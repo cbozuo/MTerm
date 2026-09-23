@@ -57,6 +57,11 @@ export struct SessionDraft {
     stop-bits: int,
     parity: string,        // "none" | "odd" | "even"
     flow-control: string,  // "none" | "hardware" | "software"
+    // RDP-only (ignored unless kind == "rdp")
+    rdp-domain: string,      // Windows logon domain ("" = none)
+    rdp-resolution: string,  // "fullscreen" | "custom" | "WxH"
+    rdp-width: int,          // desktop size used by the "custom" choice
+    rdp-height: int,
     encoding: string,
     // Honor VT100 line drawing (DEC Special Graphics) even in UTF-8 mode (#376),
     // like PuTTY's Window → Translation option. On by default.
@@ -291,7 +296,7 @@ component ProtoSelect inherits VerticalLayout {
         return "SSH";
     }
     pure function is-soon(id: string) -> bool {
-        return id == "rdp" || id == "vnc";
+        return id == "vnc";
     }
     function badge-of(id: string) -> string {
         if (!root.is-soon(id)) { return ""; }
@@ -1268,6 +1273,12 @@ export component SessionDialog inherits Rectangle {
     in-out property <bool> draft-vt100-drawing: false;
     in-out property <bool> draft-disable-shell-integration: false;
     in-out property <string> draft-note;
+    // RDP-only (the width/height below are the "custom" desktop size).
+    in-out property <string> draft-rdp-domain;
+    // "fullscreen" | "custom" | "<width>x<height>" (a preset from the dropdown).
+    in-out property <string> draft-rdp-resolution: "1280x720";
+    in-out property <string> draft-rdp-width: "1280";
+    in-out property <string> draft-rdp-height: "720";
     in-out property <string> test-status;
     in-out property <bool> serial-missing: false;
 
@@ -1298,7 +1309,7 @@ export component SessionDialog inherits Rectangle {
     background: Theme.modal-scrim;
 
     property <bool> is-preview: root.preview-kind != "" && root.draft-kind == root.preview-kind;
-    property <bool> is-real: root.draft-kind == "ssh" || root.draft-kind == "serial" || root.draft-kind == "telnet";
+    property <bool> is-real: root.draft-kind == "ssh" || root.draft-kind == "serial" || root.draft-kind == "telnet" || root.draft-kind == "rdp";
     function proto-glyph(id: string) -> string {
         return Theme.protocol-glyph(id);
     }
@@ -1333,6 +1344,18 @@ export component SessionDialog inherits Rectangle {
     }
     function is-default-port(p: string) -> bool {
         return p == "22" || p == "23" || p == "3389" || p == "5900" || p == "";
+    }
+    // 分辨率下拉的存储值 ↔ 本地化显示文本互转(同串口 Parity 的做法):
+    // "fullscreen"/"custom" 之外的值即预设 "WxH" 本身,显示原样。
+    pure function resolution-text(id: string) -> string {
+        if (id == "fullscreen") { return @tr("Full screen"); }
+        if (id == "custom") { return @tr("Custom"); }
+        return id;
+    }
+    pure function resolution-from-text(text: string) -> string {
+        if (text == @tr("Full screen")) { return "fullscreen"; }
+        if (text == @tr("Custom")) { return "custom"; }
+        return text;
     }
     function set-kind(id: string) {
         if (root.is-default-port(root.draft-port) && id != "serial") {
@@ -1451,6 +1474,10 @@ export component SessionDialog inherits Rectangle {
             stop-bits: root.draft-stop-bits.to-float(),
             parity: root.draft-parity,
             flow-control: root.draft-flow,
+            rdp-domain: root.draft-rdp-domain,
+            rdp-resolution: root.draft-rdp-resolution,
+            rdp-width: root.draft-rdp-width.to-float(),
+            rdp-height: root.draft-rdp-height.to-float(),
             encoding: root.draft-encoding,
             vt100-drawing: root.draft-vt100-drawing,
             disable-shell-integration: root.draft-disable-shell-integration,
@@ -1831,7 +1858,7 @@ HorizontalLayout {
         horizontal-stretch: 1.25;
         min-width: 0;
         picked(id) => {
-            if (id == "rdp" || id == "vnc") { root.start-preview(id); } else { root.set-kind(id); }
+            if (id == "vnc") { root.start-preview(id); } else { root.set-kind(id); }
         }
     }
     if root.draft-kind != "serial" : sf2 := LabeledInput {
@@ -2002,7 +2029,7 @@ if root.draft-kind == "serial" : HorizontalLayout {
         horizontal-stretch: 1.25;
         min-width: 0;
         picked(id) => {
-            if (id == "rdp" || id == "vnc") { root.start-preview(id); } else { root.set-kind(id); }
+            if (id == "vnc") { root.start-preview(id); } else { root.set-kind(id); }
         }
     }
     sf6 := LabeledInput {
@@ -2284,6 +2311,100 @@ if root.draft-kind == "serial" : HorizontalLayout {
                         }
                     }
                     if root.draft-kind == "ssh" : Rectangle { height: 1phx; background: Theme.dark ? Theme.line-2 : #b9b9c2; }
+
+                    // RDP 专属段 —— 账户(用户名/密码同行,同 #auth-row 双列节奏)
+                    // + 登录域/分辨率同行;宽×高只在「自定义」时出现。连接时这些
+                    // 账户信息原样交给系统远程桌面客户端(#rdp-session)。
+                    if root.draft-kind == "rdp" : Rectangle { height: 1phx; background: Theme.dark ? Theme.line-2 : #b9b9c2; }
+                    if root.draft-kind == "rdp" : VerticalLayout {
+                        spacing: 10px;
+                        HorizontalLayout {
+                            spacing: 10px;
+                            LabeledInput {
+                                focus-changed(f) => { if (f) { root.drop-clock += 1; } }
+                                dialog-field: true;
+                                input-height: 38px;
+                                label: @tr("Username");
+                                placeholder: @tr("DOMAIN\\user or user@domain");
+                                value <=> root.draft-user;
+                                horizontal-stretch: 1;
+                                clearable: true;
+                                canceled => { root.cancel(); }
+                                accepted => { root.try-submit(); }
+                            }
+                            LabeledInput {
+                                focus-changed(f) => { if (f) { root.drop-clock += 1; } }
+                                dialog-field: true;
+                                input-height: 38px;
+                                label: @tr("Password");
+                                placeholder: root.is-editing ? @tr("Leave blank to keep the current password") : "••••••••";
+                                password: true;
+                                value <=> root.draft-password;
+                                horizontal-stretch: 1;
+                                canceled => { root.cancel(); }
+                                accepted => { root.try-submit(); }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            LabeledInput {
+                                focus-changed(f) => { if (f) { root.drop-clock += 1; } }
+                                dialog-field: true;
+                                input-height: 38px;
+                                label: @tr("Domain (optional)");
+                                placeholder: "CONTOSO";
+                                value <=> root.draft-rdp-domain;
+                                horizontal-stretch: 1;
+                                min-width: 0;
+                                clearable: true;
+                                canceled => { root.cancel(); }
+                                accepted => { root.try-submit(); }
+                            }
+                            SelectField {
+                                opening => { dialog-focus.focus(); }
+                                drop-clock <=> root.drop-clock;
+                                horizontal-stretch: 1;
+                                min-width: 0;
+                                label: @tr("Resolution");
+                                choices: [@tr("Full screen"), "1280x720", "1366x768", "1440x900", "1600x900", "1920x1080", "2560x1440", "3840x2160", @tr("Custom")];
+                                value: root.resolution-text(root.draft-rdp-resolution);
+                                picked(value) => { root.draft-rdp-resolution = root.resolution-from-text(value); }
+                            }
+                        }
+                        if root.draft-rdp-resolution == "custom" : HorizontalLayout {
+                            spacing: 12px;
+                            LabeledInput {
+                                focus-changed(f) => { if (f) { root.drop-clock += 1; } }
+                                dialog-field: true;
+                                input-height: 38px;
+                                label: @tr("Width");
+                                placeholder: "1280";
+                                value <=> root.draft-rdp-width;
+                                horizontal-stretch: 1;
+                                clearable: true;
+                                canceled => { root.cancel(); }
+                                accepted => { root.try-submit(); }
+                            }
+                            LabeledInput {
+                                focus-changed(f) => { if (f) { root.drop-clock += 1; } }
+                                dialog-field: true;
+                                input-height: 38px;
+                                label: @tr("Height");
+                                placeholder: "720";
+                                value <=> root.draft-rdp-height;
+                                horizontal-stretch: 1;
+                                clearable: true;
+                                canceled => { root.cancel(); }
+                                accepted => { root.try-submit(); }
+                            }
+                        }
+                        Text {
+                            text: @tr("Remote desktop size. In full screen, Ctrl+Alt+Enter switches back to a window.");
+                            color: Theme.text-muted;
+                            font-size: Theme.fs-xs;
+                            wrap: word-wrap;
+                        }
+                    }
 
                     // ④ 高级 —— 所有协议统一形态:按钮 + 折叠容器(#adv-uniform)。
                     // 旧版 Serial 只渲染内容、不渲染开关,从 SSH 切过来会出现"字段露在外面
@@ -2790,7 +2911,8 @@ if root.draft-kind == "serial" : HorizontalLayout {
                 HorizontalLayout {
                     horizontal-stretch: 1;
                     spacing: 10px;
-                GhostButton {
+                // RDP 没有可预先探测的端点(账户直交系统客户端),测试按钮不渲染。
+                if root.draft-kind != "rdp" : GhostButton {
                     btn-height: 38px;
                     btn-radius: 9px;
                     dialog-chrome: true;

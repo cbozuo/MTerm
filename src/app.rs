@@ -356,10 +356,10 @@ fn close_session_rows(
 thread_local! {
     static TRAY_ENSURE: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
     static TRAY_HANDLE: RefCell<Option<Tray>> = const { RefCell::new(None) };
-    // (#tray-menu-flyout 2026-09-21) 自绘弹层。(#tray-flyout-blank) 不再常驻:
-    // 右击现建、关闭即销毁(见 hide_tray_flyout),TRAY_MENU 只是"当前存活
-    // 实例"的槽位,None = 无弹层。
+    // 托盘菜单窗口只创建一次并复用，避免快速右击时透明 HWND 销毁/重建闪烁。
     static TRAY_MENU: RefCell<Option<Rc<TrayMenuWindow>>> = const { RefCell::new(None) };
+    static TRAY_MENU_EPOCH: Cell<usize> = const { Cell::new(0) };
+    static TRAY_MENU_OPENING: Cell<bool> = const { Cell::new(false) };
     static TRAY_DISMISS_ARMED: Cell<bool> = const { Cell::new(false) };
     // (#tray-flyout-r9) 弹层"chrome 补装"(点外钩子 + DWM 圆角)是否已完成。
     static TRAY_CHROME_DONE: Cell<bool> = const { Cell::new(false) };
@@ -451,38 +451,23 @@ fn minimize_to_tray(win: &AppWindow) {
 
 fn hide_tray_flyout() {
     TRAY_DISMISS_ARMED.with(|a| a.set(false));
-    // (#tray-flyout-r9) 弹层窗口每次右击现建,chrome 补装标记随之复位。
+    TRAY_MENU_OPENING.with(|opening| opening.set(false));
     TRAY_CHROME_DONE.with(|c| c.set(false));
+    TRAY_MENU_EPOCH.with(|e| e.set(e.get().wrapping_add(1)));
     // (#tray-flyout-r8) 停 Esc 轮询 + 卸载点外部收起的低级鼠标钩子。
     TRAY_ESC_TIMER.with(|t| t.borrow().stop());
     Tray::remove_menu_hook();
-    TRAY_MENU.with(|m| {
-        if let Some(w) = m.borrow().as_ref() {
+    let retired = TRAY_MENU.with(|m| {
+        let old = m.borrow_mut().take();
+        if let Some(w) = old.as_ref() {
             let _ = w.hide();
         }
+        old
     });
-    // (#tray-icon-vanish 2026-09-21) 弹层抢前台会让 Explorer 的托盘悬停/溢出
-    // 层收起,图标偶发停留"未重画"态 —— 关闭时 NIM_MODIFY 兜底强制重画。
+    // Release only this hidden instance after the current event stack unwinds.
+    // Never let an old cleanup callback inspect or clear the next menu instance.
+    slint::Timer::single_shot(std::time::Duration::from_millis(0), move || drop(retired));
     Tray::refresh_icon();
-    // (#tray-flyout-blank 2026-09-21) 关闭即销毁弹层窗口(0ms 后,等当前输入
-    // 事件栈退栈),每次右击都重建、走"首次显示"路径。复用窗口时实测二次打开
-    // 必空白:hide 时 winit 后端 frame-throttle 可能仍挂着未决 redraw(隐藏
-    // 窗口收不到 WM_PAINT,pending 停留 true、计时器空转);再 show 时后端先清
-    // pending,我们的 request_redraw 又被仍在运行的计时器吞掉
-    // (request_throttled_redraw: `if self.timer.running() { return }`),
-    // 直到鼠标滑动触发重绘才有内容。销毁重建彻底绕开该状态机,也消灭空转。
-    // is_visible 保护:0ms 销毁若排在一次"现建+show"之后执行(极快连击),
-    // 不能把正显示的新实例一起销毁。
-    slint::Timer::single_shot(std::time::Duration::from_millis(0), || {
-        let visible = TRAY_MENU.with(|m| {
-            m.borrow()
-                .as_ref()
-                .is_some_and(|w| w.window().is_visible())
-        });
-        if !visible {
-            TRAY_MENU.with(|m| *m.borrow_mut() = None);
-        }
-    });
 }
 
 /// (#about-window 2026-09-21) 隐藏并销毁「关于」弹窗(0ms 后等输入事件栈退
@@ -579,11 +564,6 @@ fn active_session_count(core: &AppCore) -> i32 {
     n as i32
 }
 
-/// 托盘菜单贴边:先按「底边对齐光标上方 6px」(任务栏在下的常见布局,留缝
-/// 避免遮住托盘图标的悬停区),再钳到光标所在显示器工作区,避免多屏/任务栏
-/// 在上时飞出屏幕。
-const TRAY_CURSOR_GAP: i32 = 24;
-
 /// (#tray-place-scale 2026-09-23) 点击点所在显示器的有效 DPI 缩放(96 dpi =
 /// 1.0)。弹层 place 时窗口**尚未映射**,winit 的 scale_factor 拿不到目标
 /// 显示器的真实缩放(200% 屏实测:首次创建的窗口返回 1.0,ph 被算成一半,
@@ -621,12 +601,21 @@ fn monitor_scale_at(_cursor_x: i32, _cursor_y: i32, fallback: f32) -> f32 {
     fallback
 }
 
+fn tray_pos_in_bounds(
+    click_x: i32,
+    click_y: i32,
+    width: i32,
+    height: i32,
+    bounds: (i32, i32, i32, i32),
+) -> (i32, i32) {
+    let (left, top, right, bottom) = bounds;
+    let x = click_x.min(right - width).max(left);
+    let y = (click_y - height).min(bottom - height).max(top);
+    (x, y)
+}
+
+/// 菜单左下角对齐右击点;只有越出整块显示器时才调整位置。
 fn clamp_tray_pos(cursor_x: i32, cursor_y: i32, width: i32, height: i32) -> (i32, i32) {
-    // (#tray-flyout-r4-r2) **左缘对齐点击点、向右上弹**(x = cursor_x):右缘
-    // 对齐(r4)实测被用户否决("感觉是朝左向上弹了");超出工作区右侧时由
-    // 下方钳制拉回。底缘仍在点击点上方 6px。
-    let mut x = cursor_x;
-    let mut y = cursor_y - height - TRAY_CURSOR_GAP;
     #[cfg(windows)]
     unsafe {
         use windows::Win32::Foundation::POINT;
@@ -646,23 +635,18 @@ fn clamp_tray_pos(cursor_x: i32, cursor_y: i32, width: i32, height: i32) -> (i32
                 ..Default::default()
             };
             if GetMonitorInfoW(mon, &mut mi).as_bool() {
-                let wr = mi.rcWork;
-                if x + width > wr.right {
-                    x = wr.right - width;
-                }
-                if y + height > wr.bottom {
-                    y = wr.bottom - height;
-                }
-                if x < wr.left {
-                    x = wr.left;
-                }
-                if y < wr.top {
-                    y = wr.top;
-                }
+                let rect = mi.rcMonitor;
+                return tray_pos_in_bounds(
+                    cursor_x,
+                    cursor_y,
+                    width,
+                    height,
+                    (rect.left, rect.top, rect.right, rect.bottom),
+                );
             }
         }
     }
-    (x, y)
+    (cursor_x, cursor_y - height)
 }
 
 /// (#tray-flyout-r4) 弹层窗口样式:**WS_EX_NOACTIVATE**(不抢激活——悬停/点击
@@ -735,9 +719,10 @@ fn arm_tray_flyout_chrome(sw: &slint::Window) {
         if hwnd == 0 {
             return;
         }
-        Tray::install_menu_hook(hwnd);
-        TRAY_CHROME_DONE.with(|c| c.set(true));
-        tracing::info!("tray: flyout chrome armed (hook + dwm corner)");
+        if Tray::install_menu_hook(hwnd) {
+            TRAY_CHROME_DONE.with(|c| c.set(true));
+            tracing::info!("tray: flyout chrome armed (hook + dwm corner)");
+        }
     }
     #[cfg(not(windows))]
     TRAY_CHROME_DONE.with(|c| c.set(true));
@@ -775,7 +760,12 @@ fn show_tray_flyout(
         tracing::info!(px, py, pw, ph, scale, "tray: place flyout");
     };
     place();
-    let _ = fly.show();
+    if let Err(err) = fly.show() {
+        tracing::error!("tray: failed to show flyout: {err}");
+        hide_tray_flyout();
+        TRAY_MENU.with(|m| *m.borrow_mut() = None);
+        return;
+    }
     fly.window().request_redraw();
     fly.invoke_take_keys();
     // (#tray-flyout-r7) 旧有的 show 后 TOOLWINDOW/NOACTIVATE 补设与 r5 的
@@ -800,16 +790,20 @@ fn show_tray_flyout(
         t.borrow().start(
             slint::TimerMode::Repeated,
             std::time::Duration::from_millis(50),
-            || {
-                #[link(name = "user32")]
-                extern "system" {
-                    fn GetAsyncKeyState(vkey: i32) -> i16;
-                }
-                unsafe {
-                    // 高位=按住、低位=按下过,任一命中即收起
-                    //(收起时 Timer 一并停止,不会连发)。
-                    if GetAsyncKeyState(0x1B) != 0 {
-                        hide_tray_flyout();
+            {
+                let epoch = TRAY_MENU_EPOCH.get();
+                move || {
+                    #[link(name = "user32")]
+                    extern "system" {
+                        fn GetAsyncKeyState(vkey: i32) -> i16;
+                    }
+                    if TRAY_MENU_EPOCH.get() != epoch {
+                        return;
+                    }
+                    unsafe {
+                        if GetAsyncKeyState(0x1B) != 0 {
+                            hide_tray_flyout();
+                        }
                     }
                 }
             },
@@ -818,13 +812,28 @@ fn show_tray_flyout(
     // 50ms 兜底重绘:首次显示本就有"先画首帧再映射窗口"(后端 first-show
     // 路径),这里是防御性补一枪,防个别环境下 pre-draw 被跳过后窗口停在空白。
     let fly_weak = Rc::downgrade(fly);
+    let epoch = TRAY_MENU_EPOCH.get();
     slint::Timer::single_shot(std::time::Duration::from_millis(50), move || {
-        if let Some(f) = fly_weak.upgrade() {
-            f.window().request_redraw();
+        let current = TRAY_MENU_EPOCH.get() == epoch;
+        if current {
+            if let Some(f) = fly_weak.upgrade() {
+                if f.window().is_visible() {
+                    f.window().request_redraw();
+                }
+            }
         }
     });
-    slint::Timer::single_shot(std::time::Duration::from_millis(80), || {
-        TRAY_DISMISS_ARMED.with(|a| a.set(true));
+    let fly_weak = Rc::downgrade(fly);
+    slint::Timer::single_shot(std::time::Duration::from_millis(80), move || {
+        let current = TRAY_MENU.with(|m| {
+            let Some(fly) = fly_weak.upgrade() else { return false };
+            m.borrow()
+                .as_ref()
+                .is_some_and(|w| Rc::ptr_eq(w, &fly) && w.window().is_visible())
+        });
+        if current {
+            TRAY_DISMISS_ARMED.with(|a| a.set(true));
+        }
     });
 }
 
@@ -836,10 +845,30 @@ fn bind_tray_flyout(
     {
         // (#tray-icon-vanish) 失焦/Esc 统一走 hide_tray_flyout(armed 复位 +
         // NIM_MODIFY 心跳),不再直接持 fly_weak 手动 hide。
+        let fly_weak = Rc::downgrade(fly);
         fly.window().on_winit_window_event(move |sw, event| {
             use i_slint_backend_winit::winit::event::{ElementState, WindowEvent as WEvent};
             use i_slint_backend_winit::winit::keyboard::{Key, NamedKey};
             use i_slint_backend_winit::EventResult;
+            let current = TRAY_MENU.with(|m| {
+                let Some(fly) = fly_weak.upgrade() else { return false };
+                m.borrow().as_ref().is_some_and(|w| Rc::ptr_eq(w, &fly))
+            });
+            if !current {
+                return EventResult::Propagate;
+            }
+            let epoch = TRAY_MENU_EPOCH.get();
+            slint::Timer::single_shot(std::time::Duration::from_millis(16), move || {
+                let current = TRAY_MENU_EPOCH.get() == epoch
+                    && TRAY_MENU.with(|m| {
+                        m.borrow()
+                            .as_ref()
+                            .is_some_and(|w| w.window().is_visible())
+                    });
+                if current {
+                    TRAY_MENU_OPENING.with(|opening| opening.set(false));
+                }
+            });
             // (#tray-flyout-r9) 首个事件时补装点外钩子与 DWM 圆角
             //(show 后立即安装拿不到 winit 窗口;幂等,重复事件直接短路)。
             arm_tray_flyout_chrome(sw);
@@ -4089,18 +4118,25 @@ fn open_window(
                     }
                 }
                 TrayAction::OpenMenu { x, y } => {
-                    // (#tray-flyout-r2) 旧实例先**显式隐藏**再丢弃:杜绝"隐藏
-                    // 链路失灵时旧弹层残留堆积"(任务栏/屏上叠加,用户截图)。
-                    TRAY_MENU.with(|m| {
-                        if let Some(old) = m.borrow_mut().take() {
-                            let _ = old.hide();
+                    let menu_exists = TRAY_MENU.with(|m| m.borrow().is_some());
+                    if menu_exists || TRAY_MENU_OPENING.with(|opening| opening.get()) {
+                        tracing::debug!("tray: ignored duplicate open callback while menu is active");
+                        return;
+                    }
+                    TRAY_MENU_OPENING.with(|opening| opening.set(true));
+                    TRAY_DISMISS_ARMED.with(|a| a.set(false));
+                    TRAY_ESC_TIMER.with(|t| t.borrow().stop());
+                    Tray::remove_menu_hook();
+                    TRAY_CHROME_DONE.with(|c| c.set(false));
+                    let retired = TRAY_MENU.with(|m| {
+                        let old = m.borrow_mut().take();
+                        if let Some(w) = old.as_ref() {
+                            let _ = w.hide();
                         }
+                        old
                     });
-                    // (#tray-flyout-r7) 创建期注入:标志 → 后端创建钩子给这个窗口
-                    // 带 owner(托盘宿主)/skip-taskbar/无激活(见 window.rs
-                    // TRAY_WINDOW_NEXT)。
-                    // (#tray-round-corner 2026-09-23) 同套机制开透明窗底,配合
-                    // ui/tray_menu.slint 圆角矩形 → 四角真圆角。
+                    slint::Timer::single_shot(std::time::Duration::from_millis(0), move || drop(retired));
+
                     window::TRAY_WINDOW_NEXT.store(true, std::sync::atomic::Ordering::Relaxed);
                     window::TRAY_TRANSPARENT_NEXT
                         .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -4110,20 +4146,21 @@ fn open_window(
                                 .store(false, std::sync::atomic::Ordering::Relaxed);
                             window::TRAY_TRANSPARENT_NEXT
                                 .store(false, std::sync::atomic::Ordering::Relaxed);
-                            let fly = Rc::new(w);
-                            bind_tray_flyout(&fly, closer.clone(), tray_weak.clone());
-                            TRAY_MENU.with(|m| *m.borrow_mut() = Some(fly.clone()));
-                            fly
+                            Rc::new(w)
                         }
                         Err(e) => {
                             window::TRAY_WINDOW_NEXT
                                 .store(false, std::sync::atomic::Ordering::Relaxed);
                             window::TRAY_TRANSPARENT_NEXT
                                 .store(false, std::sync::atomic::Ordering::Relaxed);
+                            TRAY_MENU_OPENING.with(|opening| opening.set(false));
                             tracing::error!("tray: flyout window failed: {e}");
                             return;
                         }
                     };
+                    TRAY_MENU_EPOCH.with(|e| e.set(e.get().wrapping_add(1)));
+                    bind_tray_flyout(&fly, closer.clone(), tray_weak.clone());
+                    TRAY_MENU.with(|m| *m.borrow_mut() = Some(fly.clone()));
                     show_tray_flyout(&fly, &tray_weak, &core, x, y);
                 }
             }));
@@ -4889,6 +4926,10 @@ fn wire_session_callbacks(
             w.set_dialog_vt100_drawing(false);
             w.set_dialog_disable_shell_integration(false);
             w.set_dialog_note("".into());
+            w.set_dialog_rdp_domain("".into());
+            w.set_dialog_rdp_resolution(RDP_RESOLUTION_DEFAULT.into());
+            w.set_dialog_rdp_width("1280".into());
+            w.set_dialog_rdp_height("720".into());
             w.set_dialog_editing(false);
             w.set_dialog_open(true);
         }
@@ -5121,6 +5162,13 @@ fn wire_session_callbacks(
                 w.set_dialog_vt100_drawing(session.vt100_drawing);
                 w.set_dialog_disable_shell_integration(session.disable_shell_integration);
                 w.set_dialog_note(session.note.clone().into());
+                w.set_dialog_rdp_domain(session.rdp_domain.clone().into());
+                w.set_dialog_rdp_resolution(
+                    rdp_resolution_choice(session.rdp_fullscreen, session.rdp_width, session.rdp_height)
+                        .into(),
+                );
+                w.set_dialog_rdp_width(session.rdp_width.to_string().into());
+                w.set_dialog_rdp_height(session.rdp_height.to_string().into());
                 w.set_dialog_editing(true);
                 w.set_dialog_open(true);
             }
@@ -5804,12 +5852,17 @@ fn wire_session_callbacks(
                 _ if draft.user.trim().is_empty() => draft.host.to_string(),
                 _ => format!("{}@{}", draft.user, draft.host),
             };
-            // Telnet defaults to port 23, SSH to 22; serial ignores port.
-            let default_port = if kind == crate::config::SessionKind::Telnet {
-                23
-            } else {
-                22
+            // Telnet defaults to port 23, RDP to 3389, SSH to 22; serial ignores port.
+            let default_port = match kind {
+                crate::config::SessionKind::Telnet => 23,
+                crate::config::SessionKind::Rdp => 3389,
+                _ => 22,
             };
+            let (rdp_fullscreen, rdp_width, rdp_height) = rdp_display_settings(
+                &draft.rdp_resolution.to_string(),
+                draft.rdp_width,
+                draft.rdp_height,
+            );
             let new_session = Session {
                 id,
                 name: if draft.name.is_empty() {
@@ -5845,6 +5898,10 @@ fn wire_session_callbacks(
                 stop_bits: draft.stop_bits as u8,
                 parity: draft.parity.to_string(),
                 flow_control: draft.flow_control.to_string(),
+                rdp_domain: draft.rdp_domain.to_string(),
+                rdp_fullscreen,
+                rdp_width,
+                rdp_height,
                 encoding: draft.encoding.to_string(),
                 vt100_drawing: draft.vt100_drawing,
                 forwards,
@@ -5880,6 +5937,11 @@ fn wire_session_callbacks(
         let edit_trigger_secrets = edit_trigger_secrets.clone();
         window.on_session_dialog_test(move |draft: SessionDraft| {
             let kind = draft.kind.to_string();
+            if kind == "rdp" {
+                // RDP hands the account to the system remote desktop client —
+                // there is nothing to probe beforehand (the UI hides the button).
+                return;
+            }
             if kind == "serial" {
                 let port_name = draft.serial_port.to_string();
                 let baud = if draft.baud_rate <= 0 {
@@ -6223,6 +6285,15 @@ fn wire_session_callbacks(
                     None => return,
                 }
             };
+            // RDP is handled by the system client in its own window. Do not
+            // surface its launch result as a persistent SSH-import hint.
+            if session.kind == SessionKind::Rdp {
+                match crate::rdp::launch(&session) {
+                    Ok(what) => tracing::info!("RDP client started: {what}"),
+                    Err(err) => tracing::warn!("RDP client failed to start: {err}"),
+                }
+                return;
+            }
             let tab_id = format!("term-{}", uuid::Uuid::new_v4());
             let tab_title = session.name.clone();
 
@@ -6234,6 +6305,9 @@ fn wire_session_callbacks(
                 }
                 SessionKind::Telnet => format!("telnet {}:{}", session.host, session.port),
                 SessionKind::Local => format!("local {}", session.name),
+                // Unreachable today: RDP returns above before any tab is made.
+                // Kept so the match stays exhaustive.
+                SessionKind::Rdp => format!("rdp {}:{}", session.host, session.port),
             };
             // Compatibility mode also suppresses the SFTP side-channel so
             // bastions that only permit one proxied PTY connection stay alive.

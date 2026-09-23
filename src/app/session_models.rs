@@ -621,6 +621,85 @@ pub(super) fn wsl_available() -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// RDP display settings
+// ---------------------------------------------------------------------------
+
+/// Resolution dropdown values shared by the dialog and the stored session.
+/// `fullscreen` and `custom` are the two non-preset entries; presets are the
+/// `"WxH"` strings below.
+pub(super) const RDP_RESOLUTION_FULLSCREEN: &str = "fullscreen";
+pub(super) const RDP_RESOLUTION_CUSTOM: &str = "custom";
+pub(super) const RDP_RESOLUTION_DEFAULT: &str = "1280x720";
+pub(super) const RDP_RESOLUTION_PRESETS: [&str; 7] = [
+    "1280x720",
+    "1366x768",
+    "1440x900",
+    "1600x900",
+    "1920x1080",
+    "2560x1440",
+    "3840x2160",
+];
+
+/// Smallest/largest desktop side accepted from the dialog. The system client
+/// clamps further on its own, but sizes outside this range are clearly typos.
+pub(super) const RDP_MIN_SIDE: i32 = 200;
+pub(super) const RDP_MAX_SIDE: i32 = 8192;
+
+/// Turn the dialog's resolution choice into the stored display settings
+/// `(fullscreen, width, height)`. A `"WxH"` preset carries its own size;
+/// the two free inputs are only trusted for `custom` (non-positive values
+/// fall back to the defaults, positive ones are clamped into range).
+/// Unrecognised strings fall back to full screen.
+pub(super) fn rdp_display_settings(
+    resolution: &str,
+    custom_width: i32,
+    custom_height: i32,
+) -> (bool, u16, u16) {
+    if resolution == RDP_RESOLUTION_FULLSCREEN {
+        return (true, 1280, 720);
+    }
+    if resolution == RDP_RESOLUTION_CUSTOM {
+        let clamp_side = |value: i32, default: u16| -> u16 {
+            if value <= 0 {
+                default
+            } else {
+                value.clamp(RDP_MIN_SIDE, RDP_MAX_SIDE) as u16
+            }
+        };
+        return (
+            false,
+            clamp_side(custom_width, 1280),
+            clamp_side(custom_height, 720),
+        );
+    }
+    if let Some((width, height)) = resolution.split_once('x') {
+        if let (Ok(width), Ok(height)) = (width.parse::<u16>(), height.parse::<u16>()) {
+            let (wide, high) = (i32::from(width), i32::from(height));
+            if (RDP_MIN_SIDE..=RDP_MAX_SIDE).contains(&wide)
+                && (RDP_MIN_SIDE..=RDP_MAX_SIDE).contains(&high)
+            {
+                return (false, width, height);
+            }
+        }
+    }
+    (true, 1280, 720)
+}
+
+/// Map stored display settings back to the dialog's resolution entry: one of
+/// the preset `"WxH"` strings, `fullscreen`, or `custom` for any other size.
+pub(super) fn rdp_resolution_choice(fullscreen: bool, width: u16, height: u16) -> &'static str {
+    if fullscreen {
+        return RDP_RESOLUTION_FULLSCREEN;
+    }
+    let size = format!("{}x{}", width, height);
+    RDP_RESOLUTION_PRESETS
+        .iter()
+        .copied()
+        .find(|preset| *preset == size)
+        .unwrap_or(RDP_RESOLUTION_CUSTOM)
+}
+
+// ---------------------------------------------------------------------------
 // Session callbacks (welcome page + dialog)
 // ---------------------------------------------------------------------------
 
@@ -660,7 +739,13 @@ pub(super) fn session_from_draft(
         _ if draft.user.trim().is_empty() => draft.host.to_string(),
         _ => format!("{}@{}", draft.user, draft.host),
     };
-    let default_port = if kind == SessionKind::Telnet { 23 } else { 22 };
+    let default_port = match kind {
+        SessionKind::Telnet => 23,
+        SessionKind::Rdp => 3389,
+        _ => 22,
+    };
+    let (rdp_fullscreen, rdp_width, rdp_height) =
+        rdp_display_settings(&draft.rdp_resolution.to_string(), draft.rdp_width, draft.rdp_height);
 
     Session {
         id: draft.id.to_string(),
@@ -696,6 +781,10 @@ pub(super) fn session_from_draft(
         stop_bits: draft.stop_bits as u8,
         parity: draft.parity.to_string(),
         flow_control: draft.flow_control.to_string(),
+        rdp_domain: draft.rdp_domain.to_string(),
+        rdp_fullscreen,
+        rdp_width,
+        rdp_height,
         encoding: draft.encoding.to_string(),
         vt100_drawing: draft.vt100_drawing,
         forwards,
@@ -890,5 +979,38 @@ mod row_display_tests {
             assert_eq!(rows[0].port, 2222);
             assert_eq!(rows[0].user.as_str(), "alice");
         }
+    }
+}
+
+#[cfg(test)]
+mod rdp_display_tests {
+    use super::*;
+
+    #[test]
+    fn fullscreen_choice_stores_fullscreen() {
+        assert_eq!(rdp_display_settings("fullscreen", 0, 0), (true, 1280, 720));
+    }
+
+    #[test]
+    fn presets_round_trip_through_the_stored_fields() {
+        for preset in RDP_RESOLUTION_PRESETS {
+            let (fullscreen, width, height) = rdp_display_settings(preset, 0, 0);
+            assert!(!fullscreen, "{preset}");
+            assert_eq!(rdp_resolution_choice(fullscreen, width, height), preset);
+        }
+    }
+
+    #[test]
+    fn custom_choice_clamps_positive_sizes_and_defaults_junk() {
+        assert_eq!(rdp_display_settings("custom", 0, 99_999), (false, 1280, 8192));
+        assert_eq!(rdp_display_settings("custom", -5, 720), (false, 1280, 720));
+        assert_eq!(rdp_display_settings("custom", 1000, 1000), (false, 1000, 1000));
+        assert_eq!(rdp_resolution_choice(false, 1000, 1000), RDP_RESOLUTION_CUSTOM);
+    }
+
+    #[test]
+    fn unrecognised_resolution_falls_back_to_fullscreen() {
+        assert_eq!(rdp_display_settings("garbage", 1920, 1080), (true, 1280, 720));
+        assert_eq!(rdp_display_settings("", 1920, 1080), (true, 1280, 720));
     }
 }

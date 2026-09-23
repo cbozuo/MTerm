@@ -16,6 +16,10 @@ pub enum SessionKind {
     Telnet,
     /// Local shell process on this machine (PowerShell/CMD/WSL/$SHELL).
     Local,
+    /// Remote Desktop session: meatshell only stores the account details and
+    /// hands them to the system RDP client (`mstsc` / `xfreerdp`), which opens
+    /// the desktop in its own native window — no tab is created.
+    Rdp,
 }
 
 impl SessionKind {
@@ -25,6 +29,7 @@ impl SessionKind {
             SessionKind::Serial => "serial",
             SessionKind::Telnet => "telnet",
             SessionKind::Local => "local",
+            SessionKind::Rdp => "rdp",
         }
     }
 
@@ -33,6 +38,7 @@ impl SessionKind {
             "serial" => SessionKind::Serial,
             "telnet" => SessionKind::Telnet,
             "local" => SessionKind::Local,
+            "rdp" => SessionKind::Rdp,
             _ => SessionKind::Ssh,
         }
     }
@@ -61,6 +67,14 @@ fn default_encoding() -> String {
 
 fn default_vt100_drawing() -> bool {
     false
+}
+
+fn default_rdp_width() -> u16 {
+    1280
+}
+
+fn default_rdp_height() -> u16 {
+    720
 }
 
 /// How a session authenticates.
@@ -150,6 +164,23 @@ pub struct Session {
     /// "none" | "hardware" | "software".
     #[serde(default = "default_flow")]
     pub flow_control: String,
+
+    // --- RDP-only fields (ignored unless kind == Rdp) -----------------------
+    /// Windows logon domain (or "." for the local machine); empty = none. A
+    /// "DOMAIN\user" style username is split into this when the connection is
+    /// handed to the system RDP client.
+    #[serde(default)]
+    pub rdp_domain: String,
+    /// Ask the system client to start the desktop full screen. It then uses the
+    /// local monitor resolution, which keeps the image pixel-exact; the size
+    /// below is only used when this is false.
+    #[serde(default)]
+    pub rdp_fullscreen: bool,
+    /// Remote desktop size in pixels for a windowed session.
+    #[serde(default = "default_rdp_width")]
+    pub rdp_width: u16,
+    #[serde(default = "default_rdp_height")]
+    pub rdp_height: u16,
 
     /// Character encoding used by the interactive terminal stream (#338).
     /// UTF-8 remains the default for existing and newly created sessions.
@@ -246,6 +277,10 @@ impl Session {
             stop_bits: default_stop_bits(),
             parity: default_parity(),
             flow_control: default_flow(),
+            rdp_domain: String::new(),
+            rdp_fullscreen: false,
+            rdp_width: default_rdp_width(),
+            rdp_height: default_rdp_height(),
             encoding: default_encoding(),
             vt100_drawing: default_vt100_drawing(),
             forwards: Vec::new(),

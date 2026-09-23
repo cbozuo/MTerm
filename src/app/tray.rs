@@ -20,8 +20,7 @@
 pub(crate) enum TrayAction {
     /// 用户要回主窗口(左键单击,或菜单「显示」)
     Show,
-    /// 右键:打开自绘菜单。坐标是弹出锚点(托盘图标矩形的左缘/顶缘,屏幕
-    /// 物理像素;`Shell_NotifyIconGetRect` 现查,菜单锚定其右上方向)。
+    /// 右键:打开自绘菜单。坐标是右击点(屏幕物理像素),菜单左下角锚定于此。
     OpenMenu { x: i32, y: i32 },
 }
 
@@ -90,9 +89,16 @@ impl Tray {
 
     /// (#tray-flyout-r8) 菜单打开期间装低级鼠标钩子(点菜单外收起)。
     #[allow(unused)]
-    pub(crate) fn install_menu_hook(menu_hwnd: isize) {
+    pub(crate) fn install_menu_hook(menu_hwnd: isize) -> bool {
         #[cfg(windows)]
-        win::install_menu_hook(menu_hwnd);
+        {
+            win::install_menu_hook(menu_hwnd)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = menu_hwnd;
+            true
+        }
     }
 
     /// (#tray-flyout-r8) 卸载低级鼠标钩子(菜单关闭时调用)。
@@ -111,6 +117,11 @@ fn split_message_pos(pos: u32) -> (i32, i32) {
     let x = (pos & 0xffff) as u16 as i16 as i32;
     let y = (pos >> 16) as u16 as i16 as i32;
     (x, y)
+}
+
+#[cfg(windows)]
+fn dismiss_matches_menu(posted_epoch: usize, current_epoch: usize, menu_hwnd: isize) -> bool {
+    menu_hwnd != 0 && posted_epoch == current_epoch
 }
 
 #[cfg(test)]
@@ -133,8 +144,9 @@ mod win {
         NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, NOTIFYICONIDENTIFIER,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, GetMessagePos,
-        GetSystemMetrics, GetWindowRect, HHOOK, LoadImageW, MSLLHOOKSTRUCT, PostMessageW,
+        CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos,
+        GetMessagePos, GetSystemMetrics, GetWindowRect, HHOOK, LoadImageW, MSLLHOOKSTRUCT,
+        PostMessageW,
         RegisterClassW, RegisterWindowMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
         WH_MOUSE_LL, CW_USEDEFAULT, HICON, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTCOLOR,
         LR_DEFAULTSIZE, LR_SHARED, SM_CXSMICON, SM_CYSMICON, WM_APP, WM_CONTEXTMENU,
@@ -164,6 +176,9 @@ mod win {
         /// (0 = 未装钩)——点击菜单矩形外时收起菜单。
         static MENU_HOOK: Cell<isize> = const { Cell::new(0) };
         static MENU_HWND: Cell<isize> = const { Cell::new(0) };
+        // 每次更换菜单/卸载钩子均失效旧的异步点外关闭消息。
+        static MENU_EPOCH: Cell<usize> = const { Cell::new(0) };
+        static MENU_DISMISS_QUEUED: Cell<bool> = const { Cell::new(false) };
     }
 
     /// 托盘图标当前是否可用(最近一次 ADD 的结果;宿主未创建 = false)。
@@ -373,11 +388,15 @@ mod win {
                 LRESULT(0)
             }
             WM_TRAY_DISMISS => {
-                // (#tray-dismiss-msg 2026-09-23) 点外收起的执行点:低级鼠标钩子
-                // 只 Post 本消息,hide 链路(Slint 窗口 hide + Timer)在这里的
-                // 正常消息上下文跑,不占钩子回调的超时预算。
-                tracing::info!("tray: dismiss message received");
-                super::super::hide_tray_flyout();
+                // 旧菜单投递的消息不得关闭随后创建的新菜单。
+                let epoch = MENU_EPOCH.get();
+                let menu = MENU_HWND.get();
+                if super::dismiss_matches_menu(wparam.0, epoch, menu) {
+                    tracing::info!(epoch, "tray: dismiss message received");
+                    super::super::hide_tray_flyout();
+                } else {
+                    tracing::debug!(posted = wparam.0, epoch, menu, "tray: stale dismiss ignored");
+                }
                 LRESULT(0)
             }
             msg if msg == taskbar_created_msg() => {
@@ -396,15 +415,11 @@ mod win {
     ///
     /// 不再调用 `TrackPopupMenu` —— 原生菜单画不出每项图标,也不能 hug 内容宽度。
     ///
-    /// (#tray-click-pos 2026-09-23 → #tray-icon-rect) 锚点来源的第二次修正:
-    /// `GetCursorPos` 是消息**处理时刻**的光标(主线程忙时漂移);`GetMessagePos`
-    /// 也不可靠 —— 托盘回调是 Explorer **PostMessage 投递的 posted 消息,不携带
-    /// 点击位置**,GetMessagePos 返回线程的陈旧输入记录(实测:连续「别处左击 →
-    /// 右击图标」菜单弹回上一次左击处,place x 与点外记录 4/4 吻合)。最终改用
-    /// **Shell_NotifyIconGetRect**:向系统现查托盘图标矩形(右击必落在图标上,
-    /// 锚定图标左缘/顶缘向右上展开,与点击点语义一致),完全确定性;查询失败或
-    /// 矩形异常时回落 GetMessagePos 兜底。
+    /// 托盘回调由 Explorer 投递,GetMessagePos 可能是上一次输入的位置。
+    /// 以当前光标为锚点;若消息延迟到光标已离开图标,退回图标中心。
     unsafe fn show_menu(hwnd: HWND) {
+        let mut pt = windows::Win32::Foundation::POINT::default();
+        let cursor = GetCursorPos(&mut pt).ok().map(|_| pt);
         let nid = NOTIFYICONIDENTIFIER {
             cbSize: size_of::<NOTIFYICONIDENTIFIER>() as u32,
             hWnd: hwnd,
@@ -422,15 +437,27 @@ mod win {
                 "tray: icon rect queried"
             );
             if valid {
-                emit(TrayAction::OpenMenu {
-                    x: rect.left,
-                    y: rect.top,
-                });
+                let (x, y) = match cursor {
+                    Some(pt)
+                        if pt.x >= rect.left
+                            && pt.x < rect.right
+                            && pt.y >= rect.top
+                            && pt.y < rect.bottom => (pt.x, pt.y),
+                    _ => (
+                        rect.left + (rect.right - rect.left) / 2,
+                        rect.top + (rect.bottom - rect.top) / 2,
+                    ),
+                };
+                emit(TrayAction::OpenMenu { x, y });
                 return;
             }
         }
+        if let Some(pt) = cursor {
+            emit(TrayAction::OpenMenu { x: pt.x, y: pt.y });
+            return;
+        }
         let (x, y) = super::split_message_pos(GetMessagePos());
-        tracing::info!(x, y, "tray: icon rect unavailable, fall back to GetMessagePos");
+        tracing::warn!(x, y, "tray: icon rect and cursor unavailable, fall back to GetMessagePos");
         emit(TrayAction::OpenMenu { x, y });
     }
 
@@ -439,13 +466,13 @@ mod win {
     /// 与原生菜单一致;点击本身穿透不吞)。装/卸必须配对(install 于弹层 show、
     /// remove 于弹层 hide),钩子回调要求安装线程持续泵消息——主线程 winit
     /// 事件循环满足。
-    pub(super) fn install_menu_hook(menu_hwnd: isize) {
-        // (#tray-flyout-r9) 幂等:弹层首个 winit 事件里会反复尝试补装,
-        // 已装钩子时直接返回(否则泄漏旧钩子句柄)。
+    pub(super) fn install_menu_hook(menu_hwnd: isize) -> bool {
         if MENU_HOOK.get() != 0 {
-            return;
+            if MENU_HWND.get() == menu_hwnd {
+                return true;
+            }
+            remove_menu_hook();
         }
-        MENU_HWND.set(menu_hwnd);
         unsafe {
             let Ok(hook) = SetWindowsHookExW(
                 WH_MOUSE_LL,
@@ -455,16 +482,23 @@ mod win {
             ) else {
                 let err = windows::core::Error::from_win32();
                 tracing::error!("tray: SetWindowsHookExW(WH_MOUSE_LL) failed: {err}");
-                return;
+                return false;
             };
+            let epoch = MENU_EPOCH.get().wrapping_add(1);
+            MENU_EPOCH.set(epoch);
+            MENU_HWND.set(menu_hwnd);
+            MENU_DISMISS_QUEUED.set(false);
             MENU_HOOK.set(hook.0 as isize);
-            tracing::info!(hook = hook.0 as isize, menu_hwnd, "tray: menu hook installed");
+            tracing::info!(hook = hook.0 as isize, menu_hwnd, epoch, "tray: menu hook installed");
+            true
         }
     }
 
     pub(super) fn remove_menu_hook() {
         let hook = MENU_HOOK.replace(0);
         MENU_HWND.set(0);
+        MENU_DISMISS_QUEUED.set(false);
+        MENU_EPOCH.set(MENU_EPOCH.get().wrapping_add(1));
         if hook != 0 {
             unsafe {
                 let _ = UnhookWindowsHookEx(HHOOK(hook as *mut _));
@@ -492,28 +526,27 @@ mod win {
                             && info.pt.x < rect.right
                             && info.pt.y >= rect.top
                             && info.pt.y < rect.bottom;
-                        if !inside {
-                            // (#tray-dismiss-msg 2026-09-23) 只 Post 一条消息,
-                            // 不在钩子回调里直接执行 hide_tray_flyout(Slint 窗口
-                            // hide + Timer 是重活):低级钩子回调一旦超时,Win11
-                            // 会静默跳过乃至移除钩子,点外收起从此失灵。回调只发
-                            // 消息,耗时微秒级;hide 挪到 wnd_proc 的
-                            // WM_TRAY_DISMISS(正常消息上下文)执行。Post 失败
-                            //(宿主未建等)回落旧路径兜底。
+                        if !inside && !MENU_DISMISS_QUEUED.get() {
+                            // 钩子只投递消息;携带菜单代次,避免旧点击关闭新菜单。
                             let host = HOST_HWND.with(|h| *h.borrow());
+                            let epoch = MENU_EPOCH.get();
                             let posted = host != 0
                                 && PostMessageW(
                                     HWND(host as *mut _),
                                     WM_TRAY_DISMISS,
-                                    WPARAM(0),
+                                    WPARAM(epoch),
                                     LPARAM(0),
                                 )
                                 .is_ok();
+                            if posted {
+                                MENU_DISMISS_QUEUED.set(true);
+                            }
                             tracing::info!(
                                 info.pt.x,
                                 info.pt.y,
                                 menu,
                                 host,
+                                epoch,
                                 posted,
                                 "tray: outside click on flyout"
                             );

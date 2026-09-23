@@ -3,7 +3,15 @@
 //! 左侧/上方时坐标为负。
 #![cfg(windows)]
 
-use super::split_message_pos;
+use super::{dismiss_matches_menu, split_message_pos};
+use super::super::tray_pos_in_bounds;
+
+#[test]
+fn dismiss_message_only_closes_its_own_menu() {
+    assert!(dismiss_matches_menu(3, 3, 123));
+    assert!(!dismiss_matches_menu(3, 4, 456));
+    assert!(!dismiss_matches_menu(3, 3, 0));
+}
 
 #[test]
 fn splits_positive_screen_coords() {
@@ -23,4 +31,35 @@ fn splits_i16_boundary_coords() {
     // i16 正负边界:32767 保持,-32768 须正确符号扩展。
     let pos: u32 = 32767u32 | (u32::from((-32768i16) as u16) << 16);
     assert_eq!(split_message_pos(pos), (32767, -32768));
+}
+
+#[test]
+fn tray_menu_grows_upward_with_active_sessions() {
+    let monitor = (0, 0, 1920, 1080);
+    let click = (800, 1052);
+    for height in [117, 158, 176, 237] {
+        let (x, y) = tray_pos_in_bounds(click.0, click.1, 160, height, monitor);
+        assert_eq!(x, click.0);
+        assert_eq!(y + height, click.1);
+    }
+}
+
+#[test]
+fn tray_menu_can_anchor_over_taskbar() {
+    let (x, y) = tray_pos_in_bounds(1792, 1052, 120, 117, (0, 0, 1920, 1080));
+    assert_eq!((x, y), (1792, 935));
+}
+
+#[test]
+fn tray_menu_stays_inside_monitor_at_edges() {
+    let monitor = (0, 0, 1920, 1080);
+    assert_eq!(tray_pos_in_bounds(1890, 900, 160, 158, monitor), (1760, 742));
+    assert_eq!(tray_pos_in_bounds(500, 30, 160, 158, monitor), (500, 0));
+}
+
+#[test]
+fn tray_menu_uses_negative_virtual_desktop_coordinates() {
+    let monitor = (-1920, -1080, 0, 0);
+    assert_eq!(tray_pos_in_bounds(-1800, -100, 160, 158, monitor), (-1800, -258));
+    assert_eq!(tray_pos_in_bounds(-50, -1000, 160, 158, monitor), (-160, -1080));
 }
