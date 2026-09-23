@@ -1682,10 +1682,14 @@ impl WinitWindowAdapter {
                 self.resize_window(size.into())?;
             };
 
-            // Pre-render the first frame before mapping the window to avoid a flash of
-            // uninitialized VRAM on X11 (no background_pixmap). Skipped on Wayland, where
-            // rendering before the initial configure makes the compositor mis-size the window.
-            if !self.first_frame_presented.get() && !self.shared_backend_data.is_wayland {
+            // Pre-render before mapping the window to avoid exposing an uninitialized
+            // surface. This also runs when a hidden window is shown again: a pending
+            // throttled redraw may otherwise be delayed until after the window is visible.
+            // Skipped on Wayland, where rendering before the initial configure makes the
+            // compositor mis-size the window.
+            if (!self.first_frame_presented.get() || recreating_window)
+                && !self.shared_backend_data.is_wayland
+            {
                 let _ = self.draw();
                 #[cfg(target_os = "macos")]
                 if !self.first_frame_presented.get() {

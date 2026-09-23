@@ -457,21 +457,16 @@ fn hide_tray_flyout() {
     // (#tray-flyout-r8) 停 Esc 轮询 + 卸载点外部收起的低级鼠标钩子。
     TRAY_ESC_TIMER.with(|t| t.borrow().stop());
     Tray::remove_menu_hook();
-    let retired = TRAY_MENU.with(|m| {
-        let old = m.borrow_mut().take();
-        if let Some(w) = old.as_ref() {
+    TRAY_MENU.with(|m| {
+        if let Some(w) = m.borrow().as_ref() {
             let _ = w.hide();
         }
-        old
     });
-    // Release only this hidden instance after the current event stack unwinds.
-    // Never let an old cleanup callback inspect or clear the next menu instance.
-    slint::Timer::single_shot(std::time::Duration::from_millis(0), move || drop(retired));
     Tray::refresh_icon();
 }
 
 /// (#about-window 2026-09-21) 隐藏并销毁「关于」弹窗(0ms 后等输入事件栈退
-/// 栈,is_visible 保护,同 hide_tray_flyout 的销毁模式)。
+/// 栈,is_visible 保护)。
 fn hide_about_window() {
     ABOUT_WIN.with(|m| {
         if let Some(w) = m.borrow().as_ref() {
@@ -4096,10 +4091,8 @@ fn open_window(
             let closer = closer.clone();
             let tray_weak = tray_weak.clone();
             let core = core.clone();
-            // (#tray-flyout-blank 2026-09-21) 弹层窗口不再预创建/常驻:每次右击
-            // 现建(OpenMenu 分支),关闭即销毁(hide_tray_flyout)。复用窗口要过
-            // winit 后端的 hide/show 状态机,实测二次打开必空白(见
-            // hide_tray_flyout 注释);现建走"首次显示"路径,后端先画首帧再映射。
+            // 托盘菜单延迟创建并常驻复用,避免快速右击时透明 HWND 销毁/重建闪烁。
+            // 关于窗仍独立创建并在关闭时销毁。
             let handle = Tray::ensure(Box::new(move |action| match action {
                 TrayAction::Show => {
                     hide_tray_flyout();
@@ -4118,8 +4111,10 @@ fn open_window(
                     }
                 }
                 TrayAction::OpenMenu { x, y } => {
-                    let menu_exists = TRAY_MENU.with(|m| m.borrow().is_some());
-                    if menu_exists || TRAY_MENU_OPENING.with(|opening| opening.get()) {
+                    let existing = TRAY_MENU.with(|m| m.borrow().as_ref().cloned());
+                    if existing.as_ref().is_some_and(|w| w.window().is_visible())
+                        || TRAY_MENU_OPENING.with(|opening| opening.get())
+                    {
                         tracing::debug!("tray: ignored duplicate open callback while menu is active");
                         return;
                     }
@@ -4128,39 +4123,35 @@ fn open_window(
                     TRAY_ESC_TIMER.with(|t| t.borrow().stop());
                     Tray::remove_menu_hook();
                     TRAY_CHROME_DONE.with(|c| c.set(false));
-                    let retired = TRAY_MENU.with(|m| {
-                        let old = m.borrow_mut().take();
-                        if let Some(w) = old.as_ref() {
-                            let _ = w.hide();
-                        }
-                        old
-                    });
-                    slint::Timer::single_shot(std::time::Duration::from_millis(0), move || drop(retired));
-
-                    window::TRAY_WINDOW_NEXT.store(true, std::sync::atomic::Ordering::Relaxed);
-                    window::TRAY_TRANSPARENT_NEXT
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                    let fly = match TrayMenuWindow::new() {
-                        Ok(w) => {
-                            window::TRAY_WINDOW_NEXT
-                                .store(false, std::sync::atomic::Ordering::Relaxed);
-                            window::TRAY_TRANSPARENT_NEXT
-                                .store(false, std::sync::atomic::Ordering::Relaxed);
-                            Rc::new(w)
-                        }
-                        Err(e) => {
-                            window::TRAY_WINDOW_NEXT
-                                .store(false, std::sync::atomic::Ordering::Relaxed);
-                            window::TRAY_TRANSPARENT_NEXT
-                                .store(false, std::sync::atomic::Ordering::Relaxed);
-                            TRAY_MENU_OPENING.with(|opening| opening.set(false));
-                            tracing::error!("tray: flyout window failed: {e}");
-                            return;
+                    let fly = if let Some(fly) = existing {
+                        fly
+                    } else {
+                        window::TRAY_WINDOW_NEXT.store(true, std::sync::atomic::Ordering::Relaxed);
+                        window::TRAY_TRANSPARENT_NEXT
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        match TrayMenuWindow::new() {
+                            Ok(w) => {
+                                window::TRAY_WINDOW_NEXT
+                                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                                window::TRAY_TRANSPARENT_NEXT
+                                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                                let fly = Rc::new(w);
+                                bind_tray_flyout(&fly, closer.clone(), tray_weak.clone());
+                                TRAY_MENU.with(|m| *m.borrow_mut() = Some(fly.clone()));
+                                fly
+                            }
+                            Err(e) => {
+                                window::TRAY_WINDOW_NEXT
+                                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                                window::TRAY_TRANSPARENT_NEXT
+                                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                                TRAY_MENU_OPENING.with(|opening| opening.set(false));
+                                tracing::error!("tray: flyout window failed: {e}");
+                                return;
+                            }
                         }
                     };
                     TRAY_MENU_EPOCH.with(|e| e.set(e.get().wrapping_add(1)));
-                    bind_tray_flyout(&fly, closer.clone(), tray_weak.clone());
-                    TRAY_MENU.with(|m| *m.borrow_mut() = Some(fly.clone()));
                     show_tray_flyout(&fly, &tray_weak, &core, x, y);
                 }
             }));
