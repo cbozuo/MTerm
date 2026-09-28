@@ -357,6 +357,8 @@ thread_local! {
     static TRAY_ENSURE: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
     static TRAY_HANDLE: RefCell<Option<Tray>> = const { RefCell::new(None) };
     // 托盘菜单窗口只创建一次并复用，避免快速右击时透明 HWND 销毁/重建闪烁。
+    // Current tray flyout only. Closing takes the instance out and releases it
+    // after the event stack unwinds so the next opening gets a fresh HWND.
     static TRAY_MENU: RefCell<Option<Rc<TrayMenuWindow>>> = const { RefCell::new(None) };
     static TRAY_MENU_EPOCH: Cell<usize> = const { Cell::new(0) };
     static TRAY_MENU_OPENING: Cell<bool> = const { Cell::new(false) };
@@ -457,11 +459,14 @@ fn hide_tray_flyout() {
     // (#tray-flyout-r8) 停 Esc 轮询 + 卸载点外部收起的低级鼠标钩子。
     TRAY_ESC_TIMER.with(|t| t.borrow().stop());
     Tray::remove_menu_hook();
-    TRAY_MENU.with(|m| {
-        if let Some(w) = m.borrow().as_ref() {
+    let retired = TRAY_MENU.with(|m| {
+        let old = m.borrow_mut().take();
+        if let Some(w) = old.as_ref() {
             let _ = w.hide();
         }
+        old
     });
+    slint::Timer::single_shot(std::time::Duration::from_millis(0), move || drop(retired));
     Tray::refresh_icon();
 }
 
@@ -900,7 +905,10 @@ fn bind_tray_flyout(
             if let Some(w) = main_weak.upgrade() {
                 tracing::info!("tray: show main window");
                 let _ = w.show();
+                // (#tray-restore-blank 2026-09-28) 先恢复(脱最小化+激活)再补绘,
+                // 与左键 TrayAction::Show 同序:重绘落在窗口状态落定之后。
                 raise_to_front(&w);
+                refresh_revealed_main_window(w.as_weak());
             }
         });
     }
@@ -3598,6 +3606,18 @@ fn open_window(
                         apply_window_chrome(win.window());
                     }
                 }
+                // (#tray-restore-blank 2026-09-28) 托盘唤回空白取证:焦点/遮挡/
+                // 尺寸/重绘的到达时序。RedrawRequested 可能高频(终端逐帧重绘),
+                // 只打 debug;Focused/Occluded/Resized 低频且是诊断关键,打 info。
+                match event {
+                    WEvent::Focused(f) => tracing::info!(focused = f, "main: winit focused"),
+                    WEvent::Occluded(o) => tracing::info!(occluded = o, "main: winit occluded"),
+                    WEvent::Resized(s) => {
+                        tracing::info!(w = s.width, h = s.height, "main: winit resized")
+                    }
+                    WEvent::RedrawRequested => tracing::debug!("main: winit redraw requested"),
+                    _ => {}
+                }
                 // Recompute window activity, push it to the shared cell, and update
                 // Theme.window-focused (gates the cursor blink) (#127).
                 let apply_activity = |focused: bool, minimized: bool, occluded: bool| {
@@ -4105,17 +4125,25 @@ fn open_window(
                     if let Some(w) = tray_weak.upgrade() {
                         tracing::info!("tray: show main window");
                         let _ = w.show();
+                        // (#tray-restore-blank 2026-09-28) 先恢复(脱最小化+激活)
+                        // 再补绘:重绘落在窗口状态落定之后,避免恢复途中发的
+                        // request_redraw 被吞。
                         raise_to_front(&w);
+                        refresh_revealed_main_window(w.as_weak());
                     } else {
                         tracing::warn!("tray: main window component gone — cannot show");
                     }
                 }
                 TrayAction::OpenMenu { x, y } => {
                     let existing = TRAY_MENU.with(|m| m.borrow().as_ref().cloned());
-                    if existing.as_ref().is_some_and(|w| w.window().is_visible())
-                        || TRAY_MENU_OPENING.with(|opening| opening.get())
-                    {
-                        tracing::debug!("tray: ignored duplicate open callback while menu is active");
+                    if TRAY_MENU_OPENING.with(|opening| opening.get()) {
+                        tracing::info!("tray: right-click toggled opening menu closed");
+                        hide_tray_flyout();
+                        return;
+                    }
+                    if existing.as_ref().is_some_and(|w| w.window().is_visible()) {
+                        tracing::info!("tray: right-click toggled menu closed");
+                        hide_tray_flyout();
                         return;
                     }
                     TRAY_MENU_OPENING.with(|opening| opening.set(true));

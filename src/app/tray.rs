@@ -124,6 +124,46 @@ fn dismiss_matches_menu(posted_epoch: usize, current_epoch: usize, menu_hwnd: is
     menu_hwnd != 0 && posted_epoch == current_epoch
 }
 
+/// (#tray-toggle-r9 2026-09-28) 低级鼠标钩子对"菜单打开期间鼠标按下"的裁决。
+#[cfg(windows)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HookDismiss {
+    /// 菜单矩形内(或无菜单):不干预,交给弹层自身的点击处理。
+    Ignore,
+    /// 托盘图标上的右键按下:跳过收起,保留弹层,让该击的抬起(WM_RBUTTONUP →
+    /// OpenMenu)命中切换守卫关菜单 —— 右击开→右击关。若钩子在这里抢先拆掉,
+    /// 抬起到达时已检测不到"菜单开着",只能当作首次打开重新弹窗(切换失效,
+    /// 快速右击时新旧弹层重叠出残影)。
+    KeepForToggle,
+    /// 菜单矩形外:照旧投递点外收起。
+    Dismiss,
+}
+
+/// (#tray-toggle-r9) 点外收起判定:矩形取半开区间 [l,r)×[t,b)(与
+/// menu_hook_proc 的 flyout 命中判定一致);图标矩形未知时回退收起。
+#[cfg(windows)]
+fn hook_dismiss_decision(
+    right_down: bool,
+    pt: (i32, i32),
+    flyout_rect: Option<(i32, i32, i32, i32)>,
+    icon_rect: Option<(i32, i32, i32, i32)>,
+) -> HookDismiss {
+    fn inside(rect: (i32, i32, i32, i32), pt: (i32, i32)) -> bool {
+        let (l, t, r, b) = rect;
+        pt.0 >= l && pt.0 < r && pt.1 >= t && pt.1 < b
+    }
+    let Some(fly) = flyout_rect else {
+        return HookDismiss::Ignore;
+    };
+    if inside(fly, pt) {
+        return HookDismiss::Ignore;
+    }
+    if right_down && icon_rect.is_some_and(|r| inside(r, pt)) {
+        return HookDismiss::KeepForToggle;
+    }
+    HookDismiss::Dismiss
+}
+
 #[cfg(test)]
 #[path = "../../tests/app/tray/mod.rs"]
 mod tray_tests;
@@ -149,8 +189,8 @@ mod win {
         PostMessageW,
         RegisterClassW, RegisterWindowMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
         WH_MOUSE_LL, CW_USEDEFAULT, HICON, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTCOLOR,
-        LR_DEFAULTSIZE, LR_SHARED, SM_CXSMICON, SM_CYSMICON, WM_APP, WM_CONTEXTMENU,
-        WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
+        LR_DEFAULTSIZE, LR_SHARED, SM_CXSMICON, SM_CYSMICON, WM_APP, WM_DESTROY,
+        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
         WNDCLASSW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
     };
     /// 托盘回调消息(自定义区起始值);winit 的消息循环会派发到 wnd_proc。
@@ -179,6 +219,11 @@ mod win {
         // 每次更换菜单/卸载钩子均失效旧的异步点外关闭消息。
         static MENU_EPOCH: Cell<usize> = const { Cell::new(0) };
         static MENU_DISMISS_QUEUED: Cell<bool> = const { Cell::new(false) };
+        /// (#tray-toggle-r9 2026-09-28) 最近一次 show_menu 查到的托盘图标矩形
+        /// (屏幕物理坐标)。供低级钩子判定"右键按在图标上"—— 钩子回调内不做
+        /// Shell 查询(LL 钩子必须快),且每次打开菜单前 show_menu 都会刷新缓存,
+        /// 装钩子时缓存必新。
+        static ICON_RECT: Cell<Option<(i32, i32, i32, i32)>> = const { Cell::new(None) };
     }
 
     /// 托盘图标当前是否可用(最近一次 ADD 的结果;宿主未创建 = false)。
@@ -382,7 +427,12 @@ mod win {
                 tracing::info!(evt, "tray: callback event");
                 match evt {
                     WM_LBUTTONUP => emit(TrayAction::Show),
-                    WM_RBUTTONUP | WM_CONTEXTMENU => show_menu(hwnd),
+                    // Version 0 delivers WM_RBUTTONUP for the physical click.
+                    // WM_CONTEXTMENU can describe the same gesture; treating both
+                    // as separate toggles would reopen immediately after closing.
+                    // (#tray-toggle-r9) 右击关菜单也走这里:钩子对"图标上的右键
+                    // 按下"放行不拆,hit OpenMenu 的切换守卫收起。
+                    WM_RBUTTONUP => show_menu(hwnd),
                     _ => {}
                 }
                 LRESULT(0)
@@ -437,6 +487,8 @@ mod win {
                 "tray: icon rect queried"
             );
             if valid {
+                // (#tray-toggle-r9) 供低级钩子识别"右键按在图标上"的切换语义。
+                ICON_RECT.with(|c| c.set(Some((rect.left, rect.top, rect.right, rect.bottom))));
                 let (x, y) = match cursor {
                     Some(pt)
                         if pt.x >= rect.left
@@ -506,9 +558,11 @@ mod win {
         }
     }
 
-    /// (#tray-flyout-r8) 低级鼠标钩子过程:左/右键按下时判定点击点是否落在
-    /// 菜单窗口矩形外 —— 外部则隐藏弹层(经 app.rs 的隐藏链路,含图标心跳与
-    /// 延迟销毁),点击本身照常穿透给系统(不吞,点哪哪生效)。
+    /// (#tray-flyout-r8) 低级鼠标钩子过程:左/右键按下时判定点击点与菜单窗口
+    /// 矩形的关系 —— 外部则隐藏弹层(经 app.rs 的隐藏链路,含图标心跳与延迟
+    /// 销毁),菜单内不干预;(#tray-toggle-r9) 托盘图标上的**右键**按下同样
+    /// 不干预(保留弹层给抬起消息走切换关闭)。点击本身照常穿透给系统
+    /// (不吞,点哪哪生效)。
     unsafe extern "system" fn menu_hook_proc(
         code: i32,
         wparam: WPARAM,
@@ -522,36 +576,51 @@ mod win {
                 if menu != 0 {
                     let mut rect = std::mem::zeroed();
                     if GetWindowRect(HWND(menu as *mut _), &mut rect).is_ok() {
-                        let inside = info.pt.x >= rect.left
-                            && info.pt.x < rect.right
-                            && info.pt.y >= rect.top
-                            && info.pt.y < rect.bottom;
-                        if !inside && !MENU_DISMISS_QUEUED.get() {
-                            // 钩子只投递消息;携带菜单代次,避免旧点击关闭新菜单。
-                            let host = HOST_HWND.with(|h| *h.borrow());
-                            let epoch = MENU_EPOCH.get();
-                            let posted = host != 0
-                                && PostMessageW(
-                                    HWND(host as *mut _),
-                                    WM_TRAY_DISMISS,
-                                    WPARAM(epoch),
-                                    LPARAM(0),
-                                )
-                                .is_ok();
-                            if posted {
-                                MENU_DISMISS_QUEUED.set(true);
+                        let icon = ICON_RECT.with(|r| r.get());
+                        let decision = super::hook_dismiss_decision(
+                            msg == WM_RBUTTONDOWN,
+                            (info.pt.x, info.pt.y),
+                            Some((rect.left, rect.top, rect.right, rect.bottom)),
+                            icon,
+                        );
+                        match decision {
+                            super::HookDismiss::Ignore => {}
+                            super::HookDismiss::KeepForToggle => {
+                                tracing::info!(
+                                    info.pt.x,
+                                    info.pt.y,
+                                    "tray: right-down on icon — keep flyout for toggle"
+                                );
                             }
-                            tracing::info!(
-                                info.pt.x,
-                                info.pt.y,
-                                menu,
-                                host,
-                                epoch,
-                                posted,
-                                "tray: outside click on flyout"
-                            );
-                            if !posted {
-                                super::super::hide_tray_flyout();
+                            super::HookDismiss::Dismiss => {
+                                if !MENU_DISMISS_QUEUED.get() {
+                                    // 钩子只投递消息;携带菜单代次,避免旧点击关闭新菜单。
+                                    let host = HOST_HWND.with(|h| *h.borrow());
+                                    let epoch = MENU_EPOCH.get();
+                                    let posted = host != 0
+                                        && PostMessageW(
+                                            HWND(host as *mut _),
+                                            WM_TRAY_DISMISS,
+                                            WPARAM(epoch),
+                                            LPARAM(0),
+                                        )
+                                        .is_ok();
+                                    if posted {
+                                        MENU_DISMISS_QUEUED.set(true);
+                                    }
+                                    tracing::info!(
+                                        info.pt.x,
+                                        info.pt.y,
+                                        menu,
+                                        host,
+                                        epoch,
+                                        posted,
+                                        "tray: outside click on flyout"
+                                    );
+                                    if !posted {
+                                        super::super::hide_tray_flyout();
+                                    }
+                                }
                             }
                         }
                     }

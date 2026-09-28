@@ -83,6 +83,13 @@ mod renderer {
         // Got WindowEvent::Occluded
         fn occluded(&self, _: bool) {}
 
+        // (#tray-restore-blank 2026-09-28 local patch) Request a full-buffer
+        // repaint on the next render. The presentation buffer's content must not
+        // be trusted after the window was hidden (on Windows it is cleared while
+        // the buffer age still reports valid), so incremental damage rendering
+        // would compose stale regions over a cleared buffer.
+        fn force_full_redraw(&self) {}
+
         fn suspend(&self) -> Result<(), PlatformError>;
 
         // The window's transparency changed after the window was created. Renderers that pick

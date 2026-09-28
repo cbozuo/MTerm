@@ -10,7 +10,7 @@ use i_slint_core::platform::PlatformError;
 use i_slint_core::renderer::DrawOutcome;
 pub use i_slint_renderer_software::SoftwareRenderer;
 use i_slint_renderer_software::{PremultipliedRgbaColor, RepaintBufferType, TargetPixel};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use winit::event_loop::ActiveEventLoop;
@@ -19,6 +19,9 @@ use super::WinitCompatibleRenderer;
 
 pub struct WinitSoftwareRenderer {
     renderer: SoftwareRenderer,
+    /// (#tray-restore-blank 2026-09-28 local patch) One-shot request to discard
+    /// incremental-repaint caches on the next render (see `force_full_redraw`).
+    force_full_redraw: Cell<bool>,
     _context: RefCell<Option<softbuffer::Context<Arc<winit::window::Window>>>>,
     surface: RefCell<
         Option<softbuffer::Surface<Arc<winit::window::Window>, Arc<winit::window::Window>>>,
@@ -76,6 +79,7 @@ impl WinitSoftwareRenderer {
     ) -> Result<Box<dyn WinitCompatibleRenderer>, PlatformError> {
         Ok(Box::new(Self {
             renderer: SoftwareRenderer::new(),
+            force_full_redraw: Cell::new(false),
             _context: RefCell::new(None),
             surface: RefCell::new(None),
         }))
@@ -109,10 +113,20 @@ impl super::WinitCompatibleRenderer for WinitSoftwareRenderer {
             .map_err(|e| format!("Error retrieving softbuffer rendering buffer: {e}"))?;
 
         let age = target_buffer.age();
-        self.renderer.set_repaint_buffer_type(match age {
-            1 => RepaintBufferType::ReusedBuffer,
-            2 => RepaintBufferType::SwappedBuffers,
-            _ => RepaintBufferType::NewBuffer,
+        // (#tray-restore-blank 2026-09-28 local patch) A pending full-repaint
+        // request takes precedence over the buffer age: after hide/show the OS
+        // may have cleared the buffer while its age still reports valid, so the
+        // age-based choice would only redraw damage regions over a cleared
+        // buffer and the window stays partially rendered until a resize.
+        let force = self.force_full_redraw.replace(false);
+        self.renderer.set_repaint_buffer_type(if force {
+            RepaintBufferType::NewBuffer
+        } else {
+            match age {
+                1 => RepaintBufferType::ReusedBuffer,
+                2 => RepaintBufferType::SwappedBuffers,
+                _ => RepaintBufferType::NewBuffer,
+            }
         });
 
         let region = if std::env::var_os("SLINT_LINE_BY_LINE").is_none() {
@@ -175,8 +189,16 @@ impl super::WinitCompatibleRenderer for WinitSoftwareRenderer {
 
     fn occluded(&self, _: bool) {
         // On X11 and Windows, the buffer is completely cleared when the window is hidden
-        // and the buffer age doesn't respect that, so clean the partial rendering cache
-        self.renderer.set_repaint_buffer_type(RepaintBufferType::NewBuffer);
+        // and the buffer age doesn't respect that, so clean the partial rendering cache.
+        // (#tray-restore-blank 2026-09-28 local patch) Request the cleanup as a
+        // one-shot flag consumed in `render` — setting the repaint buffer type
+        // directly here was ineffective because every `render` call overrides it
+        // with the age-based selection below.
+        self.force_full_redraw.set(true);
+    }
+
+    fn force_full_redraw(&self) {
+        self.force_full_redraw.set(true);
     }
 
     fn resume(

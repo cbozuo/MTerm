@@ -1700,6 +1700,14 @@ impl WinitWindowAdapter {
 
             winit_window.set_visible(true);
 
+            // (#tray-restore-blank 2026-09-28 local patch) The window just became
+            // visible again: its presentation buffer may have been cleared while
+            // it was hidden (Windows) and the buffer age doesn't reflect that.
+            // Force the next frame to redraw the whole buffer instead of only the
+            // damage regions, or the window stays partially rendered until an
+            // unrelated resize recomposes it.
+            self.renderer.force_full_redraw();
+
             // Refresh the SlintContext color-scheme now that the window is mapped: on some platforms
             // `winit_window.theme()` only reports a real value once the window is shown.
             if let Some(theme) = winit_window.theme() {

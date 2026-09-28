@@ -317,6 +317,9 @@ pub(super) fn refresh_revealed_main_window(weak: slint::Weak<AppWindow>) {
             stale
         })
         .unwrap_or(false);
+    // (#tray-restore-blank 2026-09-28) 取证:两枪重绘的发出时间,对照 winit
+    // 事件钩子里 RedrawRequested 的到达时间定位断点。
+    tracing::info!(repair, "main: refresh_revealed — immediate redraw sent");
 
     let weak2 = weak.clone();
     slint::Timer::single_shot(std::time::Duration::from_millis(60), move || {
@@ -327,6 +330,7 @@ pub(super) fn refresh_revealed_main_window(weak: slint::Weak<AppWindow>) {
                 }
                 ww.request_redraw();
             });
+            tracing::info!("main: refresh_revealed — 60ms redraw sent");
         }
     });
 }

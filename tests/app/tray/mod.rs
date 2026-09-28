@@ -5,12 +5,84 @@
 
 use super::{dismiss_matches_menu, split_message_pos};
 use super::super::tray_pos_in_bounds;
+#[cfg(windows)]
+use super::{hook_dismiss_decision, HookDismiss};
 
 #[test]
 fn dismiss_message_only_closes_its_own_menu() {
     assert!(dismiss_matches_menu(3, 3, 123));
     assert!(!dismiss_matches_menu(3, 4, 456));
     assert!(!dismiss_matches_menu(3, 3, 0));
+}
+
+// (#tray-toggle-r9 2026-09-28) 低级钩子点外收起判定:右击开→右击关的切换
+// 语义要求"托盘图标上的右键按下"不拆弹层,让抬起消息走 OpenMenu 守卫。
+#[test]
+fn hook_ignores_clicks_inside_flyout_or_without_flyout() {
+    let fly = Some((100, 500, 360, 800));
+    let icon = Some((1800, 1040, 1832, 1072));
+    assert_eq!(
+        hook_dismiss_decision(true, (200, 600), fly, icon),
+        HookDismiss::Ignore
+    );
+    assert_eq!(
+        hook_dismiss_decision(false, (200, 600), fly, None),
+        HookDismiss::Ignore
+    );
+    assert_eq!(
+        hook_dismiss_decision(true, (0, 0), None, icon),
+        HookDismiss::Ignore
+    );
+}
+
+#[test]
+fn hook_dismisses_outside_clicks_except_right_down_on_icon() {
+    let fly = Some((100, 500, 360, 800));
+    let icon = Some((1800, 1040, 1832, 1072));
+    // 菜单矩形外的一般点击(含左键):照旧收起。
+    assert_eq!(
+        hook_dismiss_decision(false, (50, 50), fly, icon),
+        HookDismiss::Dismiss
+    );
+    assert_eq!(
+        hook_dismiss_decision(true, (500, 200), fly, icon),
+        HookDismiss::Dismiss
+    );
+    // 右键按下正落在图标矩形上:保留弹层给切换关闭。
+    assert_eq!(
+        hook_dismiss_decision(true, (1810, 1050), fly, icon),
+        HookDismiss::KeepForToggle
+    );
+    // 左键按下图标:照旧收起(随后抬起走 Show 拉起主窗)。
+    assert_eq!(
+        hook_dismiss_decision(false, (1810, 1050), fly, icon),
+        HookDismiss::Dismiss
+    );
+    // 图标矩形未知(查询失败):回退收起。
+    assert_eq!(
+        hook_dismiss_decision(true, (1810, 1050), fly, None),
+        HookDismiss::Dismiss
+    );
+}
+
+#[test]
+fn hook_icon_rect_edges_are_half_open() {
+    let fly = Some((100, 500, 360, 800));
+    let icon = Some((1800, 1040, 1832, 1072));
+    // 半开区间 [l,r)×[t,b):左/上边缘命中,右/下边缘不命中 —— 与 flyout
+    // 命中判定保持一致,避免图标矩形相邻时判定抖动。
+    assert_eq!(
+        hook_dismiss_decision(true, (1800, 1040), fly, icon),
+        HookDismiss::KeepForToggle
+    );
+    assert_eq!(
+        hook_dismiss_decision(true, (1832, 1040), fly, icon),
+        HookDismiss::Dismiss
+    );
+    assert_eq!(
+        hook_dismiss_decision(true, (1800, 1072), fly, icon),
+        HookDismiss::Dismiss
+    );
 }
 
 #[test]
