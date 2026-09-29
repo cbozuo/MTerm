@@ -636,6 +636,35 @@ impl WinitWindowAdapter {
             self.renderer.resume(active_event_loop, window_attributes, self.self_weak.clone())?;
         self.first_frame_presented.set(false);
 
+        // (#tray-flyout-flash 2026-09-29 local patch) Opt out of the DWM
+        // open-fade: on Windows 11 a new HWND fades in over ~200ms on first
+        // show, and a per-opening popup (the tray flyout) reads as a shadow
+        // flashing behind the menu while the fade lets the window behind show
+        // through. Must be set pre-map — after ShowWindow it cannot cancel a
+        // fade already in flight.
+        #[cfg(windows)]
+        {
+            #[link(name = "dwmapi")]
+            unsafe extern "system" {
+                fn DwmSetWindowAttribute(hwnd: isize, attr: u32, pv: isize, cb: u32) -> i32;
+            }
+            const DWMWA_TRANSITIONS_OPTIMIZED: u32 = 3;
+            let disable: i32 = 1;
+            use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+            if let Ok(handle) = winit_window.window_handle()
+                && let RawWindowHandle::Win32(h) = handle.as_raw()
+            {
+                unsafe {
+                    let _ = DwmSetWindowAttribute(
+                        h.hwnd.get() as isize,
+                        DWMWA_TRANSITIONS_OPTIMIZED,
+                        &disable as *const i32 as isize,
+                        4,
+                    );
+                }
+            }
+        }
+
         // Push the host shell's color scheme and accent color to the SlintContext.
         // With `xdg_desktop_settings` the backend-wide portal watcher (spawned in
         // `Backend::bind_context`) is responsible for that; we only echo the
@@ -1690,6 +1719,12 @@ impl WinitWindowAdapter {
             if (!self.first_frame_presented.get() || recreating_window)
                 && !self.shared_backend_data.is_wayland
             {
+                // (#tray-flyout-flash 2026-09-29 local patch) The pre-render
+                // must produce the full buffer: on Windows the redirection
+                // surface is cleared while hidden while the buffer age still
+                // reports valid, so the age-based path can blit an empty
+                // damage set and map the window transparent.
+                self.renderer.force_full_redraw();
                 let _ = self.draw();
                 #[cfg(target_os = "macos")]
                 if !self.first_frame_presented.get() {
@@ -1705,7 +1740,8 @@ impl WinitWindowAdapter {
             // it was hidden (Windows) and the buffer age doesn't reflect that.
             // Force the next frame to redraw the whole buffer instead of only the
             // damage regions, or the window stays partially rendered until an
-            // unrelated resize recomposes it.
+            // unrelated resize recomposes it. (#tray-flyout-flash) Kept also for
+            // paths that skip the pre-render above (e.g. Wayland).
             self.renderer.force_full_redraw();
 
             // Refresh the SlintContext color-scheme now that the window is mapped: on some platforms

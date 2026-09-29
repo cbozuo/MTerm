@@ -356,9 +356,8 @@ fn close_session_rows(
 thread_local! {
     static TRAY_ENSURE: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
     static TRAY_HANDLE: RefCell<Option<Tray>> = const { RefCell::new(None) };
-    // 托盘菜单窗口只创建一次并复用，避免快速右击时透明 HWND 销毁/重建闪烁。
-    // Current tray flyout only. Closing takes the instance out and releases it
-    // after the event stack unwinds so the next opening gets a fresh HWND.
+    // Current tray flyout only。hide 走 take+0ms-drop **现建现毁**(每次打开
+    // 新 HWND),不是旧注释说的"只创建一次并复用";配套机制见 arm_tray_flyout_chrome。
     static TRAY_MENU: RefCell<Option<Rc<TrayMenuWindow>>> = const { RefCell::new(None) };
     static TRAY_MENU_EPOCH: Cell<usize> = const { Cell::new(0) };
     static TRAY_MENU_OPENING: Cell<bool> = const { Cell::new(false) };
@@ -649,55 +648,14 @@ fn clamp_tray_pos(cursor_x: i32, cursor_y: i32, width: i32, height: i32) -> (i32
     (cursor_x, cursor_y - height)
 }
 
-/// (#tray-flyout-r4) 弹层窗口样式:**WS_EX_NOACTIVATE**(不抢激活——悬停/点击
-/// 都不改前台焦点,Explorer 托盘飞出层不被顶掉,问题③)+ **WS_EX_TOOLWINDOW
-/// + set_skip_taskbar(true)**(不进任务栏,问题①)。r3 实测:放 show 之后无效
-/// ——Explorer 不会因运行中改样式而撤掉已建的任务栏按钮;必须 **show 前**设置,
-/// 建按钮时直接跳过;show 后再调一次做防御性重设。HUD 取法沿用 window.rs 的
-/// raw-window-handle 惯例(winit 0.30 的 WindowExtWindows::hwnd 本工具链不可用)。
-#[cfg(windows)]
-fn apply_tray_flyout_chrome(fly: &Rc<TrayMenuWindow>) {
-    fly.window().with_winit_window(|ww| {
-        use i_slint_backend_winit::winit::platform::windows::WindowExtWindows;
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            GetWindowLongPtrW, SetWindowLongPtrW, GWLP_HWNDPARENT, GWL_EXSTYLE,
-            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-        };
-        ww.set_skip_taskbar(true);
-        let Ok(handle) = ww.window_handle() else {
-            return;
-        };
-        let RawWindowHandle::Win32(h) = handle.as_raw() else {
-            return;
-        };
-        let hwnd = HWND(h.hwnd.get() as *mut _);
-        unsafe {
-            let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-            let _ = SetWindowLongPtrW(
-                hwnd,
-                GWL_EXSTYLE,
-                style | WS_EX_NOACTIVATE.0 as isize | WS_EX_TOOLWINDOW.0 as isize,
-            );
-            // (#tray-persist 2026-09-21) 认托盘消息宿主为 **owner 窗口**:被属主
-            // 的顶层窗口 Windows 从不给任务栏按钮(与 TOOLWINDOW 时序无关,确定性
-            // 消除右击/显示/关于时的任务栏图标闪现)。宿主全程常驻,不波及菜单。
-            let host = Tray::host_hwnd();
-            if host != 0 {
-                let _ = SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, host);
-            }
-        }
-    });
-}
-
 /// (#tray-flyout-r9) 弹层 chrome 补装:点外收起的低级鼠标钩子 + DWM 圆角。
 ///
-/// **不能在 show() 后立即做**:Slint 1.18 下 winit 窗口的实际创建由事件循环
-/// 完成,show 后立刻 `with_winit_window` 闭包静默不执行(实测日志:
-/// install 日志从未出现,钩子/圆角双双失效 —— 用户报告"点外不关、四角直角"
-/// 的共同根因)。改为挂到弹层**首个 winit 事件**(此时窗口必然已创建),
-/// 经 TRAY_CHROME_DONE + install_menu_hook 的幂等守卫只做一次。
+/// 调用时机(#tray-flyout-flash):show_tray_flyout 在 `fly.show()` 返回后**同步**
+/// 调一次 —— 弹层每次打开都是新 HWND(hide 现建现毁),此刻窗口已建成而 DWM
+/// 首帧合成要等下一个 vsync,ROUND/钩子先于合成就位;窗口未建成时(show 前)
+/// `with_winit_window` 拿不到 hwnd、闭包静默,故在 show 前装是无效的。
+/// 本次若拿不到 hwnd,弹层首个 winit 事件兜底补装;幂等:TRAY_CHROME_DONE +
+/// install_menu_hook 双守卫。
 fn arm_tray_flyout_chrome(sw: &slint::Window) {
     if TRAY_CHROME_DONE.with(|c| c.get()) {
         return;
@@ -766,6 +724,9 @@ fn show_tray_flyout(
         TRAY_MENU.with(|m| *m.borrow_mut() = None);
         return;
     }
+    // (#tray-flyout-flash) chrome 同步武装时机与"首个事件兜底"见
+    // arm_tray_flyout_chrome 文档。
+    arm_tray_flyout_chrome(fly.window());
     fly.window().request_redraw();
     fly.invoke_take_keys();
     // (#tray-flyout-r7) 旧有的 show 后 TOOLWINDOW/NOACTIVATE 补设与 r5 的
