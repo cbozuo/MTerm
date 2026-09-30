@@ -98,7 +98,15 @@ pub struct ConfigFile {
     /// software/femtovg/skia. Missing or foreign-platform values use the platform default.
     #[serde(default)]
     pub renderer_mode: String,
-    /// Terminal font family. Empty = the built-in default ("Meatshell Mono").
+    /// UI (sans) font family, chosen in Interface › Font › Interface font. Empty
+    /// = the first usable system CJK family from the chain in app.rs. A saved
+    /// name that is no longer installed — or that no longer covers the probe
+    /// glyphs — falls back to the chain at startup and is rewritten to empty.
+    #[serde(default)]
+    pub ui_font_family: String,
+    /// Terminal font family. Empty = the first usable system monospace
+    /// (resolved from the mono chain in app.rs). Stale names that are no
+    /// longer installed migrate back to empty at startup.
     #[serde(default)]
     pub font_family: String,
     /// Terminal font size in px. 0 = the built-in default.

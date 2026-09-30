@@ -24,7 +24,23 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::rc::Weak;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, Ordering, AtomicUsize};
+
+// (#settings-drag-ghost 2026-09-30 local patch) One-shot full-repaint broadcast
+// for app code: while a window is moved or resized, DWM may hand softbuffer a
+// back buffer whose content does not match the reported buffer age, so
+// age-based incremental rendering composites stale strips from older frames
+// into the current one (ghost line fragments in the settings overlay). App
+// code calls `force_full_redraw_all_windows()` at the trigger points (drag
+// release, overlay open/close); the next render of each software-rendered
+// window discards its incremental caches. First renderer to render consumes
+// the flag — sufficient for the single main window this app renders.
+pub static FULL_REDRAW_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Ask every software-rendered window to fully repaint its next frame.
+pub fn force_full_redraw_all_windows() {
+    FULL_REDRAW_PENDING.store(true, Ordering::SeqCst);
+}
 use winit::event_loop::ActiveEventLoop;
 
 #[cfg(not(target_arch = "wasm32"))]

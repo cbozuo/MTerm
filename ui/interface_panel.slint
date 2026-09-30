@@ -55,7 +55,7 @@ component NavItem inherits Rectangle {
 // Small muted group heading (字体 / 预览 / SFTP …).
 component SectionHeader inherits Text {
     font-size: 11px * Theme.panel-font;
-    font-weight: 700;
+    font-weight: Theme.fw-strong;
     color: Theme.text-muted;
     vertical-alignment: center;
 }
@@ -154,6 +154,125 @@ component Stepper inherits Rectangle {
             }
             Text { text: "\u{E145}"; font-family: "Material Icons"; font-size: 14px * Theme.panel-font;
                    color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+    }
+}
+
+// Font picker for the settings rows: a custom dropdown, not std ComboBox —
+// it needs this panel's row chrome, a scrollable list (system families run
+// into the hundreds) and a 默认 sentinel row that is "" in the model and
+// stores "" back (= re-run the chain in Rust). Popup anatomy mirrors
+// SelectField in widgets.slint.
+component FontCombo inherits Rectangle {
+    in property <bool> lang-en;
+    in property <[string]> values;
+    in property <string> value;          // raw choice; "" = chain default
+    in property <string> default-name;   // resolved chain family behind 默认
+    callback selected(string);
+    property <bool> drop-open: false;
+
+    function label-for(v: string) -> string {
+        if (v != "") { return v; }
+        if (root.default-name == "") {
+            return root.lang-en ? "Default" : "默认";
+        }
+        return (root.lang-en ? "Default" : "默认") + "（" + root.default-name + "）";
+    }
+
+    width: 220px;
+    height: 30px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: root.drop-open || fta.has-hover ? Theme.line-2 : Theme.border-subtle;
+    background: Theme.bg-elevated;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 8px;
+        spacing: 6px;
+        Text {
+            text: root.label-for(root.value);
+            color: Theme.text-primary;
+            font-size: 12px * Theme.panel-font;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        Text {
+            text: "\u{E5CF}";   // expand_more
+            font-family: "Material Icons";
+            color: root.drop-open || fta.has-hover ? Theme.text-secondary : Theme.text-muted;
+            font-size: 14px * Theme.panel-font;
+            vertical-alignment: center;
+        }
+    }
+    fta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.drop-open = true; font-pop.show(); }
+    }
+
+    font-pop := PopupWindow {
+        x: 0;
+        y: parent.height + 4px;
+        width: max(parent.width, 260px);
+        height: min(root.values.length * 29px + 10px, 300px);
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: Theme.popup-bg;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Theme.line-2;
+            drop-shadow-blur: 18px;
+            drop-shadow-color: #00000066;
+            pop-scroll := ScrollView {
+                width: 100%;
+                height: 100%;
+                viewport-width: self.visible-width;
+                viewport-height: max(self.visible-height, pop-list.preferred-height);
+                pop-list := VerticalLayout {
+                    width: pop-scroll.visible-width;
+                    padding: 5px;
+                    spacing: 1px;
+                    for v in root.values : Rectangle {
+                        height: 28px;
+                        border-radius: 5px;
+                        background: r-ta.has-hover ? Theme.field-2
+                            : (root.value == v ? Theme.accent-soft : transparent);
+                        r-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.drop-open = false;
+                                root.selected(v);
+                                font-pop.close();
+                            }
+                        }
+                        Text {
+                            x: 9px;
+                            width: parent.width - 32px;
+                            height: parent.height;
+                            text: root.label-for(v);
+                            color: Theme.text-primary;
+                            font-size: 12px * Theme.panel-font;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        Rectangle {
+                            x: parent.width - 23px;
+                            y: (parent.height - 14px) / 2;
+                            width: 14px;
+                            height: 14px;
+                            Text {
+                                width: 100%; height: 100%;
+                                text: root.value == v ? "\u{E5CA}" : "";
+                                font-family: "Material Icons";
+                                color: Theme.accent;
+                                font-size: 14px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -364,7 +483,15 @@ export component InterfacePanel inherits Rectangle {
     in property <bool> is-windows;
     in-out property <string> renderer-mode: "software";
     in property <[string]> term-fonts;
-    in property <string> term-font-family;
+    // Interface (sans) font. `ui-fonts` is pre-filtered by Rust to installed,
+    // non-monospace families that cover the CJK probe glyphs, so every row here
+    // is safe for editable inputs (#54). The `*-chosen` strings are the RAW
+    // stored choices ("" = the chain default), not the resolved families.
+    in property <[string]> ui-fonts;
+    in property <string> term-font-chosen;
+    in property <string> term-font-default-name;
+    in property <string> ui-font-chosen;
+    in property <string> ui-font-default-name;
     in property <length> term-font-size;
     in-out property <float> terminal-line-spacing: 1.0;
     in-out property <bool> term-font-bold;
@@ -424,6 +551,7 @@ export component InterfacePanel inherits Rectangle {
         && root.current-wallpaper != "builtin:miku" && root.current-wallpaper != "builtin:ms";
 
     callback set-term-font(string);
+    callback set-ui-font(string);
     callback set-term-font-size(int);
     callback set-terminal-line-spacing(float);
     callback set-term-font-bold(bool);
@@ -587,12 +715,52 @@ export component InterfacePanel inherits Rectangle {
                 alignment: start;
 
                 SectionHeader { text: root.lang-en ? "FONT" : "字体"; height: 24px; }
+                SectionHeader { text: root.lang-en ? "INTERFACE" : "界面"; height: 22px; }
+                SettingRow {
+                    label: root.lang-en ? "Interface font" : "界面字体";
+                    desc: root.lang-en
+                        ? "Sans-serif face for labels, menus and input boxes. Heavier CJK stems read cleaner at small sizes."
+                        : "标签、菜单和输入框使用的无衬线字体。中文字重越粗，小字号下越清晰。";
+                    FontCombo {
+                        lang-en: root.lang-en;
+                        values: root.ui-fonts;
+                        value: root.ui-font-chosen;
+                        default-name: root.ui-font-default-name;
+                        selected(v) => { root.set-ui-font(v); }
+                    }
+                }
+                SettingRow {
+                    label: root.lang-en ? "UI scale" : "界面缩放";
+                    desc: root.lang-en ? "Zooms the whole interface (not this panel)."
+                                       : "缩放整个界面(不影响本面板)。";
+                    Stepper {
+                        value: round(root.ui-scale * 100); minimum: 80; maximum: 200; step: 10; unit: "%";
+                        changed(v) => { root.set-ui-scale(v); }
+                    }
+                }
+                SettingRow {
+                    label: root.lang-en ? "Settings font size" : "界面字体大小";
+                    desc: root.lang-en ? "Enlarges this settings panel (font + window)."
+                                       : "放大本设置面板的字体和窗口。";
+                    show-divider: false;
+                    Stepper {
+                        value: round(Theme.panel-font * 100); minimum: 80; maximum: 160; step: 10; unit: "%";
+                        changed(v) => { root.set-panel-font(v); }
+                    }
+                }
+
+                Rectangle { height: 14px; }
+                SectionHeader { text: root.lang-en ? "TERMINAL" : "终端"; height: 22px; }
                 SettingRow {
                     label: root.lang-en ? "Terminal font" : "终端字体";
-                    ComboBox {
-                        width: 220px;
-                        model: root.term-fonts;
-                        current-value: root.term-font-family;
+                    desc: root.lang-en
+                        ? "Fixed-pitch face for the terminal grid."
+                        : "终端单元格使用的等宽字体。";
+                    FontCombo {
+                        lang-en: root.lang-en;
+                        values: root.term-fonts;
+                        value: root.term-font-chosen;
+                        default-name: root.term-font-default-name;
                         selected(v) => { root.set-term-font(v); }
                     }
                 }
@@ -612,14 +780,6 @@ export component InterfacePanel inherits Rectangle {
                         minimum: 80; maximum: 150; step: 5; unit: "%";
                         changed(v) => { root.terminal-line-spacing = v / 100; root.set-terminal-line-spacing(root.terminal-line-spacing); }
                     }
-                }
-                SettingRow {
-                    label: root.lang-en ? "Installed fonts" : "已安装字体";
-                    desc: root.lang-en
-                        ? "Install a TTF/OTF font in Windows, then restart meatshell to refresh this list."
-                        : "在 Windows 中安装 TTF/OTF 字体后，重启 meatshell 即可刷新字体列表。";
-                    show-divider: false;
-                    Rectangle { width: 1px; height: 1px; background: transparent; }
                 }
                 SettingRow {
                     label: root.lang-en ? "Bold terminal text" : "终端字体加粗";
@@ -660,50 +820,22 @@ export component InterfacePanel inherits Rectangle {
                     label: root.lang-en ? "Cursor color" : "光标颜色";
                     desc: root.lang-en ? "Enter a hexadecimal RGB color."
                                        : "输入十六进制 RGB 颜色。";
+                    show-divider: false;
                     CursorColorInput {
                         value <=> root.term-cursor-color-hex;
                         preview-color: root.term-cursor-color;
                         apply-color(v) => { root.set-term-cursor-color(v) }
                     }
                 }
-                SettingRow {
-                    label: root.lang-en ? "UI scale" : "界面缩放";
-                    desc: root.lang-en ? "Zooms the whole interface (not this panel)."
-                                       : "缩放整个界面(不影响本面板)。";
-                    Stepper {
-                        value: round(root.ui-scale * 100); minimum: 80; maximum: 200; step: 10; unit: "%";
-                        changed(v) => { root.set-ui-scale(v); }
-                    }
-                }
-                SettingRow {
-                    label: root.lang-en ? "Settings font size" : "界面字体大小";
-                    desc: root.lang-en ? "Enlarges this settings panel (font + window)."
-                                       : "放大本设置面板的字体和窗口。";
-                    show-divider: false;
-                    Stepper {
-                        value: round(Theme.panel-font * 100); minimum: 80; maximum: 160; step: 10; unit: "%";
-                        changed(v) => { root.set-panel-font(v); }
-                    }
-                }
 
-                Rectangle { height: 14px; }
-                SectionHeader { text: root.lang-en ? "PREVIEW" : "预览"; height: 22px; }
-                Rectangle {
-                    height: 52px;
-                    background: Theme.term-bg;
-                    border-radius: 6px;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-                    Text {
-                        x: 12px;
-                        text: "meatshell ~$ echo preview 0123";
-                        font-family: Theme.term-font-family;
-                        font-size: Theme.term-font-size;
-                        font-weight: Theme.term-font-bold ? 700 : 400;
-                        color: Theme.term-fg;
-                        vertical-alignment: center;
-                        height: parent.height;
-                    }
+                Rectangle { height: 12px; }
+                Text {
+                    text: root.lang-en
+                        ? "Install a TTF/OTF font in Windows, then restart meatshell to refresh the font list."
+                        : "在 Windows 中安装 TTF/OTF 字体后，重启 meatshell 即可刷新字体列表。";
+                    color: Theme.text-muted;
+                    font-size: 11px * Theme.panel-font;
+                    wrap: word-wrap;
                 }
             }
 

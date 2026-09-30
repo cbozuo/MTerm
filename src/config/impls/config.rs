@@ -840,6 +840,15 @@ impl ConfigStore {
         };
     }
 
+    /// UI (sans) font family ("" = first usable system CJK family from the chain).
+    pub fn ui_font_family(&self) -> &str {
+        &self.cache.ui_font_family
+    }
+
+    pub fn set_ui_font_family(&mut self, family: String) {
+        self.cache.ui_font_family = family;
+    }
+
     /// Terminal font family ("" = built-in default).
     pub fn font_family(&self) -> &str {
         &self.cache.font_family

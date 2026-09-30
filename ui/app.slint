@@ -1,17 +1,7 @@
-// Embedded cross-platform fonts (compile-time): terminal monospace + UI icons.
-// Embedding means Windows / Linux / macOS all render the same glyphs without
-// relying on Consolas / Segoe MDL2 Assets being installed.
-//
-// "Meatshell Mono" is Cascadia Mono re-named to a unique family (#114): full
-//   box-drawing + block-elements + braille (needed by htop/btop graphs). The
-//   original "Cascadia Mono" name collides with the system font family, so on a
-//   machine without Cascadia installed (e.g. Win11 Home) the OS font matcher
-//   substituted a glyph-poor fallback and box/braille rendered as tofu. A unique
-//   name (like Material Icons) can't be shadowed, so the embedded font is always
-//   used.
-// Material Icons: open-source icon font replacing Windows-only Segoe MDL2 Assets.
-import "fonts/MeatshellMono-Regular.ttf";
-import "fonts/MeatshellMono-Bold.ttf";
+// Embedded icon font only (#font-chain removed the embedded text fonts): the
+// UI sans and the terminal mono resolve from system fonts at startup
+// (src/app.rs). Material Icons stays embedded because the protocol glyphs must
+// not depend on what the OS ships (Segoe MDL2 Assets is Windows-only).
 import "fonts/MaterialIcons-Regular.ttf";
 
 import { Theme } from "theme.slint";
@@ -962,6 +952,7 @@ export component AppWindow inherits Window {
     in-out property <float> panel-font <=> Theme.panel-font;  // settings-panel font scale
     callback set-panel-font(int);                          // apply + persist (percent)
     in-out property <string> ui-font-family <=> Theme.ui-font-family;
+    in-out property <string> font-mono <=> Theme.font-mono;
     // Window focused & visible — Rust drives it from winit events; gates the
     // cursor blink so an idle background window stops repainting (#127).
     in-out property <bool> window-focused <=> Theme.window-focused;
@@ -979,6 +970,12 @@ export component AppWindow inherits Window {
     in-out property <float> wallpaper-overlay <=> Theme.panel-alpha;
     callback persist-wallpaper-overlay(float);
     in property <[string]> term-fonts;             // installed monospace families
+    in property <string> term-font-chosen;         // raw stored choice ("" = chain default)
+    in property <string> term-font-default-name;   // resolved chain mono, labels the 默认 row
+    in property <[string]> ui-fonts;               // installed CJK-capable sans families
+    in property <string> ui-font-chosen;           // raw stored choice ("" = chain default)
+    in property <string> ui-font-default-name;     // resolved chain sans, labels the 默认 row
+    callback set-ui-font(string);                  // apply + persist the UI sans choice
     in-out property <bool> interface-open: false;  // Interface settings overlay
     // Interface card position (draggable by its title bar, clamped inside the
     // window so it can't leave the parent); init centered.
@@ -986,8 +983,8 @@ export component AppWindow inherits Window {
     // card's text render on subpixel offsets and look blurry (#v0.5).
     property <length> ifd-w: min(root.width - 32px, max(560px, 720px * Theme.panel-font));
     property <length> ifd-h: min(root.height - 32px, max(320px, 480px * Theme.panel-font));
-    property <length> ifd-x: round((root.width - root.ifd-w) / 2 / 1px) * 1px;
-    property <length> ifd-y: round((root.height - root.ifd-h) / 2 / 1px) * 1px;
+    property <length> ifd-x: Theme.snap-to-device((root.width - root.ifd-w) / 2);
+    property <length> ifd-y: Theme.snap-to-device((root.height - root.ifd-h) / 2);
     property <bool> ifd-dragging;
     property <bool> ifd-resizing;
     property <length> ifd-base-x;
@@ -1001,16 +998,23 @@ export component AppWindow inherits Window {
     // every time the modal opens so coordinates from a larger/DPI-different
     // monitor can never leave the settings card outside the current window.
     changed interface-open => {
+        // (#settings-drag-ghost) The overlay appearing/disappearing is a huge
+        // damage union; ask for one clean full frame so no stale strip from
+        // the pre-toggle frames survives incremental presentation.
+        root.request-full-redraw();
         if (root.interface-open) {
             root.ifd-dragging = false;
             root.ifd-resizing = false;
             root.ifd-w = clamp(root.ifd-w, min(560px, root.width - 32px), max(560px, root.width - 32px));
             root.ifd-h = clamp(root.ifd-h, min(320px, root.height - 32px), max(320px, root.height - 32px));
-            root.ifd-x = round((root.width - root.ifd-w) / 2 / 1px) * 1px;
-            root.ifd-y = round((root.height - root.ifd-h) / 2 / 1px) * 1px;
+            root.ifd-x = Theme.snap-to-device((root.width - root.ifd-w) / 2);
+            root.ifd-y = Theme.snap-to-device((root.height - root.ifd-h) / 2);
         }
     }
     callback set-term-font(string);                // apply + persist font family
+    // (#settings-drag-ghost) One full repaint of every software-rendered
+    // window on the next frame; see the vendored i-slint-backend-winit patch.
+    callback request-full-redraw();
     callback set-term-font-size(int);              // apply + persist font size (px)
     // Font zoom: Ctrl+=/-/0 → `tab-id`'s session only; Ctrl+Shift+=/-/0 →
     // every session in this window (scope: false = session, true = window).
@@ -3973,7 +3977,7 @@ export component AppWindow inherits Window {
                                         : (root.editor-dirty ? "  ·  " + @tr("Modified") : ""));
                                 color: Theme.text-primary;
                                 font-size: Theme.fs-md;
-                                font-weight: 600;
+                                font-weight: Theme.fw-strong;
                                 font-family: Theme.ui-font-family;
                                 vertical-alignment: center;
                                 horizontal-stretch: 1;
@@ -4301,7 +4305,7 @@ export component AppWindow inherits Window {
                     text: @tr("Transfers manager");
                     color: Theme.text-primary;
                     font-size: Theme.fs-md;
-                    font-weight: 600;
+                    font-weight: Theme.fw-strong;
                     horizontal-stretch: 1;
                     vertical-alignment: center;
                 }
@@ -4839,7 +4843,7 @@ export component AppWindow inherits Window {
                             : (root.lang-en ? "Edit group" : "编辑分组");
                         color: Theme.text-primary;
                         font-size: Theme.fs-lg;
-                        font-weight: 700;
+                        font-weight: Theme.fw-strong;
                     }
                 }
                 Rectangle { height: 1px; background: Theme.border-subtle; }
@@ -4854,7 +4858,7 @@ export component AppWindow inherits Window {
                         text: @tr("Group name");
                         color: Theme.text-secondary;
                         font-size: Theme.fs-sm;
-                        font-weight: 600;
+                        font-weight: Theme.fw-strong;
                     }
                     // (#hex-input-plain) 不用 std LineEdit:自带清叉在短栏里
                     // 像搜索框。名称输入同样改 TextInput,与会话对话框其它
@@ -4910,7 +4914,7 @@ export component AppWindow inherits Window {
                         text: @tr("Group color");
                         color: Theme.text-secondary;
                         font-size: Theme.fs-sm;
-                        font-weight: 600;
+                        font-weight: Theme.fw-strong;
                     }
                     GroupColorField {
                         show-header: false;
@@ -5075,7 +5079,7 @@ export component AppWindow inherits Window {
                                     : root.group-dialog-name;
                                 color: Theme.text-secondary;
                                 font-size: Theme.fs-md;
-                                font-weight: 600;
+                                font-weight: Theme.fw-strong;
                                 vertical-alignment: center;
                                 overflow: elide;
                                 horizontal-stretch: 1;
@@ -5092,7 +5096,6 @@ export component AppWindow inherits Window {
                                         x: 6px;
                                         height: parent.height;
                                         text: "0";
-                                        font-family: Theme.font-mono;
                                         color: Theme.text-secondary;
                                         font-size: Theme.fs-xs;
                                         vertical-alignment: center;
@@ -5106,7 +5109,6 @@ export component AppWindow inherits Window {
                                         x: 6px;
                                         height: parent.height;
                                         text: "\{s.group-size}";
-                                        font-family: Theme.font-mono;
                                         color: Theme.text-secondary;
                                         font-size: Theme.fs-xs;
                                         vertical-alignment: center;
@@ -5179,7 +5181,7 @@ export component AppWindow inherits Window {
                     text: root.lang-en ? "Rename session" : "重命名会话";
                     color: Theme.text-primary;
                     font-size: Theme.fs-lg;
-                    font-weight: 700;
+                    font-weight: Theme.fw-strong;
                 }
                 Text {
                     text: @tr("Session name");
@@ -5256,7 +5258,7 @@ export component AppWindow inherits Window {
                         text: @tr("Quick commands");
                         color: Theme.text-primary;
                         font-size: Theme.fs-lg;
-                        font-weight: 700;
+                        font-weight: Theme.fw-strong;
                         horizontal-stretch: 1;
                         vertical-alignment: center;
                     }
@@ -5308,7 +5310,12 @@ export component AppWindow inherits Window {
                                 width: parent.width - 16px;
                                 text <=> root.qcm-command;
                                 color: Theme.text-primary;
-                                font-family: Theme.font-mono;
+                                // Not the mono chain: this is free text and a quick
+                                // command is as likely to be Chinese as not. Native
+                                // TextInput does no glyph fallback (#54) and every
+                                // mono family here is CJK-less, so a mono face
+                                // renders 中文 as tofu the moment it is typed.
+                                font-family: Theme.ui-font-family;
                                 font-size: Theme.fs-sm;
                                 single-line: false;
                                 wrap: no-wrap;
@@ -5384,7 +5391,7 @@ export component AppWindow inherits Window {
                                     Text { text: "\u{E2C7}"; font-family: "Material Icons";
                                            color: Theme.text-muted; font-size: Theme.fs-sm; vertical-alignment: center; }
                                     Text { text: q.group; color: Theme.text-muted; font-size: Theme.fs-xs;
-                                           font-weight: 700; vertical-alignment: center;
+                                           font-weight: Theme.fw-strong; vertical-alignment: center;
                                            horizontal-stretch: 1; horizontal-alignment: left; }
                                 }
                                 TouchArea {
@@ -5639,7 +5646,7 @@ export component AppWindow inherits Window {
                         : (root.lang-en ? "Rename group" : "重命名分组");
                     color: Theme.text-primary;
                     font-size: Theme.fs-lg;
-                    font-weight: 700;
+                    font-weight: Theme.fw-strong;
                 }
                 Text { text: @tr("Group name"); color: Theme.text-secondary; font-size: Theme.fs-sm; }
                 qcg-input := LineEdit {
@@ -5707,7 +5714,7 @@ export component AppWindow inherits Window {
                                 ? @tr("New folder") : @tr("New file")));
                     color: Theme.text-primary;
                     font-size: Theme.fs-lg;
-                    font-weight: 700;
+                    font-weight: Theme.fw-strong;
                 }
                 Text {
                     text: root.sftp-prompt-kind == "chmod"
@@ -5822,7 +5829,7 @@ export component AppWindow inherits Window {
                         text: root.lang-en ? "Close main window" : "关闭主窗口";
                         color: Theme.text-primary;
                         font-size: Theme.fs-lg;
-                        font-weight: 700;
+                        font-weight: Theme.fw-strong;
                         vertical-alignment: center;
                     }
                     Text {
@@ -5935,14 +5942,23 @@ export component AppWindow inherits Window {
                             if root.close-behavior == "tray" : Rectangle {
                                 x: parent.width - self.width - 6px;
                                 y: 6px;
-                                width: 30px; height: 15px;
-                                border-radius: 3px;
+                                // 30px was sized around 9px "默认" — and "default"
+                                // already overflowed it by ~4px. 9px bold CJK is the
+                                // worst case in the app: bold plus a CJK stem that
+                                // thin under unhinted grayscale AA. The badge
+                                // positions from its own width, so growing it is
+                                // safe (it eats leftward into the row's empty
+                                // space), and scaling both together keeps the
+                                // 10px label and its chip in proportion.
+                                width: 46px * Theme.ui-scale;
+                                height: 16px * Theme.ui-scale;
+                                border-radius: 3px * Theme.ui-scale;
                                 background: Theme.chip;
                                 Text {
                                     text: root.lang-en ? "default" : "默认";
                                     color: Theme.accent;
-                                    font-size: 9px;
-                                    font-weight: 700;
+                                    font-size: Theme.fs-2xs;
+                                    font-weight: Theme.fw-strong;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
                                 }
@@ -5963,7 +5979,7 @@ export component AppWindow inherits Window {
                                     text: root.lang-en ? "Minimize to tray" : "最小化到托盘";
                                     color: Theme.text-primary;
                                     font-size: Theme.fs-sm;
-                                    font-weight: 600;
+                                    font-weight: Theme.fw-strong;
                                     horizontal-alignment: center;
                                 }
                                 Text {
@@ -6003,14 +6019,16 @@ export component AppWindow inherits Window {
                             if root.close-behavior == "exit" : Rectangle {
                                 x: parent.width - self.width - 6px;
                                 y: 6px;
-                                width: 30px; height: 15px;
-                                border-radius: 3px;
+                                // Same sizing rationale as the "tray" badge above.
+                                width: 46px * Theme.ui-scale;
+                                height: 16px * Theme.ui-scale;
+                                border-radius: 3px * Theme.ui-scale;
                                 background: Theme.chip;
                                 Text {
                                     text: root.lang-en ? "default" : "默认";
                                     color: Theme.accent;
-                                    font-size: 9px;
-                                    font-weight: 700;
+                                    font-size: Theme.fs-2xs;
+                                    font-weight: Theme.fw-strong;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
                                 }
@@ -6031,7 +6049,7 @@ export component AppWindow inherits Window {
                                     text: root.lang-en ? "Quit completely" : "完全退出";
                                     color: Theme.text-primary;
                                     font-size: Theme.fs-sm;
-                                    font-weight: 600;
+                                    font-weight: Theme.fw-strong;
                                     horizontal-alignment: center;
                                 }
                                 Text {
@@ -6114,7 +6132,7 @@ export component AppWindow inherits Window {
                 spacing: 10px;
                 Text {
                     text: root.lang-en ? "Permissions" : "修改文件权限";
-                    color: Theme.text-primary; font-size: Theme.fs-lg; font-weight: 700;
+                    color: Theme.text-primary; font-size: Theme.fs-lg; font-weight: Theme.fw-strong;
                 }
                 Text {
                     text: root.chmod-name;
@@ -6210,7 +6228,7 @@ export component AppWindow inherits Window {
                         text: root.lang-en ? "Keyboard shortcuts" : "快捷键";
                         color: Theme.text-primary;
                         font-size: Theme.fs-lg;
-                        font-weight: 700;
+                        font-weight: Theme.fw-strong;
                         horizontal-stretch: 1;
                         vertical-alignment: center;
                     }
@@ -6344,7 +6362,7 @@ export component AppWindow inherits Window {
                             text: "meatshell";
                             color: Theme.text-primary;
                             font-size: 22px;
-                            font-weight: 700;
+                            font-weight: Theme.fw-strong;
                             vertical-alignment: center;
                         }
                         // The "vX.Y.Z" chip was removed from the title card —
@@ -6549,7 +6567,7 @@ export component AppWindow inherits Window {
                     text: root.lang-en ? "Batch import connections" : "批量导入连接";
                     color: Theme.text-primary;
                     font-size: Theme.fs-xl;
-                    font-weight: 600;
+                    font-weight: Theme.fw-strong;
                 }
                 Text {
                     text: root.lang-en
@@ -6575,7 +6593,13 @@ export component AppWindow inherits Window {
                             width: parent.width - 20px;
                             text <=> root.batch-import-text;
                             color: Theme.text-primary;
-                            font-family: Theme.font-mono;
+                            // The placeholder right below is
+                            // "…|pass@123|服务器1" — this field is specified to
+                            // carry CJK session names. Mono has no CJK and
+                            // TextInput never falls back, so it would tofu on the
+                            // very first Chinese name. ui-font-family is the
+                            // CJK-capable face Rust resolves at startup.
+                            font-family: Theme.ui-font-family;
                             font-size: Theme.fs-md;
                             single-line: false;
                             wrap: no-wrap;
@@ -6586,7 +6610,11 @@ export component AppWindow inherits Window {
                         y: 8px;
                         text: "192.168.1.108|22|root|pass@123|服务器1";
                         color: Theme.text-muted;
-                        font-family: Theme.font-mono;
+                        // Must match bi-input above: a sans placeholder over a sans
+                        // field, so the two overlay pixel-for-pixel. A mono
+                        // placeholder over the sans field would also fall back
+                        // mid-string on the CJK tail and break its own metrics.
+                        font-family: Theme.ui-font-family;
                         font-size: Theme.fs-md;
                     }
                 }
@@ -6634,7 +6662,7 @@ export component AppWindow inherits Window {
                     text: @tr("Login");
                     color: Theme.text-primary;
                     font-size: Theme.fs-xl;
-                    font-weight: 600;
+                    font-weight: Theme.fw-strong;
                 }
                 Text {
                     text: root.cred-host;
@@ -6704,7 +6732,7 @@ export component AppWindow inherits Window {
                     text: root.lang-en ? "Two-factor verification" : "双重验证 (MFA)";
                     color: Theme.text-primary;
                     font-size: Theme.fs-xl;
-                    font-weight: 600;
+                    font-weight: Theme.fw-strong;
                 }
                 Text {
                     text: root.mfa-host;
@@ -6804,15 +6832,20 @@ export component AppWindow inherits Window {
                                 root.ifd-grab-y = self.absolute-position.y + self.mouse-y;
                             } else if (e.kind == PointerEventKind.up) {
                                 root.ifd-dragging = false;
+                                // (#settings-drag-ghost) buffer age can lie
+                                // while the card moves under the cursor; one
+                                // clean frame on release erases any stale strip
+                                // the drag left behind.
+                                root.request-full-redraw();
                             }
                         }
                         moved => {
                             if (root.ifd-dragging) {
                                 root.ifd-x = clamp(
-                                    round((root.ifd-base-x + (self.absolute-position.x + self.mouse-x - root.ifd-grab-x)) / 1px) * 1px,
+                                    Theme.snap-to-device(root.ifd-base-x + (self.absolute-position.x + self.mouse-x - root.ifd-grab-x)),
                                     0px, max(0px, root.width - root.ifd-w));
                                 root.ifd-y = clamp(
-                                    round((root.ifd-base-y + (self.absolute-position.y + self.mouse-y - root.ifd-grab-y)) / 1px) * 1px,
+                                    Theme.snap-to-device(root.ifd-base-y + (self.absolute-position.y + self.mouse-y - root.ifd-grab-y)),
                                     0px, max(0px, root.height - root.ifd-h));
                             }
                         }
@@ -6824,7 +6857,7 @@ export component AppWindow inherits Window {
                             text: root.lang-en ? "Settings" : "设置";
                             color: Theme.text-primary;
                             font-size: 14px;
-                            font-weight: 700;
+                            font-weight: Theme.fw-strong;
                             horizontal-stretch: 1;
                             vertical-alignment: center;
                         }
@@ -6856,7 +6889,16 @@ export component AppWindow inherits Window {
                     is-windows: root.is-windows;
                     renderer-mode <=> root.renderer-mode;
                     term-fonts: root.term-fonts;
-                    term-font-family: root.term-font-family;
+                    term-font-chosen: root.term-font-chosen;
+                    term-font-default-name: root.term-font-default-name;
+                    // Interface › Font › Interface font. One-way on the value
+                    // (Rust owns the resolution) and one-way out through the
+                    // callback, mirroring term-font-family so the two pickers
+                    // read the same way.
+                    ui-fonts: root.ui-fonts;
+                    ui-font-chosen: root.ui-font-chosen;
+                    ui-font-default-name: root.ui-font-default-name;
+                    set-ui-font(v) => { root.set-ui-font(v); }
                     term-font-size: root.term-font-size;
                     terminal-line-spacing <=> root.terminal-line-spacing;
                     // (#close-behavior) 设置 › 窗口 的「关闭按钮行为」双向绑定。
@@ -6993,15 +7035,16 @@ export component AppWindow inherits Window {
                             root.ifd-grab-y = self.absolute-position.y + self.mouse-y;
                         } else if (e.kind == PointerEventKind.up) {
                             root.ifd-resizing = false;
+                            root.request-full-redraw();   // (#settings-drag-ghost)
                         }
                     }
                     moved => {
                         if (root.ifd-resizing) {
                             root.ifd-w = clamp(
-                                round((root.ifd-base-w + (self.absolute-position.x + self.mouse-x - root.ifd-grab-x)) / 1px) * 1px,
+                                Theme.snap-to-device(root.ifd-base-w + (self.absolute-position.x + self.mouse-x - root.ifd-grab-x)),
                                 640px, max(640px, root.width - root.ifd-x));
                             root.ifd-h = clamp(
-                                round((root.ifd-base-h + (self.absolute-position.y + self.mouse-y - root.ifd-grab-y)) / 1px) * 1px,
+                                Theme.snap-to-device(root.ifd-base-h + (self.absolute-position.y + self.mouse-y - root.ifd-grab-y)),
                                 420px, max(420px, root.height - root.ifd-y));
                         }
                     }

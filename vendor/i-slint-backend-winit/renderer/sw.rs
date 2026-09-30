@@ -118,13 +118,28 @@ impl super::WinitCompatibleRenderer for WinitSoftwareRenderer {
         // may have cleared the buffer while its age still reports valid, so the
         // age-based choice would only redraw damage regions over a cleared
         // buffer and the window stays partially rendered until a resize.
-        let force = self.force_full_redraw.replace(false);
+        // (#settings-drag-ghost 2026-09-30 local patch) Also honor the
+        // app-side one-shot broadcast: buffer age can lie while the window is
+        // being moved/resized (see lib.rs), so let the app force one clean
+        // frame at those moments.
+        let force = self.force_full_redraw.replace(false)
+            || crate::FULL_REDRAW_PENDING.swap(false, std::sync::atomic::Ordering::SeqCst);
         self.renderer.set_repaint_buffer_type(if force {
             RepaintBufferType::NewBuffer
         } else {
             match age {
                 1 => RepaintBufferType::ReusedBuffer,
-                2 => RepaintBufferType::SwappedBuffers,
+                // (#settings-drag-ghost 2026-09-30 local patch) Never trust
+                // the age-2 restore path on Windows: while a window is moved,
+                // resized or occluded, DWM may hand back buffers whose content
+                // does not match softbuffer's accounting, and the
+                // swapped-buffer restore then composites stale strips from
+                // older frames into the current one. Three user-visible bugs
+                // came through this door (tray flyout flash, restore blank,
+                // ghost fragments of the settings title divider). Cost: frames
+                // presented with age >= 2 repaint fully; the app renders only
+                // when dirty, so idle UI is unaffected.
+                2 => RepaintBufferType::NewBuffer,
                 _ => RepaintBufferType::NewBuffer,
             }
         });

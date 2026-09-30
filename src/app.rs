@@ -1680,13 +1680,84 @@ fn open_window(
     window.set_is_mac(cfg!(target_os = "macos"));
     window.set_is_windows(cfg!(windows));
 
-    // Apply the saved terminal font (Interface settings). An empty family keeps
-    // the built-in default; the size always applies (defaults to 13).
+    // Fonts (#font-chain): one fontdb scan feeds the UI sans resolver, the
+    // terminal mono chain and the Interface font picker. Nothing is embedded —
+    // the first system family that resolves AND probes clean (cmap coverage,
+    // #114/#129) wins; "" lets the platform default take over.
+    let db = load_font_database();
+    // The family the UI is actually drawing with, shared with the config
+    // listener so a later change (or another window) can re-apply the resolved
+    // value without re-running the fontdb scan. See `on_set_ui_font`.
+    let ui_font_effective: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+    let mono_default = resolve_mono_font_family(&db);
+    window.set_font_mono(mono_default.clone());
+    // What the pickers' 默认 row ("" choice) means: the chain defaults. Kept so
+    // clearing an explicit font can re-apply them without a re-scan.
+    let ui_chain_default = resolve_ui_font_family(&db, "");
+    window.set_term_font_default_name(mono_default.clone());
+    window.set_ui_font_default_name(ui_chain_default.clone());
+    // Populate both Interface font pickers from the same scan: monospace
+    // families for the terminal, CJK-capable sans families for the UI. Row 0 is
+    // the "" sentinel — the picker renders it as 默认 and stores "" back.
+    let mut term_list = vec![slint::SharedString::from("")];
+    term_list.extend(system_monospace_fonts(&db));
+    window.set_term_fonts(ModelRc::from(Rc::new(VecModel::from(term_list))));
+    let mut ui_list = vec![slint::SharedString::from("")];
+    ui_list.extend(system_ui_fonts(&db));
+    window.set_ui_fonts(ModelRc::from(Rc::new(VecModel::from(ui_list))));
+
+    // Apply the saved UI font (Interface › Font). An empty family keeps the
+    // resolved chain default. Unlike the terminal, an explicit choice is only
+    // honored when it still probes clean, not merely when the name resolves:
+    // the UI face must cover CJK because native TextInput does no glyph
+    // fallback (#54), and a family that lost its CJK face between runs would
+    // tofu every typed Chinese character. Migration is one-shot, in config.
     {
-        let s = store.borrow();
-        let fam = s.font_family().to_string();
+        let mut s = store.borrow_mut();
+        let saved = s.ui_font_family().to_string();
+        if !saved.is_empty() && !family_covers(&db, &saved, SANS_PROBE) {
+            tracing::warn!(
+                family = %saved,
+                "ui-font: configured family is missing or no longer covers the UI probe \
+                 glyphs; migrating to the system CJK default"
+            );
+            s.set_ui_font_family(String::new());
+            let _ = s.save();
+        }
+        let chosen = s.ui_font_family().to_string();
+        window.set_ui_font_chosen(chosen.clone().into());
+        let resolved = if chosen.is_empty() {
+            ui_chain_default.clone()
+        } else {
+            resolve_ui_font_family(&db, &chosen)
+        };
+        if !resolved.is_empty() {
+            window.set_ui_font_family(resolved.clone());
+            *ui_font_effective.borrow_mut() = resolved.to_string();
+        }
+    }
+
+    // Apply the saved terminal font (Interface settings). An empty family keeps
+    // the resolved chain default; the size always applies (defaults to 13). A
+    // stale name that no longer resolves (e.g. configs still naming the removed
+    // embedded "Meatshell Mono") migrates to the chain default once, in config.
+    {
+        let mut s = store.borrow_mut();
+        let mut fam = s.font_family().to_string();
+        if !fam.is_empty() && !family_exists(&db, &fam) {
+            tracing::warn!(
+                family = %fam,
+                "term-font: configured family is not installed; migrating to the system mono default"
+            );
+            s.set_font_family(String::new());
+            let _ = s.save();
+            fam.clear();
+        }
+        window.set_term_font_chosen(fam.clone().into());
         if !fam.is_empty() {
             window.set_term_font_family(fam.into());
+        } else {
+            window.set_term_font_family(mono_default.clone());
         }
         window.set_term_font_size(s.font_size() as f32);
         window.set_terminal_line_spacing(s.terminal_line_spacing());
@@ -1730,22 +1801,6 @@ fn open_window(
         // theme when the user actively selects them (#theme-persistence).
         apply_wallpaper(&window, &store.borrow(), &bufs, &id, false);
     }
-    // Editable inputs (e.g. the SFTP path bar) need a CJK-capable font: the
-    // embedded mono font has no Chinese glyphs and native TextInput doesn't
-    // glyph-fallback like Text does, so typed Chinese would render as tofu (#54).
-    //
-    // We must NOT hard-code one system font name: on macOS 26 (Tahoe) fontdb
-    // failed to register "PingFang SC", so the UI default font resolved to nothing
-    // and *all* text vanished (#129) — icons survived only because they use an
-    // embedded font. Instead probe what fontdb actually loaded and pick the first
-    // resolvable CJK family, falling back to the embedded "Meatshell Mono" so the
-    // window is never fully blank even when the system font DB is unreadable.
-    window.set_ui_font_family(resolve_ui_font_family());
-    // Populate the Interface font picker with installed monospace families.
-    window.set_term_fonts(ModelRc::from(Rc::new(VecModel::from(
-        system_monospace_fonts(),
-    ))));
-
     // Command bar (#55): seed quick commands + history from the config. Groups
     // start collapsed by default (#55).
     window.set_quick_commands(quick_cmd_model(
@@ -2239,21 +2294,69 @@ fn open_window(
             apply_custom_output_rules(&w, &bufs, s.output_highlight_rules());
         });
     }
+    // Interface settings: apply + persist the UI (sans) font.
+    //
+    // `ui_font_effective` carries the *resolved* family (what the window is
+    // actually drawing with), which is not the same as the stored string: the
+    // config may hold "" meaning "re-run the chain", and this callback has no
+    // fontdb scan to re-run it with. The config listener reads this cell, so
+    // every window converges on the one resolved value per broadcast without
+    // re-scanning system fonts.
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let registry = registry.clone();
+        let effective = ui_font_effective.clone();
+        let chain_default = ui_chain_default.clone();
+        window.on_set_ui_font(move |family: SharedString| {
+            {
+                let mut s = store.borrow_mut();
+                s.set_ui_font_family(family.to_string());
+                let _ = s.save();
+            }
+            // "" is the picker's 默认 row: re-apply the chain default instead of
+            // the literal empty family, which would drop the UI to the Slint
+            // platform default (no CJK guarantee).
+            let resolved =
+                if family.is_empty() { chain_default.clone() } else { family.clone() };
+            *effective.borrow_mut() = resolved.to_string();
+            if let Some(w) = weak.upgrade() {
+                w.set_ui_font_family(resolved);
+                w.set_ui_font_chosen(family.clone());
+            }
+            registry.broadcast_config_changed();
+        });
+    }
     // Interface settings: apply + persist the terminal font family / size.
     {
         let weak = window.as_weak();
         let store = store.clone();
+        let chain_default = mono_default.clone();
         window.on_set_term_font(move |family: SharedString| {
             {
                 let mut s = store.borrow_mut();
                 s.set_font_family(family.to_string());
                 let _ = s.save();
             }
+            // "" is the picker's 默认 row: the resolved chain mono, not a
+            // literal empty name.
+            let resolved =
+                if family.is_empty() { chain_default.clone() } else { family.clone() };
             if let Some(w) = weak.upgrade() {
-                w.set_term_font_family(family);
+                w.set_term_font_family(resolved);
+                w.set_term_font_chosen(family);
             }
         });
     }
+    // (#settings-drag-ghost) Settings overlay drag/resize release and
+    // open/close ask for one clean frame: while the card moves, the buffer age
+    // softbuffer reports can mismatch what DWM actually handed back, and
+    // incremental presentation would keep stale strips from older frames (the
+    // broken-looking title divider). See the vendored i-slint-backend-winit
+    // patch for the flag this consumes.
+    window.on_request_full_redraw(|| {
+        i_slint_backend_winit::force_full_redraw_all_windows();
+    });
     // Output highlighting: persist the switch/preset and immediately rebuild
     // every open terminal, including scrollback captured before the change.
     {
@@ -2503,6 +2606,7 @@ fn open_window(
         let sessions_model = sessions_model.clone();
         let bufs = bufs.clone();
         let editor_weak = editor_win.as_weak();
+        let ui_font = ui_font_effective.clone();
         registry.add_config_listener(
             window_id,
             Rc::new(move || {
@@ -2515,6 +2619,16 @@ fn open_window(
                 w.set_lang_en(crate::i18n::is_en());
                 // Command-bar visibility is a global preference.
                 w.set_cmd_bar_hidden(store.borrow().cmd_bar_hidden());
+                // Persisted UI (sans) font is global. Read the RESOLVED family
+                // from the shared cell, not the raw config string: an empty
+                // config value means "re-run the chain", and re-resolving here
+                // would need the fontdb scan this listener does not own. Empty
+                // cell means the chain found nothing usable — leave whatever the
+                // platform default is in place rather than pushing "".
+                let family = ui_font.borrow().clone();
+                if !family.is_empty() {
+                    w.set_ui_font_family(family.clone().into());
+                }
                 // Persisted terminal font size (settings stepper) is global too.
                 w.set_term_font_size(store.borrow().font_size() as f32);
                 if let Some(editor) = editor_weak.upgrade() {
@@ -8284,25 +8398,91 @@ fn clipboard_set_text(text: String) {
     }
 }
 
-/// Enumerate installed monospace font families for the Interface font picker.
-/// Terminals want fixed-width fonts, so non-monospace families are filtered out.
-/// Choose a UI font family that fontdb can actually resolve, falling back to the
-/// embedded "Meatshell Mono" when the system font database is empty/unreadable.
-///
-/// macOS 26 (Tahoe) shipped a system where fontdb couldn't register the named
-/// CJK font ("PingFang SC"), so hard-coding that name made the whole UI render
-/// blank (#129). This probes the loaded faces and picks the first CJK-capable
-/// family that exists; if none do, it returns the embedded font so the window is
-/// still visible (Latin text shows; CJK may tofu — far better than a blank UI).
-///
-/// Emits a one-line WARN summary (faces loaded + chosen font) so the choice lands
-/// in `error.log` for diagnostics without needing RUST_LOG.
-fn resolve_ui_font_family() -> slint::SharedString {
-    use fontdb::{Database, Family, Query, Stretch, Style, Weight};
+/// Shared probe strings for the font chain (#font-chain). The UI sans must
+/// cover CJK (native TextInput has no glyph fallback, #54) plus Latin and
+/// digits; the terminal mono must at least grid ASCII and draw the box-drawing
+/// lines htop/vim lean on. Braille (btop graphs) is deliberately NOT required —
+/// most system monos (Consolas, Menlo) ship without it, and demanding it would
+/// strand the chain on nothing.
+const SANS_PROBE: &[char] = &['中', 'A', '0'];
+const MONO_PROBE: &[char] = &['A', 'g', '0', '─', '│'];
 
+/// One fontdb scan feeding every resolver — enumerating system fonts is not
+/// free, and all font decisions must agree on what "is installed" means.
+fn load_font_database() -> fontdb::Database {
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+    db
+}
+
+/// fontdb lookup of one family name at regular weight/style.
+fn find_regular_face(db: &fontdb::Database, name: &str) -> Option<fontdb::ID> {
+    let families = [fontdb::Family::Name(name)];
+    db.query(&fontdb::Query {
+        families: &families,
+        weight: fontdb::Weight::NORMAL,
+        stretch: fontdb::Stretch::Normal,
+        style: fontdb::Style::Normal,
+    })
+}
+
+/// True when `name` resolves to any installed face. Used for user-picked
+/// terminal fonts: an explicit Interface-settings choice is honored as long as
+/// it exists, probe quirks notwithstanding.
+fn family_exists(db: &fontdb::Database, name: &str) -> bool {
+    find_regular_face(db, name).is_some()
+}
+
+/// True when the face `name` resolves to actually covers every probe char.
+/// Both font incidents happened because "present in the font DB" did not mean
+/// "draws the glyphs we need": #114 — the OS font matcher substituted a
+/// glyph-poor family for a name that wasn't installed (Win11 Home: box/braille
+/// tofu), #129 — macOS 26 registered faces that rasterized blank. The cmap
+/// check catches the substituted/incomplete-glyph class; the blank-raster
+/// class stays unprobed (there is no cheap offscreen render to lean on).
+fn family_covers(db: &fontdb::Database, name: &str, probe: &[char]) -> bool {
+    use fontdb::Source;
+    let Some(id) = find_regular_face(db, name) else {
+        return false;
+    };
+    let Some(face) = db.face(id) else {
+        return false;
+    };
+    let bytes: Vec<u8> = match &face.source {
+        Source::Binary(b) => b.as_ref().as_ref().to_vec(),
+        Source::SharedFile(_, b) => b.as_ref().as_ref().to_vec(),
+        Source::File(p) => match std::fs::read(p) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::debug!(font = name, error = %e, "font probe: face unreadable");
+                return false;
+            }
+        },
+    };
+    let Ok(font) = skrifa::FontRef::from_index(&bytes, face.index) else {
+        tracing::debug!(font = name, "font probe: face failed to parse");
+        return false;
+    };
+    let charmap = skrifa::charmap::Charmap::new(&font);
+    probe.iter().all(|&c| charmap.map(c).is_some())
+}
+
+/// Choose the UI (sans) font. `saved` is the user's Interface › Font choice; a
+/// non-empty value that still resolves AND probes clean wins outright. Empty
+/// (or stale — the caller migrates those away) falls through to the first
+/// CJK-complete family in the platform chain. "" when nothing qualifies —
+/// Slint's platform default then takes over (no embedded fallback is shipped).
+///
+/// Emits a WARN summary (faces loaded + what is available) so the cause lands
+/// in `error.log` for diagnostics without needing RUST_LOG.
+fn resolve_ui_font_family(
+    db: &fontdb::Database,
+    saved: &str,
+) -> slint::SharedString {
     // Diagnostic / escape hatch (#129): force a specific UI font without a rebuild.
-    // e.g. MEATSHELL_UI_FONT="Meatshell Mono" to test whether the embedded font
-    // renders when system fonts don't. Empty value is ignored.
+    // e.g. MEATSHELL_UI_FONT="Microsoft YaHei". Empty value is ignored. Wins over
+    // both the saved choice and the chain so a bad face can be worked around
+    // without touching config.
     if let Some(f) = std::env::var_os("MEATSHELL_UI_FONT") {
         let f = f.to_string_lossy().into_owned();
         if !f.trim().is_empty() {
@@ -8311,8 +8491,16 @@ fn resolve_ui_font_family() -> slint::SharedString {
         }
     }
 
-    let mut db = Database::new();
-    db.load_system_fonts();
+    // The user's explicit pick. Probed, not just resolved: see the call site for
+    // why a name that still enumerates can still be wrong for the UI.
+    if !saved.trim().is_empty() {
+        if family_covers(db, saved, SANS_PROBE) {
+            tracing::debug!(font = %saved, "ui-font: using the saved Interface choice");
+            return saved.into();
+        }
+        tracing::debug!(font = %saved, "ui-font: saved choice no longer probes clean");
+    }
+
     let face_count = db.faces().count();
 
     // CJK-capable system families, most-preferred first, per platform. The UI
@@ -8334,8 +8522,26 @@ fn resolve_ui_font_family() -> slint::SharedString {
         "PingFang SC",
         "Hiragino Sans GB",
     ];
+    // Windows: YaHei keeps first place so machines that only ship it are
+    // unaffected. Noto Sans SC / Source Han Sans SC sit behind it purely as
+    // the crisper alternative: their CJK stems are heavier and more even, which
+    // matters because Slint's text rasterizer (fontique) does unhinted
+    // grayscale AA with no LCD subpixel. At 12-13px a YaHei stroke is only ~2
+    // device px wide, so no pixel reaches full coverage and the stroke breaks
+    // into a bead of half-intensity pixels — the "颗粒感" report. A heavier
+    // stem keeps the coverage solid. Noto also ships a real 500 weight, which
+    // YaHei's regular+bold-only set cannot provide (see Theme.fw-*).
+    // SimSun stays last: it is a serif, and serif terminals in a sans UI are
+    // worse than every option above it.
     #[cfg(target_os = "windows")]
-    let candidates: &[&str] = &["Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "SimSun"];
+    let candidates: &[&str] = &[
+        "Microsoft YaHei UI",
+        "Microsoft YaHei",
+        "Noto Sans SC",
+        "Source Han Sans SC",
+        "SimHei",
+        "SimSun",
+    ];
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let candidates: &[&str] = &[
         "Noto Sans CJK SC",
@@ -8346,24 +8552,15 @@ fn resolve_ui_font_family() -> slint::SharedString {
     ];
 
     for name in candidates {
-        let q = Query {
-            families: &[Family::Name(name)],
-            weight: Weight::NORMAL,
-            stretch: Stretch::Normal,
-            style: Style::Normal,
-        };
-        if db.query(&q).is_some() {
-            tracing::debug!(
-                faces = face_count,
-                font = name,
-                "ui-font: using system CJK font"
-            );
+        if family_covers(db, name, SANS_PROBE) {
+            tracing::debug!(faces = face_count, font = name, "ui-font: using system CJK font");
             return (*name).into();
         }
     }
 
-    // No preferred family resolved. List what *is* available (if anything) so the
-    // log shows whether enumeration is empty or just missing our candidates (#129).
+    // No preferred family qualified. List what *is* available (if anything) so
+    // the log shows whether enumeration is empty or just missing our
+    // candidates / failing the coverage probe (#129).
     if face_count > 0 {
         let mut fams: Vec<String> = db
             .faces()
@@ -8373,18 +8570,109 @@ fn resolve_ui_font_family() -> slint::SharedString {
         fams.dedup();
         let sample: Vec<String> = fams.into_iter().take(40).collect();
         tracing::warn!(faces = face_count, available = ?sample,
-            "ui-font: no preferred CJK font resolved; listing available families");
+            "ui-font: no preferred CJK font qualified; listing available families");
     }
     tracing::warn!(
         faces = face_count,
-        "ui-font: falling back to embedded 'Meatshell Mono' (system fonts unusable, #129)"
+        "ui-font: no CJK-capable system font qualified; leaving the choice to the platform default"
     );
-    "Meatshell Mono".into()
+    "".into()
 }
 
-fn system_monospace_fonts() -> Vec<slint::SharedString> {
-    let mut db = fontdb::Database::new();
-    db.load_system_fonts();
+/// Monospace chain for the terminal default and UI machine literals
+/// (#font-chain): JetBrains Mono → Noto Sans Mono CJK SC → Noto Sans Mono →
+/// Menlo → Cascadia Mono → Consolas, then a per-platform last resort. The
+/// shared list is platform-agnostic by construction — families that don't
+/// exist on the current OS simply never resolve (Menlo is macOS-only,
+/// Cascadia Mono / Consolas are Windows-only). First family that resolves AND
+/// covers ASCII + box drawing wins; "" hands the choice to the platform
+/// default. No embedded mono is shipped anymore, so a system with none of
+/// these is the one case that loses the fixed-grid guarantee.
+fn mono_candidates() -> Vec<&'static str> {
+    let mut chain: Vec<&'static str> = vec![
+        "JetBrains Mono",
+        "Noto Sans Mono CJK SC",
+        "Noto Sans Mono",
+        "Menlo",
+        "Cascadia Mono",
+        "Consolas",
+    ];
+    chain.extend_from_slice(if cfg!(target_os = "macos") {
+        &["Monaco", "Courier New"][..]
+    } else if cfg!(target_os = "windows") {
+        &["Courier New"][..]
+    } else {
+        &["DejaVu Sans Mono", "Liberation Mono"][..]
+    });
+    chain
+}
+
+/// Nerd Font re-publish lookup: `name` ("JetBrains Mono") is absent under its
+/// official family, but a Nerd-Font-suffixed re-publish may be installed
+/// ("JetBrainsMono Nerd Font Mono", "JetBrainsMono NF", ...). Match by
+/// whitespace-stripped prefix plus a known suffix, preferring the true
+/// monospace variants; proportional ("propo") re-publishes never match.
+/// Returns the variant's exact family name — Slint and the picker speak
+/// reported names only, so the alias must round-trip through fontdb.
+fn nerd_font_alias(db: &fontdb::Database, name: &str) -> Option<String> {
+    const SUFFIXES: &[&str] = &["nerdfontmono", "nfmono", "nfm", "nerdfont", "nf", "mono"];
+    let norm = |s: &str| -> String {
+        s.to_lowercase().chars().filter(|c| !c.is_whitespace()).collect()
+    };
+    let base = norm(name);
+    if base.is_empty() {
+        return None;
+    }
+    let mut fams: Vec<String> = db
+        .faces()
+        .filter_map(|f| f.families.first().map(|(n, _)| n.clone()))
+        .collect();
+    fams.sort();
+    fams.dedup();
+    let mut best: Option<(usize, String)> = None;
+    for fam in fams {
+        let fnorm = norm(&fam);
+        let Some(rest) = fnorm.strip_prefix(&base) else { continue };
+        if let Some(pri) = SUFFIXES.iter().position(|s| *s == rest) {
+            if best.as_ref().map_or(true, |(p, _)| pri < *p) {
+                best = Some((pri, fam));
+            }
+        }
+    }
+    let (_, fam) = best?;
+    if find_regular_face(db, &fam).is_some() { Some(fam) } else { None }
+}
+
+fn resolve_mono_font_family(db: &fontdb::Database) -> slint::SharedString {
+    for name in mono_candidates() {
+        if family_covers(db, name, MONO_PROBE) {
+            tracing::debug!(font = name, "term-font: using system monospace");
+            return name.into();
+        }
+        // The chain speaks official names; a Nerd Font re-publish of the same
+        // mono qualifies too (same glyph probe) and reports under its own name.
+        if let Some(alias) = nerd_font_alias(db, name) {
+            if family_covers(db, &alias, MONO_PROBE) {
+                tracing::debug!(
+                    font = %alias,
+                    official = name,
+                    "term-font: using Nerd Font variant of a chain family"
+                );
+                return alias.into();
+            }
+        }
+    }
+    tracing::warn!(
+        "term-font: no system monospace qualified; leaving the choice to the platform default"
+    );
+    "".into()
+}
+
+/// Enumerate installed monospace font families for the Interface font picker.
+/// Terminals want fixed-width fonts, so non-monospace families are filtered
+/// out. Pure fontdb output — the chain default chosen at startup is always an
+/// installed system font and therefore shows up here too.
+fn system_monospace_fonts(db: &fontdb::Database) -> Vec<slint::SharedString> {
     let mut names: Vec<String> = db
         .faces()
         .filter(|f| f.monospaced)
@@ -8392,13 +8680,34 @@ fn system_monospace_fonts() -> Vec<slint::SharedString> {
         .collect();
     names.sort();
     names.dedup();
-    // Surface the built-in glyph-complete font first so it's selectable and the
-    // default selection is shown — it isn't a system face so fontdb won't list it
-    // (#114).
-    names.retain(|n| n != "Meatshell Mono");
-    let mut out = vec![slint::SharedString::from("Meatshell Mono")];
-    out.extend(names.into_iter().map(slint::SharedString::from));
-    out
+    names.into_iter().map(slint::SharedString::from).collect()
+}
+
+/// Enumerate installed families suitable as the Interface (sans) font.
+///
+/// Two filters, both load-bearing:
+///   * not monospaced — a fixed-pitch UI face makes every label and button a
+///     different width, and CJK monospace families (Noto Sans Mono CJK, Sarasa)
+///     are a terminal choice, not a chrome one;
+///   * passes `SANS_PROBE` (中/A/0) — the same probe the resolver uses, so every
+///     row in the picker is actually safe for editable inputs (#54). Without it
+///     the list would offer families that tofu the moment you type Chinese.
+///
+/// The chain default the resolver picks is always an installed family that
+/// passes this probe, so it always appears in the list and the ComboBox's
+/// `current-value` can never name a row that isn't there.
+fn system_ui_fonts(db: &fontdb::Database) -> Vec<slint::SharedString> {
+    let mut names: Vec<String> = db
+        .faces()
+        .filter(|f| !f.monospaced)
+        .filter_map(|f| f.families.first().map(|(n, _)| n.clone()))
+        .collect();
+    names.sort();
+    names.dedup();
+    // Probe only after dedup: family_covers reads the face file from disk, so
+    // filtering first would re-read a family once per face (regular/bold/...).
+    names.retain(|n| family_covers(db, n, SANS_PROBE));
+    names.into_iter().map(slint::SharedString::from).collect()
 }
 
 /// Split a stored proxy URL into `(type, host:port)` for the session dialog.

@@ -153,24 +153,46 @@ export global Theme {
     in-out property <float> panel-font: 1.0;
 
     // --- Typography --------------------------------------------------------
+    // 12px was the worst rung in the ladder for CJK: Slint rasterizes text with
+    // unhinted grayscale AA (no LCD subpixel), and a 12px YaHei/Noto CJK stroke
+    // is only ~2 device px wide, so no pixel reaches full coverage and the
+    // stroke renders as a bead of half-intensity dots. 13px is the smallest size
+    // that still holds a solid stem, so fs-sm now equals fs-md.
+    //
+    // Both tokens are kept on purpose: they mean different things (small label
+    // vs body copy) and ~120 call sites read them. Same rendered size today, but
+    // moving fs-md later must not drag every small label with it.
+    out property <length> fs-2xs: 10px * root.ui-scale;
     out property <length> fs-xs: 11px * root.ui-scale;
-    out property <length> fs-sm: 12px * root.ui-scale;
+    out property <length> fs-sm: 13px * root.ui-scale;
     out property <length> fs-md: 13px * root.ui-scale;
     out property <length> fs-lg: 15px * root.ui-scale;
     out property <length> fs-xl: 18px * root.ui-scale;
 
-    // Embedded glyph-complete monospace (Cascadia Mono under a unique name, #114).
-    out property <string> font-mono: "Meatshell Mono";
+    // Exactly two weight tiers. CJK system fonts (雅黑/Heiti) ship regular+bold
+    // only, so every bare 500/600/800 collapsed onto one of these via font
+    // matching anyway — spelling intermediates just produced same-rank drift
+    // (welcome 600 vs sidebar 400). All UI code reads these; no literal weights.
+    out property <int> fw-regular: 400;
+    out property <int> fw-strong: 700;
 
-    // UI (sans) font for editable inputs. The embedded mono font has no CJK
-    // glyphs and native TextInput doesn't glyph-fallback like Text does, so
-    // typing Chinese into a bare TextInput renders tofu. Rust sets this to a
-    // CJK-capable system font on startup (empty = platform default).
+    // Monospace for machine literals only (IPs, paths, ports, keycaps, command
+    // examples) — plain numbers and labels read in the UI sans so same-rank
+    // text shares one face. Rust resolves the first usable system mono at
+    // startup (#font-chain); empty = platform default. Nothing is embedded.
+    in-out property <string> font-mono: "";
+
+    // UI (sans) font for editable inputs. The mono chain has no CJK glyphs and
+    // native TextInput doesn't glyph-fallback like Text does, so typing Chinese
+    // into a bare TextInput renders tofu. Rust sets this to a CJK-capable
+    // system font on startup (empty = platform default).
     in-out property <string> ui-font-family: "";
 
-    // Terminal font — user-configurable via Interface settings, set by Rust
-    // from the config on startup. cell size in terminal_view derives from these.
-    in-out property <string> term-font-family: "Meatshell Mono";
+    // Terminal font — Rust sets it from the saved Interface setting, falling
+    // back to the resolved system-mono chain default when unset/stale. The
+    // cell-probe in terminal_view measures whatever this resolves to, so
+    // "" (platform default) still produces a consistent grid.
+    in-out property <string> term-font-family: "";
     in-out property <length> term-font-size: 13px;
     in-out property <bool> term-font-bold: false;
 
@@ -251,4 +273,14 @@ export global Theme {
     out property <length> gap-sm: 8px * root.ui-scale;
     out property <length> gap-md: 12px * root.ui-scale;
     out property <length> gap-lg: 16px * root.ui-scale;
+
+    // (#settings-drag-ghost) Snap a length onto the physical-pixel grid. At
+    // 125% scaling a logical-integer position sits on a half device pixel for
+    // every odd logical value, which splits the settings card's 1px chrome
+    // lines across two device rows — soft and doubled on some drags, crisp on
+    // others. Keeping the card's x/y/w/h on this grid makes its lines
+    // rasterize identically at every position.
+    public pure function snap-to-device(v: length) -> length {
+        round(v / (1px * root.ui-scale)) * (1px * root.ui-scale);
+    }
 }
