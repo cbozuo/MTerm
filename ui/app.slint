@@ -949,6 +949,13 @@ export component AppWindow inherits Window {
     in property <[OutputRuleItem]> output-highlight-rules;
     in-out property <string> output-highlight-rule-status;
     in-out property <float> ui-scale <=> Theme.ui-scale;   // global UI zoom (#100)
+    // (#settings-divider-line) The window's real device pixel ratio (winit
+    // scale-factor). Slint 1.18 has no scale-factor property in .slint, so Rust
+    // mirrors it here (startup, every winit ScaleFactorChanged, and whenever
+    // the settings modal opens via refresh-device-pixel-ratio); snap-to-device
+    // and hairline read it from Theme.
+    in-out property <float> device-pixel-ratio <=> Theme.device-pixel-ratio;
+    callback refresh-device-pixel-ratio();
     in-out property <float> panel-font <=> Theme.panel-font;  // settings-panel font scale
     callback set-panel-font(int);                          // apply + persist (percent)
     in-out property <string> ui-font-family <=> Theme.ui-font-family;
@@ -981,8 +988,11 @@ export component AppWindow inherits Window {
     // window so it can't leave the parent); init centered.
     // Centred, snapped to whole logical pixels: a half-pixel origin makes the
     // card's text render on subpixel offsets and look blurry (#v0.5).
-    property <length> ifd-w: min(root.width - 32px, max(560px, 720px * Theme.panel-font));
-    property <length> ifd-h: min(root.height - 32px, max(320px, 480px * Theme.panel-font));
+    // (#settings-divider-line) Snap w/h too: an un-snapped card width puts the
+    // right border and the nav divider on a fractional device column even when
+    // x/y are snapped.
+    property <length> ifd-w: Theme.snap-to-device(min(root.width - 32px, max(560px, 720px * Theme.panel-font)));
+    property <length> ifd-h: Theme.snap-to-device(min(root.height - 32px, max(320px, 480px * Theme.panel-font)));
     property <length> ifd-x: Theme.snap-to-device((root.width - root.ifd-w) / 2);
     property <length> ifd-y: Theme.snap-to-device((root.height - root.ifd-h) / 2);
     property <bool> ifd-dragging;
@@ -998,10 +1008,21 @@ export component AppWindow inherits Window {
     // every time the modal opens so coordinates from a larger/DPI-different
     // monitor can never leave the settings card outside the current window.
     changed interface-open => {
+        // (#settings-divider-line) Re-read the winit scale-factor right before
+        // the card re-centers, so the snap below lands on the current grid
+        // even if the window moved to a display with different scaling.
+        root.refresh-device-pixel-ratio();
         // (#settings-drag-ghost) The overlay appearing/disappearing is a huge
         // damage union; ask for one clean full frame so no stale strip from
         // the pre-toggle frames survives incremental presentation.
         root.request-full-redraw();
+        // (#settings-divider-line) While the modal is open every interactive
+        // frame (drag, resize, nav switching, hover animations) renders fully —
+        // the age-1 incremental path has already smuggled stale strips into
+        // the title divider on this machine, and an idle window renders
+        // nothing anyway, so holding full repaints for the modal's lifetime is
+        // free when idle and bulletproof while interacting.
+        root.set-full-redraw-hold(root.interface-open);
         if (root.interface-open) {
             root.ifd-dragging = false;
             root.ifd-resizing = false;
@@ -1015,6 +1036,10 @@ export component AppWindow inherits Window {
     // (#settings-drag-ghost) One full repaint of every software-rendered
     // window on the next frame; see the vendored i-slint-backend-winit patch.
     callback request-full-redraw();
+    // (#settings-divider-line) Hold full repaints for a stretch of time (the
+    // settings modal's lifetime) instead of a single frame; wired to the
+    // vendored i-slint-backend-winit patch.
+    callback set-full-redraw-hold(bool);
     callback set-term-font-size(int);              // apply + persist font size (px)
     // Font zoom: Ctrl+=/-/0 → `tab-id`'s session only; Ctrl+Shift+=/-/0 →
     // every session in this window (scope: false = session, true = window).
@@ -2769,7 +2794,7 @@ export component AppWindow inherits Window {
                     root.qcm-edit-index = -1;
                     root.quick-cmd-manage-open = true;
                 }
-                close => { root.quick-panel-collapsed = true; }
+                request-close => { root.quick-panel-collapsed = true; }
                 dock-drag-move(ax, ay) => {
                     root.panel-dragging = true;
                     root.drag-nx = (ax - dock-area.absolute-position.x) / dock-area.width;
@@ -4120,7 +4145,7 @@ export component AppWindow inherits Window {
                                 background: Theme.bg-panel-alt;
                                 clip: true;
                                 VerticalLayout {
-                                    y: ed-scroll.viewport-y + 8px;
+                                    y: ed-scroll.content-y + 8px;
                                     width: parent.width;
                                     height: self.preferred-height;
                                     spacing: 0px;
@@ -4163,16 +4188,16 @@ export component AppWindow inherits Window {
                                 // wheel behind it and scroll the editor (#388).
                                 editor-wheel := TouchArea {
                                     scroll-event(event) => {
-                                        ed-scroll.viewport-y = clamp(
-                                            ed-scroll.viewport-y + event.delta-y,
-                                            min(0px, ed-scroll.visible-height - ed-scroll.viewport-height),
+                                        ed-scroll.content-y = clamp(
+                                            ed-scroll.content-y + event.delta-y,
+                                            min(0px, ed-scroll.visible-height - ed-scroll.content-height),
                                             0px);
                                         accept
                                     }
                                 }
                                 ed-scroll := ScrollView {
-                                    viewport-width: self.visible-width;
-                                    viewport-height: max(self.visible-height, edit-input.preferred-height + 16px);
+                                    content-width: self.visible-width;
+                                    content-height: max(self.visible-height, edit-input.preferred-height + 16px);
                                     edit-input := TextInput {
                                         x: 8px;
                                         y: 8px;
@@ -4191,14 +4216,14 @@ export component AppWindow inherits Window {
                                             // visible. During a pointer grab this also
                                             // advances the viewport as the mouse moves
                                             // beyond its top or bottom edge (#388).
-                                            let cursor-y = position.y + self.y + ed-scroll.viewport-y;
+                                            let cursor-y = position.y + self.y + ed-scroll.content-y;
                                             if (cursor-y < 12px) {
-                                                ed-scroll.viewport-y = min(0px,
-                                                    ed-scroll.viewport-y + 12px - cursor-y);
+                                                ed-scroll.content-y = min(0px,
+                                                    ed-scroll.content-y + 12px - cursor-y);
                                             } else if (cursor-y > ed-scroll.visible-height - 12px) {
-                                                ed-scroll.viewport-y = max(
-                                                    min(0px, ed-scroll.visible-height - ed-scroll.viewport-height),
-                                                    ed-scroll.viewport-y
+                                                ed-scroll.content-y = max(
+                                                    min(0px, ed-scroll.visible-height - ed-scroll.content-height),
+                                                    ed-scroll.content-y
                                                         - (cursor-y - ed-scroll.visible-height + 12px));
                                             }
                                         }
@@ -4403,8 +4428,8 @@ export component AppWindow inherits Window {
 
                 Flickable {
                     vertical-stretch: 1;
-                    viewport-width: self.width;
-                    viewport-height: max(self.height, xfer-col.preferred-height);
+                    content-width: self.width;
+                    content-height: max(self.height, xfer-col.preferred-height);
                     xfer-col := VerticalLayout {
                         alignment: start;
                         spacing: 4px;
@@ -5303,8 +5328,8 @@ export component AppWindow inherits Window {
                         background: Theme.bg-root;
                         clip: true;
                         Flickable {
-                            viewport-width: self.width;
-                            viewport-height: max(self.height, qcm-cmd-in.preferred-height + 12px);
+                            content-width: self.width;
+                            content-height: max(self.height, qcm-cmd-in.preferred-height + 12px);
                             qcm-cmd-in := TextInput {
                                 x: 8px; y: 6px;
                                 width: parent.width - 16px;
@@ -5370,8 +5395,8 @@ export component AppWindow inherits Window {
                 // Existing commands list with delete buttons.
                 Flickable {
                     vertical-stretch: 1;
-                    viewport-width: self.width;
-                    viewport-height: max(self.height, qcm-list.preferred-height);
+                    content-width: self.width;
+                    content-height: max(self.height, qcm-list.preferred-height);
                     qcm-list := VerticalLayout {
                         alignment: start;
                         spacing: 2px;
@@ -6586,7 +6611,7 @@ export component AppWindow inherits Window {
                     background: Theme.bg-root;
                     clip: true;
                     Flickable {
-                        viewport-height: max(self.height, bi-input.preferred-height + 16px);
+                        content-height: max(self.height, bi-input.preferred-height + 16px);
                         bi-input := TextInput {
                             x: 10px;
                             y: 8px;
@@ -6784,7 +6809,11 @@ export component AppWindow inherits Window {
         background: #00000080;            // dim backdrop
         // Grab focus and swallow keys so nothing leaks to the terminal beneath;
         // Esc closes the panel (#140-3).
-        FocusScope {
+        // (#ifd-input-blur 2026-10-01) Named so the card's click-swallower can
+        // hand focus here: clicking any blank part of the card blurs a focused
+        // input field (standard modal behaviour — a field used to keep focus
+        // until another focusable element was clicked).
+        esc-scope := FocusScope {
             init => { self.focus(); }
             key-pressed(e) => {
                 if (e.text == Key.Escape) { root.interface-open = false; }
@@ -6805,12 +6834,20 @@ export component AppWindow inherits Window {
             // grey settings labels stay readable at a low overlay (user request).
             background: Theme.bg-panel-strong;
             border-radius: Theme.radius-md;
-            border-width: 1px;
+            // (#settings-divider-line) hairline: one device pixel instead of a
+            // logical 1px, which at 125% spans two device rows and reads soft.
+            border-width: Theme.hairline();
             border-color: Theme.border-strong;
             drop-shadow-blur: 24px;
             drop-shadow-color: #000000a0;
             clip: true;
-            TouchArea {}   // swallow inside clicks so they don't hit the backdrop
+            // Swallow inside clicks so they don't hit the backdrop, and blur a
+            // focused input field: clicks on blank card areas (labels, dividers,
+            // dead space) aren't consumed by any control, so they land here and
+            // hand focus to the Esc scope (#ifd-input-blur).
+            TouchArea {
+                clicked => { esc-scope.focus(); }
+            }
 
             VerticalLayout {
                 // Title bar — drag to move (clamped inside the window).
@@ -6821,6 +6858,18 @@ export component AppWindow inherits Window {
                     // panels and following the wallpaper slider (#new-user-defaults
                     // items 6/7). The 1px divider below still separates it.
                     background: transparent;
+                    // (#settings-divider-line) The bottom divider lives *inside*
+                    // the title bar so its y can be snapped onto the device grid;
+                    // as a layout-stacked sibling it inherited whatever fractional
+                    // offset the bar's height decodes to at the current DPI, and
+                    // the line rasterized onto two device rows — the "thick/thin,
+                    // broken" divider. One device pixel tall + snapped top edge:
+                    // the same crisp row at every drag position and every scale.
+                    Rectangle {
+                        y: Theme.snap-to-device(parent.height) - Theme.hairline();
+                        height: Theme.hairline();
+                        background: Theme.border-subtle;
+                    }
                     title-drag := TouchArea {
                         mouse-cursor: move;
                         pointer-event(e) => {
@@ -6881,12 +6930,15 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                Rectangle { height: 1px; background: Theme.border-subtle; }
-
                 InterfacePanel {
                     vertical-stretch: 1;
                     lang-en: root.lang-en;
                     is-windows: root.is-windows;
+                    // (#settings-divider-line) Nav switching rebuilds the right
+                    // pane's whole subtree; one clean full frame per page change
+                    // keeps the title divider from being composited out of
+                    // stale buffer strips by the incremental path.
+                    request-full-redraw => root.request-full-redraw();
                     renderer-mode <=> root.renderer-mode;
                     term-fonts: root.term-fonts;
                     term-font-chosen: root.term-font-chosen;

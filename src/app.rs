@@ -1444,7 +1444,7 @@ fn open_window(
         // ✕ hides the window (data keeps flowing into the shared model).
         let weak = proc_win.as_weak();
         let main_weak = window.as_weak();
-        proc_win.on_close(move || {
+        proc_win.on_request_close(move || {
             if let Some(main) = main_weak.upgrade() {
                 main.set_process_window_open(false);
             }
@@ -1602,7 +1602,7 @@ fn open_window(
     {
         let weak = sys_win.as_weak();
         let main_weak = window.as_weak();
-        sys_win.on_close(move || {
+        sys_win.on_request_close(move || {
             if let Some(main) = main_weak.upgrade() {
                 main.set_system_info_window_open(false);
             }
@@ -2356,6 +2356,35 @@ fn open_window(
     // patch for the flag this consumes.
     window.on_request_full_redraw(|| {
         i_slint_backend_winit::force_full_redraw_all_windows();
+    });
+    // (#settings-divider-line) The settings modal holds this for its lifetime
+    // so every interactive frame (drag/resize/nav switch) renders fully — the
+    // age-1 incremental path has been compositing stale strips over the title
+    // divider. See the vendored i-slint-backend-winit patch.
+    window.on_set_full_redraw_hold(|on| {
+        i_slint_backend_winit::set_full_redraw_hold(on);
+    });
+    // (#settings-divider-line) Mirror the winit scale-factor into the UI so
+    // snap-to-device()/hairline() align to the real device-pixel grid: once
+    // right now, on every winit ScaleFactorChanged (monitor with different OS
+    // scaling), and whenever the settings modal opens (refresh callback).
+    {
+        let weak = window.as_weak();
+        let mirror = move |f: f64| {
+            if let Some(w) = weak.upgrade() {
+                w.set_device_pixel_ratio(f as f32);
+            }
+        };
+        mirror(window.window().scale_factor() as f64);
+        i_slint_backend_winit::on_scale_factor_changed(std::sync::Arc::new(mirror));
+    }
+    window.on_refresh_device_pixel_ratio({
+        let weak = window.as_weak();
+        move || {
+            if let Some(w) = weak.upgrade() {
+                w.set_device_pixel_ratio(w.window().scale_factor() as f32);
+            }
+        }
     });
     // Output highlighting: persist the switch/preset and immediately rebuild
     // every open terminal, including scrollback captured before the change.
@@ -8580,31 +8609,39 @@ fn resolve_ui_font_family(
 }
 
 /// Monospace chain for the terminal default and UI machine literals
-/// (#font-chain): JetBrains Mono → Noto Sans Mono CJK SC → Noto Sans Mono →
-/// Menlo → Cascadia Mono → Consolas, then a per-platform last resort. The
-/// shared list is platform-agnostic by construction — families that don't
+/// (#font-chain), in three tiers (#term-font-default-mono):
+///
+/// 1. [`mono_brand_candidates`] — deliberately-installed programming fonts,
+///    tried first so they always beat the platform defaults;
+/// 2. every *installed* monospace family, alphabetical + glyph-probed — the
+///    old single chain skipped this tier, so a machine with none of the brand
+///    fonts fell straight to Consolas even with e.g. Maple Mono installed;
+/// 3. [`mono_last_resort`] — the platform defaults.
+///
+/// The lists are platform-agnostic by construction — families that don't
 /// exist on the current OS simply never resolve (Menlo is macOS-only,
-/// Cascadia Mono / Consolas are Windows-only). First family that resolves AND
-/// covers ASCII + box drawing wins; "" hands the choice to the platform
+/// Cascadia Mono / Consolas are Windows-only). A family wins when it resolves
+/// AND covers ASCII + box drawing; "" hands the choice to the platform
 /// default. No embedded mono is shipped anymore, so a system with none of
 /// these is the one case that loses the fixed-grid guarantee.
-fn mono_candidates() -> Vec<&'static str> {
-    let mut chain: Vec<&'static str> = vec![
+fn mono_brand_candidates() -> Vec<&'static str> {
+    vec![
         "JetBrains Mono",
         "Noto Sans Mono CJK SC",
         "Noto Sans Mono",
         "Menlo",
         "Cascadia Mono",
-        "Consolas",
-    ];
-    chain.extend_from_slice(if cfg!(target_os = "macos") {
-        &["Monaco", "Courier New"][..]
+    ]
+}
+
+fn mono_last_resort() -> Vec<&'static str> {
+    if cfg!(target_os = "macos") {
+        vec!["Monaco", "Courier New"]
     } else if cfg!(target_os = "windows") {
-        &["Courier New"][..]
+        vec!["Consolas", "Courier New"]
     } else {
-        &["DejaVu Sans Mono", "Liberation Mono"][..]
-    });
-    chain
+        vec!["DejaVu Sans Mono", "Liberation Mono"]
+    }
 }
 
 /// Nerd Font re-publish lookup: `name` ("JetBrains Mono") is absent under its
@@ -8644,22 +8681,54 @@ fn nerd_font_alias(db: &fontdb::Database, name: &str) -> Option<String> {
 }
 
 fn resolve_mono_font_family(db: &fontdb::Database) -> slint::SharedString {
-    for name in mono_candidates() {
+    // The chain speaks official names; a Nerd Font re-publish of the same
+    // mono qualifies too (same glyph probe) and reports under its own name.
+    let try_family = |name: &str| -> Option<slint::SharedString> {
         if family_covers(db, name, MONO_PROBE) {
-            tracing::debug!(font = name, "term-font: using system monospace");
-            return name.into();
+            return Some(name.into());
         }
-        // The chain speaks official names; a Nerd Font re-publish of the same
-        // mono qualifies too (same glyph probe) and reports under its own name.
-        if let Some(alias) = nerd_font_alias(db, name) {
-            if family_covers(db, &alias, MONO_PROBE) {
-                tracing::debug!(
-                    font = %alias,
-                    official = name,
-                    "term-font: using Nerd Font variant of a chain family"
-                );
-                return alias.into();
-            }
+        let alias = nerd_font_alias(db, name)?;
+        if family_covers(db, &alias, MONO_PROBE) {
+            tracing::debug!(
+                font = %alias,
+                official = name,
+                "term-font: using Nerd Font variant of a chain family"
+            );
+            return Some(alias.into());
+        }
+        None
+    };
+
+    for name in mono_brand_candidates() {
+        if let Some(f) = try_family(name) {
+            tracing::debug!(font = %f, "term-font: using system monospace");
+            return f;
+        }
+    }
+    // (#term-font-default-mono) Brand fonts are missing on most machines, so
+    // before falling back to the platform defaults prefer any monospace family
+    // the user actually has installed — alphabetical, so the choice stays
+    // deterministic and explainable.
+    let mut installed: Vec<String> = db
+        .faces()
+        .filter(|f| f.monospaced)
+        .filter_map(|f| f.families.first().map(|(n, _)| n.clone()))
+        .collect();
+    installed.sort();
+    installed.dedup();
+    for fam in &installed {
+        if family_covers(db, fam, MONO_PROBE) {
+            tracing::debug!(
+                font = %fam,
+                "term-font: using installed monospace outside the brand chain"
+            );
+            return fam.clone().into();
+        }
+    }
+    for name in mono_last_resort() {
+        if let Some(f) = try_family(name) {
+            tracing::debug!(font = %f, "term-font: using platform fallback monospace");
+            return f;
         }
     }
     tracing::warn!(

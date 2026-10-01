@@ -1583,6 +1583,11 @@ impl WinitWindowAdapter {
                 }
             }
             WinitWindowEvent::ScaleFactorChanged { scale_factor, mut inner_size_writer } => {
+                // (#settings-divider-line 2026-09-30 local patch) Tell the app
+                // so it can mirror the new factor into the UI (device-pixel
+                // snapping). Fired before the core dispatch so listeners see
+                // the value this event carries.
+                crate::notify_scale_factor(scale_factor);
                 if std::env::var("SLINT_SCALE_FACTOR").is_err() {
                     self.window().dispatch_event_with_result(
                         corelib::platform::WindowEvent::ScaleFactorChanged {

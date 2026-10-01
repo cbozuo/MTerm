@@ -152,6 +152,16 @@ export global Theme {
     // this so the panel (which is exempt from ui-scale) can still be enlarged.
     in-out property <float> panel-font: 1.0;
 
+    // (#settings-divider-line 2026-09-30) The window's real device pixel ratio
+    // (winit scale-factor, i.e. the OS display scaling — 1.25/1.5 on typical
+    // Windows setups). AppWindow mirrors `root.scale-factor` into this on init
+    // and on every DPI change. This — not ui-scale — is what decides the
+    // physical-pixel grid: Slint rasterizes logical px × scale-factor, so a
+    // "1px" line always covers scale-factor device rows and any logical-integer
+    // position can sit on a fractional device pixel. hairline()/snap-to-device()
+    // below use it to keep the settings card's chrome lines crisp and stable.
+    in-out property <float> device-pixel-ratio: 1.0;
+
     // --- Typography --------------------------------------------------------
     // 12px was the worst rung in the ladder for CJK: Slint rasterizes text with
     // unhinted grayscale AA (no LCD subpixel), and a 12px YaHei/Noto CJK stroke
@@ -274,13 +284,27 @@ export global Theme {
     out property <length> gap-md: 12px * root.ui-scale;
     out property <length> gap-lg: 16px * root.ui-scale;
 
-    // (#settings-drag-ghost) Snap a length onto the physical-pixel grid. At
-    // 125% scaling a logical-integer position sits on a half device pixel for
-    // every odd logical value, which splits the settings card's 1px chrome
-    // lines across two device rows — soft and doubled on some drags, crisp on
-    // others. Keeping the card's x/y/w/h on this grid makes its lines
-    // rasterize identically at every position.
+    // (#settings-drag-ghost) Snap a length onto the physical-pixel grid.
+    // (#settings-divider-line 2026-09-30) The grid step is one *device* pixel
+    // expressed in logical lengths — 1px / scale-factor — which at 125% scaling
+    // is 0.8 logical px. The old step (1px * ui-scale) was the wrong baseline:
+    // ui-scale is the in-app zoom setting, not the renderer's DPR, so on a
+    // 125% display the snap was a no-op and every odd logical card position
+    // split the card's 1px chrome lines across two device rows — soft and
+    // doubled on some drags, crisp on others. Keeping the card's x/y/w/h on
+    // this grid makes its lines rasterize identically at every position.
     public pure function snap-to-device(v: length) -> length {
-        round(v / (1px * root.ui-scale)) * (1px * root.ui-scale);
+        round(v / (1px / root.device-pixel-ratio)) * (1px / root.device-pixel-ratio);
+    }
+
+    // (#settings-divider-line 2026-09-30) Exactly one *device* pixel, as a
+    // logical length. At 100% scaling this equals 1px; at 125% it is 0.8px, so
+    // a hairline rectangle aligned to the device grid rasterizes to a single
+    // crisp row instead of one solid row plus a faint ghost row (what a
+    // logical 1px line always costs at 125%). Only use it where the position is
+    // device-snapped too (settings card chrome); an unaligned hairline would
+    // anti-alias into a fainter, blurrier line than plain 1px.
+    public pure function hairline() -> length {
+        return 1px / root.device-pixel-ratio;
     }
 }

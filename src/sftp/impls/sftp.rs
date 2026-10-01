@@ -1164,7 +1164,7 @@ async fn run_sftp(
                     // remote .pem symlinks now also land as real files in the archive
                     // (replaces the old `tar -chf -h` behaviour, #sftp-batch-download-symlink).
                     // Server-supplied names are untrusted → quote every argument.
-                    let mut cmd = format!(
+                    let cmd = format!(
                         "cd {} && zip -q {} {}",
                         sh_quote(&remote_dir),
                         sh_quote(&tmp),

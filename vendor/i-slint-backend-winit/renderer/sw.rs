@@ -123,7 +123,11 @@ impl super::WinitCompatibleRenderer for WinitSoftwareRenderer {
         // being moved/resized (see lib.rs), so let the app force one clean
         // frame at those moments.
         let force = self.force_full_redraw.replace(false)
-            || crate::FULL_REDRAW_PENDING.swap(false, std::sync::atomic::Ordering::SeqCst);
+            || crate::FULL_REDRAW_PENDING.swap(false, std::sync::atomic::Ordering::SeqCst)
+            // (#settings-divider-line 2026-09-30 local patch) While the app
+            // holds this (settings modal open), render every frame fully —
+            // see lib.rs.
+            || crate::FULL_REDRAW_HOLD.load(std::sync::atomic::Ordering::SeqCst);
         self.renderer.set_repaint_buffer_type(if force {
             RepaintBufferType::NewBuffer
         } else {

@@ -35,11 +35,51 @@ use std::sync::atomic::{AtomicBool, Ordering, AtomicUsize};
 // release, overlay open/close); the next render of each software-rendered
 // window discards its incremental caches. First renderer to render consumes
 // the flag — sufficient for the single main window this app renders.
+/// One-shot full-repaint request, consumed by the next software-rendered frame
+/// (see the long comment above and [`force_full_redraw_all_windows`]).
 pub static FULL_REDRAW_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Ask every software-rendered window to fully repaint its next frame.
 pub fn force_full_redraw_all_windows() {
     FULL_REDRAW_PENDING.store(true, Ordering::SeqCst);
+}
+
+// (#settings-divider-line 2026-09-30 local patch) Level-triggered sibling of
+// FULL_REDRAW_PENDING: while set, *every* frame renders fully instead of the
+// age-1 incremental path. The settings modal holds this for its lifetime —
+// drag/resize/nav-switch frames then can never composite stale buffer strips
+// over the chrome lines, and an idle window renders nothing anyway, so the
+// hold costs nothing between interactions.
+/// Level-triggered full-repaint request: every frame renders fully while set
+/// (see the long comment above and [`set_full_redraw_hold`]).
+pub static FULL_REDRAW_HOLD: AtomicBool = AtomicBool::new(false);
+
+/// Fully repaint every frame while `on` is true (until called with false).
+pub fn set_full_redraw_hold(on: bool) {
+    FULL_REDRAW_HOLD.store(on, Ordering::SeqCst);
+}
+
+// (#settings-divider-line 2026-09-30 local patch) DPI-change notification:
+// Slint 1.18 exposes no scale-factor property to .slint, so the app registers
+// a callback here and mirrors each winit scale-factor into the UI so
+// device-pixel snapping stays on the real grid when the window moves between
+// displays with different OS scaling. Invoked on the Slint (event-loop) thread.
+/// Callback invoked with the new winit scale-factor on every DPI change
+/// (see the long comment above and [`on_scale_factor_changed`]).
+pub type ScaleFactorCallback = std::sync::Arc<dyn Fn(f64) + Send + Sync>;
+static SCALE_FACTOR_CB: std::sync::Mutex<Option<ScaleFactorCallback>> = std::sync::Mutex::new(None);
+
+/// Register (replacing any previous) the callback invoked on every winit
+/// `ScaleFactorChanged` event with the new factor.
+pub fn on_scale_factor_changed(cb: ScaleFactorCallback) {
+    *SCALE_FACTOR_CB.lock().unwrap() = Some(cb);
+}
+
+/// Invoke the registered scale-factor callback, if any.
+pub fn notify_scale_factor(factor: f64) {
+    if let Some(cb) = &*SCALE_FACTOR_CB.lock().unwrap() {
+        cb(factor);
+    }
 }
 use winit::event_loop::ActiveEventLoop;
 

@@ -1497,8 +1497,8 @@ export component Welcome inherits Rectangle {
                     // 却正常——正是用户反馈的方向不对称。恢复内容高度上限,
                     // ghost 全程跟手。
                     // (#ghost-panel-bound 2026-09-07) 钳制到面板可视边界:
-                    // 可视顶内容坐标 = -viewport-y(viewport-y ≤ 0),可视底 =
-                    // -viewport-y + flick.height;再与内容底取小,列表短于面板
+                    // 可视顶内容坐标 = -content-y(content-y ≤ 0),可视底 =
+                    // -content-y + flick.height;再与内容底取小,列表短于面板
                     // 时不超内容底。
                     // (#ghost-follow-anywhere 2026-09-11) 上下限都取可视区:
                     // 内容比面板短时 ghost 在最后一行下方也继续跟指针,
@@ -1514,13 +1514,13 @@ export component Welcome inherits Rectangle {
                         self.drag-pointer-y + root.drag-grab-y - 16px;
                     property <length> ghost-y: clamp(
                         self.drag-pointer-y,
-                        max(0px, -flick.viewport-y),
+                        max(0px, -flick.content-y),
                         // (#ghost-follow-anywhere 2026-09-11) 下限改为**可视区底**:
                         // 原来非出组态取 min(可视底, 内容底),内容比面板短时
                         // ghost 在最后一行下方就停住不再跟指针 —— 这正是用户
                         // 反馈的"拖动不跟手"(拖到底部附近卡片不走了)。现在
                         // 与出组态统一:只受面板可视底约束,卡片全程贴指针。
-                        max(0px, -flick.viewport-y + flick.height) - self.ghost-h);
+                        max(0px, -flick.content-y + flick.height) - self.ghost-h);
                     x: 16px;
                     y: root.compact ? 128px : 90px;
                     width: parent.width - 32px;
@@ -1546,8 +1546,8 @@ export component Welcome inherits Rectangle {
                         clip: true;
                     flick := Flickable {
                         interactive: false;
-                        viewport-width: self.width;
-                        viewport-height: max(self.height, sess-list.preferred-height);
+                        content-width: self.width;
+                        content-height: max(self.height, sess-list.preferred-height);
                     sess-list := VerticalLayout {
                     // (#member-gap 2026-09-21) 成员行之间从紧贴(0)改为 **2px**,
                     // 与"组名↔首成员"的既有 2px 对齐(用户提议):拖拽槽框的边线
@@ -1932,12 +1932,12 @@ export component Welcome inherits Rectangle {
                                         root.group-drag-collapse = session.group;
                                         // (#group-drag-reset-scroll 2026-09-11) 拖起
                                         // 即重置滚动坐标系:上一次拖动的自动滚动会在
-                                        // flick.viewport-y(负值)与 drag-scroll-dy 残留,
-                                        // 下次拖动的 ghost 显示(= 内容 y + viewport-y)
+                                        // flick.content-y(负值)与 drag-scroll-dy 残留,
+                                        // 下次拖动的 ghost 显示(= 内容 y + content-y)
                                         // 会整体偏上 |滚动量| —— "第一/二组多拖几次
                                         // ghost 跑到上面"的根因。组列表不长,回顶
                                         // 换来每次拖动的坐标系从零开始。
-                                        flick.viewport-y = 0px;
+                                        flick.content-y = 0px;
                                         root.drag-scroll-dy = 0px;
                                         parent.g-was-drag = true;
                                     }
@@ -2372,8 +2372,8 @@ export component Welcome inherits Rectangle {
                     }
                     // (#drag-autoscroll 2026-09-07) 拖到列表上下边缘自动滚动
                     // (tabs.slint #408 同款):机器多于一屏时一次拖到位。指针
-                    // 的可视 y = 内容 y + viewport-y(viewport-y ≤ 0)。
-                    property <length> pointer-visible-y: list-host.drag-pointer-y + flick.viewport-y;
+                    // 的可视 y = 内容 y + content-y(content-y ≤ 0)。
+                    property <length> pointer-visible-y: list-host.drag-pointer-y + flick.content-y;
                     // (#autoscroll-tiers 2026-09-09) 速度分级:原单一 7px/帧
                     // 在长列表里"拖到底要等半天",放大步长又会过头。按进入
                     // 边缘区的深度分两档——浅区 7px 精调、深区 14px 快滚。
@@ -2395,14 +2395,14 @@ export component Welcome inherits Rectangle {
                             // 会一路冲到 ±6000px 上限;回拖时指针的内容坐标要
                             // 先"消耗"这几千像素才会反向——"拖到顶/到底之后就
                             // 拖不回来了"的真凶(用户实测)。改为用新旧
-                            // viewport-y 的差值(实际位移)累计。
-                            let before = flick.viewport-y;
-                            flick.viewport-y = clamp(before - flick.edge-step,
-                                min(0px, flick.height - flick.viewport-height), 0px);
+                            // content-y 的差值(实际位移)累计。
+                            let before = flick.content-y;
+                            flick.content-y = clamp(before - flick.edge-step,
+                                min(0px, flick.height - flick.content-height), 0px);
                             // 滚了多少,指针的内容坐标就平移多少,否则 ghost 会
                             // 与指针分离(dy 只记录屏幕位移)。
                             root.drag-scroll-dy = clamp(
-                                root.drag-scroll-dy + (before - flick.viewport-y),
+                                root.drag-scroll-dy + (before - flick.content-y),
                                 -6000px, 6000px);
                         }
                     }
@@ -2446,42 +2446,42 @@ export component Welcome inherits Rectangle {
                     }
                     // (#session-scrollbar) 自绘滚动条:右缘 4px overlay,仅
                     // 内容溢出时出现;按下跳转 + 拖动,hover/按住加深。
-                    if flick.viewport-height > flick.height : Rectangle {
+                    if flick.content-height > flick.height : Rectangle {
                         x: parent.width - 6px;
                         y: 2px;
                         width: 4px;
                         height: parent.height - 4px;
                         background: transparent;
                         // 可视比例 = 视口高 / 内容高;拇指高按比例,设 24px 下限。
-                        property <float> ratio: flick.viewport-height > 0px
-                            ? flick.height / flick.viewport-height : 1.0;
+                        property <float> ratio: flick.content-height > 0px
+                            ? flick.height / flick.content-height : 1.0;
                         property <length> thumb-h: max(24px, self.height * self.ratio);
                         sb-ta := TouchArea {
                             mouse-cursor: ns-resize;
                             pointer-event(e) => {
                                 if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
                                     // 按下即跳:拇指中心对齐按点。
-                                    flick.viewport-y = clamp(
+                                    flick.content-y = clamp(
                                         -(self.mouse-y - parent.thumb-h / 2)
-                                            * (flick.viewport-height / max(1px, parent.height)),
-                                        flick.height - flick.viewport-height, 0px);
+                                            * (flick.content-height / max(1px, parent.height)),
+                                        flick.height - flick.content-height, 0px);
                                 }
                             }
                             moved => {
                                 if (self.pressed) {
-                                    flick.viewport-y = clamp(
+                                    flick.content-y = clamp(
                                         -(self.mouse-y - parent.thumb-h / 2)
-                                            * (flick.viewport-height / max(1px, parent.height)),
-                                        flick.height - flick.viewport-height, 0px);
+                                            * (flick.content-height / max(1px, parent.height)),
+                                        flick.height - flick.content-height, 0px);
                                 }
                             }
                         }
                         Rectangle {
                             width: parent.width;
                             height: parent.thumb-h;
-                            // 顶部位置:内容偏移比例映射到轨道。viewport-y ≤ 0。
-                            y: flick.viewport-height > 0px
-                                ? (-flick.viewport-y) / flick.viewport-height * parent.height
+                            // 顶部位置:内容偏移比例映射到轨道。content-y ≤ 0。
+                            y: flick.content-height > 0px
+                                ? (-flick.content-y) / flick.content-height * parent.height
                                 : 0px;
                             border-radius: 2px;
                             background: sb-ta.pressed || sb-ta.has-hover
@@ -2559,8 +2559,8 @@ export component Welcome inherits Rectangle {
                             : list-host.ghost-y + root.drag-grab-y) - 16px
                             // (#ghost-panel-overlay 2026-09-11) ghost 已移出 flick,
                             // 基准从 flick 内容坐标变为 list-host 局部坐标,须补偿
-                            // 滚动偏移(内容坐标 → 可视坐标 = +viewport-y)。
-                            + flick.viewport-y;
+                            // 滚动偏移(内容坐标 → 可视坐标 = +content-y)。
+                            + flick.content-y;
                         animate y { duration: root.drag-fly-home ? 180ms : 0ms;
                             easing: cubic-bezier(0.22, 0.61, 0.36, 1); }
                         border-radius: Theme.radius-sm;

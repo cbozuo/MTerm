@@ -497,7 +497,7 @@ pub(super) fn sync_sessions_to_model_with_filter(
     let builtin_sessions = builtin_local_sessions(store.wsl_profiles());
     // (#hide-system-group) 隐藏"本地终端"时把 system 组整组从**模型**里剔除:
     // Slint 的 `visible: false` 只是不画、位置照占,列表上方会残留一块空白。
-    let mut rows = build_session_rows(
+    let rows = build_session_rows(
         store.sessions(),
         store.groups(),
         store.collapsed_session_groups(),
@@ -522,7 +522,7 @@ pub(super) fn refresh_session_rows_in_place(
 ) -> bool {
     use slint::Model as _;
     let builtin_sessions = builtin_local_sessions(store.wsl_profiles());
-    let mut rows = build_session_rows(
+    let rows = build_session_rows(
         store.sessions(),
         store.groups(),
         store.collapsed_session_groups(),
