@@ -1549,13 +1549,15 @@ export component Welcome inherits Rectangle {
                         content-width: self.width;
                         content-height: max(self.height, sess-list.preferred-height);
                     sess-list := VerticalLayout {
-                    // (#member-gap 2026-09-21) 成员行之间从紧贴(0)改为 **2px**,
-                    // 与"组名↔首成员"的既有 2px 对齐(用户提议):拖拽槽框的边线
-                    // 不再紧贴下一行起笔位被盖(下边线丢失的根因),列表密度与
-                    // 设计稿 #session-tree-hierarchy 的本意(成员间 2px)一致。
-                    // 注意:步距从此 = 行高+2 = drag-pitch(32/34),拖拽常量
-                    // drag-step/line-half 已同步重整(见 SessionRow 同名属性)。
-                    spacing: 2px;
+                    // (#member-gap 2026-09-21) 成员行之间 2px,与"组名↔首成员"
+                    // 的既有 2px 对齐(用户提议)。
+                    // (#group-gap-fix 2026-10-01) spacing 归 0,行距改由**可见行
+                    // 自身的 padding** 承担(见下方 padding-top):Slint 布局对
+                    // visible:false 的 0 高行仍然分配 spacing 槽——折叠组的每个
+                    // 隐藏成员行都会漏 2px,组间距因此随上一组成员数 6/8/10px
+                    // 漂移(收起态组间距不一致的根因)。spacing=0 后隐藏行零贡献,
+                    // 各状态间距恒定。拖拽步距仍是 行高+2 = drag-pitch(32/34)。
+                    spacing: 0px;
                     for session[i] in sessions : VerticalLayout {
                         // (#slot-box-above 2026-09-21) 1.18 运行时动态 z 首次落地:
                         // 画落点框的属主行与被拖行整子树抬到其它条目之上——邻行卡/
@@ -1569,21 +1571,19 @@ export component Welcome inherits Rectangle {
                             // 与成员行一起不参与布局(整组从列表里消失)。
                             && !(root.system-hidden && session.builtin);
                         // (#session-tree-hierarchy 2026-09-04) 层级 = 组间 ≥ 组内:
-                        // 分组之间 12px 拉开,组头与成员、成员与成员之间收紧到
-                        // 2px,配合成员缩进 + 树形引导线,父子关系一目了然。
-                        // (旧值 #group-header-larger:padding-top 6px / spacing 8px,
-                        // 组内比组间还松,层级倒置。)
-                        // (#session-tree-hierarchy-r2) 关键修复:padding-top 的
-                        // 条件补上 `group-header != ""`。旧条件只有 `i > 0`,
-                        // 会把组间距错误地加在**每个成员行迭代**上——组内成员
-                        // 之间因此多出无意义空隙。
-                        // (#session-tree-hierarchy-r5 2026-09-05) 间距恒定 8px:
-                        // r3 的"折叠 4px/展开 12px"自适应会随点击收展跳变,导致
-                        // 点击的组自身上下位移(用户反馈);固定值消除跳变。
-                        // (#density) 组间距 8→6:与收紧后的行高成比例。
-                        // (#member-gap 2026-09-21) 6→4:列表 spacing 统一 2px 后,
-                        // 组间净距 = 4 + 2 = 6px,与改前完全一致(补偿而非加大)。
-                        padding-top: self.visible && session.group-header != "" && i > 0 ? 4px : 0px;
+                        // 分组之间拉开,组头与成员、成员与成员之间收紧到 2px,
+                        // 配合成员缩进 + 树形引导线,父子关系一目了然。
+                        // (#density) 组间 6px:与收紧后的行高成比例。
+                        // (#member-gap 2026-09-21) 组间净距 6px = padding 4 + 列表
+                        // spacing 2(补偿而非加大)。
+                        // (#group-gap-fix 2026-10-01) 列表 spacing 归 0 后,行距
+                        // 全部由这里的 padding 承担(隐藏行 padding 0 → 布局零
+                        // 贡献):可见成员行 padding 2px(原外层 spacing 补偿),
+                        // 可见组头行 padding 6px(原 4px + 外层 2px 并入),
+                        // 组间净距在收起/展开/搜索三态恒定 6px。
+                        padding-top: !self.visible ? 0px
+                            : session.group-header != "" ? (i > 0 ? 6px : 0px)
+                            : 2px;
                         spacing: 2px;
                         // Group header on the first row of each group (#41).
                         // Click anywhere on it to collapse / expand the group.
