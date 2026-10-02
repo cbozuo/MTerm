@@ -5,7 +5,19 @@ use crate::terminal::{HistSpan, Line};
 /// How much terminal byte history is retained for resize reflow.
 pub(crate) const RAW_CAP: usize = 2 * 1024 * 1024;
 /// Per-session rendered scrollback cap.
-pub(crate) const MAX_HISTORY: usize = 100_000;
+///
+/// 2026-10-02: 100_000 → 20_000（内存）。用户实测单进程 311 MB。
+/// 一行的代价不是"一段文本"——`Line = (String, Vec<HistSpan>, bool)`
+/// （`struct/state.rs`），整行文本一份 + **每个彩色片段各自一份 String**。
+/// 200 列、带几个颜色段 ≈ 700 B/行（含分配器开销），于是
+///   100_000 行 ≈ **70 MB / 会话**；4 个会话就上 300 MB。
+/// 20_000 行 ≈ 14 MB/会话，且仍能完整装下一次 `cargo build` 的日志（3–8k 行）。
+/// 主流终端默认都在 1k–10k（Windows Terminal 9999 / Alacritty 10000），本值已是它们的2 倍。
+///
+/// 硬上限在 `term_buffer.rs` 的 `while history.len() > MAX_HISTORY { pop_front }`，
+/// 内存因此有天花板、不会无限涨；连接关闭时 `release_scrollback()` 会把 history/raw 全清空。
+/// 要放宽只需改这一个常量。
+pub(crate) const MAX_HISTORY: usize = 20_000;
 
 pub(crate) fn cell_prefix(chars: &[char]) -> Vec<usize> {
     let mut prefix = Vec::with_capacity(chars.len() + 1);

@@ -1,3 +1,4 @@
+import { Icon } from "icons.slint";
 // Interface settings content (#23 follow-up).
 //
 // Embedded panel (not a window): it lives inside AppWindow's modal overlay, so
@@ -43,9 +44,11 @@ component NavItem inherits Rectangle {
     HorizontalLayout {
         padding-left: 10px;
         spacing: 9px;
-        Text { text: root.icon; font-family: "Material Icons";
-               color: root.active ? Theme.text-primary : Theme.text-secondary;
-               font-size: 15px * Theme.panel-font; vertical-alignment: center; }
+        Icon {
+    glyph: root.icon;
+    tint: root.active ? Theme.text-primary : Theme.text-secondary;
+    size: Theme.fs-md;
+}
         Text { text: root.label;
                color: root.active ? Theme.text-primary : Theme.text-secondary;
                font-size: 13px * Theme.panel-font; vertical-alignment: center; horizontal-stretch: 1; }
@@ -137,8 +140,11 @@ component Stepper inherits Rectangle {
                 mouse-cursor: pointer;
                 clicked => { root.changed(max(root.minimum, root.value - root.step)); }
             }
-            Text { text: "\u{E15B}"; font-family: "Material Icons"; font-size: 14px * Theme.panel-font;
-                   color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            Icon {
+    glyph: "remove";
+    tint: Theme.text-secondary;
+    size: 14px * Theme.panel-font;
+}
         }
         Rectangle { width: 1px; background: Theme.border-subtle; }
         Text { text: root.value + root.unit; horizontal-stretch: 1;
@@ -152,8 +158,11 @@ component Stepper inherits Rectangle {
                 mouse-cursor: pointer;
                 clicked => { root.changed(min(root.maximum, root.value + root.step)); }
             }
-            Text { text: "\u{E145}"; font-family: "Material Icons"; font-size: 14px * Theme.panel-font;
-                   color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            Icon {
+    glyph: "add";
+    tint: Theme.text-secondary;
+    size: 14px * Theme.panel-font;
+}
         }
     }
 }
@@ -173,7 +182,14 @@ component FontCombo inherits Rectangle {
     in property <string> default-name;   // resolved chain family behind 默认
     in property <bool> enabled: true;
     callback selected(string);
-    property <bool> drop-open: false;
+    // (#combo-focus-decoupled 2026-10-02) 聚焦态 = 「我是最近一次被操作的下拉」
+    // （代际时钟，与 session_dialog 同一套），**与弹层开闭无关**。
+    // 曾用 `drop-open || has-hover` 作判据，而 drop-open 只在选中项时才清 ——
+    // 点弹层外部关闭后它仍是 true，边框会**永久**保持高亮。面板级 blank-ta 推进
+    // combo-clock 即失焦（与弹框三路清时钟等价）；弹层开合已改读 `font-pop.is-open`。
+    in-out property <int> focus-clock: 0;
+    property <int> focus-stamp: -1;
+    property <bool> focused: root.focus-stamp == root.focus-clock;
     // (#combo-tip 2026-10-01) Hover tooltip for rows whose name is elided:
     // tip-text is the hovered row's full label ("" = none), tip-y the row's y
     // within the popup surface. The overlay itself is drawn inside the popup,
@@ -193,7 +209,7 @@ component FontCombo inherits Rectangle {
     height: 30px;
     border-radius: 6px;
     border-width: 1px;
-    border-color: root.enabled && (root.drop-open || fta.has-hover) ? Theme.line-2 : Theme.border-subtle;
+    border-color: root.enabled && (root.focused || fta.has-hover) ? Theme.line-2 : Theme.border-subtle;
     background: Theme.bg-elevated;
     HorizontalLayout {
         padding-left: 10px;
@@ -207,20 +223,21 @@ component FontCombo inherits Rectangle {
             horizontal-stretch: 1;
             overflow: elide;
         }
-        Text {
-            text: "\u{E5CF}";   // expand_more
-            font-family: "Material Icons";
-            color: root.drop-open || fta.has-hover ? Theme.text-secondary : Theme.text-muted;
-            font-size: 14px * Theme.panel-font;
-            vertical-alignment: center;
-        }
+        Icon {
+    glyph: "expand-more";
+    tint: root.focused || fta.has-hover ? Theme.text-secondary : Theme.text-muted;
+    size: 14px * Theme.panel-font;
+} // expand_more
     }
     fta := TouchArea {
         mouse-cursor: root.enabled ? pointer : default;
         clicked => {
             if (root.enabled) {
                 root.tip-text = "";
-                root.drop-open = true;
+                // (#combo-focus-decoupled) 打上聚焦戳：弹层被 close-on-click-outside
+                // 收起后高亮仍在，只有面板级 blank-ta 推进 focus-clock 才清。
+                root.focus-clock += 1;
+                root.focus-stamp = root.focus-clock;
                 font-pop.show();
             }
         }
@@ -259,7 +276,6 @@ component FontCombo inherits Rectangle {
                             mouse-cursor: pointer;
                             clicked => {
                                 root.tip-text = "";
-                                root.drop-open = false;
                                 root.selected(v);
                                 font-pop.close();
                             }
@@ -303,15 +319,11 @@ component FontCombo inherits Rectangle {
                             y: (parent.height - 14px) / 2;
                             width: 14px;
                             height: 14px;
-                            Text {
-                                width: 100%; height: 100%;
-                                text: root.value == v ? "\u{E5CA}" : "";
-                                font-family: "Material Icons";
-                                color: Theme.accent;
-                                font-size: 14px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                            Icon {
+    glyph: root.value == v ? "check" : "";
+    tint: Theme.accent;
+    size: 14px;
+}
                         }
                     }
                 }
@@ -533,12 +545,11 @@ component WallpaperSwatch inherits Rectangle {
         height: 18px;
         border-radius: 9px;
         background: Theme.accent;
-        Text {
-            text: "\u{E5CA}"; // check
-            font-family: "Material Icons"; color: white; font-size: 13px * Theme.panel-font;
-            width: 100%; height: 100%;
-            horizontal-alignment: center; vertical-alignment: center;
-        }
+        Icon {
+    glyph: "check";
+    tint: Theme.text-secondary;
+    size: Theme.fs-md;
+} // check
     }
     ta := TouchArea {
         mouse-cursor: pointer;
@@ -608,6 +619,10 @@ export component InterfacePanel inherits Rectangle {
     in-out property <string> wsl-new-directory: "~";
 
     property <string> ifd-page: "font";
+    // (#combo-focus-decoupled 2026-10-02) 面板级下拉代际时钟：blank-ta（点面板
+    // 空白）推进它，各 FontCombo 的 focus-stamp 随之失效 → 高亮清除。
+    // 与 session_dialog 的 drop-clock 同构，避免设置侧栏自造一套失焦机制。
+    in-out property <int> combo-clock: 0;
     // (#settings-divider-line) A page switch destroys/rebuilds the right pane's
     // whole subtree through the incremental renderer; one full frame per switch
     // keeps stale buffer strips out of the title divider above.
@@ -663,6 +678,15 @@ export component InterfacePanel inherits Rectangle {
     callback remove-wsl-profile(string);
     callback pick-wsl-directory();
 
+    // (#combo-focus-decoupled 2026-10-02) 面板级"点空白"吞点击层：推进 combo-clock，
+    // 清掉 FontCombo 的聚焦高亮。声明在 HorizontalLayout **之前** = 最底层，
+    // 后面的控件照常收点击（与 session_dialog 的 blank-ta 同款做法）。
+    blank-ta := TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.combo-clock += 1; }
+    }
+
     HorizontalLayout {
         // --- Left nav ------------------------------------------------------
         Rectangle {
@@ -688,78 +712,78 @@ export component InterfacePanel inherits Rectangle {
                     spacing: 2px;
                     alignment: start;
                 NavItem {
-                    icon: "\u{E167}"; label: root.lang-en ? "Display & Fonts" : "显示与字体";
+                    icon: "pencil"; label: root.lang-en ? "Display & Fonts" : "显示与字体";
                     active: root.ifd-page == "font";
                     clicked => { root.ifd-page = "font"; }
                 }
                 NavItem {
-                    icon: "\u{E312}"; label: root.lang-en ? "Input" : "输入";
+                    icon: "keyboard"; label: root.lang-en ? "Input" : "输入";
                     active: root.ifd-page == "input";
                     clicked => { root.ifd-page = "input"; }
                 }
                 NavItem {
-                    icon: "\u{E1B1}"; label: root.lang-en ? "Rendering" : "渲染";
+                    icon: "rendering"; label: root.lang-en ? "Rendering" : "渲染";
                     active: root.ifd-page == "renderer";
                     clicked => { root.ifd-page = "renderer"; }
                 }
                 NavItem {
-                    icon: "\u{E8D4}"; label: root.lang-en ? "Output" : "输出高亮";
+                    icon: "output-highlight"; label: root.lang-en ? "Output" : "输出高亮";
                     active: root.ifd-page == "output";
                     clicked => { root.ifd-page = "output"; }
                 }
                 NavItem {
-                    icon: "\u{E1BC}"; label: root.lang-en ? "Wallpaper" : "壁纸";
+                    icon: "wallpaper"; label: root.lang-en ? "Wallpaper" : "壁纸";
                     active: root.ifd-page == "wallpaper";
                     clicked => { root.ifd-page = "wallpaper"; }
                 }
                 NavItem {
-                    icon: "\u{E2C7}"; label: "SFTP";
+                    icon: "folder"; label: "SFTP";
                     active: root.ifd-page == "sftp";
                     clicked => { root.ifd-page = "sftp"; }
                 }
                 if root.is-windows : NavItem {
-                    icon: "\u{E30A}"; label: "WSL";
+                    icon: "computer"; label: "WSL";
                     active: root.ifd-page == "wsl";
                     clicked => { root.ifd-page = "wsl"; }
                 }
                 NavItem {
-                    icon: "\u{E5CB}"; label: root.lang-en ? "Sidebars" : "侧栏";
+                    icon: "chevron-left"; label: root.lang-en ? "Sidebars" : "侧栏";
                     active: root.ifd-page == "sidebar";
                     clicked => { root.ifd-page = "sidebar"; }
                 }
                 NavItem {
-                    icon: "\u{E88A}"; label: root.lang-en ? "Welcome page" : "欢迎页";
+                    icon: "home"; label: root.lang-en ? "Welcome page" : "欢迎页";
                     active: root.ifd-page == "welcome";
                     clicked => { root.ifd-page = "welcome"; }
                 }
                 NavItem {
-                    icon: "\u{E627}"; label: root.lang-en ? "Session sync" : "会话同步";
+                    icon: "link"; label: root.lang-en ? "Session sync" : "会话同步";
                     active: root.ifd-page == "sync";
                     clicked => { root.ifd-page = "sync"; }
                 }
                 NavItem {
-                    icon: "\u{E2C2}"; label: "WebDAV";
+                    icon: "cloud"; label: "WebDAV";
                     active: root.ifd-page == "webdav";
                     clicked => { root.ifd-page = "webdav"; }
                 }
                 NavItem {
-                    icon: "\u{E2C4}"; label: root.lang-en ? "Download" : "下载";
+                    icon: "download"; label: root.lang-en ? "Download" : "下载";
                     active: root.ifd-page == "download";
                     clicked => { root.ifd-page = "download"; }
                 }
                 // (#close-behavior) 新增:「窗口」页承载关闭按钮行为。
                 NavItem {
-                    icon: "\u{E5D4}"; label: root.lang-en ? "Window" : "窗口";
+                    icon: "more-vert"; label: root.lang-en ? "Window" : "窗口";
                     active: root.ifd-page == "window";
                     clicked => { root.ifd-page = "window"; }
                 }
                 NavItem {
-                    icon: "\u{E335}"; label: "MCP";
+                    icon: "plug"; label: "MCP";
                     active: root.ifd-page == "mcp";
                     clicked => { root.ifd-page = "mcp"; }
                 }
                 NavItem {
-                    icon: "\u{E923}"; label: root.lang-en ? "Update check" : "新版本提示";
+                    icon: "system-update"; label: root.lang-en ? "Update check" : "新版本提示";
                     active: root.ifd-page == "update";
                     clicked => { root.ifd-page = "update"; }
                 }
@@ -798,6 +822,7 @@ export component InterfacePanel inherits Rectangle {
                         ? "Sans-serif face for labels, menus and input boxes. Heavier CJK stems read cleaner at small sizes."
                         : "标签、菜单和输入框使用的无衬线字体。中文字重越粗，小字号下越清晰。";
                     FontCombo {
+                        focus-clock <=> root.combo-clock;
                         lang-en: root.lang-en;
                         values: root.ui-fonts;
                         value: root.ui-font-chosen;
@@ -833,6 +858,7 @@ export component InterfacePanel inherits Rectangle {
                         ? "Fixed-pitch face for the terminal grid."
                         : "终端单元格使用的等宽字体。";
                     FontCombo {
+                        focus-clock <=> root.combo-clock;
                         lang-en: root.lang-en;
                         values: root.term-fonts;
                         value: root.term-font-chosen;
@@ -972,6 +998,7 @@ export component InterfacePanel inherits Rectangle {
                         : "日志级别更保守；DevOps 还识别部署与健康状态。";
                     show-divider: false;
                     FontCombo {
+                        focus-clock <=> root.combo-clock;
                         width: 190px;
                         enabled: root.output-highlight-enabled;
                         values: [root.lang-en ? "Log levels" : "日志级别", "DevOps"];
@@ -1055,6 +1082,7 @@ export component InterfacePanel inherits Rectangle {
                 HorizontalLayout {
                     spacing: 8px;
                     FontCombo {
+                        focus-clock <=> root.combo-clock;
                         width: 130px;
                         values: [root.lang-en ? "Keyword" : "关键词", root.lang-en ? "Regex" : "正则"];
                         value: root.new-rule-regex
@@ -1065,6 +1093,7 @@ export component InterfacePanel inherits Rectangle {
                         }
                     }
                     FontCombo {
+                        focus-clock <=> root.combo-clock;
                         width: 120px;
                         values: ["Red", "Yellow", "Green", "Cyan", "Magenta", "Gray"];
                         value: root.new-rule-color == "yellow" ? "Yellow"
@@ -1175,15 +1204,11 @@ export component InterfacePanel inherits Rectangle {
                                 mouse-cursor: pointer;
                                 clicked => { root.remove-output-highlight-rule(index); }
                             }
-                            Text {
-                                text: "\u{E872}";
-                                font-family: "Material Icons";
-                                color: Theme.text-muted;
-                                font-size: 15px * Theme.panel-font;
-                                width: 100%; height: 100%;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                            Icon {
+    glyph: "delete";
+    tint: Theme.text-muted;
+    size: 15px * Theme.panel-font;
+}
                         }
                     }
                 }
@@ -1225,13 +1250,11 @@ export component InterfacePanel inherits Rectangle {
                             Rectangle {
                                 width: 100%; height: 100%;
                                 background: Theme.window-base;
-                                Text {
-                                    text: "\u{E14C}"; // clear / none
-                                    font-family: "Material Icons"; color: Theme.text-muted;
-                                    font-size: 22px * Theme.panel-font;
-                                    width: 100%; height: 100%;
-                                    horizontal-alignment: center; vertical-alignment: center;
-                                }
+                                Icon {
+    glyph: "select-all";
+    tint: Theme.text-muted;
+    size: 22px * Theme.panel-font;
+} // clear / none
                             }
                         }
                         Text { text: root.lang-en ? "None" : "无"; font-size: 11px * Theme.panel-font;
@@ -1352,13 +1375,11 @@ export component InterfacePanel inherits Rectangle {
                         if !root.wp-is-custom : Rectangle {
                             width: 100%; height: 100%;
                             background: Theme.bg-elevated;
-                            Text {
-                                text: "\u{E2C6}"; // folder-open
-                                font-family: "Material Icons"; color: Theme.text-secondary;
-                                font-size: 22px * Theme.panel-font;
-                                width: 100%; height: 100%;
-                                horizontal-alignment: center; vertical-alignment: center;
-                            }
+                            Icon {
+    glyph: "folder-open";
+    tint: Theme.text-secondary;
+    size: 22px * Theme.panel-font;
+} // folder-open
                         }
                     }
                     VerticalLayout {
@@ -1438,6 +1459,7 @@ export component InterfacePanel inherits Rectangle {
                     // (#ifd-combo-unify 2026-10-01) Was the last std ComboBox;
                     // the custom FontCombo dropdown matches the panel chrome.
                     FontCombo {
+                        focus-clock <=> root.combo-clock;
                         width: 150px;
                         values: Theme.is-mac
                             ? ["CPU", "FemtoVG", "Skia"]

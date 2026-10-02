@@ -1,3 +1,4 @@
+import { Icon } from "icons.slint";
 import { Theme } from "theme.slint";
 import { LabeledInput, PrimaryButton, GhostButton, SelectField, ProtocolIcon } from "widgets.slint";
 
@@ -108,13 +109,11 @@ component SegOption inherits Rectangle {
         alignment: center;
         padding-left: 6px;
         padding-right: 6px;
-        Text {
-            text: root.glyph;
-            font-family: "Material Icons";
-            color: active ? Theme.accent : Theme.text-secondary;
-            font-size: 15px;
-            vertical-alignment: center;
-        }
+        Icon {
+    glyph: root.glyph;
+    tint: active ? Theme.accent : Theme.text-secondary;
+    size: 15px;
+}
         Text {
             text: root.label;
             color: active ? Theme.accent : (ta.has-hover ? Theme.text-primary : Theme.text-secondary);
@@ -250,15 +249,11 @@ component ProtoItem inherits Rectangle {
             width: 14px;
             height: 14px;
             y: (parent.height - self.height) / 2;
-            Text {
-                width: 100%; height: 100%;
-                text: root.selected ? "\u{E5CA}" : "";
-                font-family: "Material Icons";
-                color: Theme.accent;
-                font-size: 14px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
+            Icon {
+    glyph: root.selected ? "check" : "";
+    tint: Theme.accent;
+    size: 14px;
+}
         }
     }
 
@@ -279,7 +274,6 @@ component ProtoSelect inherits VerticalLayout {
     // 关闭时把焦点恢复给旧输入框,蓝框复现)。
     callback opening();
     spacing: 5px;
-    property <bool> drop-open: false;
     // (#dialog-focus-reset 2026-09-19) 代际时钟:dialog 级 drop-clock,打开时
     // 记 open-clock,蓝框只在「自己仍是最近一次打开」时成立 —— 点其它下拉
     // 或点空白都会推进时钟,旧下拉的蓝框自动恢复普通边框。Slint 1.16 的
@@ -319,17 +313,19 @@ component ProtoSelect inherits VerticalLayout {
         // border-control(与输入框同线,两控件并排时深浅一致)。
         border-radius: 9px;
         border-width: 1px;
-        // Slint 1.16 读不到 PopupWindow.visible,用 drop-open 镜像展开态
-        // (与 GroupCombo 同一套:点开置位、选中项清位)。
+        // (#is-open 2026-10-02) 展开态直接读 `proto-pop.is-open` —— Slint 1.18 的
+        // PopupWindow 在 Drop 里把所有关闭路径统一翻回 false，不再需要镜像。
         // (#dialog-focus-reset) 蓝框只在「自己仍是最近一次打开的下拉」时成立。
         // (#proto-focus 2026-09-22) 选中协议后 pick-clock == drop-clock 期间
         // 蓝框继续保持(切换协议不再清蓝框,用户要求)。
-        border-color: (root.drop-open && root.open-clock == root.drop-clock)
+        // (#drop-focus-decoupled 2026-10-02) 同 SelectField/JumpCombo：聚焦与弹层开闭解耦，
+        // 收起后蓝框保留，只有点弹层以外的地方才失焦。
+        border-color: (root.open-clock == root.drop-clock)
             || root.pick-clock == root.drop-clock ? Theme.accent
             : (bta.has-hover ? Theme.line-2 : Theme.border-control);
-        background: (root.drop-open && root.open-clock == root.drop-clock)
+        background: (root.open-clock == root.drop-clock)
             || root.pick-clock == root.drop-clock ? Theme.field-2 : Theme.field;
-        if (root.drop-open && root.open-clock == root.drop-clock)
+        if (root.open-clock == root.drop-clock)
             || root.pick-clock == root.drop-clock : Rectangle {
             x: -3px; y: -3px;
             width: parent.width + 6px;
@@ -392,15 +388,11 @@ component ProtoSelect inherits VerticalLayout {
                 width: 14px;
                 height: 14px;
                 y: (parent.height - self.height) / 2;
-                Text {
-                    width: 100%; height: 100%;
-                    text: "\u{E5CF}";     // expand_more
-                    font-family: "Material Icons";
-                    color: Theme.text-muted;
-                    font-size: 14px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
+                Icon {
+    glyph: "expand-more";
+    tint: Theme.text-muted;
+    size: 14px;
+} // expand_more
             }
         }
 
@@ -410,7 +402,6 @@ component ProtoSelect inherits VerticalLayout {
                 root.opening();
                 root.drop-clock += 1;
                 root.open-clock = root.drop-clock;
-                root.drop-open = true;
                 proto-pop.show();
             }
         }
@@ -441,7 +432,6 @@ component ProtoSelect inherits VerticalLayout {
                     proto-id: "ssh"; label: "SSH";
                     selected: root.value == "ssh"; badge: root.badge-of("ssh");
                     picked => {
-                        root.drop-open = false;
                         root.pick-clock = root.drop-clock + 1;
                         root.picked("ssh"); proto-pop.close();
                     }
@@ -450,7 +440,6 @@ component ProtoSelect inherits VerticalLayout {
                     proto-id: "telnet"; label: "Telnet";
                     selected: root.value == "telnet"; badge: root.badge-of("telnet");
                     picked => {
-                        root.drop-open = false;
                         root.pick-clock = root.drop-clock + 1;
                         root.picked("telnet"); proto-pop.close();
                     }
@@ -459,7 +448,6 @@ component ProtoSelect inherits VerticalLayout {
                     proto-id: "serial"; label: @tr("Serial");
                     selected: root.value == "serial"; badge: root.badge-of("serial");
                     picked => {
-                        root.drop-open = false;
                         root.pick-clock = root.drop-clock + 1;
                         root.picked("serial"); proto-pop.close();
                     }
@@ -468,7 +456,6 @@ component ProtoSelect inherits VerticalLayout {
                     proto-id: "rdp"; label: "RDP";
                     selected: root.value == "rdp"; badge: root.badge-of("rdp");
                     picked => {
-                        root.drop-open = false;
                         root.pick-clock = root.drop-clock + 1;
                         root.picked("rdp"); proto-pop.close();
                     }
@@ -477,7 +464,6 @@ component ProtoSelect inherits VerticalLayout {
                     proto-id: "vnc"; label: "VNC";
                     selected: root.value == "vnc"; badge: root.badge-of("vnc");
                     picked => {
-                        root.drop-open = false;
                         root.pick-clock = root.drop-clock + 1;
                         root.picked("vnc"); proto-pop.close();
                     }
@@ -501,13 +487,11 @@ component EmptyAddButton inherits Rectangle {
     HorizontalLayout {
         spacing: 7px;
         alignment: center;
-        Text {
-            text: "\u{E145}";
-            font-family: "Material Icons";
-            color: ta.has-hover ? Theme.accent : Theme.text-muted;
-            font-size: Theme.fs-md;
-            vertical-alignment: center;
-        }
+        Icon {
+    glyph: "add";
+    tint: ta.has-hover ? Theme.accent : Theme.text-muted;
+    size: Theme.fs-md;
+}
         Text {
             text: root.label;
             color: ta.has-hover ? Theme.accent : Theme.text-muted;
@@ -654,32 +638,21 @@ component PortForwardRow inherits Rectangle {
                         mouse-cursor: pointer;
                         clicked => { root.remove(root.index); }
                     }
-                    Text {
-                        text: "\u{E5CD}";
-                        font-family: "Material Icons";
-                        color: remove-area.has-hover ? Theme.danger : Theme.text-muted;
-                        font-size: Theme.fs-sm;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
+                    Icon {
+    glyph: "close";
+    tint: remove-area.has-hover ? Theme.danger : Theme.text-muted;
+    size: Theme.fs-sm;
+}
                 }
                 Rectangle {
                     width: 16px;
                     height: 16px;
                     y: (parent.height - self.height) / 2;
-                    Text {
-                        width: 100%;
-                        height: 100%;
-                        text: "\u{E5CC}";
-                        font-family: "Material Icons";
-                        color: Theme.text-muted;
-                        font-size: Theme.fs-md;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        transform-origin: { x: 8px, y: 8px };
-                        transform-rotation: root.open ? 90deg : 0deg;
-                        animate transform-rotation { duration: 240ms; }
-                    }
+                    Icon {
+    glyph: "chevron-right";
+    tint: Theme.text-muted;
+    size: Theme.fs-md;
+}
                 }
             }
         }
@@ -815,29 +788,21 @@ component TriggerRow inherits Rectangle {
                     border-radius: Theme.radius-sm;
                     background: trigger-remove.has-hover ? Theme.danger.with-alpha(0.18) : transparent;
                     trigger-remove := TouchArea { mouse-cursor: pointer; clicked => { root.remove(root.index); } }
-                    Text {
-                        text: "\u{E5CD}"; font-family: "Material Icons";
-                        color: trigger-remove.has-hover ? Theme.danger : Theme.text-muted;
-                        font-size: Theme.fs-sm; horizontal-alignment: center; vertical-alignment: center;
-                    }
+                    Icon {
+    glyph: "close";
+    tint: trigger-remove.has-hover ? Theme.danger : Theme.text-muted;
+    size: Theme.fs-md;
+}
                 }
                 Rectangle {
                     width: 16px;
                     height: 16px;
                     y: (parent.height - self.height) / 2;
-                    Text {
-                        width: 100%;
-                        height: 100%;
-                        text: "\u{E5CC}";
-                        font-family: "Material Icons";
-                        color: Theme.text-muted;
-                        font-size: Theme.fs-md;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        transform-origin: { x: 8px, y: 8px };
-                        transform-rotation: root.open ? 90deg : 0deg;
-                        animate transform-rotation { duration: 240ms; }
-                    }
+                    Icon {
+    glyph: "chevron-right";
+    tint: Theme.text-muted;
+    size: Theme.fs-md;
+}
                 }
             }
         }
@@ -872,6 +837,72 @@ component TriggerRow inherits Rectangle {
     }
 }
 
+// Checkbox + 文案 + 说明。**整行可点**：点文字与点方框等效（#checkfield-row 2026-10-02）。
+// 原先「启用 VT100 线框绘制」与「禁用 shell 集成」是两份复制粘贴的重复块
+//（18×18 / 圆角 5px / Icon check / TouchArea），TouchArea 只盖方框 —— 点文字没反应，
+// 且两处文案一处全角括号一处半角。抽成组件后两处行为必然一致。
+component CheckField inherits VerticalLayout {
+    in property <string> label;
+    in property <string> hint;
+    in-out property <bool> checked;
+    // 作为上一级字段的「例外开关」时传 18px，靠缩进表达从属（不缩进 = 平级）。
+    in property <length> indent: 0px;
+    spacing: 6px;
+
+    Rectangle {
+        height: 18px;
+        // 整行可点：TouchArea 铺满整行。声明在 HorizontalLayout **之前** → 画在
+        // 下层，但 Rectangle / Text / Image 不吃输入事件，点击仍落到它身上
+        // （与 close-rem 复选框、"无颜色"色点同款做法）。
+        cta := TouchArea {
+            width: 100%;
+            height: 100%;
+            mouse-cursor: pointer;
+            clicked => { root.checked = !root.checked; }
+        }
+        HorizontalLayout {
+            padding-left: root.indent;
+            spacing: 8px;
+            Rectangle {
+                width: 18px;
+                height: 18px;
+                border-radius: 5px;
+                border-width: 1px;
+                border-color: root.checked ? Theme.accent : Theme.line-2;
+                background: root.checked ? Theme.accent : transparent;
+                Icon {
+                    glyph: root.checked ? "check" : "";
+                    tint: Theme.text-secondary;
+                    size: Theme.fs-md;
+                }
+            }
+            Text {
+                text: root.label;
+                color: Theme.text-primary;
+                font-size: Theme.fs-sm;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+        }
+    }
+    if root.hint != "" : HorizontalLayout {
+        // 26 = 方框 18 + 间距 8，让说明与**文案**左对齐（不是与方框）。
+        padding-left: root.indent + 26px;
+        Text {
+            text: root.hint;
+            color: Theme.text-muted;
+            font-size: Theme.fs-xs;
+            // (#dialog-hint-clip 2026-10-02) 显式两行高度，不靠测量：弹框主体是
+            // Flickable（clip: true），而 wrap 文本的 preferred-height 在
+            // body.preferred-height 里按 1 行计入，第二行被裁掉（用户截图：两段
+            // 说明都只剩上半个字）。11px 字号两行 ≈ 32px。
+            height: 32px;
+            horizontal-stretch: 1;
+            wrap: word-wrap;
+        }
+    }
+}
+
 // Group field with an editable text box + a dropdown of existing groups (#179).
 // Type to create a new group, or click the ▾ to pick one already in use.
 component GroupCombo inherits VerticalLayout {
@@ -883,15 +914,95 @@ component GroupCombo inherits VerticalLayout {
     // (#hifi-v17) 标签↔框的 gap 与 LabeledInput 同为 5px —— 4px 时两列的
     // 输入框顶边差 1px,并排看就是"名称框和分组框不一样"。
     spacing: 5px;
-    // (#hifi-v17 2026-09-18) 弹层展开态镜像:Slint 1.16 读不到 PopupWindow 的
-    // visible,而原型 .combo:has([aria-expanded=true]) 要求"点 ▾ 展开时整框
-    // 也进聚焦态"(accent 描边 + field-2 底),没有这个镜像就做不出来。
-    property <bool> drop-open: false;
+    // (#hifi-v17 2026-09-18) 原型 .combo:has([aria-expanded=true]) 要求"点 ▾ 展开时
+    // 整框也进聚焦态"(accent 描边 + field-2 底)。当时靠镜像实现；
+    // (#is-open 2026-10-02) 现已改读 `groups-popup.is-open`（1.18 原生属性）。
     // (#dialog-focus-reset) 打开弹层前由实例化处把焦点交回容器。
     callback opening();
     // (#dialog-focus-reset 2026-09-19) 代际时钟,同 ProtoSelect/SelectField。
     in-out property <int> drop-clock: 0;
     property <int> open-clock: -1;
+    // (#group-focus-split 2026-10-02) 整框聚焦的具名形式。**与弹层开闭无关**——
+    // ▾ 按钮高亮曾挂在它上面，导致点输入框时 ▾ 也亮（ginput 的 has-focus 回调会
+    // 推进 drop-clock 并同步 open-clock，时钟镜像随之成立）。现在两者语义分开：
+    //   整框聚焦 = 输入框有焦点 **或** 本字段最近被操作过（点外部才清）；
+    //   ▾ 按钮    = `groups-popup.is-open`，弹层一关立即恢复。
+    property <bool> drop-mirror: root.open-clock == root.drop-clock;
+    // (#group-completion 2026-10-02) 命中已有组的前缀 → 返回该组名，空串 = 无补全。
+    // 大小写不敏感；跳过完全相等（那就是当前值，无可补）。
+    // ⚠️ 只能展开固定路数：Slint 的 function 体**不支持 for**，也不允许递归
+    //（自调用会被绑定环检测挡下："The binding for the property 'match-of' is
+    // part of a binding loop"）。这与既有的 group-hint() 同一写法；上限 16 组，
+    // 超过 16 的靠后组不会被补全 —— 这是展开式的固有代价，不是遗漏。
+    function group-match() -> string {
+        if (root.value == "") { return ""; }
+        if (root.groups.length > 0 && root.groups[0].name != root.value
+            && root.groups[0].name.to-lowercase().starts-with(root.value.to-lowercase())) {
+            return root.groups[0].name;
+        }
+        if (root.groups.length > 1 && root.groups[1].name != root.value
+            && root.groups[1].name.to-lowercase().starts-with(root.value.to-lowercase())) {
+            return root.groups[1].name;
+        }
+        if (root.groups.length > 2 && root.groups[2].name != root.value
+            && root.groups[2].name.to-lowercase().starts-with(root.value.to-lowercase())) {
+            return root.groups[2].name;
+        }
+        if (root.groups.length > 3 && root.groups[3].name != root.value
+            && root.groups[3].name.to-lowercase().starts-with(root.value.to-lowercase())) {
+            return root.groups[3].name;
+        }
+        if (root.groups.length > 4 && root.groups[4].name != root.value
+            && root.groups[4].name.to-lowercase().starts-with(root.value.to-lowercase())) {
+            return root.groups[4].name;
+        }
+        if (root.groups.length > 5 && root.groups[5].name != root.value
+            && root.groups[5].name.to-lowercase().starts-with(root.value.to-lowercase())) {
+            return root.groups[5].name;
+        }
+        if (root.groups.length > 6 && root.groups[6].name != root.value
+            && root.groups[6].name.to-lowercase().starts-with(root.value.to-lowercase())) {
+            return root.groups[6].name;
+        }
+        if (root.groups.length > 7 && root.groups[7].name != root.value
+            && root.groups[7].name.to-lowercase().starts-with(root.value.to-lowercase())) {
+            return root.groups[7].name;
+        }
+        if (root.groups.length > 8 && root.groups[8].name != root.value
+            && root.groups[8].name.to-lowercase().starts-with(root.value.to-lowercase())) {
+            return root.groups[8].name;
+        }
+        if (root.groups.length > 9 && root.groups[9].name != root.value
+            && root.groups[9].name.to-lowercase().starts-with(root.value.to-lowercase())) {
+            return root.groups[9].name;
+        }
+        if (root.groups.length > 10 && root.groups[10].name != root.value
+            && root.groups[10].name.to-lowercase().starts-with(root.value.to-lowercase())) {
+            return root.groups[10].name;
+        }
+        if (root.groups.length > 11 && root.groups[11].name != root.value
+            && root.groups[11].name.to-lowercase().starts-with(root.value.to-lowercase())) {
+            return root.groups[11].name;
+        }
+        if (root.groups.length > 12 && root.groups[12].name != root.value
+            && root.groups[12].name.to-lowercase().starts-with(root.value.to-lowercase())) {
+            return root.groups[12].name;
+        }
+        if (root.groups.length > 13 && root.groups[13].name != root.value
+            && root.groups[13].name.to-lowercase().starts-with(root.value.to-lowercase())) {
+            return root.groups[13].name;
+        }
+        if (root.groups.length > 14 && root.groups[14].name != root.value
+            && root.groups[14].name.to-lowercase().starts-with(root.value.to-lowercase())) {
+            return root.groups[14].name;
+        }
+        if (root.groups.length > 15 && root.groups[15].name != root.value
+            && root.groups[15].name.to-lowercase().starts-with(root.value.to-lowercase())) {
+            return root.groups[15].name;
+        }
+        return "";
+    }
+    property <string> match-name: root.group-match();
 
     Text {
         text: root.label;
@@ -902,15 +1013,15 @@ component GroupCombo inherits VerticalLayout {
     Rectangle {
         height: 38px;      // (#identity-row 2026-09-18) 与 LabeledInput 的 38px 对齐
         // (#hifi-v17) 与名称输入框完全同一套:9px 圆角 + border-control 常态边;
-        // 聚焦点有两处 —— 直接点输入框(ginput.has-focus)或点 ▾ 展开弹层
-        // (drop-open),两者任一为真整框都进聚焦态(accent 描边 + 亮底)。
+        // 聚焦点有两处 —— 直接点输入框(ginput.has-focus)或本字段最近被点过
+        // (drop-mirror),两者任一为真整框都进聚焦态(accent 描边 + 亮底)。
         border-radius: 9px;
         border-width: 1px;
-        border-color: ginput.has-focus || (drop-open && open-clock == root.drop-clock) ? Theme.accent : Theme.border-control;
-        background: ginput.has-focus || (drop-open && open-clock == root.drop-clock) ? Theme.field-2 : Theme.field;
-        // (#dialog-focus-reset) 光晕与边框同一时钟条件:只看 drop-open 会在
+        border-color: ginput.has-focus || root.drop-mirror ? Theme.accent : Theme.border-control;
+        background: ginput.has-focus || root.drop-mirror ? Theme.field-2 : Theme.field;
+        // (#dialog-focus-reset) 光晕与边框同一时钟条件:只看弹层展开态会在
         // 点空白/其它按钮后残留光晕(边框已恢复、光晕还在,实测)。
-        if ginput.has-focus || (drop-open && open-clock == root.drop-clock) : Rectangle {
+        if ginput.has-focus || root.drop-mirror : Rectangle {
             x: -3px; y: -3px;
             width: parent.width + 6px;
             height: parent.height + 6px;
@@ -941,7 +1052,7 @@ component GroupCombo inherits VerticalLayout {
         // Hide on focus: IME preedit is visible before value is committed.
         if root.value == "" && !ginput.has-focus : Text {
             x: 12px;
-            width: parent.width - 62px;
+            width: parent.width - 100px;
             height: parent.height;
             overflow: elide;
             text: root.placeholder;
@@ -951,18 +1062,41 @@ component GroupCombo inherits VerticalLayout {
             vertical-alignment: center;
         }
 
+        // (#group-completion) 补全 ghost：整段画 muted 色的完整组名，**声明在
+        // ginput 之前** → 输入框文字画在它之上，已输入的那几个字被完全盖住，
+        // 只有后缀露出来，得到浏览器式的灰色补全。
+        if root.match-name != "" : Text {
+            x: 12px;
+            width: parent.width - 100px;
+            height: parent.height;
+            text: root.match-name;
+            color: Theme.text-muted;
+            font-family: Theme.ui-font-family;
+            font-size: Theme.fs-md;
+            vertical-alignment: center;
+        }
+
         ginput := TextInput {
             x: 12px;
-            width: parent.width - 62px;
+            width: parent.width - 100px;
             height: parent.height;
             text <=> root.value;
-            // (#hifi-v17) 输入框拿到焦点 = 弹层必已收起(close-on-click-outside
-            // 或已选中):这里兜底清展开态镜像,防"框亮着、弹层没了"的假聚焦。
-            // (#dialog-focus-reset) 同时推进下拉时钟:别的下拉若残留蓝框
-            // (click-outside 关掉弹层但状态没清),此刻一并恢复普通边框。
+            // (#group-completion) Tab / Enter 接受补全。命中候选时**吞掉**这个键 ——
+            // 否则 Enter 会穿透上去直接创建会话，用户想补全却建了连接。
+            // 无补全时不处理，按键继续走 TextInput 与上层（Enter = 创建）。
+            key-pressed(e) => {
+                if (root.match-name != "" && (e.text == Key.Tab || e.text == Key.Return)) {
+                    root.value = root.match-name;
+                    accept
+                } else {
+                    reject
+                }
+            }
+            // (#hifi-v17) 输入框拿到焦点 = 弹层必已收起（点框内会在弹层外，
+            // 由 close-on-click-outside 关掉）。这里只需推进时钟:别的下拉若残留
+            // 蓝框，此刻一并恢复普通边框。弹层开合已由 is-open 自动跟踪，无需手动清。
             changed has-focus => {
                 if (self.has-focus) {
-                    root.drop-open = false;
                     root.drop-clock += 1;
                     root.open-clock = root.drop-clock;
                 }
@@ -975,10 +1109,37 @@ component GroupCombo inherits VerticalLayout {
         }
 
 
+        // (#group-clear 2026-10-02) 有值时右侧出 ×，点击清空并回焦 —— 与
+        // LabeledInput 的 clearable 完全同款（28×28 / 圆角 7px / 不透明 token
+        // 防悬停噪点）。位置在色点左侧，故输入框右预留从 62px 扩到 100px。
+        if root.value != "" : clear-ta := TouchArea {
+            x: parent.width - 80px;
+            width: 32px;
+            height: parent.height;
+            mouse-cursor: pointer;
+            clicked => {
+                root.value = "";
+                ginput.focus();
+            }
+            Rectangle {
+                x: (parent.width - 28px) / 2;
+                y: (parent.height - 28px) / 2;
+                width: 28px;
+                height: 28px;
+                border-radius: 7px;
+                border-width: 1px;
+                border-color: clear-ta.has-hover ? Theme.border-strong : transparent;
+                background: clear-ta.has-hover ? Theme.bg-hover : transparent;
+                Icon {
+                    glyph: "close";
+                    tint: clear-ta.has-hover ? Theme.text-primary : Theme.text-muted;
+                    size: Theme.fs-sm;
+                }
+            }
+        }
+
         // ▾ — opens the existing-groups list (no-op when there are none).
-        // (#hifi-v17) chevron 用 Material expand_more(E5CF)——原型是 SVG
-        // stroke chevron,与其余下拉(协议/跳板)同一语言;旧 Unicode "▼"
-        // 字形重、与弹层里的角标不搭。28px inset 居中(hover 浅底)。
+        // (#icon-svg-migration) 下拉 chevron 换 SVG expand-more,与其余下拉同一语言。
         drop-ta := TouchArea {
             x: parent.width - 36px;
             width: 36px;
@@ -989,8 +1150,7 @@ component GroupCombo inherits VerticalLayout {
                     root.opening();
                     root.drop-clock += 1;
                     root.open-clock = root.drop-clock;
-                    root.drop-open = true;
-                    groups-popup.show();
+                        groups-popup.show();
                 }
             }
             Rectangle {
@@ -1001,16 +1161,20 @@ component GroupCombo inherits VerticalLayout {
                 border-width: 1px;
                 // (#nonoise-hover) 与清除 × 按钮完全同款的问题:28×28 圆角块,
                 // 半透明填充 + 1px 半透明描边 → hover 时边缘出颗粒。改不透明 token。
-                border-color: (drop-ta.has-hover && root.groups.length > 0) ? Theme.border-strong : transparent;
-                background: (drop-ta.has-hover && root.groups.length > 0) ? Theme.bg-hover : transparent;
-                Text {
-                    text: root.groups.length > 0 ? "\u{E5CF}" : "";
-                    font-family: "Material Icons";
-                    color: root.groups.length > 0 ? Theme.text-secondary : Theme.border-strong;
-                    font-size: Theme.fs-md;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
+                // (#group-focus-split 2026-10-02) 高亮 = hover **或** `groups-popup.is-open`。
+                // 刻意**不用** drop-mirror(代际时钟):点输入框时 ginput 的 has-focus
+                // 会推进时钟并同步 open-clock,按钮跟着一起亮(用户截图)。
+                // 弹层一关(收起/选完项)is-open 自动回 false → 箭头立即恢复,正是要的。
+                // token 与 hover 完全同款,不引入新配色。
+                border-color: ((drop-ta.has-hover && root.groups.length > 0) || groups-popup.is-open)
+                    ? Theme.border-strong : transparent;
+                background: ((drop-ta.has-hover && root.groups.length > 0) || groups-popup.is-open)
+                    ? Theme.bg-hover : transparent;
+                Icon {
+    glyph: root.groups.length > 0 ? "expand-more" : "";
+    tint: root.groups.length > 0 ? Theme.text-secondary : Theme.border-strong;
+    size: Theme.fs-md;
+}
             }
         }
 
@@ -1043,10 +1207,9 @@ component GroupCombo inherits VerticalLayout {
                             clicked => {
                                 root.value = g.name;
                                 groups-popup.close();
-                                // Slint 1.16 的 PopupWindow 无 closed 回调,
-                                // 展开态镜像在选择/窗口失焦两路手动清。
-                                root.drop-open = false;
-                            }
+                                // (#is-open 2026-10-02) 选中后弹层由 close() 关闭，
+                                // `groups-popup.is-open` 自动回 false，无需手动清镜像。
+                                    }
                         }
                         // (#group-dot 2026-09-14) 色点 + 组名。无色组不画点,但
                         // **保留 8px 空位**,所有组名左缘因此对齐(与输入框同口径)。
@@ -1102,7 +1265,6 @@ component JumpCombo inherits VerticalLayout {
     in property <[string]> choices;      // display labels; index 0 = "no jump host"
     in-out property <int> selected-index: 0;
     spacing: 5px;
-    property <bool> drop-open: false;
     // (#dialog-focus-reset) 同 ProtoSelect。
     callback opening();
     // (#dialog-focus-reset 2026-09-19) 代际时钟,同上:蓝框互斥 + 点空白恢复。
@@ -1115,14 +1277,16 @@ component JumpCombo inherits VerticalLayout {
         font-size: Theme.fs-sm;
     }
 
+    // (#drop-focus-decoupled 2026-10-02) 聚焦判据同 SelectField：只看时钟，
+    // 收起弹层后蓝框仍在，只有弹层外点击（三路推进 drop-clock）才清。
     Rectangle {
         height: 38px;
         border-radius: 9px;
         border-width: 1px;
-        border-color: root.drop-open && root.open-clock == root.drop-clock ? Theme.accent
+        border-color: root.open-clock == root.drop-clock ? Theme.accent
             : (jump-ta.has-hover ? Theme.line-2 : Theme.border-control);
-        background: root.drop-open && root.open-clock == root.drop-clock ? Theme.field-2 : Theme.field;
-        if root.drop-open && root.open-clock == root.drop-clock : Rectangle {
+        background: root.open-clock == root.drop-clock ? Theme.field-2 : Theme.field;
+        if root.open-clock == root.drop-clock : Rectangle {
             x: -3px; y: -3px;
             width: parent.width + 6px;
             height: parent.height + 6px;
@@ -1137,7 +1301,6 @@ component JumpCombo inherits VerticalLayout {
                 root.opening();   // (#dialog-focus-reset) 焦点先回容器,弹层关闭时恢复目标即容器
                 root.drop-clock += 1;
                 root.open-clock = root.drop-clock;
-                root.drop-open = true;
                 jump-popup.show();
             }
         }
@@ -1159,15 +1322,11 @@ component JumpCombo inherits VerticalLayout {
             y: (parent.height - 14px) / 2;
             width: 14px;
             height: 14px;
-            Text {
-                width: 100%; height: 100%;
-                text: "\u{E5CF}";
-                font-family: "Material Icons";
-                color: (jump-ta.has-hover || root.drop-open) ? Theme.text-secondary : Theme.text-muted;
-                font-size: 14px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
+            Icon {
+    glyph: "expand-more";
+    tint: (jump-ta.has-hover || jump-popup.is-open) ? Theme.text-secondary : Theme.text-muted;
+    size: 14px;
+}
         }
 
         jump-popup := PopupWindow {
@@ -1202,8 +1361,7 @@ component JumpCombo inherits VerticalLayout {
                             mouse-cursor: pointer;
                             clicked => {
                                 root.selected-index = idx;
-                                root.drop-open = false;
-                                jump-popup.close();
+                                        jump-popup.close();
                             }
                         }
                         Text {
@@ -1221,15 +1379,11 @@ component JumpCombo inherits VerticalLayout {
                             y: (parent.height - 14px) / 2;
                             width: 14px;
                             height: 14px;
-                            Text {
-                                width: 100%; height: 100%;
-                                text: root.selected-index == idx ? "\u{E5CA}" : "";
-                                font-family: "Material Icons";
-                                color: Theme.accent;
-                                font-size: 14px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                            Icon {
+    glyph: root.selected-index == idx ? "check" : "";
+    tint: Theme.accent;
+    size: 14px;
+}
                         }
                     }
                     }
@@ -1314,9 +1468,6 @@ export component SessionDialog inherits Rectangle {
 
     property <bool> is-preview: root.preview-kind != "" && root.draft-kind == root.preview-kind;
     property <bool> is-real: root.draft-kind == "ssh" || root.draft-kind == "serial" || root.draft-kind == "telnet" || root.draft-kind == "rdp";
-    function proto-glyph(id: string) -> string {
-        return Theme.protocol-glyph(id);
-    }
     function header-sub() -> string {
         if (root.is-editing) {
             return @tr("Edit the {0} connection", root.proto-label(root.draft-kind));
@@ -1445,10 +1596,10 @@ export component SessionDialog inherits Rectangle {
         return root.test-status;
     }
     function footer-status-icon() -> string {
-        if (root.host-missing || root.serial-missing) { return "\u{E000}"; }
-        if (root.test-status == @tr("Connection OK")) { return "\u{E5CA}"; }
+        if (root.host-missing || root.serial-missing) { return "error"; }
+        if (root.test-status == @tr("Connection OK")) { return "check"; }
         if (root.test-status == @tr("Testing...")) { return ""; }
-        if (root.test-status != "") { return "\u{E000}"; }
+        if (root.test-status != "") { return "error"; }
         return "";
     }
     function focus-error-field() {
@@ -1721,14 +1872,11 @@ export component SessionDialog inherits Rectangle {
                         mouse-cursor: pointer;
                         clicked => { root.cancel(); }
                     }
-                    Text {
-                        text: "\u{E5CD}";
-                        font-family: "Material Icons";
-                        color: close-ta.has-hover ? white : Theme.text-muted;
-                        font-size: 15px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
+                    Icon {
+    glyph: "close";
+    tint: close-ta.has-hover ? white : Theme.text-muted;
+    size: 15px;
+}
                 }
             }
         }
@@ -2445,19 +2593,14 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                     width: 16px;
                                     height: 16px;
                                     y: (parent.height - self.height) / 2;
-                                    Text {
-                                        width: 100%;
-                                        height: 100%;
-                                        // (#hifi-adv-chevron 2026-09-19) transform-rotation
-                                        // 在 Text 上不生效(实测),改为直接切字形:
-                                        // 展开=向下 v(E5CF)、收起=向右 >(E5CC)。
-                                        text: root.show-advanced ? "\u{E5CF}" : "\u{E5CC}";
-                                        font-family: "Material Icons";
-                                        color: Theme.text-muted;
-                                        font-size: Theme.fs-md;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
+                                    Icon {
+                                            // (#hifi-adv-chevron 2026-09-19) transform-rotation
+                                            // 在 Text 上不生效(实测),改为直接切字形:
+                                            // 展开=向下 v(E5CF)、收起=向右 >(E5CC)。
+    glyph: root.show-advanced ? "expand-more" : "chevron-right";
+    tint: Theme.text-muted;
+    size: Theme.fs-md;
+}
                                 }
                             }
                         }
@@ -2481,36 +2624,16 @@ if root.draft-kind == "serial" : HorizontalLayout {
                             }
                         }
 
+                        // (#dialog-adv-hierarchy 2026-10-02) 缩进 18px = 它是上一级
+                        // 「终端字符集」的例外分支；下面的 shell 集成不缩进 = 与它平级。
+                        // 从属关系靠"缩进与否"表达，不加分组标题（弹框其它段落都没有）。
                         if root.show-advanced : VerticalLayout {
                             spacing: 6px;
-                            HorizontalLayout {
-                                spacing: 8px;
-                                Rectangle {
-                                    width: 18px; height: 18px; y: 1px;
-                                    border-radius: 5px;
-                                    border-width: 1px;
-                                    border-color: root.draft-vt100-drawing ? Theme.accent : Theme.line-2;
-                                    background: root.draft-vt100-drawing ? Theme.accent : transparent;
-                                    Text {
-                                        text: root.draft-vt100-drawing ? "\u{E5CA}" : "";
-                                        font-family: "Material Icons"; color: white; font-size: 14px;
-                                        width: 100%; height: 100%;
-                                        horizontal-alignment: center; vertical-alignment: center;
-                                    }
-                                    TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => { root.draft-vt100-drawing = !root.draft-vt100-drawing; }
-                                    }
-                                }
-                                Text {
-                                    text: @tr("Enable VT100 line drawing even in UTF-8 mode");
-                                    color: Theme.text-primary; font-size: Theme.fs-sm;
-                                    vertical-alignment: center; horizontal-stretch: 1;
-                                }
-                            }
-                            Text {
-                                text: @tr("Show box-drawing output from servers that switch charsets (ESC(0, SO/SI) while staying in UTF-8, e.g. top or mc frames.");
-                                color: Theme.text-muted; font-size: Theme.fs-xs; wrap: word-wrap;
+                            CheckField {
+                                label: @tr("Enable VT100 line drawing even in UTF-8 mode");
+                                hint: @tr("Show box-drawing output from servers that switch charsets (ESC(0, SO/SI) while staying in UTF-8, e.g. top or mc frames.");
+                                checked <=> root.draft-vt100-drawing;
+                                indent: 18px;
                             }
                         }
 
@@ -2570,34 +2693,14 @@ if root.draft-kind == "serial" : HorizontalLayout {
 
                         if root.show-advanced && root.draft-kind == "ssh" : VerticalLayout {
                             spacing: 6px;
-                            HorizontalLayout {
-                                spacing: 8px;
-                                Rectangle {
-                                    width: 18px; height: 18px; y: 1px;
-                                    border-radius: 5px;
-                                    border-width: 1px;
-                                    border-color: root.draft-disable-shell-integration ? Theme.accent : Theme.line-2;
-                                    background: root.draft-disable-shell-integration ? Theme.accent : transparent;
-                                    Text {
-                                        text: root.draft-disable-shell-integration ? "\u{E5CA}" : "";
-                                        font-family: "Material Icons"; color: white; font-size: 14px;
-                                        width: 100%; height: 100%;
-                                        horizontal-alignment: center; vertical-alignment: center;
-                                    }
-                                    TouchArea {
-                                        mouse-cursor: pointer;
-                                        clicked => { root.draft-disable-shell-integration = !root.draft-disable-shell-integration; }
-                                    }
-                                }
-                                Text {
-                                    text: @tr("Disable shell integration (Windows / pwsh server)");
-                                    color: Theme.text-primary; font-size: Theme.fs-sm;
-                                    vertical-alignment: center; horizontal-stretch: 1;
-                                }
-                            }
-                            Text {
-                                text: @tr("Turn on for Windows servers: skips the cwd-follow hook and monitor that assume a POSIX shell and otherwise break the shell.");
-                                color: Theme.text-muted; font-size: Theme.fs-xs; wrap: word-wrap;
+                            // (#dialog-adv-hierarchy 2026-10-02) 「禁用 shell 集成」描述的是
+                            //**目标服务器**的 shell 行为,不属于「跳板机」—— 原来它紧跟
+                            // 在跳板机 ▾ 下面,读起来像跳板机的选项。移到这里与 VT100
+                            // 同层(不缩进)后归属才正确;跳板机因此只剩 ▾ + hint。
+                            CheckField {
+                                label: @tr("Disable shell integration (Windows / pwsh server)");
+                                hint: @tr("Turn on for Windows servers: skips the cwd-follow hook and monitor that assume a POSIX shell and otherwise break the shell.");
+                                checked <=> root.draft-disable-shell-integration;
                             }
 
                             HorizontalLayout {
@@ -2621,13 +2724,11 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                         padding-left: 9px;
                                         padding-right: 9px;
                                         spacing: 5px;
-                                        Text {
-                                            text: "\u{E145}";
-                                            font-family: "Material Icons";
-                                            color: add-fw-ta.has-hover ? Theme.accent : Theme.text-muted;
-                                            font-size: Theme.fs-sm;
-                                            vertical-alignment: center;
-                                        }
+                                        Icon {
+    glyph: "add";
+    tint: add-fw-ta.has-hover ? Theme.accent : Theme.text-muted;
+    size: Theme.fs-sm;
+}
                                         Text {
                                             text: @tr("Add");
                                             color: add-fw-ta.has-hover ? Theme.accent : Theme.text-muted;
@@ -2716,13 +2817,11 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                         padding-left: 9px;
                                         padding-right: 9px;
                                         spacing: 5px;
-                                        Text {
-                                            text: "\u{E145}";
-                                            font-family: "Material Icons";
-                                            color: add-trg-ta.has-hover ? Theme.accent : Theme.text-muted;
-                                            font-size: Theme.fs-sm;
-                                            vertical-alignment: center;
-                                        }
+                                        Icon {
+    glyph: "add";
+    tint: add-trg-ta.has-hover ? Theme.accent : Theme.text-muted;
+    size: Theme.fs-sm;
+}
                                         Text {
                                             text: @tr("Add");
                                             color: add-trg-ta.has-hover ? Theme.accent : Theme.text-muted;
@@ -2921,9 +3020,9 @@ if root.draft-kind == "serial" : HorizontalLayout {
                     btn-height: 38px;
                     btn-radius: 9px;
                     dialog-chrome: true;
-                    // (#hifi-test-icon 2026-09-19) wifi_tethering:波纹扩散,
-                    // 呼应"测试连通性"。
-                    glyph: "\u{EF48}";
+                    // (#hifi-test-icon 2026-10-02) 脉冲波形,呼应"测试连通性"
+                    // (原 wifi_tethering 双向波纹;码位 EF48 未变,仅 SVG 侧换形)。
+                    glyph: "connectivity-test";
                     // (#foot-btn 2026-09-20) 内容宽,不再均分拉伸。
                     horizontal-stretch: 0;
                     btn-min-width: 0px;
@@ -2957,15 +3056,11 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                 // 0、文字拿 1:间距恒为 spacing,文字靠左、elide 生效。
                                 alignment: start;
                                 spacing: 6px;
-                                status-ico := Text {
-                                    visible: root.footer-status-icon() != "";
-                                    text: root.footer-status-icon();
-                                    font-family: "Material Icons";
-                                    color: root.footer-status-color();
-                                    font-size: Theme.fs-md;
-                                    vertical-alignment: center;
-                                    horizontal-stretch: 0;
-                                }
+                                status-ico := Icon {
+    glyph: root.footer-status-icon();
+    tint: root.footer-status-color();
+    size: Theme.fs-md;
+}
                                 status-txt := Text {
                                     text: root.footer-status-text();
                                     color: root.footer-status-color();

@@ -1,5 +1,6 @@
 import { Theme } from "theme.slint";
 import { Sparkline } from "widgets.slint";
+import { Icon } from "icons.slint";
 
 // One filesystem row for the disk-usage panel.
 export struct DiskInfo {
@@ -80,6 +81,11 @@ component NetGraph inherits VerticalLayout {
     in property <[string]> ifaces;
     in property <string> selected;
     callback iface-selected(string);
+    // (#net-iface-focus 2026-10-02) 接口选择器的聚焦代际时钟，与弹框 drop-clock /
+    // 设置面板 combo-clock 同一套机制（"我是最近一次被操作的下拉"）。
+    in-out property <int> focus-clock: 0;
+    property <int> focus-stamp: -1;
+    property <bool> sel-focused: root.focus-stamp == root.focus-clock;
 
     // Stay at preferred height; without this the inherited VerticalLayout grabs
     // a stretch share of the sidebar and balloons the sparkline into blank space.
@@ -88,12 +94,10 @@ component NetGraph inherits VerticalLayout {
 
     HorizontalLayout {
         spacing: 3px;
-        Text {                              // ↑ upload (green)
-            text: "\u{E5D8}";
-            font-family: "Material Icons";
-            color: Theme.success;
-            font-size: Theme.fs-xs;
-            vertical-alignment: center;
+        Icon {                              // ↑ upload (green)
+            glyph: "arrow-up";
+            tint: Theme.success;
+            size: Theme.fs-xs;
         }
         Text {
             text: root.up-text;
@@ -101,12 +105,10 @@ component NetGraph inherits VerticalLayout {
             font-size: Theme.fs-xs;
             vertical-alignment: center;
         }
-        Text {                              // ↓ download (blue)
-            text: "\u{E5DB}";
-            font-family: "Material Icons";
-            color: Theme.accent;
-            font-size: Theme.fs-xs;
-            vertical-alignment: center;
+        Icon {                              // ↓ download (blue)
+            glyph: "arrow-down";
+            tint: Theme.accent;
+            size: Theme.fs-xs;
         }
         Text {
             text: root.down-text;
@@ -120,7 +122,10 @@ component NetGraph inherits VerticalLayout {
             width: 64px;
             height: 18px;
             border-radius: 3px;
-            background: sel-ta.has-hover ? Theme.bg-hover : Theme.bg-elevated;
+            // (#net-iface-focus 2026-10-02) 高亮 = hover **或** 本选择器最近被操作过
+            // （代际时钟，与弹框/设置面板同一套）。点开弹层后鼠标移开、点收起时
+            // 高亮都保留，只有点面板空白（dock-bg 推进 combo-clock）才清。
+            background: sel-ta.has-hover || root.sel-focused ? Theme.bg-hover : Theme.bg-elevated;
 
             HorizontalLayout {
                 padding-left: 5px; padding-right: 4px; spacing: 2px;
@@ -132,18 +137,22 @@ component NetGraph inherits VerticalLayout {
                     horizontal-stretch: 1;
                     overflow: elide;
                 }
-                Text {
-                    text: "\u{E5CF}";
-                    font-family: "Material Icons";
-                    color: Theme.text-muted;
-                    font-size: 8px;
-                    vertical-alignment: center;
+                Icon {
+                    glyph: "expand-more";
+                    tint: Theme.text-muted;
+                    size: 8px;
                 }
             }
 
             sel-ta := TouchArea {
                 mouse-cursor: pointer;
-                clicked => { popup.show(); }
+                clicked => {
+                    // (#net-iface-focus) 打聚焦戳：弹层被 close-on-click-outside
+                    // 收起后高亮仍在，只有面板空白处推进 focus-clock 才清。
+                    root.focus-clock += 1;
+                    root.focus-stamp = root.focus-clock;
+                    popup.show();
+                }
             }
 
             popup := PopupWindow {
@@ -239,9 +248,7 @@ component StatusBlock inherits Rectangle {
                 border-radius: Theme.radius-sm;
                 background: cl-ta.has-hover ? Theme.bg-hover : transparent;
                 cl-ta := TouchArea { mouse-cursor: pointer; clicked => { root.collapse(); } }
-                Text { text: root.collapse-icon; font-family: "Material Icons";
-                       font-size: 14px; color: Theme.text-secondary;
-                       horizontal-alignment: center; vertical-alignment: center; }
+                Icon { glyph: root.collapse-icon; size: 14px; tint: Theme.text-secondary; }
             }
         }
         // IP / host line — click to copy (#192). Only interactive when there's a
@@ -326,13 +333,10 @@ component StatsBlock inherits VerticalLayout {
             border-radius: Theme.radius-sm;
             background: info-ta.has-hover ? Theme.bg-hover : transparent;
             info-ta := TouchArea { mouse-cursor: pointer; clicked => { root.show-system-info(); } }
-            Text {
-                text: "\u{E88E}";
-                font-family: "Material Icons";
-                color: Theme.text-secondary;
-                font-size: Theme.fs-sm;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+            Icon {
+                glyph: "info";
+                tint: Theme.text-secondary;
+                size: Theme.fs-sm;
             }
         }
         if root.proc-available : Rectangle {
@@ -361,10 +365,15 @@ component NetBlock inherits VerticalLayout {
     in property <string> net-bot-down;
     in property <[float]> net-bot-history;
     callback select-net-iface(string);
+    // (#net-iface-focus 2026-10-02) 下拉聚焦代际时钟：点面板空白时由 dock-bg 推进，
+    // 各 NetGraph 的 focus-stamp 随之失效 → 接口选择器高亮清除。与设置面板
+    // combo-clock 同构。
+    in-out property <int> combo-clock: 0;
     spacing: 6px;
     NetGraph {
         up-text: root.net-top-up; down-text: root.net-top-down; history: root.net-top-history;
         show-selector: root.net-show-selector; ifaces: root.net-ifaces; selected: root.net-selected;
+        focus-clock <=> root.combo-clock;
         iface-selected(i) => { root.select-net-iface(i); }
     }
     Text { text: @tr("Local"); color: Theme.text-muted; font-size: Theme.fs-xs; }
@@ -435,6 +444,10 @@ component DiskBlock inherits Rectangle {
 // Left-hand panel showing local machine health, mimicking FinalShell's
 // @tr("Status") column but kept minimal for the v0.1 baseline.
 export component Sidebar inherits Rectangle {
+    // (#net-iface-focus 2026-10-02) 下拉聚焦代际时钟：点面板空白时由 dock-bg 推进，
+    // 传给 NetBlock → 各 NetGraph 的 focus-stamp 失效 → 接口选择器高亮清除。
+    // 与设置面板 combo-clock / 弹框 drop-clock 同一套机制。
+    in-out property <int> combo-clock: 0;
     in property <string> connection-state: @tr("Not connected");
     in property <bool> system-info-available; // connected Linux session only (#268)
     in property <string> conn-host;                  // clean IP/host to copy (#192)
@@ -474,10 +487,10 @@ export component Sidebar inherits Rectangle {
     // Which edge the panel is docked to — drives the collapse chevron direction.
     in property <string> dock-edge;
     property <string> collapse-icon:
-        root.dock-edge == "right"  ? "\u{E5CC}"   // chevron_right
-      : root.dock-edge == "top"    ? "\u{E5CE}"   // expand_less
-      : root.dock-edge == "bottom" ? "\u{E5CF}"   // expand_more
-      : "\u{E5CB}";                               // chevron_left (left, default)
+        root.dock-edge == "right"  ? "chevron-right"
+      : root.dock-edge == "top"    ? "expand-less"
+      : root.dock-edge == "bottom" ? "expand-more"
+      : "chevron-left";                           // left, default
 
     width: 220px;
     // (#sidebar-bg-root 2026-09-04) Root background switches from bg-panel to
@@ -502,6 +515,10 @@ export component Sidebar inherits Rectangle {
         pointer-event(ev) => {
             if (ev.kind == PointerEventKind.up) { root.dock-drag-end(); }
         }
+        // (#net-iface-focus 2026-10-02) 点面板空白 → 清掉接口选择器的聚焦高亮。
+        // dock-bg 本来就是铺满面板的底层热区（拖拽换边用），顺带当失焦点；
+        // 它声明在最前，后面的控件照常收点击。
+        clicked => { root.combo-clock += 1; }
     }
 
     // --- Vertical stack (docked left/right) --------------------------------
@@ -551,6 +568,7 @@ export component Sidebar inherits Rectangle {
                 net-top-up: root.net-top-up; net-top-down: root.net-top-down; net-top-history: root.net-top-history;
                 net-show-selector: root.net-show-selector; net-ifaces: root.net-ifaces; net-selected: root.net-selected;
                 net-bot-up: root.net-bot-up; net-bot-down: root.net-bot-down; net-bot-history: root.net-bot-history;
+                combo-clock <=> root.combo-clock;
                 select-net-iface(i) => { root.select-net-iface(i); }
             }
             Rectangle { height: 1px; background: Theme.border-subtle; }
@@ -611,6 +629,7 @@ export component Sidebar inherits Rectangle {
                 net-top-up: root.net-top-up; net-top-down: root.net-top-down; net-top-history: root.net-top-history;
                 net-show-selector: root.net-show-selector; net-ifaces: root.net-ifaces; net-selected: root.net-selected;
                 net-bot-up: root.net-bot-up; net-bot-down: root.net-bot-down; net-bot-history: root.net-bot-history;
+                combo-clock <=> root.combo-clock;
                 select-net-iface(i) => { root.select-net-iface(i); }
             }
             Rectangle { width: 1px; background: Theme.border-subtle; }

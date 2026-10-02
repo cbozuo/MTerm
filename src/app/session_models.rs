@@ -372,7 +372,7 @@ fn build_session_rows(
         id: "".into(),
         name: "".into(),
         // Placeholder rows render no member icon; "" falls back to the default
-        // protocol glyph. See Theme.protocol-glyph.
+        // protocol glyph. See Theme.protocol-icon.
         kind: "".into(),
         host: "".into(),
         port: 0,
@@ -937,7 +937,7 @@ mod row_display_tests {
     use super::*;
 
     // (#proto-icon 2026-09-17) 每一行的 kind 必须原样带出协议名 —— 它是成员行
-    // 图标(Theme.protocol-glyph)的唯一数据源。各协议各测一遍。
+    // 图标(Theme.protocol-icon)的唯一数据源。各协议各测一遍。
     #[test]
     fn rows_carry_the_protocol_kind_for_the_row_icon() {
         for (kind, expected) in [

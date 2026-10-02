@@ -1580,6 +1580,21 @@ fn open_window(
                     .set_position(slint::PhysicalPosition::new(new_x, new_y));
             }
             w.window().set_size(slint::LogicalSize::new(new_w, new_h));
+            // (#resize-blank-edges 2026-10-02) 拖动过程中**每帧**都要整窗重绘。
+            // 尺寸每帧都在变，而 DWM 交给 softbuffer 的 back buffer 与它上报的
+            // buffer age 可能不匹配 —— 基于 age 的增量渲染会把旧帧的条带合成进
+            // **本次新暴露的右侧/底部区域**，表现为"拖动时右侧和下边空白"，
+            // 而且因为那一块一直在合成脏内容，看起来也"不跟手"（松手后下一帧
+            // 又正常了，所以容易被当成偶发）。
+            //
+            // vendored i-slint-backend-winit patch 的 FULL_REDRAW_PENDING 是
+            // one-shot、每帧消费，所以这里每帧调一次 = 拖动期间每帧全量重绘；
+            // 松手后不再有 move 事件，自动停。
+            //
+            // 同款问题的另外两条已存在的处置：detached 窗口走 OS 模态
+            // `drag_resize_window`，靠 #win-resize-blank-corner 在拖完重新
+            // set_size 兜底；设置弹窗则常驻 `set_full_redraw_hold`。
+            i_slint_backend_winit::force_full_redraw_all_windows();
         });
     }
     {
@@ -4298,6 +4313,11 @@ fn open_window(
                     let _ = ww.drag_window();
                 });
                 schedule_slint_pointer_ungrab(weak.clone());
+                // (#resize-blank-edges 2026-10-02) `drag_window()` 是 OS 模态循环，
+                // 期间 Slint 一帧都不画；返回后 back buffer 的 age 与 DWM 实际给的
+                // 内容可能对不上，增量渲染会留下移动途中的残影/空白。移动不像 resize
+                // 那样有逐帧 move 事件可挂，所以只能在模态**返回后**请求一次整窗重绘。
+                i_slint_backend_winit::force_full_redraw_all_windows();
             }
         });
     }
