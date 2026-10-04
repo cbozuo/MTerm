@@ -37,6 +37,20 @@ export struct GroupEntry {
     count: int,
 }
 
+// (#conn-path 2026-10-04 高保真 #proxy-fields) 跳板机链的候选/链路条目:
+// 信息卡(名称:/主机:/用户:/认证:/分组:/备注:,非空才显示)的数据源。
+export struct JumpEntry {
+    id: string,
+    label: string,     // 下拉里显示的 "name (user@host)" / "user@host"
+    name: string,      // 会话别名("" = 纯 IP 会话,信息卡不显示名称行)
+    host: string,
+    port: int,
+    user: string,
+    auth: string,      // "password" | "keyboard-interactive" | "key"
+    group: string,
+    note: string,
+}
+
 export struct SessionDraft {
     id: string,
     name: string,
@@ -49,7 +63,17 @@ export struct SessionDraft {
     private-key-path: string,
     private-key-inline: string,
     private-key-inline-mode: bool,
-    proxy: string,     // "" | "socks5://host:port" | "http://host:port"
+    proxy: string,     // "" | "socks5://[user:pass@]host:port" | "http://..." (assembled)
+    // (#conn-path 2026-10-04 高保真 #proxy-fields) Connection path split:
+    // "direct" | "proxy" | "jump". When "proxy" the four proxy-* fields describe
+    // it and `proxy` above keeps the assembled URL for storage (same format as
+    // the old single-box days, so proxy.rs parsing is untouched).
+    path-type: string,     // "direct" | "proxy" | "jump"
+    proxy-type: string,    // "socks5" | "http"
+    proxy-host: string,
+    proxy-port: string,
+    proxy-user: string,
+    proxy-pass: string,
     group: string,     // folder/group name ("" = ungrouped)
     // Serial-only (ignored unless kind == "serial")
     serial-port: string,
@@ -78,6 +102,9 @@ export struct SessionDraft {
 }
 
 // Segmented selector chip. Selected = Theme.chip (neutral float), never solid accent.
+// (#seg-thumb 2026-10-04) chip 底色改由容器 SegGroup 的独立滑层绘制 —— 各段自绘时
+// 选中块是"各自蹦出来"的;滑层让选中块按 active-index 平滑滑动(高保真
+// #proxy-fields:Slint 原生 animate x,180ms ease-in-out)。文字/hover 三态保留在此组件。
 component SegOption inherits Rectangle {
     in property <string> label;
     in property <bool> active;
@@ -86,15 +113,17 @@ component SegOption inherits Rectangle {
     callback clicked();
     height: 30px;
     horizontal-stretch: 1;
-    // (#hifi-v17) 段内**无边框**(单一外框由容器画,见 .seg 用法):选中 =
-    // chip 淡染圆块,hover = text 8% 浅底(原型 .seg button:hover),未选中
-    // 透明。文字三态:选中 accent / hover primary / 常态 secondary。
+    // (#seg-uniform-cells 2026-10-04) 格宽必须**均匀**：HL 按 preferred+
+    // stretch 分配，文字长短不一时格子宽窄不一，而 SegGroup 滑块按等分
+    // cell-w 计算步长 —— 格子与滑块错位（用户截图：右移滑块压进邻格、
+    // 左移又露出缝隙）。preferred 归零后 stretch 等分 = cell-w，滑块与
+    // 格子逐格重合。文字仍由格内 alignment 居中，不受影响。
+    preferred-width: 0px;
+    // (#hifi-v17) 段内**无边框**(单一外框由容器 SegGroup 画):选中态透明
+    // (透出滑层),hover = 不透明 bg-hover(#nonoise-hover),未选中透明。
+    // 选中项 hover 不画 bg-hover,否则不透明底会盖住滑层丢掉 chip 视觉。
     border-radius: 7px;
-    // (#nonoise-hover 2026-09-20) hover 底色改用**不透明**的 bg-hover。
-    // 原来的 text-primary@0.08 是半透明填充,和 1px 描边叠加时边缘会抖出颗粒
-    // (同 LabeledInput 的清除 × / 密码眼睛,见 #field-btn-nonoise)。
-    // 选中态仍保留 Theme.chip —— 那是"已选中"的语义淡染,不是 hover 反馈。
-    background: active ? Theme.chip : (ta.has-hover ? Theme.bg-hover : transparent);
+    background: active ? transparent : (ta.has-hover ? Theme.bg-hover : transparent);
     Text {
         visible: root.glyph == "";
         text: root.label;
@@ -144,6 +173,41 @@ component SegOption inherits Rectangle {
     ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
+    }
+}
+
+// (#seg-thumb 2026-10-04) 滑动分段容器:单一外框 + 独立滑层 thumb。调用方传
+// count(段数,Slint 无法运行时数 children)与 active-index(选中段,从 0 起),
+// thumb 按 cell 宽 × index 平滑滑动;段本身仍是 SegOption(透明透出滑层)。
+// 布局与原手写外框逐像素一致:36px 高 / 圆角 10 / 内衬 3px / 段间 2px。
+component SegGroup inherits Rectangle {
+    in property <int> active-index: 0;
+    in property <int> count: 2;
+    height: 36px;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: Theme.border-control;
+    background: Theme.field;
+    property <length> cell-w: (self.width - 6px - 2px * (max(self.count - 1, 0))) / max(self.count, 1);
+    // (#seg-thumb-progress 2026-10-04) 动画驱动改为**无量纲进度**而非 x 长度:
+    // 面板切换(滚动条出现/消失)会让 cell-w 在 180ms 动画途中变化 —— x 直接绑
+    // active-index 时插值用的是旧几何,滑块右侧会越过格界被裁、宽窄看着在变
+    // (用户截图)。thumb-pos 只插值「第几格」,x/width 每帧都取当前 cell-w,
+    // 与格子恒对齐。
+    property <float> thumb-pos: root.active-index;
+    animate thumb-pos { duration: 180ms; easing: ease-in-out; }
+    thumb := Rectangle {
+        x: 3px + root.thumb-pos * (cell-w + 2px);
+        y: 3px;
+        width: cell-w;
+        height: parent.height - 6px;
+        border-radius: 7px;
+        background: Theme.chip;
+    }
+    HorizontalLayout {
+        padding: 3px;
+        spacing: 2px;
+        @children
     }
 }
 
@@ -649,7 +713,7 @@ component PortForwardRow inherits Rectangle {
                     height: 16px;
                     y: (parent.height - self.height) / 2;
                     Icon {
-    glyph: "chevron-right";
+    glyph: root.open ? "expand-more" : "chevron-right";
     tint: Theme.text-muted;
     size: Theme.fs-md;
 }
@@ -661,19 +725,12 @@ component PortForwardRow inherits Rectangle {
             padding-right: 11px;
             padding-bottom: 12px;
             spacing: 8px;
-            Rectangle {
-                height: 36px;
-                border-radius: 10px;
-                border-width: 1px;
-                border-color: Theme.border-control;
-                background: Theme.field;
-                HorizontalLayout {
-                    padding: 3px;
-                    spacing: 2px;
-                    SegOption { label: @tr("Local (-L)"); active: root.kind == "local"; clicked => { root.kind = "local"; root.notify-updated(); } }
-                    SegOption { label: @tr("Remote (-R)"); active: root.kind == "remote"; clicked => { root.kind = "remote"; root.notify-updated(); } }
-                    SegOption { label: @tr("Dynamic (-D)"); active: root.kind == "dynamic"; clicked => { root.kind = "dynamic"; root.notify-updated(); } }
-                }
+            SegGroup {
+                active-index: root.kind == "local" ? 0 : (root.kind == "remote" ? 1 : 2);
+                count: 3;
+                SegOption { label: @tr("Local (-L)"); active: root.kind == "local"; clicked => { root.kind = "local"; root.notify-updated(); } }
+                SegOption { label: @tr("Remote (-R)"); active: root.kind == "remote"; clicked => { root.kind = "remote"; root.notify-updated(); } }
+                SegOption { label: @tr("Dynamic (-D)"); active: root.kind == "dynamic"; clicked => { root.kind = "dynamic"; root.notify-updated(); } }
             }
             MiniInput {
                 placeholder: @tr("Name (optional)");
@@ -799,7 +856,7 @@ component TriggerRow inherits Rectangle {
                     height: 16px;
                     y: (parent.height - self.height) / 2;
                     Icon {
-    glyph: "chevron-right";
+    glyph: root.open ? "expand-more" : "chevron-right";
     tint: Theme.text-muted;
     size: Theme.fs-md;
 }
@@ -1256,136 +1313,202 @@ component GroupCombo inherits VerticalLayout {
         overflow: elide;
     }
 }
-
-// Read-only dropdown picking an SSH jump host from a fixed list of saved
-// sessions (#211). Index-based: `choices[0]` is the "no jump host" entry, and
-// `selected-index` maps into the parallel `ids` list held by the caller.
-component JumpCombo inherits VerticalLayout {
-    in property <string> label;
-    in property <[string]> choices;      // display labels; index 0 = "no jump host"
-    in-out property <int> selected-index: 0;
-    spacing: 5px;
-    // (#dialog-focus-reset) 同 ProtoSelect。
-    callback opening();
-    // (#dialog-focus-reset 2026-09-19) 代际时钟,同上:蓝框互斥 + 点空白恢复。
-    in-out property <int> drop-clock: 0;
-    property <int> open-clock: -1;
-
-    Text {
-        text: root.label;
-        color: Theme.text-secondary;
-        font-size: Theme.fs-sm;
+// (#conn-path 2026-10-04 高保真 #proxy-fields) 链 chip 上的操作小钮(↑ ↓ ×):
+// 20px 方块,hover 点亮;删除(danger)悬停染红。hov 暴露给父级 —— 嵌套
+// TouchArea 抢占:鼠标进按钮时外层 has-hover 变 false,ops 显隐必须并上
+// 内层 hov 才稳定(否则出现→消失→出现抖动)。
+component JumpChipOp inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> danger: false;
+    callback clicked();
+    out property <bool> hov: ta.has-hover;
+    width: 20px;
+    height: 20px;
+    border-radius: 5px;
+    background: ta.has-hover
+        ? (root.danger ? Theme.danger.with-alpha(0.15) : Theme.bg-hover)
+        : transparent;
+    animate background { duration: 90ms; }
+    Icon {
+        glyph: root.glyph;
+        size: 13px;
+        tint: ta.has-hover ? (root.danger ? Theme.danger : Theme.text-primary) : Theme.text-muted;
     }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
 
-    // (#drop-focus-decoupled 2026-10-02) 聚焦判据同 SelectField：只看时钟，
-    // 收起弹层后蓝框仍在，只有弹层外点击（三路推进 drop-clock）才清。
-    Rectangle {
-        height: 38px;
-        border-radius: 9px;
-        border-width: 1px;
-        border-color: root.open-clock == root.drop-clock ? Theme.accent
-            : (jump-ta.has-hover ? Theme.line-2 : Theme.border-control);
-        background: root.open-clock == root.drop-clock ? Theme.field-2 : Theme.field;
-        if root.open-clock == root.drop-clock : Rectangle {
-            x: -3px; y: -3px;
-            width: parent.width + 6px;
-            height: parent.height + 6px;
-            border-radius: 11px;
-            border-width: 3px;
-            border-color: Theme.accent-soft;
+// 链上的单个跳板机 chip:序号圆标 + 别名/IP + 悬停出 ↑↓×。边界方向**不渲染**
+// (高保真规则:首个无上移、末个无下移、单 chip 只有删除;删除悬停红)。
+// 悬停 150ms 后请求集中信息卡(tip-show 带链位),moved 让卡片跟随鼠标。
+// 注意 ta 必须先于 ops 声明(下层),否则按钮收不到点击。
+component JumpChip inherits Rectangle {
+    in property <JumpEntry> entry;
+    in property <int> index;    // 0-based
+    in property <int> total;
+    callback remove();
+    callback up();
+    callback down();
+    callback tip-show(JumpEntry, int);
+    callback tip-move(length, length);
+    callback tip-hide();
+    height: 32px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Theme.border-control;
+    background: Theme.field;
+    ta := TouchArea {
+        changed has-hover => {
+            if (!self.has-hover) { root.tip-hide(); }
         }
-
-        jump-ta := TouchArea {
-            mouse-cursor: pointer;
-            clicked => {
-                root.opening();   // (#dialog-focus-reset) 焦点先回容器,弹层关闭时恢复目标即容器
-                root.drop-clock += 1;
-                root.open-clock = root.drop-clock;
-                jump-popup.show();
+        moved => {
+            if (self.has-hover) {
+                root.tip-move(self.absolute-position.x + self.mouse-x,
+                              self.absolute-position.y + self.mouse-y);
             }
         }
-
-        Text {
-            x: 12px;
-            width: parent.width - 44px;
-            height: parent.height;
-            text: (root.selected-index >= 0 && root.selected-index < root.choices.length)
-                ? root.choices[root.selected-index] : "";
-            color: root.selected-index > 0 ? Theme.text-primary : Theme.text-muted;
-            font-size: Theme.fs-md;
-            vertical-alignment: center;
-            overflow: elide;
-        }
-
+    }
+    // ops 显隐:鼠标在 chip 任一处(空白 ta 或按钮自身)即显示;按钮常驻实例、
+    // 用 visible 控制边界方向 —— 条件元素(if)的 id 在外部不可见,无法被组合进
+    // 显隐表达式,故不用 if。
+    property <bool> ops-on: ta.has-hover || op-up.hov || op-down.hov || op-del.hov;
+    HorizontalLayout {
+        padding-left: 5px;
+        padding-right: 4px;
+        padding-top: 4px;
+        padding-bottom: 4px;
+        spacing: 6px;
         Rectangle {
-            x: parent.width - 30px;
-            y: (parent.height - 14px) / 2;
-            width: 14px;
-            height: 14px;
-            Icon {
-    glyph: "expand-more";
-    tint: (jump-ta.has-hover || jump-popup.is-open) ? Theme.text-secondary : Theme.text-muted;
-    size: 14px;
-}
+            width: 18px;
+            vertical-stretch: 1;
+            border-radius: 9px;
+            background: Theme.chip;
+            Text {
+                width: 100%;
+                height: 100%;
+                text: root.index + 1;
+                color: Theme.accent;
+                font-size: Theme.fs-2xs;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
         }
+        Text {
+            vertical-alignment: center;
+            text: root.entry.name != "" ? root.entry.name : root.entry.host;
+            color: Theme.text-primary;
+            font-size: Theme.fs-sm;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        ops := HorizontalLayout {
+            spacing: 1px;
+            alignment: center;
+            op-up := JumpChipOp {
+                visible: root.index > 0 && root.ops-on;
+                glyph: "arrow-up";
+                clicked => { root.up(); }
+            }
+            op-down := JumpChipOp {
+                visible: root.index < root.total - 1 && root.ops-on;
+                glyph: "arrow-down";
+                clicked => { root.down(); }
+            }
+            op-del := JumpChipOp {
+                visible: root.ops-on;
+                glyph: "delete";
+                danger: true;
+                clicked => { root.remove(); }
+            }
+        }
+    }
+    tip-delay := Timer {
+        interval: 150ms;
+        running: ta.has-hover;
+        triggered => { root.tip-show(root.entry, root.index + 1); }
+    }
+}
 
-        jump-popup := PopupWindow {
-            x: 0;
-            // (#dialog-pop-flip 2026-09-19) 跳板行位于弹窗下部,弹层**向上**
-            // 展开:选项多时向下会超出卡片边界、盖住自己的下拉框行(实测)。
-            // 高度 = 行数×33(32 行高 + 1 间距) + 10 内距,上限 280px,超出部分
-            // 在弹层内滚动。
-            // (#dialog-pop-flip 2026-09-19) 改回向下:78% 弹窗布局下,跳板字段下方
-            // 到弹窗底仍有约 370 逻辑 px,容纳 280px 弹层(朝上反而越过弹窗顶)。
-            y: parent.height + 6px;
-            width: parent.width;
-            close-policy: close-on-click-outside;
-            Rectangle {
-                max-height: 280px;
-                background: Theme.popup-bg;
-                border-radius: 11px;
-                border-width: 1px;
-                border-color: Theme.line-2;
-                drop-shadow-blur: 18px;
-                drop-shadow-color: #00000066;
-                Flickable {
-                    VerticalLayout {
+// 「＋添加跳板机」触发行 + 候选下拉:候选 = jump-pool(Rust 已滤除已入链/自身);
+// 候选行悬停出同款信息卡(无链位)。pool 空(候选全部入链)时整个 picker 禁用
+// 变暗 —— 防环由「只能从候选添加」结构保证。
+component ChainPicker inherits Rectangle {
+    in property <[JumpEntry]> pool;
+    callback pick(string);
+    callback tip-show(JumpEntry, int);
+    callback tip-move(length, length);
+    callback tip-hide();
+    property <bool> exhausted: root.pool.length == 0;
+    height: 36px;
+    border-radius: 9px;
+    border-width: 1px;
+    border-color: Theme.border-control;
+    background: Theme.field;
+    opacity: root.exhausted ? 0.4 : 1.0;
+    HorizontalLayout {
+        alignment: center;
+        Text {
+            text: @tr("＋ Add jump host");
+            color: root.exhausted ? Theme.text-muted : Theme.text-secondary;
+            font-size: Theme.fs-sm;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        enabled: !root.exhausted;
+        mouse-cursor: root.exhausted ? default : pointer;
+        clicked => { pop.show(); }
+        changed has-hover => { if (!self.has-hover) { root.tip-hide(); } }
+    }
+    pop := PopupWindow {
+        x: 0;
+        y: parent.height + 6px;
+        width: parent.width;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            max-height: 280px;
+            background: Theme.popup-bg;
+            border-radius: 11px;
+            border-width: 1px;
+            border-color: Theme.line-2;
+            drop-shadow-blur: 18px;
+            drop-shadow-color: #00000066;
+            Flickable {
+                VerticalLayout {
                     padding: 5px;
                     spacing: 1px;
-                    for c[idx] in root.choices : Rectangle {
+                    for e in root.pool : Rectangle {
                         height: 32px;
                         border-radius: 8px;
-                        background: c-ta.has-hover ? Theme.field-2
-                            : (root.selected-index == idx ? Theme.accent-soft : transparent);
-                        c-ta := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => {
-                                root.selected-index = idx;
-                                        jump-popup.close();
-                            }
-                        }
+                        background: e-ta.has-hover ? Theme.field-2 : transparent;
                         Text {
                             x: 9px;
                             width: parent.width - 32px;
                             height: parent.height;
-                            text: c;
+                            text: "＋ " + e.label;
                             color: Theme.text-primary;
                             font-size: Theme.fs-md;
                             vertical-alignment: center;
                             overflow: elide;
                         }
-                        Rectangle {
-                            x: parent.width - 23px;
-                            y: (parent.height - 14px) / 2;
-                            width: 14px;
-                            height: 14px;
-                            Icon {
-    glyph: root.selected-index == idx ? "check" : "";
-    tint: Theme.accent;
-    size: 14px;
-}
+                        e-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.pick(e.id); pop.close(); root.tip-hide(); }
+                            changed has-hover => { if (!self.has-hover) { root.tip-hide(); } }
+                            moved => {
+                                if (self.has-hover) {
+                                    root.tip-move(self.absolute-position.x + self.mouse-x,
+                                                  self.absolute-position.y + self.mouse-y);
+                                }
+                            }
                         }
-                    }
+                        tip-delay := Timer {
+                            interval: 150ms;
+                            running: e-ta.has-hover;
+                            triggered => { root.tip-show(e, 0); }
+                        }
                     }
                 }
             }
@@ -1412,15 +1535,44 @@ export component SessionDialog inherits Rectangle {
     in-out property <string> draft-key-path;
     in-out property <string> draft-key-inline;
     in-out property <bool> draft-key-inline-mode: false;
-    in-out property <string> draft-proxy-type: "none";  // "none" | "socks5" | "http"
-    in-out property <string> draft-proxy-hostport;
+    // (#conn-path 2026-10-04 高保真 #proxy-fields) 连接路径三分:直连 / 代理 /
+    // 跳板机 —— 结构互斥,取代原「代理 + 跳板机」两个独立区块(旧代码跳板优先、
+    // 代理被静默忽略的隐藏规则变成看得见的结构)。切换分段即清空未生效配置。
+    in-out property <string> draft-path-type: "direct";  // "direct" | "proxy" | "jump"
+    // 代理协议:SOCKS5 用户名握手 / HTTP CONNECT。默认 SOCKS5。
+    in-out property <string> draft-proxy-type: "socks5";  // "socks5" | "http"
+    // 代理四字段(2×2 等宽,主机+端口一行、用户名+密码一行):保存时拼回
+    // scheme://[user:pass@]host:port 存 session.proxy,存储格式与单框时代一致
+    // (proxy.rs 解析不动)。密码编辑不回显(#10 惯例),空 = 保留旧值。
+    in-out property <string> draft-proxy-host;
+    in-out property <string> draft-proxy-port;
+    in-out property <string> draft-proxy-user;
+    in-out property <string> draft-proxy-pass;
+    // 端口即输即校:非空且非 1–65535 整数 → 红框 + 页脚状态行提示(不占表单流)。
+    in-out property <bool> proxy-port-invalid: false;
     in-out property <string> draft-group;
     in property <[GroupEntry]> session-groups;   // existing groups (+ colour) for the dropdown (#179)
-    // SSH jump host picker (#211): parallel label/id lists (index 0 = "none")
-    // plus the selected index. The id is resolved on submit via `jump-ids`.
-    in property <[string]> jump-choices;
-    in property <[string]> jump-ids;
-    in-out property <int> draft-jump-index: 0;
+    // (#conn-path 2026-10-04 高保真 #proxy-fields) 跳板机链:候选池(jump-pool,
+    // Rust 填充,已排除自身/非 SSH/**已入链**)与当前链(jump-chain,Rust 持有
+    // VecModel,chain-add/remove/up/down 回调驱动)。pool 空 = 候选全部入链 →
+    // 添加按钮禁用 —— 防环由「只能从候选添加」结构保证。
+    in property <[JumpEntry]> jump-pool;
+    in property <[JumpEntry]> jump-chain;
+    in property <bool> jump-pool-exhausted: false;
+    callback chain-add(string);
+    callback chain-remove(int);
+    callback chain-up(int);
+    callback chain-down(int);
+    // 悬浮信息卡(集中卡片层渲染,同 #foot-status-tip-card 模式):chip 与下拉
+    // 候选通过 tip-show(entry, 链位;0=不显示)/tip-move/tip-hide 驱动。
+    callback tip-show(JumpEntry, int);
+    callback tip-move(length, length);
+    callback tip-hide();
+    in-out property <JumpEntry> jumptip-entry;
+    in-out property <int> jumptip-pos: 0;
+    in-out property <bool> jumptip-on: false;
+    in-out property <length> jumptip-x;
+    in-out property <length> jumptip-y;
     in-out property <string> draft-serial-port;
     in-out property <string> draft-baud: "115200";
     in-out property <string> draft-data-bits: "8";
@@ -1449,6 +1601,8 @@ export component SessionDialog inherits Rectangle {
     in-out property <string> preview-kind: "";
     property <int> host-focus-seq: 0;
     property <int> serial-focus-seq: 0;
+    // (#conn-path) 代理端口校验失败时点击页脚错误 → 定位端口框。
+    property <int> proxy-port-focus-seq: 0;
 
     callback submit(SessionDraft);
     callback test-connection(SessionDraft);
@@ -1584,7 +1738,7 @@ export component SessionDialog inherits Rectangle {
         return "none";
     }
     function footer-status-color() -> brush {
-        if (root.host-missing || root.serial-missing) { return Theme.danger; }
+        if (root.host-missing || root.serial-missing || root.proxy-port-invalid) { return Theme.danger; }
         if (root.test-status == @tr("Connection OK")) { return Theme.success; }
         if (root.test-status == @tr("Testing...")) { return Theme.text-muted; }
         if (root.test-status != "") { return Theme.danger; }
@@ -1593,10 +1747,12 @@ export component SessionDialog inherits Rectangle {
     function footer-status-text() -> string {
         if (root.host-missing) { return @tr("Please enter a host / IP address."); }
         if (root.serial-missing) { return @tr("Please enter a serial port."); }
+        // (#conn-path) 代理端口非法:文案在页脚(高度常驻),不占表单流、零跳动。
+        if (root.proxy-port-invalid) { return @tr("Proxy port must be a whole number between 1 and 65535."); }
         return root.test-status;
     }
     function footer-status-icon() -> string {
-        if (root.host-missing || root.serial-missing) { return "error"; }
+        if (root.host-missing || root.serial-missing || root.proxy-port-invalid) { return "error"; }
         if (root.test-status == @tr("Connection OK")) { return "check"; }
         if (root.test-status == @tr("Testing...")) { return ""; }
         if (root.test-status != "") { return "error"; }
@@ -1605,6 +1761,13 @@ export component SessionDialog inherits Rectangle {
     function focus-error-field() {
         if (root.host-missing) { root.host-focus-seq += 1; }
         if (root.serial-missing) { root.serial-focus-seq += 1; }
+        if (root.proxy-port-invalid) { root.proxy-port-focus-seq += 1; }
+    }
+    // (#conn-path) 跳板悬浮信息卡的认证方式显示名(与认证分段 SegOption 一致)。
+    function auth-label(a: string) -> string {
+        if (a == "keyboard-interactive") { return @tr("Keyboard-interactive"); }
+        if (a == "key") { return @tr("Private key"); }
+        return @tr("Password");
     }
     function make-draft() -> SessionDraft {
         return {
@@ -1619,9 +1782,21 @@ export component SessionDialog inherits Rectangle {
             private-key-path: root.draft-key-path,
             private-key-inline: root.draft-key-inline,
             private-key-inline-mode: root.draft-key-inline-mode,
-            proxy: (root.draft-proxy-type == "none" || root.draft-proxy-hostport == "") ? ""
-                 : root.draft-proxy-type == "http" ? "http://" + root.draft-proxy-hostport
-                 : "socks5://" + root.draft-proxy-hostport,
+            // (#conn-path) 仅「代理」分支拼 URL;格式与单框时代一致,proxy.rs 不动。
+            // 端口留空则省略 :port(parse 失败时回落直连,与"地址为空=不用代理"同义)。
+            proxy: root.draft-path-type == "proxy" && root.draft-proxy-host != ""
+                 ? (root.draft-proxy-type == "http" ? "http://" : "socks5://")
+                   + (root.draft-proxy-user != ""
+                      ? root.draft-proxy-user + ":" + root.draft-proxy-pass + "@" : "")
+                   + root.draft-proxy-host
+                   + (root.draft-proxy-port != "" ? ":" + root.draft-proxy-port : "")
+                 : "",
+            path-type: root.draft-path-type,
+            proxy-type: root.draft-proxy-type,
+            proxy-host: root.draft-proxy-host,
+            proxy-port: root.draft-proxy-port,
+            proxy-user: root.draft-proxy-user,
+            proxy-pass: root.draft-proxy-pass,
             group: root.draft-group,
             serial-port: root.draft-serial-port,
             baud-rate: root.draft-baud.to-float(),
@@ -1637,8 +1812,9 @@ export component SessionDialog inherits Rectangle {
             vt100-drawing: root.draft-vt100-drawing,
             disable-shell-integration: root.draft-disable-shell-integration,
             note: root.draft-note,
-            jump-session-id: (root.draft-jump-index > 0 && root.draft-jump-index < root.jump-ids.length)
-                ? root.jump-ids[root.draft-jump-index] : "",
+            // (#conn-path) 跳板链不进 draft —— 由 Rust 侧 edit_jump_chain 状态在
+            // submit/test 回调里写入 Session.jump_chain(同 edit_forwards 模式)。
+            jump-session-id: "",
         };
     }
     function try-submit() {
@@ -1651,6 +1827,11 @@ export component SessionDialog inherits Rectangle {
         if (root.draft-kind == "serial" && root.draft-serial-port == "") {
             root.serial-missing = true;
             root.serial-focus-seq += 1;
+            return;
+        }
+        // (#conn-path) 代理端口非法不放行;文案走页脚状态行(不占表单流),点击定位端口框。
+        if (root.proxy-port-invalid) {
+            root.proxy-port-focus-seq += 1;
             return;
         }
         root.host-missing = false;
@@ -1668,6 +1849,10 @@ export component SessionDialog inherits Rectangle {
             root.serial-focus-seq += 1;
             return;
         }
+        if (root.proxy-port-invalid) {
+            root.proxy-port-focus-seq += 1;
+            return;
+        }
         root.host-missing = false;
         root.serial-missing = false;
         root.test-status = @tr("Testing...");
@@ -1681,9 +1866,13 @@ export component SessionDialog inherits Rectangle {
             self.serial-missing = false;
             self.host-focus-seq = 0;
             self.serial-focus-seq = 0;
+            self.proxy-port-focus-seq = 0;
             self.preview-kind = "";
             self.show-advanced = false;
             self.test-status = "";
+            // (#conn-path) 路径类型与端口错误态复位(代理四字段由 Rust 侧
+            // on_new_session_clicked / on_edit_session 按会话回填)。
+            self.proxy-port-invalid = false;
             // (#dialog-focus-reset 2026-09-19) 弹窗是常驻组件 + visible 开关,
             // Slint 隐藏元素不清窗口焦点 —— 上次点过的输入框重开时仍持蓝色
             // 焦点边框(实测)。打开时把焦点交还弹窗容器 FocusScope:所有
@@ -1704,6 +1893,32 @@ export component SessionDialog inherits Rectangle {
     }
     changed draft-serial-port => {
         if (root.serial-missing && root.draft-serial-port != "") { root.serial-missing = false; }
+    }
+    // (#conn-path) 代理端口即输即校:空 = 未填(不标错);非 1–65535 整数 → 红框
+    // + 页脚提示。错误优先于焦点(LabeledInput error 语义)。
+    function proxy-port-check() -> bool {
+        // 空 = 未填(不标错);to-float 失败返回 0(落进 <1 → invalid)。
+        return root.draft-proxy-port != ""
+            && !(root.draft-proxy-port.to-float() >= 1
+                && root.draft-proxy-port.to-float() <= 65535
+                && Math.round(root.draft-proxy-port.to-float()) == root.draft-proxy-port.to-float());
+    }
+    changed draft-proxy-port => {
+        root.proxy-port-invalid = root.proxy-port-check();
+        if (!root.proxy-port-invalid
+            && root.test-status == @tr("Proxy port must be a whole number between 1 and 65535.")) {
+            root.test-status = "";
+        }
+    }
+    // (#conn-path) 切换连接路径分段:清空未生效配置,每次进入分支都是干净起点
+    // (高保真行为:跳板链清空——第 3 步接入、代理协议还原 SOCKS5、四字段清空)。
+    changed draft-path-type => {
+        root.draft-proxy-type = "socks5";
+        root.draft-proxy-host = "";
+        root.draft-proxy-port = "";
+        root.draft-proxy-user = "";
+        root.draft-proxy-pass = "";
+        root.proxy-port-invalid = false;
     }
     // (#dialog-focus-reset) 焦点回容器的延迟通道:布局求值期间直接 focus()
     // 会踩运行时递归保护,与 LabeledInput 的 0ms Timer 同一模式。
@@ -2258,19 +2473,12 @@ if root.draft-kind == "serial" : HorizontalLayout {
                             // 选中 = chip 淡染浮块(非实心 accent),未选中段靠
                             // hover 浅底提亮文字表达可点。旧版每段各自描边,
                             // 三个独立按钮视觉散、与原型完全两样。
-                            Rectangle {
-                                height: 36px;
-                                border-radius: 10px;
-                                border-width: 1px;
-                                border-color: Theme.border-control;
-                                background: Theme.field;
-                                HorizontalLayout {
-                                    padding: 3px;
-                                    spacing: 2px;
-                                    SegOption { label: @tr("Password"); active: root.draft-auth == "password"; clicked => { root.draft-auth = "password"; } }
-                                    SegOption { label: @tr("Keyboard-interactive"); active: root.draft-auth == "keyboard-interactive"; clicked => { root.draft-auth = "keyboard-interactive"; } }
-                                    SegOption { label: @tr("Private key"); active: root.draft-auth == "key"; clicked => { root.draft-auth = "key"; } }
-                                }
+                            SegGroup {
+                                active-index: root.draft-auth == "password" ? 0 : (root.draft-auth == "keyboard-interactive" ? 1 : 2);
+                                count: 3;
+                                SegOption { label: @tr("Password"); active: root.draft-auth == "password"; clicked => { root.draft-auth = "password"; } }
+                                SegOption { label: @tr("Keyboard-interactive"); active: root.draft-auth == "keyboard-interactive"; clicked => { root.draft-auth = "keyboard-interactive"; } }
+                                SegOption { label: @tr("Private key"); active: root.draft-auth == "key"; clicked => { root.draft-auth = "key"; } }
                             }
                         }
                         // (#auth-row 2026-09-18) 用户名 + 密码 **同行**:两者都是短字段,
@@ -2324,18 +2532,11 @@ if root.draft-kind == "serial" : HorizontalLayout {
                             spacing: 4px;
                             Text { text: @tr("Private key"); color: Theme.text-secondary; font-size: Theme.fs-sm; }
                             // (#hifi-v17) 同 .seg 单一外框。
-                            Rectangle {
-                                height: 36px;
-                                border-radius: 10px;
-                                border-width: 1px;
-                                border-color: Theme.border-control;
-                                background: Theme.field;
-                                HorizontalLayout {
-                                    padding: 3px;
-                                    spacing: 2px;
-                                    SegOption { label: @tr("Private key file"); active: !root.draft-key-inline-mode; clicked => { root.draft-key-inline-mode = false; } }
-                                    SegOption { label: @tr("Paste private key"); active: root.draft-key-inline-mode; clicked => { root.draft-key-inline-mode = true; } }
-                                }
+                            SegGroup {
+                                active-index: root.draft-key-inline-mode ? 1 : 0;
+                                count: 2;
+                                SegOption { label: @tr("Private key file"); active: !root.draft-key-inline-mode; clicked => { root.draft-key-inline-mode = false; } }
+                                SegOption { label: @tr("Paste private key"); active: root.draft-key-inline-mode; clicked => { root.draft-key-inline-mode = true; } }
                             }
                             if !root.draft-key-inline-mode : VerticalLayout {
                                 spacing: 4px;
@@ -2594,9 +2795,8 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                     height: 16px;
                                     y: (parent.height - self.height) / 2;
                                     Icon {
-                                            // (#hifi-adv-chevron 2026-09-19) transform-rotation
-                                            // 在 Text 上不生效(实测),改为直接切字形:
-                                            // 展开=向下 v(E5CF)、收起=向右 >(E5CC)。
+                                            // (#icon-svg-migration 2026-10-02) 直接切
+                                            // 字形:展开=expand-more、收起=chevron-right。
     glyph: root.show-advanced ? "expand-more" : "chevron-right";
     tint: Theme.text-muted;
     size: Theme.fs-md;
@@ -2637,57 +2837,283 @@ if root.draft-kind == "serial" : HorizontalLayout {
                             }
                         }
 
-                        if root.show-advanced && root.draft-kind != "serial" : VerticalLayout {
+                        // (#conn-path 2026-10-04 高保真 #proxy-fields) 连接路径三分:
+                        // 直连 / 代理 / 跳板机 —— 结构互斥,取代原「代理 + 跳板机」
+                        // 两个独立区块(旧代码跳板优先、代理被静默忽略的隐藏规则,
+                        // 变成看得见的结构)。切换分段即清空未生效配置。
+                        // (#conn-path-gate 2026-10-04) 连接路径仅 ssh/telnet 有意义:
+                        // serial 无网络、local 是本机 shell、rdp 交给系统 mstsc ——
+                        // 对它们显示代理/跳板机是误导(配置不生效)。
+                        if root.show-advanced && (root.draft-kind == "ssh" || root.draft-kind == "telnet") : VerticalLayout {
                             spacing: 4px;
-                            Text { text: @tr("Proxy (optional)"); color: Theme.text-secondary; font-size: Theme.fs-sm; }
-                            // (#hifi-v17) 同 .seg 单一外框。
-                            Rectangle {
-                                height: 36px;
-                                border-radius: 10px;
-                                border-width: 1px;
-                                border-color: Theme.border-control;
-                                background: Theme.field;
-                                HorizontalLayout {
-                                    padding: 3px;
-                                    spacing: 2px;
-                                    SegOption { label: @tr("None"); active: root.draft-proxy-type == "none"; clicked => { root.draft-proxy-type = "none"; } }
+                            Text { text: @tr("Connection path (optional)"); color: Theme.text-secondary; font-size: Theme.fs-sm; }
+                            SegGroup {
+                                active-index: root.draft-path-type == "direct" ? 0 : (root.draft-path-type == "proxy" ? 1 : 2);
+                                count: 3;
+                                SegOption { label: @tr("Direct"); active: root.draft-path-type == "direct"; clicked => { root.draft-path-type = "direct"; } }
+                                SegOption { label: @tr("Proxy"); active: root.draft-path-type == "proxy"; clicked => { root.draft-path-type = "proxy"; } }
+                                SegOption { label: @tr("Jump host"); active: root.draft-path-type == "jump"; clicked => { root.draft-path-type = "jump"; } }
+                            }
+                            // 直连:一行回退说明($ALL_PROXY 兜底语义保留)
+                            if root.draft-path-type == "direct" : Text {
+                                text: @tr("No proxy — use $ALL_PROXY or connect directly");
+                                color: Theme.text-muted;
+                                font-size: Theme.fs-xs;
+                            }
+                            // 代理:协议子分段(SOCKS5 默认) + 四字段 2×2 等宽
+                            if root.draft-path-type == "proxy" : VerticalLayout {
+                                spacing: 4px;
+                                Text { text: @tr("Protocol"); color: Theme.text-secondary; font-size: Theme.fs-sm; }
+                                SegGroup {
+                                    active-index: root.draft-proxy-type == "socks5" ? 0 : 1;
+                                    count: 2;
                                     SegOption { label: "SOCKS5"; active: root.draft-proxy-type == "socks5"; clicked => { root.draft-proxy-type = "socks5"; } }
                                     SegOption { label: "HTTP"; active: root.draft-proxy-type == "http"; clicked => { root.draft-proxy-type = "http"; } }
                                 }
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    sf-ph := LabeledInput {
+                                        focus-changed(f) => { if (f) { root.drop-clock += 1; } }
+                                        dialog-field: true;
+                                        input-height: 38px;
+                                        horizontal-stretch: 1;
+                                        // (#proxy-equal-widths 2026-10-04) 四框等宽:HL 按
+                                        // preferred+stretch 分配,占位长短不一会宽窄不一;
+                                        // preferred 归零 → stretch 纯等分,上下两行严格对齐。
+                                        min-width: 0px;
+                                        preferred-width: 0px;
+                                        label: @tr("Proxy host (IP/Domain)");
+                                        placeholder: "proxy.example.com 或 127.0.0.1";
+                                        value <=> root.draft-proxy-host;
+                                        clearable: true;
+                                        canceled => { root.cancel(); }
+                                        accepted => { root.try-submit(); }
+                                    }
+                                    sf-pp := LabeledInput {
+                                        focus-changed(f) => { if (f) { root.drop-clock += 1; } }
+                                        dialog-field: true;
+                                        input-height: 38px;
+                                        horizontal-stretch: 1;
+                                        min-width: 0px;
+                                        preferred-width: 0px;
+                                        label: @tr("Port");
+                                        placeholder: "1080";
+                                        value <=> root.draft-proxy-port;
+                                        clearable: true;
+                                        error: root.proxy-port-invalid;
+                                        focus-seq: root.proxy-port-focus-seq;
+                                        canceled => { root.cancel(); }
+                                        accepted => { root.try-submit(); }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    sf-pu := LabeledInput {
+                                        dialog-field: true;
+                                        input-height: 38px;
+                                        horizontal-stretch: 1;
+                                        min-width: 0px;
+                                        preferred-width: 0px;
+                                        label: @tr("Username (optional)");
+                                        placeholder: @tr("Leave blank to connect anonymously");
+                                        value <=> root.draft-proxy-user;
+                                        clearable: true;
+                                        canceled => { root.cancel(); }
+                                        accepted => { root.try-submit(); }
+                                    }
+                                    sf-ppw := LabeledInput {
+                                        dialog-field: true;
+                                        input-height: 38px;
+                                        horizontal-stretch: 1;
+                                        min-width: 0px;
+                                        preferred-width: 0px;
+                                        label: @tr("Password (optional)");
+                                        placeholder: @tr("Leave blank for no password");
+                                        value <=> root.draft-proxy-pass;
+                                        password: true;
+                                        canceled => { root.cancel(); }
+                                        accepted => { root.try-submit(); }
+                                    }
+                                }
+                                Text {
+                                    text: @tr("Fill in only if the proxy needs credentials; blank username/password = anonymous.");
+                                    color: Theme.text-muted;
+                                    font-size: Theme.fs-xs;
+                                }
                             }
-                            if root.draft-proxy-type != "none" : sf14 := LabeledInput {
-                                focus-changed(f) => { if (f) { root.drop-clock += 1; } }
-                                dialog-field: true;
-                                input-height: 38px;
-                                label: @tr("Proxy address");
-                                placeholder: "127.0.0.1:1080";
-                                value <=> root.draft-proxy-hostport;
-                                clearable: true;
-                                canceled => { root.cancel(); }
-                                accepted => { root.try-submit(); }
-                            }
-                            Text {
-                                text: root.draft-proxy-type == "none"
-                                    ? @tr("No proxy — use $ALL_PROXY or connect directly")
-                                    : @tr("Format: host:port  (with auth: user:pass@host:port)");
-                                color: Theme.text-muted;
-                                font-size: Theme.fs-xs;
-                            }
-                        }
-
-                        if root.show-advanced && root.draft-kind == "ssh" : VerticalLayout {
-                            spacing: 4px;
-                            JumpCombo {
-                                opening => { dialog-focus.focus(); }
-                                drop-clock <=> root.drop-clock;
-                                label: @tr("Jump host (optional)");
-                                choices: root.jump-choices;
-                                selected-index <=> root.draft-jump-index;
-                            }
-                            Text {
-                                text: @tr("Tunnel this connection through another saved SSH session.");
-                                color: Theme.text-muted;
-                                font-size: Theme.fs-xs;
+                            // (#conn-path) 跳板机链编辑器(高保真 #proxy-fields):
+                            // 空态虚线框提示 → 添加成链;chip 悬停出信息卡/排序/删除。
+                            if root.draft-path-type == "jump" && root.draft-kind == "ssh" : VerticalLayout {
+                                spacing: 4px;
+                                // 链头行:标签 + 右侧动态提示(随链长;空态隐藏)
+                                HorizontalLayout {
+                                    Text {
+                                        text: @tr("Jump chain (connected in order)");
+                                        color: Theme.text-secondary;
+                                        font-size: Theme.fs-sm;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
+                                    if root.jump-chain.length > 0 : Text {
+                                        text: root.jump-chain.length == 1
+                                            ? @tr("Hover for host info / remove")
+                                            : @tr("Hover for host info / reorder / remove");
+                                        color: Theme.text-muted;
+                                        font-size: Theme.fs-xs;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                // 空态:虚线框提示(Slint 无 dashed border,以淡实线近似)
+                                if root.jump-chain.length == 0 : Rectangle {
+                                    height: 52px;
+                                    border-radius: 8px;
+                                    border-width: 1px;
+                                    border-color: Theme.border-control;
+                                    background: Theme.bg-root;
+                                    Text {
+                                        width: 100%;
+                                        height: 100%;
+                                        text: @tr("No jump host selected yet — add one from the list below");
+                                        color: Theme.text-muted;
+                                        font-size: Theme.fs-xs;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                // 链可视化:本机 → 编号 chips → 目标主机
+                                if root.jump-chain.length > 0 : Rectangle {
+                                    height: 48px;
+                                    border-radius: 8px;
+                                    border-width: 1px;
+                                    border-color: Theme.border-control;
+                                    background: Theme.bg-root;
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        padding-top: 8px;
+                                        padding-bottom: 8px;
+                                        spacing: 8px;
+                                        alignment: center;
+                                        Rectangle {
+                                            height: 32px;
+                                            border-radius: 8px;
+                                            border-width: 1px;
+                                            border-color: Theme.accent.with-alpha(0.45);
+                                            HorizontalLayout {
+                                                padding-left: 8px;
+                                                padding-right: 8px;
+                                                Text {
+                                                    text: @tr("This PC");
+                                                    color: Theme.accent;
+                                                    font-size: Theme.fs-sm;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                        for c[ci] in root.jump-chain : HorizontalLayout {
+                                            spacing: 8px;
+                                            Text {
+                                                text: "→";
+                                                color: Theme.text-muted;
+                                                font-size: Theme.fs-sm;
+                                                vertical-alignment: center;
+                                            }
+                                            JumpChip {
+                                                entry: c;
+                                                index: ci;
+                                                total: root.jump-chain.length;
+                                                tip-show(e, pos) => { root.tip-show(e, pos); }
+                                                tip-move(x, y) => { root.tip-move(x, y); }
+                                                tip-hide => { root.tip-hide(); }
+                                                remove => { root.chain-remove(ci); }
+                                                up => { root.chain-up(ci); }
+                                                down => { root.chain-down(ci); }
+                                            }
+                                        }
+                                        Text {
+                                            text: "→";
+                                            color: Theme.text-muted;
+                                            font-size: Theme.fs-sm;
+                                            vertical-alignment: center;
+                                        }
+                                        Rectangle {
+                                            height: 32px;
+                                            border-radius: 8px;
+                                            border-width: 1px;
+                                            border-color: Theme.success.with-alpha(0.45);
+                                            HorizontalLayout {
+                                                padding-left: 8px;
+                                                padding-right: 8px;
+                                                Text {
+                                                    text: @tr("Target host");
+                                                    color: Theme.success;
+                                                    font-size: Theme.fs-sm;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                ChainPicker {
+                                    pool: root.jump-pool;
+                                    tip-show(e, pos) => { root.tip-show(e, pos); }
+                                    tip-move(x, y) => { root.tip-move(x, y); }
+                                    tip-hide => { root.tip-hide(); }
+                                    pick(id) => { root.chain-add(id); }
+                                }
+                                // 警告:链长 > 2(暖橙,不阻断)
+                                if root.jump-chain.length > 2 : HorizontalLayout {
+                                    spacing: 6px;
+                                    Icon {
+                                        glyph: "warning";
+                                        tint: Theme.warning;
+                                        size: 13px;
+                                    }
+                                    Text {
+                                        text: @tr("Too many jump hosts may hurt connection speed and stability.");
+                                        color: Theme.warning;
+                                        font-size: Theme.fs-xs;
+                                        vertical-alignment: center;
+                                        // (#jump-tips-left 2026-10-04) 显式靠左:Text 默认
+                                        // 拉伸填充,不绑 alignment 时文字在剩余宽里居中,图标
+                                        // 与文字之间空出一大截(用户截图)。
+                                        horizontal-stretch: 1;
+                                        horizontal-alignment: left;
+                                    }
+                                }
+                                // 两条常驻说明(同构对齐)
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Icon {
+                                        glyph: "info";
+                                        tint: Theme.text-muted;
+                                        size: 13px;
+                                    }
+                                    Text {
+                                        text: @tr("Reach the target through intermediate servers (bastion mode).");
+                                        color: Theme.text-muted;
+                                        font-size: Theme.fs-xs;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                        horizontal-alignment: left;
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Icon {
+                                        glyph: "info";
+                                        tint: Theme.text-muted;
+                                        size: 13px;
+                                    }
+                                    Text {
+                                        text: @tr("Multi-hop: this PC → jump 1 → jump 2 → … → target.");
+                                        color: Theme.text-muted;
+                                        font-size: Theme.fs-xs;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                        horizontal-alignment: left;
+                                    }
+                                }
                             }
                         }
 
@@ -3225,6 +3651,75 @@ if root.draft-kind == "serial" : HorizontalLayout {
                 wrap: word-wrap;
             }
         }
+
+        // (#conn-path 2026-10-04 高保真 #proxy-fields) 跳板悬浮信息卡:键值对
+        // 「K：V」,名称/分组/备注非空才显示;链位行仅在链 chip 上出现(候选无)。
+        // 跟随鼠标、光标上方偏右;靠右缘翻到左侧、贴顶翻到下方。挂在 SessionDialog
+        // 根(全屏坐标系,jumptip-x/y 即窗口坐标)且无 TouchArea —— 指针事件穿透。
+        if root.jumptip-on : Rectangle {
+            property <length> pw: jumptip-lay.preferred-width + 24px;
+            property <length> ph: jumptip-lay.preferred-height + 18px;
+            x: root.jumptip-x + 14px + pw > parent.width - 8px
+                ? max(8px, root.jumptip-x - pw - 14px) : root.jumptip-x + 14px;
+            y: root.jumptip-y - ph - 12px < 8px
+                ? root.jumptip-y + 20px : root.jumptip-y - ph - 12px;
+            width: pw;
+            height: ph;
+            background: Theme.bg-elevated;
+            border-radius: 9px;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: #00000045;
+            jumptip-lay := VerticalLayout {
+                padding: 9px;
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 2px;
+                // (#conn-path) 键值**单行连排**(键＋全角冒号＋值同一个 Text):
+                // 两列布局会把全角冒号自带的右空隙与键列宽叠加,视觉间隙过大。
+                if root.jumptip-entry.name != "" : Text {
+                    text: @tr("Name:") + root.jumptip-entry.name;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-xs;
+                    overflow: elide;
+                }
+                Text {
+                    text: @tr("Host:") + root.jumptip-entry.host + ":" + root.jumptip-entry.port;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-xs;
+                    overflow: elide;
+                }
+                if root.jumptip-entry.user != "" : Text {
+                    text: @tr("User:") + root.jumptip-entry.user;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-xs;
+                    overflow: elide;
+                }
+                if root.jumptip-entry.auth != "" : Text {
+                    text: @tr("Auth:") + root.auth-label(root.jumptip-entry.auth);
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-xs;
+                    overflow: elide;
+                }
+                if root.jumptip-entry.group != "" : Text {
+                    text: @tr("Group:") + root.jumptip-entry.group;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-xs;
+                    overflow: elide;
+                }
+                if root.jumptip-entry.note != "" : Text {
+                    text: @tr("Note:") + root.jumptip-entry.note;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-xs;
+                    overflow: elide;
+                }
+                if root.jumptip-pos > 0 : Text {
+                    text: @tr("Hop {0} in the chain", root.jumptip-pos);
+                    color: Theme.accent;
+                    font-size: Theme.fs-2xs;
+                }
+            }        }
 
     }
 }

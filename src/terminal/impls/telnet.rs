@@ -40,6 +40,8 @@ pub fn spawn_telnet_session(
     runtime: &tokio::runtime::Handle,
     tab_id: String,
     session: Session,
+    // (#conn-path 2026-10-04) Telnet 经多级跳板的纯 TCP 隧道(目标侧无 SSH)。
+    jumps: Vec<Session>,
     initial_cols: u32,
     initial_rows: u32,
 ) -> (SessionHandle, UnboundedReceiver<SessionEvent>) {
@@ -50,6 +52,7 @@ pub fn spawn_telnet_session(
     let join = runtime.spawn(async move {
         if let Err(err) = run_telnet(
             session,
+            jumps,
             cmd_rx,
             evt_for_task.clone(),
             initial_cols,
@@ -102,6 +105,7 @@ fn naws_subneg(cols: u32, rows: u32) -> Vec<u8> {
 
 async fn run_telnet(
     session: Session,
+    jumps: Vec<Session>,
     mut commands: UnboundedReceiver<SessionCommand>,
     events: UnboundedSender<SessionEvent>,
     initial_cols: u32,
@@ -117,24 +121,45 @@ async fn run_telnet(
         addr
     )));
 
-    // Direct, or tunnel through a SOCKS5 / HTTP proxy (reuses issue #7 plumbing).
-    let stream = match crate::ssh::proxy::resolve(&session.proxy) {
-        Some(p) => {
+    // (#conn-path 2026-10-04) 连接顺序:多级跳板链 → SOCKS5/HTTP 代理 → 直连。
+    // 跳板隧道句柄整串绑定到会话生命周期 —— 链上任何一级断开即会话断开。
+    // (#conn-path) 跳板隧道是 ChannelStream(非真实 TCP):三个分支统一装箱成
+    // TunnelStream;set_nodelay 只对真实 TcpStream 有意义,在各直连/代理分支内做。
+    let (stream, _jump_keepalives): (crate::ssh::TunnelStream, Vec<russh::client::Handle<crate::ssh::ClientHandler>>) = match jumps.as_slice() {
+        [j @ ..] if !j.is_empty() => {
             let _ = events.send(SessionEvent::Status(format!(
                 "{} {} → {}",
-                t("经代理连接", "via proxy"),
-                crate::ssh::proxy::describe(&p),
+                t("经跳板机连接", "via jump host"),
+                j.iter().map(|s| format!("{}@{}", s.user, s.host)).collect::<Vec<_>>().join(" → "),
                 addr
             )));
-            crate::ssh::proxy::connect(&p, &host, port)
+            crate::ssh::connect_tunnel_via_jumps(j, &host, port, &events)
                 .await
-                .with_context(|| format!("proxy connect to {addr} failed"))?
+                .with_context(|| format!("telnet connect {addr} via jump chain failed"))?
         }
-        None => TcpStream::connect(&addr)
-            .await
-            .with_context(|| format!("connect {addr} failed"))?,
+        _ => match crate::ssh::proxy::resolve(&session.proxy) {
+            Some(p) => {
+                let _ = events.send(SessionEvent::Status(format!(
+                    "{} {} → {}",
+                    t("经代理连接", "via proxy"),
+                    crate::ssh::proxy::describe(&p),
+                    addr
+                )));
+                let s = crate::ssh::proxy::connect(&p, &host, port)
+                    .await
+                    .with_context(|| format!("proxy connect to {addr} failed"))?;
+                let _ = s.set_nodelay(true);
+                (Box::new(s), Vec::new())
+            }
+            None => {
+                let s = TcpStream::connect(&addr)
+                    .await
+                    .with_context(|| format!("connect {addr} failed"))?;
+                let _ = s.set_nodelay(true);
+                (Box::new(s), Vec::new())
+            }
+        },
     };
-    let _ = stream.set_nodelay(true);
 
     let _ = events.send(SessionEvent::Connected);
     let _ = events.send(SessionEvent::Status(format!(

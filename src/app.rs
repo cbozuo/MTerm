@@ -21,6 +21,7 @@ mod sftp_callbacks;
 mod sftp_ui;
 mod sidebar;
 mod single_instance;
+mod storage_callbacks;
 mod tab_callbacks;
 mod tab_transfer;
 mod terminal_ui;
@@ -3585,6 +3586,8 @@ fn open_window(
         sftp_handles.clone(),
         sftp_last_cwd.clone(),
     );
+    // (#storage-location) Settings › storage location card.
+    storage_callbacks::wire_storage_callbacks(&window, store.clone());
     wire_key_input(
         &window,
         handles.clone(),
@@ -4995,6 +4998,29 @@ fn wire_session_callbacks(
     let edit_forwards: Rc<RefCell<Vec<PortFwd>>> = Rc::new(RefCell::new(Vec::new()));
     let edit_triggers: Rc<RefCell<Vec<TriggerDraft>>> = Rc::new(RefCell::new(Vec::new()));
     let edit_trigger_secrets: Rc<RefCell<Vec<Secret>>> = Rc::new(RefCell::new(Vec::new()));
+    // (#conn-path 2026-10-04 高保真 #proxy-fields) 跳板机链工作集:链上会话
+    // (有序)。链编辑回调增删改它;保存时写入 Session.jump_chain;jump-pool /
+    // jump-chain 两个 slint model 由 refresh_jump_chain() 重建。
+    let edit_jump_chain: Rc<RefCell<Vec<Session>>> = Rc::new(RefCell::new(Vec::new()));
+    let jump_pool_model: Rc<VecModel<JumpEntry>> = Rc::new(VecModel::default());
+    let jump_chain_model: Rc<VecModel<JumpEntry>> = Rc::new(VecModel::default());
+    // 刷新跳板链 UI:chain model 按工作集重建;pool = 全部候选 − 已入链 − 自身
+    // (exclude_id = 正在编辑的会话 id);满员(pool 空)置禁用标志。
+    let refresh_jump_chain =
+        |window: &AppWindow,
+         store: &ConfigStore,
+         exclude_id: &str,
+         chain: &Rc<RefCell<Vec<Session>>>,
+         pool: &Rc<VecModel<JumpEntry>>,
+         chain_model: &Rc<VecModel<JumpEntry>>| {
+            let entries: Vec<JumpEntry> =
+                chain.borrow().iter().map(session_models::jump_entry).collect();
+            chain_model.set_vec(entries);
+            let skip: HashSet<String> = chain.borrow().iter().map(|s| s.id.clone()).collect();
+            let pool_entries = session_models::build_jump_pool(store, exclude_id, &skip);
+            window.set_jump_pool_exhausted(pool_entries.is_empty());
+            pool.set_vec(pool_entries);
+        };
     // on_connect_session moves the panes_model binding into its closure; the
     // rename handler below needs its own handle, so clone up front.
     let panes_model_rename = panes_model.clone();
@@ -5027,6 +5053,9 @@ fn wire_session_callbacks(
     let ef_new = edit_forwards.clone();
     let et_new = edit_triggers.clone();
     let ets_new = edit_trigger_secrets.clone();
+    let ejc_new = edit_jump_chain.clone();
+    let jpm_new = jump_pool_model.clone();
+    let jcm_new = jump_chain_model.clone();
     let store_ng = store.clone();
     window.on_new_session_clicked(move || {
         if let Some(w) = weak.upgrade() {
@@ -5037,11 +5066,16 @@ fn wire_session_callbacks(
             w.set_dialog_forwards(forward_model(&ef_new.borrow()));
             w.set_dialog_triggers(trigger_model(&et_new.borrow()));
             let empty = Session::new_empty();
-            let (jump_labels, jump_ids, jump_idx) =
-                jump_candidates(&store_ng.borrow(), &empty.id, "");
-            w.set_jump_choices(jump_labels);
-            w.set_jump_ids(jump_ids);
-            w.set_dialog_jump_index(jump_idx);
+            // (#conn-path) 链编辑状态清空 + 候选池刷新。
+            *ejc_new.borrow_mut() = Vec::new();
+            refresh_jump_chain(
+                &w,
+                &store_ng.borrow(),
+                &empty.id,
+                &ejc_new,
+                &jpm_new,
+                &jcm_new,
+            );
             w.set_dialog_id(empty.id.into());
             w.set_dialog_name("".into());
             w.set_dialog_host("".into());
@@ -5055,8 +5089,13 @@ fn wire_session_callbacks(
             w.set_dialog_key_inline("".into());
             w.set_dialog_key_inline_mode(false);
             w.set_dialog_test_status("".into());
-            w.set_dialog_proxy_type("none".into());
-            w.set_dialog_proxy_hostport("".into());
+            // (#conn-path) 新会话:直连起步,代理协议默认 SOCKS5、四字段全空。
+            w.set_dialog_path_type("direct".into());
+            w.set_dialog_proxy_type("socks5".into());
+            w.set_dialog_proxy_host("".into());
+            w.set_dialog_proxy_port("".into());
+            w.set_dialog_proxy_user("".into());
+            w.set_dialog_proxy_pass("".into());
             w.set_dialog_group("".into());
             w.set_dialog_kind("ssh".into());
             w.set_dialog_serial_port("".into());
@@ -5255,11 +5294,26 @@ fn wire_session_callbacks(
         let ef_edit = edit_forwards.clone();
         let et_edit = edit_triggers.clone();
         let ets_edit = edit_trigger_secrets.clone();
+        let ejc_edit = edit_jump_chain.clone();
+        let jpm_edit = jump_pool_model.clone();
+        let jcm_edit = jump_chain_model.clone();
         window.on_edit_session(move |id: SharedString| {
             let id = id.to_string();
             let store = store.borrow();
             let Some(session) = store.get(&id) else {
                 return;
+            };
+            // (#conn-path) 链编辑状态恢复:旧 jump_session_id 单跳 → 链首一项
+            // (老配置无损迁移);链内悬空 id 剔除。
+            *ejc_edit.borrow_mut() = {
+                let mut chain: Vec<Session> =
+                    session.jump_chain.iter().filter_map(|jid| store.get(jid).cloned()).collect();
+                if chain.is_empty() && !session.jump_session_id.is_empty() {
+                    if let Some(j) = store.get(&session.jump_session_id) {
+                        chain.push(j.clone());
+                    }
+                }
+                chain
             };
             *ef_edit.borrow_mut() = forward_drafts(&session.forwards);
             *et_edit.borrow_mut() = trigger_drafts(&session.triggers);
@@ -5285,14 +5339,25 @@ fn wire_session_callbacks(
                 w.set_dialog_key_inline("".into());
                 w.set_dialog_key_inline_mode(!session.private_key_inline.is_empty());
                 w.set_dialog_test_status("".into());
-                let (proxy_type, proxy_hostport) = split_proxy(&session.proxy);
-                w.set_dialog_proxy_type(proxy_type.into());
-                w.set_dialog_proxy_hostport(proxy_hostport.into());
-                let (jump_labels, jump_ids, jump_idx) =
-                    jump_candidates(&store, &session.id, &session.jump_session_id);
-                w.set_jump_choices(jump_labels);
-                w.set_jump_ids(jump_ids);
-                w.set_dialog_jump_index(jump_idx);
+                // (#conn-path) 旧单串代理拆回五元组回填;顺序必须先 path_type
+                // (slint changed 回调会清空代理字段,先设类型再填值)。
+                // 代理密码不回显(#10):留空 = 保存时保留旧值。
+                let (path_type, proto, phost, pport, puser, _pass) =
+                    session_models::split_proxy_parts(&session.proxy);
+                w.set_dialog_path_type(path_type.into());
+                w.set_dialog_proxy_type(proto.into());
+                w.set_dialog_proxy_host(phost.into());
+                w.set_dialog_proxy_port(pport.into());
+                w.set_dialog_proxy_user(puser.into());
+                w.set_dialog_proxy_pass("".into());
+                refresh_jump_chain(
+                    &w,
+                    &store,
+                    &session.id,
+                    &ejc_edit,
+                    &jpm_edit,
+                    &jcm_edit,
+                );
                 w.set_dialog_group(session.group.clone().into());
                 w.set_dialog_kind(session.kind.as_str().into());
                 w.set_dialog_serial_port(session.serial_port.clone().into());
@@ -5930,9 +5995,87 @@ fn wire_session_callbacks(
         let weak = window.as_weak();
         let store = store.clone();
         let sessions_model = sessions_model.clone();
+        // (#conn-path) 跳板链编辑回调:增(候选未入链才加)/删/上移/下移。
+        {
+            let store_r = store.clone();
+            let ejc_r = edit_jump_chain.clone();
+            let jpm_r = jump_pool_model.clone();
+            let jcm_r = jump_chain_model.clone();
+            let refresh: Rc<dyn Fn(&AppWindow)> = Rc::new(move |w: &AppWindow| {
+                let exclude = w.get_dialog_id().to_string();
+                refresh_jump_chain(w, &store_r.borrow(), &exclude, &ejc_r, &jpm_r, &jcm_r);
+            });
+            window.on_dialog_chain_add({
+                let store = store.clone();
+                let ejc = edit_jump_chain.clone();
+                let weak = weak.clone();
+                let refresh = refresh.clone();
+                move |id: SharedString| {
+                    if let Some(w) = weak.upgrade() {
+                        if let Some(s) = store.borrow().get(id.as_str()) {
+                            let mut ch = ejc.borrow_mut();
+                            if !ch.iter().any(|x| x.id == s.id) {
+                                ch.push(s.clone());
+                            }
+                            drop(ch);
+                            refresh(&w);
+                        }
+                    }
+                }
+            });
+            window.on_dialog_chain_remove({
+                let ejc = edit_jump_chain.clone();
+                let weak = weak.clone();
+                let refresh = refresh.clone();
+                move |idx: i32| {
+                    if let Some(w) = weak.upgrade() {
+                        let mut ch = ejc.borrow_mut();
+                        if idx >= 0 && (idx as usize) < ch.len() {
+                            ch.remove(idx as usize);
+                        }
+                        drop(ch);
+                        refresh(&w);
+                    }
+                }
+            });
+            window.on_dialog_chain_up({
+                let ejc = edit_jump_chain.clone();
+                let weak = weak.clone();
+                let refresh = refresh.clone();
+                move |idx: i32| {
+                    if let Some(w) = weak.upgrade() {
+                        let mut ch = ejc.borrow_mut();
+                        let i = idx as usize;
+                        if i > 0 && i < ch.len() {
+                            ch.swap(i - 1, i);
+                        }
+                        drop(ch);
+                        refresh(&w);
+                    }
+                }
+            });
+            window.on_dialog_chain_down({
+                let ejc = edit_jump_chain.clone();
+                let weak = weak.clone();
+                let refresh = refresh.clone();
+                move |idx: i32| {
+                    if let Some(w) = weak.upgrade() {
+                        let mut ch = ejc.borrow_mut();
+                        let i = idx as usize;
+                        if i + 1 < ch.len() {
+                            ch.swap(i, i + 1);
+                        }
+                        drop(ch);
+                        refresh(&w);
+                    }
+                }
+            });
+        }
         let edit_forwards = edit_forwards.clone();
         let edit_triggers = edit_triggers.clone();
         let edit_trigger_secrets = edit_trigger_secrets.clone();
+        let ejc_submit = edit_jump_chain.clone();
+        let _ = &ejc_submit;
         let registry = registry.clone();
         window.on_session_dialog_submit(move |draft: SessionDraft| {
             let id = draft.id.to_string();
@@ -5981,8 +6124,7 @@ fn wire_session_callbacks(
                 Secret::default()
             };
             let private_key_path = if draft.private_key_inline_mode {
-                String::new()
-            } else {
+                String::new()            } else {
                 draft.private_key_path.to_string().replace('\\', "/")
             };
             let kind = crate::config::SessionKind::from_str(&draft.kind.to_string());
@@ -6025,7 +6167,15 @@ fn wire_session_callbacks(
                 // Store the key path with forward slashes uniformly.
                 private_key_path,
                 private_key_inline,
-                proxy: draft.proxy.to_string(),
+                // (#conn-path) 由四字段拼装(编辑时代理密码留空 → 复用旧值)。
+                proxy: session_models::assemble_proxy(
+                    &draft,
+                    &store
+                        .borrow()
+                        .get(&draft.id)
+                        .map(|s| s.proxy.clone())
+                        .unwrap_or_default(),
+                ),
                 last_used: None,
                 group: draft.group.to_string(),
                 kind,
@@ -6051,7 +6201,23 @@ fn wire_session_callbacks(
                 triggers,
                 disable_shell_integration: draft.disable_shell_integration,
                 note: draft.note.to_string(),
-                jump_session_id: draft.jump_session_id.to_string(),
+                // (#conn-path) 跳板链写入;jump_session_id 同步为链首(旧版本读兼容)。
+                // 仅 ssh/telnet 有连接路径 —— local/rdp 区块隐藏,残留链一并清空。
+                jump_session_id: match draft.kind.to_string().as_str() {
+                    k @ ("ssh" | "telnet") => ejc_submit
+                        .borrow()
+                        .first()
+                        .map(|s| s.id.clone())
+                        .unwrap_or_default(),
+                    _ => String::new(),
+                },
+                jump_chain: match draft.kind.to_string().as_str() {
+                    k @ ("ssh" | "telnet") => {
+                        let _ = k;
+                        ejc_submit.borrow().iter().map(|s| s.id.clone()).collect()
+                    }
+                    _ => Vec::new(),
+                },
             };
             {
                 let mut s = store.borrow_mut();
@@ -6078,6 +6244,7 @@ fn wire_session_callbacks(
         let edit_forwards = edit_forwards.clone();
         let edit_triggers = edit_triggers.clone();
         let edit_trigger_secrets = edit_trigger_secrets.clone();
+        let ejc_test = edit_jump_chain.clone();
         window.on_session_dialog_test(move |draft: SessionDraft| {
             let kind = draft.kind.to_string();
             if kind == "rdp" {
@@ -6134,11 +6301,21 @@ fn wire_session_callbacks(
                         return;
                     }
                 };
-            let session = session_from_draft(&draft, existing.as_ref(), forwards, triggers);
+            let mut session = session_from_draft(&draft, existing.as_ref(), forwards, triggers);
+            // (#conn-path) 测试连接同样走完整跳板链(仅 ssh/telnet 有连接路径)。
+            session.jump_chain = match draft.kind.to_string().as_str() {
+                k @ ("ssh" | "telnet") => {
+                    let _ = k;
+                    ejc_test.borrow().iter().map(|s| s.id.clone()).collect()
+                }
+                _ => Vec::new(),
+            };
+            session.jump_session_id =
+                session.jump_chain.first().cloned().unwrap_or_default();
             let weak_done = weak.clone();
 
             if kind == "ssh" {
-                let jump = resolve_jump(&store, &session);
+                let jump = resolve_jump_chain(&store, &session);
                 let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
                 runtime.spawn(async move {
                     let mut test = Box::pin(test_session_auth(session, jump, events_tx));
@@ -6226,15 +6403,51 @@ fn wire_session_callbacks(
                 return;
             }
 
+            // (#conn-path) telnet 测试与真实连接同路径:跳板链 → 代理 → 直连;
+            // 其余协议维持裸 TCP 探测。
+            let is_telnet = session.kind == SessionKind::Telnet;
+            let proxy = session.proxy.clone();
+            let jumps_for_test = resolve_jump_chain(&store, &session);
             let host = session.host;
             let port = session.port;
             runtime.spawn(async move {
                 let target = format!("{host}:{port}");
-                let result = tokio::time::timeout(
-                    std::time::Duration::from_secs(3),
-                    tokio::net::TcpStream::connect((host.as_str(), port)),
-                )
-                .await;
+                let result = if is_telnet && !jumps_for_test.is_empty() {
+                    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(3),
+                        crate::ssh::connect_tunnel_via_jumps(
+                            &jumps_for_test, &host, port, &tx,
+                        ),
+                    )
+                    .await
+                    .map(|r| r.map(|_| ()))
+                } else if is_telnet {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(3),
+                        async {
+                            match crate::ssh::proxy::resolve(&proxy) {
+                                Some(p) => crate::ssh::proxy::connect(&p, &host, port).await,
+                                None => tokio::net::TcpStream::connect((host.as_str(), port))
+                                    .await
+                                    .map_err(|e| anyhow::anyhow!("connect {host}:{port} failed: {e}")),
+                            }
+                        },
+                    )
+                    .await
+                    .map(|r| r.map(|_| ()))
+                } else {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(3),
+                        async {
+                            tokio::net::TcpStream::connect((host.as_str(), port))
+                                .await
+                                .map_err(|e| anyhow::anyhow!("connect {host}:{port} failed: {e}"))
+                        },
+                    )
+                    .await
+                    .map(|r| r.map(|_| ()))
+                };
                 let message = match result {
                     Ok(Ok(_)) => t("连接正常", "Connection OK").to_string(),
                     Ok(Err(e)) => format!("{}: {e}", t("连接失败", "Connection failed")),
@@ -8801,10 +9014,6 @@ fn system_ui_fonts(db: &fontdb::Database) -> Vec<slint::SharedString> {
 
 /// Split a stored proxy URL into `(type, host:port)` for the session dialog.
 ///
-/// `""` → `("none", "")`. Recognises `socks5`/`socks5h`/`socks` and
-/// `http`/`https` scheme prefixes. A value without a (recognised) scheme is
-/// treated as SOCKS5, matching proxy.rs's parse default, so older configs that
-/// stored a bare `host:port` keep working.
 /// Parse a "vX.Y.Z" / "X.Y.Z" tag into a comparable tuple, or None if it isn't
 /// a three-part numeric version. A pre-release suffix on the patch (e.g.
 /// "3-rc1") is tolerated by taking its leading digits (#48).
@@ -8822,30 +9031,9 @@ fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
     Some((major, minor, patch))
 }
 
-fn split_proxy(url: &str) -> (String, String) {
-    let s = url.trim();
-    if s.is_empty() {
-        return ("none".to_string(), String::new());
-    }
-    let lower = s.to_ascii_lowercase();
-    for p in ["http://", "https://"] {
-        if lower.starts_with(p) {
-            return (
-                "http".to_string(),
-                s[p.len()..].trim_end_matches('/').to_string(),
-            );
-        }
-    }
-    for p in ["socks5h://", "socks5://", "socks://"] {
-        if lower.starts_with(p) {
-            return (
-                "socks5".to_string(),
-                s[p.len()..].trim_end_matches('/').to_string(),
-            );
-        }
-    }
-    ("socks5".to_string(), s.trim_end_matches('/').to_string())
-}
+// (#conn-path 2026-10-04) 旧的 split_proxy 单串拆解已升级为
+// session_models::split_proxy_parts(五元组回填)+ session_models::assemble_proxy
+// (四字段拼装、代理密码留空复用旧值),见 session_models.rs。
 
 fn parent_path(path: &str) -> String {
     let trimmed = path.trim_end_matches('/');

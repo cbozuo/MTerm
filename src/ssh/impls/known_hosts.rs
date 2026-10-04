@@ -26,7 +26,7 @@ fn id(host: &str, port: u16) -> String {
 /// Path to the known_hosts file (alongside sessions.json, in the portable-first
 /// data dir — #141).
 fn path() -> Option<PathBuf> {
-    Some(crate::config::data_dir().join("known_hosts"))
+    Some(crate::datastore::config_dir().join("known_hosts"))
 }
 
 /// The presented key in its canonical OpenSSH one-line form (`type base64`,

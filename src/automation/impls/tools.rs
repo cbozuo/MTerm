@@ -127,7 +127,7 @@ async fn read_remote_text_file(arguments: &Value, frontend: Frontend) -> Result<
 fn sftp_context(
     arguments: &Value,
     frontend: Frontend,
-) -> Result<(Session, Option<Session>, Duration)> {
+) -> Result<(Session, Vec<Session>, Duration)> {
     let store = load_store(frontend)?;
     if frontend == Frontend::Mcp && !store.mcp_use_saved_credentials() {
         return Err(anyhow!(
@@ -142,16 +142,21 @@ fn sftp_context(
     if session.kind.as_str() != "ssh" {
         return Err(anyhow!("SFTP tools only support SSH sessions"));
     }
-    let jump = if session.jump_session_id.trim().is_empty() {
-        None
-    } else {
-        Some(
+    // (#conn-path) 跳板链解析:jump_chain 优先,回落旧单跳字段;悬空 id 报错。
+    let mut ids = session.jump_chain.clone();
+    if ids.is_empty() && !session.jump_session_id.trim().is_empty() {
+        ids.push(session.jump_session_id.clone());
+    }
+    let mut jump = Vec::new();
+    for jid in &ids {
+        if jid == &session.id { continue; }
+        jump.push(
             store
-                .get(&session.jump_session_id)
+                .get(jid)
                 .cloned()
-                .ok_or_else(|| anyhow!("jump session not found: {}", session.jump_session_id))?,
-        )
-    };
+                .ok_or_else(|| anyhow!("jump session not found: {}", jid))?,
+        );
+    }
     let timeout = optional_u64(arguments, "timeout_seconds")?
         .unwrap_or(DEFAULT_TIMEOUT_SECONDS)
         .clamp(1, MAX_TIMEOUT_SECONDS);
@@ -219,16 +224,21 @@ async fn run_command(arguments: &Value, frontend: Frontend) -> Result<Value> {
     if session.kind.as_str() != "ssh" {
         return Err(anyhow!("run_command only supports SSH sessions"));
     }
-    let jump = if session.jump_session_id.trim().is_empty() {
-        None
-    } else {
-        Some(
+    // (#conn-path) 跳板链解析:jump_chain 优先,回落旧单跳字段;悬空 id 报错。
+    let mut ids = session.jump_chain.clone();
+    if ids.is_empty() && !session.jump_session_id.trim().is_empty() {
+        ids.push(session.jump_session_id.clone());
+    }
+    let mut jump = Vec::new();
+    for jid in &ids {
+        if jid == &session.id { continue; }
+        jump.push(
             store
-                .get(&session.jump_session_id)
+                .get(jid)
                 .cloned()
-                .ok_or_else(|| anyhow!("jump session not found: {}", session.jump_session_id))?,
-        )
-    };
+                .ok_or_else(|| anyhow!("jump session not found: {}", jid))?,
+        );
+    }
 
     let result = crate::ssh::execute_command(
         session,

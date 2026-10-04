@@ -1,0 +1,986 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>主题与壁纸解耦 · 方案高保真 2026-10-05</title>
+<style>
+  :root{
+    --bg-root:#1b1d23; --bg-panel:#23262d; --bg-panel-alt:#2a2d35; --bg-elevated:#30333c;
+    --bg-hover:#373a44; --border-subtle:#3a3d46; --border-control:#31353e;
+    --text-primary:#e6e8ee; --text-secondary:#b4b9c4; --text-muted:#9196a3;
+    --accent:#4a90e2; --accent-soft:rgba(74,144,226,.16); --chip:rgba(74,144,226,.22);
+    --field:#191b21; --field-2:#1d2027; --panel-hi:#282b34; --danger:#e25c5c;
+    --ok:#4ec9b0; --warn:#e2a84a;
+    --mono:"Cascadia Mono","Consolas","Sarasa Mono SC",monospace;
+    --sans:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#0f1013;font-family:var(--sans);color:var(--text-primary);
+       min-height:100vh;padding:34px 24px 90px;display:flex;flex-direction:column;align-items:center;gap:18px}
+  h1{font-size:16px;font-weight:600;letter-spacing:.4px;color:var(--text-primary)}
+  .sub{font-size:12px;color:var(--text-muted);margin-top:-12px}
+  .sec{width:1180px;margin-top:14px}
+  .sec-t{font-size:14px;font-weight:700;color:var(--text-secondary);
+        border-left:3px solid var(--accent);padding-left:9px;margin-bottom:4px}
+  .sec-d{font-size:11.5px;color:var(--text-muted);line-height:1.75;margin:6px 0 12px 12px}
+  .card{width:1180px;background:var(--bg-panel);border:1px solid var(--border-subtle);
+        border-radius:10px;padding:18px 20px}
+  code{font-family:var(--mono);font-size:11px;color:var(--text-secondary)}
+  .tag{display:inline-block;font-size:9.5px;font-weight:700;padding:1.5px 7px;border-radius:7px;
+       vertical-align:2px;margin-right:6px}
+  .tag-r{background:rgba(226,92,92,.16);color:#ef8b8b}
+  .tag-o{background:rgba(226,168,74,.16);color:#eec27a}
+  .tag-g{background:rgba(78,201,176,.16);color:#7fd9c6}
+  .tag-b{background:var(--chip);color:#7fb6ee}
+
+  /* 表格 */
+  table{width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px}
+  th,td{text-align:left;padding:6px 9px;border-bottom:1px solid var(--border-subtle);vertical-align:top}
+  th{color:var(--text-muted);font-weight:600;font-size:10.5px;letter-spacing:.3px}
+  td.c{color:var(--text-secondary)}
+  td.mono{font-family:var(--mono);font-size:10.5px;color:#8fb8e0}
+  tr:last-child td{border-bottom:0}
+
+  /* 分栏 */
+  .cols{display:flex;gap:14px;align-items:flex-start}
+  .cols>*{flex:1;min-width:0}
+
+  /* ── 主题卡 ── */
+  .tgrip{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+  .tcard{background:var(--bg-root);border:1px solid var(--border-subtle);border-radius:10px;
+         overflow:hidden;cursor:pointer;transition:border-color .14s,transform .14s}
+  .tcard:hover{border-color:var(--accent);transform:translateY(-2px)}
+  .tcard.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+  .tprev{height:112px;position:relative;display:flex;flex-direction:column}
+  .tprev .bar{height:15px;display:flex;align-items:center;gap:3px;padding:0 5px}
+  .tprev .bar i{width:5px;height:5px;border-radius:50%;display:block}
+  .tprev .body{flex:1;display:flex}
+  .tprev .side{width:26%;border-right:1px solid rgba(128,128,128,.25)}
+  .tprev .main{flex:1;padding:5px 6px;display:flex;flex-direction:column;gap:3px}
+  .tprev .ln{height:3px;border-radius:2px;display:block}
+  .tprev .chip{width:30px;height:9px;border-radius:3px;display:block}
+  .tmeta{padding:8px 10px 10px}
+  .tname{font-size:12px;font-weight:700;color:var(--text-primary)}
+  .ten{font-size:10px;color:var(--text-muted);margin-top:1px}
+  .tpair{display:flex;gap:4px;margin-top:6px}
+  .tpair div{flex:1;border-radius:5px;padding:4px 5px;font-size:9px;font-weight:700;text-align:center}
+
+  /* token 表 */
+  .tok{width:100%;font-family:var(--mono);font-size:10px;border-collapse:collapse;margin-top:4px}
+  .tok td{padding:2.5px 5px;border-bottom:1px solid rgba(128,128,128,.14)}
+  .tok .k{color:var(--text-muted);width:44%}
+  .tok .v{color:var(--text-secondary)}
+  .sw{display:inline-block;width:9px;height:9px;border-radius:2px;vertical-align:-1px;
+      margin-right:5px;border:1px solid rgba(128,128,128,.35)}
+
+  /* ── 1:1 设置面板 mock ── */
+  .ifd{width:820px;border-radius:10px;overflow:hidden;border:1px solid var(--border-strong);
+       display:flex;box-shadow:0 18px 48px rgba(0,0,0,.55);font-size:12px}
+  .ifd-nav{width:168px;flex:0 0 168px;display:flex;flex-direction:column}
+  .ifd-t{height:44px;display:flex;align-items:center;padding:0 10px 0 16px;font-weight:700;font-size:14px}
+  .ifd-navlist{flex:1;padding:10px;display:flex;flex-direction:column;gap:2px;overflow:hidden}
+  .ni{display:flex;align-items:center;gap:9px;height:32px;padding:0 10px;border-radius:7px;
+      font-size:12px;color:var(--text-secondary)}
+  .ni .ic{width:15px;height:15px;flex:0 0 15px;border-radius:4px;position:relative}
+  .ni .ic::after{content:"";position:absolute;inset:3px;border-radius:2px;background:currentColor;opacity:.75}
+  .ni.on{font-weight:700}
+  .ni.on .ic{color:var(--accent)}
+  .ifd-body{flex:1;display:flex;flex-direction:column;min-width:0}
+  .ifd-c{padding:14px 20px 18px;overflow:hidden}
+
+  .shead{font-size:11px;font-weight:700;letter-spacing:.6px;margin:0 0 2px}
+  .srow{display:flex;align-items:center;justify-content:space-between;gap:16px;
+        padding:9px 0;border-bottom:1px solid var(--border-subtle)}
+  .srow:last-child{border-bottom:0}
+  .sl{font-size:12.5px;font-weight:600}
+  .sd{font-size:10.5px;margin-top:2px;line-height:1.55;max-width:330px}
+  .gap{height:14px}
+
+  /* 通用控件 */
+  .seg{display:flex;gap:2px;padding:3px;border-radius:9px;border:1px solid var(--border-control)}
+  .seg button{border:0;background:transparent;font:inherit;font-size:11.5px;padding:5px 11px;
+              border-radius:6px;cursor:pointer;white-space:nowrap}
+  .slider{width:132px;height:20px;position:relative;display:flex;align-items:center}
+  .slider .trk{width:100%;height:4px;border-radius:2px;position:relative}
+  .slider .fil{position:absolute;left:0;top:0;bottom:0;border-radius:2px}
+  .slider .kn{position:absolute;top:50%;width:12px;height:12px;border-radius:50%;
+              transform:translate(-50%,-50%);border:2px solid}
+  .pct{font-size:11px;width:32px;text-align:right;font-family:var(--mono)}
+
+  /* 主题选择网格（设置页内） */
+  .tpick{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+  .tp{height:74px;border-radius:8px;overflow:hidden;border:2px solid;position:relative;cursor:pointer}
+  .tp .inner{position:absolute;inset:0;display:flex;flex-direction:column}
+  .tp .tbar{height:11px;display:flex;align-items:center;padding:0 4px;gap:2px}
+  .tp .tbar i{width:4px;height:4px;border-radius:50%;display:block}
+  .tp .tbody{flex:1;display:flex}
+  .tp .tside{width:24%;border-right:1px solid rgba(128,128,128,.28)}
+  .tp .tmain{flex:1;padding:4px 5px;display:flex;flex-direction:column;gap:3px}
+  .tp .tmain i{height:3px;border-radius:2px;display:block}
+  .tp .tchip{position:absolute;right:5px;bottom:5px;width:22px;height:8px;border-radius:3px}
+  .tp .tick{position:absolute;right:5px;top:5px;width:13px;height:13px;border-radius:50%;
+            display:none;align-items:center;justify-content:center;font-size:8px;color:#fff;font-weight:800}
+  .tp.sel .tick{display:flex}
+  .tp-name{font-size:10.5px;margin-top:4px;text-align:center}
+
+  /* 强调色 */
+  .accents{display:flex;gap:6px;flex-wrap:wrap;max-width:250px}
+  .ac{width:19px;height:19px;border-radius:5px;cursor:pointer;position:relative;border:1px solid rgba(128,128,128,.3)}
+  .ac.on::after{content:"";position:absolute;inset:-3px;border-radius:7px;border:2px solid var(--accent)}
+
+  /* ── 终端小样（可换肤演示） ── */
+  .demo{border-radius:9px;overflow:hidden;border:1px solid var(--border-subtle)}
+  .dm-bar{height:26px;display:flex;align-items:center;padding:0 9px;gap:8px;font-size:10.5px}
+  .dm-tab{height:18px;padding:0 9px;border-radius:5px 5px 0 0;display:flex;align-items:center;font-size:10px}
+  .dm-term{padding:9px 11px;font-family:var(--mono);font-size:11px;line-height:1.62;min-height:118px}
+  .dm-term .p{color:var(--t-accent)}
+  .dm-term .g{color:var(--t-ok)} .dm-term .y{color:var(--t-warn)}
+  .dm-term .r{color:var(--t-danger)} .dm-term .c{color:var(--t-accent2)}
+  .dm-term .m{color:var(--t-mut)} .dm-term .dim{color:var(--t-mut);opacity:.75}
+  .dm-pane{padding:8px 10px;font-size:10.5px;display:flex;flex-direction:column;gap:5px}
+
+  /* 对比 */
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .bax{border:1px solid var(--border-subtle);border-radius:9px;overflow:hidden}
+  .bax-h{font-size:10.5px;font-weight:700;padding:5px 10px;letter-spacing:.4px;
+         border-bottom:1px solid var(--border-subtle)}
+  .bax-b{padding:11px 12px}
+  .arrow{text-align:center;font-size:15px;color:var(--accent);margin:2px 0}
+
+  /* 行为矩阵 */
+  .ok-c{color:#7fd9c6;font-weight:700}
+  .no-c{color:#ef8b8b;font-weight:700}
+  .new-c{color:#eec27a;font-weight:700}
+  ul.docs{margin:4px 0 0 16px;font-size:11.5px;color:var(--text-secondary);line-height:1.85}
+  ul.docs li::marker{color:var(--accent)}
+  .kv{display:grid;grid-template-columns:130px 1fr;gap:4px 12px;font-size:11.5px;margin-top:6px}
+  .kv b{color:var(--text-muted);font-weight:600}
+</style>
+</head>
+<body>
+
+<h1>MeatShell · 主题与壁纸解耦方案</h1>
+<div class="sub">高保真设计稿 · 2026-10-05 · 主题（Theme）／强调色（Accent）／壁纸（Wallpaper）三层独立</div>
+
+<!-- ══════════ §0 结论 ══════════ -->
+<div class="sec">
+  <div class="sec-t">0 · 一句话结论</div>
+  <div class="sec-d">
+    你的判断成立：<b>主题和壁纸目前是混在一起的</b>，而且是<b>双向</b>混用——壁纸不只是铺在底下，它还反写主题的明暗与强调色。
+    拆成三层后，界面上真正需要动的不是配色，而是<b>设置面板的信息架构</b>（壁纸页要拆成两页）、<b>顶栏主题控件</b>（单toggle 不够用了）、
+    以及<b>三个透明度滑杆</b>要各自独立。下面逐项给方案。
+  </div>
+  <div class="card">
+    <div class="cols">
+      <div>
+        <div class="shead" style="margin-bottom:8px">现状耦合点（代码定位）</div>
+        <table>
+          <tr><th style="width:186px">耦合</th><th>位置</th></tr>
+          <tr><td class="c">壁纸状态住在主题里</td><td class="mono">theme.slint:21-28<br>wallpaper / wallpaper-active / wp-accent / wp-tint / panel-alpha</td></tr>
+          <tr><td class="c">所有面板底色被图片染色</td><td class="mono">theme.slint:34-38　frost(base, alpha)</td></tr>
+          <tr><td class="c">强调色被图片顶替</td><td class="mono">theme.slint:106　accent-solid = wp-accent</td></tr>
+          <tr><td class="c">选壁纸 → 反写主题偏好</td><td class="mono">app.rs:2596-2600　set_theme_pref()</td></tr>
+          <tr><td class="c">图片亮度 → 顶掉用户深浅选择</td><td class="mono">terminal_ui.rs:307　apply_dark_mode(is_dark)</td></tr>
+          <tr><td class="c">深浅只有两个值</td><td class="mono">theme.slint:15　dark: bool，全文件 126 处三元式</td></tr>
+          <tr><td class="c">终端调色板只有两套</td><td class="mono">presentation.rs:654　ANSI16_DARK / LIGHT</td></tr>
+          <tr><td class="c">群色只有两套</td><td class="mono">theme.slint:244-255　group-color-dark / -light</td></tr>
+        </table>
+      </div>
+      <div>
+        <div class="shead" style="margin-bottom:8px">拆分后行为矩阵</div>
+        <table>
+          <tr><th>主题</th><th>壁纸</th><th>现状</th><th>拆分后</th></tr>
+          <tr><td class="c">暗</td><td class="c">暗图</td><td class="ok-c">可用</td><td class="ok-c">可用</td></tr>
+          <tr><td class="c">暗</td><td class="c">亮图</td><td class="no-c">被图片强制改亮，用户选择丢失</td><td class="ok-c">可用（遮罩压暗）</td></tr>
+          <tr><td class="c">亮</td><td class="c">亮图</td><td class="ok-c">可用</td><td class="ok-c">可用</td></tr>
+          <tr><td class="c">亮</td><td class="c">暗图</td><td class="no-c">被图片强制改暗</td><td class="ok-c">可用（遮罩提亮）</td></tr>
+          <tr><td class="c">暗</td><td class="c">无</td><td class="ok-c">可用</td><td class="ok-c">可用</td></tr>
+          <tr><td class="c">亮</td><td class="c">无</td><td class="ok-c">可用</td><td class="ok-c">可用</td></tr>
+          <tr><td class="c">任意</td><td class="c">自定义照片</td><td class="new-c">accent 被照片平均色接管，不可控</td><td class="ok-c">accent 归用户，取色为可选项</td></tr>
+        </table>
+        <div class="shead" style="margin:14px 0 6px">拆分后不可能再出现的现象</div>
+        <ul class="docs">
+          <li>选了"简约·浅"壁纸，深浅被改成亮 —— 不再发生，壁纸不认识深浅</li>
+          <li>顶栏 sun/moon 图标与实际主题不符 —— 图标由主题驱动，不再由图片驱动</li>
+          <li>选同一张壁纸两次，强调色不同（因为重新取了平均色）—— accent 与壁纸解耦</li>
+          <li>新用户装完是"幻想 3048 + 被反写的 dark" —— 默认壁纸改为无 + 跟随系统</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ §1 目标模型 ══════════ -->
+<div class="sec">
+  <div class="sec-t">1 · 目标模型：三层各自独立</div>
+  <div class="sec-d">核心原则：<b>壁纸只负责"背后那张图"，不参与任何颜色决策</b>。强调色从主题里独立出来，成为用户可直接选的一等公民。</div>
+  <div class="card">
+    <div style="display:flex;gap:12px;align-items:stretch">
+      <div style="flex:1;border:1px solid var(--border-subtle);border-radius:9px;padding:13px 14px;background:var(--bg-root)">
+        <div class="tag tag-b">L1</div>
+        <div style="font-size:13px;font-weight:700;margin-bottom:3px">主题 Theme</div>
+        <div style="font-size:10.5px;color:var(--text-muted);line-height:1.7">
+          一整套中性色阶 + 语义色 + 终端 ANSI 调色板。<br>
+          决定<b>所有文字与面的可读性</b>，是唯一的"对比度责任人"。<br>
+          标识：<code>theme = meat-dark</code>
+        </div>
+      </div>
+      <div style="flex:1;border:1px solid var(--border-subtle);border-radius:9px;padding:13px 14px;background:var(--bg-root)">
+        <div class="tag tag-g">L2</div>
+        <div style="font-size:13px;font-weight:700;margin-bottom:3px">强调色 Accent</div>
+        <div style="font-size:10.5px;color:var(--text-muted);line-height:1.7">
+          8 个预设 + 取色器。用于选中态、主按钮、链接、焦点环。<br>
+          <b>不再由壁纸决定</b>，也不由主题锁死。<br>
+          标识：<code>accent = ocean</code>
+        </div>
+      </div>
+      <div style="flex:1;border:1px solid var(--border-subtle);border-radius:9px;padding:13px 14px;background:var(--bg-root)">
+        <div class="tag tag-o">L3</div>
+        <div style="font-size:13px;font-weight:700;margin-bottom:3px">壁纸 Wallpaper</div>
+        <div style="font-size:10.5px;color:var(--text-muted);line-height:1.7">
+          一张图 + 三个独立透明度（可见度 / 面板 / 终端）。<br>
+          <b>不读主题，不写主题</b>。可选"跟随图片取色"，默认关。<br>
+          标识：<code>wallpaper = ""</code>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow">▼</div>
+
+    <div class="cols" style="align-items:stretch">
+      <div style="flex:1.15">
+        <div class="shead" style="margin-bottom:7px">绘制顺序（改完之后的栈）</div>
+        <table>
+          <tr><th style="width:26px">z0</th><th class="c">窗口底色 = 主题 base-bg-root（永远不透明）</th></tr>
+          <tr><th>z1</th><th class="c">壁纸图（image-fit: cover，受"壁纸可见度"控制）</td></tr>
+          <tr><th>z2</th><th class="c">面板雾面 = 主题面色 + 主题色微染 + "面板不透明度"</td></tr>
+          <tr><th>z3</th><th class="c">终端底 = 主题 base-term-bg + "终端不透明度"</td></tr>
+          <tr><th>z4</th><th class="c">弹窗 / 菜单 = 主题面色，<b>始终不透明</b>（现状 popup-bg 保持）</td></tr>
+        </table>
+        <div class="shead" style="margin:14px 0 6px">与现状的差别</div>
+        <ul class="docs">
+          <li>现状 z2 的雾面里混进了 <code>wp-tint</code>（图片平均色）—— 拆掉，这是"界面被壁纸染色"的根源</li>
+          <li>现状 <code>panel-alpha</code> 一个值同时驱动面板与终端，拖一下全局齐变 —— 拆成两个独立值</li>
+          <li>现状 z3 终端会"霜化"（半透），导致浅色终端在亮壁纸上文字发飘 —— 拆分后终端有独立下限保护</li>
+        </ul>
+      </div>
+      <div>
+        <div class="shead" style="margin-bottom:7px">解耦后的三个滑杆（各自独立）</div>
+        <table>
+          <tr><th style="width:118px">滑杆</th><th>作用对象</th><th style="width:66px">范围</th><th style="width:52px">默认</th></tr>
+          <tr><td class="c">壁纸可见度</td><td class="c">壁纸图自身 alpha（无壁纸时置灰）</td><td class="mono">0–100%</td><td class="mono">100%</td></tr>
+          <tr><td class="c">面板不透明度</td><td class="c">侧栏 / 标签栏 / 顶栏 / 设置卡</td><td class="mono">30–100%</td><td class="mono">85%</td></tr>
+          <tr><td class="c">终端不透明度</td><td class="c">仅终端区（有独立下限 0.75）</td><td class="mono">75–100%</td><td class="mono">100%</td></tr>
+        </table>
+        <div class="shead" style="margin:14px 0 6px">终端可读性下限（新增保护）</div>
+        <div style="font-size:11.5px;color:var(--text-secondary);line-height:1.8">
+          终端是唯一承载不可控 ANSI 输出的区域，因此拆出硬约束：<br>
+          <code>term-alpha = max(0.75, 终端不透明度)</code><br>
+          <span class="tag tag-g">修掉</span>现状里"浅色终端 + 亮壁纸 = 文字发飘"这个只有用户自己能发现的坑。
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ §2 主题设计 ══════════ -->
+<div class="sec">
+  <div class="sec-t">2 · 主题预设设计（4 套色系 × 明/暗 = 8 个变体）</div>
+  <div class="sec-d">
+    设计约束：<b>4 套色系都按同一套语义槽位填色</b>（root / panel / panel-alt / elevated / hover / active / line / line-strong / text ×3 / term），
+    所以切换主题不产生任何布局位移 —— 只有颜色变。点卡片可实时看终端小样换肤。
+  </div>
+  <div class="card">
+    <div class="tgrip" id="tgrip"></div>
+
+    <div style="margin-top:16px" class="cols">
+      <div style="flex:1.1">
+        <div class="shead" style="margin-bottom:7px">实时换肤 · 终端 + 侧栏 + 标签</div>
+        <div class="demo" id="demo">
+          <div class="dm-bar">
+            <div class="dm-tab" id="dTab">ssh root@prod-01</div>
+            <div style="flex:1"></div>
+            <div style="opacity:.7" id="dName">Meat Dark</div>
+          </div>
+          <div class="dm-term" id="dTerm">
+            <div><span class="p">root@prod-01</span>:<span class="c">~</span>$ systemctl status meatshell</div>
+            <div><span class="g">● active (running)</span> <span class="dim">since 3 days ago</span></div>
+            <div> &nbsp;&nbsp;Main PID: <span class="c">14288</span> (meatshell)</div>
+            <div class="dim"> &nbsp;&nbsp;Tasks: 21 (running), 20 (threads)</div>
+            <div class="dim"> &nbsp;&nbsp;Memory: 48.2M</div>
+            <div>&nbsp;</div>
+            <div><span class="p">root@prod-01</span>:<span class="c">~</span>$ ls -la assets/*.svg | wc -l</div>
+            <div><span class="m">92</span></div>
+            <div>&nbsp;</div>
+            <div><span class="y">WARN</span> <span class="dim">theme.rs</span> disk nearly full <span class="m">/mnt/d 91%</span></div>
+            <div><span class="g">SUCCESS</span> <span class="dim">packaging</span> dist/meatshell-v0.9.0-win-x64.zip</div>
+            <div><span class="r">ERROR</span> <span class="dim">ssh</span> connection refused (10.0.0.7:22)</div>
+            <div>&nbsp;</div>
+            <div><span class="p">root@prod-01</span>:<span class="c">~</span>$ <span style="opacity:.9">▊</span></div>
+          </div>
+        </div>
+        <div style="font-size:10.5px;color:var(--text-muted);margin-top:6px;line-height:1.7">
+          注意：切主题时<b>行数、列宽、字号、间距全部不变</b> —— 8 套主题用的是同一组尺寸 token，只换颜色。
+        </div>
+      </div>
+      <div>
+        <div class="shead" style="margin-bottom:7px">当前选中：<span id="tkName">—</span></div>
+        <div style="font-size:11.5px;color:var(--text-secondary);line-height:1.8;margin-bottom:8px" id="tkDesc"></div>
+        <table class="tok" id="tkTok"></table>
+        <div style="font-size:10.5px;color:var(--text-muted);margin-top:8px;line-height:1.7">
+          现状全文件是 <code>dark ? #xxx : #yyy</code> 的三元式（126 处）。拆成 8 套后改成
+          <code>Theme.slot("panel")</code> 一张查表 + 每个变体一份 palette，<b>slint 侧调用点零改动</b>。
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ §3 设置页重排 ══════════ -->
+<div class="sec">
+  <div class="sec-t">3 · 界面布局需要调整的地方（1:1 高保真）</div>
+  <div class="sec-d">这是本方案对布局的实际改动点，共 5 处，每处都给了改前/改后对照。</div>
+
+  <div class="card">
+    <div class="shead" style="margin-bottom:9px">调整 ①　设置面板左栏：新增「主题」页，壁纸页瘦身</div>
+    <div class="ba">
+      <div class="bax">
+        <div class="bax-h" style="background:var(--danger);color:#fff">现状 · 15 项导航，主题无处安放</div>
+        <div class="bax-b" style="padding:0">
+          <div class="ifd" style="width:100%;border:0;border-radius:0;box-shadow:none">
+            <div class="ifd-nav" style="background:var(--bg-panel);border-right:1px solid var(--border-subtle)">
+              <div class="ifd-t" style="color:var(--text-primary)">设置</div>
+              <div class="ifd-navlist">
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>显示与字体</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>输入</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>渲染</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>输出高亮</div>
+                <div class="ni on" style="background:var(--chip);color:var(--accent)"><span class="ic"></span>壁纸</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>SFTP</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>WSL</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>侧栏</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>欢迎页</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>会话同步</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>WebDAV</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>下载</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>窗口</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>数据目录</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>MCP</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>新版本提示</div>
+              </div>
+            </div>
+            <div class="ifd-body" style="background:var(--bg-panel);color:var(--text-primary)">
+              <div class="ifd-c">
+                <div class="shead" style="color:var(--text-muted)">壁纸页现在同时管三件事</div>
+                <div class="srow"><div><div class="sl">内置壁纸</div>
+                  <div class="sd" style="color:var(--text-muted)">选一张，界面会沉浸式适配它的颜色</div></div>
+                  <div style="font-size:10.5px;color:var(--danger)">← 主题被改写</div></div>
+                <div class="srow"><div><div class="sl">自定义</div>
+                  <div class="sd" style="color:var(--text-muted)">选择文件…</div></div></div>
+                <div class="srow"><div><div class="sl">壁纸遮罩透明度</div>
+                  <div class="sd" style="color:var(--text-muted)">一个滑杆同时改面板 + 终端</div></div>
+                  <div style="font-size:10.5px;color:var(--danger)">← 一值多用</div></div>
+                <div class="srow"><div><div class="sl" style="color:var(--text-muted)">主题深浅</div>
+                  <div class="sd" style="color:var(--text-muted)">不在本页</div></div>
+                  <div style="font-size:10.5px;color:var(--danger)">← 无处可调</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="bax">
+        <div class="bax-h" style="background:var(--ok);color:#06231d">改后 · 16 项，「主题」独立成页</div>
+        <div class="bax-b" style="padding:0">
+          <div class="ifd" style="width:100%;border:0;border-radius:0;box-shadow:none">
+            <div class="ifd-nav" style="background:var(--bg-panel);border-right:1px solid var(--border-subtle)">
+              <div class="ifd-t" style="color:var(--text-primary)">设置</div>
+              <div class="ifd-navlist">
+                <div class="ni on" style="background:var(--chip);color:var(--accent)"><span class="ic"></span>主题 <span class="tag tag-g" style="margin:0;vertical-align:0">新</span></div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>显示与字体</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>输入</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>渲染</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>输出高亮</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>壁纸</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>SFTP</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>WSL</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>侧栏</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>欢迎页</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>会话同步</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>WebDAV</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>下载</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>窗口</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>数据目录</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>MCP</div>
+                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>新版本提示</div>
+              </div>
+            </div>
+            <div class="ifd-body" style="background:var(--bg-panel);color:var(--text-primary)">
+              <div class="ifd-c">
+                <div class="shead" style="color:var(--text-muted)">主题页</div>
+                <div class="srow" style="align-items:flex-start">
+                  <div style="flex:1"><div class="sl">主题</div>
+                    <div class="sd" style="color:var(--text-muted)">整套配色（含终端调色板），与壁纸无关</div>
+                    <div class="tpick" style="margin-top:8px" id="pick"></div>
+                  </div>
+                </div>
+                <div class="gap"></div>
+                <div class="srow"><div><div class="sl">跟随系统</div>
+                  <div class="sd" style="color:var(--text-muted)">按系统的深浅自动选暗/亮变体</div></div>
+                  <div class="seg" style="background:var(--field);border-color:var(--border-control)">
+                    <button class="on" style="color:var(--accent)">开</button><button>关</button>
+                  </div></div>
+                <div class="srow"><div><div class="sl">强调色</div>
+                  <div class="sd" style="color:var(--text-muted)">选中态 / 主按钮 / 链接，独立于主题</div></div>
+                  <div class="accents" id="acc"></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <ul class="docs" style="margin-top:10px">
+      <li><b>左栏宽度不变</b>（168px），16 项在 420px 最小窗口高度下由已有的 <code>nav-scroll</code> 滚动承载，不溢出</li>
+      <li>新页用现成 <code>NavItem</code>，图标从 <code>assets/icons</code> 取 —— 建议新增 <code>palette</code>（调色板）语义图标</li>
+      <li>主题页放在第一位：它是"门面设置"，用户进设置第一眼就看到</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="shead" style="margin-bottom:9px">调整 ②　壁纸页瘦身：只管图 + 三个独立滑杆</div>
+    <div class="ba">
+      <div class="bax">
+        <div class="bax-h" style="background:var(--danger);color:#fff">现状</div>
+        <div class="bax-b">
+          <div style="font-size:11px;color:var(--text-muted);line-height:1.9">
+            · 内置壁纸 6 张（选择即改主题）<br>
+            · 自定义文件（选择即改强调色 + 深浅）<br>
+            · 一个「壁纸遮罩透明度」滑杆 → 同时改面板 + 终端<br>
+            · 顶部文案："界面会沉浸式地适配它的颜色"<br>
+            · 无壁纸时滑杆仍可拖，<span class="tag tag-r">隐性状态</span>
+          </div>
+        </div>
+      </div>
+      <div class="bax">
+        <div class="bax-h" style="background:var(--ok);color:#06231d">改后</div>
+        <div class="bax-b">
+          <div style="font-size:11px;color:var(--text-secondary);line-height:1.9">
+            · 内置壁纸 6 张（<b>不改任何主题</b>）<br>
+            · 自定义文件（<b>不改主题</b>）<br>
+            · <b>壁纸可见度</b> 0–100%（无壁纸时置灰不可拖）<br>
+            · <b>面板不透明度</b> 30–100%<br>
+            · <b>终端不透明度</b> 75–100%（带下限保护）<br>
+            · 新增「跟随图片取色」开关，<b>默认关</b>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="gap"></div>
+    <div style="border:1px solid var(--border-subtle);border-radius:9px;padding:12px 14px;background:var(--bg-root)">
+      <div class="shead" style="margin-bottom:8px">改后壁纸页 1:1（沿用现有 SettingRow / SectionHeader 组件）</div>
+      <div style="background:var(--bg-panel);border:1px solid var(--border-subtle);border-radius:8px;padding:0 14px 12px">
+        <div style="font-size:10.5px;color:var(--text-muted);padding:10px 0 4px;line-height:1.6">
+          壁纸只作为背景显示，不再改变界面的强调色和深浅。
+        </div>
+        <div class="srow"><div style="flex:1"><div class="sl">内置壁纸</div>
+          <div class="sd" style="color:var(--text-muted)">简约·浅 / 简约·暗 / 幻想 3048 / MS / Miku / 无</div></div>
+          <div style="display:flex;gap:5px">
+            <div style="width:34px;height:26px;border-radius:5px;border:2px solid var(--accent);background:linear-gradient(135deg,#10131a,#1b2233)"></div>
+            <div style="width:34px;height:26px;border-radius:5px;border:1px solid var(--border-control);background:linear-gradient(180deg,#05060f,#1a0a2e)"></div>
+            <div style="width:34px;height:26px;border-radius:5px;border:1px solid var(--border-control);background:#2a2d35"></div>
+            <div style="width:34px;height:26px;border-radius:5px;border:1px solid var(--border-control);background:#2a2d35"></div>
+          </div></div>
+        <div class="srow"><div style="flex:1"><div class="sl">自定义壁纸</div>
+          <div class="sd" style="color:var(--text-muted)">从文件选择，支持 PNG / JPG / WEBP / BMP</div></div>
+          <div style="border:1px solid var(--border-control);background:var(--field);border-radius:7px;
+                      padding:5px 13px;font-size:11.5px">选择文件…</div></div>
+        <div class="srow"><div style="flex:1"><div class="sl">壁纸可见度</div>
+          <div class="sd" style="color:var(--text-muted)">壁纸自身的可见程度</div></div>
+          <div class="slider"><div class="trk" style="background:var(--bg-active)"><div class="fil" style="width:100%;background:var(--accent)"></div>
+            <div class="kn" style="left:100%;background:var(--accent);border-color:var(--bg-panel)"></div></div></div>
+          <div class="pct" style="color:var(--text-secondary)">100%</div></div>
+        <div class="srow"><div style="flex:1"><div class="sl">面板不透明度</div>
+          <div class="sd" style="color:var(--text-muted)">侧栏 / 标签栏 / 顶栏的雾面程度</div></div>
+          <div class="slider"><div class="trk" style="background:var(--bg-active)"><div class="fil" style="width:55%;background:var(--accent)"></div>
+            <div class="kn" style="left:55%;background:var(--accent);border-color:var(--bg-panel)"></div></div></div>
+          <div class="pct" style="color:var(--text-secondary)">85%</div></div>
+        <div class="srow"><div style="flex:1"><div class="sl">终端不透明度</div>
+          <div class="sd" style="color:var(--text-muted)">仅终端区，最低 75% 以保证 ANSI 输出可读</div></div>
+          <div class="slider"><div class="trk" style="background:var(--bg-active)"><div class="fil" style="width:100%;background:var(--accent)"></div>
+            <div class="kn" style="left:100%;background:var(--accent);border-color:var(--bg-panel)"></div></div></div>
+          <div class="pct" style="color:var(--text-secondary)">100%</div></div>
+        <div class="srow"><div style="flex:1"><div class="sl">跟随图片取色</div>
+          <div class="sd" style="color:var(--text-muted)">用图片主色替换强调色（关闭时强调色只由主题决定）</div></div>
+          <div class="seg" style="background:var(--field);border-color:var(--border-control)">
+            <button>开</button><button class="on" style="color:var(--accent)">关</button></div></div>
+      </div>
+      <div style="font-size:10.5px;color:var(--text-muted);margin-top:8px;line-height:1.7">
+        <span class="tag tag-g">修掉</span>现状「没设壁纸时不生效」只是文案说明，控件照样能拖，值会存进配置，下次开壁纸突然生效 —— 改为<b>无壁纸时置灰并吞掉事件</b>。
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="shead" style="margin-bottom:9px">调整 ③　顶栏主题控件：单 toggle → 主题速选面板</div>
+    <div class="ba">
+      <div class="bax">
+        <div class="bax-h" style="background:var(--danger);color:#fff">现状 · app.slint:1727 / 2974</div>
+        <div class="bax-b">
+          <div style="display:flex;align-items:center;gap:8px;height:38px;padding:0 10px;
+                      background:var(--bg-panel);border-radius:7px;border:1px solid var(--border-subtle)">
+            <span style="font-size:10.5px;color:var(--text-secondary)">新建会话</span>
+            <span style="font-size:10.5px;color:var(--text-secondary)">命令栏</span>
+            <span style="font-size:10.5px;color:var(--text-secondary)">同步</span>
+            <span style="display:flex;flex-direction:column;align-items:center;gap:1px;padding:4px 8px;
+                         background:var(--chip);border-radius:5px;color:var(--accent)">
+              <span style="width:11px;height:11px;border-radius:50%;border:1.6px solid currentColor;
+                           box-shadow:inset -3px -1px 0 0 currentColor"></span>
+              <span style="font-size:9px;font-weight:700">主题</span>
+            </span>
+            <span style="font-size:10.5px;color:var(--text-secondary)">传输</span>
+            <span style="font-size:10.5px;color:var(--text-secondary)">更多</span>
+          </div>
+          <div style="font-size:10.5px;color:var(--text-muted);margin-top:8px;line-height:1.75">
+            sun/moon 二态 toggle，只能在两个变体间跳；且图标由 <code>Theme.dark</code> 驱动，
+            壁纸会改写 <code>dark</code> → <b>图标与用户实际看到的主题不符</b>。
+          </div>
+        </div>
+      </div>
+      <div class="bax">
+        <div class="bax-h" style="background:var(--ok);color:#06231d">改后 · 主题速选面板</div>
+        <div class="bax-b">
+          <div style="position:relative">
+            <div style="display:flex;align-items:center;gap:8px;height:38px;padding:0 10px;
+                        background:var(--bg-panel);border-radius:7px;border:1px solid var(--border-subtle)">
+              <span style="font-size:10.5px;color:var(--text-secondary)">新建会话</span>
+              <span style="font-size:10.5px;color:var(--text-secondary)">命令栏</span>
+              <span style="font-size:10.5px;color:var(--text-secondary)">同步</span>
+              <span style="display:flex;flex-direction:column;align-items:center;gap:1px;padding:4px 8px;
+                           background:var(--chip);border-radius:5px;color:var(--accent)">
+                <span style="width:11px;height:11px;border-radius:3px;display:grid;
+                             grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:1.5px">
+                  <i style="background:#e6e8ee;border-radius:1.5px"></i><i style="background:#4a90e2;border-radius:1.5px"></i>
+                  <i style="background:#b4b9c4;border-radius:1.5px"></i><i style="background:#23262d;border-radius:1.5px"></i>
+                </span>
+                <span style="font-size:9px;font-weight:700">主题</span>
+              </span>
+              <span style="font-size:10.5px;color:var(--text-secondary)">传输</span>
+              <span style="font-size:10.5px;color:var(--text-secondary)">更多</span>
+            </div>
+            <div style="position:absolute;top:44px;left:118px;width:262px;background:var(--popup-bg,var(--bg-panel));
+                        border:1px solid var(--border-strong);border-radius:9px;padding:9px;z-index:9;
+                        box-shadow:0 14px 36px rgba(0,0,0,.55)">
+              <div style="font-size:10px;color:var(--text-muted);padding:2px 4px 7px;letter-spacing:.4px">主题</div>
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px" id="pop"></div>
+              <div style="height:1px;background:var(--border-subtle);margin:8px 2px"></div>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:2px 4px">
+                <span style="font-size:11px">跟随系统深浅</span>
+                <div class="seg" style="background:var(--field);border-color:var(--border-control);padding:2px">
+                  <button class="on" style="color:var(--accent);font-size:10px;padding:2px 8px">开</button>
+                  <button style="font-size:10px;padding:2px 8px">关</button>
+                </div>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 4px 2px">
+                <span style="font-size:11px">更多主题…</span>
+                <span style="font-size:9.5px;color:var(--text-muted)">打开设置 › 主题</span>
+              </div>
+            </div>
+          </div>
+          <div style="font-size:10.5px;color:var(--text-muted);margin-top:64px;line-height:1.75">
+            弹层复用现有的 <code>topbar-click-anchor</code> 跟随点击点机制（现成能力，不新增定位逻辑）。
+            8 个变体一屏放得下，无需滚动。
+          </div>
+        </div>
+      </div>
+    </div>
+    <ul class="docs" style="margin-top:10px">
+      <li>图标从 sun/moon 换成<b>四宫格调色板</b>（双色块），语义 = "配色"而非"亮暗"</li>
+      <li>当前主题名直接显示在按钮下方或 tooltip 里 → 用户不再需要记忆"现在是暗还是亮"</li>
+      <li>「跟随系统深浅」开关同时出现在速选面板和设置页，两处双向绑定同一个值</li>
+      <li>快捷键 <code>Ctrl+Alt+T</code> 直接循环下一套主题（可选）</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="shead" style="margin-bottom:9px">调整 ④　弹窗层：从不透明改为"默认不透明 + 可选降低"</div>
+    <div class="ba">
+      <div class="bax">
+        <div class="bax-h">现状 · 正确，但过于绝对</div>
+        <div class="bax-b" style="font-size:11px;color:var(--text-secondary);line-height:1.85">
+          <code>popup-bg</code> 恒等于 <code>base-bg-panel</code>（不霜化）—— 20 处调用点全部依赖这一点。<br>
+          <span class="tag tag-g">对</span>弹窗绝不能被图片透底，否则密集文字不可读。<br>
+          <span class="tag tag-o">但</span>用户想要"全透玻璃"效果时无处可去。
+        </div>
+      </div>
+      <div class="bax">
+        <div class="bax-h" style="color:var(--ok)">改后 · 增加一档，弹窗层单独可控</div>
+        <div class="bax-b" style="font-size:11px;color:var(--text-secondary);line-height:1.85">
+          主题页新增「界面通透度」三档：<br>
+          <b>标准</b>（默认）= 现状，弹窗实心<br>
+          <b>通透</b> = 弹窗跟随面板不透明度（配深色遮罩兜底）<br>
+          <b>全透</b> = 弹窗 88% + 强遮罩（仅建议深色主题）<br>
+          <span class="tag tag-b">约束</span>无论哪档，<code>modal-scrim</code> 强度自动上调，保证弹窗之上文字对比度 ≥ 4.5:1。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="shead" style="margin-bottom:9px">调整 ⑤　随主题变化的数据：终端 ANSI + 分组色（无布局影响，但必须改）</div>
+    <div class="cols">
+      <div>
+        <div class="shead" style="margin-bottom:6px">终端 ANSI 调色板：2 套 → 8 套</div>
+        <table>
+          <tr><th>位置</th><th class="c">现状</th><th class="c">改后</th></tr>
+          <tr><td class="mono">presentation.rs:654</td><td class="c"><code>ANSI16_DARK</code> / <code>ANSI16_LIGHT</code> 二选一</td>
+            <td class="c">按 <code>theme_id</code> 取 8 套之一</td></tr>
+          <tr><td class="mono">terminal_ui.rs:233</td><td class="c">buffer 上只挂 <code>is_dark: bool</code></td>
+            <td class="c">改挂 <code>palette_id: u8</code>，切主题时全量重渲染</td></tr>
+          <tr><td class="mono">app.rs:3256</td><td class="c"><code>toggle_theme</code> 翻 bool</td>
+            <td class="c">改名为 <code>apply_theme(id)</code>，走同一条重渲染路径</td></tr>
+        </table>
+        <div style="font-size:10.5px;color:var(--text-muted);margin-top:8px;line-height:1.75">
+          <b>为什么必须做</b>：Nord / Solarized / Tokyo Night 这类主题的 ANSI 16 色是主题身份的一部分。
+          若终端还用现成两套，主题切换后<span style="color:var(--danger)">终端配色会与界面脱节</span> —— 这是最容易被用户一眼看出的破绽。
+        </div>
+      </div>
+      <div>
+        <div class="shead" style="margin-bottom:6px">分组色 24 色：2 套 → 8 套</div>
+        <table>
+          <tr><th>位置</th><th class="c">改法</th></tr>
+          <tr><td class="mono">theme.slint:244-255</td>
+            <td class="c"><code>group-color-dark</code> / <code>group-color-light</code> 两组 24 色 →
+              改为按主题查表；每套主题的 24 色按其明度重新取档，保证 1px 树线在各自背景上清晰</td></tr>
+        </table>
+        <div style="font-size:10.5px;color:var(--text-muted);margin-top:8px;line-height:1.75">
+          这套取色面板（右键菜单 → 分组颜色）必须跟着主题走，否则会出现"在浅色主题里选了深红、在深色主题里选了亮红"的不一致。
+        </div>
+        <div class="shead" style="margin:14px 0 6px">单窗口主题的传播</div>
+        <div style="font-size:11.5px;color:var(--text-secondary);line-height:1.8">
+          现状 <code>broadcast_config_changed</code> 只在主题翻转时广播，壁纸不广播。
+          拆开后<b>壁纸也要广播</b>（因为遮罩影响所有独立窗口的观感），
+          独立窗口需同步的属性从 4 个（<code>wallpaper_active</code> / <code>wp_accent</code> / <code>wp_tint</code> / <code>dark</code>）
+          改为 <code>theme_id</code> / <code>accent</code> / <code>wallpaper</code> / <code>panel_alpha</code> / <code>term_alpha</code> 共 5 个。
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ §4 自定义主题 ══════════ -->
+<div class="sec">
+  <div class="sec-t">4 · 是否支持自定义主题：支持，分三级</div>
+  <div class="sec-d">
+    不做"全量自由编辑"（那是另一个量级的工程），而是按用户实际诉求分层 —— L1/L2 覆盖 95% 的需求，L3 给愿意折腾的人一个出口。
+  </div>
+  <div class="card">
+    <table>
+      <tr>
+        <th style="width:58px">级别</th><th style="width:150px">能力</th><th>用户能得到什么</th>
+        <th style="width:120px">工程量</th><th style="width:96px">建议</th>
+      </tr>
+      <tr>
+        <td><span class="tag tag-g">L1</span></td>
+        <td class="c"><b>内置主题</b><br>8 个变体</td>
+        <td class="c">4 套色系 × 明/暗。切换即时生效，终端调色板、分组色、弹窗全部跟随。
+          设页与顶栏两处都能切。</td>
+        <td class="mono">中<br>（1–2 天）</td>
+        <td class="ok-c">必做</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-b">L2</span></td>
+        <td class="c"><b>自定义强调色</b><br>预设 8 + 取色器</td>
+        <td class="c">8 个预设（海蓝 / 松石 / 琥珀 / 绯红 / 紫罗兰 / 柠檬 / 炭灰 / 跟随主题）。
+          取色器支持 <code>#RRGGBB</code> 直输 + 本地图片取色。<b>换色不换主题</b>，文字对比度自动校正（过暗自动提亮、过亮自动压暗）。</td>
+        <td class="mono">小<br>（0.5 天）</td>
+        <td class="ok-c">必做</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-o">L3</span></td>
+        <td class="c"><b>自定义主题文件</b><br>JSON 导入/导出</td>
+        <td class="c">一份 <code>.json</code> 描述整套配色（含终端 ANSI 16 色 + 分组色 24 色）。
+          可分享、可版本化。<b>不开放</b>尺寸 / 圆角 / 字号 —— 那些是布局不属于主题。</td>
+        <td class="mono">中偏大<br>（2–3 天）</td>
+        <td class="new-c">第二阶段</td>
+      </tr>
+    </table>
+
+    <div class="cols" style="margin-top:14px">
+      <div>
+        <div class="shead" style="margin-bottom:7px">L2 强调色：8 预设 + 取色器（1:1）</div>
+        <div style="background:var(--bg-root);border:1px solid var(--border-subtle);border-radius:9px;padding:12px 14px">
+          <div class="accents" style="max-width:none;margin-bottom:10px" id="acc2"></div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="display:flex;align-items:center;gap:7px;background:var(--field);border:1px solid var(--border-control);
+                        border-radius:7px;padding:5px 10px;flex:1">
+              <span style="width:13px;height:13px;border-radius:4px;background:#7c5cff"></span>
+              <span style="font-family:var(--mono);font-size:11px;color:var(--text-secondary)">#7C5CFF</span>
+            </div>
+            <div style="background:var(--accent);color:#fff;border-radius:7px;padding:6px 14px;font-size:11.5px;font-weight:600">应用</div>
+          </div>
+          <div style="font-size:10.5px;color:var(--text-muted);margin-top:8px;line-height:1.7">
+            对比度守卫：输入的强调色若与当前主题背景对比度 &lt; 3:1，自动调整明度后再应用，并在输入框下方提示实际生效值。
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="shead" style="margin-bottom:7px">L3 自定义主题文件结构（草案）</div>
+        <div style="background:var(--field);border:1px solid var(--border-subtle);border-radius:9px;padding:12px 14px;
+                    font-family:var(--mono);font-size:10.5px;line-height:1.75;color:var(--text-secondary);
+                    white-space:pre;overflow:auto">{
+  <span style="color:#7fb6ee">"id"</span>: <span style="color:#7fd9c6">"my-midnight"</span>,
+  <span style="color:#7fb6ee">"name"</span>: <span style="color:#7fd9c6">"午夜蓝"</span>,
+  <span style="color:#7fb6ee">"mode"</span>: <span style="color:#7fd9c7">"dark"</span>,
+  <span style="color:#7fb6ee">"slots"</span>: {
+    <span style="color:#7fb6ee">"bg-root"</span>:      <span style="color:#7fd9c7">"#0e1620"</span>,
+    <span style="color:#7fb6ee">"bg-panel"</span>:     <span style="color:#7fd9c7">"#131d29"</span>,
+    <span style="color:#7fb6ee">"bg-panel-alt"</span>: <span style="color:#7fd9c7">"#18242f"</span>,
+    <span style="color:#7fb6ee">"bg-elevated"</span>:  <span style="color:#7fd9c7">"#1e2c3a"</span>,
+    <span style="color:#7fb6ee">"bg-hover"</span>:     <span style="color:#7fd9c7">"#243646"</span>,
+    <span style="color:#7fb6ee">"bg-active"</span>:    <span style="color:#7fd9c7">"#2b4055"</span>,
+    <span style="color:#7fb6ee">"line-subtle"</span>:  <span style="color:#7fd9c7">"#22323f"</span>,
+    <span style="color:#7fb6ee">"line-strong"</span>:  <span style="color:#7fd9c7">"#2e4356"</span>,
+    <span style="color:#7fb6ee">"text-primary"</span>: <span style="color:#7fd9c7">"#dbe7f0"</span>,
+    <span style="color:#7fb6ee">"text-secondary"</span>:<span style="color:#7fd9c7">"#93a9bb"</span>,
+    <span style="color:#7fb6ee">"text-muted"</span>:   <span style="color:#7fd9c7">"#6d8296"</span>,
+    <span style="color:#7fb6ee">"term-bg"</span>:       <span style="color:#7fd9c7">"#070d14"</span>,
+    <span style="color:#7fb6ee">"term-fg"</span>:       <span style="color:#7fd9c7">"#c8d6e2"</span>
+  },
+  <span style="color:#7fb6ee">"ansi"</span>: [ <span style="color:#eec27a">"#e06c75"</span>, <span style="color:#eec27a">"#98c379"</span>, ... ],
+  <span style="color:#7fb6ee">"group-colors"</span>: [ <span style="color:#eec27a">"#f87171"</span>, ... ]
+}</div>
+        <div style="font-size:10.5px;color:var(--text-muted);margin-top:8px;line-height:1.7">
+          缺槽位时回落到同 mode 的内置主题；<code>mode</code> 决定这套走明还是暗的分组色。
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ §5 迁移 ══════════ -->
+<div class="sec">
+  <div class="sec-t">5 · 兼容与迁移（不改老用户观感）</div>
+  <div class="card">
+    <div class="cols">
+      <div>
+        <div class="shead" style="margin-bottom:7px">老配置怎么落到新模型</div>
+        <table>
+          <tr><th style="width:132px">老字段</th><th>落到哪</th></tr>
+          <tr><td class="mono">theme_pref = dark|light</td><td class="c">→ <code>theme = meat-dark</code> / <code>meat-light</code>（保留原色值）</td></tr>
+          <tr><td class="mono">theme_pref = ""（跟随系统）</td><td class="c">→ <code>theme = meat-*</code> + <code>follow_system = true</code></td></tr>
+          <tr><td class="mono">wallpaper = builtin:tech</td><td class="c">→ <code>wallpaper = builtin:tech</code>，
+            并把当时被反写的深浅<b>固化到 <code>theme</code></b>，此后壁纸不再动主题</td></tr>
+          <tr><td class="mono">wallpaper_overlay = 0.85</td><td class="c">→ 拆成 <code>panel_alpha = 0.85</code> + <code>term_alpha = 1.0</code>
+            （现状终端本来就更实，拆开后视觉不回退）</td></tr>
+        </table>
+        <div class="shead" style="margin:14px 0 6px">DEFAULTS_REV bump</div>
+        <div style="font-size:11.5px;color:var(--text-secondary);line-height:1.8">
+          <code>DEFAULTS_REV: 3 → 4</code>（<code>config_file.rs:40</code>）。<b>只对"一直在默认值上"的用户生效</b>：
+          新装与未改过壁纸的用户 → <code>wallpaper = ""</code> + <code>follow_system = true</code>；
+          已经手动挑过壁纸的用户保持原样。迁移后必须跑一次实机截图核对。
+        </div>
+      </div>
+      <div>
+        <div class="shead" style="margin-bottom:7px">代码改动清单（按文件）</div>
+        <table>
+          <tr><th style="width:170px">文件</th><th>改动</th></tr>
+          <tr><td class="mono">ui/theme.slint</td><td class="c"><b>改动最大</b>：删 <code>dark</code> 三元式与 <code>wp-accent/wp-tint</code> 染色，
+            改为 <code>slot()</code> 查表 + 8 份 palette + <code>accent</code> 独立 + 三个 alpha 分离</td></tr>
+          <tr><td class="mono">ui/interface_panel.slint</td><td class="c">新增「主题」页；壁纸页改三个滑杆</td></tr>
+          <tr><td class="mono">ui/app.slint</td><td class="c">顶栏主题速选面板；绑定项换成 <code>theme_id/accent</code></td></tr>
+          <tr><td class="mono">ui/tabs.slint:227,619</td><td class="c">2 处直接读 <code>Theme.dark</code> → 改读 token</td></tr>
+          <tr><td class="mono">ui/session_dialog.slint</td><td class="c">6 处 <code>Theme.dark ? Theme.line-2 : #b9b9c2</code> → token</td></tr>
+          <tr><td class="mono">src/wallpaper/*</td><td class="c"><code>derive_palette</code> 从"决定主题"降级为"可选取色"</td></tr>
+          <tr><td class="mono">src/app/terminal_ui.rs</td><td class="c"><code>apply_wallpaper</code> 去掉 <code>apply_dark_mode</code>；
+            <code>apply_dark_mode</code> → <code>apply_theme(id)</code></td></tr>
+          <tr><td class="mono">src/app.rs:2579-2600</td><td class="c">删掉选壁纸反写 <code>theme_pref</code> 的逻辑</td></tr>
+          <tr><td class="mono">src/terminal/…/presentation.rs</td><td class="c">ANSI16 → 8 套查表</td></tr>
+          <tr><td class="mono">src/config/*</td><td class="c">新增 <code>theme/accent/panel_alpha/term_alpha/follow_system</code>；
+            保留 <code>theme_pref</code> 读兼容</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="gap"></div>
+    <div class="shead" style="margin-bottom:7px">验证清单（沿用项目既有纪律）</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:11px;color:var(--text-secondary)">
+      <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:8px 10px">① 8 套主题逐个切换，核对<b>顶栏 / 侧栏 / 标签 / 终端 / 弹窗 / 分组色</b>六处无错色</div>
+      <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:8px 10px">② 亮壁纸 + 暗主题、暗壁纸 + 亮主题，各打包实机截图核对比度</div>
+      <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:8px 10px">③ 老配置迁移后截图，与升级前逐像素比对（除刻意变更项）</div>
+      <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:8px 10px">④ 终端 ANSI 在 8 套下分别跑一遍 <code>ls --color</code> / <code>vim</code></div>
+      <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:8px 10px">⑤ 独立窗口（进程 / 编辑器 / 系统信息 / 托盘 / 关于）跟随主题，无遗漏</div>
+      <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:8px 10px">⑥ 无壁纸时三个滑杆的禁用态确实吞事件（不写配置）</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ §6 待定 ══════════ -->
+<div class="sec">
+  <div class="sec-t">6 · 需要你定的三件事</div>
+  <div class="card">
+    <div class="kv" style="grid-template-columns:150px 1fr;gap:10px 14px">
+      <b>① 4 套色系选哪 4 套</b>
+      <div class="c">方案给了「原味 Meat / 深海 Abyss / 松石 Verdigris / 炭焙 Charcoal」。也可以换成
+        Nord / Solarized / Tokyo Night / Gruvbox 这类社区成熟色系 —— 后者辨识度高但撞脸其它终端软件。
+        倾向哪一边？</div>
+      <b>② 是否保留"跟随图片取色"</b>
+      <div class="c">这是唯一让壁纸反向影响界面的开关。默认关能保证解耦干净；开则保留一点"惊艳感"。
+        我的建议：<b>保留但默认关</b>，并在取色时明确提示"强调色将跟随图片"。</div>
+      <b>③ L3 自定义主题文件做不做</b>
+      <div class="c">L1/L2 已能覆盖绝大多数人。L3 是 2–3 天的工程 + 长期格式兼容负担。
+        建议第一版只做 L1/L2，等有人真需要再上。</div>
+    </div>
+    <div class="gap"></div>
+    <div style="font-size:11.5px;color:var(--text-muted);line-height:1.8">
+      本页只是方案，<b>未改动任何代码</b>。定稿后按"先出这一页的确认 → 再改 theme.slint → 再改设置页 → 再迁移 → 最后打包"的顺序推进。
+    </div>
+  </div>
+</div>
+
+<script>
+/* ─────────── 主题数据 ─────────── */
+const FAM = {
+  meat:  { n:"原味",  en:"Meat",       d:"沿用现有 MeatShell 配色，一档不差地搬进新模型。冷调炭灰 + 品牌蓝，兼容性零风险。" },
+  abyss: { n:"深海",  en:"Abyss",      d:"蓝调深色。面板带一点海蓝倾向，长时间盯屏比纯灰更柔和；适合暗环境主力使用。" },
+  verd:  { n:"松石",  en:"Verdigris",  d:"青绿调。终端的绿系与界面同源，ANSI 输出和 UI 混排时更整体。" },
+  char:  { n:"炭焙",  en:"Charcoal",   d:"暖中性。唯一带暖色相的暗色方案，长时间阅读输出文件的疲劳感最低。" }
+};
+const T = {
+  "meat-dark":  { f:"meat",  m:"暗", n:"原味 · 暗", root:"#1b1d23", panel:"#23262d", palt:"#2a2d35", elev:"#30333c",
+                  hov:"#373a44", act:"#3f4350", line:"#3a3d46", lstr:"#4a4e59",
+                  t1:"#e6e8ee", t2:"#b4b9c4", t3:"#9196a3", tbg:"#0e0f13", tfg:"#d4d4d4",
+                  ac:"#4a90e2", ac2:"#5aa0f2", ok:"#4ec9b0", wr:"#e2a84a", dg:"#e25c5c" },
+  "meat-light": { f:"meat",  m:"亮", n:"原味 · 亮", root:"#f5f5f7", panel:"#ffffff", palt:"#f2f2f7", elev:"#e8e8ed",
+                  hov:"#e0e0e6", act:"#d8d8de", line:"#e2e2e8", lstr:"#c7c7cc",
+                  t1:"#1d1d1f", t2:"#45454a", t3:"#606066", tbg:"#fafafa", tfg:"#2d2d2f",
+                  ac:"#0071e3", ac2:"#0077ed", ok:"#34c759", wr:"#ff9f0a", dg:"#ff3b30" },
+  "abyss-dark": { f:"abyss", m:"暗", n:"深海 · 暗", root:"#0e1620", panel:"#131d29", palt:"#18242f", elev:"#1e2c3a",
+                  hov:"#243646", act:"#2b4055", line:"#22323f", lstr:"#2e4356",
+                  t1:"#dbe7f0", t2:"#93a9bb", t3:"#6d8296", tbg:"#070d14", tfg:"#c8d6e2",
+                  ac:"#3fa9f5", ac2:"#5cbcf7", ok:"#3fd0a8", wr:"#e5a54b", dg:"#e5646e" },
+  "abyss-light":{ f:"abyss", m:"亮", n:"深海 · 亮", root:"#eef4f9", panel:"#ffffff", palt:"#e6eef6", elev:"#d9e5f0",
+                  hov:"#cfdeec", act:"#c3d5e6", line:"#d3e0ec", lstr:"#adc3d6",
+                  t1:"#0e1c28", t2:"#3c5468", t3:"#5b7488", tbg:"#f7fafd", tfg:"#16232e",
+                  ac:"#0b76c4", ac2:"#0a68b0", ok:"#0f9e7e", wr:"#b5760f", dg:"#cf3b47" },
+  "verd-dark":  { f:"verd",  m:"暗", n:"松石 · 暗", root:"#101a1a", panel:"#152222", palt:"#1a2b2b", elev:"#203534",
+                  hov:"#264140", act:"#2d4d4b", line:"#1e3332", lstr:"#2a4745",
+                  t1:"#dcf0ec", t2:"#94b8b2", t3:"#6d8f8a", tbg:"#0a1212", tfg:"#c8e2dc",
+                  ac:"#2ec4a6", ac2:"#48d6ba", ok:"#5fd39a", wr:"#dda84a", dg:"#e56b6b" },
+  "verd-light": { f:"verd",  m:"亮", n:"松石 · 亮", root:"#eef6f4", panel:"#ffffff", palt:"#e4f0ed", elev:"#d5e8e4",
+                  hov:"#c9e0db", act:"#bcd7d1", line:"#cfe3df", lstr:"#a5c8c1",
+                  t1:"#0c1f1c", t2:"#375852", t3:"#54746e", tbg:"#f7fbfa", tfg:"#142a26",
+                  ac:"#0e8f78", ac2:"#0b7d69", ok:"#128a5f", wr:"#a06e12", dg:"#c34a4a" },
+  "char-dark":  { f:"char",  m:"暗", n:"炭焙 · 暗", root:"#1e1c1a", panel:"#262320", palt:"#2d2a26", elev:"#35312c",
+                  hov:"#3d3833", act:"#463f39", line:"#38332d", lstr:"#4a443c",
+                  t1:"#efe9e1", t2:"#b8ada1", t3:"#8e8377", tbg:"#141210", tfg:"#ddd5c9",
+                  ac:"#d98d4a", ac2:"#e89f61", ok:"#c2a35e", wr:"#e0b45c", dg:"#dd6b5a" },
+  "char-light": { f:"char",  m:"亮", n:"炭焙 · 亮", root:"#f6f3f0", panel:"#ffffff", palt:"#f1ede8", elev:"#e7e1da",
+                  hov:"#ded7cf", act:"#d4ccc2", line:"#e6dfd6", lstr:"#c6bcb0",
+                  t1:"#241f1a", t2:"#544c43", t3:"#776d62", tbg:"#fbf9f7", tfg:"#2e2823",
+                  ac:"#a8621f", ac2:"#8f551a", ok:"#5f7a2e", wr:"#9a6a10", dg:"#b8443a" }
+};
+const IDS = Object.keys(T);
+const ACC = ["#4a90e2","#3fa9f5","#2ec4a6","#5fd39a","#d98d4a","#e5646e","#7c5cff","#8e8377"];
+
+function mini(t){
+  return `<div class="inner" style="background:${t.root}">
+    <div class="tbar" style="background:${t.panel};border-bottom:1px solid ${t.line}">
+      <i style="background:${t.accent}"></i><i style="background:${t.t3}"></i><i style="background:${t.t3}"></i>
+    </div>
+    <div class="tbody">
+      <div class="tside" style="background:${t.palt}"></div>
+      <div class="tmain">
+        <i style="background:${t.accent};width:34%"></i>
+        <i style="background:${t.t2};width:78%"></i>
+        <i style="background:${t.t3};width:60%"></i>
+        <i style="background:${t.elev};width:88%"></i>
+        <span class="tchip" style="background:${t.accent};opacity:.85"></span>
+      </div>
+    </div></div>`;
+}
+function cur(id){ return T[id]; }
+
+function sel(id){
+  IDS.forEach(k=>{ const e=document.querySelector(`.tcard[data-id="${k}"]`); if(e) e.classList.toggle("on", k===id); });
+  const t=cur(id), dm=document.getElementById("demo");
+  dm.style.background=t.root; dm.style.borderColor=t.line;
+  const bar=dm.querySelector(".dm-bar"); bar.style.background=t.panel; bar.style.color=t.t1; bar.style.borderBottom="1px solid "+t.line;
+  const tab=document.getElementById("dTab"); tab.style.background=t.tbg; tab.style.color=t.tfg;
+  document.getElementById("dName").textContent=t.n;
+  document.getElementById("dName").style.color=t.t2;
+  const term=document.getElementById("dTerm");
+  term.style.background=t.tbg; term.style.color=t.tfg;
+  term.style.setProperty("--t-accent",t.ac); term.style.setProperty("--t-accent2",t.ac2);
+  term.style.setProperty("--t-ok",t.ok); term.style.setProperty("--t-warn",t.wr);
+  term.style.setProperty("--t-danger",t.dg); term.style.setProperty("--t-mut",t.t3);
+  document.getElementById("tkName").textContent=t.n;
+  document.getElementById("tkDesc").innerHTML=FAM[t.f].d;
+  const rows=[["bg-root",t.root],["bg-panel",t.panel],["bg-panel-alt",t.palt],["bg-elevated",t.elev],
+              ["bg-hover",t.hov],["bg-active",t.act],["line-subtle",t.line],["line-strong",t.lstr],
+              ["text-primary",t.t1],["text-secondary",t.t2],["text-muted",t.t3],
+              ["term-bg",t.tbg],["term-fg",t.tfg],["accent",t.ac]];
+  document.getElementById("tkTok").innerHTML=rows.map(r=>
+    `<tr><td class="k">${r[0]}</td><td class="v"><span class="sw" style="background:${r[1]}"></span>${r[1]}</td></tr>`).join("");
+  document.querySelectorAll("#pick .tp").forEach(e=>e.classList.toggle("sel", e.dataset.id===id));
+  document.querySelectorAll("#pop .tcell").forEach(e=>e.style.outline = e.dataset.id===id ? "2px solid "+t.ac : "none");
+}
+
+/* 主卡片 */
+document.getElementById("tgrip").innerHTML = IDS.map(id=>{
+  const t=T[id];
+  return `<div class="tcard" data-id="${id}" onclick="sel('${id}')">
+    <div class="tprev" style="background:${t.root}">
+      <div class="bar" style="background:${t.panel};border-bottom:1px solid ${t.line}">
+        <i style="background:${t.accent}"></i><i style="background:${t.t3}"></i><i style="background:${t.t3}"></i>
+      </div>
+      <div class="body">
+        <div class="side" style="background:${t.palt}"></div>
+        <div class="main">
+          <span class="ln" style="background:${t.accent};width:38%"></span>
+          <span class="ln" style="background:${t.t2};width:82%"></span>
+          <span class="ln" style="background:${t.t3};width:62%"></span>
+          <span class="ln" style="background:${t.elev};width:90%;height:14px;border-radius:3px"></span>
+          <span class="chip" style="background:${t.accent};opacity:.85"></span>
+        </div>
+      </div>
+    </div>
+    <div class="tmeta">
+      <div class="tname">${t.n}</div>
+      <div class="ten">${FAM[t.f].en} · ${t.m}</div>
+    </div>
+  </div>`;
+}).join("");
+
+/* 设置页内选择网格 */
+document.getElementById("pick").innerHTML = IDS.map(id=>{
+  const t=T[id];
+  return `<div><div class="tp" data-id="${id}" onclick="sel('${id}')" style="border-color:${t.line};background:${t.root}">
+      ${mini(t)}
+      <span class="tchip" style="background:${t.ac}"></span>
+      <span class="tick" style="background:${t.ac}">✓</span>
+    </div><div class="tp-name" style="color:var(--text-secondary)">${t.n}</div></div>`;
+}).join("");
+
+/* 顶栏弹层 */
+document.getElementById("pop").innerHTML = IDS.map(id=>{
+  const t=T[id];
+  return `<div class="tcell" data-id="${id}" onclick="sel('${id}')"
+    style="border-radius:5px;overflow:hidden;height:34px;position:relative;background:${t.root};
+           border:1px solid ${t.line};cursor:pointer">
+    <div style="position:absolute;inset:0">${mini(t)}</div>
+  </div>`;
+}).join("");
+
+/* 强调色 */
+const accHTML = ACC.map((c,i)=>`<div class="ac${i===0?" on":""}" style="background:${c}" title="${c}"></div>`).join("");
+document.getElementById("acc").innerHTML = accHTML;
+document.getElementById("acc2").innerHTML = accHTML;
+document.querySelectorAll(".accents").forEach(g=>g.addEventListener("click",e=>{
+  if(e.target.classList.contains("ac")){
+    g.querySelectorAll(".ac").forEach(x=>x.classList.remove("on"));
+    e.target.classList.add("on");
+  }
+}));
+
+sel("meat-dark");
+</script>
+</body>
+</html>

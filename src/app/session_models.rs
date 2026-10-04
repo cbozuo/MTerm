@@ -5,7 +5,7 @@ use crate::config::named_display_groups;
 // (#tab-group-bar 2026-09-14) 标签底部色条要用与左侧会话行同一套"显示组"语义。
 use crate::config::display_group_of;
 // (#group-color 2026-09-14) 分组颜色表:组名 -> "#RRGGBB"。
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// (#group-color 2026-09-14) 解析 `"#RRGGBB"` / `"#RGB"`(前导 `#` 可省)为颜色。
 /// Slint 的 `Color` **没有实现 `FromStr`**,所以这里手工解析。其他形式一律视为
@@ -185,6 +185,106 @@ pub(super) fn move_target_groups_model(store: &ConfigStore) -> ModelRc<SharedStr
     ModelRc::from(Rc::new(VecModel::from(groups)))
 }
 
+// ---------------------------------------------------------------------------
+// (#conn-path 2026-10-04 高保真 #proxy-fields) 代理四字段 ↔ 存储 URL
+// ---------------------------------------------------------------------------
+
+/// Parse a stored proxy URL back into the dialog's fields:
+/// `(path_type, proto, host, port, user, pass)`.
+///
+/// `""` → direct。scheme 识别与旧 split_proxy 一致（http/https → http、
+/// socks5h/socks5/socks → socks5、无前缀 → socks5，旧配置兼容）。userinfo 从
+/// 最后一个 `@` 切、user 取首个 `:` 前 —— 密码里含 `@`/`:` 都能还原。
+pub(super) fn split_proxy_parts(url: &str) -> (String, String, String, String, String, String) {
+    const DIRECT: &str = "direct";
+    let s = url.trim().trim_end_matches('/');
+    if s.is_empty() {
+        return (
+            DIRECT.to_string(),
+            "socks5".to_string(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+    }
+    let lower = s.to_ascii_lowercase();
+    // 先长后短（socks5h 必须在 socks5 之前试）。
+    let prefixes = [
+        ("https://", "http"),
+        ("http://", "http"),
+        ("socks5h://", "socks5"),
+        ("socks5://", "socks5"),
+        ("socks://", "socks5"),
+    ];
+    let mut proto = "socks5";
+    let mut rest = s;
+    for (p, name) in prefixes {
+        if lower.starts_with(p) {
+            proto = name;
+            rest = &s[p.len()..];
+            break;
+        }
+    }
+    let (user, pass, hostport) = match rest.rsplit_once('@') {
+        Some((userinfo, hp)) => match userinfo.split_once(':') {
+            Some((u, p)) => (u.to_string(), p.to_string(), hp.to_string()),
+            None => (userinfo.to_string(), String::new(), hp.to_string()),
+        },
+        None => (String::new(), String::new(), rest.to_string()),
+    };
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) => (h.to_string(), p.to_string()),
+        None => (hostport, String::new()),
+    };
+    let path_type = if host.is_empty() { DIRECT } else { "proxy" };
+    (
+        path_type.to_string(),
+        proto.to_string(),
+        host,
+        port,
+        user,
+        pass,
+    )
+}
+
+/// Assemble the stored proxy URL from the dialog's four fields
+/// (`path_type == "proxy"` 且 host 非空才产出，否则空串 = 不用代理）。
+///
+/// 代理密码不回显（#10 惯例）：`proxy_pass` 留空且存在旧代理 URL 时复用旧
+/// pass，这样「编辑 → 什么都不动 → 保存」不会把代理密码洗掉。
+pub(super) fn assemble_proxy(draft: &SessionDraft, existing_proxy: &str) -> String {
+    if draft.path_type != "proxy" {
+        return String::new();
+    }
+    let host = draft.proxy_host.trim();
+    if host.is_empty() {
+        return String::new();
+    }
+    let pass = if draft.proxy_pass.is_empty() {
+        split_proxy_parts(existing_proxy).5
+    } else {
+        draft.proxy_pass.to_string()
+    };
+    let mut url = format!(
+        "{}://",
+        if draft.proxy_type == "http" { "http" } else { "socks5" }
+    );
+    if !draft.proxy_user.trim().is_empty() {
+        url.push_str(draft.proxy_user.trim());
+        url.push(':');
+        url.push_str(&pass);
+        url.push('@');
+    }
+    url.push_str(host);
+    let port = draft.proxy_port.trim();
+    if !port.is_empty() {
+        url.push(':');
+        url.push_str(port);
+    }
+    url
+}
+
 /// Build the jump-host picker's parallel label/id lists for the session dialog
 /// (#211). Index 0 is always the "no jump host" entry (empty id); the rest are
 /// the saved SSH sessions except `exclude_id` (a session can't jump through
@@ -222,6 +322,45 @@ pub(super) fn jump_candidates(
         ModelRc::from(Rc::new(VecModel::from(ids))),
         selected,
     )
+}
+
+/// (#conn-path 2026-10-04 高保真 #proxy-fields) Session → 跳板链条目(信息卡
+/// 数据源):label 沿用 jump_candidates 的命名规则,auth 存原始值由 slint 侧
+/// auth-label() 转显示名。
+pub(super) fn jump_entry(s: &Session) -> JumpEntry {
+    let label = if s.name.trim().is_empty() {
+        if s.user.trim().is_empty() {
+            s.host.clone()
+        } else {
+            format!("{}@{}", s.user, s.host)
+        }
+    } else {
+        format!("{} ({}@{})", s.name, s.user, s.host)
+    };
+    JumpEntry {
+        id: s.id.clone().into(),
+        label: label.into(),
+        name: s.name.clone().into(),
+        host: s.host.clone().into(),
+        port: s.port as i32,
+        user: s.user.clone().into(),
+        auth: s.auth.as_str().into(),
+        group: s.group.clone().into(),
+        note: s.note.clone().into(),
+    }
+}
+
+/// (#conn-path) 跳板链候选池:全部已保存 SSH 会话,排除 `exclude_id`(自身)
+/// 与 `skip`(已在链中的 id 集合 —— 防环:下拉只列未入链项)。
+pub(super) fn build_jump_pool(store: &ConfigStore, exclude_id: &str, skip: &HashSet<String>) -> Vec<JumpEntry> {
+    let mut out = Vec::new();
+    for s in store.sessions() {
+        if s.kind != SessionKind::Ssh || s.id == exclude_id || skip.contains(&s.id) {
+            continue;
+        }
+        out.push(jump_entry(s));
+    }
+    out
 }
 
 fn normalized_query(query: &str) -> String {
@@ -377,6 +516,7 @@ fn build_session_rows(
         host: "".into(),
         port: 0,
         user: "".into(),
+        auth: "".into(),
         group: group.into(),
         group_header: group.into(),
         collapsed: group_is_collapsed(group),
@@ -406,6 +546,7 @@ fn build_session_rows(
             host: s.host.clone().into(),
             port: 0,
             user: s.user.clone().into(),
+            auth: "".into(),
             group: "system".into(),
             group_color: sys_gc,
             group_color_hex: sys_hex.as_str().into(),
@@ -458,6 +599,8 @@ fn build_session_rows(
                     host: s.host.clone().into(),
                     port: s.port as i32,
                     user: s.user.clone().into(),
+                    // (#conn-path) 认证方式原始值:悬浮信息卡「认证」行。
+                    auth: s.auth.as_str().into(),
                     note: s.note.clone().into(),
                     group: group.clone().into(),
                     group_color: gc,
@@ -765,7 +908,11 @@ pub(super) fn session_from_draft(
         password,
         private_key_path,
         private_key_inline,
-        proxy: draft.proxy.to_string(),
+        // (#conn-path) 由四字段拼装(编辑时代理密码留空 → 复用旧值)。
+        proxy: assemble_proxy(
+            draft,
+            existing.map(|s| s.proxy.as_str()).unwrap_or(""),
+        ),
         last_used: None,
         group: draft.group.to_string(),
         kind,
@@ -792,6 +939,7 @@ pub(super) fn session_from_draft(
         disable_shell_integration: draft.disable_shell_integration,
         note: draft.note.to_string(),
         jump_session_id: draft.jump_session_id.to_string(),
+        jump_chain: Vec::new(),
     }
 }
 

@@ -1,0 +1,707 @@
+// Storage-location settings page (#storage-location 2026-10-02, #storage-ui 2026-10-04).
+//
+// Full-page layout for the Settings › 数据目录 page:
+//   card 1 — current location: read-only path bar with inline icon actions
+//            (open / copy), plus a "contains" chip row showing what would move
+//            (hosts = configured sessions, quick commands, config, logs);
+//   card 2 — target field (same height as the path bar) with inline icon
+//            actions (pick / restore default), then two radio cards and one
+//            primary button whose label follows the selection.
+//
+// Switching writes the bootstrap file and takes effect after an app restart
+// (hint sits on the action row). Feedback is a floating toast at the
+// bottom-right instead of the old in-flow strip (#storage-ui): the strip used
+// to be inserted between the two cards and pushed the page apart.
+// Wired from src/app/storage_callbacks.rs via InterfacePanel.
+import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+// `TextInput` is a Slint built-in (no import) — same as the other plain text
+// fields in app.slint, which avoid std LineEdit's clear (×) button.
+
+// Shared geometry (#storage-ui): the read-only path bar and the editable target
+// field must be the same box — only the fill differs.
+global StorageBox {
+    out property <length> height: 40px;
+    out property <length> radius: Theme.radius-md;
+    out property <length> pad-left: 14px;
+    out property <length> pad-right: 6px;
+    out property <brush> border: Theme.border-control;
+}
+
+// A 30×28 icon button with a self-contained hover bubble. The bubble is drawn
+// above the button (negative y) and has no TouchArea, so it never clips
+// against the path bar nor steals the pointer.
+// (#chip-icon-overlap 2026-10-04) 同样改用 HL 摆图标。原来的
+// Icon { x: (parent.width - 15px)/2; y: ... } 依赖「父盒恰好 30×28、图标恰好
+// 15px」才与 Icon 的 100% 铺满 + 内部居中巧合一致；换成 HL 后由 preferred-width
+// 与交叉轴 stretch 各司其职，尺寸变了也不会错位。
+component PathAction inherits Rectangle {
+    in property <string> glyph;
+    in property <string> tip;
+    callback clicked();
+    width: 30px;
+    height: 28px;
+    border-radius: Theme.radius-sm;
+    background: ta.has-hover ? Theme.bg-hover : transparent;
+    animate background { duration: 90ms; }
+    // (#tip-hold 2026-10-05) 点击后抑制 tooltip:打开 rfd 的按钮(选择目录/
+    // 恢复默认)点击后弹框开着、指针仍悬在原位,tooltip 会一直悬着(用户截图)。
+    // 点击置 hold,指针离开(has-hover 翻 false)复位 —— 下次悬停正常显示。
+    property <bool> tip-hold: false;
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        changed has-hover => {
+            if (!self.has-hover) { root.tip-hold = false; }
+        }
+        clicked => { root.clicked(); root.tip-hold = true; }
+    }
+    HorizontalLayout {
+        alignment: center;
+        Icon {
+            glyph: root.glyph;
+            tint: ta.has-hover ? Theme.text-primary : Theme.text-muted;
+            size: 15px;
+        }
+    }
+    if ta.has-hover && !root.tip-hold : Rectangle {
+        x: parent.width - self.width;
+        y: -self.height - 4px;
+        width: tip-label.preferred-width + 16px;
+        height: tip-label.preferred-height + 10px;
+        background: Theme.bg-active;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 10px;
+        drop-shadow-color: #00000077;
+        tip-label := Text {
+            x: 8px;
+            y: 5px;
+            width: parent.width - 16px;
+            text: root.tip;
+            color: Theme.text-primary;
+            font-size: Theme.fs-xs;
+        }
+    }
+}
+
+// One "contains" chip: 12px glyph + label, pill shaped.
+// (#chip-icon-overlap 2026-10-04) 内部改用 HorizontalLayout。
+// 原来靠绝对定位：Icon { x: 9px } + Text { x: 31px }。但 Icon 组件的宽度语义是
+// 「preferred-width + 交叉轴 stretch 到父盒全高」—— 父是**非布局** Rectangle 时
+// stretch 失效、width 退化成 100% 铺满，组件内 Image 再按 (parent - self)/2 居中，
+// 图标于是落在 chip 正中、压住文字（用户截图）。改用 HL 后 Icon 走
+// preferred-width = size，文字紧随其后，spacing/padding 统一由 HL 管。
+component DirChip inherits Rectangle {
+    in property <string> glyph;
+    in property <string> label;
+    height: 22px;
+    // (#storage-chip-gap-r2 2026-10-04) 视觉间隙再收紧:lucide 图标在 12px 框里
+    // 自带 ~2px 内衬,5px spacing 的实际观感 ≈ 8px(用户反馈偏大)→ spacing 2px,
+    // 实际观感 ≈ 4px。宽度公式随 spacing 同步。
+    width: chip-row.preferred-width + 17px; // 10 pad + 12 icon + 2 gap + text + 10 pad
+    border-radius: 11px;
+    background: Theme.bg-elevated;
+    border-width: 1px;
+    border-color: Theme.border-control;
+    chip-row := HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 2px;
+        Icon {
+            glyph: root.glyph;
+            tint: Theme.text-muted;
+            size: 12px;
+        }
+        chip-label := Text {
+            text: root.label;
+            color: Theme.text-secondary;
+            font-size: Theme.fs-xs;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// A selectable option card (radio + title/description [, recommended badge]).
+component OptionCard inherits Rectangle {
+    in property <bool> lang-en;
+    in property <string> title;
+    in property <string> desc;
+    in property <bool> recommended: false;
+    in property <bool> selected;
+    callback clicked();
+    background: root.selected ? Theme.accent-soft : Theme.bg-panel;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: root.selected ? Theme.accent : Theme.border-subtle;
+    animate background, border-color { duration: 120ms; }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 13px;
+        padding-bottom: 13px;
+        spacing: 12px;
+        alignment: start;
+        // Radio indicator.
+        Rectangle {
+            width: 15px;
+            height: 15px;
+            border-radius: 8px;
+            border-width: 1.5px;
+            border-color: root.selected ? Theme.accent : Theme.border-strong;
+            if root.selected : Rectangle {
+                // (#radio-dot-center 2026-10-04) 圆心居中：(15-8)/2 = 3.5px，
+                // 原 2.5px 让内点整体偏左上 1px（用户截图可见）。
+                x: 3.5px;
+                y: 3.5px;
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: Theme.accent;
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 3px;
+            alignment: start;
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Text {
+                    text: root.title;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-md;
+                    font-weight: Theme.fw-strong;
+                    vertical-alignment: center;
+                }
+                if root.recommended : Rectangle {
+                    background: Theme.success;
+                    border-radius: 8px;
+                    width: recom-label.preferred-width + 16px;
+                    height: 16px;
+                    recom-label := Text {
+                        text: (root.lang-en ? "Recommended" : "推荐");
+                        color: white;
+                        font-size: 10px;
+                        font-weight: Theme.fw-strong;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            Text {
+                text: root.desc;
+                color: Theme.text-muted;
+                font-size: Theme.fs-xs;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+export component StorageSettings inherits Rectangle {
+    in property <bool> lang-en;   // manual bilinguality, same as the rest of the settings pages
+    in property <string> current-dir;    // resolved data dir right now
+    in property <string> default-dir;    // built-in default (~/.mterm)
+    in-out property <string> target-dir; // editable target for the switch
+    in property <string> status;         // feedback toast ("" = hidden)
+    in property <bool> status-error;
+    in property <int> host-count;        // configured sessions (= hosts); 0 → chip hidden
+    in property <int> quick-count;       // quick commands; 0 → chip hidden
+    callback open-dir();
+    callback copy-path();
+    callback pick-dir();
+    callback reset-dir();
+    callback switch-to(bool /* migrate */);
+
+    // Which of the two option cards is selected; drives the primary button label.
+    in-out property <bool> migrate: true;
+
+    // (#switch-disabled-unchanged 2026-10-05) 目标目录与当前目录相同(或为空)时,
+    // 没有可执行的操作 —— 主按钮**禁用**(变暗、不可点),状态自解释,不再弹
+    // 「新目录与当前目录相同」的错误 toast(原交互:错误 toast 恰好压在按钮上,
+    // 且相同错误重复触发时 changed status 不触发,看起来"无任何效果")。
+    property <bool> target-unchanged:
+        root.target-dir == root.current-dir || root.target-dir == "";
+
+    // (#target-focus 2026-10-05) 目标输入框的聚焦视觉开关:点输入框(自身
+    // has-focus)或点选择/恢复按钮(手动置真)时亮;点输入框以外(底层失焦区)灭。
+    in-out property <bool> target-focus: false;
+    // 失焦区:铺满整页、位于所有内容之下(先于 VerticalLayout 声明)。点击它
+    // = 点击了输入框以外的地方 → root.focus() 把窗口焦点从 TextInput 挪走。
+    // 焦点池:零尺寸可聚焦元素。点击失焦区时把焦点挪给它,TextInput 即失焦
+    // (Slint 没有 blur() API,转移焦点是标准失焦手法)。
+    blur-sink := FocusScope { x: 0; y: 0; width: 0; height: 0; }
+    ta-blank := TouchArea {
+        clicked => {
+            root.target-focus = false;
+            blur-sink.focus();
+        }
+    }
+
+    property <bool> toast-visible: false;
+    property <bool> show-status: root.status != "" && root.toast-visible;
+    // (#reset-always 2026-10-04) show-reset 已删：恢复默认按钮改为常显
+    // （原先 target 初值即 default，条件永不成立，按钮整行消失）。
+
+    // (#storage-ui) Toast auto-hide: any new status restarts the timer, so a
+    // burst of actions never stacks and the toast never covers the page.
+    hide-timer := Timer {
+        interval: 2200ms;
+        triggered => { root.toast-visible = false; }
+    }
+    changed status => {
+        if (root.status != "") {
+            root.toast-visible = true;
+            hide-timer.restart();
+        } else {
+            root.toast-visible = false;
+        }
+    }
+
+    // (#storage-gap 2026-10-04) 两层节奏分开管：
+    //   外层 spacing 16px = 高保真 `.card + .card { margin-top: 16px }`（两卡之间）
+    //   卡内 spacing 12px = 高保真 `.pathbar/.target-field/.opt { margin-top: 12px }`
+    // 上一版两层都写 12px，实测卡间距只有 12（高保真 16）。
+    // 卡内 padding 只管卡片自己的四边，块间距一律走 spacing，不再各块补
+    // padding-top（原先两张卡各写一遍数值，天然会对不齐）。
+    VerticalLayout {
+        spacing: 16px;
+        alignment: start;
+
+        // --- Card 1 · current location ----------------------------------
+        Rectangle {
+            background: Theme.bg-panel-alt;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+            // padding 18/20 与高保真 `.card { padding: 18px 20px }` 同值；
+            // 纵向节奏由外层 VL 的 spacing: 12px 统一给。
+            VerticalLayout {
+                spacing: 12px;
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 18px;
+                padding-bottom: 18px;
+                alignment: start;
+
+                // (#storage-gap-r2 2026-10-04) 卡内块间距 = 卡内 spacing 12px
+                // 统一给（高保真 .pathbar/.target-field/.opt/.contents-row 的
+                // margin-top: 12px；card-head 的 margin-bottom 2px 被 CSS 外边距
+                // 折叠进 12px，等效间距就是 12 —— 这里不再补 2px 底垫，直接
+                // 靠 spacing。此前注释写了 spacing 12 但属性没落到 VL 上，
+                // 实际 spacing = 0（默认值），输入框与「包含」行/选项卡全部
+                // 贴死 —— 用户截图三处零间距的根因。
+                // 标题行本身是「标题 + 副标题」横排、间距 10px，与高保真同构。
+                HorizontalLayout {
+                    spacing: 10px;
+                    padding-bottom: 2px;
+                    alignment: start;
+                    Text {
+                        text: (root.lang-en ? "Current storage location" : "当前存储位置");
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-lg;
+                        font-weight: Theme.fw-strong;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: (root.lang-en
+                            ? "Sessions and config are read from here; logs go into log/"
+                            : "会话与配置的存放处，日志写在 log 子目录下");
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-sm;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Path readout + inline actions.
+                Rectangle {
+                    height: StorageBox.height;
+                    background: Theme.bg-elevated;
+                    border-radius: StorageBox.radius;
+                    border-width: 1px;
+                    border-color: StorageBox.border;
+                    HorizontalLayout {
+                        padding-left: StorageBox.pad-left;
+                        padding-right: StorageBox.pad-right;
+                        spacing: 0px;
+                        // (#pathbar-icon-right 2026-10-04) **不能**写
+                        // `alignment: start`。HorizontalLayout 的 alignment 是
+                        // 主轴(水平)对齐，写了它布局就不再把剩余空间分给 stretch
+                        // 子项 —— 文字按 preferred-width 停下，图标紧跟其后，
+                        // 整行挤在左侧。实测：路径条内缘 738.5px，图标却止于
+                        // 328.5px，右边空出 410px（用户截图）。去掉后 stretch 生效，
+                        // 分隔线与两个图标被推到右缘，与高保真 `.pathbar` 的
+                        // flex:1 + 右侧按钮组一致。
+                        //
+                        // 交叉轴(垂直)居中由子项自身的 vertical-alignment 负责，
+                        // 依然不需要 alignment。同源记录见 MEMORY.md
+                        // 「Slint 布局语义」节与 scripts/audit-layout-align.py。
+                        Text {
+                            horizontal-stretch: 1;
+                            text: root.current-dir;
+                            color: Theme.text-primary;
+                            font-family: Theme.font-mono;
+                            font-size: Theme.fs-sm;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        // (#storage-vcenter 2026-10-04) HL 对**固定高子项是顶对齐**
+                        // （TopbarBtn 注释记过的坑）：竖线/按钮原先顶死在 40px 条的
+                        // 上沿，比居中的路径文字整体偏高，且竖线(20px)与按钮(28px)
+                        // 中心互错。包一层 alignment: center 的 VL：外层撑满条高、
+                        // 内容垂直居中；horizontal-stretch: 0 不抢路径文字的宽度。
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 0;
+                            // (#storage-divider-6px 2026-10-05) 竖线两侧各 6px,
+                            // 等效高保真 .divider { margin: 0 6px }。
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            Rectangle { width: 1px; height: 20px; background: Theme.border-subtle; }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 0;
+                            PathAction {
+                                glyph: "folder-open";
+                                tip: (root.lang-en ? "Open current directory" : "打开当前目录");
+                                clicked => { root.open-dir(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 0;
+                            PathAction {
+                                glyph: "copy";
+                                tip: (root.lang-en ? "Copy path" : "复制路径");
+                                clicked => { root.copy-path(); }
+                            }
+                        }
+                    }
+                }
+
+                // What lives in the directory. Hosts and quick commands only
+                // appear when non-empty (#storage-ui): an empty dir must not
+                // leave hollow chips behind.
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    Text {
+                        text: (root.lang-en ? "Contains" : "包含");
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-sm;
+                        vertical-alignment: center;
+                    }
+                    if root.host-count > 0 : DirChip {
+                        glyph: "host-server";
+                        label: (root.lang-en ? "Hosts " : "主机 ") + root.host-count;
+                    }
+                    if root.quick-count > 0 : DirChip {
+                        glyph: "quick-command";
+                        label: (root.lang-en ? "Quick commands " : "快捷指令 ") + root.quick-count;
+                    }
+                    DirChip {
+                        glyph: "settings";
+                        label: (root.lang-en ? "Config" : "配置");
+                    }
+                    DirChip {
+                        glyph: "log-file";
+                        label: (root.lang-en ? "Logs" : "日志");
+                    }
+                }
+            }
+        }
+
+        // --- Card 2 · change location -----------------------------------
+        Rectangle {
+            background: Theme.bg-panel-alt;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+            VerticalLayout {
+                spacing: 12px;
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 18px;
+                padding-bottom: 18px;
+                alignment: start;
+
+                // (#storage-gap-r2) 与卡 1 同口径：卡内 spacing 12px 统一给
+                // （目标框 → 直接切换 → 迁移数据并切换，三块之间各 12px；
+                // 操作行另有 padding-top 4px，合计 16 = 高保真 action-row。
+                // 此前 spacing 属性缺失，三块贴死）。
+                HorizontalLayout {
+                    spacing: 10px;
+                    padding-bottom: 2px;
+                    alignment: start;
+                    Text {
+                        text: (root.lang-en ? "Change storage location" : "更改存储位置");
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-lg;
+                        font-weight: Theme.fw-strong;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: (root.lang-en ? "Pick a new directory, then choose the migration mode below."
+                                            : "选择新目录，迁移方式在下方选择");
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-sm;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Target field: identical geometry to the path bar above.
+                // (#target-focus 2026-10-05) 聚焦视觉参照新建会话弹框:
+                // accent 边框 + 底色提亮(field-2)+ 外圈 3px accent-soft 光晕。
+                Rectangle {
+                    height: StorageBox.height;
+                    background: (field-input.has-focus || root.target-focus) ? Theme.field-2 : Theme.bg-root;
+                    border-radius: StorageBox.radius;
+                    border-width: 1px;
+                    border-color: (field-input.has-focus || root.target-focus) ? Theme.accent : StorageBox.border;
+                    animate border-color, background { duration: 120ms; }
+                    // (#target-focus-ring 2026-10-05) 聚焦光圈与 LabeledInput 的
+                    // 聚焦外圈**逐参数一致**(x/y -3、+6、radius 11、3px accent-soft)。
+                    if (field-input.has-focus || root.target-focus) : Rectangle {
+                        x: -3px; y: -3px;
+                        width: parent.width + 6px;
+                        height: parent.height + 6px;
+                        // (#focus-ring-concentric 2026-10-05) 圆角**同心**:半径 =
+                        // 目标框 radius + 外扩量 3px。固定 11px 是照抄 LabeledInput
+                        // (它输入框 radius 9px),而本框 radius 只有 6px —— 圆角比
+                        // 同心圆大 2px,四个角就对不精确(用户截图)。
+                        border-radius: StorageBox.radius + 3px;
+                        border-width: 3px;
+                        border-color: Theme.accent-soft;
+                    }
+                    HorizontalLayout {
+                        padding-left: StorageBox.pad-left;
+                        padding-right: StorageBox.pad-right;
+                        spacing: 0px;
+                        // (#pathbar-icon-right 2026-10-04) 同上方路径条：不能写
+                        // alignment: start（会抑制 stretch，图标贴文字而不到右缘）。
+                        field-input := TextInput {
+                            horizontal-stretch: 1;
+                            text <=> root.target-dir;
+                            color: Theme.text-primary;
+                            font-family: Theme.font-mono;
+                            font-size: Theme.fs-sm;
+                            single-line: true;
+                            vertical-alignment: center;
+                        }
+                        // (#storage-vcenter 2026-10-04) HL 对**固定高子项是顶对齐**
+                        // （TopbarBtn 注释记过的坑）：竖线/按钮原先顶死在 40px 条的
+                        // 上沿，比居中的路径文字整体偏高，且竖线(20px)与按钮(28px)
+                        // 中心互错。包一层 alignment: center 的 VL：外层撑满条高、
+                        // 内容垂直居中；horizontal-stretch: 0 不抢路径文字的宽度。
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 0;
+                            // (#storage-divider-6px 2026-10-05) 竖线两侧各 6px,
+                            // 等效高保真 .divider { margin: 0 6px }。
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            Rectangle { width: 1px; height: 20px; background: Theme.border-subtle; }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 0;
+                            PathAction {
+                                glyph: "folder-open";
+                                tip: (root.lang-en ? "Choose folder" : "选择目录");
+                                clicked => {
+                                    // (#target-focus-r2) **先聚焦再开 rfd**:目录框
+                                    // 模态阻塞,后调 focus 要等弹框关闭才生效(用户截图:
+                                    // 点图标瞬间无聚焦样式)。target-focus 维持弹框期间
+                                    // 的视觉(主窗失焦时 has-focus 会假)。
+                                    field-input.focus();
+                                    root.target-focus = true;
+                                    root.pick-dir();
+                                    // (#target-focus) 原生目录框会让主窗失焦、
+                                    // has-focus 拉假 —— 手动维持聚焦视觉。
+                                    root.target-focus = true;
+                                }
+                            }
+                        }
+                        // (#reset-always 2026-10-04) 恢复默认**常显**。原先挂在
+                        // show-reset（target != default）上，而 target 初值就是
+                        // default，两个条件同时成立 → 按钮整行消失（用户截图：框内
+                        // 只有一个图标）。高保真里这个按钮是无条件存在的操作项，
+                        // 提示语「恢复默认目录 (~/.mterm)」本身已说明了它会做什么；
+                        // 目标已是默认时点它相当于复位，是合理的一次点击。
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 0;
+                            PathAction {
+                                glyph: "folder-reset";
+                                tip: (root.lang-en ? "Restore default (~/.mterm)" : "恢复默认目录 (~/.mterm)");
+                                clicked => {
+                                    field-input.focus();
+                                    root.target-focus = true;
+                                    root.reset-dir();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                OptionCard {
+                    lang-en: root.lang-en;
+                    title: (root.lang-en ? "Switch as-is" : "直接切换");
+                    desc: (root.lang-en
+                        ? "Start using the target directory right away without copying files; best for an empty or pre-populated dir."
+                        : "立即使用目标目录，不复制文件。适合空目录或已准备好数据的目录。");
+                    selected: !root.migrate;
+                    clicked => { root.migrate = false; }
+                }
+
+                OptionCard {
+                    lang-en: root.lang-en;
+                    title: (root.lang-en ? "Migrate & switch" : "迁移数据并切换");
+                    desc: (root.lang-en
+                        ? "Copy the current files into the new directory, then switch; the old directory is kept."
+                        : "复制当前文件到新目录后切换，原目录保留。适合继续使用现有数据。");
+                    recommended: true;
+                    selected: root.migrate;
+                    clicked => { root.migrate = true; }
+                }
+
+                // Action row: restart hint on the left, one primary button on
+                // the right whose label follows the selected mode.
+                HorizontalLayout {
+                    // (#storage-gap) 卡内 spacing 12px，高保真此处是 16px ——
+                    // 多出的 4px 记在这里，避免为了一个数字再拆一层布局。
+                    padding-top: 4px;
+                    // (#storage-hint-gap 2026-10-05) 图标-文字间距对齐高保真
+                    // .action-hint { gap: 7px } —— 12px 过大(用户截图红框)。
+                    spacing: 7px;
+                    // (#storage-vcenter) 同上：固定尺寸图标在 HL 里顶对齐，包一层居中。
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 0;
+                        // 高保真 .action-hint svg { margin-top: 1px }:小图标相对
+                        // 文字行微沉 1px,基线更稳(布局内 Icon 的 y 不可设,
+                        // 用 padding-top 等效)。
+                        padding-top: 1px;
+                        Icon {
+                            // (#switch-disabled-hint) 禁用态整行切 warning,回答「为什么灰了」。
+                            glyph: root.target-unchanged ? "warning" : "info";
+                            tint: root.target-unchanged ? Theme.warning : Theme.text-muted;
+                            size: Theme.fs-sm;
+                        }
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.target-unchanged
+                            ? (root.lang-en
+                                ? "Target directory is the same as the current one — pick a new directory to enable switching."
+                                : "目标目录与当前目录相同，选择新目录后即可切换")
+                            : (root.lang-en
+                                ? "A restart is recommended after switching. Config and the encryption key move with the directory; the old directory is kept."
+                                : "切换后建议重启应用；配置与加密密钥随目录一起迁移，原目录保留不动。");
+                        color: root.target-unchanged ? Theme.warning : Theme.text-muted;
+                        font-size: Theme.fs-xs;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                    }
+                    go-wrap := Rectangle {
+                        // (#storage-ui) 固定 18px 左右留白：按钮文字会在「直接切换 /
+                        // 迁移并切换」两种模式间切换，宽度若跟着文字走会左右跳动。
+                        width: go-label.preferred-width + 36px;
+                        height: 34px;
+                        // (#switch-disabled-unchanged) 目录未变更 → 禁用(变暗、
+                        // 不可点):没有可执行的操作,变暗即"当前无事可做"。
+                        opacity: root.target-unchanged ? 0.4 : 1.0;
+                        background: !root.target-unchanged && go-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                        border-radius: Theme.radius-md;
+                        animate background { duration: 120ms; }
+                        go-ta := TouchArea {
+                            enabled: !root.target-unchanged;
+                            mouse-cursor: root.target-unchanged ? default : pointer;
+                            clicked => { root.switch-to(root.migrate); }
+                        }
+                        // 禁用态悬停提示:说明为什么按钮是灰的。
+                        if root.target-unchanged && go-ta.has-hover : Rectangle {
+                            x: parent.width - self.width;
+                            y: -self.height - 6px;
+                            width: tip-text.preferred-width + 16px;
+                            height: tip-text.preferred-height + 10px;
+                            background: Theme.bg-active;
+                            border-radius: Theme.radius-md;
+                            border-width: 1px;
+                            border-color: Theme.border-strong;
+                            drop-shadow-blur: 10px;
+                            drop-shadow-color: #00000077;
+                            tip-text := Text {
+                                x: 8px; y: 5px;
+                                width: parent.width - 16px;
+                                text: root.lang-en ? "Target directory is unchanged" : "目录未变更";
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-xs;
+                            }
+                        }
+                        go-label := Text {
+                            width: parent.width;
+                            height: parent.height;
+                            text: root.migrate
+                                ? (root.lang-en ? "Migrate & switch" : "迁移并切换")
+                                : (root.lang-en ? "Switch as-is" : "直接切换");
+                            color: white;
+                            font-size: Theme.fs-sm;
+                            font-weight: Theme.fw-strong;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Floating toast (feedback) ---------------------------------------
+    // Declared last so it paints above both cards; no TouchArea, so it never
+    // blocks the action row underneath.
+    // (#toast-top-right 2026-10-05) toast 从右下角移到**右上角**:右下角是
+    // 主按钮的位置,错误 toast(如「新目录与当前目录相同」)弹出时正好压在
+    // 按钮上(用户截图)。顶部右侧无冲突元素。
+
+    if root.show-status : Rectangle {
+        x: root.width - self.width - 20px;
+        y: 20px;
+        height: 36px;
+        width: toast-text.preferred-width + 63px; // 14 pad + 13 icon + 8 gap + 14 pad
+        background: Theme.bg-elevated;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: root.status-error ? Theme.danger.with-alpha(0.4) : Theme.success.with-alpha(0.4);
+        drop-shadow-blur: 16px;
+        drop-shadow-color: #00000099;
+        Icon {
+            x: 14px;
+            y: (parent.height - 13px) / 2;
+            glyph: root.status-error ? "error" : "check";
+            tint: root.status-error ? Theme.danger : Theme.success;
+            size: 13px;
+        }
+        toast-text := Text {
+            x: 35px;
+            y: 0px;
+            height: parent.height;
+            text: root.status;
+            color: Theme.text-primary;
+            font-size: Theme.fs-sm;
+            vertical-alignment: center;
+        }
+    }
+}

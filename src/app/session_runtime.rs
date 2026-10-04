@@ -13,14 +13,32 @@ pub(super) fn take_closed_event(events: &mut Vec<SessionEvent>) -> Option<Sessio
     Some(closed)
 }
 
-pub(super) fn resolve_jump(store: &Rc<RefCell<ConfigStore>>, session: &Session) -> Option<Session> {
-    if session.kind != SessionKind::Ssh || session.jump_session_id.trim().is_empty() {
-        return None;
+/// (#conn-path 2026-10-04 多级跳板) 解析会话的完整跳板链(有序,已剔除自身与
+/// 链内重复 —— 防环);jump_chain 优先,空则回落旧单跳字段(双保险)。悬空 id
+/// 静默剔除(退化短链),与旧行为「悬空单跳 → 直连」一致。
+pub(super) fn resolve_jump_chain(
+    store: &Rc<RefCell<ConfigStore>>,
+    session: &Session,
+) -> Vec<Session> {
+    // (#conn-path) Telnet 也走跳板链(纯 TCP 隧道);其余协议无网络路径。
+    if session.kind != SessionKind::Ssh && session.kind != SessionKind::Telnet {
+        return Vec::new();
     }
-    if session.jump_session_id == session.id {
-        return None;
+    let mut ids = session.jump_chain.clone();
+    if ids.is_empty() && !session.jump_session_id.trim().is_empty() {
+        ids.push(session.jump_session_id.clone());
     }
-    store.borrow().get(&session.jump_session_id).cloned()
+    let store = store.borrow();
+    let mut out: Vec<Session> = Vec::new();
+    for id in ids {
+        if id == session.id || out.iter().any(|s| s.id == id) {
+            continue;
+        }
+        if let Some(s) = store.get(&id) {
+            out.push(s.clone());
+        }
+    }
+    out
 }
 
 pub(super) fn should_start_sftp(session: &Session) -> bool {
@@ -36,9 +54,9 @@ pub(super) fn should_start_sftp(session: &Session) -> bool {
 pub(super) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &ConnectCtx) {
     let has_sftp = should_start_sftp(&session);
     let (initial_cols, initial_rows) = *ctx.last_term_size.lock().unwrap();
-    // Resolve the optional SSH jump host now (on the UI thread, where the store
-    // lives) so the owned Session can be handed to the worker threads (#211).
-    let jump = resolve_jump(&ctx.store, &session);
+    // Resolve the jump chain now (on the UI thread, where the store lives) so
+    // the owned Sessions can be handed to the worker threads (#211, #conn-path).
+    let jump = resolve_jump_chain(&ctx.store, &session);
     let (handle, rx) = match session.kind {
         SessionKind::Ssh => spawn_session(
             ctx.runtime.handle(),
@@ -57,6 +75,7 @@ pub(super) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &Connect
             ctx.runtime.handle(),
             tab_id.to_string(),
             session.clone(),
+            jump.clone(),
             initial_cols,
             initial_rows,
         ),
@@ -128,7 +147,7 @@ pub(super) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &Connect
                 return;
             }
             tokio::task::yield_now().await;
-            let sftp_handle = spawn_sftp(sftp_task_runtime.handle(), session, jump, sftp_tx);
+            let sftp_handle = spawn_sftp(sftp_task_runtime.handle(), session, jump.clone(), sftp_tx);
             let handles = sftp_route.lock().ok().map(|r| r.sftp_handles.clone());
             if let Some(handles) = handles {
                 if let Ok(mut handles) = handles.lock() {

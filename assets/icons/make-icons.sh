@@ -71,6 +71,11 @@ mk upload '<path d="M12 21V7m0 0-5 5m5-5 5 5M5 3h14"/>'
 # E2C4（Material file_download）：SFTP 下载按钮（sftp_panel.slint:649）+ 设置侧栏「下载」（interface_panel.slint:746）。
 mk download '<path d="M12 3v14m0 0-5-5m5 5 5-5M5 21h14"/>'
 mk create-new-folder "$FOLDER"'<path d="M12 9.5v7M8.5 13h7"/>'
+# 数据目录设置页「恢复默认目录」按钮（2026-10-04 新增）。
+# 语义 = 目录回到默认，故**复用 $FOLDER 骨架**并在内部放复位箭头 —— 与 folder / folder-open
+# 的区别只在内部符号。实测：与 folder 0.44，全库最高 0.515（未撞形）。
+# 箭头长度是调过的：6.5 格偏短不协调，9.5 格会让 11px 与文件夹左壁合并，定在 8 格（12–20px 全档 ok）。
+mk folder-reset "$FOLDER"'<path d="M17.5 13.5H9.5"/><path d="M13 11 9.5 13.5 13 16"/>'
 # 密码可见性 / 显示·隐藏本地终端（app.slint:3394 的 E8F4/E8F5 开关，widgets.slint 密码框也用它）。
 # 原杏仁形两端是**尖角**（`s3-8` 三次曲线的端点就是拐点），16px 下是两根硬刺；
 # 改用 Lucide eye 的圆端收尾（`a1 1 0 0 1 0-.696`）。两版互撞 0.671 → 0.582。
@@ -198,7 +203,10 @@ mk settings '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2
 # 依据：Icons8 把 "Available Updates" 归入 cycle-arrows，Windows 11 亦用循环箭头；
 # 单向 refresh 表示"刷新"，双向表示"检查更新"，两者语义不同。
 mk system-update '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>'
-mk input '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M11 12.5v5m0 0-2.5-2.5m2.5 2.5 2.5-2.5"/>'
+# 【2026-10-04 重画】旧形是「文件内部一支向下箭头」：箭头与文件壁墨距不足，14px 起糊成一坨，
+# 且语义偏「下载文件」。改用 file-input 标准形 —— 文件右置，左缘在 y=8 以下断开，
+# 箭头从开口水平穿入，「导入」语义由箭头的**进入方向**表达，不再靠内部符号。
+mk input '<path d="M4 21h12a2 2 0 0 0 2-2V8l-4-4H6a2 2 0 0 0-2 2v4"/><path d="M14 4v4h4"/><path d="M3 15h8"/><path d="M8 12l3 3-3 3"/>'
 mk language '<path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/>'
 # 协议回落（theme.slint:227 protocol-glyph 的兜底：ssh / local / 未知协议）。
 # 只承载 **EB8E**。EA34（顶栏「命令栏」开关）已拆到下一行的 command-bar —— 两者原先同形，
@@ -221,7 +229,9 @@ mk window-asset '<rect x="2" y="4" width="20" height="16" rx="3"/><path d="M2 9h
 #   （实测 0.854），故取并排（不交叠）。
 # 【为何不拆 RDP / VNC 两个】主流对两者用同一个「远程桌面」图标；实测拆分后两者互撞
 #   0.729，而它们在会话列表里正是并排的 —— 拆分解决不了问题。
-mk remote-desktop '<rect x="2" y="5" width="9" height="11" rx="1.5"/><rect x="13" y="5" width="9" height="11" rx="1.5"/><path d="M5 20h3M6.5 16v4M16 20h3M17.5 16v4"/>'
+# 【2026-10-04 重画】旧形两屏路径间距只有 2 格 → 墨距 0，两屏是**贴死**的，再加双竖杆
+# 双底座共 6 个元素，16px 全粘。新形两屏间距 4 格（墨距 2），去掉各自底座改共享底座横线。
+mk remote-desktop '<rect x="3" y="4" width="7" height="9" rx="1.5"/><rect x="14" y="4" width="7" height="9" rx="1.5"/><path d="M6.5 15v2M17.5 15v2"/><path d="M4 19h16"/>'
 # 显示（托盘菜单「显示 / Show」，tray_menu.slint 的 TrayGlyph kind=0 的库内对应）。
 # 【改名】原名 monitor 是物件名，而它承载的功能是「显示」；项目其余图标均按功能命名。
 # 【码位】托盘「显示」是**自绘** TrayGlyph，没有 Material 码位，故为 —；
@@ -245,8 +255,20 @@ mk wallpaper '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy
 # 若这里再放箭头就成了三个箭头排一列（上一版我加过箭头，是在孤立语境下误判的）。
 mk table-rows '<path d="M16 5H3M11 12H3M16 19H3M18 9v6M21 12h-6"/>'
 mk file '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>'
+# 日志（数据目录页「包含」条目 / 日志文件，2026-10-04 新增）。
+# 折角刻意放在**右下**：与 file 同为右上折角时 16px 相关度 0.755（撞形），换到右下后降到 0.473。
+mk log-file '<path d="M20 16V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9z"/><path d="M20 16l-5 5"/><path d="M8 7h8M8 11h8M8 15h5"/>'
 mk cloud '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>'
 mk computer '<path d="M20 16V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9m16 0H4m16 0 1.28 2.55A1 1 0 0 1 20.38 20H3.62a1 1 0 0 1-.9-1.45L4 16"/>'
+# 主机（数据目录页「包含 · 主机」条目，2026-10-04 新增）。
+# 造型 = 机架两层横条 + 左端指示灯。三条约束：① 两条墨距必须 2 格（上一版墨距 0，视觉贴死）；
+# ② 上下边距对称 2/2；③ 指示灯 r=0.9，距内壁 1.6 格 —— 再大就与横条糊在一起。
+# 实测 16 / 20px 分量 3（两横条 + 灯各自成块），最高对手 dashboard 0.692。
+mk host-server '<rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><circle cx="7.5" cy="6.5" r="0.9" fill="currentColor" stroke="none"/><circle cx="7.5" cy="17.5" r="0.9" fill="currentColor" stroke="none"/>'
+# 快捷指令（数据目录页「包含 · 快捷指令」条目，2026-10-04 新增）。
+# 造型 = 尖括号 + 斜杠。斜杠端点距括号尖必须 >=1.6 格：拉斜到 5 格更接近参考图，但 16px 三笔合一，
+# 故定在 3 格（近竖直）。实测 12 / 16 / 20px 分量 3，最高对手 arrow-up 0.471。
+mk quick-command '<path d="M7 7 3 12l4 5"/><path d="M13.5 6 10.5 18"/><path d="M17 7l4 5-4 5"/>'
 mk plug '<path d="M17 19a1 1 0 0 1-1-1v-2a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2a1 1 0 0 1-1 1z"/><path d="M17 21v-2"/><path d="M19 14V6.5a1 1 0 0 0-7 0v11a1 1 0 0 1-7 0V10"/><path d="M21 21v-2"/><path d="M3 5V3"/><path d="M4 10a2 2 0 0 1-2-2V6a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2a2 2 0 0 1-2 2z"/><path d="M7 5V3"/>'
 mk refresh '<path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/>'
 

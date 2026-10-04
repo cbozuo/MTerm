@@ -25,7 +25,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -33,152 +32,15 @@ use chacha20poly1305::{
     aead::{Aead, AeadCore, KeyInit},
     ChaCha20Poly1305,
 };
-use directories::ProjectDirs;
 use rand::rngs::OsRng;
 use uuid::Uuid;
 
 use super::structs::*;
 
-// ── Data directory resolution (portable-first, #141) ──────────────────────────
-//
-// All user data — sessions.json, secret.key, known_hosts, error.log — lives in
-// ONE directory resolved here, and `errlog` / `known_hosts` route through it too.
+// ── Data directory (#storage-location 2026-10-02) ─────────────────────────────
+// Directory resolution lives in the dedicated `datastore` module
+// (src/datastore/); config.rs only consumes `data_dir()` / `log_dir()` from it.
 
-static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
-
-/// The single directory holding all user data (sessions, encryption key,
-/// known_hosts, error.log). Resolved once and cached; any one-time migration
-/// from the legacy per-user dir runs exactly once.
-///
-/// Portable-first: prefers a `config/` folder beside the executable, falling
-/// back to the per-user OS config dir when the exe dir is read-only (#141).
-pub fn data_dir() -> PathBuf {
-    DATA_DIR.get_or_init(resolve_data_dir).clone()
-}
-
-/// Directory for diagnostic logs (`error.log`). Kept *separate* from the config
-/// dir so logs don't clutter user data: portable-first → a `log/` folder beside
-/// the executable (a sibling of `config/`). On Windows, the fallback is
-/// `%APPDATA%/meatshell/meatshell/log/log`, outside the config directory
-/// (#log-dir).
-pub fn log_dir() -> PathBuf {
-    // Portable: <exe_dir>/log, sibling of the portable config/ folder.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let log = parent.join("log");
-            if fs::create_dir_all(&log).is_ok() && dir_is_writable(&log) {
-                return log;
-            }
-        }
-    }
-    // Resolve independently from portable configuration storage.
-    let dir = user_log_dir();
-    let _ = fs::create_dir_all(&dir);
-    dir
-}
-
-fn user_log_dir() -> PathBuf {
-    let config = legacy_data_dir()
-        .unwrap_or_else(|| std::env::temp_dir().join("meatshell"));
-    user_log_dir_from_config(&config, cfg!(target_os = "windows"))
-}
-
-fn user_log_dir_from_config(config: &Path, windows: bool) -> PathBuf {
-    if windows {
-        if let Some(base) = config.parent() {
-            return base.join("log").join("log");
-        }
-    }
-    config.join("log")
-}
-
-/// Pre-0.4.15 location: the per-user OS config dir
-/// (`%APPDATA%/meatshell`, `~/.config/meatshell`, …).
-fn legacy_data_dir() -> Option<PathBuf> {
-    ProjectDirs::from("dev", "meatshell", "meatshell").map(|d| d.config_dir().to_path_buf())
-}
-
-/// Portable location: a `config/` folder beside the executable.
-fn portable_data_dir() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.join("config"))
-}
-
-/// True only if we can actually create and write a file in `dir` — Program Files
-/// and other system locations can reject writes even when the dir appears to
-/// exist, so a real write probe is the reliable test.
-fn dir_is_writable(dir: &Path) -> bool {
-    let probe = dir.join(format!(".write_probe_{}", std::process::id()));
-    match fs::write(&probe, b"") {
-        Ok(()) => {
-            let _ = fs::remove_file(&probe);
-            true
-        }
-        Err(_) => false,
-    }
-}
-
-fn resolve_data_dir() -> PathBuf {
-    let legacy = legacy_data_dir();
-
-    if let Some(portable) = portable_data_dir() {
-        // Already a portable install → keep using it (nothing to migrate).
-        if portable.exists() && dir_is_writable(&portable) {
-            return portable;
-        }
-        // Otherwise try to claim the portable dir. This succeeds only where the
-        // exe directory is writable (i.e. not a Program Files / system install),
-        // which is exactly when portable mode makes sense.
-        if fs::create_dir_all(&portable).is_ok() && dir_is_writable(&portable) {
-            if let Some(ref legacy) = legacy {
-                migrate_legacy(legacy, &portable);
-            }
-            return portable;
-        }
-    }
-
-    // Fall back to the legacy per-user dir (also the pre-0.4.15 location). Last
-    // resort: a temp dir, so the app still launches if neither is available.
-    let dir = legacy.unwrap_or_else(|| std::env::temp_dir().join("meatshell"));
-    let _ = fs::create_dir_all(&dir);
-    dir
-}
-
-/// On the first launch that lands on the portable dir, copy user data over from
-/// the legacy per-user dir so upgrading users keep their saved sessions. The
-/// originals are left in place (copy, not move) as a safety net, and existing
-/// destination files are never overwritten (#141).
-fn migrate_legacy(legacy: &Path, portable: &Path) {
-    if legacy == portable {
-        return;
-    }
-    for name in ["sessions.json", "secret.key", "known_hosts"] {
-        let src = legacy.join(name);
-        let dst = portable.join(name);
-        if src.exists() && !dst.exists() {
-            match fs::copy(&src, &dst) {
-                Ok(_) => {
-                    // Keep the key owner-only on Unix (copy preserves bytes, not
-                    // necessarily the mode).
-                    #[cfg(unix)]
-                    if name == "secret.key" {
-                        use std::os::unix::fs::PermissionsExt;
-                        let _ = fs::set_permissions(&dst, fs::Permissions::from_mode(0o600));
-                    }
-                    tracing::info!(
-                        "migrated {name} to portable config dir {}",
-                        portable.display()
-                    );
-                }
-                Err(e) => tracing::warn!(
-                    "data migration: failed to copy {} → {}: {e}",
-                    src.display(),
-                    dst.display()
-                ),
-            }
-        }
-    }
-}
 
 fn sessions_file_has_connections(path: &Path) -> bool {
     let Ok(raw) = fs::read_to_string(path) else {
@@ -576,7 +438,7 @@ impl ConfigStore {
     }
 
     fn config_path() -> Result<PathBuf> {
-        Ok(data_dir().join("sessions.json"))
+        Ok(crate::datastore::config_dir().join("sessions.json"))
     }
 
     pub fn sessions(&self) -> &[Session] {
@@ -2786,20 +2648,4 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod log_path_tests {
-    use super::*;
-
-    #[test]
-    fn windows_user_logs_are_outside_config() {
-        let base = Path::new("profile").join("meatshell").join("meatshell");
-        assert_eq!(user_log_dir_from_config(&base.join("config"), true),
-            base.join("log").join("log"));
-    }
-
-    #[test]
-    fn unix_user_log_path_is_unchanged() {
-        let config = Path::new("home/.config/meatshell");
-        assert_eq!(user_log_dir_from_config(config, false), config.join("log"));
-    }
-}
+use crate::datastore::legacy_data_dir;

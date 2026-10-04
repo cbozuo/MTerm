@@ -11,6 +11,7 @@ import { Theme } from "theme.slint";
 import { Slider, ScrollView } from "std-widgets.slint";
 import { SelectField } from "widgets.slint";
 import { LabeledInput, PrimaryButton, GhostButton } from "widgets.slint";
+import { StorageSettings } from "storage_settings.slint";
 
 export struct OutputRuleItem {
     pattern: string,
@@ -44,9 +45,12 @@ component NavItem inherits Rectangle {
     HorizontalLayout {
         padding-left: 10px;
         spacing: 9px;
-        Icon {
+        // (#nav-icon-accent 2026-10-05) 选中项图标**跟随主题色**:
+    // 高保真 .item.active svg { stroke: accent } —— 只靠底色区分选中时
+    // 层级偏弱,图标点亮后更清晰。
+    Icon {
     glyph: root.icon;
-    tint: root.active ? Theme.text-primary : Theme.text-secondary;
+    tint: root.active ? Theme.accent : Theme.text-secondary;
     size: Theme.fs-md;
 }
         Text { text: root.label;
@@ -668,6 +672,20 @@ export component InterfacePanel inherits Rectangle {
     callback set-quick-commands-as-sidebar(bool);
     // (#close-behavior) 设置 › 窗口 的「关闭按钮行为」下发回调。
     callback set-close-behavior(string);
+    // (#storage-location 2026-10-02) 设置 › 窗口 的「存储位置」卡。
+    in-out property <string> storage-current;
+    in-out property <string> storage-default;
+    in-out property <string> storage-target;
+    in-out property <string> storage-status;
+    in-out property <bool> storage-status-error;
+    // (#storage-ui 2026-10-04) 「包含」chips 的两个计数，由 app.slint 下发。
+    in-out property <int> storage-host-count;
+    in-out property <int> storage-quick-count;
+    callback open-storage-dir();
+    callback copy-storage-path();
+    callback pick-storage-dir();
+    callback reset-storage-dir();
+    callback switch-storage(bool) -> bool;
     callback set-update-check-enabled(bool);   // startup new-version check (#184)
     callback set-welcome-as-sidebar(bool);
     callback set-mcp-permissions(bool, bool, bool, bool);
@@ -776,6 +794,12 @@ export component InterfacePanel inherits Rectangle {
                     icon: "more-vert"; label: root.lang-en ? "Window" : "窗口";
                     active: root.ifd-page == "window";
                     clicked => { root.ifd-page = "window"; }
+                }
+                // (#storage-location) 独立页:数据目录的查看/切换/迁移。
+                NavItem {
+                    icon: "folder-open"; label: root.lang-en ? "Data directory" : "数据目录";
+                    active: root.ifd-page == "storage";
+                    clicked => { root.ifd-page = "storage"; }
                 }
                 NavItem {
                     icon: "plug"; label: "MCP";
@@ -1864,6 +1888,30 @@ export component InterfacePanel inherits Rectangle {
                             root.set-close-behavior(root.close-behavior);
                         }
                     }
+                }
+            }
+
+            // --- (#storage-location) Data-directory page ----------------
+            if root.ifd-page == "storage" : VerticalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 14px;
+                spacing: 0;
+                alignment: start;
+                StorageSettings {
+                    lang-en: root.lang-en;
+                    current-dir: root.storage-current;
+                    default-dir: root.storage-default;
+                    target-dir <=> root.storage-target;
+                    status: root.storage-status;
+                    status-error: root.storage-status-error;
+                    host-count: root.storage-host-count;
+                    quick-count: root.storage-quick-count;
+                    open-dir() => { root.open-storage-dir(); }
+                    copy-path() => { root.copy-storage-path(); }
+                    pick-dir() => { root.pick-storage-dir(); }
+                    reset-dir() => { root.reset-storage-dir(); }
+                    switch-to(m) => { root.switch-storage(m); }
                 }
             }
 

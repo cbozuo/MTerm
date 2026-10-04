@@ -17,6 +17,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -147,16 +148,24 @@ fn read_port_file(port_file: &Path) -> Option<u16> {
     std::fs::read_to_string(port_file).ok()?.trim().parse().ok()
 }
 
-/// Endpoint path inside the per-user data dir: the unix socket on unix, the
-/// TCP port file on Windows (see module docs).
+/// Endpoint path for the single-instance handshake: the unix socket on unix,
+/// the TCP port file on Windows (see module docs).
+///
+/// (#storage-location 2026-10-03) Lives in %TEMP%, not the data dir: the lock
+/// is a runtime artifact and must not clutter the personal-data directory (nor
+/// follow it across a storage switch).
 pub fn socket_path() -> PathBuf {
+    // The parent dir doesn't exist by default and write/bind won't create it —
+    // without this the first acquire() fails and single-instance silently
+    // degrades to a plain launch.
+    let _ = fs::create_dir_all(std::env::temp_dir().join("meatshell-ipc"));
     #[cfg(windows)]
     {
-        crate::config::data_dir().join("ipc.port")
+        std::env::temp_dir().join("meatshell-ipc").join("ipc.port")
     }
     #[cfg(not(windows))]
     {
-        crate::config::data_dir().join("ipc.sock")
+        std::env::temp_dir().join("meatshell-ipc").join("ipc.sock")
     }
 }
 

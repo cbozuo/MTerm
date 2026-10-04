@@ -129,6 +129,11 @@ pub struct Session {
     /// Single hop only; the jump session supplies its own host/user/auth (#211).
     #[serde(default)]
     pub jump_session_id: String,
+    /// (#conn-path 2026-10-04) 多级跳板链(有序会话 id,依次经过)。单跳时代只
+    /// 写 jump_session_id;加载时若本字段为空而 jump_session_id 非空则迁移为
+    /// 链首一项;保存时 jump_session_id 同步为链首(旧版本读兼容)。
+    #[serde(default)]
+    pub jump_chain: Vec<String>,
     #[serde(default)]
     pub last_used: Option<String>,
     /// Optional folder/group name to organize sessions in the list (#41).
@@ -266,6 +271,7 @@ impl Session {
             private_key_inline: Secret::default(),
             proxy: String::new(),
             jump_session_id: String::new(),
+            jump_chain: Vec::new(),
             last_used: None,
             group: String::new(),
             kind: SessionKind::Ssh,

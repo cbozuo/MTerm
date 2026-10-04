@@ -12,6 +12,10 @@ export struct SessionInfo {
     host: string,
     port: int,
     user: string,
+    // (#conn-path 2026-10-04) 认证方式原始值(password/keyboard-interactive/
+    // key):悬停信息卡的「认证」行(显示名由 slint auth-display 转换)。空 =
+    // builtin 行,不显示。
+    auth: string,
     group: string,        // folder/group name ("" = ungrouped)
     group-header: string, // set on the first row of each group → render a header
     collapsed: bool,      // group is collapsed → this session row is hidden
@@ -438,6 +442,11 @@ component SessionRow inherits Rectangle {
             }
         }
         moved => {
+            // (#conn-path) 信息卡跟随指针(Timer 只定首次锚点)。
+            if (self.has-hover && !root.list-dragging && root.card-out-name == root.session.name) {
+                root.card-out-x = self.absolute-position.x + self.mouse-x;
+                root.card-out-y = self.absolute-position.y + self.mouse-y;
+            }
             if (!root.pressing) { return; }
             if (!root.grab-dragging) {
                 // (#drag-threshold-omni 2026-09-11) 阈值对齐交互设计(§1②):
@@ -484,13 +493,18 @@ component SessionRow inherits Rectangle {
     // "标签: 值"逐行渲染,备注可选。
     in-out property <string> card-out-name;
     in-out property <string> card-out-host;
+    in-out property <string> card-out-user;
+    in-out property <string> card-out-auth;
     in-out property <string> card-out-note;
     in-out property <length> card-out-x;
     in-out property <length> card-out-y;
     in-out property <length> drag-out-dy;   // (#session-drag-smooth) 拖动中的指针偏移输出
     in-out property <length> drag-out-dx;   // (#ghost-follow-x-r2) 指针**窗口绝对 x**:ghost 窄卡横向跟手用
+    // (#conn-path 2026-10-04 高保真 #proxy-fields) 150ms 延迟(原 450ms);
+    // 信息卡改为**跟随鼠标、光标上方**(靠右缘翻左侧/贴顶翻下方,见
+    // pointer-follow 与 app.slint 渲染处的翻转公式)。
     info-delay := Timer {
-        interval: 450ms;
+        interval: 150ms;
         running: touch.has-hover && !root.list-dragging;   // 拖动中不弹信息卡
         triggered => {
             // (#hover-card-drag) running 翻转与 triggered 的竞态防护:
@@ -499,16 +513,19 @@ component SessionRow inherits Rectangle {
                 root.card-out-name = root.session.name;
                 root.card-out-host = root.session.builtin
                     ? root.session.host
-                    : (root.session.user != "" ? root.session.user + "@" : "")
-                        + (root.session.port > 0
-                            ? root.session.host + ":" + root.session.port
-                            : root.session.host);
+                    : (root.session.port > 0
+                        ? root.session.host + ":" + root.session.port
+                        : root.session.host);
+                root.card-out-user = root.session.user;
+                root.card-out-auth = root.session.auth;
                 root.card-out-note = root.session.note;
-                root.card-out-x = touch.absolute-position.x + touch.width + 6px;
-                root.card-out-y = touch.absolute-position.y;
+                // 锚点 = 指针(窗口坐标);翻转在渲染层按卡宽/卡高修正。
+                root.card-out-x = touch.absolute-position.x + touch.mouse-x;
+                root.card-out-y = touch.absolute-position.y + touch.mouse-y;
             }
         }
     }
+
 
     // Row content — wrapped in a card so it can hide in place while dragged
     // (洞) and tint when hovered by the ghost.
@@ -835,6 +852,8 @@ export component Welcome inherits Rectangle {
     // 实例侧绑定到 AppWindow 根的集中浮层(链路 SessionRow→Welcome→根)。
     in-out property <string> card-out-name;
     in-out property <string> card-out-host;
+    in-out property <string> card-out-user;
+    in-out property <string> card-out-auth;
     in-out property <string> card-out-note;
     in-out property <length> card-out-x;
     in-out property <length> card-out-y;
@@ -1954,6 +1973,24 @@ export component Welcome inherits Rectangle {
                             HorizontalLayout {
                                 padding-top: 0;
                                 padding-bottom: 0;
+                                // (#group-row-h-align 2026-10-04) 这里**不能**设
+                                // alignment: center —— 那是 HorizontalLayout 的
+                                // **主轴(水平)**对齐,会把 chevron/folder/组名/徽章
+                                // 整行居中,stretch 失效。组名越长内容越宽、左缘越靠左,
+                                // 五行组头就排成一道向右递进的阶梯(用户截图)。
+                                // 像素实测:五行内容 x 范围 114..338 / 127..325 /
+                                // 139..313 / 140..312 / 157..295,中心全等于 226。
+                                // 与 app.slint #ui-fix-align、session_dialog.slint
+                                // #head-oneline-align 同源,两处都已有同样的记录。
+                                //
+                                // 垂直居中由布局的交叉轴行为负责,不需要 alignment:
+                                // ① chevron/folder 是 Icon 组件,自身 preferred-height
+                                //    走 size、内部 Image 按 (parent - self)/2 居中,
+                                //    交叉轴 stretch 把盒子撑到行高后自然居中
+                                //    (见 icons.slint #icon-align);
+                                // ② 组名 Text 有 vertical-alignment: center;
+                                // ③ 徽章外包的 VerticalLayout 有 alignment: center。
+                                // 三条路径各司其职,主轴 alignment 越权反而添乱。
                                 // (#caret-align-spine 2026-09-10) 三角(chevron)
                                 // 与成员脊线**同轴对齐**:脊线 x = 10 + indent/2
                                 // - 1 = 18px、宽 2px → 轴心 19px;chevron 字形

@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>代理配置拆四字段（主机/端口/用户名/密码）2026-10-04</title>
+<style>
+  :root{
+    --bg-root:#1b1d23; --bg-panel:#23262d; --bg-panel-alt:#2a2d35; --bg-elevated:#30333c;
+    --bg-hover:#373a44; --border-subtle:#3a3d46; --border-control:#31353e;
+    --text-primary:#e6e8ee; --text-secondary:#b4b9c4; --text-muted:#9196a3;
+    --accent:#4a90e2; --accent-soft:rgba(74,144,226,.16); --chip:rgba(74,144,226,.22);
+    --field:#191b21; --field-2:#1d2027; --panel-hi:#282b34; --danger:#e25c5c;
+    --danger-soft:rgba(226,92,92,.14);
+    --mono:"Cascadia Mono","Consolas",monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#121317;font-family:"Segoe UI","Microsoft YaHei",sans-serif;color:var(--text-primary);
+       min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:36px 24px 80px;gap:20px}
+  h1{font-size:15px;font-weight:600;color:var(--text-secondary);letter-spacing:.5px}
+  .notes{width:1080px;background:var(--bg-panel);border:1px solid var(--border-subtle);border-radius:10px;
+         padding:16px 20px;font-size:12.5px;color:var(--text-muted);line-height:1.8}
+  .notes b{color:var(--text-secondary);font-weight:600}
+  .num{color:var(--accent);font-weight:700;margin-right:6px}
+  .ok{color:#4ec9b0;font-weight:700}
+  code{font-family:var(--mono);font-size:11px;color:var(--text-secondary)}
+
+  .sec{width:1080px;font-size:13px;font-weight:600;color:var(--text-secondary);margin:4px 0 0}
+
+  /* 对话框卡片 mock */
+  .vers{width:1080px;display:flex;gap:12px;align-items:stretch}
+  .ver{flex:1;background:var(--bg-panel);border:1px solid var(--border-subtle);border-radius:10px;padding:14px 18px}
+  .ver.new{border-color:var(--accent);background:rgba(74,144,226,.06)}
+  .v-tag{font-size:10px;font-weight:700;border-radius:8px;padding:1.5px 8px;background:#4ec9b0;color:#fff;vertical-align:2px}
+  .v-tag.old{background:var(--bg-elevated);border:1px solid var(--border-subtle);color:var(--text-secondary)}
+  .v-name{font-size:13px;font-weight:700;margin-bottom:2px}
+  .v-desc{font-size:11.5px;color:var(--text-muted);line-height:1.7;margin-bottom:12px}
+
+  /* —— 会话弹窗代理区块 1:1 还原 —— */
+  .dlg{background:var(--panel-hi);border:1px solid var(--border-subtle);border-radius:14px;
+       padding:22px 24px;width:100%}
+  .dlg h3{font-size:13.5px;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+  .dlg h3 .ic{width:22px;height:22px;border-radius:6px;background:var(--chip);display:inline-flex;
+              align-items:center;justify-content:center;color:var(--accent);font-size:11px;font-weight:800}
+  .fld-label{font-size:13px;color:var(--text-secondary);margin-bottom:5px}
+  .blk{margin-bottom:4px}
+  .blk-label{font-size:13px;color:var(--text-secondary);margin-bottom:5px}
+
+  /* 分段选择器：36px 高 / 圆角10 / 内衬3 / 选中 chip —— 选中块为独立滑层，切换时平滑滑动 */
+  .seg{position:relative;height:36px;border-radius:10px;border:1px solid var(--border-control);background:var(--field);
+       display:flex;padding:3px;gap:2px;margin-bottom:4px}
+  .seg .thumb{position:absolute;top:3px;bottom:3px;left:3px;width:calc((100% - 10px)/3);
+       background:var(--chip);border-radius:7px;pointer-events:none;
+       transition:transform .18s cubic-bezier(.4,0,.2,1)}
+  /* 两格分段（代理协议 SOCKS5 / HTTP）：格宽与滑距按两格算 */
+  .seg2 .thumb{width:calc((100% - 8px)/2)}
+  .seg button{flex:1;border:0;background:transparent;border-radius:7px;color:var(--text-secondary);
+              font-size:13px;cursor:pointer;font-family:inherit;
+              transition:color .18s}
+  .seg button:hover{background:var(--bg-hover);color:var(--text-primary)}
+  .seg button.on{color:#5aa0f2}
+  .seg button.on:hover{background:transparent;color:#5aa0f2}
+
+  /* 输入框：38px / 圆角9 / field 底 / 聚焦 accent+3px 光晕 */
+  .row{display:flex;gap:12px;margin-bottom:10px}
+  .ctl{flex:1;display:flex;flex-direction:column;min-width:0}
+  .box{height:38px;border-radius:9px;border:1px solid var(--border-control);background:var(--field);
+       display:flex;align-items:center;padding:0 12px;transition:border-color .12s,background .12s,box-shadow .12s}
+  .box input{flex:1;background:transparent;border:0;outline:0;color:var(--text-primary);
+             font-size:13px;font-family:inherit;min-width:0}
+  .box input::placeholder{color:#6b7080}
+  .box.focus-within{border-color:var(--accent);background:var(--field-2);
+                    box-shadow:0 0 0 3px var(--accent-soft)}
+  .box.err{border-color:var(--danger);box-shadow:0 0 0 3px var(--danger-soft)}
+  .hint{font-size:11px;color:var(--text-muted);margin-top:4px;line-height:1.6}
+
+  /* 页脚状态行：常驻高度，错误只填内容 —— 不占表单流，不挤压任何行 */
+  .foot{border-top:1px solid var(--border-subtle);margin:14px -24px -22px;padding:10px 24px 0;
+        display:flex;align-items:center;gap:12px;height:46px}
+  .foot .ghostbtn{font-size:13px;color:var(--text-secondary);border:1px solid var(--border-control);
+        border-radius:8px;padding:5px 14px;display:flex;align-items:center;gap:5px}
+  .foot .spacer{flex:1}
+  .foot .primary{font-size:13px;color:#fff;background:var(--accent);border-radius:8px;padding:6px 16px}
+  .foot .cancel{font-size:13px;color:var(--text-secondary);border:1px solid var(--border-control);
+        border-radius:8px;padding:6px 16px}
+  .status-row{display:flex;align-items:center;gap:6px;min-width:0;flex:1;position:relative}
+  .status-row .u{flex:1;height:1px;background:var(--danger);margin-top:14px;display:none}
+  .status-txt{font-size:12px;color:var(--danger);white-space:nowrap;overflow:hidden;
+        text-overflow:ellipsis;display:none;cursor:pointer}
+  .status-txt .ico{font-style:normal;margin-right:4px}
+
+  /* —— 连接路径：三分分段 + 跳板机链 —— */
+  .pane{display:none}
+  .pane.on{display:block}
+  .chain{display:flex;align-items:center;flex-wrap:wrap;gap:8px;background:var(--bg-root);
+        border:1px solid var(--border-control);border-radius:8px;padding:10px 12px;margin:5px 0 10px}
+  .chain.empty{border-style:dashed;justify-content:center;padding:20px 12px;
+        color:var(--text-muted);font-size:12px}
+  .node{display:flex;align-items:center;gap:6px;padding:4px 6px 4px 5px;border-radius:8px;
+        border:1px solid var(--border-control);background:var(--field);font-size:12.5px;
+        color:var(--text-primary);white-space:nowrap}
+  /* 悬浮主机信息卡：跟随鼠标、显示在光标上方（靠边自动翻转，见 JS mousemove）；
+     hover 才显示，延迟 0.15s 防扫过闪烁（落地同 #foot-status-tip 浮层先例，坐标取指针 move 事件） */
+  .tip{position:fixed;left:0;top:0;background:var(--bg-elevated);border:1px solid var(--border-subtle);
+        border-radius:9px;padding:9px 12px;pointer-events:none;z-index:30;text-align:left;
+        white-space:normal;max-width:280px;
+        opacity:0;transition:opacity .12s .15s;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+  .node:hover .tip{opacity:1}
+  .menu > div:hover .tip{opacity:1}
+  .tip .trow{display:flex;gap:10px;font-size:11.5px;color:var(--text-secondary);line-height:1.7}
+  .tip .tk{color:var(--text-muted);flex:0 0 auto}
+  .tip .tloc{margin-top:4px;font-size:10.5px;color:var(--accent)}  .node.src{color:var(--accent);border-color:rgba(74,144,226,.45)}
+  .node.dst{color:#4ec9b0;border-color:rgba(78,201,176,.45)}
+  .node .idx{width:18px;height:18px;border-radius:50%;background:var(--chip);color:#5aa0f2;
+        font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:0 0 18px}
+  .node .ops{display:flex;gap:1px;opacity:0;transition:opacity .12s}
+  .node:hover .ops{opacity:1}
+  .node .ops button{width:20px;height:20px;border:0;background:transparent;border-radius:5px;
+        color:var(--text-muted);cursor:pointer;font-size:11px;line-height:1;
+        display:flex;align-items:center;justify-content:center;padding:0}
+  .node .ops button svg{stroke:currentColor}
+  .node .ops button:hover{background:var(--bg-hover);color:var(--text-primary)}
+  /* 删除是破坏性操作：悬停染红提示 */
+  .node .ops button.del:hover{background:rgba(226,92,92,.15);color:var(--danger)}
+  .arrow{color:var(--text-muted);font-size:12px}
+  .addbtn{width:100%;height:36px;border-radius:9px;border:1px solid var(--border-control);
+        background:var(--field);color:var(--text-secondary);font-size:13px;cursor:pointer;
+        font-family:inherit;display:flex;align-items:center;justify-content:center;gap:4px}
+  .addbtn:hover{background:var(--bg-hover);color:var(--text-primary)}
+  .addbtn:disabled{opacity:.4;cursor:default}
+  .addbtn:disabled:hover{background:var(--field);color:var(--text-secondary)}
+  .dropdown{position:relative}
+  .menu{position:absolute;left:0;top:calc(100% + 4px);width:max-content;min-width:100%;max-width:100%;
+        background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:9px;display:none;z-index:5;
+        box-shadow:0 8px 24px rgba(0,0,0,.45)}
+  .menu.open{display:block}
+  /* 必须用 > 直接子选择器：.menu div 会命中候选内嵌的 .tip（也是 div），
+     其 position:relative 会以更高优先级盖掉 .tip 的 absolute → 悬浮卡变流内元素撑爆菜单 */
+  .menu > div{padding:8px 12px;font-size:12.5px;cursor:pointer;color:var(--text-primary);
+        white-space:nowrap}
+  .menu > div .lbl{display:block;overflow:hidden;text-overflow:ellipsis}
+  .menu > div:first-child{border-radius:9px 9px 0 0}
+  .menu > div:last-child{border-radius:0 0 9px 9px}
+  .menu > div:hover{background:var(--bg-hover)}
+  .menu > div.dim{color:var(--text-muted);cursor:default}
+  .menu > div.dim:hover{background:transparent}
+  /* 下拉候选项的悬浮信息卡：向右浮出（chip 的向上浮出区分开） */
+  .menu > div .tip{left:calc(100% + 10px);right:auto;top:-8px;bottom:auto}
+  /* 提示三行同构：固定图标列 + 统一 gap，图标列与文字列逐行严格对齐 */
+  .tip-row{display:flex;align-items:flex-start;gap:7px;margin-top:6px;font-size:11px;
+        line-height:1.6;color:var(--text-muted)}
+  .tip-row svg{stroke:currentColor;flex:0 0 13px;margin-top:2px}
+  .tip-row.warn{color:#e2a65c;display:none}
+  .tip-row.warn.show{display:flex}
+  .chainhead{display:flex;justify-content:space-between;align-items:baseline}
+
+  /* —— 左侧会话列表 · 悬浮信息卡（与跳板机 chip 同款 .tip，去掉「分组」行）—— */
+  .sesslist{background:var(--bg-root);border:1px solid var(--border-control);border-radius:8px;
+        padding:6px 8px}
+  .grp{font-size:11.5px;color:var(--text-muted);padding:6px 8px 4px;display:flex;align-items:center;gap:5px}
+  .sessrow{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:7px;
+        font-size:13px;color:var(--text-primary);cursor:pointer}
+  .sessrow:hover{background:var(--bg-hover)}
+  .sessrow .sic{width:22px;height:22px;border-radius:6px;background:var(--chip);display:flex;
+        align-items:center;justify-content:center;color:var(--accent);font-size:10px;font-weight:800;flex:0 0 22px}
+  .sessrow:hover .tip{opacity:1}
+  .eye{width:26px;height:26px;border:0;background:transparent;border-radius:6px;cursor:pointer;
+       display:flex;align-items:center;justify-content:center;color:var(--text-muted);flex:0 0 26px;margin-right:-5px}
+  .eye:hover{background:var(--bg-hover);color:var(--text-primary)}
+  .eye svg{stroke:currentColor}
+  .clearx{width:22px;height:22px;border:0;background:transparent;border-radius:6px;cursor:pointer;
+          color:var(--text-muted);font-size:13px;line-height:1;display:flex;align-items:center;justify-content:center}
+  .clearx:hover{background:var(--bg-hover);color:var(--text-primary)}
+
+  table{width:1080px;border-collapse:collapse;font-size:12px;color:var(--text-secondary)}
+  th,td{border:1px solid var(--border-subtle);padding:7px 12px;text-align:left}
+  th{background:var(--bg-panel);color:var(--text-muted);font-weight:600}
+  td{background:var(--bg-panel)}
+  td code{font-size:11px}
+</style>
+</head>
+<body>
+
+<h1>代理配置拆四字段 —— 主机 / 端口 / 用户名 / 密码（可交互，分段与眼睛可直接点）</h1>
+
+<div class="notes">
+  <b>现状问题</b><br>
+  <span class="num">1</span>单框 <code>user:pass@host:port</code> 把四种信息挤在一个字符串里：<b>用户名含 <code>:</code> 无法表达</b>（parser 按第一个冒号切）；密码里的 <code>@</code>/<code>:</code> 虽然能被 <code>rsplit_once('@')</code> 容忍，但用户不知道，写错只报「连不上」。<br>
+  <span class="num">2</span>密码以<b>明文形态</b>躺在地址框里（眼睛开关只属于密码型输入框，这一格享受不到），旁人扫一眼屏幕就泄露。<br>
+  <b>新方案</b><br>
+  <span class="num">3</span>拆成 <b>代理主机 + 端口</b> 一行、<b>用户名 + 密码</b> 一行（四框等宽 2×2）；端口天然数字校验（1–65535）；密码框复用 <code>LabeledInput password</code> 的眼睛开关与 <code>Secret</code> 存储。<br>
+  <span class="num">4</span>用户名/密码<b>留空即匿名</b>，提示语同步替换；「无」态仍整块收起（与现状一致）。<br>
+  <span class="num">5</span><b>存储格式不变</b>：仍拼回 <code>scheme://[user:pass@]host:port</code> 存进 <code>session.proxy</code>，旧配置打开时由 <code>split_proxy</code> 升级为四段回填——零迁移成本，双实现可共存。<br>
+  <span class="num">6</span><b>错误不占表单流</b>：端口非法只让<b>端口框变红</b>，文案进<b>页脚状态行</b>（与现有 <code>#dialog-error-clear</code> 字段红框 + 页脚提示同源，点击红字定位字段）——若在字段下插错误行，会把用户名/密码行往下顶，布局跳动。<br>
+  <span class="num">7</span><b>分段选中块滑动</b>：chip 底色从各 <code>SegOption</code> 自绘改为容器内<b>独立滑层 thumb</b>，位置绑定选中索引 + <code>animate x</code>（Slint 1.x 原生属性动画，180ms ease-in-out）；文字颜色同步 <code>animate color</code>，切换即平滑滑动过去。
+</div>
+
+<div class="sec">现状 vs 新方案（同区块对照）</div>
+<div class="vers">
+  <div class="ver">
+    <div class="v-name">现状 · 单地址框 <span class="v-tag old">旧</span></div>
+    <div class="v-desc">一格塞 host:port + 认证；密码明文；无端口校验。</div>
+    <div class="dlg">
+      <h3><span class="ic">&gt;_</span>新建会话 <span style="color:var(--text-muted);font-weight:400;font-size:12px">配置一个 SSH 连接</span></h3>
+      <div class="blk-label">代理（可选）</div>
+      <div class="seg">
+        <div class="thumb" style="transform:translateX(calc(100% + 2px))"></div>
+        <button>无</button><button class="on">SOCKS5</button><button>HTTP</button>
+      </div>
+      <div class="blk-label">代理地址</div>
+      <div class="box"><input value="admin:p@ss:word@10.0.0.8:1080" readonly></div>
+      <div class="hint">格式：host:port（带认证：user:pass@host:port）</div>
+    </div>
+  </div>
+  <div class="ver new">
+    <div class="v-name">新方案 · 四字段 <span class="v-tag">提案</span></div>
+    <div class="v-desc">主机+端口、用户名+密码 各一行（四框等宽 2×2）；密码密文 + 眼睛；端口即输即校。</div>
+    <div class="dlg">
+      <h3><span class="ic">&gt;_</span>新建会话 <span style="color:var(--text-muted);font-weight:400;font-size:12px">配置一个 SSH 连接</span></h3>
+      <div class="blk-label">代理（可选）</div>
+      <div class="seg" id="seg">
+        <div class="thumb" id="seg-thumb"></div>
+        <button data-v="none">无</button><button data-v="socks5" class="on">SOCKS5</button><button data-v="http">HTTP</button>
+      </div>
+      <div id="fields">
+        <div class="row">
+          <div class="ctl">
+            <div class="fld-label">代理主机 (IP/Domain)</div>
+            <div class="box"><input placeholder="proxy.example.com 或 127.0.0.1" value="10.0.0.8"></div>
+          </div>
+          <div class="ctl">
+            <div class="fld-label">端口</div>
+            <div class="box" id="port-box"><input id="port" inputmode="numeric" placeholder="1080" value="1080"></div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="ctl">
+            <div class="fld-label">用户名（可选）</div>
+            <div class="box"><input placeholder="留空 = 匿名连接" value="admin"><button class="clearx" title="清空">×</button></div>
+          </div>
+          <div class="ctl">
+            <div class="fld-label">密码（可选）</div>
+            <div class="box">
+              <input id="pw" type="password" placeholder="留空 = 无密码" value="p@ss:word">
+              <button class="eye" id="eye" title="显示/隐藏密码">
+                <svg id="eye-open" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.8"/></svg>
+                <svg id="eye-off" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.9 10.9 0 0 1 12 5c6.5 0 10 7 10 7a17.4 17.4 0 0 1-3.2 3.9M6.6 6.6C3.8 8.4 2 12 2 12s3.5 7 10 7c1.4 0 2.7-.3 3.9-.8"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="hint">代理需要账号密码时填写；用户名、密码留空即匿名连接。</div>
+      </div>
+      <div class="hint" id="none-hint" style="display:none">不使用代理 —— 回退读取 $ALL_PROXY，未设置则直连。</div>
+      <!-- 页脚状态行：常驻高度，端口非法时红字出现在这里，表单不跳动 -->
+      <div class="foot">
+        <div class="ghostbtn">〜 测试连接</div>
+        <div class="status-row">
+          <span class="status-txt" id="foot-err"><span class="ico">⚠</span>端口须为 1–65535 的数字</span>
+          <div class="u" id="foot-u"></div>
+        </div>
+        <div class="cancel">取消</div>
+        <div class="primary">创建</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="sec" style="margin-top:14px">关键状态（新方案放大检视）</div>
+<div class="vers">
+  <div class="ver">
+    <div class="v-name">聚焦态</div>
+    <div class="v-desc">accent 描边 + field-2 提亮 + 3px accent-soft 光晕（与对话框所有输入框一致）。</div>
+    <div class="dlg">
+      <div class="fld-label">代理主机 (IP/Domain)</div>
+      <div class="box focus-within"><input value="10.0.0.8" readonly style="caret-color:transparent"></div>
+    </div>
+  </div>
+  <div class="ver">
+    <div class="v-name">端口校验失败</div>
+    <div class="v-desc">红框在字段、文案在页脚状态行（点击红字定位字段）——页脚高度常驻，<b>下方行零挤压、零跳动</b>。</div>
+    <div class="dlg">
+      <div class="row" style="margin-bottom:0">
+        <div class="ctl">
+          <div class="fld-label">代理主机 (IP/Domain)</div>
+          <div class="box"><input value="10.0.0.8" readonly></div>
+        </div>
+        <div class="ctl">
+          <div class="fld-label">端口</div>
+          <div class="box err"><input value="70000" readonly></div>
+        </div>
+      </div>
+      <div class="foot">
+        <div class="ghostbtn">〜 测试连接</div>
+        <div class="status-row"><span class="status-txt" style="display:inline"><span class="ico">⚠</span>端口须为 1–65535 的数字（点击定位）</span><div class="u" style="display:block"></div></div>
+      </div>
+    </div>
+  </div>
+  <div class="ver">
+    <div class="v-name">「无」态收起</div>
+    <div class="v-desc">四字段整体隐藏，只留一行回退说明——层级与现状一致，不新增高度。</div>
+    <div class="dlg">
+      <div class="blk-label">代理（可选）</div>
+      <div class="seg">
+        <div class="thumb"></div>
+        <button class="on">无</button><button>SOCKS5</button><button>HTTP</button>
+      </div>
+      <div class="hint">不使用代理 —— 回退读取 $ALL_PROXY，未设置则直连。</div>
+    </div>
+  </div>
+</div>
+
+<div class="sec" style="margin-top:14px">连接路径：代理 × 跳板机 三分互斥 + 多级跳板链（可交互 —— 切分段 / 加减跳板机 / 悬停 chip 排序都可直接点）</div>
+<div class="vers">
+  <div class="ver new">
+    <div class="v-name">「代理 + 跳板机」合并为「连接路径」分段 <span class="v-tag">提案</span></div>
+    <div class="v-desc">互斥不再是禁用置灰，而是三分分段：一条路径要么直连、要么经代理、要么经跳板机——选中即展开对应编辑器，结构上杜绝「配了代理又配跳板机」的静默冲突。demo 从<b>空链起步</b>（虚线空态提示）→ 添加成链；悬停 chip 看主机信息 / 排序 / 删除（删除悬停变红）；加到 3 个看警告，加满 4 个按钮禁用。</div>
+    <div class="dlg">
+      <h3><span class="ic">&gt;_</span>新建会话 <span style="color:var(--text-muted);font-weight:400;font-size:12px">配置一个 SSH 连接</span></h3>
+      <div class="blk-label">连接路径（可选）</div>
+      <div class="seg" id="pseg">
+        <div class="thumb" id="pthumb"></div>
+        <button data-v="direct" class="on">直连</button><button data-v="proxy">代理</button><button data-v="jump">跳板机</button>
+      </div>
+      <div class="pane on" id="pane-direct">
+        <div class="hint">本机直接连接目标主机；若系统设置了 $ALL_PROXY，将作为回退代理。</div>
+      </div>
+      <div class="pane" id="pane-proxy">
+        <div class="blk-label">协议</div>
+        <div class="seg seg2" id="segproto">
+          <div class="thumb" id="thumbproto"></div>
+          <button data-v="socks5" class="on">SOCKS5</button><button data-v="http">HTTP</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <div class="ctl">
+            <div class="fld-label">代理主机 (IP/Domain)</div>
+            <div class="box"><input placeholder="proxy.example.com 或 127.0.0.1"></div>
+          </div>
+          <div class="ctl">
+            <div class="fld-label">端口</div>
+            <div class="box"><input inputmode="numeric" placeholder="1080"></div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="ctl">
+            <div class="fld-label">用户名（可选）</div>
+            <div class="box"><input placeholder="留空 = 匿名连接"></div>
+          </div>
+          <div class="ctl">
+            <div class="fld-label">密码（可选）</div>
+            <div class="box"><input type="password" placeholder="留空 = 无密码"></div>
+          </div>
+        </div>
+        <div class="hint">代理需要账号密码时填写；用户名、密码留空即匿名连接。</div>
+      </div>
+      <div class="pane" id="pane-jump">
+        <div class="chainhead">
+          <div class="fld-label" style="margin:0">跳转链路（按顺序连接）</div>
+          <div class="hint" id="chainhint" style="margin:0;display:none">悬停查看主机信息 / 调整顺序 / 删除</div>
+        </div>
+        <div class="chain" id="chain"></div>
+        <div class="dropdown">
+          <button class="addbtn" id="addhop">＋ 添加跳板机</button>
+          <div class="menu" id="hopmenu"></div>
+        </div>
+        <div class="tip-row">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 17v-5"/><circle cx="12" cy="8" r="1.2" fill="currentColor" stroke="none"/></svg>
+          通过中间服务器访问目标主机，即堡垒机模式
+        </div>
+        <div class="tip-row">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 17v-5"/><circle cx="12" cy="8" r="1.2" fill="currentColor" stroke="none"/></svg>
+          支持多级跳转：本机 → 跳板机1 → 跳板机2 → … → 目标主机
+        </div>
+        <div class="tip-row warn" id="hopwarn">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 4.5 3 18a2 2 0 0 0 1.73 3h14.54A2 2 0 0 0 21 18l-7.5-13.5a2 2 0 0 0-3 0z"/><path d="M12 9.5v4"/><circle cx="12" cy="16.5" r="1.2" fill="currentColor" stroke="none"/></svg>
+          跳板机超过 2 级可能影响连接速度和稳定性
+        </div>
+      </div>
+      <div class="foot">
+        <div class="ghostbtn">〜 测试连接</div>
+        <div class="status-row"><div class="u"></div></div>
+        <div class="cancel">取消</div>
+        <div class="primary">创建</div>
+      </div>
+    </div>
+  </div>
+  <div style="flex:1;display:flex;flex-direction:column;gap:12px">
+    <div class="ver">
+      <div class="v-name">3 级链 · 触发「过多」警告</div>
+      <div class="v-desc">链长 &gt; 2 时出现暖橙警告条（新增 <code>Theme.warning</code> 语义色）；<b>仅提示不阻断</b>，仍可继续添加。</div>
+      <div class="dlg">
+        <div class="fld-label">跳转链路（按顺序连接）</div>
+        <div class="chain">
+          <div class="node src">本机</div><span class="arrow">→</span>
+          <div class="node"><span class="idx">1</span>office-gw (192.168.0.4)
+            <div class="tip">
+              <div class="trow"><span class="tk">名称：</span><span>office-gw</span></div>
+              <div class="trow"><span class="tk">主机：</span><span>192.168.0.4:22</span></div>
+              <div class="trow"><span class="tk">用户：</span><span>root</span></div>
+              <div class="trow"><span class="tk">认证：</span><span>密钥 ~/.ssh/id_ed25519</span></div>
+              <div class="trow"><span class="tk">分组：</span><span>生产环境</span></div>
+              <div class="tloc">链路中第 1 跳</div>
+            </div>
+          </div><span class="arrow">→</span>
+          <div class="node"><span class="idx">2</span>192.168.0.3</div><span class="arrow">→</span>
+          <div class="node"><span class="idx">3</span>192.168.0.2</div><span class="arrow">→</span>
+          <div class="node dst">目标主机</div>
+        </div>
+        <div class="tip-row warn show">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 4.5 3 18a2 2 0 0 0 1.73 3h14.54A2 2 0 0 0 21 18l-7.5-13.5a2 2 0 0 0-3 0z"/><path d="M12 9.5v4"/><circle cx="12" cy="16.5" r="1.2" fill="currentColor" stroke="none"/></svg>
+          跳板机超过 2 级可能影响连接速度和稳定性
+        </div>
+      </div>
+    </div>
+    <div class="ver">
+      <div class="v-name">添加跳板机 · 下拉选择已保存会话</div>
+      <div class="v-desc">候选来自已保存的 SSH 会话；<b>已在链中的会话与当前会话自身自动排除</b>（防环）。chip 悬停出 ↑ ↓ ×，边界自动禁用。</div>
+      <div class="dlg">
+        <div class="dropdown">
+          <button class="addbtn">＋ 添加跳板机</button>
+          <div class="menu open" style="position:static;margin-top:4px">
+            <div>＋ 192.168.0.1 (192.168.0.1:22) - root</div>
+            <div>＋ db-bastion (10.8.0.6:22) - deploy</div>
+            <div class="dim">192.168.0.4 — 已在链路中</div>
+            <div class="dim">db-jump — 已在链路中</div>
+          </div>
+        </div>
+        <div class="hint" style="margin-top:8px">与端口转发的「+ 添加端口转发」同款全宽按钮语言。</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="sec" style="margin-top:14px">落地映射（连接路径 / 跳板机链）</div>
+<table>
+  <tr><th style="width:180px">环节</th><th>行为</th></tr>
+  <tr><td>代理协议归属</td><td>旧「无 / SOCKS5 / HTTP」分段拆解：<b>「无」→「直连」</b>；<b>SOCKS5 / HTTP 是代理的协议类型</b>，收纳为「代理」分支内的两格分段（默认 SOCKS5）。存储不变：仍拼成 <code>socks5://…</code> / <code>http://…</code> 存 <code>session.proxy</code>。</td></tr>
+  <tr><td>互斥语义</td><td>现有代码本就「跳板机优先、代理静默忽略」（<code>ssh.rs:1040</code> jump 分支直接 return）；三分分段把这个隐藏规则变成<b>看得见的结构</b>，歧义从根上消除。<b>切换分段即清空跳板链</b>，还原虚线空态——每次进入都是干净起点。</td></tr>
+  <tr><td>跳板机链存储</td><td>新增会话字段（如 <code>jump-chain: 有序会话 id 列表</code>）；旧单跳 <code>draft-jump-index</code> 迁移为链首一项，老配置无损。</td></tr>
+  <tr><td>多级连接</td><td><code>connect_target_via_jump</code> 从单跳扩为链式循环：逐跳 connect + auth，再经最后一级 <code>direct-tcpip</code> 到目标——UI 先行，连接层需同步扩展。</td></tr>
+  <tr><td>「过多」警告</td><td>链长 &gt; 2 显示 <code>Theme.warning</code> 暖橙提示（新增语义色）；非阻断，仅提示性能代价。</td></tr>
+  <tr><td>chip 悬浮提示</td><td>悬停 150ms 后<b>跟随鼠标、显示在光标上方</b>（靠屏幕右缘翻到左侧、贴顶翻到下方）：<b>名称 / 分组 / 备注非空才显示</b>（空字段整行不出现），另有主机:端口 / 用户 / 认证方式 / 链中位置；落地复用 <code>#foot-status-tip</code> 卡片层浮层先例 + hover Timer，坐标取指针 move 事件，数据取自已保存会话摘要。</td></tr>
+  <tr><td>下拉候选悬浮</td><td>「添加跳板机」候选 hover 时<b>同样跟随鼠标在光标上方</b>浮出同款信息卡（无链位行）——选之前就能看到这台机器是谁；实现上菜单容器不裁切、tooltip 挂在候选项内。</td></tr>
+  <tr><td>会话列表悬浮</td><td>左侧列表行 hover 出<b>同款信息卡</b>（跟随鼠标、光标上方），内容 = 名称 / 主机 / 用户 / 认证 / 备注，<b>去掉「分组」行</b>——列表已按分组组织，卡里重复显示是冗余；数据即会话对象本身，零额外查询。</td></tr>
+  <tr><td>防环与排除</td><td>下拉只列<b>未入链</b>的会话（「已在链路中」灰项不再出现）；全部会话都已入链时「＋ 添加跳板机」<b>禁用</b>（变暗、不可点）——防环由「只能从候选添加」结构保证。</td></tr>
+  <tr><td>chip 排序</td><td>悬停出 ↑ / ↓ / ×（边界自动禁用），图标即 <code>assets/icons</code> 的 <code>arrow-up / arrow-down / delete</code>（<code>ui/icons.slint</code> 现成 Icon，src() 引用即可）；落地复用列表按钮 + <code>jump-chain</code> 重排；拖拽排序成本高，不进第一版。</td></tr>
+</table>
+
+<div class="sec" style="margin-top:14px">左侧会话列表 · 悬浮信息卡（与跳板机 chip 同款，去掉「分组」行 —— 悬停行可直接体验）</div>
+<div class="vers">
+  <div class="ver new">
+    <div class="v-name">会话列表行 · hover 信息卡 <span class="v-tag">提案</span></div>
+    <div class="v-desc">同款浮层：跟随鼠标、光标上方、150ms 延迟；名称 / 备注非空才显示，<b>去掉「分组」行</b>——列表本身已按分组组织，卡里再显示是冗余。</div>
+    <div class="dlg" style="padding:14px 16px">
+      <div class="sesslist">
+        <div class="grp">▾ 生产环境</div>
+        <div class="sessrow"><span class="sic">&gt;_</span>office-gw
+          <div class="tip">
+            <div class="trow"><span class="tk">名称：</span><span>office-gw</span></div>
+            <div class="trow"><span class="tk">主机：</span><span>192.168.0.4:22</span></div>
+            <div class="trow"><span class="tk">用户：</span><span>root</span></div>
+            <div class="trow"><span class="tk">认证：</span><span>密钥 ~/.ssh/id_ed25519</span></div>
+            <div class="trow"><span class="tk">备注：</span><span>仅内网可访问 · 维护窗口 周五 22:00</span></div>
+          </div>
+        </div>
+        <div class="sessrow"><span class="sic">&gt;_</span>db-bastion
+          <div class="tip">
+            <div class="trow"><span class="tk">名称：</span><span>db-bastion</span></div>
+            <div class="trow"><span class="tk">主机：</span><span>10.8.0.6:22</span></div>
+            <div class="trow"><span class="tk">用户：</span><span>deploy</span></div>
+            <div class="trow"><span class="tk">认证：</span><span>密钥 ~/.ssh/id_rsa</span></div>
+          </div>
+        </div>
+        <div class="grp">▾ 测试环境</div>
+        <div class="sessrow"><span class="sic">&gt;_</span>192.168.0.1
+          <div class="tip">
+            <div class="trow"><span class="tk">主机：</span><span>192.168.0.1:22</span></div>
+            <div class="trow"><span class="tk">用户：</span><span>root</span></div>
+            <div class="trow"><span class="tk">认证：</span><span>密码</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="ver">
+    <div class="v-name">与跳板机 chip 的差异 & 共用</div>
+    <div class="v-desc">同一浮层组件、同一数据源（会话摘要），仅两处不同：<b>去掉「分组」行</b>、无「链路中第 N 跳」。一处实现三处使用：跳板机 chip / 添加下拉候选 / 会话列表行。</div>
+    <div class="dlg">
+      <table style="width:100%">
+        <tr><th style="width:110px">位置</th><th>内容</th></tr>
+        <tr><td>跳板机 chip</td><td>名称 + 主机 + 用户 + 认证 + 分组 + 备注 + <span style="color:var(--accent)">链位</span></td></tr>
+        <tr><td>下拉候选</td><td>同 chip，无链位</td></tr>
+        <tr><td><b>会话列表行</b></td><td>名称 + 主机 + 用户 + 认证 + 备注，<b>无分组</b></td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="sec" style="margin-top:14px">存储与回填（格式不变，UI 拆装）</div>
+<table>
+  <tr><th style="width:180px">环节</th><th>行为</th></tr>
+  <tr><td>保存（四个框 → URL）</td><td><code>socks5://[user:pass@]host:port</code> 拼回单字符串存 <code>session.proxy</code>；用户名为空则省略 <code>@</code> 段。密码里含 <code>@</code>/<code>:</code> 也安全（不再依赖字符串约定，只是存储层格式）。</td></tr>
+  <tr><td>回填（URL → 四个框）</td><td><code>split_proxy</code> 升级：除 scheme 外再拆 <code>rsplit_once('@')</code> / <code>split_once(':')</code>，旧单框配置打开编辑对话框时自动落到四个框，<b>无需迁移</b>。</td></tr>
+  <tr><td>端口字段</td><td>UI 层即时校验 1–65535（错误不放行「测试连接 / 创建」）；<b>错误文案走页脚状态行</b>（<code>footer-status-text()</code> 加一个 <code>proxy-port-invalid</code> 分支即可，行高常驻、点击定位字段），不占表单流。</td></tr>
+  <tr><td>密码存储</td><td>复用 <code>Secret</code> 包裹与既有会话密码同管道；URL 反序列化时照旧 <code>Secret::new</code>。</td></tr>
+</table>
+
+<script>
+  // 分段切换：滑块平滑移动（Slint 落地 = thumb 的 x 加 animate）+ 无 → 收起四字段
+  const seg = document.getElementById('seg'), thumb = document.getElementById('seg-thumb'),
+        fields = document.getElementById('fields'), noneHint = document.getElementById('none-hint');
+  function moveThumb() {
+    const btns = [...seg.querySelectorAll('button')];
+    const i = btns.indexOf(seg.querySelector('button.on'));
+    thumb.style.transform = `translateX(calc(${i} * (100% + 2px)))`;
+  }
+  moveThumb();
+  seg.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    moveThumb();
+    const none = b.dataset.v === 'none';
+    fields.style.display = none ? 'none' : '';
+    noneHint.style.display = none ? '' : 'none';
+  });
+  // 端口即输即校：红框在字段、文案进页脚状态行（不占表单流）
+  const port = document.getElementById('port'), pbox = document.getElementById('port-box'),
+        ferr = document.getElementById('foot-err'), fu = document.getElementById('foot-u');
+  port.addEventListener('input', () => {
+    const v = port.value.trim(), bad = v !== '' && !(/^\d+$/.test(v) && +v >= 1 && +v <= 65535);
+    pbox.classList.toggle('err', bad);
+    ferr.style.display = bad ? 'inline' : 'none';
+    fu.style.display = bad ? 'block' : 'none';
+  });
+  // 密码眼睛
+  const eye = document.getElementById('eye'), pw = document.getElementById('pw'),
+        eo = document.getElementById('eye-open'), ef = document.getElementById('eye-off');
+  eye.addEventListener('click', () => {
+    const show = pw.type === 'password';
+    pw.type = show ? 'text' : 'password';
+    eo.style.display = show ? 'none' : '';
+    ef.style.display = show ? '' : 'none';
+  });
+  // 聚焦态样式跟随
+  document.querySelectorAll('.box input').forEach(i => {
+    i.addEventListener('focus', () => i.closest('.box').classList.add('focus-within'));
+    i.addEventListener('blur',  () => i.closest('.box').classList.remove('focus-within'));
+  });
+  // —— 连接路径三分分段：直连 / 代理 / 跳板机（滑块同款动画）——
+  const pseg = document.getElementById('pseg'), pthumb = document.getElementById('pthumb');
+  function movePThumb() {
+    const btns = [...pseg.querySelectorAll('button')];
+    const i = btns.indexOf(pseg.querySelector('button.on'));
+    pthumb.style.transform = `translateX(calc(${i} * (100% + 2px)))`;
+  }
+  movePThumb();
+  pseg.dataset.cur = 'direct';
+  pseg.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b || b.dataset.v === pseg.dataset.cur) return;
+    pseg.dataset.cur = b.dataset.v;
+    pseg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    movePThumb();
+    // 切换连接路径即清空未生效配置：跳板链清空、代理协议与四字段还原默认
+    hops = [];
+    segproto.querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.v === 'socks5'));
+    moveProtoThumb();
+    document.querySelectorAll('#pane-proxy input').forEach(i => { i.value = ''; });
+    renderChain();
+    ['direct', 'proxy', 'jump'].forEach(v =>
+      document.getElementById('pane-' + v).classList.toggle('on', b.dataset.v === v));
+  });
+
+  // —— 代理协议分段（SOCKS5 / HTTP，两格滑块）——
+  const segproto = document.getElementById('segproto'), thumbproto = document.getElementById('thumbproto');
+  function moveProtoThumb() {
+    const btns = [...segproto.querySelectorAll('button')];
+    const i = btns.indexOf(segproto.querySelector('button.on'));
+    thumbproto.style.transform = `translateX(calc(${i} * (100% + 2px)))`;
+  }
+  moveProtoThumb();
+  segproto.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    segproto.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    moveProtoThumb();
+  });
+
+  // —— 跳板机链：增删 / 排序 / 过多警告 / 防环下拉 / 悬浮主机信息卡 ——
+  const chain = document.getElementById('chain'), hopmenu = document.getElementById('hopmenu'),
+        hopwarn = document.getElementById('hopwarn'), addhop = document.getElementById('addhop');
+  // 已保存会话池（候选来源）；hops 引用池内同一对象 —— 入链判断按引用，防环天然成立
+  const pool = [
+    { label: '192.168.0.1 (192.168.0.1:22) - root', name: '', host: '192.168.0.1', port: 22, user: 'root', auth: '密码', group: '测试环境', note: '' },
+    { label: 'db-bastion (10.8.0.6:22) - deploy',   name: 'db-bastion', host: '10.8.0.6', port: 22, user: 'deploy', auth: '密钥 ~/.ssh/id_rsa', group: '生产环境', note: '主备双活' },
+    { label: 'office-gw (192.168.0.4:22) - root',   name: 'office-gw', host: '192.168.0.4', port: 22, user: 'root', auth: '密钥 ~/.ssh/id_ed25519', group: '生产环境', note: '' },
+    { label: 'db-jump (192.168.0.3:2222) - deploy', name: 'db-jump', host: '192.168.0.3', port: 2222, user: 'deploy', auth: '密码', group: '', note: '仅内网可访问 · 维护窗口 周五 22:00' },
+  ];
+  let hops = [];
+  // 悬浮信息卡：名称/分组/备注非空才显示；在链中时附链位（下拉候选无）
+  function tipHtml(h, chainPos) {
+    const row = (k, v) => v ? `<div class="trow"><span class="tk">${k}：</span><span>${v}</span></div>` : '';
+    return `<div class="tip">
+      ${row('名称', h.name)}
+      ${row('主机', `${h.host}:${h.port}`)}
+      ${row('用户', h.user)}
+      ${row('认证', h.auth)}
+      ${row('分组', h.group)}
+      ${row('备注', h.note)}
+      ${chainPos ? `<div class="tloc">链路中第 ${chainPos} 跳</div>` : ''}
+    </div>`;
+  }
+  // 操作钮图标 = assets/icons/ 的 arrow-up / arrow-down / delete（落地直接 src() 引用同名图标）
+  const SVG = {
+    up: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V3m0 0-8 8m8-8 8 8"/></svg>',
+    down: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18m0 0-8-8m8 8 8-8"/></svg>',
+    del: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6"/></svg>',
+  };
+  function renderMenu() {
+    // 只列未入链的会话；「已在链路中」不再出现 —— 满员时直接禁用添加按钮
+    hopmenu.innerHTML = '';
+    pool.filter(p => !hops.includes(p)).forEach(p => {
+      const d = document.createElement('div');
+      d.innerHTML = `<span class="lbl">＋ ${p.label}</span>${tipHtml(p)}`;
+      d.onclick = () => { hops.push(p); renderChain(); hopmenu.classList.remove('open'); };
+      hopmenu.appendChild(d);
+    });
+  }
+  function updateAddBtn() {
+    addhop.disabled = !pool.some(p => !hops.includes(p));
+  }
+  function renderChain() {
+    chain.innerHTML = '';
+    const hint = document.getElementById('chainhint');
+    // 空态：虚线框提示；右侧悬停提示与警告都不出现
+    if (!hops.length) {
+      chain.classList.add('empty');
+      chain.textContent = '还未选择跳板机，请从下方列表添加';
+      hint.style.display = 'none';
+      hopwarn.classList.remove('show');
+      renderMenu(); updateAddBtn();
+      return;
+    }
+    chain.classList.remove('empty');
+    // 提示文字随链长动态变化：1 个没有「调整顺序」可言
+    hint.style.display = '';
+    hint.textContent = hops.length === 1 ? '悬停查看主机信息 / 删除' : '悬停查看主机信息 / 调整顺序 / 删除';
+    const node = (cls, html) => {
+      const d = document.createElement('div');
+      d.className = 'node' + (cls ? ' ' + cls : ''); d.innerHTML = html; return d;
+    };
+    const arrow = () => {
+      const s = document.createElement('span');
+      s.className = 'arrow'; s.textContent = '→'; return s;
+    };
+    chain.appendChild(node('src', '本机'));
+    hops.forEach((h, i) => {
+      chain.appendChild(arrow());
+      const n = node('', `<span class="idx">${i + 1}</span><span>${h.name || h.host}</span>${tipHtml(h, i + 1)}`);
+      const ops = document.createElement('span'); ops.className = 'ops';
+      // 边界方向直接不渲染（而非禁用）：1 个只有删除；首个只有下移+删除；末个只有上移+删除
+      const acts = [];
+      if (hops.length > 1 && i > 0) acts.push([SVG.up, 'up']);
+      if (hops.length > 1 && i < hops.length - 1) acts.push([SVG.down, 'down']);
+      acts.push([SVG.del, 'del']);
+      acts.forEach(([svg, a]) => {
+        const b = document.createElement('button');
+        b.innerHTML = svg; b.title = { up: '上移', down: '下移', del: '移除' }[a];
+        if (a === 'del') b.classList.add('del');
+        b.onclick = () => {
+          const j = hops.indexOf(h);
+          if (a === 'del') hops.splice(j, 1);
+          if (a === 'up') [hops[j - 1], hops[j]] = [hops[j], hops[j - 1]];
+          if (a === 'down') [hops[j + 1], hops[j]] = [hops[j], hops[j + 1]];
+          renderChain();
+        };
+        ops.appendChild(b);
+      });
+      n.appendChild(ops);
+      chain.appendChild(n);
+    });
+    chain.appendChild(arrow());
+    chain.appendChild(node('dst', '目标主机'));
+    hopwarn.classList.toggle('show', hops.length > 2);
+    renderMenu();
+    updateAddBtn();
+  }
+  renderChain();
+  addhop.addEventListener('click', e => { e.stopPropagation(); hopmenu.classList.toggle('open'); });
+  document.addEventListener('click', () => hopmenu.classList.remove('open'));
+
+  // 悬浮卡跟随鼠标：默认显示在光标上方偏右；靠右缘翻到左侧、贴顶翻到下方
+  document.addEventListener('mousemove', e => {
+    const host = e.target.closest('.node, .menu > div, .sessrow');
+    const tip = host && host.querySelector(':scope > .tip');
+    if (!tip) return;
+    const r = tip.getBoundingClientRect();
+    let x = e.clientX + 14, y = e.clientY - r.height - 12;
+    if (x + r.width > window.innerWidth - 8) x = e.clientX - r.width - 14;
+    if (y < 8) y = e.clientY + 20;
+    tip.style.left = Math.round(x) + 'px';
+    tip.style.top = Math.round(y) + 'px';
+  });
+</script>
+</body>
+</html>
