@@ -1320,14 +1320,20 @@ component GroupCombo inherits VerticalLayout {
 // 20px 方块,hover 点亮;删除(danger)悬停染红。hov 暴露给父级 —— 嵌套
 // TouchArea 抢占:鼠标进按钮时外层 has-hover 变 false,ops 显隐必须并上
 // 内层 hov 才稳定(否则出现→消失→出现抖动)。
+// (#chain-cell-r3 2026-10-05) on 属性:off 时 **opacity 0 但仍占位**(visible
+// 会塌陷导致悬停时 chip 宽度跳变、自适应宽没法按「IP+序号+三图标」预留);
+// ta.enabled 同步关掉,off 状态点不到。
 component JumpChipOp inherits Rectangle {
     in property <string> glyph;
     in property <bool> danger: false;
+    in property <bool> on: true;
     callback clicked();
     out property <bool> hov: ta.has-hover;
     width: 20px;
     height: 20px;
     border-radius: 5px;
+    opacity: root.on ? 1.0 : 0.0;
+    animate opacity { duration: 90ms; }
     background: ta.has-hover
         ? (root.danger ? Theme.danger.with-alpha(0.15) : Theme.bg-hover)
         : transparent;
@@ -1338,6 +1344,7 @@ component JumpChipOp inherits Rectangle {
         tint: ta.has-hover ? (root.danger ? Theme.danger : Theme.text-primary) : Theme.text-muted;
     }
     ta := TouchArea {
+        enabled: root.on;
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
@@ -1388,10 +1395,9 @@ component JumpChip inherits Rectangle {
     callback tip-move(length, length);
     callback tip-hide();
     height: 32px;
-    // (#chain-cell 2026-10-05) 固定块宽:等宽 chip 换行后成整齐网格,也避免
-    // 长名字把行撑爆(名字超长内部 elide)。行 HL 已 alignment:start 不会再
-    // 被均摊拉伸(且 Slint 不允许 width 与 max-width 并存)。
-    width: 210px;
+    // (#chain-cell-r3 2026-10-05) **自适应宽**:按「完整 IP + 序号徽章 + 三个
+    // 悬停图标(常驻占位)」自然撑开,不再固定 210px(固定宽把长 IP elide 失去
+    // 意义、短会话又留大空白,用户两条反馈同源)。极端长域名 max-width 兜底。
     border-radius: 8px;
     border-width: 1px;
     border-color: Theme.border-control;
@@ -1440,30 +1446,31 @@ component JumpChip inherits Rectangle {
         }
         Text {
             vertical-alignment: center;
-            // (#chain-cell 2026-10-05) chip 直接显示**主机 IP/域名**(用户要求
-            // 「显示主机ip」):固定宽 190px 放不下「名字 (IP)」全串(IP 会被
-            // elide 失去意义),名字信息悬停 tip 卡可见。host 为空退化为名字。
+            // (#chain-cell) chip 直接显示**主机 IP/域名**(用户要求「显示主机ip」);
+            // (#chain-cell-r3) 自适应宽下自然撑开,280px 兜底防极端长域名撑爆行。
             text: root.entry.host != "" ? root.entry.host : root.entry.name;
             color: Theme.text-primary;
             font-size: Theme.fs-sm;
             overflow: elide;
-            horizontal-stretch: 1;
+            max-width: 280px;
         }
         ops := HorizontalLayout {
             spacing: 1px;
             alignment: center;
+            // (#chain-cell-r3) 三钮**常驻占位**(opacity 0/1 切换,不用 visible——
+            // visible 塌陷会让悬停瞬间 chip 宽度跳变、行溢出)。
             op-up := JumpChipOp {
-                visible: root.index > 0 && root.ops-on;
+                on: root.index > 0 && root.ops-on;
                 glyph: "arrow-up";
                 clicked => { root.up(); }
             }
             op-down := JumpChipOp {
-                visible: root.index < root.total - 1 && root.ops-on;
+                on: root.index < root.total - 1 && root.ops-on;
                 glyph: "arrow-down";
                 clicked => { root.down(); }
             }
             op-del := JumpChipOp {
-                visible: root.ops-on;
+                on: root.ops-on;
                 glyph: "delete";
                 danger: true;
                 clicked => { root.remove(); }
@@ -1495,6 +1502,7 @@ component JumpChip inherits Rectangle {
 component ChainRow inherits HorizontalLayout {
     in property <[JumpEntry]> entries;
     in property <int> row-index;       // 0-based
+    in property <int> row-offset;      // (#chain-cell-r3) 本行首 chip 的全局序号(0-based)——贪心分行后行内 chip 数不固定,不能再用 row-index*2 推
     in property <bool> is-last-row;
     in property <int> total;
     callback tip-show(JumpEntry, int);
@@ -1515,14 +1523,14 @@ component ChainRow inherits HorizontalLayout {
         alignment: start;
         JumpChip {
             entry: c;
-            index: root.row-index * 2 + ci;
+            index: root.row-offset + ci;
             total: root.total;
             tip-show(e, pos) => { root.tip-show(e, pos); }
             tip-move(x, y) => { root.tip-move(x, y); }
             tip-hide => { root.tip-hide(); }
-            remove => { root.remove(root.row-index * 2 + ci); }
-            up => { root.up(root.row-index * 2 + ci); }
-            down => { root.down(root.row-index * 2 + ci); }
+            remove => { root.remove(root.row-offset + ci); }
+            up => { root.up(root.row-offset + ci); }
+            down => { root.down(root.row-offset + ci); }
         }
         if ci < root.entries.length - 1 : ChainArrow { }
     }
@@ -1673,7 +1681,10 @@ export component SessionDialog inherits Rectangle {
     in property <[JumpEntry]> jump-pool;
     in property <[JumpEntry]> jump-chain;
     // (#chain-wrap 2026-10-05) 链分行 model(2 chip/行,Rust 侧分好)。
+    // (#chain-cell-r3) 分行升级为按宽度贪心;row-offsets = 每行首 chip 的
+    // 全局序号(0-based),ChainRow 用来算 chip 链位。
     in property <[[JumpEntry]]> jump-chain-rows;
+    in property <[int]> jump-chain-row-offsets;
     callback chain-add(string);
     callback chain-remove(int);
     callback chain-up(int);
@@ -3155,6 +3166,7 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                         for row[ri] in root.jump-chain-rows : ChainRow {
                                             entries: row;
                                             row-index: ri;
+                                            row-offset: root.jump-chain-row-offsets[ri];
                                             is-last-row: ri == root.jump-chain-rows.length - 1;
                                             total: root.jump-chain.length;
                                             tip-show(e, pos) => { root.tip-show(e, pos); }
@@ -3766,13 +3778,16 @@ if root.draft-kind == "serial" : HorizontalLayout {
 
         // (#conn-path 2026-10-04 高保真 #proxy-fields) 跳板悬浮信息卡:键值对
         // 「K：V」,名称/分组/备注非空才显示;链位行仅在链 chip 上出现(候选无)。
-        // 跟随鼠标、光标上方偏右;靠右缘翻到左侧、贴顶翻到下方。挂在 SessionDialog
-        // 根(全屏坐标系,jumptip-x/y 即窗口坐标)且无 TouchArea —— 指针事件穿透。
+        // 跟随鼠标、**水平居中**对齐指针(用户要求正上方);居中后左溢贴左缘、
+        // 右溢贴右缘(自适应翻转);贴顶翻到下方。挂在 SessionDialog 根(全屏
+        // 坐标系,jumptip-x/y 即窗口坐标)且无 TouchArea —— 指针事件穿透。
         if root.jumptip-on : Rectangle {
             property <length> pw: jumptip-lay.preferred-width + 24px;
             property <length> ph: jumptip-lay.preferred-height + 18px;
-            x: root.jumptip-x + 14px + pw > parent.width - 8px
-                ? max(8px, root.jumptip-x - pw - 14px) : root.jumptip-x + 14px;
+            x: root.jumptip-x - self.pw / 2 < 8px ? 8px
+                : (root.jumptip-x + self.pw / 2 > parent.width - 8px
+                    ? parent.width - self.pw - 8px
+                    : root.jumptip-x - self.pw / 2);
             y: root.jumptip-y - ph - 12px < 8px
                 ? root.jumptip-y + 20px : root.jumptip-y - ph - 12px;
             width: pw;

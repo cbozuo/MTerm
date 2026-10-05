@@ -5013,8 +5013,10 @@ fn wire_session_callbacks(
     // 刷新跳板链 UI:chain model 按工作集重建;pool = 全部候选 − 已入链 − 自身
     // (exclude_id = 正在编辑的会话 id)。禁用由 ChainPicker 的 pool.length==0
     // 推导,无需单独的 exhausted 标志(#jump-pool-bind 顺带清理死属性)。
-    // (#chain-wrap 2026-10-05) rows = 链按 2 chip/行分组(chip 固定宽 190px,
-    // 弹框内容宽一行恰好 2 个):slint 无 flex-wrap,Rust 分行、ChainRow 渲染。
+    // (#chain-wrap 2026-10-05 → #chain-cell-r3 2026-10-05) rows 分行从「固定
+    // 2 chip/行」升级为**按估算宽度贪心**:chip 自适应宽(完整 IP+ops 三图标)
+    // 后固定分组会溢出弹框(用户截图);host 按 ascii 8px/全角 13px 粗估,
+    // 行容量 460px(弹框内容最窄场景,偏保守——宽窗口下换行偏早不溢出)。
     let refresh_jump_chain =
         |window: &AppWindow,
          store: &ConfigStore,
@@ -5022,19 +5024,57 @@ fn wire_session_callbacks(
          chain: &Rc<RefCell<Vec<Session>>>,
          pool: &Rc<VecModel<JumpEntry>>,
          chain_model: &Rc<VecModel<JumpEntry>>| {
+            fn text_w(s: &str) -> f64 {
+                s.chars().map(|c| if c.is_ascii() { 8.0 } else { 13.0 }).sum()
+            }
+            const ROW_CAP: f64 = 460.0;
+            const CHIP_FIXED: f64 = 105.0; // padding9+徽章18+spacing12+ops三钮62
+            const ARROW: f64 = 20.0; // 箭头 + spacing
+            const SRC_HEAD: f64 = 80.0; // 首行:本机端点 + 箭头
+            const DST_TAIL: f64 = 110.0; // 末行尾:箭头 + 目标主机端点
             let entries: Vec<JumpEntry> =
                 chain.borrow().iter().map(session_models::jump_entry).collect();
-            chain_model.set_vec(entries);
-            let rows: Vec<ModelRc<JumpEntry>> = chain
-                .borrow()
-                .chunks(2)
-                .map(|chunk| {
-                    let row: Vec<JumpEntry> =
-                        chunk.iter().map(session_models::jump_entry).collect();
-                    ModelRc::from(Rc::new(VecModel::from(row)))
+            chain_model.set_vec(entries.clone());
+
+            // 贪心装箱:行首第一行计本机开销;「目标主机」视作挂在末行尾的
+            // 虚拟项(110px)——末行装不下就把末行最后一个 chip 下移一行。
+            let mut rows: Vec<Vec<JumpEntry>> = Vec::new();
+            let mut cur: Vec<JumpEntry> = Vec::new();
+            let mut cur_w = 0.0f64;
+            for e in &entries {
+                let w = CHIP_FIXED + text_w(&e.host) + ARROW;
+                let prefix = if rows.is_empty() && cur.is_empty() { SRC_HEAD } else { 0.0 };
+                if !cur.is_empty() && cur_w + w > ROW_CAP {
+                    rows.push(std::mem::take(&mut cur));
+                    cur_w = 0.0;
+                }
+                cur.push(e.clone());
+                let prefix2 = if rows.is_empty() && cur.len() == 1 { SRC_HEAD } else { 0.0 };
+                cur_w += prefix2 + w;
+            }
+            if !cur.is_empty() && cur_w + DST_TAIL > ROW_CAP && cur.len() > 1 {
+                let last = cur.pop().unwrap();
+                rows.push(std::mem::take(&mut cur));
+                cur = vec![last];
+            }
+            rows.push(cur);
+
+            let row_models: Vec<ModelRc<JumpEntry>> = rows
+                .iter()
+                .map(|row| ModelRc::from(Rc::new(VecModel::from(row.clone()))))
+                .collect();
+            window.set_jump_chain_rows(Rc::new(VecModel::from(row_models)).into());
+            // 每行首 chip 的全局序号(0-based):ChainRow 用它算 chip 链位
+            // (贪心分行后行内 chip 数不定,不能再用行号×2 推)。
+            let offsets: Vec<i32> = rows
+                .iter()
+                .scan(0, |acc, row| {
+                    let off = *acc;
+                    *acc += row.len() as i32;
+                    Some(off)
                 })
                 .collect();
-            window.set_jump_chain_rows(Rc::new(VecModel::from(rows)).into());
+            window.set_jump_chain_row_offsets(Rc::new(VecModel::from(offsets)).into());
             let skip: HashSet<String> = chain.borrow().iter().map(|s| s.id.clone()).collect();
             let pool_entries = session_models::build_jump_pool(store, exclude_id, &skip);
             pool.set_vec(pool_entries);
