@@ -5004,10 +5004,17 @@ fn wire_session_callbacks(
     let edit_jump_chain: Rc<RefCell<Vec<Session>>> = Rc::new(RefCell::new(Vec::new()));
     let jump_pool_model: Rc<VecModel<JumpEntry>> = Rc::new(VecModel::default());
     let jump_chain_model: Rc<VecModel<JumpEntry>> = Rc::new(VecModel::default());
+    // (#jump-pool-bind 2026-10-05) 两个 model 必须在此**绑定到窗口属性**,
+    // 否则 refresh_jump_chain 的 set_vec 改的是没人看的 VecModel —— 弹框的
+    // jump-pool/jump-chain 恒空,「＋添加跳板机」因 pool.length==0 永远禁用,
+    // 编辑会话的链回填也不显示(用户手测首个 bug,落地时的绑定遗漏)。
+    window.set_jump_pool(jump_pool_model.clone().into());
+    window.set_jump_chain(jump_chain_model.clone().into());
     // 刷新跳板链 UI:chain model 按工作集重建;pool = 全部候选 − 已入链 − 自身
-    // (exclude_id = 正在编辑的会话 id);满员(pool 空)置禁用标志。
+    // (exclude_id = 正在编辑的会话 id)。禁用由 ChainPicker 的 pool.length==0
+    // 推导,无需单独的 exhausted 标志(#jump-pool-bind 顺带清理死属性)。
     let refresh_jump_chain =
-        |window: &AppWindow,
+        |_window: &AppWindow,
          store: &ConfigStore,
          exclude_id: &str,
          chain: &Rc<RefCell<Vec<Session>>>,
@@ -5018,7 +5025,6 @@ fn wire_session_callbacks(
             chain_model.set_vec(entries);
             let skip: HashSet<String> = chain.borrow().iter().map(|s| s.id.clone()).collect();
             let pool_entries = session_models::build_jump_pool(store, exclude_id, &skip);
-            window.set_jump_pool_exhausted(pool_entries.is_empty());
             pool.set_vec(pool_entries);
         };
     // on_connect_session moves the panes_model binding into its closure; the
