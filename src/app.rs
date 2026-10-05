@@ -5013,8 +5013,10 @@ fn wire_session_callbacks(
     // 刷新跳板链 UI:chain model 按工作集重建;pool = 全部候选 − 已入链 − 自身
     // (exclude_id = 正在编辑的会话 id)。禁用由 ChainPicker 的 pool.length==0
     // 推导,无需单独的 exhausted 标志(#jump-pool-bind 顺带清理死属性)。
+    // (#chain-wrap 2026-10-05) rows = 链按 2 chip/行分组(chip 固定宽 190px,
+    // 弹框内容宽一行恰好 2 个):slint 无 flex-wrap,Rust 分行、ChainRow 渲染。
     let refresh_jump_chain =
-        |_window: &AppWindow,
+        |window: &AppWindow,
          store: &ConfigStore,
          exclude_id: &str,
          chain: &Rc<RefCell<Vec<Session>>>,
@@ -5023,6 +5025,16 @@ fn wire_session_callbacks(
             let entries: Vec<JumpEntry> =
                 chain.borrow().iter().map(session_models::jump_entry).collect();
             chain_model.set_vec(entries);
+            let rows: Vec<ModelRc<JumpEntry>> = chain
+                .borrow()
+                .chunks(2)
+                .map(|chunk| {
+                    let row: Vec<JumpEntry> =
+                        chunk.iter().map(session_models::jump_entry).collect();
+                    ModelRc::from(Rc::new(VecModel::from(row)))
+                })
+                .collect();
+            window.set_jump_chain_rows(Rc::new(VecModel::from(rows)).into());
             let skip: HashSet<String> = chain.borrow().iter().map(|s| s.id.clone()).collect();
             let pool_entries = session_models::build_jump_pool(store, exclude_id, &skip);
             pool.set_vec(pool_entries);
