@@ -1343,6 +1343,36 @@ component JumpChipOp inherits Rectangle {
     }
 }
 
+// (#chain-wrap 2026-10-05) 链路换行布局的子件。**必须组件化**:嵌套
+// for→条件→for 直排会让 slint 生成的 Rust 类型嵌套过深,rustc 编译时
+// STATUS_STACK_BUFFER_OVERRUN(icons.slint 分段 src() 同款先例)——组件
+// 边界打断类型递归。
+component ChainArrow inherits Text {
+    text: "→";
+    color: Theme.text-muted;
+    font-size: Theme.fs-sm;
+    vertical-alignment: center;
+}
+
+component ChainEndpoint inherits Rectangle {
+    in property <string> label;
+    in property <color> tint;
+    height: 32px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: root.tint.with-alpha(0.45);
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        Text {
+            text: root.label;
+            color: root.tint;
+            font-size: Theme.fs-sm;
+            vertical-alignment: center;
+        }
+    }
+}
+
 // 链上的单个跳板机 chip:序号圆标 + 别名/IP + 悬停出 ↑↓×。边界方向**不渲染**
 // (高保真规则:首个无上移、末个无下移、单 chip 只有删除;删除悬停红)。
 // 悬停 150ms 后请求集中信息卡(tip-show 带链位),moved 让卡片跟随鼠标。
@@ -1404,7 +1434,9 @@ component JumpChip inherits Rectangle {
             color: Theme.text-primary;
             font-size: Theme.fs-sm;
             overflow: elide;
-            horizontal-stretch: 1;
+            // (#chain-wrap 2026-10-05) 去掉 stretch(分行布局里 chip 按内容宽,
+            // 不再被压缩成「…」);超长名以 220px 封顶 elide,防单 chip 撑爆行。
+            max-width: 220px;
         }
         ops := HorizontalLayout {
             spacing: 1px;
@@ -2974,7 +3006,8 @@ if root.draft-kind == "serial" : HorizontalLayout {
                             // 空态虚线框提示 → 添加成链;chip 悬停出信息卡/排序/删除。
                             if root.draft-path-type == "jump" && (root.draft-kind == "ssh" || root.draft-kind == "telnet") : VerticalLayout {
                                 spacing: 4px;
-                                // 链头行:标签 + 右侧动态提示(随链长;空态隐藏)
+                                // 链头行:标签 + 右侧提示(#chain-hint 2026-10-05 按用户
+                                // 终稿固定为一条;链位操作(↑↓×)悬停 chip 自解释)。
                                 HorizontalLayout {
                                     Text {
                                         text: @tr("Jump chain (connected in order)");
@@ -2984,9 +3017,7 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                     }
                                     Rectangle { horizontal-stretch: 1; }
                                     if root.jump-chain.length > 0 : Text {
-                                        text: root.jump-chain.length == 1
-                                            ? @tr("Hover for host info / remove")
-                                            : @tr("Hover for host info / reorder / remove");
+                                        text: @tr("Hover for host info / remove");
                                         color: Theme.text-muted;
                                         font-size: Theme.fs-xs;
                                         vertical-alignment: center;
@@ -3009,76 +3040,56 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                         vertical-alignment: center;
                                     }
                                 }
-                                // 链可视化:本机 → 编号 chips → 目标主机
+                                // 链可视化:本机 → 编号 chips → 目标主机。
+                                // (#chain-hscroll 2026-10-05) 链长时 chips 不再
+                                // 压扁成「…」:Flickable 横向滚动,chip 按内容
+                                // 自然宽度完整显示(名字超长 220px 封顶 elide)。
+                                // 换行(flex-wrap)方案曾用 [[JumpEntry]] 嵌套
+                                // model 属性实现,触发 rustc 编译栈溢出
+                                // (STATUS_STACK_BUFFER_OVERRUN,icons.slint
+                                // 分段 src() 同类先例)——勿再引入嵌套 model 属性。
                                 if root.jump-chain.length > 0 : Rectangle {
                                     height: 48px;
                                     border-radius: 8px;
                                     border-width: 1px;
                                     border-color: Theme.border-control;
                                     background: Theme.bg-root;
-                                    HorizontalLayout {
-                                        padding-left: 12px;
-                                        padding-right: 12px;
-                                        padding-top: 8px;
-                                        padding-bottom: 8px;
-                                        spacing: 8px;
-                                        alignment: center;
-                                        Rectangle {
-                                            height: 32px;
-                                            border-radius: 8px;
-                                            border-width: 1px;
-                                            border-color: Theme.accent.with-alpha(0.45);
-                                            HorizontalLayout {
-                                                padding-left: 8px;
-                                                padding-right: 8px;
-                                                Text {
-                                                    text: @tr("This PC");
-                                                    color: Theme.accent;
-                                                    font-size: Theme.fs-sm;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-                                        }
-                                        for c[ci] in root.jump-chain : HorizontalLayout {
+                                    fl := Flickable {
+                                        width: parent.width;
+                                        height: parent.height;
+                                        content-height: parent.height;
+                                        // content 宽度 = 内容自然宽:不绑的话 HL 会被
+                                        // 压进容器宽、chip 重新变「…」(实测)。
+                                        content-width: chain-row.preferred-width;
+                                        chain-row := HorizontalLayout {
+                                            padding-left: 12px;
+                                            padding-right: 12px;
+                                            padding-top: 8px;
+                                            padding-bottom: 8px;
                                             spacing: 8px;
-                                            Text {
-                                                text: "→";
-                                                color: Theme.text-muted;
-                                                font-size: Theme.fs-sm;
-                                                vertical-alignment: center;
+                                            ChainEndpoint {
+                                                label: @tr("This PC");
+                                                tint: Theme.accent;
                                             }
-                                            JumpChip {
-                                                entry: c;
-                                                index: ci;
-                                                total: root.jump-chain.length;
-                                                tip-show(e, pos) => { root.tip-show(e, pos); }
-                                                tip-move(x, y) => { root.tip-move(x, y); }
-                                                tip-hide => { root.tip-hide(); }
-                                                remove => { root.chain-remove(ci); }
-                                                up => { root.chain-up(ci); }
-                                                down => { root.chain-down(ci); }
-                                            }
-                                        }
-                                        Text {
-                                            text: "→";
-                                            color: Theme.text-muted;
-                                            font-size: Theme.fs-sm;
-                                            vertical-alignment: center;
-                                        }
-                                        Rectangle {
-                                            height: 32px;
-                                            border-radius: 8px;
-                                            border-width: 1px;
-                                            border-color: Theme.success.with-alpha(0.45);
-                                            HorizontalLayout {
-                                                padding-left: 8px;
-                                                padding-right: 8px;
-                                                Text {
-                                                    text: @tr("Target host");
-                                                    color: Theme.success;
-                                                    font-size: Theme.fs-sm;
-                                                    vertical-alignment: center;
+                                            for c[ci] in root.jump-chain : HorizontalLayout {
+                                                spacing: 8px;
+                                                ChainArrow { }
+                                                JumpChip {
+                                                    entry: c;
+                                                    index: ci;
+                                                    total: root.jump-chain.length;
+                                                    tip-show(e, pos) => { root.tip-show(e, pos); }
+                                                    tip-move(x, y) => { root.tip-move(x, y); }
+                                                    tip-hide => { root.tip-hide(); }
+                                                    remove => { root.chain-remove(ci); }
+                                                    up => { root.chain-up(ci); }
+                                                    down => { root.chain-down(ci); }
                                                 }
+                                            }
+                                            ChainArrow { }
+                                            ChainEndpoint {
+                                                label: @tr("Target host");
+                                                tint: Theme.success;
                                             }
                                         }
                                     }
