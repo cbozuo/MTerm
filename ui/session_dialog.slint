@@ -118,6 +118,11 @@ component SegOption inherits Rectangle {
     // cell-w 计算步长 —— 格子与滑块错位（用户截图：右移滑块压进邻格、
     // 左移又露出缝隙）。preferred 归零后 stretch 等分 = cell-w，滑块与
     // 格子逐格重合。文字仍由格内 alignment 居中，不受影响。
+    // (#seg-min-width-zero 2026-10-05) min-width 也要归零：HL 先满足各格
+    // min-content(文字宽)再分剩余 —— 文字长短不一时格宽被撑得不等,滑块
+    // 与格子错位且大小观感改变(用户截图)。归零后等分严格成立;超长文字
+    // 由格内 elide 兜底。
+    min-width: 0px;
     preferred-width: 0px;
     // (#hifi-v17) 段内**无边框**(单一外框由容器 SegGroup 画):选中态透明
     // (透出滑层),hover = 不透明 bg-hover(#nonoise-hover),未选中透明。
@@ -131,6 +136,7 @@ component SegOption inherits Rectangle {
         font-size: Theme.fs-sm;
         horizontal-alignment: center;
         vertical-alignment: center;
+        overflow: elide;
     }
     HorizontalLayout {
         visible: root.glyph != "";
@@ -2689,73 +2695,18 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                 focus-changed(f) => { if (f) { root.drop-clock += 1; } }
                                 dialog-field: true;
                                 input-height: 38px;
-                                label: @tr("Password");
-                                placeholder: root.is-editing ? @tr("Leave blank to keep the current password") : "••••••••";
+                                // (#rdp-password-optional 2026-10-05) RDP 密码可留空:
+                                // 不填则交给系统 mstsc 按其凭据策略处理(弹窗/空密码)。
+                                label: @tr("Password (leave blank ok)");
+                                placeholder: root.is-editing
+                                    ? @tr("Leave blank to keep the current password")
+                                    : @tr("Leave blank — mstsc prompts if needed");
                                 password: true;
                                 value <=> root.draft-password;
                                 horizontal-stretch: 1;
                                 canceled => { root.cancel(); }
                                 accepted => { root.try-submit(); }
                             }
-                        }
-                        HorizontalLayout {
-                            spacing: 12px;
-                            LabeledInput {
-                                focus-changed(f) => { if (f) { root.drop-clock += 1; } }
-                                dialog-field: true;
-                                input-height: 38px;
-                                label: @tr("Domain (optional)");
-                                placeholder: "CONTOSO";
-                                value <=> root.draft-rdp-domain;
-                                horizontal-stretch: 1;
-                                min-width: 0;
-                                clearable: true;
-                                canceled => { root.cancel(); }
-                                accepted => { root.try-submit(); }
-                            }
-                            SelectField {
-                                opening => { dialog-focus.focus(); }
-                                drop-clock <=> root.drop-clock;
-                                horizontal-stretch: 1;
-                                min-width: 0;
-                                label: @tr("Resolution");
-                                choices: [@tr("Full screen"), "1280x720", "1366x768", "1440x900", "1600x900", "1920x1080", "2560x1440", "3840x2160", @tr("Custom")];
-                                value: root.resolution-text(root.draft-rdp-resolution);
-                                picked(value) => { root.draft-rdp-resolution = root.resolution-from-text(value); }
-                            }
-                        }
-                        if root.draft-rdp-resolution == "custom" : HorizontalLayout {
-                            spacing: 12px;
-                            LabeledInput {
-                                focus-changed(f) => { if (f) { root.drop-clock += 1; } }
-                                dialog-field: true;
-                                input-height: 38px;
-                                label: @tr("Width");
-                                placeholder: "1280";
-                                value <=> root.draft-rdp-width;
-                                horizontal-stretch: 1;
-                                clearable: true;
-                                canceled => { root.cancel(); }
-                                accepted => { root.try-submit(); }
-                            }
-                            LabeledInput {
-                                focus-changed(f) => { if (f) { root.drop-clock += 1; } }
-                                dialog-field: true;
-                                input-height: 38px;
-                                label: @tr("Height");
-                                placeholder: "720";
-                                value <=> root.draft-rdp-height;
-                                horizontal-stretch: 1;
-                                clearable: true;
-                                canceled => { root.cancel(); }
-                                accepted => { root.try-submit(); }
-                            }
-                        }
-                        Text {
-                            text: @tr("Remote desktop size. In full screen, Ctrl+Alt+Enter switches back to a window.");
-                            color: Theme.text-muted;
-                            font-size: Theme.fs-xs;
-                            wrap: word-wrap;
                         }
                     }
 
@@ -2804,6 +2755,73 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                 }
                             }
                         }
+                        // (#rdp-adv 2026-10-05) RDP 的域/分辨率收进高级区:
+                        // 主表单只留账户(用户名/密码),显示参数属于高级配置;
+                        // 分辨率下拉 open-up 向上翻转(高级区靠弹框底部)。
+                        if root.show-advanced && root.draft-kind == "rdp" : VerticalLayout {
+                            spacing: 12px;
+                            HorizontalLayout {
+                                spacing: 12px;
+                                LabeledInput {
+                                    focus-changed(f) => { if (f) { root.drop-clock += 1; } }
+                                    dialog-field: true;
+                                    input-height: 38px;
+                                    label: @tr("Domain (optional)");
+                                    placeholder: "CONTOSO";
+                                    value <=> root.draft-rdp-domain;
+                                    horizontal-stretch: 1;
+                                    min-width: 0;
+                                    clearable: true;
+                                    canceled => { root.cancel(); }
+                                    accepted => { root.try-submit(); }
+                                }
+                                SelectField {
+                                    opening => { dialog-focus.focus(); }
+                                    drop-clock <=> root.drop-clock;
+                                    horizontal-stretch: 1;
+                                    min-width: 0;
+                                    open-up: true;
+                                    label: @tr("Resolution");
+                                    choices: [@tr("Full screen"), "1280x720", "1366x768", "1440x900", "1600x900", "1920x1080", "2560x1440", "3840x2160", @tr("Custom")];
+                                    value: root.resolution-text(root.draft-rdp-resolution);
+                                    picked(value) => { root.draft-rdp-resolution = root.resolution-from-text(value); }
+                                }
+                            }
+                            if root.draft-rdp-resolution == "custom" : HorizontalLayout {
+                                spacing: 12px;
+                                LabeledInput {
+                                    focus-changed(f) => { if (f) { root.drop-clock += 1; } }
+                                    dialog-field: true;
+                                    input-height: 38px;
+                                    label: @tr("Width");
+                                    placeholder: "1280";
+                                    value <=> root.draft-rdp-width;
+                                    horizontal-stretch: 1;
+                                    clearable: true;
+                                    canceled => { root.cancel(); }
+                                    accepted => { root.try-submit(); }
+                                }
+                                LabeledInput {
+                                    focus-changed(f) => { if (f) { root.drop-clock += 1; } }
+                                    dialog-field: true;
+                                    input-height: 38px;
+                                    label: @tr("Height");
+                                    placeholder: "720";
+                                    value <=> root.draft-rdp-height;
+                                    horizontal-stretch: 1;
+                                    clearable: true;
+                                    canceled => { root.cancel(); }
+                                    accepted => { root.try-submit(); }
+                                }
+                            }
+                            Text {
+                                text: @tr("Remote desktop size. In full screen, Ctrl+Alt+Enter switches back to a window.");
+                                color: Theme.text-muted;
+                                font-size: Theme.fs-xs;
+                                wrap: word-wrap;
+                            }
+                        }
+
                         if root.show-advanced && root.draft-kind == "ssh" : VerticalLayout {
                             spacing: 4px;
                             // (#hifi-spacing 2026-09-19) label 并入 SelectField(间距
@@ -2943,7 +2961,7 @@ if root.draft-kind == "serial" : HorizontalLayout {
                             }
                             // (#conn-path) 跳板机链编辑器(高保真 #proxy-fields):
                             // 空态虚线框提示 → 添加成链;chip 悬停出信息卡/排序/删除。
-                            if root.draft-path-type == "jump" && root.draft-kind == "ssh" : VerticalLayout {
+                            if root.draft-path-type == "jump" && (root.draft-kind == "ssh" || root.draft-kind == "telnet") : VerticalLayout {
                                 spacing: 4px;
                                 // 链头行:标签 + 右侧动态提示(随链长;空态隐藏)
                                 HorizontalLayout {
