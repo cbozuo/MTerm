@@ -74,7 +74,8 @@
   .app.lt .tbb:hover{background:#f0f0f2}
   .tbb{position:relative}
   .tbb.on{background:var(--chip);color:#4a90e2}
-  /* 状态条被 × 隐藏：按钮加 2px 下划线，表示「仍在频道里，只是条收起了」 */
+  /* 状态条被「隐藏状态条」收起：按钮加 2px 下划线，
+     表示「仍在频道里，只是条收起了」——这个常驻锚点不能丢 */
   .tbb.barhid::after{content:"";position:absolute;left:6px;right:6px;bottom:2px;
                       height:2px;border-radius:1px;background:currentColor;opacity:.8}
   .app.lt .tbb.on{background:rgba(0,113,227,.14);color:#0071e3}
@@ -124,8 +125,6 @@
   .it.on{background:rgba(74,144,226,.22);color:#e6e8ee;font-weight:600}
   .app.lt .it.on{background:rgba(0,113,227,.12);color:#1d1d1f}
   .gbar{width:3px;height:20px;border-radius:2px;flex:0 0 3px}
-  .tab .gbar{margin-left:0}
-  .tab.first .gbar{margin-left:0}
   .mt{font-size:10px;color:#6b7080}
   .sft{margin-top:auto;font-size:10px;color:#6b7080;padding-top:6px;flex:0 0 auto}
 
@@ -143,24 +142,62 @@
 
   .main{flex:1;min-width:0;display:flex;flex-direction:column;background:#0e0f13}
   .app.lt .main{background:#fafafa}
-  .trow{height:32px;background:#0e0f13;display:flex;align-items:stretch;flex:0 0 32px}
+  /* v34：tab 紧贴，且**整行不画任何分隔线**（2026-10-05 用户定稿）。
+     v27~v33 用的是「非选中 tab 右侧 1px 暗线」（#101216）——本轮撤掉。
+     撤的代价与替代方案见下方「tab 紧贴：撤掉 1px 分隔线」专章。
+     为什么必须撤：1px 暗线在 125% / 150% 缩放下会被渲染成一道**发丝缝**，
+     观感上等于「tab 之间又有间隙了」，与"紧贴"的诉求自相矛盾；
+     IDEA 2023+ 新 UI 的 tab 行也不画分隔线。 */
+  .trow{height:32px;background:#0e0f13;display:flex;align-items:stretch;
+        flex:0 0 32px;gap:0}
   .app.lt .trow{background:#fafafa}
-  .tab{height:32px;display:flex;align-items:center;gap:7px;padding:0 8px 0 10px;
+  /* v34：左内边距 10px → **6px**（竖条 3px + 3px 间隙）。
+     为什么能收：tab 行的横向空间是稀缺资源，每让 1px 都直接吃掉标题可读长度。
+     中间态 10px 是在"必须有 1px 分隔线、块边界要读得清"的前提下定的，
+     撤掉分隔线后不再需要额外呼吸。
+     ⚠️ 无频道的 tab 走的是**同一条** padding-left（首个 flex 子项变成标题），
+     所以两类 tab 的文字起点自动仍然对齐——不要给 .no-ch 单开一条规则。
+     同理**不要按 first 分叉**：首 tab 特例只会在行内制造第二种文字起点。 */
+  .tab{height:32px;display:flex;align-items:center;gap:7px;padding:0 8px 0 6px;
        font-size:11.5px;background:#25282f;color:#b4b9c4;position:relative;
-       cursor:pointer;flex:0 0 auto;white-space:nowrap;overflow:hidden}
+       cursor:pointer;flex:0 0 auto;white-space:nowrap;overflow:hidden;
+       box-sizing:border-box}
+  /* v32：分组色竖条**绝对定位贴 tab 左侧边线**。
+     v30 把它当普通 flex 子项（靠 padding-left 定位），结果整条缩进在 tab 内，
+     **不贴边** —— 而"竖条贴左缘"才是它作为「分组边界标记」的核心语义：
+     它标记的是**这个 tab 从哪开始**，不是"文字从哪开始"。
+
+     改法：竖条 `position: absolute; left: 0`，脱离 flex 流；
+     文字靠 `padding-left: 6px` 让开。两者解耦后，
+     **竖条永远贴边、文字起点全行一致**，且首 tab 无需特例。
+     v34 顺带把这条 padding 收到 6px —— 竖条既然 absolute，让位只需 3px + 3px 呼吸。 */
+  .tab .gbar{position:absolute;left:0;top:6px;width:3px;height:20px;
+             border-radius:2px;flex:0 0 3px}
   .app.lt .tab{background:#e2e2e8;color:#45454a}
   .tab:hover{background:#2e323a}
   .app.lt .tab:hover{background:#dcdce3}
   .tab.on{background:#0e0f13;color:#e6e8ee}
   .app.lt .tab.on{background:#fafafa;color:#1d1d1f}
-  .tab.on::before{content:"";position:absolute;top:0;left:0;right:0;height:3px;background:#4a90e2}
+  /* v31：选中横线长度 = **tab 的 border-box 宽度**，与 `el.style.width` 严格同值。
+     Slint 侧对应 `Rectangle { x: 0; width: parent.width; height: 3px }`。
+     v34 撤掉 border-right 后 tab 不再有边框，`parent.width` **就是**视觉宽度，
+     不存在"边框占位 → 横线短 1px / 右端留缺口"的历史坑（125% / 150% 缩放下
+     那个缺口极难定位）。横线右缘与 tab 右缘天然齐平。 */
+  .tab.on::before{content:"";position:absolute;top:0;left:0;right:0;
+                  height:3px;background:#4a90e2}
   .app.lt .tab.on::before{background:#0071e3}
-  .tab .x{width:16px;height:16px;border-radius:3px;display:none;align-items:center;
-         justify-content:center;font-size:11px;flex:0 0 16px;margin-left:2px}
+  /* v33：关闭键改**绝对定位**。
+     原来用 `display:none → flex` 在流内切换，hover 时突然占 16+2=18px，
+     **把后面的 tab 顶开一条缝** —— 看起来就是"相邻 tab 之间有间隙"。
+     v32 修的 transition 残留是另一个成因（已修），这个是**独立**的第二条。
+     绝对定位后关闭键叠在标题上方（标题留出 18px 让位），不参与布局。 */
+  .tab{padding-right:24px}          /* 给关闭键预留空间，标题不被压住 */
+  .tab .x{position:absolute;right:4px;top:8px;width:16px;height:16px;
+          border-radius:3px;display:none;align-items:center;justify-content:center;
+          font-size:11px;background:transparent}
   .tab:hover .x{display:flex}
   .tab .x:hover{background:#e81123;color:#fff}
-  .tsep{width:1px;height:32px;background:#08090c;flex:0 0 1px}
-  .app.lt .tsep{background:#c6c6cc}
+  .tsep{display:none}   /* v25 起停用：v27~v33 曾改用 tab 的 border-right，v34 连它一起撤 */
   .tsep.hid{display:none}
   .tadd{width:28px;height:32px;display:flex;align-items:center;justify-content:center;
         color:#9196a3;font-size:14px;cursor:pointer;flex:0 0 28px;margin-left:auto}
@@ -193,7 +230,13 @@
      若日后要恢复，规格：宽 = tab 宽、高 2px、y = parent.height - 2px，
      **只在非选中态画**（选中态顶部已有 accent 横线）。 */
   .chline{display:none}
-  .chname{font-size:9px;letter-spacing:.3px;opacity:.75;flex:0 0 auto}
+  /* 频道字母：11px / 800 字重。**必须去掉 opacity** —— 原来 0.75 会把
+     频道色往标签底色方向混，实测把 D 槽从 2.11 又压低到约 1.7。
+     字重 + 尺寸是 WCAG 对「非文本元素」的替代补偿手段：
+     对比度不足时，加粗放大能让笔画本身更清晰可辨。 */
+  .chname{font-size:11px;font-weight:800;letter-spacing:0;flex:0 0 auto;
+          line-height:1;display:inline-flex;align-items:center;justify-content:center;
+          min-width:13px;height:15px}
   .tab .tt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1 1 auto}
 
   /* hover 宽度预览 */
@@ -207,9 +250,22 @@
   /* 频道状态条（tab 行之下，仅当前 tab 已加入频道时出现） */
   /* 底色 = term-bg：与 tab 行条带、终端区三者同色（③-f 定下的口径）。
      原来用 bg-panel-alt（暗 #2a2d35）比终端亮一档，状态条会读成"另一个面板" */
+  /* 上下双线对称。**顶线只在「非选中 tab 区段」画**——
+     选中 tab 底色 = term-bg（theme.slint:72 tab-active-bg），
+     本意是「与下方内容连成一片」；一条贯通整宽的顶线会切断这个连通关系。
+     实现：顶线是 .chbar 的 ::before（absolute，top:-1px），
+     由 JS 按选中 tab 的 x/width 设置 left/width，只覆盖非选中区段。 */
   .chbar{height:32px;display:flex;align-items:center;gap:8px;padding:0 8px 0 12px;
          background:#0e0f13;border-bottom:1px solid #3a3d46;flex:0 0 32px;
-         font-size:11px;color:#b4b9c4}
+         font-size:11px;color:#b4b9c4;position:relative}
+  /* 顶线**贯通整宽**（v26 定）。v23 曾按"选中 tab 与下方内容连成一片"
+     在选中区段留空，那是**无同步条时**的逻辑；有同步条时状态条本身就是
+     一个独立信息层，边界必须完整——否则选中 tab 下方一段没线，
+     会读成"选中 tab 漏下去了 / 状态条没对齐"。
+     连通关系由**状态条底色 = term-bg**（与终端同色）保持，不靠断开顶线。 */
+  .chbar .tline{position:absolute;top:-1px;left:0;right:0;height:1px;
+                background:#3a3d46}
+  .app.lt .chbar .tline{background:#bfbfc8}
   /* 亮色分界线用 #bfbfc8（1.75:1，与暗色 #3a3d46 的 1.77:1 齐平）。
      原 #e2e2e8 只有 1.24:1，在同色底上等于看不见 */
   .app.lt .chbar{background:#fafafa;border-bottom-color:#bfbfc8;color:#45454a}
@@ -225,20 +281,50 @@
   .chbar .cbtn.pri{background:#4a90e2;border-color:#4a90e2;color:#fff}
   .app.lt .chbar .cbtn.pri{background:#0071e3;border-color:#0071e3}
   .chbar .cbtn .k{font-size:9px;opacity:.65}
-  /* 右端关闭键：× 形。**不能画成 +**——那个位置紧邻「关闭频道」，
-     加号会被读成「再加一个频道 / 新增」，与左端 tab 行的 + 同形但语义无关 */
-  .chbar .cx{width:22px;height:22px;border-radius:5px;display:flex;align-items:center;
-             justify-content:center;cursor:pointer;color:#9196a3;flex:0 0 22px;
-             position:relative;margin-left:2px}
-  .chbar .cx:hover{background:rgba(226,92,92,.16);color:#ef8b8b}
-  .dlg.lt .chbar .cx:hover{background:rgba(226,92,92,.12)}
-  .chbar .cx::before,.chbar .cx::after{content:"";position:absolute;
-             width:9px;height:1.4px;border-radius:1px;background:currentColor}
-  .chbar .cx::before{transform:rotate(45deg)}
-  .chbar .cx::after{transform:rotate(-45deg)}
   /* 暂停态**不再转暖底色**——同色是本轮定下的口径，转暖会读成"另一个面板"。
      改用左侧 3px 暖色竖条 + 文字标签表达，底色保持与 tab 行一致 */
   .chbar.paused{border-left:3px solid #e2a84a;padding-left:9px}
+  /* ── v24 方案 A：主操作左置 + 破坏性操作收进 ⋯ ── */
+  .chbar .meta{font-size:10.5px;color:#6b7080;font-family:var(--mono);flex:0 0 auto}
+  .chbar .cbtn.pri{background:#4a90e2;border-color:#4a90e2;color:#fff;font-weight:600}
+  /* v35：操作区。**默认平铺**——「离开 / 关闭 / 隐藏」三个都是低频操作，
+     藏进下拉等于让用户每次都要多点一次，而这三个加起来也就 ~180px。
+     宽度不够时整块换成 ⋮（见 fitBarOps()），不做"挤掉一个留一个"的取舍。 */
+  .chbar .ops{display:flex;align-items:center;gap:6px;flex:0 0 auto}
+  .chbar .ops .cbtn{height:22px;padding:0 9px}
+  /* 「关闭频道」是破坏性：红字 + 红边，**不给实心底**——
+     实心底会和左边的主色「暂停」抢"最该点"的读法 */
+  .chbar .cbtn.dgr{color:#ef8b8b;border-color:rgba(239,139,139,.42)}
+  .chbar .cbtn.dgr:hover{background:rgba(226,92,92,.16);border-color:#ef8b8b;color:#ff9d9d}
+  .app.lt .chbar .cbtn.dgr{color:#c0392b;border-color:rgba(192,57,43,.34)}
+  .app.lt .chbar .cbtn.dgr:hover{background:rgba(192,57,43,.10);border-color:#c0392b}
+  /* ⋮ 竖三点：收起态的唯一入口。用三点竖排（不是横排 ⋯）——
+     竖排是"还有更多东西竖着堆起来"的通用暗示，横排会被读成"省略号文本" */
+  .chbar .more{width:24px;height:22px;border-radius:5px;display:none;align-items:center;
+               justify-content:center;cursor:pointer;color:#9196a3;flex:0 0 24px;
+               font-size:14px;line-height:1}
+  .chbar.tight .more{display:flex}
+  .chbar.tight .ops{display:none}
+  .chbar .more:hover{background:#2a2d35;color:#e6e8ee}
+  .app.lt .chbar .more:hover{background:#eaeaec;color:#1d1d1f}
+  .chbar .mpop{position:absolute;top:26px;right:6px;z-index:20;min-width:136px;
+               background:#191b21;border:1px solid #4a4e59;border-radius:7px;padding:4px;
+               display:none;box-shadow:0 12px 28px rgba(0,0,0,.55)}
+  .dlg.lt .chbar .mpop{background:#fff;border-color:#c7c7cc;box-shadow:0 12px 28px rgba(0,0,0,.18)}
+  .chbar .mpop.open{display:block}
+  .chbar .mi{padding:6px 10px;border-radius:5px;font-size:11px;color:#b4b9c4;cursor:pointer;
+             display:flex;align-items:center;gap:8px;white-space:nowrap}
+  .dlg.lt .chbar .mi{color:#45454a}
+  .chbar .mi:hover{background:#2a2d35}
+  .dlg.lt .chbar .mi:hover{background:#eaeaec}
+  .chbar .mi.dgr{color:#ef8b8b}
+  .chbar .mi .kk{margin-left:auto;font-size:9px;color:#6b7080;font-family:var(--mono)}
+  .chbar .msep{height:1px;background:#3a3d46;margin:3px 6px}
+  .dlg.lt .chbar .msep{background:#e2e2e8}
+  .chbar .badge{font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;
+                background:rgba(226,168,74,.18);color:#eec27a;flex:0 0 auto}
+  .chbar.paused .cdot{opacity:.35}
+
   .chbar .ctag{font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;
                background:rgba(226,168,74,.18);color:#eec27a}
 
@@ -387,7 +473,8 @@
   <div class="demo-hd">
     <b>可交互演示</b>
     <span>点左上角 <span class="kbd">‹</span> 收起左侧栏　·　点 <span class="kbd">+</span> 加会话
-      　·　点 tab 切换　·　点色块改频道　·　点<b style="color:var(--accent)">「暂停」</b>看状态条三态　·　点「主题」切深浅</span>
+      　·　点 tab 切换　·　点色块改频道　·　点<b style="color:var(--accent)">「暂停」</b>看状态条三态
+      　·　点<b style="color:#ef8b8b">「关闭频道」</b>看字母全清　·　点「主题」切深浅</span>
   </div>
   <div class="app open" id="app">
     <div class="tb">
@@ -441,23 +528,18 @@
 
       <div class="main">
         <div class="trow" id="trow">
-          <div class="tab on" data-i="0" data-w="150" style="padding-left:0">
+          <div class="tab on" data-i="0" data-w="145">
             <span class="gbar" style="background:#e5646e"></span>
             <span class="chname" style="color:#ba7517">C</span>root@prod-01<span class="x">×</span></div>
-          <div class="tsep" data-s="0"></div>
-          <div class="tab" data-i="1" data-w="150">
+          <div class="tab" data-i="1" data-w="145">
             <span class="gbar" style="background:#e5646e"></span>
             <span class="chname" style="color:#378add">A</span>deploy@web-02<span class="x">×</span></div>
-          <div class="tsep" data-s="1"></div>
-          <div class="tab" data-i="2" data-w="128">
+          <div class="tab" data-i="2" data-w="123">
             <span class="gbar" style="background:#2ec4a6"></span>
             <span class="chname" style="color:#1d9e75">B</span>qa@a-very-long-hostname.internal.prod<span class="x">×</span></div>
-          <div class="tsep" data-s="2"></div>
-          <div class="tab" data-i="3" data-w="132">
+          <div class="tab" data-i="3" data-w="127">
             <span class="gbar" style="background:transparent"></span>
             <span class="chname" style="color:#993556">D</span>new-session<span class="x">×</span></div>
-          <div class="tsep" data-s="3"></div>
-          <div class="tsep hid" data-s="4"></div>
           <div class="chpick" id="chpick">
             <span class="cb" data-ch="A" style="background:#378add" title="频道 A · 海蓝"></span>
             <span class="cb" data-ch="B" style="background:#1d9e75" title="频道 B · 松石"></span>
@@ -468,16 +550,30 @@
           <div class="tipl" id="tipl"></div>
         </div>
         <div class="chbar" id="chbar">
+          <span class="tline" id="tlFull"></span>
           <span class="cdot" id="chDot"></span>
-          <span class="ctitle" id="chTitle">同步频道 C 中的输入</span>
-          <span class="ctag" id="chTag" style="display:none">仅接收，不发送</span>
+          <span class="ctitle" id="chTitle">同步频道 C</span>
+          <span class="meta" id="chMeta">3 个会话</span>
+          <span class="badge" id="chTag" style="display:none">仅接收</span>
+          <div class="cbtn pri" id="chPause">暂停</div>
+          <span class="meta" id="chFlow">发送到 2</span>
           <span style="flex:1"></span>
-          <div class="cbtn" id="chPause">暂停<span class="k">P</span></div>
-          <div class="cbtn" id="chLeave">离开频道<span class="k">L</span></div>
-          <div class="cbtn pri" id="chClose">关闭频道<span class="k">C</span></div>
-          <span style="width:1px;height:14px;background:#3a3d46;flex:0 0 1px;
-                       margin:0 7px"></span>
-          <div class="cx" id="chX" title="隐藏状态条（不离开频道）"></div>
+          <!-- v35：三个操作**默认平铺**在状态条上，不再藏进下拉。
+               ⋮ 只在窗口窄到放不下时才出现（见 fitBarOps()）。 -->
+          <span class="ops" id="barOps">
+            <div class="cbtn" id="bLeave" title="仅当前会话退出该频道">离开频道</div>
+            <div class="cbtn dgr" id="bClose"
+                 title="停止本频道内所有活动会话的同步通信（不影响别处）">关闭频道</div>
+            <div class="cbtn" id="bHide"
+                 title="只收起这条状态条，频道成员关系与通信都不变">隐藏状态条</div>
+          </span>
+          <div class="more" id="chMore" title="更多操作">⋮</div>
+          <div class="mpop" id="chPop">
+            <div class="mi" id="mLeave">离开频道<span class="kk">L</span></div>
+            <div class="msep"></div>
+            <div class="mi dgr" id="mClose">关闭频道<span class="kk">C</span></div>
+            <div class="mi" id="mHide">隐藏状态条<span class="kk">H</span></div>
+          </div>
         </div>
         <div class="term" id="term"></div>
       </div>
@@ -515,8 +611,8 @@
     <span><span class="kbd">‹</span>收起后<b style="color:var(--text-secondary);margin:0 3px">左侧一条线都不留</b>，终端直接顶到窗口左缘</span>
     <span><span class="kbd">·</span>tab 行 32px = 标签高，无上留白</span>
     <span><span class="kbd">·</span>选中 tab 顶部 3px 强调色横线</span>
-    <span><span class="kbd">·</span>tab 间 1px 暗线分隔，选中块两侧无线</span>
-    <span><span class="kbd">·</span>首 tab 贴左缘、末 tab 贴 + 号，无空隙</span>
+    <span><span class="kbd">·</span>tab 紧贴、<b style="color:var(--text-secondary);margin:0 3px">整行不画分隔线</b></span>
+    <span><span class="kbd">·</span>竖条贴 tab 左缘，文字起点内缩 6px</span>
     <span><span class="kbd">·</span>点右侧 4 色块改<span style="color:var(--text-secondary)">当前 tab 的频道</span></span>
   </div>
 </div>
@@ -546,7 +642,14 @@
         <td class="c">用 <code>Theme.accent-solid</code>。<b>顶部优于底部</b>——底部要压在
           <code>term-bg</code> 与终端的连接缝上，频道状态条出现时那条缝会下移、横线就对不齐。
           旧 token <code>tab-active-border</code>（<code>theme.slint:73</code>）<b>零引用</b>
-          且深色值是灰 → <b>删</b></td></tr>
+          且深色值是灰 → <b>删</b><br>
+          <b class="new-c">横线长度 = tab 的 border-box 宽度</b>
+          （<code>Rectangle { x: 0; width: parent.width; height: 3px }</code>）。
+          <b class="no-c">必须用 <code>parent.width</code> 而不是「内容区宽」</b>——
+          后者比 tab 短 1px、右端留缺口，<b>125% / 150% 缩放下尤其明显且极难定位</b>。
+          <br><b class="new-c">v34 附带解决</b>：撤掉 <code>border-right</code> 后 tab 不再有边框，
+          <code>parent.width</code> <b>就是</b>视觉宽度，"选中态那条 transparent border
+          不占视觉宽度"的补偿逻辑不再需要</td></tr>
       <tr><td class="c">顶部内高光</td><td class="mono">仅暗色 1px</td><td class="mono">删除</td>
         <td class="new-c">改</td>
         <td class="c">与横线<b>职责重复</b>（<code>:227-233</code>）</td></tr>
@@ -563,21 +666,36 @@
           <b>方向相反</b>——暗色比终端<b>亮</b>、亮色<b>暗</b>，都读作「浮在终端之上」。
           深浅<b>不能同值</b></td></tr>
       <tr><td class="c">tab 间分隔</td><td class="mono">3px 间隙</td>
-        <td class="mono"><b>1px 竖线</b><br>#08090c/#c6c6cc</td>
+        <td class="mono"><b>不画</b></td>
         <td class="new-c">改</td>
-        <td class="c">DBeaver 式。条带同色后间隙会「透出终端」失效。
-          线条<b class="no-c">必须画在 SingleTab 内部</b>——画槽位上会在拖拽重排时横移。
-          <b>选中 tab 两侧不画</b>；分隔色取<b>比条带更沉</b>一档，
-          <span class="tag tag-r">别用 border-subtle</span>（亮于条带会发飘）</td></tr>
+        <td class="c"><span class="tag tag-o">v34 撤销</span>v27~v33 曾用「非选中 tab 右侧 1px 暗线」
+          （画在 <code>SingleTab</code> 内部的 <code>border-right</code>，选中态 transparent）。
+          <b class="new-c">本轮全部删掉</b>：1px 暗线在 125% / 150% 缩放下会被渲染成一道
+          <b>发丝缝</b>，观感上就是"tab 之间又有间隙了"，与"紧贴"自相矛盾。
+          块边界改由 <b>hover 底色</b> + <b>选中块底色</b> + <b>顶部 3px 横线</b> 三者承担；
+          相邻非选中 tab 同色粘连的问题靠 <b>标题不 elide 时两段文字自然分开</b> +
+          <code>tab-width()</code> 常数同步收紧来缓解（见下行）。</td></tr>
       <tr><td class="c">首 tab 左边距</td><td class="mono">3px</td><td class="mono"><b>0</b></td>
         <td class="new-c">改</td>
         <td class="c">3px 原为跟 <code>spacing: 3px</code> 对齐（<code>:461-462</code>
-          标注「用户定稿」），改竖线后成多余错位。<b class="no-c">落地须改代码注释说明动机已变</b>。
-          配套首 tab 的 <code>padding-left</code> 12→<b>10px</b>（<code>:141</code>）</td></tr>
+          标注「用户定稿」），间隙归零后成多余错位。<b class="no-c">落地须改代码注释说明动机已变</b>。
+          配套首 tab 的 <code>padding-left</code> 12→<b>6px</b>（<code>:141</code>）</td></tr>
+      <tr><td class="c">标签左内边距</td><td class="mono">12px</td><td class="mono"><b>6px</b></td>
+        <td class="new-c">改</td>
+        <td class="c"><b class="new-c">v34</b>中间态 10px → <b>6px</b>。3px 竖条绝对定位贴左缘后，
+          让位只需「3px 竖条 + 3px 间隙」。<b>横向空间是稀缺资源</b>，每让 1px 都直接吃掉标题长度。
+          <br><b class="no-c">有频道 / 无频道必须共用同一条规则</b>：无频道时首个 flex 子项变成标题，
+          两者自动仍对齐；一旦给无频道单开一条 <code>padding</code>，行内就会出现两种文字起点。<br>
+          连带：<code>tab-width()</code> 常数 <b>64 → 59</b>（下面「最窄标签」行）</td></tr>
       <tr><td class="c">最窄标签</td><td class="mono">100px</td><td class="mono"><b>76px</b></td>
         <td class="new-c">改</td>
         <td class="c">现状 100px 里文字只拿到 ~60px（扣 12+8 padding + 20px 关闭键）。
-          <code>tab-width()</code> 常数同时 <b>64 → 40</b>（<code>:322-324</code>）</td></tr>
+          <code>tab-width()</code> 下限 100 → <b>76px</b>、常数 64 → <b>59px</b>
+          （<code>:322-324</code>）<br>
+          <b class="new-c">59 = 64 − 5</b>，5px 全部来自本轮左内边距收紧（12→6 省 4px）
+          与撤掉 <code>border-right</code>（省 1px）。
+          <b class="no-c">常数与内边距必须同批改</b>：只收内边距不改常数，
+          每个 tab 会平白多出 5px 空白，该 elide 的标题不 elide</td></tr>
       <tr><td class="c">关闭键</td><td class="mono">20px<br>hover/active</td>
         <td class="mono">18px<br><b>仅 hover</b></td>
         <td class="new-c">改</td>
@@ -588,16 +706,19 @@
         <td class="c">已调得很稳（<code>:204-222</code>），与左侧列表组头同源。
           <b>独占左缘</b>（不留给状态点）</td></tr>
       <tr><td class="c">频道标识</td><td class="mono">无</td>
-        <td class="mono"><b>底缘 2px 横线</b><br>+ 字母前缀</td>
+        <td class="mono"><b>仅字母前缀</b><br><span class="no-c" style="font-size:9.5px">底缘色线已撤</span></td>
         <td class="new-c">改</td>
-        <td class="c"><span class="tag tag-o">已按反馈改</span><b>撤销了右上三角旗</b>——
-          10px 三角在 32px 高的标签上<b>贴边显得突兀</b>，且与左缘分组色竖条形态不统一。
-          改用<b>底缘横线</b>：与 3px 选中横线同处一条边，<b>一条线两段信息</b>
-          （上=选中、下=频道），视觉更整。<br>
-          另加<b>频道字母前缀</b>（<code>A prod-01</code>）——
-          颜色在低对比屏 / 色觉障碍下会失效，<b>字母不会</b>。<br>
+        <td class="c"><span class="tag tag-o">两次返工</span>先做<b>右上三角旗</b>（10px 在 32px 标签上贴边突兀），
+          改<b>底缘 2px 横线</b>，<b>现已全部撤掉</b>——那条边叠了太多东西：
+          顶部 3px 选中横线 + 底缘 2px 频道线 + 状态条下缘分界线，
+          32px 高的标签承受不住，且<b>双线会被误读成"选中的是两根线"</b>。<br>
+          <b class="ok-c">现方案：只留频道字母前缀</b>（<code>A prod-01</code>）+
+          左缘分组色竖条，<b>两个信息两条通道，不共用边缘</b>。<br>
           固定 4 槽：<b>A 海蓝 #378add / B 松石 #1d9e75 / C 琥珀 #ba7517 / D 玫红 #993556</b>，
-          <b>不允许自由取色</b>（频道是有限枚举）</td></tr>
+          <b>不允许自由取色</b>。<br>
+          <span class="tag tag-r">已知短板</span>字母在亮色/非选中 tab 上对比度只有
+          2.6~2.9:1（<b class="no-c">不达 3:1</b>），
+          D 槽在暗色/非选中只有 2.11。<b>根治需深浅两套频道色</b>（见专章）</td></tr>
       <tr><td class="c">频道操作</td><td class="mono">无</td>
         <td class="mono">行尾 4 色块</td>
         <td class="new-c">改</td>
@@ -606,6 +727,39 @@
           条件元素在 Slint 1.8 下不重建。<br>
           <code>TabInfo</code> 加 <code>channel_id</code> / <code>channel_color</code>（<code>:5-24</code>）；
           频道功能代码里<b>完全不存在</b>，属前瞻预留</td></tr>
+      <tr><td class="c">状态条操作</td><td class="mono">无</td>
+        <td class="mono"><b>3 个平铺按钮</b><br>窄屏 → ⋮</td>
+        <td class="new-c">改</td>
+        <td class="c"><b class="new-c">v35</b>「离开频道 / 关闭频道 / 隐藏状态条」
+          <b>默认全部平铺</b>在状态条右端，<b>⋮ 只在放不下时才出现</b>
+          （<code>fitBarOps()</code> 量 <code>bar.clientWidth</code>，
+          <b>不查窗口宽也不用媒体查询</b>——状态条只占 main 列，侧栏开合会改它宽度）。
+          ⋮ 用<b>竖排</b>三点，横排会被读成省略号文本。<br>
+          <b class="no-c">破坏项靠红字降权，不靠"藏起来"</b>；
+          三个按钮各带 <code>title</code> 写明后果。<br>
+          <b class="new-c">已删 × 键</b>：「隐藏状态条」既是平铺按钮，
+          × 就是同一件事的第二个入口，且最容易被误读成"关掉这一切"</td></tr>
+      <tr><td class="c">频道状态数据源</td><td class="mono">—</td>
+        <td class="mono"><b>单一：<code>tab.ch</code></b></td>
+        <td class="new-c">改</td>
+        <td class="c"><span class="tag tag-r">v35 修 bug</span>原先 <code>joined</code> 只管状态条、
+          <code>tab.ch</code> 管字母，<b>两份独立状态</b> → 点「离开频道」只改前者，
+          出现<b>「状态条没了但字母还在」</b>的矛盾态。<br>
+          <b class="ok-c">已删 <code>joined</code></b>，状态条显隐改为
+          <code>!!t.ch &amp;&amp; !barHidden</code> 推导。
+          <b>凡"两处都该变"的状态必须收敛到单一数据源</b>，
+          另一处做成派生态，否则迟早分叉</td></tr>
+      <tr><td class="c">「关闭频道」语义</td><td class="mono">无</td>
+        <td class="mono"><b>仅停通信</b><br>不删频道定义</td>
+        <td class="new-c">定稿</td>
+        <td class="c"><b class="new-c">v35 用户定稿</b>：关闭频道 =
+          <b>关闭「加入当前频道的所有活动会话」的通信</b>，
+          <b class="no-c">不是关闭所有频道</b>，也<b>不解散频道定义</b>
+          ——频道与其成员表原样保留，随时可恢复。
+          实现上就是 <code>send_key</code> 不再向该频道成员表投递。<br>
+          与「离开频道」的区别<b>只有作用域</b>：离开 = 当前这一个 tab；
+          关闭 = 本频道内全部活动会话（演示稿里表现为该频道所有 tab 字母一起清掉）。
+          两者都<b>不删频道</b></td></tr>
       <tr><td class="c">连接状态点</td><td class="mono">无</td><td class="mono"><b>不加</b></td>
         <td class="ok-c">保持</td>
         <td class="c">现状移除有道理（8px 圆点换 17px 宽度不划算，<code>:147-148</code>）。
@@ -812,6 +966,690 @@
   </div>
 </div>
 
+<!-- ═══ 撤掉分隔线 ═══ -->
+<div class="sec">
+  <div class="sec-t">tab 紧贴：撤掉 1px 分隔线，左内边距收到 6px</div>
+  <div class="card">
+    <div style="font-size:11.5px;color:var(--text-secondary);line-height:1.85;margin-bottom:12px">
+      v27~v33 的做法是「间隙归零 + 非选中 tab 右侧 1px 暗线」（画在
+      <code>SingleTab</code> 内部的 <code>border-right</code>，选中态 transparent）。
+      <b class="new-c">本轮把这条线整个撤掉</b>，并顺手把左内边距
+      <code>10px → 6px</code>。<br>
+      <b class="no-c">撤线的真实理由不是"更简洁"</b>，是那条线<b>在缩放下会变成间隙</b>：
+      1px 暗线在 125% / 150% 缩放时被渲染成一道发丝缝，观感上就是
+      「tab 之间又有空隙了」——恰好是前几轮反复在修的那个症状。
+      它为了解决"两块粘成一片"，亲手造出了"两块之间有缝"。
+    </div>
+
+    <div style="display:flex;gap:14px;margin-bottom:13px">
+      <div style="flex:1">
+        <div class="win-hd"><b class="no-c">改前</b>　1px 暗线 + 左内边距 10px</div>
+        <div style="border:1px solid #3a3d46;border-radius:8px;overflow:hidden;background:#0e0f13">
+          <div style="height:30px;display:flex;align-items:stretch">
+            <div style="width:120px;height:30px;background:#25282f;box-sizing:border-box;
+                        border-right:1px solid #101216;display:flex;align-items:center;
+                        padding-left:10px;font-size:11.5px;color:#b4b9c4">root@a</div>
+            <div style="width:130px;height:30px;background:#25282f;box-sizing:border-box;
+                        border-right:1px solid #101216;display:flex;align-items:center;
+                        padding-left:10px;font-size:11.5px;color:#b4b9c4">web-02</div>
+            <div style="width:110px;height:30px;background:#0e0f13;border-top:3px solid #4a90e2;
+                        display:flex;align-items:center;padding-left:10px;font-size:11.5px;
+                        color:#e6e8ee">prod-01</div>
+            <div style="flex:1"></div>
+          </div>
+          <div style="height:24px;padding:4px 10px;font-family:monospace;font-size:10px;
+                      color:#4ec9b0">root@a:~$ ▊</div>
+        </div>
+        <div style="font-size:10.5px;color:var(--danger);margin-top:5px;line-height:1.75">
+          <b>症状</b>：相邻 tab 之间那道<b>竖直暗缝</b>与 tab 底色只差 1.27:1，
+          缩放后读作<b>一条实实在在的缝</b>；同时左边距 10px 让每个 tab
+          <b>白吃 4px</b>（3px 竖条只需要 3px 让位）
+        </div>
+      </div>
+      <div style="flex:1">
+        <div class="win-hd"><b class="ok-c">改后</b>　无分隔线 + 左内边距 6px</div>
+        <div style="border:1px solid #3a3d46;border-radius:8px;overflow:hidden;background:#0e0f13">
+          <div style="height:30px;display:flex;align-items:stretch">
+            <div style="width:116px;height:30px;background:#25282f;display:flex;
+                        align-items:center;padding-left:6px;font-size:11.5px;
+                        color:#b4b9c4">root@a</div>
+            <div style="width:126px;height:30px;background:#25282f;display:flex;
+                        align-items:center;padding-left:6px;font-size:11.5px;
+                        color:#b4b9c4">web-02</div>
+            <div style="width:110px;height:30px;background:#0e0f13;border-top:3px solid #4a90e2;
+                        display:flex;align-items:center;padding-left:6px;font-size:11.5px;
+                        color:#e6e8ee">prod-01</div>
+            <div style="flex:1"></div>
+          </div>
+          <div style="height:24px;padding:4px 10px;font-family:monospace;font-size:10px;
+                      color:#4ec9b0">root@a:~$ ▊</div>
+        </div>
+        <div style="font-size:10.5px;color:var(--ok);margin-top:5px;line-height:1.75">
+          行内<b>一条多余笔画都没有</b>。块边界交给
+          <b>左缘 3px 分组色竖条</b>（每个 tab 起点都有一根）+
+          <b>选中块底色</b> + <b>顶部 3px 横线</b>，
+          同宽下每个 tab 还<b>多出 4~5px 标题长度</b>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid2" style="margin-bottom:12px">
+      <div class="box">
+        <b>块边界现在由谁承担</b>
+        <br><b>① 左缘分组色竖条</b>（<code>left: 0</code>，3px）——
+        每个 tab 的起点都有一根竖线，<b>它本身就是边界标记</b>，
+        比 1px 暗线更强（宽度 3px vs 1px，且是彩色）。
+        <br><b>② 选中块</b>：底色 = <code>term-bg</code> + 顶部 3px accent 横线。
+        <br><b>③ hover 底色</b>：<code>#2e323a</code>，鼠标下的归属感。
+        <br><b class="no-c">唯一真会粘连的场景</b>：相邻两个 tab
+        <b>同组 + 无频道 + 都未选中</b>，此时既无竖条色差也无底色差。
+        标题不 elide 时两段文字本身就把它们分开；真读不出来时
+        靠 hover 底色定位。
+      </div>
+      <div class="box">
+        <b>左内边距为什么能收</b>
+        <br>竖条 v32 起已 <code>position: absolute; left: 0</code>，
+        <b>让位需求 = 3px 竖条 + 一点呼吸 = 6px</b>。
+        原来的 10px 是在"必须有 1px 暗线、块边界要读得清"的前提下定的，
+        撤线后那份额外的呼吸没有存在理由。
+        <br><b class="new-c">有频道 / 无频道共用同一条规则</b>：
+        无频道时首个 flex 子项自动变成标题，文字起点仍然对齐。
+        <br><b class="no-c">别给无频道单开一条 padding</b>——那会让行内出现两种文字起点。
+      </div>
+    </div>
+
+    <div class="warnbox">
+      <b>撤线的连带项（漏一个就会看出"漏了"）</b><br>
+      <b>①</b> <code>.tab.last</code> 规则与 JS 里的 <code>classList.toggle('last')</code>
+      一起删——它只为"末 tab 不画线"存在，线没了就没有存在的理由。<br>
+      <b>②</b> <code>tab-width()</code> 常数 <b>64 → 59</b>（省下的 5px 还给标题）。
+      <span class="tag tag-r">必测</span>不改常数的话，每个 tab 平白多 5px 空白，
+      该 elide 的名字不 elide。<br>
+      <b>③</b> 顶部 3px 横线的 <code>parent.width</code> 逻辑可以简化：
+      tab 不再有边框，<code>parent.width</code> <b>就是</b>视觉宽度，
+      不再需要"transparent border 不占视觉宽度"的补偿口径。<br>
+      <b>④</b> 拖拽插入位计算里的 <code>if (i &gt; 0) acc += 0</code> 是分隔线时代的残留，一并删。
+    </div>
+
+    <div class="redbox" style="margin-top:11px">
+      <b>一条被否决的替代方案：把线换成更浅的灰</b><br>
+      想过用 <code>#3a3d46</code>（亮于 tab 底）当分隔线，理由是"亮线在两种底色下都可见"。
+      <b class="no-c">否决</b>：亮线读作"高亮分隔"而不是"分块"，
+      两个 tab 之间的关系从「相邻块」变成「被隔开」，
+      而 tab 行要表达的是<b>同一组会话的平铺</b>。<br>
+      既然"块边界"这件事在 IDEA 里本来就不靠线解决（它连 gap 都不留，
+      靠选中态 + hover 区分），那就<b>索性什么都不画</b>——
+      少一个要在深浅两档分别调色的变量，也少一个在缩放下变形的像素。
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 分组色竖条对齐 ═══ -->
+<div class="sec">
+  <div class="sec-t">分组色竖条：全行对齐，取消首 tab 特例</div>
+  <div class="card">
+    <div style="font-size:11.5px;color:var(--text-secondary);line-height:1.85;margin-bottom:12px">
+      你发现的是一个真实的不一致：<b class="no-c">首 tab 的分组色竖条贴左缘，
+      其余 tab 的缩进 10px</b>。同一行里两种位置，视觉上就是"没对齐"。
+      <br><b class="new-c">已取消首 tab 的 <code>padding-left: 0</code> 特例</b>，全行统一。
+      <br><b class="new-c">v34 再把统一值从 10px 收到 6px</b>（竖条已 absolute 贴边，
+      让位只需 3px 竖条 + 3px 呼吸）——文字起点仍然全行一致，只是更靠左、省出宽度。
+    </div>
+
+    <div style="display:flex;gap:14px;margin-bottom:13px">
+      <div style="flex:1">
+        <div class="win-hd"><b class="no-c">改前</b>　首 tab 竖条贴边，其余缩进</div>
+        <div style="border:1px solid #3a3d46;border-radius:8px;overflow:hidden;background:#0e0f13">
+          <div style="height:30px;display:flex;align-items:stretch">
+            <div style="width:116px;height:30px;background:#25282f;display:flex;
+                        align-items:center;padding:0 8px 0 0;font-size:11.5px;
+                        color:#b4b9c4">
+              <span style="width:3px;height:20px;border-radius:2px;background:#e5646e;
+                           margin:0 4px 0 2px;flex:0 0 3px"></span>root@a</div>
+            <div style="width:120px;height:30px;background:#25282f;display:flex;
+                        align-items:center;padding:0 8px 0 0;font-size:11.5px;
+                        color:#b4b9c4">
+              <span style="width:3px;height:20px;border-radius:2px;background:#e5646e;
+                           margin:0 4px 0 10px;flex:0 0 3px"></span>web-02</div>
+            <div style="flex:1"></div>
+          </div>
+        </div>
+        <div style="font-size:10.5px;color:var(--danger);margin-top:5px;line-height:1.75">
+          <b>症状</b>：两条竖条不在同一垂直线上，
+          <b>扫一眼看不出它们同属"分组标识"这个通道</b>
+        </div>
+      </div>
+      <div style="flex:1">
+        <div class="win-hd"><b class="ok-c">改后</b>　竖条贴各 tab 左缘，文字统一内缩 6px</div>
+        <div style="border:1px solid #3a3d46;border-radius:8px;overflow:hidden;background:#0e0f13">
+          <div style="height:30px;display:flex;align-items:stretch">
+            <div style="width:116px;height:30px;background:#25282f;position:relative;display:flex;
+                        align-items:center;padding:0 8px 0 6px;font-size:11.5px;
+                        color:#b4b9c4">
+              <span style="position:absolute;left:0;top:5px;width:3px;height:20px;
+                           border-radius:2px;background:#e5646e"></span>root@a</div>
+            <div style="width:120px;height:30px;background:#25282f;position:relative;display:flex;
+                        align-items:center;padding:0 8px 0 6px;font-size:11.5px;
+                        color:#b4b9c4">
+              <span style="position:absolute;left:0;top:5px;width:3px;height:20px;
+                           border-radius:2px;background:#e5646e"></span>web-02</div>
+            <div style="flex:1"></div>
+          </div>
+        </div>
+        <div style="font-size:10.5px;color:var(--ok);margin-top:5px;line-height:1.75">
+          竖条<b>贴各自的左缘</b>、文字起点<b>同一条垂线</b>，
+          一行扫过去竖条连成一条线，文字起点也齐
+        </div>
+      </div>
+    </div>
+
+    <div class="redbox">
+      <b>根因：竖条是 flex 子项，跟着 padding 走</b><br>
+      <code>.gbar</code>（<code>width: 3px; flex: 0 0 3px</code>）在 <code>HorizontalLayout</code> 里，
+      <b>它的左缘 = tab 的 <code>padding-left</code></b>。
+      之前首 tab 特例 <code>padding-left: 0</code>（v11「首 tab 贴左缘」），
+      其余是 10px → <b>竖条必然差 10px</b>。<br>
+      <b class="new-c">这不是竖条的问题，是首 tab 特例的副作用</b>——
+      特例是为了"贴边"，但没考虑到贴边会连带把竖条和文字一起拉走。
+    </div>
+
+    <div class="grid2" style="margin-top:12px">
+      <div class="warnbox" style="margin-bottom:12px">
+        <b>⚠️ v30 的解法不对，v32 已修正</b><br>
+        v30 的做法是「取消首 tab <code>padding-left: 0</code>，全行统一 10px」——
+        这让<b>竖条对齐了，但竖条整体缩进在 tab 内 10px，不贴左边线</b>。<br>
+        <b class="new-c">正确解法是让竖条脱离 flex 流</b>：
+        <code>position: absolute; left: 0</code>，文字靠 <code>padding-left</code> 让开。
+        <br>竖条标记的是「<b>这个 tab 从哪开始</b>」，
+        不是「文字从哪开始」——贴边才是它的语义。<b class="no-c">解耦后两者各归各的</b>。
+      </div>
+
+      <div class="box">
+        <b>为什么不让首 tab 继续贴边</b>
+        <br>v11 定「首 tab 贴左缘」是为了消除"首 tab 缩进一截"的孤立感。
+        <br><b class="new-c">但那个孤立感已经被 <code>gap: 0</code>（v27/v28）解决了</b>——
+        tab 之间紧贴之后，首 tab 不再"缩进"，它就是左边缘。<br>
+        再叠加 <code>padding-left: 0</code> 只会让<b>组内第一个成员与其他成员不同</b>，
+        反而制造新的不一致。<br>
+        <b class="ok-c">两条已定规则叠加后的正确形态</b>：
+        <b>tab 之间不留缝、tab 内部左内边距 6px</b>
+      </div>
+      <div class="box">
+        <b>备选 B：竖条绝对定位（若你坚持首 tab 贴边）</b>
+        <br>把竖条从 flex 流里拿出来，<code>absolute</code> 定位到 <code>x: 2px</code>
+        ——所有 tab 的竖条都贴<b>各自</b>的左缘。
+        <br><b class="no-c">代价</b>：竖条与文字起点<b>解耦</b>，
+        首 tab 文字会比其余<b>靠左一个内边距</b>，<b>换一种方式产生新的不一致</b>。
+        <br><b class="ok-c">除非你确实要求首 tab 文字贴边，否则不选</b>
+      </div>
+    </div>
+
+    <div class="redbox" style="margin-bottom:12px">
+      <b>「相邻 tab 之间有间隙」——三条独立成因，症状完全相同</b><br>
+      这个症状修了三轮才找全，<b>每轮只找到一条</b>。全部列出供后续核对：
+      <table style="margin-top:6px;background:transparent">
+        <tr><th style="width:34px;background:transparent;border-color:rgba(128,128,128,.2)">#</th>
+          <th style="width:158px;background:transparent;border-color:rgba(128,128,128,.2)">成因</th>
+          <th style="background:transparent;border-color:rgba(128,128,128,.2)">触发条件</th></tr>
+        <tr><td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)">1</td>
+          <td class="c"><code>transition</code> 残留</td>
+          <td class="c">拖拽过一次之后，<b>之后任何宽度变化</b>都被播成过渡 → tab 滑一下</td></tr>
+        <tr><td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)">2</td>
+          <td class="c">插入线定位按 <code>+1px</code></td>
+          <td class="c">拖拽时插入线偏 1px（间隙归零后没同步）</td></tr>
+        <tr><td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)"><b class="new-c">3</b></td>
+          <td class="c"><b>关闭键在流内做 <code>display</code> 切换</b></td>
+          <td class="c"><b>鼠标悬停在任意 tab 上</b> → 关闭键突然占 18px，
+            把后面的 tab 顶开一条缝。<b class="no-c">最隐蔽</b>：
+            不拖拽也会出现，但截图里鼠标不在 tab 上就看不到</td></tr>
+      </table>
+      <br><b class="new-c">已修</b>：① mouseup 同时清 <code>transform</code> + <code>transition</code>；
+      ② 插入线改按 0 算；③ <b>关闭键改 <code>position: absolute</code></b> 脱离 flex 流，
+      <code>padding-right: 24px</code> 给它预留位置。<br>
+      <b class="ok-c">验证方式</b>：鼠标<strong>悬停在</strong>某个 tab 上按住不放，
+      看它右侧的 tab 是否被顶开。
+    </div>
+
+    <div class="warnbox" style="margin-top:11px">
+      <b>同类风险：还有哪些元素跟着 padding 走</b><br>
+      分组色竖条只是最显眼的一个。tab 内<b>频道字母</b>（<code>.chname</code>）同样在 flex 流里，
+      首 tab 特例一去掉，它也跟着归位——<b>这是好事</b>。
+      <br><span class="tag tag-r">判据 1</span>给某个 tab 开口令前，先问
+      <b>"tab 内还有哪些元素靠这个内边距定位"</b>。只改文字不管图标，
+      就会出现"文字对齐了、图标没对齐"。<br>
+      <span class="tag tag-r">判据 2</span><b>凡是用 <code>display</code> 切换显隐的元素，
+      一律不进 flex 流</b>（改 <code>position: absolute</code>）。
+      在流内切换 = 悬停时突然改变占位 = <b>把邻居顶开</b>，
+      而"顶开"这个症状会被误判成"间距没设对"，<b>极难定位</b>。
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 状态条重设计 ═══ -->
+<div class="sec">
+  <div class="sec-t">频道状态条重设计：解决左疏右密与语义重叠</div>
+  <div class="card">
+    <div style="font-size:11.5px;color:var(--text-secondary);line-height:1.85;margin-bottom:12px">
+      你说这个布局不好看，我量了三处失衡。其中<b class="no-c">两处是真错误</b>，
+      不只是审美问题。
+    </div>
+
+    <table style="margin-bottom:14px">
+      <tr><th style="width:150px">失衡点</th><th style="width:110px">性质</th><th>说明</th></tr>
+      <tr><td class="c">左疏右密</td>
+        <td class="new-c">可利用</td>
+        <td class="c">左侧信息 130px、右侧控件 200px，<b>中间空 224px</b>。
+          重心严重偏右，且那 224px 是<b>空白不是留白</b>——留白是有节奏的呼吸，
+          空白是缺内容</td></tr>
+      <tr><td class="c">「关闭频道」用主色</td>
+        <td class="no-c"><b>真错误</b></td>
+        <td class="c">它是<b>破坏性操作</b>（停掉整频道的同步通信），
+          却是整个条里<b>最醒目的那一个</b>。视觉权重和后果严重性倒挂</td></tr>
+      <tr><td class="c">× 与「关闭频道」隔 10px</td>
+        <td class="no-c"><b>真错误</b></td>
+        <td class="c">两个都是"关闭"，并排且<b>点错不可逆</b>。
+          上一轮我用"形态不同 + 权重不同"区分，<b>那不够</b>——
+          上一版根本没解决</td></tr>
+    </table>
+
+    <div style="display:flex;gap:14px;margin-bottom:13px">
+      <div style="flex:1">
+        <div class="win-hd"><b class="no-c">改前</b>　控件全挤右端，破坏性操作最醒目</div>
+        <div style="border:1px solid #3a3d46;border-radius:8px;overflow:hidden;background:#0e0f13">
+          <div style="position:relative;height:32px;background:#0e0f13;display:flex;
+                      align-items:center;gap:8px;padding:0 8px 0 12px;font-size:11px;
+                      color:#b4b9c4">
+            <span style="width:8px;height:8px;border-radius:2px;background:#ba7517"></span>
+            同步频道 C 中的输入
+            <span style="flex:1"></span>
+            <span style="height:22px;padding:0 9px;border-radius:5px;font-size:10.5px;
+                         border:1px solid #4a4e59;display:flex;align-items:center">暂停 P</span>
+            <span style="height:22px;padding:0 9px;border-radius:5px;font-size:10.5px;
+                         border:1px solid #4a4e59;display:flex;align-items:center">离开频道 L</span>
+            <span style="height:22px;padding:0 9px;border-radius:5px;font-size:10.5px;
+                         background:#4a90e2;color:#fff;display:flex;align-items:center">关闭频道 C</span>
+            <span style="width:1px;height:14px;background:#3a3d46;margin:0 7px"></span>
+            <span style="width:22px;height:22px;display:flex;align-items:center;
+                         justify-content:center;color:#9196a3">×</span>
+          </div>
+          <div style="height:26px;padding:5px 10px;font-family:monospace;font-size:10px;
+                      color:#4ec9b0">root@prod-01:~$ ▊</div>
+        </div>
+        <div style="font-size:10.5px;color:var(--danger);margin-top:5px;line-height:1.75">
+          <b>症状</b>：最亮的蓝块给了一个<b>不可逆的破坏性操作</b>；
+          它右边 10px 就是 ×，两个"关闭"并排
+        </div>
+      </div>
+      <div class="ok-c" style="flex:1">
+        <div class="win-hd"><b class="ok-c">改后（v35）</b>　主色给暂停，三个操作平铺，删掉 ×</div>
+        <div style="border:1px solid #3a3d46;border-radius:8px;overflow:hidden;background:#0e0f13">
+          <div style="position:relative;height:32px;background:#0e0f13;display:flex;
+                      align-items:center;gap:8px;padding:0 8px 0 12px;font-size:11px;
+                      color:#b4b9c4">
+            <span style="width:8px;height:8px;border-radius:2px;background:#ba7517"></span>
+            <span style="color:#e6e8ee">同步频道 C</span>
+            <span style="font-size:10.5px;color:#6b7080;font-family:monospace">4 个会话</span>
+            <span style="height:22px;padding:0 10px;border-radius:5px;font-size:10.5px;
+                         background:#4a90e2;color:#fff;font-weight:600;display:flex;
+                         align-items:center">暂停</span>
+            <span style="font-size:10.5px;color:#6b7080;font-family:monospace">发送到 3</span>
+            <span style="flex:1"></span>
+            <span style="height:22px;padding:0 9px;border-radius:5px;font-size:10.5px;
+                         border:1px solid #4a4e59;display:flex;align-items:center">离开频道</span>
+            <span style="height:22px;padding:0 9px;border-radius:5px;font-size:10.5px;
+                         border:1px solid rgba(239,139,139,.42);color:#ef8b8b;
+                         display:flex;align-items:center">关闭频道</span>
+            <span style="height:22px;padding:0 9px;border-radius:5px;font-size:10.5px;
+                         border:1px solid #4a4e59;display:flex;align-items:center">隐藏状态条</span>
+          </div>
+          <div style="height:26px;padding:4px 10px;font-family:monospace;font-size:10px;
+                      color:#4ec9b0">root@prod-01:~$ ▊</div>
+        </div>
+        <div style="font-size:10.5px;color:var(--ok);margin-top:5px;line-height:1.75">
+          左边连续三段（频道名 / 成员数 / 主操作）<b>视线不用横跨空白</b>；
+          右边三个操作<b>直接看得见、看得懂</b>（各带 <code>title</code> 说明后果），
+          破坏项靠<b>红色</b>而不是靠"藏起来"来降权
+        </div>
+      </div>
+    </div>
+
+    <div class="grid2" style="margin-bottom:12px">
+      <div class="box">
+        <b>① 空白改成信息，不改成居中</b>
+        <br>左端补<b>成员数</b>（<code>4 个会话</code>）和<b>流向</b>（<code>发送到 3</code>）。
+        <br><b class="new-c">不要靠"整体居中"来找平衡</b>——那条信息在左、控件在右，
+        居中会让两边都留半截空白，只是把问题对称化了。
+        <br><span class="tag tag-o">附带</span>这两个数字<b>不是装饰</b>：
+        多窗口时用户最想知道的就是"我这键盘打到几台机器上"
+      </div>
+      <div class="box">
+        <b>② 主色只给「当前最该做的那件事」</b>
+        <br>正常态主色 = <b>暂停</b>（高频、可逆）；暂停态主色 = <b>继续</b>。<br>
+        <b class="no-c">「关闭频道」永远不用主色</b>——即使 v35 把它平铺出来，
+        也只给<b>红字 + 红边</b>（<code>#ef8b8b</code>），
+        与顶栏「同步」按钮的强调色区分开。
+        <br><span class="tag tag-r">这条是硬规则</span>破坏性操作在任何状态下都不能最醒目
+      </div>
+      <div class="box">
+        <b>③ v35 撤销「收进 ⋯」</b>
+        <br>三个操作<b class="new-c">默认全部平铺</b>在状态条右端，
+        ⋮ <b>只在窗口窄到放不下时才出现</b>。<br>
+        <b class="no-c">原方案的理由是"破坏性操作不该显眼"</b>，
+        但这个理由只解决了<b>视觉权重</b>，代价是<b>可用性</b>——
+        三个低频操作每次都要多点一次，而且菜单里的项
+        <b>没有 tooltip、没有二次确认</b>，用户根本不知道点下去会发生什么。
+        <br><b class="ok-c">正确解法是"降低权重"而不是"增加层级"</b>：
+        破坏项用红字，位置仍在右手边，一眼扫到、一眼分辨。
+      </div>
+      <div class="box">
+        <b>④ v35 删掉 × 键</b>
+        <br>原来条尾有 ×（收起状态条）+ ⋯（更多操作）两个图标。
+        <br>既然「隐藏状态条」已经<b>平铺成文字按钮</b>，× 就成了
+        <b>同一件事的第二个入口</b>——而且是最容易点错的那个
+        （它长得像"关掉这一切"）。<br>
+        <b class="new-c">一条信息一个入口</b>：留按钮，删 ×。
+      </div>
+    </div>
+
+    <div class="redbox">
+      <b>三个状态的新形态（都要核对）</b><br>
+      <table style="margin-top:6px;background:transparent">
+        <tr><th style="width:74px;background:transparent;border-color:rgba(128,128,128,.2)">态</th>
+          <th style="background:transparent;border-color:rgba(128,128,128,.2)">标题</th>
+          <th style="background:transparent;border-color:rgba(128,128,128,.2)">主色按钮</th>
+          <th style="background:transparent;border-color:rgba(128,128,128,.2)">流向</th>
+          <th style="background:transparent;border-color:rgba(128,128,128,.2)">徽标</th></tr>
+        <tr><td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)">正常</td>
+          <td style="background:transparent;border-color:rgba(128,128,128,.2)">同步频道 C</td>
+          <td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)">暂停</td>
+          <td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)">发送到 N</td>
+          <td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)">—</td></tr>
+        <tr><td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)">暂停</td>
+          <td style="background:transparent;border-color:rgba(128,128,128,.2)">同步频道 C</td>
+          <td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)">继续</td>
+          <td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)">只接收，不发送</td>
+          <td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)">仅接收</td></tr>
+        <tr><td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)">离开</td>
+          <td colspan="4" class="no-c" style="background:transparent;border-color:rgba(128,128,128,.2)">
+            整条不画，终端直接贴上来（不占位）</td></tr>
+      </table>
+      <br><span class="tag tag-o">演示稿</span>点<b>「暂停」</b>看主色按钮变「继续」+ 出现「仅接收」徽标；
+      点平铺的<b>「关闭频道」</b>看它是<b>红色</b>，且点完当前频道内<b>所有 tab 的字母一起消失</b>。
+    </div>
+
+    <div class="redbox" style="margin-top:11px">
+      <b>v35 修掉一个真 bug：状态条与频道字母是两套状态</b><br>
+      原来的实现里，<code>joined</code> 标志只管状态条显隐，
+      <b>而 tab 上的频道字母由 <code>t.ch</code> 决定</b>——两者独立。
+      点「离开频道」只改了 <code>joined</code>，<b>没清 <code>t.ch</code></b>，
+      于是出现你截图里的矛盾态：<b>状态条没了，tab 上还挂着 D</b>。<br>
+      <b class="ok-c">正解是消灭双份状态</b>：删掉 <code>joined</code>，
+      状态条显隐改成由 <code>tab.ch</code> + <code>barHidden</code> 推导
+      （<code>show = !!t.ch &amp;&amp; !barHidden</code>）。
+      「加入 / 离开 / 关闭频道」都只改 <code>t.ch</code>，
+      <b>字母与状态条由同一份数据驱动，不可能再分叉</b>。<br>
+      <span class="tag tag-r">判据</span>
+      <b>同一件事若有两处独立状态，迟早会分叉</b>——
+      凡是"两处都该变"的操作，都必须收敛到单一数据源，
+      让另一个变成<b>派生态</b>。
+    </div>
+
+    <div class="warnbox" style="margin-top:11px">
+      <b>「关闭频道」的语义必须写死，否则实现必然做错</b><br>
+      你的定稿：<b>关闭频道 = 只关闭"加入当前频道的所有活动会话"的通信</b>，
+      <b class="no-c">不是关闭所有频道</b>，也不是解散频道定义。<br>
+      对应实现：<code>send_key</code> 不再向该频道成员表投递，
+      频道本身与其成员表<b>原样保留</b>，随时可恢复。
+      演示稿里表现为<b>本频道所有 tab 的字母一起清掉</b>，其它频道不受影响。<br>
+      <b>与「离开频道」的区别只有作用域</b>：离开 = 当前这一个 tab；
+      关闭 = 本频道内全部活动会话。两者都<b>不删频道定义</b>。<br>
+      <span class="tag tag-o">措辞</span>按钮 tooltip 已写明这一点
+      （"停止本频道内所有活动会话的同步通信（不影响别处）"）——
+      <b>破坏性操作的后果必须写在 tooltip 里</b>，不能只靠名字让人猜。
+    </div>
+
+    <div class="grid2" style="margin-top:11px">
+      <div class="box">
+        <b>v35：⋮ 只在放不下时才出现</b>
+        <br>判据用<b>状态条实际可用宽度</b>（<code>bar.clientWidth</code> −
+        左半段实测占用 − 必要 gap），<b>不查窗口宽、不用媒体查询</b>。
+        <br><b class="new-c">为什么</b>：状态条只占 main 列，
+        左侧栏展开 / 收起时它的宽度会变，媒体查询测不到这个。
+        <br>监听两个源：<code>window.resize</code> +
+        <code>ResizeObserver(bar)</code>，任一变化都重算。
+        <br><b class="no-c">不做"挤掉一个留一个"</b>——
+        三个操作要么全在、要么全进菜单，<b>部分可见等于没有规则</b>。
+      </div>
+      <div class="box">
+        <b>⋮ 用竖排三点，不用横排</b>
+        <br>竖排 <code>⋮</code> 是"还有更多内容竖着堆起来"的通用暗示；
+        横排 <code>⋯</code> 在中文界面里会被读成<b>省略号文本</b>，
+        而且和"这一行还没显示完"是同一件事——<b>两种含义撞在一起</b>。
+        <br>菜单项与平铺按钮<b>共用同一套处理函数</b>
+        （<code>bindOp('bLeave','mLeave',leaveCh)</code>），
+        <b class="no-c">不要写两遍</b>：两套实现必然出现"改了一处忘了另一处"。
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 状态条顶线 ═══ -->
+<div class="sec">
+  <div class="sec-t">状态条顶线：上下对称，贯通整宽</div>
+  <div class="card">
+    <div style="font-size:11.5px;color:var(--text-secondary);line-height:1.85;margin-bottom:12px">
+      已加顶线，与底缘线对称。但<b class="new-c">不能画成贯通整宽的一条</b>——
+      选中 tab 的底色是 <code>term-bg</code>（<code>theme.slint:72</code>
+      <code>tab-active-bg: root.term-bg</code>），本意是"<b>与下方内容连成一片</b>"。
+      一条通贯的顶线会把那个连通关系<b>横向切开</b>。
+    </div>
+
+    <div style="display:flex;gap:14px;margin-bottom:13px">
+      <div style="flex:1">
+        <div class="win-hd"><b class="no-c">✗ 选中处断开</b>　读成「漏下去了」</div>
+        <div style="border:1px solid #3a3d46;border-radius:8px;overflow:hidden;background:#0e0f13">
+          <div style="height:30px;display:flex;align-items:stretch">
+            <div style="width:96px;height:30px;background:#25282f"></div>
+            <div style="width:112px;height:30px;background:#0e0f13;border-top:3px solid #4a90e2"></div>
+            <div style="flex:1;height:30px;background:#25282f"></div>
+          </div>
+          <div style="position:relative;height:30px;border-top:1px solid #ef8b8b;
+                      background:#0e0f13;display:flex;align-items:center;padding:0 10px;
+                      font-size:11px;color:#b4b9c4">
+            <span style="width:8px;height:8px;border-radius:2px;background:#ba7517"></span>
+            同步频道 C 中的输入</div>
+          <div style="height:26px;padding:4px 10px;font-family:monospace;font-size:10px;
+                      color:#4ec9b0">root@prod-01:~$ ▊</div>
+        </div>
+        <div style="font-size:10.5px;color:var(--danger);margin-top:5px;line-height:1.75">
+          <b>症状</b>：选中 tab 正下方<b>缺一段</b>，读作
+          "<b>这个标签漏下去了</b>"或"状态条没对齐"——有同步条时不该有缺口
+        </div>
+      </div>
+      <div style="flex:1">
+        <div class="win-hd"><b class="ok-c">✓ 贯通整宽</b>　边界完整</div>
+        <div style="border:1px solid #3a3d46;border-radius:8px;overflow:hidden;background:#0e0f13">
+          <div style="height:30px;display:flex;align-items:stretch">
+            <div style="width:96px;height:30px;background:#25282f"></div>
+            <div style="width:112px;height:30px;background:#0e0f13;border-top:3px solid #4a90e2"></div>
+            <div style="flex:1;height:30px;background:#25282f"></div>
+          </div>
+          <div style="position:relative;height:30px;background:#0e0f13;
+                      display:flex;align-items:center;padding:0 10px;
+                      font-size:11px;color:#b4b9c4">
+            <span style="position:absolute;left:0;top:-1px;right:0;height:1px;
+                         background:#3a3d46"></span>
+            <span style="width:8px;height:8px;border-radius:2px;background:#ba7517"></span>
+            同步频道 C 中的输入</div>
+          <div style="height:26px;padding:4px 10px;font-family:monospace;font-size:10px;
+                      color:#4ec9b0">root@prod-01:~$ ▊</div>
+        </div>
+        <div style="font-size:10.5px;color:var(--ok);margin-top:5px;line-height:1.75">
+          上下两条线<b>等长等重</b>，状态条读作一个<b>完整的信息层</b>。
+          连通关系由底色同色（<code>term-bg</code>）保持，不靠断开顶线
+        </div>
+      </div>
+    </div>
+
+    <div class="redbox">
+      <b>为什么顶线是必需的（不是装饰）</b><br>
+      ③-f 把三者统一成 <code>term-bg</code> 后，<b>tab 行下沿与状态条上沿之间
+      没有任何色差</b>（都是 <code>#0e0f13</code>，对比 1.00）。
+      <b class="new-c">这条线是唯一的分界手段</b>——去掉它，状态条会糊进 tab 行里。
+      实测线本身 <code>#3a3d46</code> vs <code>#0e0f13</code> = <b>1.77:1</b>，
+      亮色 <code>#bfbfc8</code> = <b>1.75:1</b>（与底缘线同值，上下等重）。<br>
+      <b class="new-c">v34 提醒：这条线与被撤掉的「tab 间分隔线」不是同一件事</b>——
+      它隔的是<b>两个信息层</b>（标签行 / 频道状态条），职责必需；
+      被撤的那条隔的是<b>同一层内的相邻同级</b>，职责本就不成立。
+      <b class="no-c">别把"竖线都删了"顺手延伸到这条</b>。
+    </div>
+
+    <div class="grid2" style="margin-top:12px">
+      <div class="box">
+        <b>实现：一条 <code>absolute</code> 1px，铺满整宽</b>
+        <br>顶线<b>不能画在 <code>TabBar</code> 组件里</b>（它不知道状态条的存在），
+        要画在状态条内部、<code>y: -1px</code>、<code>left: 0; right: 0</code>。<br>
+        <b class="new-c">不需要 JS 计算</b>——<code>right: 0</code> 由父盒宽度自动铺满，
+        所以<b>切 tab / 拖拽 / 侧栏收放 / 窗口缩放都不必刷新顶线</b>
+        （v23 那套 5 个刷新点可以全部删掉）。<br>
+        <span class="tag tag-g">净收益</span>比 v23 少 4 个刷新点、少 2 个元素
+      </div>
+      <div class="box">
+        <b>v23 的五个刷新点：<span class="ok-c">现在都不需要了</span></b>
+        <br>v23 分两段时要按选中 tab 量位置，因此需要 5 个刷新时机：
+        切 tab / 拖拽提交后 / 侧栏收放 / 窗口缩放 / 状态条从
+        <code>display:none</code> 恢复。<br>
+        <b class="ok-c">改成 <code>right: 0</code> 铺满后，这 5 处全部消失</b>——
+        顶线不再依赖 tab 位置，只依赖状态条自身的宽度。<br>
+        <span class="tag tag-g">额外收益</span>：不只是少几行代码，而是
+        <b>少了一类"忘了刷新导致错位"的 bug</b>——
+        这类 bug 最难查，因为触发时机很偏
+      </div>
+    </div>
+
+    <div class="warnbox" style="margin-top:11px">
+      <b>分屏时的规则要定</b>：状态条是<b>一个 pane 一条</b>（不是每 tab 一条），
+      但顶线要断在<b>本 pane 的活动 tab</b> 下沿。多 pane 并排时，
+      两条状态条的顶线各自只在自己 pane 范围内断开——<b>不能跨 pane 连成一条</b>。
+      落地时顶线的 <code>left</code>/<code>width</code> 必须<b>相对本 pane</b>算，
+      不是相对窗口。
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 字母放大加粗 ═══ -->
+<div class="sec">
+  <div class="sec-t">频道字母：放大加粗，并去掉 opacity</div>
+  <div class="card">
+    <div style="font-size:11.5px;color:var(--text-secondary);line-height:1.85;margin-bottom:12px">
+      已把频道字母从 <b>9px / 常规字重 / <code>opacity:.75</code></b>
+      改为 <b class="new-c">11px / 字重 800 / 无透明度</b>。
+      <br><b class="no-c">其中最关键的不是放大，是去掉 <code>opacity: .75</code></b>——
+      半透明会把频道色往标签底色方向混，<b>把对比度进一步压低</b>。
+    </div>
+
+    <div style="display:flex;gap:14px;margin-bottom:13px">
+      <div style="flex:1">
+        <div class="win-hd"><b class="no-c">改前</b>　9px 常规 + opacity .75</div>
+        <div style="border:1px solid #3a3d46;border-radius:8px;overflow:hidden;background:#0e0f13;
+                    padding:10px">
+          <div style="height:32px;background:#25282f;display:flex;align-items:center;gap:6px;
+                      padding:0 10px 0 8px;font-size:11.5px;color:#b4b9c4">
+            <span style="width:3px;height:20px;border-radius:2px;background:#e5646e"></span>
+            <span style="font-size:9px;font-weight:400;opacity:.75;color:#993556">D</span>new-session</div>
+          <div style="height:8px"></div>
+          <div style="height:32px;background:#0e0f13;border-top:3px solid #4a90e2;
+                      display:flex;align-items:center;gap:6px;padding:0 10px 0 8px;
+                      font-size:11.5px;color:#e6e8ee">
+            <span style="width:3px;height:20px;border-radius:2px;background:#e5646e"></span>
+            <span style="font-size:9px;font-weight:400;opacity:.75;color:#993556">D</span>db-staging</div>
+        </div>
+        <div style="font-size:10.5px;color:var(--danger);margin-top:5px;line-height:1.75">
+          <b>症状</b>：那个字母<b>几乎看不见</b>——9px + 半透明混色后
+          暗色底上只有 <b class="no-c">1.70:1</b>，比不用还糟
+        </div>
+      </div>
+      <div style="flex:1">
+        <div class="win-hd"><b class="ok-c">改后</b>　11px / 800 字重 / 无透明</div>
+        <div style="border:1px solid #3a3d46;border-radius:8px;overflow:hidden;background:#0e0f13;
+                    padding:10px">
+          <div style="height:32px;background:#25282f;display:flex;align-items:center;gap:7px;
+                      padding:0 10px 0 8px;font-size:11.5px;color:#b4b9c4">
+            <span style="width:3px;height:20px;border-radius:2px;background:#e5646e"></span>
+            <span style="font-size:11px;font-weight:800;line-height:1;display:inline-flex;
+                         align-items:center;justify-content:center;min-width:13px;height:15px;
+                         color:#993556">D</span>new-session</div>
+          <div style="height:8px"></div>
+          <div style="height:32px;background:#0e0f13;border-top:3px solid #4a90e2;
+                      display:flex;align-items:center;gap:7px;padding:0 10px 0 8px;
+                      font-size:11.5px;color:#e6e8ee">
+            <span style="width:3px;height:20px;border-radius:2px;background:#e5646e"></span>
+            <span style="font-size:11px;font-weight:800;line-height:1;display:inline-flex;
+                         align-items:center;justify-content:center;min-width:13px;height:15px;
+                         color:#993556">D</span>db-staging</div>
+        </div>
+        <div style="font-size:10.5px;color:var(--ok);margin-top:5px;line-height:1.75">
+          <b>同色底上 D 槽从 1.70 → 2.11（+24%）</b>，笔画粗壮可辨。
+          代价：每个 tab <b>宽 +5px</b>
+        </div>
+      </div>
+    </div>
+
+    <div class="redbox">
+      <b>半透明是这轮最大的坑，我之前漏算了</b><br>
+      方案页前面给的对比度表算的是<b>纯色值</b>，但 CSS 上字母还带
+      <code>opacity: .75</code>——<b>半透明会与底色混合，实际对比度远低于表里的数字</b>。
+      D 槽实测：<br>
+      <table style="margin-top:6px;background:transparent">
+        <tr><th style="width:118px;background:transparent;border-color:rgba(128,128,128,.2)">条件</th>
+          <th style="background:transparent;border-color:rgba(128,128,128,.2)">实际色值</th>
+          <th style="background:transparent;border-color:rgba(128,128,128,.2)">对比度</th></tr>
+        <tr><td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)">旧：opacity .75<br><span style="font-size:9px">暗/非选中</span></td>
+          <td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)">混色后 #7c324c</td>
+          <td class="mono no-c" style="background:transparent;border-color:rgba(128,128,128,.2)"><b>1.70:1</b></td></tr>
+        <tr><td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)">新：纯色<br><span style="font-size:9px">暗/非选中</span></td>
+          <td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)">#993556</td>
+          <td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)"><b class="ok-c">2.11:1</b>（+24%）</td></tr>
+      </table>
+      <br><b class="new-c">教训：带 <code>opacity</code> 的元素算对比度必须先做混色</b>，
+      直接拿色值算会系统性偏乐观。<b>检测类工具同理——误报会让人不再信任它。</b>
+    </div>
+
+    <div class="grid2" style="margin-top:12px">
+      <div class="box">
+        <b>放大加粗能补多少，补不了多少</b>
+        <br>WCAG 对<b>非文本元素</b>的补偿路径是「加粗 / 放大 / 加边框」，
+        但<b>不能替代对比度本身</b>。11px/800 只是把「勉强可辨」推到「可辨」，
+        <b>2.11:1 仍不达 3:1 的图形元素线</b>。<br>
+        <span class="tag tag-o">演示稿</span>对比左边和右边——
+        差别很明显，但<b>别指望它替代配色修正</b>
+      </div>
+      <div class="box">
+        <b>宽度代价：+5px，公式常数要跟着改</b>
+        <br><code>tab-width()</code>（<code>tabs.slint:322-324</code>）=
+        <code>clamp(100, 64 + len×7, 320)</code>。
+        字母从 9px→11px 粗体（宽约 6→8px）+ 间距 3→5px，
+        <b class="new-c">常数 64 → 69</b>。<br>
+        <b class="no-c">不改的后果</b>：标题被 <code>×</code> 挤掉 / 提前触发 elide，
+        而且<b>看不出原因</b>——最难查的一类问题<br>
+        <b class="new-c">v34 结算</b>：左内边距 12→6（−4）、撤 <code>border-right</code>（−1），
+        两项抵消后最终落在 <b>59</b>。改动宽度相关值时，
+        <b>永远以「内边距 + 边框的实际增减」为准重新算，不要在旧结论上叠加</b>
+      </div>
+    </div>
+
+    <div class="warnbox" style="margin-top:11px">
+      <b>仍未解决：要「深浅两套频道色」</b><br>
+      本轮改动把最差的情况从 <b>1.70 拉到 2.11</b>，但<b>离 3:1 还差</b>，
+      而且<b>亮色/非选中档的 A/B/C 三槽只有 2.6~2.9</b>——
+      放大加粗<b>同样救不了那一档</b>（它们的问题在浅底上颜色太淡）。<br>
+      <b class="ok-c">根治仍是 <code>channel-color-dark</code> / <code>channel-color-light</code></b>
+      （四槽各两个值共 8 个，照抄 <code>group-color-dark/light</code> 的既有做法）。
+      本轮的放大加粗<b>不替代它</b>，两者一起做才够。
+    </div>
+  </div>
+</div>
+
 <!-- ═══ 状态条同色 ═══ -->
 <div class="sec">
   <div class="sec-t">频道状态条：底色与 tab 行统一</div>
@@ -906,98 +1744,6 @@
       <b class="ok-c">已改为</b>：<b>左侧 3px 暖色竖条</b>（<code>#e2a84a</code>，<code>padding-left</code> 同步 12→9px）
       + 保留「仅接收，不发送」文字标签。<b class="new-c">竖条比转色更克制</b>——
       只占 3px，不破坏整条连续的面。
-    </div>
-  </div>
-</div>
-
-<!-- ═══ 状态条右端符号 ═══ -->
-<div class="sec">
-  <div class="sec-t">频道状态条：右端必须是 × 不是 +</div>
-  <div class="card">
-    <div style="font-size:11.5px;color:var(--text-secondary);line-height:1.85;margin-bottom:12px">
-      你截图里状态条右端画的是 <b style="color:#ef8b8b">＋</b>，但那个位置紧邻「<b>关闭频道</b>」，
-      加号会被读成「<b>再加一个频道 / 新增</b>」——它和左端 tab 行那个「新建会话」的 <code>+</code>
-      <b>同形但语义完全无关</b>。这是同屏两个 <code>+</code> 干两件事，典型的误触来源。
-      <b class="new-c">已改为 ×</b>。
-    </div>
-
-    <div style="display:flex;gap:14px;margin-bottom:13px">
-      <div style="flex:1">
-        <div class="win-hd"><b class="no-c">✗ 画成 ＋</b>　被读成「新增」</div>
-        <div style="background:#1d2027;border:1px solid #3a3d46;border-radius:7px;
-                    padding:8px 10px;display:flex;align-items:center;gap:6px;
-                    font-size:11px;color:#b4b9c4">
-          <span style="width:8px;height:8px;border-radius:2px;background:#ba7517"></span>
-          同步频道 C 中的输入
-          <span style="flex:1"></span>
-          <span style="height:22px;padding:0 9px;border-radius:5px;font-size:10.5px;
-                       border:1px solid #4a4e59;display:flex;align-items:center">暂停</span>
-          <span style="height:22px;padding:0 9px;border-radius:5px;font-size:10.5px;
-                       border:1px solid #4a4e59;display:flex;align-items:center">离开频道</span>
-          <span style="height:22px;padding:0 9px;border-radius:5px;font-size:10.5px;
-                       background:#4a90e2;color:#fff;display:flex;align-items:center">关闭频道</span>
-          <span style="width:22px;height:22px;border-radius:5px;display:flex;
-                       align-items:center;justify-content:center;color:#9196a3;
-                       font-size:15px;font-weight:300;background:rgba(226,92,92,.1)">+</span>
-        </div>
-        <div style="font-size:10.5px;color:var(--danger);margin-top:5px;line-height:1.75">
-          <b>问题</b>：同屏第二个 <code>+</code>，用户会本能地点它 、期待新增点什么，
-          结果只是收起状态条——一次无预期的界面消失
-        </div>
-      </div>
-      <div style="flex:1">
-        <div class="win-hd"><b class="ok-c">✓ 改成 ×</b>　并加分隔线隔开</div>
-        <div style="background:#1d2027;border:1px solid #3a3d46;border-radius:7px;
-                    padding:8px 10px;display:flex;align-items:center;gap:6px;
-                    font-size:11px;color:#b4b9c4">
-          <span style="width:8px;height:8px;border-radius:2px;background:#ba7517"></span>
-          同步频道 C 中的输入
-          <span style="flex:1"></span>
-          <span style="height:22px;padding:0 9px;border-radius:5px;font-size:10.5px;
-                       border:1px solid #4a4e59;display:flex;align-items:center">暂停</span>
-          <span style="height:22px;padding:0 9px;border-radius:5px;font-size:10.5px;
-                       border:1px solid #4a4e59;display:flex;align-items:center">离开频道</span>
-          <span style="height:22px;padding:0 9px;border-radius:5px;font-size:10.5px;
-                       background:#4a90e2;color:#fff;display:flex;align-items:center">关闭频道</span>
-          <span style="width:1px;height:14px;background:#3a3d46;margin:0 5px"></span>
-          <span style="width:22px;height:22px;border-radius:5px;display:flex;
-                       align-items:center;justify-content:center;color:#9196a3;
-                       position:relative" id="dbgCx"><span style="position:absolute;
-                       width:9px;height:1.4px;border-radius:1px;background:#9196a3;
-                       transform:rotate(45deg)"></span><span style="position:absolute;
-                       width:9px;height:1.4px;border-radius:1px;background:#9196a3;
-                       transform:rotate(-45deg)"></span></span>
-        </div>
-        <div style="font-size:10.5px;color:var(--ok);margin-top:5px;line-height:1.75">
-          <b>三处改动</b>：① 形态改 <code>×</code>（9px 斜杠，<code>rotate(±45deg)</code>）；
-          ② <b>左侧加 1px 分隔线</b>（左右 7px 边距），把它与「关闭频道」分成两组；
-          ③ hover 转<b>警示红</b>——它是破坏性动作
-        </div>
-      </div>
-    </div>
-
-    <div class="redbox">
-      <b>更根本的问题：× 和「关闭频道」语义重叠</b><br>
-      左边已经有「<b>关闭频道</b>」（解散频道、踢掉其他成员、需二次确认），
-      右端 × 又是「关闭」，<b>两个按钮在同一行、只隔 10px，用户会点错</b>——
-      而且点错的那个后果不可逆（解散了频道）。<br><br>
-      <b class="ok-c">已做的区分</b>：<br>
-      ① tooltip 写明 <b>「隐藏状态条（不离开频道）」</b>——点它只是收起这条 bar，
-      频道成员关系<b>不变</b>，再点顶栏「同步」按钮就回来；<br>
-      ② 形态不同：一个是<b>文字按钮</b>（关闭频道），一个是<b>纯图标</b>（×）；
-      <br>
-      ③ 视觉权重不同：「关闭频道」是<b>主色实心</b>，× 是<b>灰图标</b>。<br>
-      <span class="tag tag-o">演示稿</span>点状态条最右 × 可看到整条 bar 消失、
-      终端直接贴上来，但顶栏「同步」按钮仍是亮态——这就是「只隐藏、不离开」。
-    </div>
-
-    <div class="warnbox" style="margin-top:11px">
-      <b>一个仍然存在的风险，建议你定</b>：<br>
-      状态条消失后，<b>「我还在频道里」这个信息就没有任何常驻显示</b>了
-      ——只有 tab 上的频道字母和底缘线。如果那条线不够显眼，用户会以为同步已关闭。<br>
-      <b class="new-c">建议</b>：× 隐藏后，在<b>顶栏「同步」按钮上加一个 2px 强调色下划线</b>
-      表示「已加入频道但状态条被隐藏」，点它重新展开。这样
-      <b>「有没有在频道里」永远有一个常驻锚点</b>，不会因为收起条就丢失。
     </div>
   </div>
 </div>
@@ -1339,22 +2085,27 @@
               <span class="tag tag-o">用 opacity 不用 if</span>——条件元素在 Slint 1.8 下不重建</td></tr>
           <tr><td class="mono">tabs.slint:227-233</td>
             <td class="c"><b>删</b>顶部内高光（与横线职责重复）</td></tr>
-          <tr><td class="mono">tabs.slint:222 之后</td>
-            <td class="c"><b class="new-c">新增</b>非选中 tab 右侧 1px 分隔线
-              （画在 <b class="no-c">SingleTab 内部</b>，不是槽位；<code>active</code> 时不画）</td></tr>
+          <tr><td class="mono">—（不做）</td>
+            <td class="c"><b class="new-c">v34 撤销</b>「非选中 tab 右侧 1px 分隔线」。
+              原计划画在 <code>SingleTab</code> 内部的 <code>border-right</code>
+              （<code>active</code> 时 transparent）——本轮<b>整条不画</b>，
+              块边界交给左缘分组色竖条 + 选中块底色 + hover 底色。<br>
+              <span class="tag tag-r">若日后要恢复</span>线必须画在 tab <b>内部</b>，
+              画在槽位上会在拖拽重排时横移出残影</td></tr>
           <tr><td class="mono">tabs.slint:466-467 / 483</td>
-            <td class="c">两处 <code>spacing: 3px</code> → <b>0</b>，改由相邻 tab 各让 0.5px</td></tr>
+            <td class="c">两处 <code>spacing: 3px</code> → <b>0</b>（tab 紧贴，无让位）</td></tr>
           <tr><td class="mono">tabs.slint:465</td>
             <td class="c"><code>padding-left: 3px</code> → <b>0</b>
               <span class="tag tag-o">反转老定稿，须改注释</span></td></tr>
           <tr><td class="mono">tabs.slint:141</td>
-            <td class="c">首 tab 的 <code>padding-left: 12px</code> → <b>10px</b>
-              （需父级传 <code>first</code>）</td></tr>
+            <td class="c"><code>padding-left: 12px</code> → <b>6px</b>
+              <span class="tag tag-o">有/无频道共用</span>不按 <code>first</code> 分叉</td></tr>
           <tr><td class="mono">tabs.slint:189 / 175-202</td>
             <td class="c">关闭键去掉 <code>|| active</code>；20 → 18px</td></tr>
           <tr><td class="mono">tabs.slint:322-324</td>
-            <td class="c"><code>tab-width()</code>：下限 100 → <b>76px</b>、常数 64 → <b>40px</b>；
-              另需计入分隔线让位（每 tab 多占 1px）</td></tr>
+            <td class="c"><code>tab-width()</code>：下限 100 → <b>76px</b>、常数 64 → <b>59px</b><br>
+              <b class="no-c">与内边距同批改</b>：59 = 64 − 4（左内边距 12→6）− 1（撤边框）。
+              只改一边距不改常数，每个 tab 平白多 5px 空白</td></tr>
           <tr><td class="mono">tabs.slint:562-569</td>
             <td class="c"><span class="tag tag-r">易漏</span>插入线
               <code>parent.height - 12px</code> → <code>- 8px</code></td></tr>
@@ -1397,6 +2148,34 @@
               带 <code>group_color</code>（复用 <code>tab_group_color</code>，
               <code>:52</code>）与 <code>online</code> 标记；<br>
               ② <code>channel_members_model(ch)</code> —— 该频道成员</td></tr>
+          <tr><td class="mono">ui/channel_bar.slint</td>
+            <td class="c"><b class="new-c">新组件</b>频道状态条（32px，属于当前 pane 一条）：
+              底色 <code>term-bg</code>（与 tab 行同色）、<b>上下各 1px 分界线</b>
+              （暗 <code>#3a3d46</code> / 亮 <code>#bfbfc8</code>，上下同值等重）、
+              <b class="new-c">v35：三个操作按钮平铺右端（无 ×）</b>、三态。<br>
+              <b class="new-c">顶线一条即可</b>：<code>absolute</code> 1px
+              <code>Rectangle</code>，<code>y: -1px</code>、<code>left: 0</code>、
+              <code>right: 0</code>（<b>铺满整宽</b>）。<br>
+              <span class="tag tag-g">不需要 JS 刷新</span>顶线不依赖 tab 位置，
+              只依赖状态条自身宽度 → <b>切 tab / 拖拽 / 侧栏收放 / 窗口缩放
+              都无需重算</b>，比"分两段"少 4 个刷新点。<br>
+              另：暂停态<b>不改底色</b>（同色是定下的口径），用<b>左侧 3px 暖色竖条</b>
+              <code>#e2a84a</code> + <code>padding-left</code> 12→9px</td></tr>
+          <tr><td class="mono">ui/channel_bar.slint<span class="mono">（v35 新增）</span></td>
+            <td class="c"><b class="new-c">平铺 / ⋮ 两态</b>：
+              三个操作按钮常驻右端，<b>宽度不够时整块换成竖排 ⋮</b>。<br>
+              <b class="no-c">判据量自身宽度，不量窗口宽</b>——
+              状态条只占 main 列，侧栏展开/收起会改它宽度，
+              <b>媒体查询测不到</b>。用 <code>self.width</code> 对比
+              "左半段 preferred-width + 按钮组 preferred-width"。<br>
+              <b class="no-c">不做"挤掉一个留一个"</b>：
+              要么全平铺、要么全进菜单，部分可见等于没有规则。<br>
+              两个入口（平铺按钮 / 菜单项）<b>共用同一处理函数</b>，
+              别写两遍</td></tr>
+          <tr><td class="mono">ui/channel_bar.slint<span class="mono">（v35 删除）</span></td>
+            <td class="c"><b>删</b>右端 <code>×</code> 键：它与平铺的「隐藏状态条」
+              是<b>同一件事的第二个入口</b>，且最容易被误读成"关掉这一切"。<br>
+              <b>一条信息一个入口</b></td></tr>
           <tr><td class="mono">ui/sync_dialog.slint</td>
             <td class="c"><b class="new-c">新组件</b>：双栏分配对话框。
               复用 <code>SelectField</code>（<code>widgets.slint:524</code>）做分组筛选、
@@ -1409,9 +2188,26 @@
             <td class="c"><span class="tag tag-o">预留</span><code>TabInfo</code> 加
               <code>channel_id</code> / <code>channel_color</code></td></tr>
           <tr><td class="mono">tabs.slint:222 附近</td>
-            <td class="c"><b class="new-c">新增</b>tab <b>底缘 2px 频道横线</b> +
-              <b>频道字母前缀</b>（<code>A </code>）在标题前。
-              <span class="tag tag-o">元素常驻</span>只改 <code>color</code>/<code>text</code></td></tr>
+            <td class="c"><b class="new-c">新增</b><b>频道字母前缀</b>（<code>A </code>）在标题前。
+              <span class="tag tag-o">元素常驻</span>只改 <code>color</code>/<code>text</code>。
+              <b class="no-c">不加底缘色线</b>（已撤，见专章）<br>
+              <b>规格：</b><code>font-size: 11px</code>、<code>font-weight: 800</code>、
+              <code>min-width: 13px</code>、<code>height: 15px</code>、
+              <code>line-height: 1</code>、<code>letter-spacing: 0</code>、
+              <b class="new-c">禁止 <code>opacity</code></b>（半透明会混色压低对比度）</td></tr>
+          <tr><td class="mono">tabs.slint:322-324</td>
+            <td class="c"><span class="tag tag-r">连带</span>
+              <code>tab-width()</code> 常数 <b>64 → 59</b>：
+              左内边距 12→6（−4）+ 撤 <code>border-right</code>（−1）= <b>−5px</b>。
+              字母加粗那轮的 "+5" 已被这轮抵消，<b>不要在旧结论上叠加</b>。<br>
+              <b class="no-c">不改会每个 tab 平白多 5px 空白</b>、
+              该 elide 的标题不 elide，且看不出原因</td></tr>
+          <tr><td class="mono">theme.slint</td>
+            <td class="c"><span class="tag tag-o">根治</span>
+              <b class="new-c">新增</b><code>channel-color-dark</code> /
+              <code>channel-color-light</code>，四槽各给深浅两个值（共 8 个），
+              参照 <code>group-color-dark/light</code>（<code>:244-255</code>）的既有做法。
+              <b>否则字母在深浅两档无法同时达标</b>（实测 D 槽 2.11 / 6.71）</td></tr>
           <tr><td class="mono">tabs.slint:606 附近</td>
             <td class="c"><b class="new-c">新增</b>行尾 4 个 <b>16px 色块</b>（A/B/C/D 固定四槽），
               点击把当前 tab 归入该频道；<b>元素常驻</b>、只改 <code>color</code>/<code>opacity</code>——
@@ -1454,7 +2250,13 @@
           <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:7px 10px">
             ⑤ 分屏两个 pane 各自<b>拖 tab 跨 pane</b> 落位正常（命中带）</div>
           <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:7px 10px">
-            ⑥ <b>拖拽重排时分隔线不横移</b>（线条归属的关键判据）</div>
+            ⑥ <b class="new-c">v34 改</b>相邻 tab 之间<b>无间隙、无竖线、无边框</b>；
+            拖拽重排后仍然没有。相邻两个「同组 + 无频道 + 未选中」的 tab
+            允许读作一整块，<b class="no-c">但不要为此再加线</b>——
+            加线等于把 1px 发丝缝请回来</div>
+          <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:7px 10px">
+            ⑥-b <b class="new-c">v34 改</b>有频道 / 无频道两类 tab 的
+            <b>文字左起点在同一条垂线上</b>（左内边距同为 6px）</div>
           <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:7px 10px">
             ⑦ 面板收起后<b>左侧无任何图标 / 无左边线</b>，终端直接到 x=0；
             标题行入口与面板内按钮<b>双向同步</b></div>
@@ -1463,6 +2265,19 @@
             <code>welcome-as-sidebar</code> 时条带不闪烁</div>
           <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:7px 10px">
             ⑨ 720×420 最小窗口下顶栏不重叠、tab 不换行</div>
+          <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:7px 10px">
+            ⑩ <b class="new-c">v35 改</b>点「关闭频道」后：<b>本频道内所有 tab 的字母一起消失</b>、
+            其它频道不受影响、<b>频道定义保留</b>（可重新加入）。
+            <b class="no-c">不允许出现"字母还在但状态条没了"</b>——
+            那是 v35 修掉的双份状态分叉</div>
+          <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:7px 10px">
+            ⑪ <b class="new-c">v35 改</b>「离开频道」后当前 tab 字母消失；
+            「隐藏状态条」后<b>字母必须还在</b>（只是收起 bar）</div>
+          <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:7px 10px">
+            ⑫ <b class="new-c">v35 改</b>窗口从宽拖到窄：三个操作<b>整体</b>换成 ⋮，
+            不允许"只收起两个、留一个在外面"；拖回宽立刻复原。<br>
+            <b>侧栏展开/收起也要触发</b>（状态条宽度变了，
+            媒体查询测不到）</div>
         </div>
         <div style="font-size:12px;font-weight:700;color:var(--text-secondary);margin:14px 0 8px">
           落地顺序</div>
@@ -1496,6 +2311,12 @@
   var CH_COLOR = { A: '#378add', B: '#1d9e75', C: '#ba7517', D: '#993556' };
   var CH_NAME = { A: '海蓝', B: '松石', C: '琥珀', D: '玫红' };
   var TAB_MIN = 76, TAB_MAX = 320;
+  // v34：常数 64 → 59。左侧省下的 5px 直接还给可用宽度：
+  //   padding-left 10 → 6（-4）+ 撤掉 border-right 1px（-1）。
+  // tab 行的横向空间是稀缺资源，宽度公式必须跟着一起收，
+  // 否则标题会平白多出 5px 空白、该 elide 的名字不 elide。
+  var TAB_BASE = 59;
+  // v34：tab 紧贴、间隙为 0，且**不画任何分隔线**（v27~v33 的 border-right 已撤）
 
   var OUT = {
     p: '<div><span class="c">root@prod-01</span>:~$ systemctl is-active meatshell</div>' +
@@ -1556,19 +2377,36 @@
     t.el.style.width = t.w + 'px';
   }
 
-  // 依文字实测宽度（模拟 tab-width(): 64 + len*7，clamp）
+  // 依文字实测宽度（模拟 tab-width()：59 + len*7，clamp）
   function calcW(name, ch, gcolor) {
     var len = tabLabel({ name: name, ch: ch, gcolor: gcolor }).length;
-    return Math.max(TAB_MIN, Math.min(TAB_MAX, 64 + len * 7));
+    return Math.max(TAB_MIN, Math.min(TAB_MAX, TAB_BASE + len * 7));
+  }
+
+  // v26：顶线**贯通整宽**，不再在选中 tab 处断开。
+  //
+  // v23 曾按"选中 tab 与下方内容连成一片"把选中区段留空，那是**无同步条时**的逻辑。
+  // 有同步条时状态条自己就是一个独立信息层，边界必须完整——否则选中 tab
+  // 下方一段没线，会读成"选中 tab 漏下去了 / 状态条没对齐"。
+  // 连通关系由**状态条底色 = term-bg**（与终端同色）保持，不靠断开顶线。
+  //
+  // right:0 由父盒宽度自动铺满 → 顶线不依赖 tab 位置，
+  // 下面 5 处调用在贯通方案下都是空操作（保留是为了状态条显示/隐藏时确保重绘）。
+  function syncTopLine() {
+    var bar = document.getElementById('chbar');
+    var f = document.getElementById('tlFull');
+    if (!bar || !f) return;
+    // 状态条与 tab 行同宽同起点（同一列），铺满即贯通
+    f.style.left = '0px';
+    f.style.right = '0px';
+    f.style.width = 'auto';
   }
 
   function selTab(idx) {
     tabs.forEach(function (t, i) { t.el.classList.toggle('on', i === idx); });
-    // 选中 tab 两侧的分隔线隐藏
-    var seps = row.querySelectorAll('.tsep');
-    for (var i = 0; i < seps.length; i++) {
-      seps[i].classList.toggle('hid', i === idx || i === idx - 1);
-    }
+    syncTopLine();
+    // v34：无需处理任何分隔线显隐——整行本来就不画线，
+    // 选中 tab 靠底色 + 顶部 3px 横线区分
     app.querySelectorAll('.it[data-i]').forEach(function (r) {
       r.classList.toggle('on', +r.getAttribute('data-i') === idx);
     });
@@ -1583,66 +2421,148 @@
     term.innerHTML = OUT[t.key] || OUT.n;
   }
 
-  // ── 频道状态条 ──
+  // ── 频道状态条（v35：操作平铺，窄屏才收进 ⋮）──
   var bar = document.getElementById('chbar');
   var chDot = document.getElementById('chDot');
   var chTitle = document.getElementById('chTitle');
+  var chMeta = document.getElementById('chMeta');
+  var chFlow = document.getElementById('chFlow');
   var chTag = document.getElementById('chTag');
   var chPause = document.getElementById('chPause');
+  var chMore = document.getElementById('chMore');
+  var chPop = document.getElementById('chPop');
+  var barOps = document.getElementById('barOps');
   var paused = false;
-  var joined = true;   // false = 已离开频道 或 被 × 隐藏 → 整条不画
-  var barHidden = false;   // 被 × 隐藏（**不等于离开频道**：成员关系仍在）
+  // v35 修掉的真 bug：`joined` 原来只管状态条显隐，**与 tab 上的频道字母是两套状态**。
+  // 点「离开频道」只把 joined 置 false，字母没清 → 出现
+  //「状态条没了但 tab 上还挂着 D」的矛盾态。
+  // 现在**单一数据源 = tab.ch**：字母在不在、状态条在不在，都由它推导。
+  var barHidden = false;   // 已加入频道但用户收起了状态条（成员关系与通信都不变）
+
+  // 每频道的成员数（演示数据；真实实现读频道成员表长度）
+  var CH_MEMBERS = { A: 3, B: 2, C: 4, D: 1 };
 
   function syncBar() {
     var t = tabs[current()];
     if (!t) return;
-    var c = CH_COLOR[t.ch];
+    // v35：状态条显隐只看 tab.ch + barHidden，不再有独立的 joined 标志
+    var show = !!t.ch && !barHidden;
     bar.classList.toggle('paused', paused);
-    bar.style.display = joined ? 'flex' : 'none';
-    if (!joined) return;
-    chDot.style.background = c;
-    chTitle.textContent = paused
-      ? '已暂停 · 同步频道 ' + t.ch
-      : '同步频道 ' + t.ch + ' 中的输入';
+    bar.style.display = show ? 'flex' : 'none';
+    if (!show) return;
+    // 状态条从 display:none 恢复后才能量到宽度，故在此刷新顶线
+    syncTopLine();
+    chDot.style.background = CH_COLOR[t.ch];
+
+    // 左侧：频道名 + 成员数（把空白填成信息，不靠居中找平衡）
+    chTitle.textContent = '同步频道 ' + t.ch;
+    var total = CH_MEMBERS[t.ch] || 1;
+    chMeta.textContent = total + ' 个会话';
+
+    // 暂停态：主色按钮变「继续」，并加「仅接收」徽标 + 流向说明
     chTag.style.display = paused ? '' : 'none';
-    chPause.firstChild.nodeValue = paused ? '继续' : '暂停';
-    chPause.classList.toggle('pri', paused);
-    document.getElementById('chClose').classList.toggle('pri', !paused);
+    chPause.textContent = paused ? '继续' : '暂停';
+    // **主色永远给「当前最该做的那件事」**：正常态=暂停，暂停态=继续。
+    // 破坏性操作（关闭频道）永远不用主色。
+    chFlow.textContent = paused
+      ? '只接收，不发送'
+      : '发送到 ' + Math.max(0, total - 1);
+    fitBarOps();
   }
 
-  chPause.addEventListener('click', function () { paused = !paused; syncBar(); });
-  document.getElementById('chLeave').addEventListener('click', function () {
-    joined = false; syncBar();
+  chPause.addEventListener('click', function () {
+    paused = !paused; syncBar();
   });
-  document.getElementById('chClose').addEventListener('click', function () {
-    joined = false; paused = false; syncBar();
+
+  // ── v35：操作平铺 / 窄屏收起的切换 ──
+  // 判据用**实际可用宽度**（chbar 宽 − 左半段占用 − 必要的 gap），
+  // 不看窗口宽也不看媒体查询——状态条只占 main 列，侧栏展开/收起时
+  // 它的宽度会变，媒体查询测不到这个。
+  function fitBarOps() {
+    if (bar.style.display === 'none') return;
+    var avail = bar.clientWidth;
+    if (!avail) return;
+    // barPop 是 absolute，不占流内宽度；barOps / chMore 是互斥的一对，
+    // 量"左半段"时都要跳过，否则会把正要决定的那对算进去
+    var left = 0, n = 0;
+    for (var i = 0; i < bar.children.length; i++) {
+      var el = bar.children[i];
+      if (el === barOps || el === chMore || el === chPop) continue;
+      if (getComputedStyle(el).display === 'none') continue;
+      left += el.offsetWidth;
+      n++;
+    }
+    // 每个可见子项一个 8px gap，减 1 个是因为末项右侧无 gap
+    var need = left + n * 8 + barOps.offsetWidth;
+    bar.classList.toggle('tight', avail < need);
+  }
+  window.addEventListener('resize', fitBarOps);
+  if (window.ResizeObserver) {
+    // 侧栏展开/收起、主区宽度变化都会改 chbar 宽度，必须跟着重算
+    new ResizeObserver(fitBarOps).observe(bar);
+  }
+
+  // ⋮ 菜单（仅窄屏态出现）
+  function closePop() { chPop.classList.remove('open'); }
+  chMore.addEventListener('click', function (e) {
+    e.stopPropagation();
+    chPop.classList.toggle('open');
   });
-  // × 只隐藏状态条，**不离开频道** —— 顶栏「同步」按钮加 2px 下划线，
-  // 表示「已加入频道但状态条被隐藏」，避免这个信息彻底消失
-  document.getElementById('chX').addEventListener('click', function () {
-    joined = false;
+  document.addEventListener('click', closePop);
+
+  // ── 三个操作：平铺按钮与 ⋮ 菜单项共用同一套处理 ──
+  // 「离开频道」= 仅**当前会话**退出该频道
+  function leaveCh() {
+    var t = tabs[current()];
+    if (!t) return;
+    t.ch = null;                 // ← v35：清字母，这是修复"字母还在"的正解
+    paused = false; barHidden = false;
+    renderTab(t);
+    closePop(); syncBar();
+    var sb = document.getElementById('syncBtn');
+    if (sb) sb.classList.remove('barhid');
+  }
+
+  // 「关闭频道」= 关闭**本频道内所有活动会话的同步通信**。
+  // ⚠️ 不是"关闭所有频道"，也不是解散频道定义：
+  // 频道本身仍然存在，只是**本窗口内加入它的会话全部停止收发**，
+  // 对应到实现就是 send_key 不再向该频道成员表投递。
+  // 与「离开频道」的区别：作用域是**整个频道**（含其它会话），不是单个 tab。
+  function closeCh() {
+    var t = tabs[current()];
+    var ch = t && t.ch;
+    if (!ch) return;
+    tabs.forEach(function (x) {
+      if (x.ch === ch) { x.ch = null; renderTab(x); }
+    });
+    paused = false; barHidden = false;
+    closePop(); syncBar();
+    var sb = document.getElementById('syncBtn');
+    if (sb) sb.classList.remove('barhid');
+  }
+
+  // 「隐藏状态条」= 只收起这条 bar，**成员关系与通信都不变**
+  function hideBar() {
     barHidden = true;
+    chPop.classList.remove('open');
     syncBar();
     var sb = document.getElementById('syncBtn');
     if (sb) sb.classList.add('barhid');
-  });
-
-  function buildSeps() {
-    row.querySelectorAll('.tsep').forEach(function (s) { s.remove(); });
-    var frag = document.createDocumentFragment();
-    tabs.forEach(function (t, i) {
-      if (i > 0) {
-        var sp = document.createElement('div');
-        sp.className = 'tsep';
-        sp.setAttribute('data-s', String(i - 1));
-        frag.appendChild(sp);
-      }
-    });
-    var add = document.getElementById('tadd');
-    var first = tabs[0] ? tabs[0].el : null;
-    row.insertBefore(frag, first);
-    selTab(current());
   }
+
+  // 绑定：平铺按钮 id = bXxx，菜单项 id = mXxx，一一对应
+  function bindOp(btnId, menuId, fn) {
+    document.getElementById(btnId).addEventListener('click', function (e) {
+      e.stopPropagation(); fn();
+    });
+    document.getElementById(menuId).addEventListener('click', function (e) {
+      e.stopPropagation(); fn();
+    });
+  }
+  bindOp('bLeave', 'mLeave', leaveCh);
+  bindOp('bClose', 'mClose', closeCh);
+  bindOp('bHide', 'mHide', hideBar);
+
 
   function current() {
     for (var i = 0; i < tabs.length; i++) if (tabs[i].el.classList.contains('on')) return i;
@@ -1650,8 +2570,12 @@
   }
 
   function renumber() {
-    tabs.forEach(function (t, i) { t.el.setAttribute('data-i', String(i)); });
-    buildSeps();
+    // v34：不再需要任何分隔线管理——v27~v33 的 border-right 与 .last 全部作废。
+    // 末 tab 也不用特殊处理：它右侧紧贴 + 号，中间没有任何笔画。
+    tabs.forEach(function (t, i) {
+      t.el.setAttribute('data-i', String(i));
+    });
+    syncTopLine();
   }
 
   // ── 初始化四个 tab ──
@@ -1662,7 +2586,7 @@
     var gc = el.querySelector('.gbar') ? el.querySelector('.gbar').style.background : '';
     tabs.push({
       el: el, name: nmv, ch: ch, gcolor: gc,
-      fullW: Math.min(TAB_MAX, 64 + (ch + ' ' + nmv).length * 7),
+      fullW: Math.min(TAB_MAX, TAB_BASE + (ch + ' ' + nmv).length * 7),
       w: 0, key: KEY_OF[i] || 'n'
     });
     // 用 min(自然宽, 演示宽度) 作为常态宽；超出的部分靠 elide 截断
@@ -1684,7 +2608,7 @@
       if (!t) return;
       t.ch = ch;
       renderTab(t);
-      joined = true;
+      paused = false;
       barHidden = false;   // 重新加入频道 → 状态条恢复常驻
       var sb = document.getElementById('syncBtn');
       if (sb) sb.classList.remove('barhid');
@@ -1731,6 +2655,10 @@
       if (Math.abs(e.clientX - (drag.t.el.getBoundingClientRect().left + drag.offX)) < 4) return;
       drag.moved = true;
       drag.t.el.classList.add('drag-src');
+      // 让位动画只给「被跨过的 tab」，拖起的那一个不参与
+      tabs.forEach(function (tt) {
+        if (tt !== drag.t) tt.style.transition = 'transform .12s ease-out';
+      });
       // 建幽灵
       var g = drag.t.el.cloneNode(true);
       g.classList.add('tghost');
@@ -1744,10 +2672,11 @@
     drag.ghost.style.width = drag.ghostW + 'px';
 
     // 插入位：按各槽位中点判定（与真实实现同口径）
+    // v34：gap 恒为 0、tab 之间无任何附加间距 → acc 直接累加 tab 宽度即可。
+    // 旧的 `if (i > 0) acc += 0` 是分隔线时代的残留（曾按 1px 让位），已删。
     var acc = 0, to = 0;
     for (var i = 0; i < tabs.length; i++) {
-      var w = tabs[i].w + 1;
-      if (i > 0) acc += 1;
+      var w = tabs[i].w;
       var mid = acc + w / 2;
       if (x < mid) { to = i; break; }
       acc += w;
@@ -1757,13 +2686,12 @@
 
     // 让位动画：被跨过的槽位横移
     tabs.forEach(function (tt, k) {
-      var shift = 0;
+      var sh = 0;
       if (k !== drag.from) {
-        if (drag.to > drag.from && k > drag.from && k <= drag.to) shift = -(drag.t.w + 1);
-        else if (drag.to < drag.from && k >= drag.to && k < drag.from) shift = drag.t.w + 1;
+        if (drag.to > drag.from && k > drag.from && k <= drag.to) sh = -drag.t.w;
+        else if (drag.to < drag.from && k >= drag.to && k < drag.from) sh = drag.t.w;
       }
-      tt.el.style.transition = 'transform .12s ease-out';
-      tt.el.style.transform = shift ? ('translateX(' + shift + 'px)') : '';
+      tt.el.style.transform = sh ? ('translateX(' + sh + 'px)') : '';
     });
 
     // 插入线
@@ -1783,8 +2711,8 @@
       dot.style.top = '1px';
       line.parentNode.insertBefore(dot, line.nextSibling);
     }
-    var shift = drag.to > drag.from ? -(drag.t.w + 1)
-              : drag.to < drag.from ? (drag.t.w + 1) : 0;
+    var shift = drag.to > drag.from ? -drag.t.w
+              : drag.to < drag.from ? drag.t.w : 0;
     var lx = x - drag.offX + drag.t.w + (shift ? -shift : 0);
     line.style.left = (lx + 2) + 'px';
     dot.style.left = (lx + 0) + 'px';
@@ -1805,13 +2733,21 @@
     if (d.to !== d.from) {
       tabs.splice(d.to, 0, tabs.splice(d.from, 1)[0]);
     }
-    tabs.forEach(function (t) { t.el.style.transform = ''; });
+    // ⚠️ transform 与 transition **必须一起清**。只清 transform 会在元素上留下
+    // `transition: transform .12s`——之后任何宽度变化都被当成 transform 过渡来播，
+    // 表现为「tab 自己滑了一下」，看起来就像 tab 之间突然冒出空隙。v32 修。
+    tabs.forEach(function (t) {
+      t.el.style.transform = '';
+      t.el.style.transition = '';
+    });
+    d.t.el.classList.remove('drag-src');
     row.appendChild(d.t.el);
     tabs.forEach(function (t, i) {
       if (i > 0) row.insertBefore(t.el, tabs[i - 1].el.nextSibling);
     });
     renumber();
     selTab(Math.max(0, Math.min(tabs.length - 1, d.to)));
+    setTimeout(syncTopLine, 140);   // 等让位动画结束再量
   });
 
   // ── + 新增 ──
@@ -1843,7 +2779,10 @@
       if (tabs.length <= 1) return;
       t.el.remove();
       tabs.splice(i, 1);
-      joined = true;
+      // v35：删掉 `joined = true`。那行是旧状态机的残留——
+      // 关掉一个 tab 与"当前 tab 是否在频道里"无关，强行置 true 会让
+      // 切到一个**未加入频道**的 tab 时状态条也冒出来。
+      // 现在 selTab → syncBar 按新选中 tab 的 ch 推导，天然正确
       renumber();
       selTab(Math.max(0, Math.min(tabs.length - 1, i - 1)));
     });
@@ -1863,6 +2802,7 @@
     e.stopPropagation();
     app.classList.toggle('open');
     syncToggle();
+    setTimeout(syncTopLine, 240);   // 等 220ms 收起动画结束
   });
   tgl.addEventListener('mouseenter', function () {
     tip.textContent = app.classList.contains('open') ? '收起左侧栏' : '展开左侧栏';
@@ -1883,6 +2823,12 @@
       tip.classList.add('show');
     });
     b.addEventListener('mouseleave', function () { tip.classList.remove('show'); });
+  });
+
+  // 布局变化后顶线区段要重算：侧栏收起、窗口缩放、拖拽结束
+  window.addEventListener('resize', syncTopLine);
+  app.addEventListener('transitionend', function (e) {
+    if (e.propertyName === 'width' || e.propertyName === 'flex-basis') syncTopLine();
   });
 
   var lt = false;
@@ -2129,8 +3075,11 @@
       syncBtn.setAttribute('data-tip', mine
         ? '会话同步：已加入频道 ' + mine : '会话同步：未加入任何频道');
       if (!mine) {
-        joined = false; paused = false; syncBar();
+        // v35：不再需要 `joined = false`——未加入频道时 t.ch 全清空，
+        // syncBar 自然不画。删掉那行避免两套状态再次分叉
+        paused = false;
         tabs.forEach(function (t) { t.ch = null; renderTab(t); });
+        syncBar();
         return;
       }
       tabs.forEach(function (t) {
@@ -2145,7 +3094,7 @@
         t.ch = k;
         renderTab(t);
       });
-      joined = true; paused = false; syncBar();
+      paused = false; syncBar();
     }
 
     function openDlg(on) {
