@@ -21,6 +21,11 @@ export struct TabInfo {
     // (分组色是身份标识,没有身份就不该有标识),故 UI 只需判空。
     group_color_hex: string,
     group_color: color,
+    // (#tab-32) 频道：字母（A/B/C/D，空 = 不在频道）、频道色、暂停态
+    // （字母加删除线；既不发送也不接收，成员关系保留）。
+    channel_letter: string,
+    channel_color: color,
+    channel_paused: bool,
 }
 
 // --- SingleTab -------------------------------------------------------------
@@ -55,21 +60,28 @@ component SingleTab inherits Rectangle {
     // (#tab-polish 2026-09-14) 32px 高 + radius-md 圆角。**取消选中态的 2px
     // accent 全包围外框**：选中改由"背景分野"表达（暗色比栏底更暗、亮色更亮），
     // 分组身份交给底部色条 —— 焦点通道与身份通道各管一件事，不再互相压色。
-    // 边框归零后内容区会外移 2px，故 HorizontalLayout 的内边距由 10/4 补到 12/8。
-    // (#tab-flush 2026-09-14) 32 → 36px，且**底部两角改为方角**：标签下沿直接
-    // 贴住终端区顶边（条带 40px = 顶部 4px 留白 + 36px 标签），选中标签的底色
-    // 因此与终端内容连通，读作"从终端区长出来的标签"。上沿仍是 radius-md。
-    height: 36px;
-    border-radius: Theme.radius-md;
-    border-bottom-left-radius: 0px;
-    border-bottom-right-radius: 0px;
+    // (#tab-32 2026-10-07, tab-row-idia 稿)：**36 → 32px（与条带等高）、
+    // 四边全 0 圆角**（IDEA 标准长方形直切角；旧"上圆下方"两头不靠）。
+    // 选中标识改由**顶部 3px accent 横线**承担（见下方 accent-line）。
+    height: 32px;
+    border-radius: 0px;
     background: lifted ? Theme.bg-active
         : (touch.pressed ? Theme.bg-active
         : (active ? (info.kind == "terminal" ? Theme.tab-active-bg : Theme.bg-root)
-        // (#tab-shape 2026-09-15) 非活动常态给 bg-elevated 底色:比条带亮一档,
-        // 页签块轮廓清晰可辨(旧版透明底彼此黏连,多页签时读不出块)。
+        // (#tab-32) 非活动底色按稿重取：暗 1.52→1.30、亮 1.36→1.24（同色条带
+        // 上重取，方向相反——暗色比终端亮、亮色比终端暗，都读作「浮在终端之上」）。
         : (touch.has-hover ? Theme.bg-hover : Theme.bg-elevated)));
     animate background { duration: 130ms; }
+    // (#tab-32) 选中标识：顶部 3px accent 横线，长度 = border-box 全宽
+    //（width 用 parent.width 而非内容区宽——后者比 tab 短、右端留缺口，
+    // 125%/150% 缩放下尤其明显）。用 opacity 不用 if（常驻不重建）。
+    accent-line := Rectangle {
+        x: 0; y: 0;
+        width: parent.width;
+        height: 3px;
+        background: Theme.accent-solid;
+        opacity: active ? 1.0 : 0.0;
+    }
     // Lift the ghost off the strip so it reads as "in hand".
     // (#tab-flush 2026-09-14) 选中态不再有投影：标签要跟终端连成一片，任何投影
     // （尤其下偏移 1px）都会在贴合缝渗出灰边，与"贴住"互相抵消。ghost 悬空浮层照旧。
@@ -135,17 +147,19 @@ component SingleTab inherits Rectangle {
         }
     }
 
+    // (#tab-32 2026-10-07) 内容布局：padding 12/8 → **20/20**（标题动态居中
+    // 的基准是内容盒中心 = (PL+W−PR)/2，只由左右内边距之差决定，左右必须
+    // 相等）；spacing 8 → 7。竖条/字母已 absolute 脱流（见下），不参与居中。
+    // ⚠️ padding-left 必须 ≥ 19px（3px 竖条 + 3px 间隙 + 13px 字母右缘），
+    // 否则窄 tab 上标题压到字母。
     HorizontalLayout {
-        width: parent.width - (info.kind != "welcome" ? 28px : 0px);
-        // (#tab-polish 2026-09-14) 10/4 → 12/8：补上去掉的 2px 边框内缩，
-        // 保证文字与关闭键在去边框后仍停在原位。
-        padding-left: 12px;
-        padding-right: 8px;
-        spacing: 8px;
-        alignment: start;
-
-        // (#tab-polish 2026-09-14) 连接状态点已移除：标签不再用 8px 圆点表达
-        // 连接中/已连接/已断开，标题直接从左边距开始（单个标签因此窄约 17px）。
+        width: parent.width;
+        padding-left: 20px;
+        padding-right: 20px;
+        spacing: 7px;
+        // (#tab-32) alignment: center = 标题动态居中（padding 对称的前提下，
+        // 内容盒中心 = tab 中心；有频道/无频道两类 tab 的标题中心完全一致）。
+        alignment: center;
 
         title-text := Text {
             text: info.title;
@@ -160,77 +174,96 @@ component SingleTab inherits Rectangle {
             font-size: Theme.fs-sm;
             vertical-alignment: center;
             overflow: elide;
-            horizontal-stretch: 1;
+            // (#tab-32) horizontal-stretch 去掉——stretch 会让标题吃满剩余空间，
+            // 布局没有"可移动的对象"，配合 padding 20/20 的居中即失效。
         }
 
     }
 
+    // (#tab-32) 频道字母（tab-row-idia 稿）：absolute left:6px 脱流（= 3px 竖条
+    // + 3px 间隙），与分组色竖条并列成"连续的两条标记线"。11px/800 字重、
+    // 禁止 opacity（半透明混色压低对比度）；暂停态加 1.5px 删除线（跟随频道
+    // 色，不新增 token）。元素常驻，无频道时 visible=false（absolute 不占流）。
+    channel-letter := Text {
+        x: 6px;
+        y: (parent.height - self.height) / 2;
+        width: 13px;
+        text: info.channel_letter;
+        visible: info.channel_letter != "";
+        font-size: 11px;
+        font-weight: 800;
+        color: info.channel_color;
+        vertical-alignment: center;
+        // 暂停态删除线：1.5px 矩形盖在字母中线上（跟随频道色，height 1.5px
+        // 在 100% 缩放下取整为 1–2 设备像素，hairline 用不上这里）。
+        Rectangle {
+            visible: info.channel_paused;
+            x: -1px;
+            y: (parent.height - 1.5px) / 2;
+            width: parent.width + 2px;
+            height: 1.5px;
+            background: parent.color;
+        }
+    }
+
     // Keep close pinned to the far right even when the title is very short.
-    // Hover background is red (#e81123) to match the main-window top-right close
-    // button; the glyph turns white on hover (#close-hover-red, #tab-close-red).
-    // (merge #408 2026-09-04) 保留本地的红色 hover 关闭按钮，仅并入上游的
-    // `!ghost` 条件：拖动期间该槽位是跟随光标的幽灵浮层，不应出现关闭按钮。
-    // 上游此处改用了 IconButton（widgets.slint），其底色是通用 Theme.bg-hover，
-    // 会丢掉与主窗口右上角关闭按钮一致的红色反馈，故不切换，保留 Rectangle 实现。
+    // (#tab-32) 关闭键改 **absolute right:0 + 仅 hover 显示**：去掉 `|| active`
+    // （active 常显时占 20px 流内宽度）；absolute 脱流修复"hover 突然占宽把
+    // 后面的 tab 顶开一条缝"（间隙症状的第三成因，最隐蔽）。盒宽 20px 恰好
+    // 等于右内边距，别写 right:2px（会向左侵入内容区 2px 压到长标题）。
+    // glyph 改两根 9px×1.5px 斜杠（rotation 45°，精确到 px；「×」字符的视觉
+    // 跨度只有 ~0.5em 且随字体漂移）。hover **只染红 × 自身**（#dc4b44 =
+    // Theme.danger-strong；红底白字太重，与平面 tab 行不协调——VS Code/IDEA 做法）。
+    // (merge #408 2026-09-04) 保留本地的关闭按钮实现，仅并入上游的 `!ghost` 条件。
     if info.kind != "welcome" && !ghost : Rectangle {
         width: 20px; height: 20px;
-        border-radius: Theme.radius-sm;
-        x: parent.width - self.width - 6px;
+        x: parent.width - self.width;
         y: (parent.height - self.height) / 2;
-        // (#tab-polish 2026-09-14) 关闭键常态隐形：一排 × 是标签栏最大的视觉
-        // 噪音，只在悬停本标签（或它是当前标签）时淡入。此处虽是 `if` 新建元素，
-        // 但初始态恒为 0，之后 hover/active 翻转产生真实 property 变化，
-        // animate 照常触发。
+        // (#tab-32) 关闭键常态隐形，**仅 hover 显示**（去掉 || active）。
         // (#tab-close-hover-fix 2026-09-14) 必须把 **close-ta.has-hover 一并算进
         // 显示条件**：Slint 的 hover 是"单一顶层命中"语义 —— close-ta 覆盖在
         // touch 之上，鼠标一旦移到 × 槽位就把 hover 抢走，父级 touch.has-hover
         // 立刻翻 false。原先只判 touch，于是"鼠标刚靠近 ×，× 反而消失"（既看不见
-        // 也点不中）。
-        opacity: (touch.has-hover || close-ta.has-hover || active) ? 1.0 : 0.0;
+        // 也点不中）。absolute 脱流后 hover 显示不再改变占位（不顶开邻 tab）。
+        opacity: (touch.has-hover || close-ta.has-hover) ? 1.0 : 0.0;
         animate opacity { duration: 140ms; }
-        background: close-ta.has-hover ? #e81123 : transparent;
-        animate background { duration: 90ms; }
+        // (#tab-32) 去掉红底：hover 只染红 × 自身（#dc4b44 = Theme.danger-strong）。
+        background: transparent;
         close-ta := TouchArea {
             mouse-cursor: pointer;
             clicked => { root.closed(); }
         }
-        Icon {
-            glyph: "close";
-            tint: close-ta.has-hover ? white : Theme.text-secondary;
-            size: Theme.fs-sm;
+        // × 的两根斜杠用 Path 画（Slint 1.18 无元素级 rotation-angle；M/L
+        // 命令精确到 px，等效稿内 9px×1.5px 双斜杠）。stroke 1.5px，hover 染红。
+        Path {
+            width: 10px; height: 10px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            viewbox-width: 10;
+            viewbox-height: 10;
+            commands: "M 1 1 L 9 9 M 9 1 L 1 9";
+            stroke: close-ta.has-hover ? Theme.danger-strong : Theme.text-secondary;
+            stroke-width: 1.5px;
         }
     }
 
-    // --- 左缘分组色竖条 (#tab-group-bar-r2 2026-09-15) ----------------------
-    // 旧版画在页签底部、贴住与终端区的连通缝,且非活动页签也全亮 —— 一排色条
-    // 连片,页签块轮廓被吞掉(用户实测"看不到页签块")。改为**左缘竖条**:
-    // 与左侧会话列表的组头图标/成员脊线同方位,全程悬浮在页签内部,不碰连通缝。
-    // 透明度分级:活动/悬停 100%,非活动 55%。无色(hex 为空)不画(宽 0),
-    // 但元素始终存在 —— `if` 条件元素在 hex 从空变非空时,Slint 1.8 不一定
-    // 重建子树,已打开的无色页签改色后竖条出不来(用户截图:组 2 已着色,
-    // 页签 202 仍无色条)。
+    // --- 左缘分组色竖条 (#tab-group-bar-r2 2026-09-15 / #tab-32) ------------
+    // (#tab-32) 定位改 **absolute x:0 脱流**：标记「这个 tab 从哪开始」，贴边
+    // 才是核心语义——作为 flex 子项时左缘 = padding-left（首 tab 曾有 0 特例
+    // 必然差一截）；absolute 后内边距怎么变它都不用动。top 6px / height 20px。
     Rectangle {
-        x: 4px;
-        y: 7px;
+        x: 0px;
+        y: 6px;
         width: info.group_color_hex != "" ? 3px : 0px;
-        height: parent.height - 14px;
-        border-radius: 2px;
+        height: 20px;
+        border-radius: 0px;
         background: info.group_color;
         opacity: info.group_color_hex == "" ? 0.0
             : (active || touch.has-hover ? 1.0 : 0.55);
         animate opacity { duration: 140ms; }
     }
 
-    // --- 顶部内高光 (#tab-polish 2026-09-14) --------------------------------
-    // 选中态在暗色下补一条极淡的白线，像标签顶面被光扫过。亮色主题里白线叠在
-    // 白色标签上不可见，故只在暗色下绘制。
-    if active && Theme.dark : Rectangle {
-        x: 1px;
-        y: 0px;
-        width: parent.width - 2px;
-        height: 1px;
-        background: #ffffff14;
-    }
+    // --- 顶部内高光：已删（#tab-32）——与顶部 3px accent 横线职责重复。
 
 }
 
@@ -281,6 +314,15 @@ export component TabBar inherits Rectangle {
 
     callback tab-selected(string);
     callback tab-closed(string);
+    // (#tab-32) 频道（tab-row-idia 稿）：右键菜单的加入/暂停/离开与状态条
+    // 恢复入口；menu-channel-letter 供色块勾选显示。
+    callback tab-join-channel(string /* tab-id */, int /* slot 0..3 */);
+    callback tab-pause-channel(string /* tab-id */);
+    callback tab-leave-channel(string /* tab-id */);
+    callback show-channel-bar();
+    in-out property <bool> channel-bar-hidden: false;
+    in-out property <string> menu-channel-letter: "";
+    in-out property <bool> menu-channel-paused: false;
     callback new-tab();
     // Drag-to-reorder (#408), committed exactly once on drop: move the tab at
     // `from` to `to`, where `to` is the insertion index AFTER `from` has been
@@ -314,13 +356,13 @@ export component TabBar inherits Rectangle {
     // (#tab-polish 2026-09-14) 36 → 40px（32px 标签 + 上下各 4px），条带更舒展。
     // 底色改用 Theme.tab-bar-bg：亮色档比 bg-panel-alt 深一档，选中标签的
     // "背景分野"才看得出来（详见 theme.slint）。
-    height: 40px;
+    height: 32px;
     background: Theme.tab-bar-bg;
 
     // Width of a tab, from its title length. Shared by the strip's slots and the
     // drag ghost so the two agree pixel-for-pixel.
     pure function tab-width(len: int) -> length {
-        return clamp(100px, 64px + len * 7px * Theme.ui-scale, 320px);
+        return clamp(76px, 50px + len * 7px * Theme.ui-scale, 320px);
     }
 
     // --- Drag-to-reorder state (#408) --------------------------------------
@@ -460,10 +502,10 @@ export component TabBar inherits Rectangle {
         // (#tab-flush 2026-09-14) 只保留**上方** 4px：下方归零，标签下沿贴住终端区。
         // (#tab-shape 2026-09-15) 左内边距 4 → 3px：与页签间距(spacing)一致,
         // 首个页签"贴边"的观感 = 侧面板边框 + 3px,和后续页签同节奏(用户定稿)。
-        padding-top: 4px;
+        padding-top: 0px;
         padding-bottom: 0px;
-        padding-left: 3px;
-        padding-right: 4px;
+        padding-left: 0px;
+        padding-right: 0px;
         spacing: 3px;
 
         // Horizontally-scrollable strip: when the tabs overflow the available
@@ -480,7 +522,7 @@ export component TabBar inherits Rectangle {
             content-height: self.height;
             content-width: max(self.width, strip.preferred-width);
             strip := HorizontalLayout {
-                spacing: 3px;
+                spacing: 0px;
                 alignment: start;
                 // The slot owns the geometry and never moves during a drag; the
                 // tab inside it is what slides. A layout child cannot have its `x`
@@ -564,7 +606,7 @@ export component TabBar inherits Rectangle {
                             root.drag-to == root.tabs.length - 1 && i == root.tabs.length - 1;
                         y: 4px;
                         width: 3px;
-                        height: parent.height - 12px;
+                        height: parent.height - 8px;
                         border-radius: 2px;
                         background: Theme.accent-solid;
                         Rectangle {
@@ -597,7 +639,7 @@ export component TabBar inherits Rectangle {
                 y: 0px;
                 width: root.drag-width;
                 // (#tab-flush 2026-09-14) 跟随标签加高，ghost 与落位尺寸一致。
-                height: 36px;
+                height: 32px;
             }
         }
 
@@ -615,10 +657,11 @@ export component TabBar inherits Rectangle {
         y: 0px;
         width: 76px;
         height: parent.height;
-        // 渐变 stop 只接受 color(不接受 brush),故按明暗主题各写一条。
-        background: Theme.dark
-            ? @linear-gradient(90deg, #2a2d3500, #2a2d35 72%)
-            : @linear-gradient(90deg, #eaeaef00, #eaeaef 72%);
+        // (#tab-32) 渐隐端色 = 条带底色 = term-bg 的不透底（slot-tbg，Rust
+        // 按主题写入）——硬编码 #2a2d35/#eaeaef 退役。渐变 stop 只接受 color。
+        background: @linear-gradient(90deg,
+            Theme.slot-tbg.with-alpha(0),
+            Theme.slot-tbg 72%);
         more-btn := Rectangle {
             x: parent.width - self.width - 6px;
             y: (parent.height - self.height) / 2;
@@ -741,7 +784,11 @@ export component TabBar inherits Rectangle {
         x: root.menu-x;
         y: root.menu-y;
         width: 140px;
-        height: 7 * 29px + 13px;
+        // (#tab-32) 频道组动态加入：高度按菜单状态计算（基线 8 项 = 原 7 项
+        // + 加入频道行；已加入再加暂停/离开两行；barHidden 再加显示状态条一行）。
+        height: (8
+            + (root.menu-channel-letter != "" ? 2 : 0)
+            + (root.channel-bar-hidden ? 1 : 0)) * 29px + 13px + 30px;
         Rectangle {
             background: Theme.popup-bg;
             border-radius: Theme.radius-sm;
@@ -752,6 +799,61 @@ export component TabBar inherits Rectangle {
             VerticalLayout {
                 padding: 4px;
                 spacing: 1px;
+                // ── 频道组（#tab-32）：加入频道 4 色块 + 暂停/离开/显示状态条。
+                // **原有菜单项全部保留**（Duplicate/Rename/Split/Merge/Close）。
+                Text {
+                    text: @tr("Join channel");
+                    color: Theme.text-muted; font-size: 10px;
+                    height: 20px;
+                    HorizontalLayout { padding-left: 8px; padding-top: 6px; }
+                }
+                Rectangle {
+                    height: 30px;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        spacing: 8px;
+                        alignment: start;
+                        // 4 个 16px 色块（固定 4 槽；常驻、点选归频道；当前频道
+                        // 显示勾选）。色值 = Theme.channel-colors（按主题查表）。
+                        for cs in [
+                            { slot: 0, letter: "A" }, { slot: 1, letter: "B" },
+                            { slot: 2, letter: "C" }, { slot: 3, letter: "D" },
+                        ] : Rectangle {
+                            property <color> cc: Theme.channel-colors[cs.slot];
+                            width: 16px; height: 16px; border-radius: 4px;
+                            background: cc;
+                            border-width: root.menu-channel-letter == cs.letter ? 2px : 0px;
+                            border-color: Theme.text-primary;
+                            Text {
+                                text: cs.letter;
+                                color: white; font-size: 10px; font-weight: 800;
+                                horizontal-alignment: center; vertical-alignment: center;
+                            }
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.menu-channel-letter = cs.letter;
+                                    root.tab-join-channel(root.menu-target, cs.slot);
+                                }
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                }
+                if root.menu-channel-letter != "" : Rectangle { height: 1px; background: Theme.border-subtle; }
+                if root.menu-channel-letter != "" : TabMenuItem {
+                    label: @tr("Pause channel") + (root.menu-channel-paused ? @tr(" (resume)") : "");
+                    clicked => { root.tab-pause-channel(root.menu-target); }
+                }
+                if root.menu-channel-letter != "" : TabMenuItem {
+                    label: @tr("Leave channel");
+                    clicked => { root.tab-leave-channel(root.menu-target); }
+                }
+                if root.channel-bar-hidden : TabMenuItem {
+                    label: @tr("Show channel bar");
+                    clicked => { root.show-channel-bar(); }
+                }
+                Rectangle { height: 1px; background: Theme.border-subtle; }
                 TabMenuItem {
                     label: @tr("Duplicate connection");
                     enabled: root.menu-target != "welcome";

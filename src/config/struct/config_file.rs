@@ -72,8 +72,8 @@ pub(crate) fn default_wallpaper_visible() -> f32 {
 pub(crate) fn default_follow_system() -> bool {
     true
 }
-pub(crate) fn default_channel_members() -> [String; 4] {
-    [String::new(), String::new(), String::new(), String::new()]
+pub(crate) fn default_channel_members() -> [Vec<String>; 4] {
+    [Vec::new(), Vec::new(), Vec::new(), Vec::new()]
 }
 
 pub(crate) fn default_sidebar_width() -> f32 {
@@ -361,7 +361,7 @@ pub struct ConfigFile {
     /// 稳定 id**（Session.uuid / builtin "system:*"）；空 = 该槽无成员。
     /// 跨重启保留（离线成员留在表里只跳过投递），tab 序号绝不入表。
     #[serde(default)]
-    pub channel_members: [String; 4],
+    pub channel_members: [Vec<String>; 4],
     /// 已暂停参与频道的会话 id 集合（按会话粒度：既不发送也不接收，
     /// 成员关系保留；换频道时跟着会话走）。
     #[serde(default)]

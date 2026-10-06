@@ -2844,6 +2844,9 @@ fn open_window(
 
     let tabs_model: Rc<VecModel<TabInfo>> = Rc::new(VecModel::default());
     tabs_model.push(TabInfo {
+                    channel_letter: "".into(),
+                    channel_color: slint::Color::default(),
+                    channel_paused: false,
         id: "welcome".into(),
         title_len: tab_title_len(&t("新标签页", "New tab")),
         title: t("新标签页", "New tab").into(),
@@ -3298,6 +3301,115 @@ fn open_window(
         });
     }
 
+    // ── (#tab-32) 频道（tab-row-idia 稿）：加入/暂停/离开 + 状态条恢复 ──
+    // 成员表 key = 会话稳定 id（Session.uuid / builtin "system:*"；tab id 每次
+    // 连接重新生成，绝不入表）。tab↔session 映射走 window.get_tabs()。
+    // join：先 detachAll（换频道是「移动」不是「复制」，防重复投递）再写槽；
+    // pause：按会话粒度（只判自己，不判频道；双向停发停收）；
+    // leave：清成员 + 清暂停标记（留着会在重新加入时莫名多一道删除线）。
+    fn tab_session_id(window: &AppWindow, tab_id: &str) -> String {
+        window
+            .get_tabs()
+            .iter()
+            .find(|t| t.id == tab_id)
+            .map(|t| t.session_id.to_string())
+            .unwrap_or_default()
+    }
+    fn refresh_tab_channel_row(
+        window: &AppWindow,
+        store: &ConfigStore,
+        tabs: &Rc<slint::VecModel<crate::ui::TabInfo>>,
+        tab_id: &str,
+    ) {
+        let sid = tab_session_id(window, tab_id);
+        let letters = ["A", "B", "C", "D"];
+        let slot_idx = store
+            .channel_members()
+            .iter()
+            .position(|members| members.iter().any(|m| m == &sid));
+        // 频道色从 Theme 的 channel-colors（按主题查表）取该槽。
+        let theme = window.global::<crate::ui::Theme<'_>>();
+        let (letter, color) = match slot_idx {
+            Some(i) => (
+                letters[i],
+                theme.get_channel_colors().row_data(i).unwrap_or_default(),
+            ),
+            None => ("", slint::Color::default()),
+        };
+        let paused = !sid.is_empty() && store.channel_is_paused(&sid);
+        let tabs_model = window.get_tabs();
+        for i in 0..tabs_model.row_count() {
+            if let Some(mut row) = tabs_model.row_data(i) {
+                if row.id.as_str() == tab_id {
+                    row.channel_letter = letter.into();
+                    row.channel_color = color;
+                    row.channel_paused = paused;
+                    tabs_model.set_row_data(i, row);
+                }
+            }
+        }
+    }
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let tabs_model_c = tabs_model.clone();
+        window.on_tab_join_channel({
+            let (weak, store, tabs_model_c) =
+                (weak.clone(), store.clone(), tabs_model_c.clone());
+            move |tab_id: SharedString, slot: i32| {
+            let Some(w) = weak.upgrade() else { return };
+            let sid = tab_session_id(&w, &tab_id);
+            if sid.is_empty() { return; }
+            let slot = slot.clamp(0, 3) as usize;
+            {
+                let mut s = store.borrow_mut();
+                s.detach_all_channels(&sid);
+                s.set_channel_member(slot, &sid);
+                let _ = s.save();
+            }
+            refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &tab_id);
+                w.set_menu_channel_letter(["A", "B", "C", "D"][slot].into());
+                // 频道成员 = 同步激活（三态按钮的数据源；阶段-5 对话框接管后语义不变）。
+                w.set_sync_input(true);
+            }
+        });
+        window.on_tab_pause_channel({
+            let (weak, store, tabs_model_c) =
+                (weak.clone(), store.clone(), tabs_model_c.clone());
+            move |tab_id: SharedString| {
+            let Some(w) = weak.upgrade() else { return };
+            let sid = tab_session_id(&w, &tab_id);
+            if sid.is_empty() { return; }
+            let now_paused = !store.borrow().channel_is_paused(&sid);
+            store.borrow_mut().set_channel_paused(&sid, now_paused);
+            let _ = store.borrow().save();
+            refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &tab_id);
+                w.set_menu_channel_paused(now_paused);
+            }
+        });
+        window.on_tab_leave_channel({
+            let (weak, store, tabs_model_c) =
+                (weak.clone(), store.clone(), tabs_model_c.clone());
+            move |tab_id: SharedString| {
+            let Some(w) = weak.upgrade() else { return };
+            let sid = tab_session_id(&w, &tab_id);
+            if sid.is_empty() { return; }
+            {
+                let mut s = store.borrow_mut();
+                s.detach_all_channels(&sid);
+                s.clear_channel_pause(&sid);
+                let _ = s.save();
+            }
+            refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &tab_id);
+                w.set_menu_channel_letter("".into());
+                w.set_menu_channel_paused(false);
+            }
+        });
+        window.on_show_channel_bar(move || {
+            let Some(w) = weak.upgrade() else { return };
+            w.set_channel_bar_hidden(false);
+        });
+    }
     // (#theme-split) set_theme / cycle_theme：顶栏速选面板与 Ctrl+Alt+T 的
     // 入口。切主题 = 持久化 id + 整套槽位重写 + 每个终端 buffer 换 ANSI 色
     // 表并重渲染（历史输出也跟着换装）+ 独立窗口镜像 + 跨窗口广播。
@@ -7027,6 +7139,9 @@ fn wire_session_callbacks(
             // 与左侧会话行同源（同走 display_group_of + group_colors）。
             let (tab_gc, tab_gc_hex) = tab_group_color(&store.borrow(), &session);
             tabs_model.push(TabInfo {
+                    channel_letter: "".into(),
+                    channel_color: slint::Color::default(),
+                    channel_paused: false,
                 id: tab_id.clone().into(),
                 title_len: tab_title_len(&tab_title),
                 title: tab_title.into(),
@@ -8003,6 +8118,7 @@ fn wire_key_input(
         // Shared timestamp: the last time the Shift key alone was pressed
         // (key="", shift=true).  Used by the time-based Backspace filter below.
         let last_shift_time: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
+        let weak_sk = window.as_weak();
         window.on_send_key(move |tab_id: SharedString, key: SharedString, ctrl: bool, alt: bool, shift: bool| {
             // ── Enter on a disconnected tab → reconnect in place (#79) ──────
             // FinalShell-style: the tab shows "连接已断开,按 Enter 重新连接";
@@ -8310,21 +8426,71 @@ fn wire_key_input(
             );
             if !bytes.is_empty() {
                 let h = handles.borrow();
-                if sync_input.load(std::sync::atomic::Ordering::Relaxed) {
-                    // Broadcast the same bytes to every online session (#78 pt.4).
-                    for (target_id, handle) in h.iter() {
-                        if let Some(buffer) = term_buf(&bufs, target_id) {
+                // (#tab-32) 频道定向投递（tab-row-idia §五-send_key 五步）：
+                // ① 由本 tab 的**会话稳定 id** 查其所在频道（无 → 单发，等同旧「关」）；
+                // ② 遍历该频道成员表；③ 跳过发送方自己（旧全量广播连自己都发，
+                // 靠 interactive_echo_until 压回显——现显式排除，否则双份输入）；
+                // ③' 成员离线 → 跳过但**保留在表里**（持久化语义）；
+                // ④ 暂停按会话判：目标成员暂停 → 不投给它（它也不投给别人）；
+                //    ⚠️ 判的是「每个会话自己」，不能 if paused(频道) return——
+                //    那会让一个会话的暂停拖垮整个频道。
+                let Some(w_sk) = weak_sk.upgrade() else { return };
+                let my_sid = w_sk
+                    .get_tabs()
+                    .iter()
+                    .find(|t| tab_id.as_str() == t.id.as_str())
+                    .map(|t| t.session_id.to_string())
+                    .unwrap_or_default();
+                let channel_slot = if my_sid.is_empty() {
+                    None
+                } else {
+                    store
+                        .borrow()
+                        .channel_members()
+                        .iter()
+                        .position(|members| members.iter().any(|m| m == &my_sid))
+                };
+                let i_am_paused = !my_sid.is_empty()
+                    && store.borrow().channel_is_paused(&my_sid);
+                match (channel_slot, i_am_paused) {
+                    (Some(slot), false) => {
+                        let members = store.borrow().channel_members()[slot].clone();
+                        for member in members.iter().filter(|m| !m.is_empty()) {
+                            // ③ 跳过发送方自己（显式排除，非靠回显压制）。
+                            if member == &my_sid {
+                                continue;
+                            }
+                            // ④ 目标暂停 → 它既不收（投递跳过）；它的发送由它
+                            // 自己的 send_key 路径判暂停拦下。离线 → 跳过但保留。
+                            if store.borrow().channel_is_paused(member) {
+                                continue;
+                            }
+                            if let Some(handle) = h.get(member.as_str()) {
+                                if let Some(buffer) = term_buf(&bufs, member) {
+                                    buffer.lock().unwrap().interactive_echo_until =
+                                        std::time::Instant::now()
+                                            + INTERACTIVE_ECHO_WINDOW;
+                                }
+                                handle.send_raw(bytes.clone());
+                            }
+                        }
+                        // 自己的缓冲也要提帧（本 tab 回显即时）。
+                        if let Some(buffer) = term_buf(&bufs, tab_id.as_str()) {
                             buffer.lock().unwrap().interactive_echo_until =
                                 std::time::Instant::now() + INTERACTIVE_ECHO_WINDOW;
                         }
-                        handle.send_raw(bytes.clone());
                     }
-                } else if let Some(handle) = h.get(tab_id.as_str()) {
-                    if let Some(buffer) = term_buf(&bufs, tab_id.as_str()) {
-                        buffer.lock().unwrap().interactive_echo_until =
-                            std::time::Instant::now() + INTERACTIVE_ECHO_WINDOW;
+                    _ => {
+                        // 不在任何频道 / 本会话已暂停（④遍历前返回——只让本会话
+                        // 停摆，同频道其它会话之间照常互通）→ 单发给自己。
+                        if let Some(handle) = h.get(tab_id.as_str()) {
+                            if let Some(buffer) = term_buf(&bufs, tab_id.as_str()) {
+                                buffer.lock().unwrap().interactive_echo_until =
+                                    std::time::Instant::now() + INTERACTIVE_ECHO_WINDOW;
+                            }
+                            handle.send_raw(bytes);
+                        }
                     }
-                    handle.send_raw(bytes);
                 }
             }
         });

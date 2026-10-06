@@ -770,22 +770,21 @@ impl ConfigStore {
     pub fn set_wallpaper_color_pickup(&mut self, on: bool) {
         self.cache.wallpaper_color_pickup = on;
     }
-    /// 频道成员表：4 槽各一个会话稳定 id（空 = 无成员）。
-    pub fn channel_members(&self) -> &[String; 4] {
+    /// 频道成员表：4 槽各一个会话稳定 id 列表。
+    pub fn channel_members(&self) -> &[Vec<String>; 4] {
         &self.cache.channel_members
     }
-    pub fn set_channel_member(&mut self, slot: usize, session_id: String) {
-        if slot < 4 {
-            self.cache.channel_members[slot] = session_id;
+    /// 加入频道槽（幂等：已在表内则不动）。换频道前必须先 detach_all。
+    pub fn set_channel_member(&mut self, slot: usize, session_id: &str) {
+        if slot < 4 && !self.cache.channel_members[slot].iter().any(|m| m == session_id) {
+            self.cache.channel_members[slot].push(session_id.to_string());
         }
     }
     /// 把会话从全部 4 个频道清一遍（换频道是「移动」不是「复制」，§1：
     /// 同一实体只能属于一处时，写入前从全部容器清一遍）。
     pub fn detach_all_channels(&mut self, session_id: &str) {
         for slot in self.cache.channel_members.iter_mut() {
-            if slot == session_id {
-                slot.clear();
-            }
+            slot.retain(|m| m != session_id);
         }
     }
     /// 清空指定频道的成员（关闭频道只清这个频道的成员，别整表清）。
