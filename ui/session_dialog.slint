@@ -1588,30 +1588,60 @@ component ChainRow inherits HorizontalLayout {
     }
 }
 
-// 「＋添加跳板机」触发行 + 候选下拉:候选 = jump-pool(Rust 已滤除已入链/自身);
-// 候选行悬停出同款信息卡(无链位)。pool 空(候选全部入链)时整个 picker 禁用
-// 变暗 —— 防环由「只能从候选添加」结构保证。
+// 「＋添加跳板机」触发行:候选 = jump-pool(Rust 已滤除已入链/自身)。pool 空
+// (候选全部入链)时整个 picker 禁用变暗 —— 防环由「只能从候选添加」结构保证。
+// (#chain-picker-r16 2026-10-06) 候选列表**自绘浮层化**:原 pop := PopupWindow
+// 经 active_popups 渲染管线画在普通内容之后,主窗口里的悬浮信息卡伸进其矩形
+// 必被盖住(r14/r15 两轮避让的根因)。现改为 #ctx-menu-backdrop 同款模式:
+// 触发按钮只置 open 状态,列表浮层与 tip 卡上提到 SessionDialog 根(见文件尾,
+// 声明顺序 = backdrop → 列表 → tip 卡),候选行 tip 与 chip 完全同构(贴指针
+// 右上角、纯窗口坐标、零换算)。open/位置经属性中转(条件元素 id 外部不可见)。
 component ChainPicker inherits Rectangle {
     in property <[JumpEntry]> pool;
-    callback pick(string);
-    callback tip-show(JumpEntry, int);
-    callback tip-move(length, length);
+    // 指针离开按钮行时清悬浮卡(候选行 tip 逻辑已上移到根层浮层,仅剩此转发)。
     callback tip-hide();
-    // (#jumptip-pos-r14 2026-10-06) 候选行 tip 的坐标系换算基点:e-ta 在
-    // PopupWindow(独立顶层窗口)里,absolute-position/mouse-x/y 是 popup 局部
-    // 坐标,直接给主窗口卡片层必然错位(r12「乱跳」真凶)。PopupWindow 边界
-    // 内外互引被编译器禁止(试过引用 pop.x 直接 CompileError),只能经 root
-    // 属性把偏移带进去。pop 定位为 x:0 / y:parent.height+6px —— **改 pop
-    // 定位须同步此绑定**。
-    out property <length> popup-base-x: self.absolute-position.x;
-    out property <length> popup-base-y: self.absolute-position.y + self.height + 6px;
+    // (#chain-picker-r16) 打开状态双向上提(按钮开/backdrop 关);位置在**点击
+    // 时经回调上报**(report-pos)—— 不能用绑定表达式 `px: self.absolute-position.x`:
+    // absolute-position 是非响应式即时函数,绑定初求值在布局前恒为 0 且不再
+    // 更新(诊断实证 OPEN=T x=0 y=0 w=0,列表宽 0 不可见)。clicked 时布局已稳,
+    // 读到的即精确窗口坐标。
+    in-out property <bool> open;
+    // (#chain-picker-r18) 下拉代际时钟桥:按钮点击时推进,清掉其它下拉的
+    // 聚焦蓝框(SelectField/ProtoSelect 同款机制,见它们的实例化处)。
+    in-out property <int> drop-clock;
+    callback report-pos(length, length, length);
+    // (#chain-picker-r17) 滚动跟随:body-flick 每次滚动把 rescroll-seq +1
+    // (经根中转),此处重读 absolute-position 重新上报 —— 浮层随之逐帧对位。
+    // 非 open 时跳过(报告了也没人用,省无谓属性写)。
+    // (#chain-picker-r20) card-bottom 由实例化处 report-pos handler 内求值
+    // ( dlg-card 引用在那个作用域合法),本组件不再持有 in 属性 —— 绑定式
+    // 会在布局前求值拿 stale 值(与点击上报的 y 比对错位 → 错误向上翻)。
+    in property <int> rescroll-seq;
+    changed rescroll-seq => {
+        if (root.open) {
+            root.report-pos(self.absolute-position.x, self.absolute-position.y, self.width);
+        }
+    }
     property <bool> exhausted: root.pool.length == 0;
     height: 36px;
+    // (#chain-picker-r18 2026-10-06) 按钮行三态对齐 SelectField 的 sbtn
+    // (widgets.slint:552):hover 边框提亮 line-2;open = accent 蓝框 +
+    // field-2 提底 + 3px accent-soft 外圈光晕(聚焦效果,用户要求同款)。
+    // 聚焦判据用 open(入链/点外即收,失焦语义自然),不走代际时钟。
     border-radius: 9px;
     border-width: 1px;
-    border-color: Theme.border-control;
-    background: Theme.field;
+    border-color: root.open ? Theme.accent
+        : (ta.has-hover ? Theme.line-2 : Theme.border-control);
+    background: root.open ? Theme.field-2 : Theme.field;
     opacity: root.exhausted ? 0.4 : 1.0;
+    if root.open : Rectangle {
+        x: -3px; y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        border-radius: 11px;
+        border-width: 3px;
+        border-color: Theme.accent-soft;
+    }
     HorizontalLayout {
         alignment: center;
         Text {
@@ -1624,73 +1654,14 @@ component ChainPicker inherits Rectangle {
     ta := TouchArea {
         enabled: !root.exhausted;
         mouse-cursor: root.exhausted ? default : pointer;
-        clicked => { pop.show(); }
-        changed has-hover => { if (!self.has-hover) { root.tip-hide(); } }
-    }
-    pop := PopupWindow {
-        x: 0;
-        y: parent.height + 6px;
-        width: parent.width;
-        close-policy: close-on-click-outside;
-        Rectangle {
-            max-height: 280px;
-            background: Theme.popup-bg;
-            border-radius: 11px;
-            border-width: 1px;
-            border-color: Theme.line-2;
-            drop-shadow-blur: 18px;
-            drop-shadow-color: #00000066;
-            Flickable {
-                VerticalLayout {
-                    padding: 5px;
-                    spacing: 1px;
-                    for e in root.pool : Rectangle {
-                        height: 32px;
-                        border-radius: 8px;
-                        background: e-ta.has-hover ? Theme.field-2 : transparent;
-                        Text {
-                            x: 9px;
-                            width: parent.width - 32px;
-                            height: parent.height;
-                            text: "＋ " + e.label;
-                            color: Theme.text-primary;
-                            font-size: Theme.fs-md;
-                            vertical-alignment: center;
-                            overflow: elide;
-                        }
-                        e-ta := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.pick(e.id); pop.close(); root.tip-hide(); }
-                            changed has-hover => { if (!self.has-hover) { root.tip-hide(); } }
-                            // (#jumptip-pos-r15 2026-10-06) 候选 tip 恒显示在**下拉框
-                            // 顶缘上方**:popup 是独立顶层窗口,主窗口里画的 tip 伸进
-                            // popup 矩形必被盖住(r14 实测:贴指针右上角时下半截被下拉
-                            // 列表盖掉,用户截图)——指针本身就在 popup 矩形内,「贴指
-                            // 针」物理上无解,唯一不被盖的落位是 popup 上方的主窗口区
-                            // 域。故 x 仍跟指针(mouse-x 悬停实时更新,pointer-event
-                            // move 每次都触发;y 锚 popup 顶缘。
-                            pointer-event(e) => {
-                                if (e.kind == PointerEventKind.move && !self.pressed) {
-                                    root.tip-move(e-ta.absolute-position.x + e-ta.mouse-x + root.popup-base-x,
-                                                  root.popup-base-y);
-                                }
-                            }
-                        }
-                        tip-delay := Timer {
-                            interval: 150ms;
-                            running: e-ta.has-hover;
-                            triggered => {
-                                // (#jumptip-pos-r15) 首锚:x = 悬停指针 x,y = popup 顶缘,
-                                // 卡片层把卡底缘放在顶缘上方 10px → 整卡在下拉框之上。
-                                root.tip-move(e-ta.absolute-position.x + e-ta.mouse-x + root.popup-base-x,
-                                              root.popup-base-y);
-                                root.tip-show(e, 0);
-                            }
-                        }
-                    }
-                }
-            }
+        clicked => {
+            // 推进下拉代际时钟:打开本 picker 时清掉其它 SelectField/ProtoSelect
+            // 的聚焦蓝框(与「点其它下拉清蓝框」对称;桥接见实例化处)。
+            root.drop-clock += 1;
+            root.open = true;
+            root.report-pos(self.absolute-position.x, self.absolute-position.y, self.width);
         }
+        changed has-hover => { if (!self.has-hover) { root.tip-hide(); } }
     }
 }
 
@@ -1775,6 +1746,19 @@ export component SessionDialog inherits Rectangle {
     in-out property <bool> jumptip-on: false;
     in-out property <length> jumptip-x;
     in-out property <length> jumptip-y;
+    // (#chain-picker-r16 2026-10-06) 候选下拉自绘浮层的状态/位置桥(ChainPicker
+    // 在 dlg-card 深处,id 外部不可见):open 双向;位置 = picker 触发行的窗口
+    // 绝对坐标/宽,浮层据此定位(列表在触发行下方 6px、同宽)。
+    in-out property <bool> chain-picker-open: false;
+    in-out property <length> chain-picker-x: 0px;
+    in-out property <length> chain-picker-y: 0px;
+    in-out property <length> chain-picker-w: 0px;
+    // (#chain-picker-r17) 滚动代数:body-flick 的 viewport-y 每变一次 +1,
+    // 经实例化处双向桥进 ChainPicker,触发其重读 absolute-position 重新上报
+    // (absolute-position 非响应式,必须有外部变化当触发器)。
+    in-out property <int> chain-picker-rescroll: 0;
+    // (#chain-picker-r19) 卡片底窗口 y(report-pos 第 4 参上报,供浮层向上翻转判空间)。
+    in-out property <length> chain-picker-card-b: 0px;
     in-out property <string> draft-serial-port;
     in-out property <string> draft-baud: "115200";
     in-out property <string> draft-data-bits: "8";
@@ -2063,7 +2047,10 @@ export component SessionDialog inherits Rectangle {
     }
 
     // Clear the host-required flag each time the dialog opens (#110).
+    // (#chain-picker-r17) 弹框开/关都清候选下拉开态:关闭时必须清(否则残
+    // 留 true 下次开弹框浮层直接开着);打开时清是幂等兜底。
     changed is-open => {
+        self.chain-picker-open = false;
         if (self.is-open) {
             self.host-missing = false;
             self.serial-missing = false;
@@ -2311,6 +2298,17 @@ export component SessionDialog inherits Rectangle {
                 height: 100%;
                 content-width: self.width;
                 content-height: body.preferred-height;
+                // (#chain-picker-r17 2026-10-06) 滚动跟随:浮层定位是点击时的
+                // 快照坐标(report-pos),内容一滚锚点漂移(用户截图:浮层悬空)。
+                // r17 首版"滚动即关"被用户否掉(要跟随,同原 PopupWindow 手感)。
+                // absolute-position 非响应式(绑定恒 0,见 ChainPicker 注释),
+                // 无法直接绑 —— 改用**滚动代数信号链**:viewport-y 每变一次
+                // seq+1 →(实例化处双向桥)→ picker 的 changed rescroll-seq
+                // 重读 absolute-position 重新 report-pos → 浮层绑定更新跟随,
+                // 滚动动画期间逐帧对位。
+                changed viewport-y => {
+                    root.chain-picker-rescroll += 1;
+                }
                 // (#dialog-focus-reset) viewport 容器:底层铺一块吞点击
                 // TouchArea —— 点字段间空隙/行距时点击会落在它上面(Flickable
                 // 不透传到卡片底层的 TouchArea,实测),把焦点交回容器使蓝色
@@ -3035,7 +3033,14 @@ if root.draft-kind == "serial" : HorizontalLayout {
                             // (#dialog-pop-flip 2026-09-19) 弹层向下展开:78% 布局下字段下方空间充足。
                             SelectField {
                                 label: @tr("Terminal character encoding");
-                                opening => { dialog-focus.focus(); }
+                                // (#chain-picker-r20) max-bottom 改在 opening 时赋值:
+                                // 绑定式会在布局前求值拿 stale 值(与 ChainPicker
+                                // card-bottom 同款错误翻转);opening 点击时触发,
+                                // 此作用域可见 dlg-card,值精确。
+                                opening => {
+                                    dialog-focus.focus();
+                                    self.max-bottom = dlg-card.absolute-position.y + dlg-card.height;
+                                }
                                 drop-clock <=> root.drop-clock;
                                 choices: ["UTF-8", "GBK", "Big5", "Shift_JIS", "EUC-KR", "Windows-1252"];
                                 value: root.draft-encoding;
@@ -3246,10 +3251,24 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                 }
                                 ChainPicker {
                                     pool: root.jump-pool;
-                                    tip-show(e, pos) => { root.tip-show(e, pos); }
-                                    tip-move(x, y) => { root.tip-move(x, y); }
+                                    // (#chain-picker-r16) 状态/位置中转到根(浮层在根层读):
+                                    // 条件元素(dlg-card)内的 id 外部不可见,只能属性桥接。
+                                    // open 双向;位置点击时回调上报(clicked 时布局已稳,
+                                    // absolute-position 精确 —— 绑定式在布局前求值恒 0)。
+                                    open <=> root.chain-picker-open;
+                                    // (#chain-picker-r20) card-bottom 不能用绑定式(同上,
+                                    // 初求值早于布局拿到 stale 值,与点击时上报的 y 比对
+                                    // 错位 → 向下够也错误向上翻,用户截图)——改在
+                                    // report-pos handler 内求值(此作用域可见 dlg-card,
+                                    // 执行时机 = 点击,值精确)。
+                                    rescroll-seq <=> root.chain-picker-rescroll;
+                                    report-pos(x, y, w) => {
+                                        root.chain-picker-x = x;
+                                        root.chain-picker-y = y;
+                                        root.chain-picker-w = w;
+                                        root.chain-picker-card-b = dlg-card.absolute-position.y + dlg-card.height;
+                                    }
                                     tip-hide => { root.tip-hide(); }
-                                    pick(id) => { root.chain-add(id); }
                                 }
                                 // 两条常驻说明(同构对齐)
                                 HorizontalLayout {
@@ -3844,83 +3863,175 @@ if root.draft-kind == "serial" : HorizontalLayout {
             }
         }
 
-        // (#conn-path 2026-10-04 高保真 #proxy-fields) 跳板悬浮信息卡:键值对
-        // 「K：V」,名称/分组/备注非空才显示;链位行仅在链 chip 上出现(候选无)。
-        // (#jumptip-pos-r14 2026-10-06) 贴指针**右上角**:卡左下角锚在指针
-        // (x+12px / y-卡高-10px),右缘溢出翻指针左侧、顶缘溢出翻指针下方。
-        // **本浮层挂在 dlg-card(卡片层)内,坐标系是卡片局部**;而 jumptip-x/y
-        // 是窗口绝对坐标(chip/候选行的 absolute-position 累加)——r8 起恒偏
-        // dlg-card 的窗口位置(用户截图:卡飘在指针右侧远处),先减
-        // parent.absolute-position 换算成卡片局部再定位,钳制边距同系。
-        // 无 TouchArea —— 指针事件穿透。
-        if root.jumptip-on : Rectangle {
-            property <length> pw: jumptip-lay.preferred-width + 24px;
-            property <length> ph: jumptip-lay.preferred-height + 18px;
-            property <length> base-x: parent.absolute-position.x;
-            property <length> base-y: parent.absolute-position.y;
-            x: root.jumptip-x + 12px + self.pw > base-x + parent.width - 8px
-                ? max(base-x + 8px, root.jumptip-x - self.pw - 12px) - base-x
-                : root.jumptip-x + 12px - base-x;
-            y: root.jumptip-y - ph - 10px < base-y + 8px
-                ? root.jumptip-y + 20px - base-y
-                : root.jumptip-y - ph - 10px - base-y;
-            width: pw;
-            height: ph;
-            background: Theme.bg-elevated;
-            border-radius: 9px;
-            border-width: 1px;
-            border-color: Theme.border-subtle;
-            drop-shadow-blur: 24px;
-            drop-shadow-color: #00000045;
-            jumptip-lay := VerticalLayout {
-                padding: 9px;
-                padding-left: 12px;
-                padding-right: 12px;
-                spacing: 2px;
-                // (#conn-path) 键值**单行连排**(键＋全角冒号＋值同一个 Text):
-                // 两列布局会把全角冒号自带的右空隙与键列宽叠加,视觉间隙过大。
-                if root.jumptip-entry.name != "" : Text {
-                    text: @tr("Name:") + root.jumptip-entry.name;
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-xs;
-                    overflow: elide;
-                }
-                Text {
-                    text: @tr("Host:") + root.jumptip-entry.host + ":" + root.jumptip-entry.port;
-                    color: Theme.text-secondary;
-                    font-size: Theme.fs-xs;
-                    overflow: elide;
-                }
-                if root.jumptip-entry.user != "" : Text {
-                    text: @tr("User:") + root.jumptip-entry.user;
-                    color: Theme.text-secondary;
-                    font-size: Theme.fs-xs;
-                    overflow: elide;
-                }
-                if root.jumptip-entry.auth != "" : Text {
-                    text: @tr("Auth:") + root.auth-label(root.jumptip-entry.auth);
-                    color: Theme.text-secondary;
-                    font-size: Theme.fs-xs;
-                    overflow: elide;
-                }
-                if root.jumptip-entry.group != "" : Text {
-                    text: @tr("Group:") + root.jumptip-entry.group;
-                    color: Theme.text-secondary;
-                    font-size: Theme.fs-xs;
-                    overflow: elide;
-                }
-                if root.jumptip-entry.note != "" : Text {
-                    text: @tr("Note:") + root.jumptip-entry.note;
-                    color: Theme.text-secondary;
-                    font-size: Theme.fs-xs;
-                    overflow: elide;
-                }
-                if root.jumptip-pos > 0 : Text {
-                    text: @tr("Hop {0} in the chain", root.jumptip-pos);
-                    color: Theme.accent;
-                    font-size: Theme.fs-2xs;
-                }
-            }        }
+        // (#jumptip-pos-r16 2026-10-06) 跳板悬浮信息卡**上提到 SessionDialog 根**
+        // (dlg-card 闭合之后):候选下拉已自绘浮层化(#chain-picker-r16,同样挂
+        // 根层),tip 必须与它同层且声明在其后才能盖住下拉列表 —— 留在卡片内会被
+        // 根层浮层盖住(重演 r14「伸进下拉被盖」)。根层 = 全屏遮罩,坐标系即
+        // 窗口系,卡片层 r14 的减 base 换算随之删除。
 
+    }
+
+    // (#chain-picker-r16 2026-10-06) 候选下拉**自绘浮层**(#ctx-menu-backdrop 同款):
+    // 全屏透明 backdrop(点击即关)→ 列表本体(后声明 = 上层)。原 PopupWindow
+    // 方案的渲染层问题(见 ChainPicker 注释)与「无 closed 回调」一并根治。
+    // 列表定位 = ChainPicker 中转的窗口坐标(px/py/pw), y 在触发行下方 6px。
+    // (#jumptip-pos-r16) 声明顺序 tip 卡在本浮层之后 → tip 盖列表,候选行 tip
+    // 恢复与 chip 同构的「贴指针右上角」(纯窗口坐标,零换算、零避让)。
+    if root.chain-picker-open && root.is-open : Rectangle {
+        width: 100%;
+        height: 100%;
+        cp-backdrop := TouchArea {
+            clicked => {
+                root.chain-picker-open = false;
+                root.tip-hide();
+            }
+            // (#chain-picker-r19 2026-10-06) 吃掉滚轮:下拉打开期间**内容不可
+            // 滚动**(用户要求)—— TouchArea 默认不收滚轮会穿透到 body-flick,
+            // 造成「浮层开着内容在滚」。accept 拦截后 r17 滚动跟随链闲置兜底。
+            scroll-event(e) => { accept }
+        }
+        Rectangle {
+            property <length> list-h: min(280px, cp-lay.preferred-height + 10px);
+            // (#chain-picker-r19) 向下空间不足(列表会越过卡片底缘)时向上展开:
+            // 列表底贴按钮顶缘上方 6px。dlg-card 与本浮层同为根层子元素,id 可见
+            // (跨组件才不可见);卡片底 - 8px 为下边界。
+            property <bool> flip-up:
+                root.chain-picker-y + 42px + list-h
+                > root.chain-picker-card-b - 8px;
+            x: root.chain-picker-x - parent.absolute-position.x;
+            y: flip-up
+                ? root.chain-picker-y - parent.absolute-position.y - 6px - list-h
+                : root.chain-picker-y - parent.absolute-position.y + 36px + 6px;
+            width: root.chain-picker-w;
+            height: list-h;
+            background: Theme.popup-bg;
+            border-radius: 11px;
+            border-width: 1px;
+            border-color: Theme.line-2;
+            drop-shadow-blur: 18px;
+            drop-shadow-color: #00000066;
+            clip: true;
+            Flickable {
+                cp-lay := VerticalLayout {
+                    padding: 5px;
+                    spacing: 1px;
+                    for e in root.jump-pool : Rectangle {
+                        height: 32px;
+                        border-radius: 8px;
+                        background: e-ta.has-hover ? Theme.field-2 : transparent;
+                        Text {
+                            x: 9px;
+                            width: parent.width - 32px;
+                            height: parent.height;
+                            text: "＋ " + e.label;
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-md;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        e-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.chain-add(e.id);
+                                root.chain-picker-open = false;
+                                root.tip-hide();
+                            }
+                            changed has-hover => { if (!self.has-hover) { root.tip-hide(); } }
+                            // (#jumptip-pos-r16) 与 chip 完全同构:pointer-event 的
+                            // move 通知纯悬停时每次都触发(moved 回调只在按住时),
+                            // 坐标 = absolute-position + mouse-x/y(浮层在根层,
+                            // 坐标系即窗口系,零换算),Timer 只管 150ms 延迟+首锚。
+                            pointer-event(e) => {
+                                if (e.kind == PointerEventKind.move && !self.pressed) {
+                                    root.tip-move(e-ta.absolute-position.x + e-ta.mouse-x,
+                                                  e-ta.absolute-position.y + e-ta.mouse-y);
+                                }
+                            }
+                        }
+                        tip-delay := Timer {
+                            interval: 150ms;
+                            running: e-ta.has-hover;
+                            triggered => {
+                                root.tip-move(e-ta.absolute-position.x + e-ta.mouse-x,
+                                              e-ta.absolute-position.y + e-ta.mouse-y);
+                                root.tip-show(e, 0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // (#jumptip-pos-r16 2026-10-06) 跳板悬浮信息卡(自 dlg-card 内上提,原因见
+    // 卡片内注释):贴指针**右上角**(卡左下角锚指针 x+12px / y-卡高-10px),
+    // 右缘溢出翻指针左侧、顶缘溢出翻指针下方。根层全屏坐标系 = 窗口系,直接
+    // 用 jumptip-x/y 定位(原 r8 起恒偏 dlg-card 位置、r14 减 base 的历史随
+    // 上提终结)。声明在候选浮层之后 = 盖住列表。无 TouchArea —— 指针穿透。
+    if root.jumptip-on : Rectangle {
+        property <length> pw: jumptip-lay.preferred-width + 24px;
+        property <length> ph: jumptip-lay.preferred-height + 18px;
+        x: root.jumptip-x + 12px + self.pw > parent.width - 8px
+            ? max(8px, root.jumptip-x - self.pw - 12px)
+            : root.jumptip-x + 12px;
+        y: root.jumptip-y - ph - 10px < 8px
+            ? root.jumptip-y + 20px : root.jumptip-y - ph - 10px;
+        width: pw;
+        height: ph;
+        background: Theme.bg-elevated;
+        border-radius: 9px;
+        border-width: 1px;
+        border-color: Theme.border-subtle;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000045;
+        jumptip-lay := VerticalLayout {
+            padding: 9px;
+            padding-left: 12px;
+            padding-right: 12px;
+            spacing: 2px;
+            // (#conn-path) 键值**单行连排**(键＋全角冒号＋值同一个 Text):
+            // 两列布局会把全角冒号自带的右空隙与键列宽叠加,视觉间隙过大。
+            if root.jumptip-entry.name != "" : Text {
+                text: @tr("Name:") + root.jumptip-entry.name;
+                color: Theme.text-primary;
+                font-size: Theme.fs-xs;
+                overflow: elide;
+            }
+            Text {
+                text: @tr("Host:") + root.jumptip-entry.host + ":" + root.jumptip-entry.port;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-xs;
+                overflow: elide;
+            }
+            if root.jumptip-entry.user != "" : Text {
+                text: @tr("User:") + root.jumptip-entry.user;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-xs;
+                overflow: elide;
+            }
+            if root.jumptip-entry.auth != "" : Text {
+                text: @tr("Auth:") + root.auth-label(root.jumptip-entry.auth);
+                color: Theme.text-secondary;
+                font-size: Theme.fs-xs;
+                overflow: elide;
+            }
+            if root.jumptip-entry.group != "" : Text {
+                text: @tr("Group:") + root.jumptip-entry.group;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-xs;
+                overflow: elide;
+            }
+            if root.jumptip-entry.note != "" : Text {
+                text: @tr("Note:") + root.jumptip-entry.note;
+                color: Theme.text-secondary;
+                font-size: Theme.fs-xs;
+                overflow: elide;
+            }
+            if root.jumptip-pos > 0 : Text {
+                text: @tr("Hop {0} in the chain", root.jumptip-pos);
+                color: Theme.accent;
+                font-size: Theme.fs-2xs;
+            }
+        }
     }
 }

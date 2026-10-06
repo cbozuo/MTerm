@@ -536,6 +536,15 @@ export component SelectField inherits VerticalLayout {
     // 自己是最近一次打开的下拉时成立;点其它下拉/点空白时钟推进即恢复。
     in-out property <int> drop-clock: 0;
     property <int> open-clock: -1;
+    // (#chain-picker-r19 2026-10-06) 弹层向下放不下时向上翻转的空间判据:
+    // max-bottom = 卡片底的窗口 y(实例化处传 dlg-card.absolute-position.y +
+    // dlg-card.height),0 = 不限。flip-up 兼容旧 open-up 静态指定。
+    in property <length> max-bottom: 0px;
+    property <length> list-h: min(root.choices.length * 33px + 10px, 280px);
+    property <bool> flip-up: root.open-up
+        || (root.max-bottom > 0px
+            && sbtn.absolute-position.y + sbtn.height + 6px + list-h
+                > root.max-bottom - 8px);
 
     Text {
         visible: root.label != "";
@@ -600,7 +609,12 @@ export component SelectField inherits VerticalLayout {
 
     sel-pop := PopupWindow {
         x: 0px;
-        y: root.open-up ? -(min(root.choices.length * 33px + 10px, 280px) + 6px) : parent.height + 6px;
+        // (#chain-picker-r19 2026-10-06) 展开方向三态:实例显式 open-up 优先;
+        // 否则 max-bottom(卡片底窗口 y,实例化处传,0=不限)判空间——按钮底 +
+        // 6px 间距 + 列表高会越过卡底 8px 边距时自动向上(列表底贴按钮顶上方)。
+        // list-h/flip-up/max-bottom 声明在组件顶层(popup 内的 root 指向 popup
+        // 自己的根,引用不到它们);popup 绑定作用域能读组件元素 id(sbtn)。
+        y: flip-up ? -(list-h + 6px) : parent.height + 6px;
         width: parent.width;
         close-policy: close-on-click-outside;
         Rectangle {
