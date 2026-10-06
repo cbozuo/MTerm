@@ -5039,22 +5039,48 @@ fn wire_session_callbacks(
             // width 上报;上报后 on_dialog_chain_width 会重跑本闭包)。精确行
             // 模型(逻辑px):首行头「本机75+gap8+箭头20+gap8」= 111 + 末行尾
             // 「gap8+箭头20+gap8+目标110」= 146 + 容器 padding 24。
-            let mut row_cap = cw.get() as f64;
+            // (#chain-width-r3 2026-10-07) row_cap 改由**窗口尺寸推算**,弃 slint
+            // 端宽度上报链(容器 changed width / Timer 轮询 / callback 桥三条路
+            // 全部静默失效,诊断实证 cw 恒 0 兜底 470——两 chip 被强制分行的根因;
+            // absolute-position/changed 首次求值等 slint 触发时序坑太多,不再依赖)。
+            // 布局公式固定:dlg-card 宽 = min(600, 窗逻辑宽-48);链容器 = 卡宽-64
+            // (卡两侧内缩 32×2,实测锚定);行可用 = 容器-自身 padding 24。
+            let scale = window.window().scale_factor().max(0.01) as f64;
+            let win_logical_w = window.window().size().width as f64 / scale;
+            let card_w = (600.0f64).min(win_logical_w - 48.0);
+            let mut row_cap = card_w - 64.0;
             if row_cap < 100.0 {
-                row_cap = 470.0; // 兜底:容器宽未上报前(首帧)
+                row_cap = 470.0; // 兜底:窗口尺寸异常时
             }
-            // (#chain-cell-r12) chip 宽 = **min-width 180 + 内容自然撑开**
-            // (r11 修掉默认 stretch 均分后自然宽可靠):固定部分 85(pad9+徽章18
-            // +sp12+ops42+pad4),文字按 host 估(ascii 8px/全角 13px,min 100)。
+            // (#chain-cell-r22 2026-10-07) 装箱常量按渲染实测二次校准(截图像素
+            // ÷ 换算系数 0.4805 锚定,链容器 1115 截图 = 536 逻辑):
+            // - chip 实测:短名 171.5 / 长 IP 199.4(旧 est 180/206 虚高 8.5/6.6);
+            // - 端点实测:「本机」39.4(= fs-sm 全角 12×2 + padding 16)、「目标
+            //   主机」63.9(4 全角 + 16)—— 旧 31/98 反了方向;
+            // - 箭头区实测(含两侧 gap)≈ 28.8 → CHIP_GAP 29、DST_TAIL 93;
+            // - 文字系数:ascii≈6.6/全角≈11(fs-md 15px 实测回归)。
             fn text_w(s: &str) -> f64 {
-                s.chars().map(|c| if c.is_ascii() { 8.0 } else { 13.0 }).sum()
+                s.chars().map(|c| if c.is_ascii() { 6.6 } else { 11.0 }).sum()
             }
-            fn chip_w(e: &JumpEntry) -> f64 {
+            let total = chain.borrow().len();
+            fn chip_w(e: &JumpEntry, ops_n: usize) -> f64 {
                 let text = if e.host.is_empty() { &e.name } else { &e.host };
-                85.0 + (text_w(text)).max(100.0)
+                let fixed = 5.0 + 18.0 + 6.0 + 6.0 + (20.0 * ops_n as f64) + (1.0 * (ops_n as f64 - 1.0)) + 4.0;
+                (fixed + text_w(text)).max(172.0)
             }
-            const SRC_HEAD: f64 = 111.0; // 首行:本机端点 + 箭头(含 gap)
-            const DST_TAIL: f64 = 146.0; // 末行尾:箭头 + 目标主机端点(含 gap)
+            // 边界规则:单 chip 1 钮;首/末 2 钮;中间 3 钮。
+            let ops_n = |gi: usize| {
+                if total <= 1 {
+                    1
+                } else if gi == 0 || gi == total - 1 {
+                    2
+                } else {
+                    3
+                }
+            };
+            const SRC_HEAD: f64 = 68.0; // 首行:本机端点 39 + gap7 + 箭头 14 + gap7(实测)
+            const DST_TAIL: f64 = 93.0; // 末行尾:gap7 + 箭头 14 + gap7 + 目标主机 64(实测)
+            const CHIP_GAP: f64 = 29.0; // chip 间:gap7 + 箭头 14 + gap7(实测)
             const PAD: f64 = 24.0; // 容器左右 padding
             let entries: Vec<JumpEntry> =
                 chain.borrow().iter().map(session_models::jump_entry).collect();
@@ -5065,22 +5091,29 @@ fn wire_session_callbacks(
             let mut rows: Vec<Vec<JumpEntry>> = Vec::new();
             let mut cur: Vec<JumpEntry> = Vec::new();
             let mut cur_w = 0.0f64;
-            for e in &entries {
-                let w = chip_w(e);
-                if !cur.is_empty() && cur_w + w > row_cap - PAD {
+            for (gi, e) in entries.iter().enumerate() {
+                let w = chip_w(e, ops_n(gi));
+                // 行内 chip 间有「gap8+箭头20+gap8」:每多一块 chip 加 36。
+                let gap = if cur.is_empty() { 0.0 } else { CHIP_GAP };
+                if !cur.is_empty() && cur_w + gap + w > row_cap - PAD {
                     rows.push(std::mem::take(&mut cur));
                     cur_w = 0.0;
                 }
                 cur.push(e.clone());
                 let prefix = if rows.is_empty() && cur.len() == 1 { SRC_HEAD } else { 0.0 };
-                cur_w += prefix + w;
+                cur_w += prefix + gap + w;
             }
-            if !cur.is_empty() && cur_w + DST_TAIL > row_cap - PAD && cur.len() > 1 {
-                let last = cur.pop().unwrap();
+            // (#chain-cell-r22 2026-10-07) DST 判断带 **+30 渲染补偿**:est 常量
+            // (文字系数/min-width/chip 间隔)对渲染存在系统性虚高(4 chips 实测
+            // est 558 vs 渲染 ~495,虚高 ~60/两行 = 每 chip ~25-30),不补偿会把
+            // 「贴边能放下」的末行误判为放不下 → 目标主机被甩到独立行(用户
+            // 截图)。补偿后仍超员才独立行。
+            if !cur.is_empty() && cur_w + DST_TAIL > row_cap - PAD + 30.0 {
                 rows.push(std::mem::take(&mut cur));
-                cur = vec![last];
+                rows.push(Vec::new());
+            } else {
+                rows.push(std::mem::take(&mut cur));
             }
-            rows.push(cur);
 
             let row_models: Vec<ModelRc<JumpEntry>> = rows
                 .iter()
@@ -5115,6 +5148,11 @@ fn wire_session_callbacks(
         let refresh_cw = refresh_jump_chain.clone();
         let window_cw = window.as_weak();
         window.on_dialog_chain_width(move |w| {
+            // (#chain-width-r2) slint 端 250ms 重复上报,按值去抖:宽没变不重算
+            // (重跑会重建行 model,无变化时是纯浪费)。
+            if (cw.get() - w).abs() < 0.5 {
+                return;
+            }
             cw.set(w);
             tracing::warn!(w, "chain container width reported");
             // changed width 仅在值变化时触发,每次都重算(首次上报 = 弹框刚出

@@ -1407,11 +1407,11 @@ component JumpChip inherits Rectangle {
     callback tip-move(length, length);
     callback tip-hide();
     height: 32px;
-    // (#chain-cell-r12 2026-10-06) **min-width 180 + 内容自然撑开**:固定 180
-    // 装不下满位 IP(「192.168.100.202」≈103px 文字,固定后 elide,用户截图)。
-    // r11 已把全链路默认 stretch 均分修掉,自然宽不会再被拉宽——短会话保持
-    // 180 等宽,长 IP 完整显示(280 上限兜底)。
-    min-width: 180px;
+    // (#chain-cell-r22 2026-10-07) min-width 180 → 172:装箱常量按渲染实测
+    // 校准后(短名 chip 实际渲染 ≈171.5 逻辑,见 #chain-width-r3),min-width
+    // 与 est 对齐,消除「估算比渲染宽 → 放得下被误判分行」的系统性偏差。
+    // 长名仍由内容自然撑开(280 上限兜底)。
+    min-width: 172px;
     horizontal-stretch: 0;
     border-radius: 8px;
     border-width: 1px;
@@ -1580,7 +1580,9 @@ component ChainRow inherits HorizontalLayout {
     if root.is-last-row : HorizontalLayout {
         spacing: 8px;
         alignment: start;
-        ChainArrow { }
+        // (#chain-cell-r21) 前置箭头仅在行内有 chip 时渲染:目标主机独立成行
+        // (r21 空行)时上一行行尾已有悬空箭头,再画前置就是双箭头。
+        if root.entries.length > 0 : ChainArrow { }
         ChainEndpoint {
             label: @tr("Target host");
             tint: Theme.success;
@@ -3065,7 +3067,11 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                 label: @tr("Enable VT100 line drawing even in UTF-8 mode");
                                 hint: @tr("Show box-drawing output from servers that switch charsets (ESC(0, SO/SI) while staying in UTF-8, e.g. top or mc frames.");
                                 checked <=> root.draft-vt100-drawing;
-                                indent: 18px;
+                                // (#adv-align 2026-10-07) 原 indent:18px 靠缩进表达
+                                // 「从属于终端字符集」;用户要求高级区 VT100/说明行/
+                                // 警告/shell 集成五行左缘统一,取消缩进(从属关系由
+                                // 紧跟字符集之下的位置表达)。
+                                indent: 0px;
                             }
                         }
 
@@ -3177,6 +3183,30 @@ if root.draft-kind == "serial" : HorizontalLayout {
                             // 空态虚线框提示 → 添加成链;chip 悬停出信息卡/排序/删除。
                             if root.draft-path-type == "jump" && (root.draft-kind == "ssh" || root.draft-kind == "telnet") : VerticalLayout {
                                 spacing: 4px;
+                                // (#chain-width-r2 2026-10-07) 链容器宽度探针:原上报
+                                // 挂在 `if jump-chain.length > 0` 的链容器上——链空时
+                                // 元素不存在;创建后 changed width 首次求值也不触发
+                                // 回调 → Rust 永远拿兜底宽 470 装箱,两 chip 被强制
+                                // 分行(用户截图「放得下也分行」)。探针零高、跳板机
+                                // 模式选中即常驻:changed width 兜底 resize,0ms
+                                // Timer 在创建后布局完成时主动上报一次。
+                                width-probe := Rectangle {
+                                    height: 0px;
+                                    changed width => {
+                                        root.chain-width-changed(self.width / 1px);
+                                    }
+                                    // (#chain-width-r2) 250ms 重复上报:changed 在元素
+                                    // 创建后的首次求值不触发回调(实测 cw 恒 0),0ms
+                                    // Timer 也不可靠——持续上报 + Rust 端按值去抖
+                                    // (宽没变不重算)是确定性的兜底。
+                                    Timer {
+                                        interval: 250ms;
+                                        running: true;
+                                        triggered => {
+                                            root.chain-width-changed(width-probe.width / 1px);
+                                        }
+                                    }
+                                }
                                 // 链头行:标签 + 右侧提示(#chain-hint 2026-10-05 按用户
                                 // 终稿固定为一条;链位操作(↑↓×)悬停 chip 自解释)。
                                 HorizontalLayout {
@@ -3218,11 +3248,6 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                 // 损坏(rustc 0xc0000409),与本方案无关——重试前
                                 // 先删 target/debug/incremental。
                                 if root.jump-chain.length > 0 : Rectangle {
-                                    // (#chain-width) 链容器。宽度经回调上报
-                                    // Rust 触发重算(r12);warn 日志验证触发。
-                                    changed width => {
-                                        root.chain-width-changed(self.width / 1px);
-                                    }
                                     height: root.jump-chain-rows.length * 40px + 8px;
                                     border-radius: 8px;
                                     border-width: 1px;
