@@ -4,132 +4,1192 @@
 <meta charset="UTF-8">
 <title>主题与壁纸解耦 · 方案高保真 2026-10-05</title>
 <style>
+  /* ── 文档区自身配色（**不随主题变**）────────────────────────────
+     这套变量只服务于"说明用的这张页面"本身 —— 卡片、表格、正文。
+     真正的主题配色在下面 [data-theme="xxx"] 块里，两者互不影响。
+     判据：说明页与被说明的界面**必须用两套变量**，
+     否则切主题时连"说明文字本身"都跟着变色，用户读不了对照表。 */
   :root{
-    --bg-root:#1b1d23; --bg-panel:#23262d; --bg-panel-alt:#2a2d35; --bg-elevated:#30333c;
-    --bg-hover:#373a44; --border-subtle:#3a3d46; --border-control:#31353e;
-    --text-primary:#e6e8ee; --text-secondary:#b4b9c4; --text-muted:#9196a3;
-    --accent:#4a90e2; --accent-soft:rgba(74,144,226,.16); --chip:rgba(74,144,226,.22);
-    --field:#191b21; --field-2:#1d2027; --panel-hi:#282b34; --danger:#e25c5c;
-    --ok:#4ec9b0; --warn:#e2a84a;
+    --doc-bg:#1b1d23; --doc-panel:#23262d; --doc-alt:#2a2d35;
+    --doc-elev:#191b21; --doc-hov:#2e323a; --doc-act:#3f4350;
+    --doc-line:#3a3d46; --doc-line2:#4a4e59;
+    --doc-t1:#e6e8ee; --doc-t2:#b4b9c4; --doc-t3:#9196a3;
+    --doc-ac:#4a90e2; --doc-ok:#4ec9b0; --doc-wr:#e2a84a; --doc-dg:#e25c5c;
     --mono:"Cascadia Mono","Consolas","Sarasa Mono SC",monospace;
     --sans:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
   }
+
+  /* ── 主题派生槽位：全部 21 个变体共用同一份定义 ──
+     由语义色现场算，不独立取值 —— 换强调色时半透明底自动跟着变。
+     ⚠️ 这里**必须有 :root 选择器**。缺了它，这些声明就成了
+     "孤立声明"被浏览器整段丢弃 —— 症状很隐蔽：
+     页面看起来正常（只是半透明底都变透明了），
+     但 getComputedStyle 读任何 --accent-* 都返回空。
+     判据：**生成 CSS 变量块时，先确认块有选择器，再看内容。** */
+  [data-theme]{
+    --accent-soft:color-mix(in srgb, var(--accent) 15%, transparent);
+    --accent-soft-hi:color-mix(in srgb, var(--accent) 24%, transparent);
+    --accent-chip:color-mix(in srgb, var(--accent) 22%, transparent);
+    --accent-line:color-mix(in srgb, var(--accent) 34%, transparent);
+    --danger-soft:color-mix(in srgb, var(--danger) 14%, transparent);
+    --danger-line:color-mix(in srgb, var(--danger) 45%, transparent);
+    --warn-soft:color-mix(in srgb, var(--warn) 16%, transparent);
+    --neutral-line:rgba(128,128,128,.3);
+    --shadow:rgba(0,0,0,.55);
+    --shadow-weak:rgba(0,0,0,.3);
+  }
+
+  /* ═══ 现代 UI 色板 ═══ */
+  /* 石墨 · 暗 —— 1686★ */
+  [data-theme="graphite-dark"]{
+    --bg-root:        #111111;
+    --bg-panel:       #191919;
+    --bg-panel-alt:   #222222;
+    --bg-elev:        #2a2a2a;
+    --bg-hover:       #313131;
+    --bg-active:      #3a3a3a;
+    --bg-tab:         #1c1c1c;
+    --line:           #3a3a3a;
+    --line-strong:    #313131;
+    --t1:             #b4b4b4;
+    --t2:             #818181;
+    --t3:             #818181;
+    --term-bg:        #111111;
+    --term-fg:        #eeeeee;
+    --accent:         #0090ff;
+    --accent-2:       #2870bd;
+    --ok:             #46a758;
+    --warn:           #a18072;
+    --danger:         #e93d82;
+    --danger-strong:  #0090ff;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #7c9cff;
+    --ch-b:               #3ecfb8;
+    --ch-c:               #e5b84c;
+    --ch-d:               #e8859f;
+  }
+
+  /* 石墨 · 亮 —— 1686★ */
+  [data-theme="graphite-light"]{
+    --bg-root:        #fcfcfc;
+    --bg-panel:       #f9f9f9;
+    --bg-panel-alt:   #f0f0f0;
+    --bg-elev:        #e8e8e8;
+    --bg-hover:       #e0e0e0;
+    --bg-active:      #d9d9d9;
+    --bg-tab:         #f1f1f1;
+    --line:           #cecece;
+    --line-strong:    #bbbbbb;
+    --t1:             #202020;
+    --t2:             #646464;
+    --t3:             #646464;
+    --term-bg:        #fcfcfc;
+    --term-fg:        #202020;
+    --accent:         #0090ff;
+    --accent-2:       #0588f0;
+    --ok:             #29a383;
+    --warn:           #ffc53d;
+    --danger:         #e93d82;
+    --danger-strong:  #008dfa;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #3e63dd;
+    --ch-b:               #0c8a7d;
+    --ch-c:               #946200;
+    --ch-d:               #c22a52;
+  }
+
+  /* 石板 · 暗 —— 1686★ */
+  [data-theme="slate-dark"]{
+    --bg-root:        #111113;
+    --bg-panel:       #18191b;
+    --bg-panel-alt:   #212225;
+    --bg-elev:        #272a2d;
+    --bg-hover:       #2e3135;
+    --bg-active:      #363a3f;
+    --bg-tab:         #1b1c1e;
+    --line:           #363a3f;
+    --line-strong:    #2e3135;
+    --t1:             #b0b4ba;
+    --t2:             #7d8189;
+    --t3:             #7d8189;
+    --term-bg:        #111113;
+    --term-fg:        #edeef0;
+    --accent:         #00a2c7;
+    --accent-2:       #11809c;
+    --ok:             #46a758;
+    --warn:           #a18072;
+    --danger:         #e93d82;
+    --danger-strong:  #00a2c7;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #7c9cff;
+    --ch-b:               #3ecfb8;
+    --ch-c:               #e5b84c;
+    --ch-d:               #e8859f;
+  }
+
+  /* 石板 · 亮 —— 1686★ */
+  [data-theme="slate-light"]{
+    --bg-root:        #fcfcfd;
+    --bg-panel:       #f9f9fb;
+    --bg-panel-alt:   #f0f0f3;
+    --bg-elev:        #e8e8ec;
+    --bg-hover:       #e0e1e6;
+    --bg-active:      #d9d9e0;
+    --bg-tab:         #f1f1f3;
+    --line:           #cdced6;
+    --line-strong:    #b9bbc6;
+    --t1:             #1c2024;
+    --t2:             #60646c;
+    --t3:             #60646c;
+    --term-bg:        #fcfcfd;
+    --term-fg:        #1c2024;
+    --accent:         #00a2c7;
+    --accent-2:       #0797b9;
+    --ok:             #29a383;
+    --warn:           #ffc53d;
+    --danger:         #e93d82;
+    --danger-strong:  #0097ba;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #3e63dd;
+    --ch-b:               #0c8a7d;
+    --ch-c:               #946200;
+    --ch-d:               #c22a52;
+  }
+
+  /* 藕荷 · 暗 —— 1686★ */
+  [data-theme="mauve-dark"]{
+    --bg-root:        #121113;
+    --bg-panel:       #1a191b;
+    --bg-panel-alt:   #232225;
+    --bg-elev:        #2b292d;
+    --bg-hover:       #323035;
+    --bg-active:      #3c393f;
+    --bg-tab:         #1d1c1e;
+    --line:           #3c393f;
+    --line-strong:    #323035;
+    --t1:             #b5b2bc;
+    --t2:             #82808a;
+    --t3:             #82808a;
+    --term-bg:        #121113;
+    --term-fg:        #eeeef0;
+    --accent:         #5b5bd6;
+    --accent-2:       #5958b1;
+    --ok:             #46a758;
+    --warn:           #a18072;
+    --danger:         #e93d82;
+    --danger-strong:  #5b5bd6;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #7c9cff;
+    --ch-b:               #3ecfb8;
+    --ch-c:               #e5b84c;
+    --ch-d:               #e8859f;
+  }
+
+  /* 藕荷 · 亮 —— 1686★ */
+  [data-theme="mauve-light"]{
+    --bg-root:        #fdfcfd;
+    --bg-panel:       #faf9fb;
+    --bg-panel-alt:   #f2eff3;
+    --bg-elev:        #eae7ec;
+    --bg-hover:       #e3dfe6;
+    --bg-active:      #dbd8e0;
+    --bg-tab:         #f3f0f4;
+    --line:           #d0cdd7;
+    --line-strong:    #bcbac7;
+    --t1:             #211f26;
+    --t2:             #65636d;
+    --t3:             #65636d;
+    --term-bg:        #fdfcfd;
+    --term-fg:        #211f26;
+    --accent:         #5b5bd6;
+    --accent-2:       #5151cd;
+    --ok:             #29a383;
+    --warn:           #ffc53d;
+    --danger:         #e93d82;
+    --danger-strong:  #5b5bd6;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #3e63dd;
+    --ch-b:               #0c8a7d;
+    --ch-c:               #946200;
+    --ch-d:               #c22a52;
+  }
+
+  /* 青苔 · 暗 —— 1686★ */
+  [data-theme="sage-dark"]{
+    --bg-root:        #101211;
+    --bg-panel:       #171918;
+    --bg-panel-alt:   #202221;
+    --bg-elev:        #272a29;
+    --bg-hover:       #2e3130;
+    --bg-active:      #373b39;
+    --bg-tab:         #1b1d1c;
+    --line:           #373b39;
+    --line-strong:    #2e3130;
+    --t1:             #adb5b2;
+    --t2:             #78837f;
+    --t3:             #78837f;
+    --term-bg:        #101211;
+    --term-fg:        #eceeed;
+    --accent:         #29a383;
+    --accent-2:       #2a7e68;
+    --ok:             #46a758;
+    --warn:           #a18072;
+    --danger:         #e93d82;
+    --danger-strong:  #29a383;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #7c9cff;
+    --ch-b:               #3ecfb8;
+    --ch-c:               #e5b84c;
+    --ch-d:               #e8859f;
+  }
+
+  /* 青苔 · 亮 —— 1686★ */
+  [data-theme="sage-light"]{
+    --bg-root:        #fbfdfc;
+    --bg-panel:       #f7f9f8;
+    --bg-panel-alt:   #eef1f0;
+    --bg-elev:        #e6e9e8;
+    --bg-hover:       #dfe2e0;
+    --bg-active:      #d7dad9;
+    --bg-tab:         #f0f2f2;
+    --line:           #cbcfcd;
+    --line-strong:    #b8bcba;
+    --t1:             #1a211e;
+    --t2:             #5f6563;
+    --t3:             #5f6563;
+    --term-bg:        #fbfdfc;
+    --term-fg:        #1a211e;
+    --accent:         #29a383;
+    --accent-2:       #26997b;
+    --ok:             #29a383;
+    --warn:           #ffc53d;
+    --danger:         #e93d82;
+    --danger-strong:  #289d7e;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #3e63dd;
+    --ch-b:               #0c8a7d;
+    --ch-c:               #946200;
+    --ch-d:               #c22a52;
+  }
+
+  /* 暖砂 · 暗 —— 1686★ */
+  [data-theme="sand-dark"]{
+    --bg-root:        #111110;
+    --bg-panel:       #191918;
+    --bg-panel-alt:   #222221;
+    --bg-elev:        #2a2a28;
+    --bg-hover:       #31312e;
+    --bg-active:      #3b3a37;
+    --bg-tab:         #1c1c1b;
+    --line:           #3b3a37;
+    --line-strong:    #31312e;
+    --t1:             #b5b3ad;
+    --t2:             #83817b;
+    --t3:             #83817b;
+    --term-bg:        #111110;
+    --term-fg:        #eeeeec;
+    --accent:         #ffc53d;
+    --accent-2:       #8f6424;
+    --ok:             #46a758;
+    --warn:           #a18072;
+    --danger:         #e93d82;
+    --danger-strong:  #ffc53d;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #7c9cff;
+    --ch-b:               #3ecfb8;
+    --ch-c:               #e5b84c;
+    --ch-d:               #e8859f;
+  }
+
+  /* 暖砂 · 亮 —— 1686★ */
+  [data-theme="sand-light"]{
+    --bg-root:        #fdfdfc;
+    --bg-panel:       #f9f9f8;
+    --bg-panel-alt:   #f1f0ef;
+    --bg-elev:        #e9e8e6;
+    --bg-hover:       #e2e1de;
+    --bg-active:      #dad9d6;
+    --bg-tab:         #f2f2f1;
+    --line:           #cfceca;
+    --line-strong:    #bcbbb5;
+    --t1:             #21201c;
+    --t2:             #63635e;
+    --t3:             #63635e;
+    --term-bg:        #fdfdfc;
+    --term-fg:        #21201c;
+    --accent:         #ffc53d;
+    --accent-2:       #ffba18;
+    --ok:             #29a383;
+    --warn:           #ffc53d;
+    --danger:         #e93d82;
+    --danger-strong:  #ad8629;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #3e63dd;
+    --ch-b:               #0c8a7d;
+    --ch-c:               #946200;
+    --ch-d:               #c22a52;
+  }
+
+  /* 橄榄 · 暗 —— 1686★ */
+  [data-theme="olive-dark"]{
+    --bg-root:        #111210;
+    --bg-panel:       #181917;
+    --bg-panel-alt:   #212220;
+    --bg-elev:        #282a27;
+    --bg-hover:       #2f312e;
+    --bg-active:      #383a36;
+    --bg-tab:         #1c1d1b;
+    --line:           #383a36;
+    --line-strong:    #2f312e;
+    --t1:             #afb5ad;
+    --t2:             #7c837a;
+    --t3:             #7c837a;
+    --term-bg:        #111210;
+    --term-fg:        #eceeec;
+    --accent:         #e54d2e;
+    --accent-2:       #ac4d39;
+    --ok:             #46a758;
+    --warn:           #a18072;
+    --danger:         #e93d82;
+    --danger-strong:  #e54d2e;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #7c9cff;
+    --ch-b:               #3ecfb8;
+    --ch-c:               #e5b84c;
+    --ch-d:               #e8859f;
+  }
+
+  /* 橄榄 · 亮 —— 1686★ */
+  [data-theme="olive-light"]{
+    --bg-root:        #fcfdfc;
+    --bg-panel:       #f8faf8;
+    --bg-panel-alt:   #eff1ef;
+    --bg-elev:        #e7e9e7;
+    --bg-hover:       #dfe2df;
+    --bg-active:      #d7dad7;
+    --bg-tab:         #f1f2f1;
+    --line:           #cccfcc;
+    --line-strong:    #b9bcb8;
+    --t1:             #1d211c;
+    --t2:             #60655f;
+    --t3:             #60655f;
+    --term-bg:        #fcfdfc;
+    --term-fg:        #1d211c;
+    --accent:         #e54d2e;
+    --accent-2:       #dd4425;
+    --ok:             #29a383;
+    --warn:           #ffc53d;
+    --danger:         #e93d82;
+    --danger-strong:  #e54d2e;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #3e63dd;
+    --ch-b:               #0c8a7d;
+    --ch-c:               #946200;
+    --ch-d:               #c22a52;
+  }
+
+  /* ═══ 经典终端配色 ═══ */
+  /* 德古拉 · 暗 —— 23598★ */
+  [data-theme="dracula-dark"]{
+    --bg-root:        #282a36;
+    --bg-panel:       #282a36;
+    --bg-panel-alt:   #343746;
+    --bg-elev:        #3d3f4e;
+    --bg-hover:       #414453;
+    --bg-active:      #414453;
+    --bg-tab:         #3d3f4e;
+    --line:           #44475a;
+    --line-strong:    #565a73;
+    --t1:             #f8f8f2;
+    --t2:             #f8f8f2;
+    --t3:             #6272a4;
+    --term-bg:        #282a36;
+    --term-fg:        #f8f8f2;
+    --accent:         #bd93f9;
+    --accent-2:       #8be9fd;
+    --ok:             #50fa7b;
+    --warn:           #f1fa8c;
+    --danger:         #ff5555;
+    --danger-strong:  #ff5555;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #80b8ef;
+    --ch-b:               #80efd3;
+    --ch-c:               #efc680;
+    --ch-d:               #ef809c;
+  }
+
+  /* 德古拉 · 亮 —— 23598★ */
+  [data-theme="dracula-light"]{
+    --bg-root:        #fffbeb;
+    --bg-panel:       #fffbeb;
+    --bg-panel-alt:   #f7f5e8;
+    --bg-elev:        #f3f1e3;
+    --bg-hover:       #efeddd;
+    --bg-active:      #efeddd;
+    --bg-tab:         #cfcfde;
+    --line:           #cfcfde;
+    --line-strong:    #a9a8b0;
+    --t1:             #1f1f1f;
+    --t2:             #1f1f1f;
+    --t3:             #6c664b;
+    --term-bg:        #fffbeb;
+    --term-fg:        #1f1f1f;
+    --accent:         #7057c7;
+    --accent-2:       #036a96;
+    --ok:             #14710a;
+    --warn:           #846e15;
+    --danger:         #cf3f3f;
+    --danger-strong:  #cf3f3f;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #114c88;
+    --ch-b:               #158468;
+    --ch-c:               #885c11;
+    --ch-d:               #88112f;
+  }
+
+  /* 卡布奇诺 · 暗 —— 19807★ */
+  [data-theme="catppuccin-dark"]{
+    --bg-root:        #1e1e2e;
+    --bg-panel:       #1e1e2e;
+    --bg-panel-alt:   #181825;
+    --bg-elev:        #313244;
+    --bg-hover:       #45475a;
+    --bg-active:      #585b70;
+    --bg-tab:         #313244;
+    --line:           #45475a;
+    --line-strong:    #585b70;
+    --t1:             #cdd6f4;
+    --t2:             #bac2de;
+    --t3:             #a6adc8;
+    --term-bg:        #1e1e2e;
+    --term-fg:        #cdd6f4;
+    --accent:         #89b4fa;
+    --accent-2:       #b4befe;
+    --ok:             #a6e3a1;
+    --warn:           #f9e2af;
+    --danger:         #f38ba8;
+    --danger-strong:  #f38ba8;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #80b8ef;
+    --ch-b:               #80efd3;
+    --ch-c:               #efc680;
+    --ch-d:               #ef809c;
+  }
+
+  /* 卡布奇诺 · 亮 —— 19807★ */
+  [data-theme="catppuccin-light"]{
+    --bg-root:        #eff1f5;
+    --bg-panel:       #eff1f5;
+    --bg-panel-alt:   #e6e9ef;
+    --bg-elev:        #ccd0da;
+    --bg-hover:       #bcc0cc;
+    --bg-active:      #acb0be;
+    --bg-tab:         #ccd0da;
+    --line:           #bcc0cc;
+    --line-strong:    #acb0be;
+    --t1:             #4c4f69;
+    --t2:             #5c5f77;
+    --t3:             #6c6f85;
+    --term-bg:        #eff1f5;
+    --term-fg:        #4c4f69;
+    --accent:         #1e66f5;
+    --accent-2:       #7287fd;
+    --ok:             #40a02b;
+    --warn:           #df8e1d;
+    --danger:         #d20f39;
+    --danger-strong:  #d20f39;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #114c88;
+    --ch-b:               #158468;
+    --ch-c:               #885c11;
+    --ch-d:               #88112f;
+  }
+
+  /* Solarized · 暗 —— 16019★ */
+  [data-theme="solarized-dark"]{
+    --bg-root:        #002b36;
+    --bg-panel:       #002b36;
+    --bg-panel-alt:   #073642;
+    --bg-elev:        #586e75;
+    --bg-hover:       #586e75;
+    --bg-active:      #657b83;
+    --bg-tab:         #073642;
+    --line:           #586e75;
+    --line-strong:    #657b83;
+    --t1:             #fdf6e3;
+    --t2:             #eee8d5;
+    --t3:             #93a1a1;
+    --term-bg:        #002b36;
+    --term-fg:        #eee8d5;
+    --accent:         #268bd2;
+    --accent-2:       #2aa198;
+    --ok:             #859900;
+    --warn:           #b58900;
+    --danger:         #dc322f;
+    --danger-strong:  #de3e3b;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #80b8ef;
+    --ch-b:               #80efd3;
+    --ch-c:               #efc680;
+    --ch-d:               #ef809c;
+  }
+
+  /* Solarized · 亮 —— 16019★ */
+  [data-theme="solarized-light"]{
+    --bg-root:        #fdf6e3;
+    --bg-panel:       #fdf6e3;
+    --bg-panel-alt:   #eee8d5;
+    --bg-elev:        #eee8d5;
+    --bg-hover:       #eee8d5;
+    --bg-active:      #eee8d5;
+    --bg-tab:         #eee8d5;
+    --line:           #93a1a1;
+    --line-strong:    #657b83;
+    --t1:             #002b36;
+    --t2:             #123944;
+    --t3:             #2a4d56;
+    --term-bg:        #fdf6e3;
+    --term-fg:        #657b83;
+    --accent:         #268bd2;
+    --accent-2:       #2aa198;
+    --ok:             #859900;
+    --warn:           #b58900;
+    --danger:         #dc322f;
+    --danger-strong:  #dc322f;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #114c88;
+    --ch-b:               #11886a;
+    --ch-c:               #885c11;
+    --ch-d:               #88112f;
+  }
+
+  /* Gruvbox · 暗 —— 15778★ */
+  [data-theme="gruvbox-dark"]{
+    --bg-root:        #1d2021;
+    --bg-panel:       #282828;
+    --bg-panel-alt:   #32302f;
+    --bg-elev:        #3c3836;
+    --bg-hover:       #504945;
+    --bg-active:      #665c54;
+    --bg-tab:         #282828;
+    --line:           #504945;
+    --line-strong:    #665c54;
+    --t1:             #ebdbb2;
+    --t2:             #d5c4a1;
+    --t3:             #bdae93;
+    --term-bg:        #1d2021;
+    --term-fg:        #ebdbb2;
+    --accent:         #fe8019;
+    --accent-2:       #fabd2f;
+    --ok:             #b8bb26;
+    --warn:           #fabd2f;
+    --danger:         #fb4934;
+    --danger-strong:  #fb4934;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #80b8ef;
+    --ch-b:               #80efd3;
+    --ch-c:               #efc680;
+    --ch-d:               #ef809c;
+  }
+
+  /* Gruvbox · 亮 —— 15778★ */
+  [data-theme="gruvbox-light"]{
+    --bg-root:        #f9f5d7;
+    --bg-panel:       #fbf1c7;
+    --bg-panel-alt:   #f2e5bc;
+    --bg-elev:        #ebdbb2;
+    --bg-hover:       #d5c4a1;
+    --bg-active:      #bdae93;
+    --bg-tab:         #f2e5bc;
+    --line:           #d5c4a1;
+    --line-strong:    #bdae93;
+    --t1:             #504945;
+    --t2:             #665c54;
+    --t3:             #7c6f64;
+    --term-bg:        #f9f5d7;
+    --term-fg:        #504945;
+    --accent:         #af3a03;
+    --accent-2:       #b57614;
+    --ok:             #79740e;
+    --warn:           #b57614;
+    --danger:         #9d0006;
+    --danger-strong:  #9d0006;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #114c88;
+    --ch-b:               #11886a;
+    --ch-c:               #885c11;
+    --ch-d:               #88112f;
+  }
+
+  /* 东京夜 · 暗 —— 8212★ */
+  [data-theme="tokyonight-dark"]{
+    --bg-root:        #1a1b26;
+    --bg-panel:       #1f2335;
+    --bg-panel-alt:   #292e42;
+    --bg-elev:        #323247;
+    --bg-hover:       #323247;
+    --bg-active:      #24283b;
+    --bg-tab:         #24283b;
+    --line:           #292e42;
+    --line-strong:    #414868;
+    --t1:             #c0caf5;
+    --t2:             #a9b1d6;
+    --t3:             #787f9e;
+    --term-bg:        #1a1b26;
+    --term-fg:        #c0caf5;
+    --accent:         #7aa2f7;
+    --accent-2:       #7dcfff;
+    --ok:             #9ece6a;
+    --warn:           #e0af68;
+    --danger:         #f7768e;
+    --danger-strong:  #f7768e;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #80b8ef;
+    --ch-b:               #80efd3;
+    --ch-c:               #efc680;
+    --ch-d:               #ef809c;
+  }
+
+  /* 东京夜 · 亮 —— 8212★ */
+  [data-theme="tokyonight-light"]{
+    --bg-root:        #e1e2e7;
+    --bg-panel:       #e1e2e7;
+    --bg-panel-alt:   #d0d5e3;
+    --bg-elev:        #c4c8da;
+    --bg-hover:       #d0d5e3;
+    --bg-active:      #c4c8da;
+    --bg-tab:         #d0d5e3;
+    --line:           #c4c8da;
+    --line-strong:    #6172b0;
+    --t1:             #3760bf;
+    --t2:             #3760bf;
+    --t3:             #6172b0;
+    --term-bg:        #e1e2e7;
+    --term-fg:        #6172b0;
+    --accent:         #2e7de9;
+    --accent-2:       #007197;
+    --ok:             #587539;
+    --warn:           #8c6c3e;
+    --danger:         #f52a65;
+    --danger-strong:  #e4275e;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #114c88;
+    --ch-b:               #11886a;
+    --ch-c:               #885c11;
+    --ch-d:               #88112f;
+  }
+
+  /* 北欧 · 暗 —— 6886★ */
+  [data-theme="nord-dark"]{
+    --bg-root:        #2e3440;
+    --bg-panel:       #2e3440;
+    --bg-panel-alt:   #3b4252;
+    --bg-elev:        #434c5e;
+    --bg-hover:       #434c5e;
+    --bg-active:      #4c566a;
+    --bg-tab:         #3b4252;
+    --line:           #434c5e;
+    --line-strong:    #4c566a;
+    --t1:             #eceff4;
+    --t2:             #d8dee9;
+    --t3:             #a3aab9;
+    --term-bg:        #2e3440;
+    --term-fg:        #d8dee9;
+    --accent:         #88c0d0;
+    --accent-2:       #8fbcbb;
+    --ok:             #a3be8c;
+    --warn:           #ebcb8b;
+    --danger:         #bf616a;
+    --danger-strong:  #c7767d;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #80b8ef;
+    --ch-b:               #80efd3;
+    --ch-c:               #efc680;
+    --ch-d:               #ef809c;
+  }
+
+  /* 北欧 · 亮 —— 6886★ */
+  [data-theme="nord-light"]{
+    --bg-root:        #eceff4;
+    --bg-panel:       #eceff4;
+    --bg-panel-alt:   #e5e9f0;
+    --bg-elev:        #d8dee9;
+    --bg-hover:       #d8dee9;
+    --bg-active:      #c9d1e0;
+    --bg-tab:         #d8dee9;
+    --line:           #b6c2d4;
+    --line-strong:    #a5b3c8;
+    --t1:             #2e3440;
+    --t2:             #3b4252;
+    --t3:             #4c566a;
+    --term-bg:        #eceff4;
+    --term-fg:        #2e3440;
+    --accent:         #2f6bab;
+    --accent-2:       #2f7d90;
+    --ok:             #4f7a3d;
+    --warn:           #8a6d1f;
+    --danger:         #a3324a;
+    --danger-strong:  #a3324a;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #114c88;
+    --ch-b:               #11886a;
+    --ch-c:               #885c11;
+    --ch-d:               #88112f;
+  }
+
+  /* 常青 · 暗 —— 4244★ */
+  [data-theme="everforest-dark"]{
+    --bg-root:        #232a2e;
+    --bg-panel:       #2d353b;
+    --bg-panel-alt:   #343f44;
+    --bg-elev:        #3d484d;
+    --bg-hover:       #475258;
+    --bg-active:      #4f585e;
+    --bg-tab:         #343f44;
+    --line:           #475258;
+    --line-strong:    #4f585e;
+    --t1:             #d3c6aa;
+    --t2:             #9da9a0;
+    --t3:             #859289;
+    --term-bg:        #232a2e;
+    --term-fg:        #d3c6aa;
+    --accent:         #83c092;
+    --accent-2:       #7fbbb3;
+    --ok:             #a7c080;
+    --warn:           #dbbc7f;
+    --danger:         #e67e80;
+    --danger-strong:  #e67e80;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #80b8ef;
+    --ch-b:               #80efd3;
+    --ch-c:               #efc680;
+    --ch-d:               #ef809c;
+  }
+
+  /* 常青 · 亮 —— 4244★ */
+  [data-theme="everforest-light"]{
+    --bg-root:        #fdf6e3;
+    --bg-panel:       #f4f0d9;
+    --bg-panel-alt:   #efeBD4;
+    --bg-elev:        #e6e2cc;
+    --bg-hover:       #e0dcc7;
+    --bg-active:      #e0dcc7;
+    --bg-tab:         #efeBD4;
+    --line:           #e0dcc7;
+    --line-strong:    #e0dcc7;
+    --t1:             #5c6a72;
+    --t2:             #5c6a72;
+    --t3:             #829181;
+    --term-bg:        #fdf6e3;
+    --term-fg:        #5c6a72;
+    --accent:         #35a77c;
+    --accent-2:       #3a94c5;
+    --ok:             #8da101;
+    --warn:           #dfa000;
+    --danger:         #f85552;
+    --danger-strong:  #e9504d;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #114c88;
+    --ch-b:               #11886a;
+    --ch-c:               #885c11;
+    --ch-d:               #88112f;
+  }
+
+  /* 松玫瑰 · 暗 —— 1623★ */
+  [data-theme="rosepine-dark"]{
+    --bg-root:        #191724;
+    --bg-panel:       #191724;
+    --bg-panel-alt:   #1f1d2e;
+    --bg-elev:        #26233a;
+    --bg-hover:       #26233a;
+    --bg-active:      #26233a;
+    --bg-tab:         #26233a;
+    --line:           #26233a;
+    --line-strong:    #6e6a86;
+    --t1:             #e0def4;
+    --t2:             #908caa;
+    --t3:             #6e6a86;
+    --term-bg:        #191724;
+    --term-fg:        #e0def4;
+    --accent:         #31748f;
+    --accent-2:       #9ccfd8;
+    --ok:             #c4a7e7;
+    --warn:           #f6c177;
+    --danger:         #eb6f92;
+    --danger-strong:  #eb6f92;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #80b8ef;
+    --ch-b:               #80efd3;
+    --ch-c:               #efc680;
+    --ch-d:               #ef809c;
+  }
+
+  /* 松玫瑰 · 亮 —— 1623★ */
+  [data-theme="rosepine-light"]{
+    --bg-root:        #faf4ed;
+    --bg-panel:       #faf4ed;
+    --bg-panel-alt:   #fffaf3;
+    --bg-elev:        #f2e9e1;
+    --bg-hover:       #f2e9e1;
+    --bg-active:      #f2e9e1;
+    --bg-tab:         #f2e9e1;
+    --line:           #f2e9e1;
+    --line-strong:    #9893a5;
+    --t1:             #464261;
+    --t2:             #64607e;
+    --t3:             #6f6b89;
+    --term-bg:        #faf4ed;
+    --term-fg:        #464261;
+    --accent:         #286983;
+    --accent-2:       #56949f;
+    --ok:             #907aa9;
+    --warn:           #ea9d34;
+    --danger:         #b4637a;
+    --danger-strong:  #b4637a;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #114c88;
+    --ch-b:               #11886a;
+    --ch-c:               #885c11;
+    --ch-d:               #88112f;
+  }
+
+  /* 原子暗 · 暗 —— 1071★ */
+  [data-theme="onedark-dark"]{
+    --bg-root:        #1e2127;
+    --bg-panel:       #1e2127;
+    --bg-panel-alt:   #3a3f4b;
+    --bg-elev:        #4d535f;
+    --bg-hover:       #3a3f4b;
+    --bg-active:      #5c6370;
+    --bg-tab:         #3a3f4b;
+    --line:           #5c6370;
+    --line-strong:    #5c6370;
+    --t1:             #ffffff;
+    --t2:             #abb2bf;
+    --t3:             #878e9b;
+    --term-bg:        #1e2127;
+    --term-fg:        #abb2bf;
+    --accent:         #61afef;
+    --accent-2:       #56b6c2;
+    --ok:             #98c379;
+    --warn:           #d19a66;
+    --danger:         #e06c75;
+    --danger-strong:  #e06c75;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #80b8ef;
+    --ch-b:               #80efd3;
+    --ch-c:               #efc680;
+    --ch-d:               #ef809c;
+  }
+
+  /* 原子暗 · 亮 —— 1071★ */
+  [data-theme="onedark-light"]{
+    --bg-root:        #f9f9f9;
+    --bg-panel:       #f9f9f9;
+    --bg-panel-alt:   #f0f0f1;
+    --bg-elev:        #f0f0f1;
+    --bg-hover:       #ebebeb;
+    --bg-active:      #e5e5e6;
+    --bg-tab:         #ebebeb;
+    --line:           #e5e5e6;
+    --line-strong:    #383a42;
+    --t1:             #383a42;
+    --t2:             #6c6e73;
+    --t3:             #898a8f;
+    --term-bg:        #f9f9f9;
+    --term-fg:        #383a42;
+    --accent:         #4078f2;
+    --accent-2:       #0184bc;
+    --ok:             #50a14f;
+    --warn:           #986801;
+    --danger:         #e45649;
+    --danger-strong:  #e45649;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #114c88;
+    --ch-b:               #11886a;
+    --ch-c:               #885c11;
+    --ch-d:               #88112f;
+  }
+
+  /* ═══ JetBrains 官方 ═══ */
+  /* IDEA 暗 · 暗 —— JetBrains */
+  [data-theme="idea-dark"]{
+    --bg-root:        #2b2d30;
+    --bg-panel:       #2b2d30;
+    --bg-panel-alt:   #33353a;
+    --bg-elev:        #3c3f41;
+    --bg-hover:       #45494e;
+    --bg-active:      #4e5258;
+    --bg-tab:         #3c3f41;
+    --line:           #393b40;
+    --line-strong:    #4e5157;
+    --t1:             #dfdfe0;
+    --t2:             #bcbec4;
+    --t3:             #a8ac94;
+    --term-bg:        #1e1f22;
+    --term-fg:        #dfdfe0;
+    --accent:         #3574f0;
+    --accent-2:       #548af7;
+    --ok:             #499c54;
+    --warn:           #c77d2e;
+    --danger:         #d54e53;
+    --danger-strong:  #da6368;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #80b8ef;
+    --ch-b:               #80efd3;
+    --ch-c:               #efc680;
+    --ch-d:               #ef809c;
+  }
+
+  /* IDEA 亮 · 亮 —— JetBrains */
+  [data-theme="idea-light"]{
+    --bg-root:        #ffffff;
+    --bg-panel:       #ffffff;
+    --bg-panel-alt:   #f7f8fa;
+    --bg-elev:        #f2f3f5;
+    --bg-hover:       #e9eaec;
+    --bg-active:      #dfe1e5;
+    --bg-tab:         #e9eaec;
+    --line:           #ebecf0;
+    --line-strong:    #d3d5db;
+    --t1:             #1e1f22;
+    --t2:             #6c707e;
+    --t3:             #818594;
+    --term-bg:        #ffffff;
+    --term-fg:        #1e1f22;
+    --accent:         #3574f0;
+    --accent-2:       #1f6feb;
+    --ok:             #3d8b40;
+    --warn:           #9a6700;
+    --danger:         #c50f1f;
+    --danger-strong:  #c50f1f;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #114c88;
+    --ch-b:               #11886a;
+    --ch-c:               #885c11;
+    --ch-d:               #88112f;
+  }
+
+  /* ══════════════════════════════════════════════════════════════
+     文档区样式（说明这张页面本身，与 [data-theme] 主题变量无关）
+     ══════════════════════════════════════════════════════════════
+     ★ 表面层级（三层，别再混用）：
+         app   = --doc-bg页面底
+         card  = --doc-panel       卡片（章节容器）
+         elev  = --doc-elev        浮层 / 抬升面（内嵌面板、代码块）
+       原来的表格裸在卡片里 → 层级断裂，读起来像"卡片里又摊了一张纸"。
+     ★ 留白节奏：卡片内 18px、章节间 22px、段间 11px。
+       原来 14/10/…混着，密集处糊、疏处散。
+     ──────────────────────────────────────────────────────────── */
   *{margin:0;padding:0;box-sizing:border-box}
-  body{background:#0f1013;font-family:var(--sans);color:var(--text-primary);
-       min-height:100vh;padding:34px 24px 90px;display:flex;flex-direction:column;align-items:center;gap:18px}
-  h1{font-size:16px;font-weight:600;letter-spacing:.4px;color:var(--text-primary)}
-  .sub{font-size:12px;color:var(--text-muted);margin-top:-12px}
-  .sec{width:1180px;margin-top:14px}
-  .sec-t{font-size:14px;font-weight:700;color:var(--text-secondary);
-        border-left:3px solid var(--accent);padding-left:9px;margin-bottom:4px}
-  .sec-d{font-size:11.5px;color:var(--text-muted);line-height:1.75;margin:6px 0 12px 12px}
-  .card{width:1180px;background:var(--bg-panel);border:1px solid var(--border-subtle);
-        border-radius:10px;padding:18px 20px}
-  code{font-family:var(--mono);font-size:11px;color:var(--text-secondary)}
-  .tag{display:inline-block;font-size:9.5px;font-weight:700;padding:1.5px 7px;border-radius:7px;
-       vertical-align:2px;margin-right:6px}
+  body{background:var(--doc-bg);font-family:var(--sans);
+    color:var(--doc-t1);min-height:100vh;padding:40px 24px 100px;
+    display:flex;flex-direction:column;align-items:center;gap:0;
+    -webkit-font-smoothing:antialiased}
+  h1{font-size:17px;font-weight:650;letter-spacing:.3px;color:var(--doc-t1)}
+  .sub{font-size:12px;color:var(--doc-t3);margin-top:7px;
+    padding-bottom:20px;border-bottom:1px solid var(--doc-line);
+    width:1180px;text-align:left}
+
+  /* ── 章节 ── */
+  .sec{width:1180px;margin-top:22px}
+  .sec:first-of-type{margin-top:14px}
+  .sec-t{font-size:14.5px;font-weight:700;color:var(--doc-t1);
+    border-left:3px solid var(--doc-ac);
+    padding:2px 0 2px 11px;margin-bottom:9px;line-height:1.4}
+  .sec-d{font-size:11.5px;color:var(--doc-t3);line-height:1.8;
+    margin:0 0 12px 14px}
+  .card{width:100%;background:var(--doc-panel);
+    border:1px solid var(--doc-line);border-radius:11px;
+    padding:18px 20px}
+
+  /* ── 排版 ── */
+  .shead{font-size:12px;font-weight:700;color:var(--doc-t2);
+    letter-spacing:.2px}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+  .cols>*{min-width:0}
+  .mono{font-family:var(--mono);font-size:11px;color:var(--doc-t2)}
+  .c{font-size:11.5px;color:var(--doc-t3);line-height:1.75;
+    vertical-align:top}
+  .ok-c{color:#6bcf9e;font-weight:700}
+  .no-c{color:#ef8b8b;font-weight:700}
+  .new-c{color:#eec27a;font-weight:700}
+  .gap{height:14px}
+  .mono code,code{font-family:var(--mono);font-size:10.5px;
+    color:var(--doc-t2);background:var(--doc-elev);
+    padding:.5px 4px;border-radius:4px}
+  ul.docs{margin:5px 0 0 17px;font-size:11.5px;color:var(--doc-t2);
+    line-height:1.9}
+  ul.docs li::marker{color:var(--doc-ac)}
+  .kv{display:grid;grid-template-columns:132px 1fr;gap:5px 13px;
+    font-size:11.5px;margin-top:6px}
+  .kv b{color:var(--doc-t3);font-weight:600}
+
+  /* ── 表格 ──
+     ★ table-layout:fixed + 首列固定宽度：
+       长文本列不再被内容撑开 → 整表左对齐、右侧齐平。
+       原来 auto布局时，"说明"列因为长句把列宽吃掉，
+       右边的"取值"列被挤到很窄，两列都不好看。 */
+  /* 校验表：数字列**必须右对齐 + 不折行**，
+     否则 46px 宽的列里"15.5"会折成两行、整表节奏被打乱。
+     判据：**纯数字列给等宽字体 + 右对齐** —— 扫一列数字时
+     个位对齐，比左对齐快得多（也是终端里数字列的惯例）。 */
+  table.chk td.mono{text-align:right;white-space:nowrap;
+    padding-left:3px;padding-right:3px}
+  table.chk th{text-align:right}
+  table.chk th:nth-child(2),table.chk th:nth-child(3),
+  table.chk td:nth-child(2),table.chk td:nth-child(3){text-align:left}
+
+  table{width:100%;border-collapse:collapse;margin:7px 0 0;
+    table-layout:fixed;font-size:11px}
+  th,td{text-align:left;padding:5px 8px;vertical-align:top;
+    border-bottom:1px solid var(--doc-line);line-height:1.65}
+  th{font-weight:600;color:var(--doc-t3);font-size:10.5px;
+    background:var(--doc-elev)}
+  tr:last-child td{border-bottom:none}
+  td.mono{color:var(--doc-t2)}
+  .sw{display:inline-block;width:11px;height:11px;border-radius:3px;
+    box-shadow:inset 0 0 0 1px rgba(128,128,128,.3);
+    vertical-align:-1px;margin-right:5px}
+
+  /* ── 标签 ── */
+  .tag{display:inline-block;font-size:9.5px;font-weight:700;
+    padding:1.5px 7px;border-radius:7px;vertical-align:2px;
+    margin-right:6px}
   .tag-r{background:rgba(226,92,92,.16);color:#ef8b8b}
   .tag-o{background:rgba(226,168,74,.16);color:#eec27a}
   .tag-g{background:rgba(78,201,176,.16);color:#7fd9c6}
-  .tag-b{background:var(--chip);color:#7fb6ee}
+  .tag-b{background:rgba(74,144,226,.18);color:#8ab8ee}
 
-  /* 表格 */
-  table{width:100%;border-collapse:collapse;font-size:11.5px;margin-top:6px}
-  th,td{text-align:left;padding:6px 9px;border-bottom:1px solid var(--border-subtle);vertical-align:top}
-  th{color:var(--text-muted);font-weight:600;font-size:10.5px;letter-spacing:.3px}
-  td.c{color:var(--text-secondary)}
-  td.mono{font-family:var(--mono);font-size:10.5px;color:#8fb8e0}
-  tr:last-child td{border-bottom:0}
+  /* ── 提示框：三类，语义不同不能混用 ── */
+  .box{background:var(--doc-elev);border:1px solid var(--doc-line);
+    border-radius:8px;padding:11px 13px;
+    font-size:11.5px;color:var(--doc-t2);line-height:1.8}
+  .warnbox{background:rgba(226,168,74,.07);
+    border:1px solid rgba(226,168,74,.3);border-radius:8px;
+    padding:11px 13px;font-size:11.5px;color:var(--doc-t2);
+    line-height:1.8}
+  .redbox{background:rgba(226,92,92,.07);
+    border:1px solid rgba(226,92,92,.28);border-radius:8px;
+    padding:11px 13px;font-size:11.5px;color:var(--doc-t2);
+    line-height:1.8}
+  .box b,.warnbox b,.redbox b{color:var(--doc-t1)}
+  .box code,.warnbox code,.redbox code{background:transparent;
+    padding:0;color:var(--doc-t3)}
 
-  /* 分栏 */
-  .cols{display:flex;gap:14px;align-items:flex-start}
-  .cols>*{flex:1;min-width:0}
+  /* ── 改前 / 改后 对照 ── */
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:13px}
+  .bax{min-width:0}
+  .bax-h{font-size:10.5px;font-weight:700;padding:5px 9px;
+    border-radius:7px 7px 0 0}
+  .bax-b{background:var(--doc-elev);border:1px solid var(--doc-line);
+    border-radius:0 0 8px 8px;padding:11px;
+    font-size:11px;color:var(--doc-t2);line-height:1.7}
 
-  /* ── 主题卡 ── */
-  .tgrip{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
-  .tcard{background:var(--bg-root);border:1px solid var(--border-subtle);border-radius:10px;
-         overflow:hidden;cursor:pointer;transition:border-color .14s,transform .14s}
-  .tcard:hover{border-color:var(--accent);transform:translateY(-2px)}
-  .tcard.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
-  .tprev{height:112px;position:relative;display:flex;flex-direction:column}
-  .tprev .bar{height:15px;display:flex;align-items:center;gap:3px;padding:0 5px}
-  .tprev .bar i{width:5px;height:5px;border-radius:50%;display:block}
-  .tprev .body{flex:1;display:flex}
-  .tprev .side{width:26%;border-right:1px solid rgba(128,128,128,.25)}
-  .tprev .main{flex:1;padding:5px 6px;display:flex;flex-direction:column;gap:3px}
-  .tprev .ln{height:3px;border-radius:2px;display:block}
-  .tprev .chip{width:30px;height:9px;border-radius:3px;display:block}
-  .tmeta{padding:8px 10px 10px}
-  .tname{font-size:12px;font-weight:700;color:var(--text-primary)}
-  .ten{font-size:10px;color:var(--text-muted);margin-top:1px}
-  .tpair{display:flex;gap:4px;margin-top:6px}
-  .tpair div{flex:1;border-radius:5px;padding:4px 5px;font-size:9px;font-weight:700;text-align:center}
+  /* ── 设置界面模拟 ── */
+  .ifd{display:flex;height:452px;border:1px solid var(--doc-line2);
+    border-radius:9px;overflow:hidden;background:var(--doc-panel)}
+  .ifd-nav{width:158px;flex:0 0 158px;padding:9px 0}
+  .ifd-t{font-size:11.5px;font-weight:700;padding:4px 12px 9px;
+    border-bottom:1px solid var(--doc-line);margin-bottom:6px}
+  .ifd-navlist{display:flex;flex-direction:column}
+  .ni{display:flex;align-items:center;gap:7px;padding:5px 12px;
+    font-size:11px;color:var(--doc-t2);line-height:1.4}
+  .ni.on{font-weight:600}
+  .ni .ic{width:4px;height:4px;border-radius:1px;flex:0 0 4px;
+    background:currentColor;opacity:.55}
+  /* ⚠️ 必须是 auto（可滚动）而不是 hidden ——
+     hidden 会把溢出的内容**静默裁掉**，看不出是"溢出"还是"本来就这么长"。
+     真实设置页的内容区本来就是可滚动的（nav-scroll）。 */
+  .ifd-body{flex:1;min-width:0;overflow-y:auto;overflow-x:hidden;
+    border-left:1px solid var(--doc-line)}
+  .ifd-c{padding:11px 13px}
+  .srow{display:flex;align-items:center;gap:14px;
+    padding:8px 0;border-bottom:1px solid var(--doc-line)}
+  .srow:last-child{border-bottom:none}
+  .srow>div:first-child{flex:1;min-width:0}
+  .sl{font-size:11.5px;color:var(--doc-t1);line-height:1.5}
+  .sd{font-size:10.5px;color:var(--doc-t3);line-height:1.6;
+    margin-top:2px}
+  .seg{display:flex;border:1px solid var(--doc-line2);
+    border-radius:7px;overflow:hidden}
+  .seg>div{padding:5px 12px;font-size:10.5px;color:var(--doc-t2)}
+  .seg>div.on{background:var(--doc-ac);color:#fff;font-weight:600}
 
-  /* token 表 */
-  .tok{width:100%;font-family:var(--mono);font-size:10px;border-collapse:collapse;margin-top:4px}
-  .tok td{padding:2.5px 5px;border-bottom:1px solid rgba(128,128,128,.14)}
-  .tok .k{color:var(--text-muted);width:44%}
-  .tok .v{color:var(--text-secondary)}
-  .sw{display:inline-block;width:9px;height:9px;border-radius:2px;vertical-align:-1px;
-      margin-right:5px;border:1px solid rgba(128,128,128,.35)}
+  /* ── 滑杆 ── */
+  .slider{width:120px;height:3px;border-radius:2px;
+    background:var(--doc-line2);position:relative;flex:0 0 120px}
+  .slider .fill{position:absolute;left:0;top:0;bottom:0;
+    border-radius:2px;background:var(--doc-ac)}
+  .slider .kn{position:absolute;top:50%;width:11px;height:11px;
+    border-radius:50%;background:var(--doc-t1);
+    transform:translate(-50%,-50%);
+    box-shadow:0 1px 4px rgba(0,0,0,.5)}
+  .pct{font-size:10px;color:var(--doc-t3);width:34px;
+    text-align:right;flex:0 0 34px}
 
-  /* ── 1:1 设置面板 mock ── */
-  .ifd{width:820px;border-radius:10px;overflow:hidden;border:1px solid var(--border-strong);
-       display:flex;box-shadow:0 18px 48px rgba(0,0,0,.55);font-size:12px}
-  .ifd-nav{width:168px;flex:0 0 168px;display:flex;flex-direction:column}
-  .ifd-t{height:44px;display:flex;align-items:center;padding:0 10px 0 16px;font-weight:700;font-size:14px}
-  .ifd-navlist{flex:1;padding:10px;display:flex;flex-direction:column;gap:2px;overflow:hidden}
-  .ni{display:flex;align-items:center;gap:9px;height:32px;padding:0 10px;border-radius:7px;
-      font-size:12px;color:var(--text-secondary)}
-  .ni .ic{width:15px;height:15px;flex:0 0 15px;border-radius:4px;position:relative}
-  .ni .ic::after{content:"";position:absolute;inset:3px;border-radius:2px;background:currentColor;opacity:.75}
-  .ni.on{font-weight:700}
-  .ni.on .ic{color:var(--accent)}
-  .ifd-body{flex:1;display:flex;flex-direction:column;min-width:0}
-  .ifd-c{padding:14px 20px 18px;overflow:hidden}
+  /* ── 终端色样 ── */
+  .fil{display:inline-block;width:11px;height:11px;border-radius:3px;
+    box-shadow:inset 0 0 0 1px rgba(128,128,128,.3);
+    vertical-align:-1px}
+  .p{color:var(--doc-ac)}
+  .g{color:var(--doc-ok)}
+  .y{color:var(--doc-wr)}
+  .r{color:var(--doc-dg)}
+  .m{color:var(--doc-t3)}
+  .kn{color:var(--doc-t2)}
+  .dim{color:var(--doc-t3)}
+  .accents{display:flex;gap:6px;max-width:236px;flex-wrap:wrap}
+  .ac{width:26px;height:26px;border-radius:7px;cursor:pointer;
+    position:relative;box-shadow:inset 0 0 0 1px rgba(128,128,128,.3);
+    overflow:hidden}
+  .ac i{position:absolute;inset:0;display:block}
+  .ac:hover{box-shadow:inset 0 0 0 1.5px var(--doc-t3)}
+  .ac.on{box-shadow:inset 0 0 0 2px var(--doc-t1),0 0 0 2px var(--doc-ac)}
+  .tok{margin-top:8px}
+  .tok td{padding:3px 6px;font-size:10px}
+  .tok .k{font-family:var(--mono);color:var(--doc-t3);
+    white-space:nowrap;width:88px}
+  .tok .v{font-family:var(--mono);color:var(--doc-t2);
+    white-space:nowrap}
 
-  .shead{font-size:11px;font-weight:700;letter-spacing:.6px;margin:0 0 2px}
-  .srow{display:flex;align-items:center;justify-content:space-between;gap:16px;
-        padding:9px 0;border-bottom:1px solid var(--border-subtle)}
-  .srow:last-child{border-bottom:0}
-  .sl{font-size:12.5px;font-weight:600}
-  .sd{font-size:10.5px;margin-top:2px;line-height:1.55;max-width:330px}
-  .gap{height:14px}
+  .hint{width:1180px;font-size:11px;color:var(--doc-t3);
+    display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+    padding:0 4px}
+  .hint span{display:flex;align-items:center;gap:5px}
 
-  /* 通用控件 */
-  .seg{display:flex;gap:2px;padding:3px;border-radius:9px;border:1px solid var(--border-control)}
-  .seg button{border:0;background:transparent;font:inherit;font-size:11.5px;padding:5px 11px;
-              border-radius:6px;cursor:pointer;white-space:nowrap}
-  .slider{width:132px;height:20px;position:relative;display:flex;align-items:center}
-  .slider .trk{width:100%;height:4px;border-radius:2px;position:relative}
-  .slider .fil{position:absolute;left:0;top:0;bottom:0;border-radius:2px}
-  .slider .kn{position:absolute;top:50%;width:12px;height:12px;border-radius:50%;
-              transform:translate(-50%,-50%);border:2px solid}
-  .pct{font-size:11px;width:32px;text-align:right;font-family:var(--mono)}
 
-  /* 主题选择网格（设置页内） */
-  .tpick{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
-  .tp{height:74px;border-radius:8px;overflow:hidden;border:2px solid;position:relative;cursor:pointer}
-  .tp .inner{position:absolute;inset:0;display:flex;flex-direction:column}
-  .tp .tbar{height:11px;display:flex;align-items:center;padding:0 4px;gap:2px}
-  .tp .tbar i{width:4px;height:4px;border-radius:50%;display:block}
-  .tp .tbody{flex:1;display:flex}
-  .tp .tside{width:24%;border-right:1px solid rgba(128,128,128,.28)}
-  .tp .tmain{flex:1;padding:4px 5px;display:flex;flex-direction:column;gap:3px}
-  .tp .tmain i{height:3px;border-radius:2px;display:block}
-  .tp .tchip{position:absolute;right:5px;bottom:5px;width:22px;height:8px;border-radius:3px}
-  .tp .tick{position:absolute;right:5px;top:5px;width:13px;height:13px;border-radius:50%;
-            display:none;align-items:center;justify-content:center;font-size:8px;color:#fff;font-weight:800}
-  .tp.sel .tick{display:flex}
-  .tp-name{font-size:10.5px;margin-top:4px;text-align:center}
+  /* JetBrains 官方 */
+  /* Darcula · 暗 —— JetBrains */
+  [data-theme="darcula"]{
+    --bg-root:        #3c3f41;
+    --bg-panel:       #3c3f41;
+    --bg-panel-alt:   #313335;
+    --bg-elev:        #45494a;
+    --bg-hover:       #4e5254;
+    --bg-active:      #565b60;
+    --bg-tab:         #45494a;
+    --line:           #515151;
+    --line-strong:    #5a5d5f;
+    --t1:             #ffffff;
+    --t2:             #bbbbbb;
+    --t3:             #a9a7a3;
+    --term-bg:        #2b2b2b;
+    --term-fg:        #ffffff;
+    --accent:         #589df6;
+    --accent-2:       #287bde;
+    --ok:             #499c54;
+    --warn:           #c77d2e;
+    --danger:         #e06c75;
+    --danger-strong:  #e2737c;
+    /* 频道 4 槽：固定色相，跨全部主题共用 */
+    --ch-a:               #80b8ef;
+    --ch-b:               #80efd3;
+    --ch-c:               #efc680;
+    --ch-d:               #ef809c;
+  }
 
-  /* 强调色 */
-  .accents{display:flex;gap:6px;flex-wrap:wrap;max-width:250px}
-  .ac{width:19px;height:19px;border-radius:5px;cursor:pointer;position:relative;border:1px solid rgba(128,128,128,.3)}
-  .ac.on::after{content:"";position:absolute;inset:-3px;border-radius:7px;border:2px solid var(--accent)}
-
-  /* ── 终端小样（可换肤演示） ── */
-  .demo{border-radius:9px;overflow:hidden;border:1px solid var(--border-subtle)}
+  .demo{border-radius:9px;overflow:hidden;border:1px solid var(--doc-line)}
   .dm-bar{height:26px;display:flex;align-items:center;padding:0 9px;gap:8px;font-size:10.5px}
   .dm-tab{height:18px;padding:0 9px;border-radius:5px 5px 0 0;display:flex;align-items:center;font-size:10px}
   .dm-term{padding:9px 11px;font-family:var(--mono);font-size:11px;line-height:1.62;min-height:118px}
@@ -141,20 +1201,152 @@
 
   /* 对比 */
   .ba{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  .bax{border:1px solid var(--border-subtle);border-radius:9px;overflow:hidden}
+  .bax{border:1px solid var(--doc-line);border-radius:9px;overflow:hidden}
   .bax-h{font-size:10.5px;font-weight:700;padding:5px 10px;letter-spacing:.4px;
-         border-bottom:1px solid var(--border-subtle)}
+         border-bottom:1px solid var(--doc-line)}
   .bax-b{padding:11px 12px}
-  .arrow{text-align:center;font-size:15px;color:var(--accent);margin:2px 0}
+  .arrow{text-align:center;font-size:15px;color:var(--doc-ac);margin:2px 0}
 
   /* 行为矩阵 */
   .ok-c{color:#7fd9c6;font-weight:700}
   .no-c{color:#ef8b8b;font-weight:700}
   .new-c{color:#eec27a;font-weight:700}
-  ul.docs{margin:4px 0 0 16px;font-size:11.5px;color:var(--text-secondary);line-height:1.85}
-  ul.docs li::marker{color:var(--accent)}
+  ul.docs{margin:4px 0 0 16px;font-size:11.5px;color:var(--doc-t2);line-height:1.85}
+  ul.docs li::marker{color:var(--doc-ac)}
   .kv{display:grid;grid-template-columns:130px 1fr;gap:4px 12px;font-size:11.5px;margin-top:6px}
-  .kv b{color:var(--text-muted);font-weight:600}
+  .kv b{color:var(--doc-t3);font-weight:600}
+
+  /* ═══ 主题选择器：下拉框 + 悬停预览 ═══════════════════════════
+     33 个变体放不进网格 —— 一屏最多 6 列 × 4 行 = 24 个，
+     而且网格没有"分组"的位置，33个平铺会让用户无从下手。
+     判据：**选项数超过一屏能舒适显示的量，就换列表**。
+     33 个 → 列表（可滚动 + 可分组）；≤12 个 → 网格仍然更好（省一次点击）。 */
+
+  .tpk{display:flex;gap:11px;align-items:stretch}
+  /* ── 容器窄时改**纵向**（下拉在上、预览在下）─────────────────
+     ★ 判据：**先定"目标位置"，再选实现手段**。
+     这里的目标是"下拉 + 预览都要完整可读"，而不是"它们必须左右排"。
+     横向是手段，不是目的 —— 容器放不下（ifd-body 内容区仅 ~190px）
+     时纵向才是达成目标的手段。
+     ⚠️ 真实设置面板（~560px）仍用横向：那边空间够，
+        横向能同时看到"选中什么"和"长什么样"。 */
+  /* ⚠️ 祖先选择器要对准**真实祖先链**：设置界面里 tpk 嵌在
+     .ifd > .ifd-body > .ifd-c 里，**不直属 .ifd**。
+     写成 `.ifd .tpk` 时（若 tpk 直接在 .ifd 下）才命中；
+     这里实际靠 .ifd-c 命中 → 选择器必须写 .ifd-c .tpk。
+     判据：**后代选择器要按真实 DOM 层级写，不能凭应该是这样猜。** */
+  .ifd-c .tpk{flex-direction:column;gap:9px}
+  .ifd-c .tpk-btn{flex:none;width:100%}
+
+  /* 下拉：触发器 */
+  .tpk-btn{flex:0 0 258px;display:flex;flex-direction:column;gap:0;
+    background:var(--doc-elev);border:1px solid var(--doc-line2);
+    border-radius:8px;overflow:visible;cursor:pointer;position:relative}
+  .tpk-btn:hover{border-color:var(--doc-t3)}
+  .tpk-btn.open{border-color:var(--doc-ac)}
+  .tpk-cur{display:flex;align-items:center;gap:9px;padding:8px 10px}
+  .tpk-thumb{width:44px;height:30px;border-radius:5px;overflow:hidden;
+    flex:0 0 44px;position:relative;border:1px solid rgba(128,128,128,.28)}
+  .tpk-txt{flex:1;min-width:0;text-align:left}
+  .tpk-n1{font-size:12px;color:var(--doc-t1);line-height:1.35}
+  .tpk-n2{font-size:10px;color:var(--doc-t3);line-height:1.35;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tpk-caret{width:9px;height:9px;flex:0 0 9px;color:var(--doc-t3);
+    transition:transform .14s}
+  .tpk-btn.open .tpk-caret{transform:rotate(180deg)}
+
+  /* 下拉：浮层
+     ⚠️ **必须 position:fixed**，不能用 absolute ——
+     `.ifd` / `.ifd-body` 带 overflow:hidden（模拟设置页的滚动区），
+     absolute 浮层会被**裁掉**，实测只显示 4 行就断了。
+     fixed 的包含块是视口，不受祖先 overflow 影响。
+     代价是坐标要自己算（见 JS 的 placePop）。 */
+  .tpk-pop{position:fixed;width:258px;
+    background:var(--doc-panel);border:1px solid var(--doc-line2);
+    border-radius:8px;z-index:60;box-shadow:0 16px 40px rgba(0,0,0,.6);
+    display:none;overflow:hidden}
+  .ifd-c .tpk-pop{width:auto;min-width:264px}
+  .tpk-btn.open .tpk-pop{display:block}
+  .tpk-search{padding:6px;border-bottom:1px solid var(--doc-line)}
+  .tpk-si{width:100%;background:var(--doc-alt);border:1px solid var(--doc-line);
+    border-radius:6px;padding:5px 8px;font-size:11px;color:var(--doc-t1);
+    font-family:var(--sans)}
+  .tpk-list{max-height:296px;overflow-y:auto;padding:4px 0}
+  .tpk-grp{padding:8px 10px 3px;font-size:9.5px;letter-spacing:.5px;
+    color:var(--doc-t3);display:flex;align-items:center;gap:6px}
+  .tpk-grp::after{content:"";flex:1;height:1px;background:var(--doc-line)}
+  .tpk-row{display:flex;align-items:center;gap:9px;padding:5px 10px;
+    cursor:pointer;position:relative}
+  .tpk-row:hover{background:var(--doc-hov)}
+  .tpk-row.on{background:var(--doc-ac);color:#fff}
+  .tpk-row.on .tpk-r2,.tpk-row.on .tpk-nm{color:rgba(255,255,255,.82)}
+  .tpk-th{width:34px;height:22px;border-radius:4px;overflow:hidden;
+    flex:0 0 34px;position:relative;border:1px solid rgba(128,128,128,.24)}
+  .tpk-nm{flex:1;min-width:0;font-size:11.5px;color:var(--doc-t1);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tpk-r2{font-size:9.5px;color:var(--doc-t3);flex:0 0 auto}
+  .tpk-empty{padding:14px 10px;font-size:11px;color:var(--doc-t3);
+    text-align:center}
+
+  /* 悬停预览：右侧固定面板（非浮出）——
+     ⚠️ 不用浮出卡：下拉宽258 + 浮出卡300 = 558，
+     而设置面板的内容区只有 ~560 —— 放不下就会盖住右边内容。
+     判据：**浮出层与固定面板二选一时，看空间**：
+     空间够用固定面板（不遮挡、可长时间停留），不够才用浮出卡。*/
+  .tpk-prev{flex:1;min-width:0;background:var(--doc-bg);
+    border:1px solid var(--doc-line);border-radius:8px;padding:10px;
+    display:flex;flex-direction:column;gap:8px}
+  .tpk-pv-hd{display:flex;align-items:baseline;gap:7px}
+  .tpk-pv-n1{font-size:12.5px;color:var(--doc-t1);font-weight:600}
+  .tpk-pv-n2{font-size:10px;color:var(--doc-t3)}
+  .tpk-pv-star{margin-left:auto;font-size:9.5px;color:var(--doc-wr);
+    font-weight:700}
+  .tpk-pv-desc{font-size:11px;color:var(--doc-t2);line-height:1.7;
+    min-height:36px}
+  .tpk-pv-lic{font-size:10px;color:var(--doc-t3);line-height:1.6}
+  .tpk-pv-bar{display:flex;gap:3px;padding:2px}
+  .tpk-pv-bar i{width:22px;height:11px;border-radius:2px;display:block}
+  .tpk-pv-bar i:first-child{width:42px}
+
+  /* 预览里的迷你界面（与真实界面同构造） */
+  .pv{height:112px;border-radius:6px;overflow:hidden;
+    display:flex;flex-direction:column;flex:0 0 112px}
+  .pv-bar{height:13px;display:flex;align-items:center;gap:3px;
+    padding:0 5px;flex:0 0 13px}
+  .pv-bar i{width:5px;height:5px;border-radius:50%;display:block;flex:0 0 5px}
+  .pv-tab{height:20px;display:flex;align-items:stretch;flex:0 0 20px}
+  .pv-tab .pt{width:88px;position:relative;display:block}
+  .pv-tab .pt.on{box-shadow:inset 0 2px 0 currentColor}
+  .pt .ltr{position:absolute;left:0;top:5px;width:3px;height:8px;
+    border-radius:1px;display:block}
+  .pt .lb{position:absolute;left:6px;top:5px;width:6px;height:8px;
+    font-size:8px;line-height:8px;font-weight:800;display:block}
+  .pt .tx{position:absolute;left:15px;top:5px;right:5px;height:8px;
+    font-size:8px;line-height:8px;overflow:hidden;white-space:nowrap;
+    display:block}
+  .pv-tab .add{width:18px;display:flex;align-items:center;justify-content:center;
+    font-size:9px;flex:0 0 18px}
+  .pv-side{width:26%;display:flex;flex-direction:column;gap:4px;
+    padding:5px 4px;flex:0 0 26%}
+  .pv-side i{height:3px;border-radius:2px;display:block}
+  .pv-side i.on{height:5px}
+  .pv-main{flex:1;min-width:0;padding:4px 5px;display:flex;
+    flex-direction:column;gap:3px}
+  .pv-main .ln{height:4px;border-radius:2px;display:block}
+  .pv-main .mk{height:11px;border-radius:3px;display:block;margin-top:2px}
+
+  /* 槽位表（预览下方） */
+  .tpk-slots{display:grid;grid-template-columns:repeat(2,1fr);gap:2px 8px}
+  /* 窄容器（190px）下2 列各~90px，色值与变量名会挤在一起 → 改 1 列 */
+  .ifd-c .tpk-slots{grid-template-columns:1fr}
+  .ifd-c .tpk-pv-desc{min-height:0}
+  .tpk-sl{display:flex;align-items:center;gap:6px;font-size:9.5px;
+    color:var(--doc-t3)}
+  .tpk-sl b{font-family:var(--mono);font-size:9px;font-weight:400;
+    color:var(--doc-t2);min-width:52px}
+  .tpk-sl .sq{width:11px;height:11px;border-radius:3px;
+    box-shadow:inset 0 0 0 1px rgba(128,128,128,.28);flex:0 0 11px}
+
 </style>
 </head>
 <body>
@@ -216,28 +1408,28 @@
   <div class="sec-d">核心原则：<b>壁纸只负责"背后那张图"，不参与任何颜色决策</b>。强调色从主题里独立出来，成为用户可直接选的一等公民。</div>
   <div class="card">
     <div style="display:flex;gap:12px;align-items:stretch">
-      <div style="flex:1;border:1px solid var(--border-subtle);border-radius:9px;padding:13px 14px;background:var(--bg-root)">
+      <div style="flex:1;border:1px solid var(--doc-line);border-radius:9px;padding:13px 14px;background:var(--doc-bg)">
         <div class="tag tag-b">L1</div>
         <div style="font-size:13px;font-weight:700;margin-bottom:3px">主题 Theme</div>
-        <div style="font-size:10.5px;color:var(--text-muted);line-height:1.7">
+        <div style="font-size:10.5px;color:var(--doc-t3);line-height:1.7">
           一整套中性色阶 + 语义色 + 终端 ANSI 调色板。<br>
           决定<b>所有文字与面的可读性</b>，是唯一的"对比度责任人"。<br>
           标识：<code>theme = meat-dark</code>
         </div>
       </div>
-      <div style="flex:1;border:1px solid var(--border-subtle);border-radius:9px;padding:13px 14px;background:var(--bg-root)">
+      <div style="flex:1;border:1px solid var(--doc-line);border-radius:9px;padding:13px 14px;background:var(--doc-bg)">
         <div class="tag tag-g">L2</div>
         <div style="font-size:13px;font-weight:700;margin-bottom:3px">强调色 Accent</div>
-        <div style="font-size:10.5px;color:var(--text-muted);line-height:1.7">
+        <div style="font-size:10.5px;color:var(--doc-t3);line-height:1.7">
           8 个预设 + 取色器。用于选中态、主按钮、链接、焦点环。<br>
           <b>不再由壁纸决定</b>，也不由主题锁死。<br>
           标识：<code>accent = ocean</code>
         </div>
       </div>
-      <div style="flex:1;border:1px solid var(--border-subtle);border-radius:9px;padding:13px 14px;background:var(--bg-root)">
+      <div style="flex:1;border:1px solid var(--doc-line);border-radius:9px;padding:13px 14px;background:var(--doc-bg)">
         <div class="tag tag-o">L3</div>
         <div style="font-size:13px;font-weight:700;margin-bottom:3px">壁纸 Wallpaper</div>
-        <div style="font-size:10.5px;color:var(--text-muted);line-height:1.7">
+        <div style="font-size:10.5px;color:var(--doc-t3);line-height:1.7">
           一张图 + 三个独立透明度（可见度 / 面板 / 终端）。<br>
           <b>不读主题，不写主题</b>。可选"跟随图片取色"，默认关。<br>
           标识：<code>wallpaper = ""</code>
@@ -252,10 +1444,10 @@
         <div class="shead" style="margin-bottom:7px">绘制顺序（改完之后的栈）</div>
         <table>
           <tr><th style="width:26px">z0</th><th class="c">窗口底色 = 主题 base-bg-root（永远不透明）</th></tr>
-          <tr><th>z1</th><th class="c">壁纸图（image-fit: cover，受"壁纸可见度"控制）</td></tr>
-          <tr><th>z2</th><th class="c">面板雾面 = 主题面色 + 主题色微染 + "面板不透明度"</td></tr>
-          <tr><th>z3</th><th class="c">终端底 = 主题 base-term-bg + "终端不透明度"</td></tr>
-          <tr><th>z4</th><th class="c">弹窗 / 菜单 = 主题面色，<b>始终不透明</b>（现状 popup-bg 保持）</td></tr>
+          <tr><th>z1</th><th class="c">壁纸图（image-fit: cover，受"壁纸可见度"控制）</th></tr>
+          <tr><th>z2</th><th class="c">面板雾面 = 主题面色 + 主题色微染 + "面板不透明度"</th></tr>
+          <tr><th>z3</th><th class="c">终端底 = 主题 base-term-bg + "终端不透明度"</th></tr>
+          <tr><th>z4</th><th class="c">弹窗 / 菜单 = 主题面色，<b>始终不透明</b>（现状 popup-bg 保持）</th></tr>
         </table>
         <div class="shead" style="margin:14px 0 6px">与现状的差别</div>
         <ul class="docs">
@@ -273,7 +1465,7 @@
           <tr><td class="c">终端不透明度</td><td class="c">仅终端区（有独立下限 0.75）</td><td class="mono">75–100%</td><td class="mono">100%</td></tr>
         </table>
         <div class="shead" style="margin:14px 0 6px">终端可读性下限（新增保护）</div>
-        <div style="font-size:11.5px;color:var(--text-secondary);line-height:1.8">
+        <div style="font-size:11.5px;color:var(--doc-t2);line-height:1.8">
           终端是唯一承载不可控 ANSI 输出的区域，因此拆出硬约束：<br>
           <code>term-alpha = max(0.75, 终端不透明度)</code><br>
           <span class="tag tag-g">修掉</span>现状里"浅色终端 + 亮壁纸 = 文字发飘"这个只有用户自己能发现的坑。
@@ -285,13 +1477,132 @@
 
 <!-- ══════════ §2 主题设计 ══════════ -->
 <div class="sec">
-  <div class="sec-t">2 · 主题预设设计（4 套色系 × 明/暗 = 8 个变体）</div>
+  <div class="sec-t">2 · 主题预设：9 套社区色系 + 3 套 IDEA 主题 = 21 个变体</div>
   <div class="sec-d">
-    设计约束：<b>4 套色系都按同一套语义槽位填色</b>（root / panel / panel-alt / elevated / hover / active / line / line-strong / text ×3 / term），
-    所以切换主题不产生任何布局位移 —— 只有颜色变。点卡片可实时看终端小样换肤。
+    全部色值取自各自<b>官方发布的调色板文件</b>（不是自创、不是凭印象填的），
+    逐套校验对比度后填进同一组语义槽位 —— 所以切主题<b>不产生任何布局位移</b>，
+    只有颜色变。点卡片可实时看终端小样换肤。
   </div>
   <div class="card">
-    <div class="tgrip" id="tgrip"></div>
+
+    <!-- ① 三个族：为什么不能只有终端配色 -->
+    <div class="redbox" style="margin-bottom:15px">
+      <b>为什么终端社区的成熟色系，铺满界面会"掉一个档次"</b><br>
+      这个问题不是审美偏好，是<b>用途错配</b>：<br>
+      <table style="margin-top:6px;background:transparent">
+        <tr><th style="width:112px;background:transparent;border-color:rgba(128,128,128,.2)">维度</th>
+          <th style="width:184px;background:transparent;border-color:rgba(128,128,128,.2)">终端配色（Nord / Dracula…）</th>
+          <th style="background:transparent;border-color:rgba(128,128,128,.2)">界面色板（Radix）</th></tr>
+        <tr><td class="c" style="background:transparent;border-color:rgba(128,128,128,.2)">为谁设计</td>
+          <td class="c" style="background:transparent;border-color:rgba(128,128,128,.2)">
+            <b>ANSI 16 色</b> —— 前景/背景之间要<b>硬对比</b>，
+            长时间读输出才不累</td>
+          <td class="c" style="background:transparent;border-color:rgba(128,128,128,.2)">
+            <b>界面元素</b> —— 底/面板/弹窗/悬停要<b>柔和分层</b>，
+            大面积铺开不刺眼</td></tr>
+        <tr><td class="c" style="background:transparent;border-color:rgba(128,128,128,.2)">面板层级</td>
+          <td class="c" style="background:transparent;border-color:rgba(128,128,128,.2)">
+            <b class="no-c">没有</b> —— 终端里只有"底 + 文字"两个概念。
+            硬造三级面板只能靠色相偏移，面板间色差仅 0.02~0.03 → <b>糊</b></td>
+          <td class="c" style="background:transparent;border-color:rgba(128,128,128,.2)">
+            <b>12 档等距阶梯</b>，每档官方标注用途
+            （背景 / 悬停 / 边框 / 文字）→ 层级天然清晰</td></tr>
+        <tr><td class="c" style="background:transparent;border-color:rgba(128,128,128,.2)">对比度基准</td>
+          <td class="c" style="background:transparent;border-color:rgba(128,128,128,.2)">WCAG 2.1</td>
+          <td class="c" style="background:transparent;border-color:rgba(128,128,128,.2)">
+            <b>APCA</b>（感知对比度算法）—— 更贴近人眼，
+            这是它敢把背景推得更"柔"的前提</td></tr>
+        <tr><td class="c" style="background:transparent;border-color:rgba(128,128,128,.2)">色域</td>
+          <td class="c" style="background:transparent;border-color:rgba(128,128,128,.2)">sRGB</td>
+          <td class="c" style="background:transparent;border-color:rgba(128,128,128,.2)">
+            <b>P3</b> —— 亮度能推上去而不偏色</td></tr>
+      </table>
+      <br><b class="new-c">判据：色系要按"它服务什么"选，不是按"它多好看"选。</b><br>
+      把终端配色当界面主题用，就像把工程测量尺当装饰 —— 不是不行，是不对口。
+      所以两类<b>都要</b>，但要在选单里<b>分组</b>，
+      让用户知道自己看到的是哪一类。<br>
+      <b class="ok-c">新增「现代 UI 色板」族（Radix Colors，MIT，1686★）</b>
+      —— 6 个中性色系 × 明暗 = 12 个变体，打头排在选单最前。
+      配色是<b>成对挑</b>的（灰 + 强调），不是随机组合：
+      sage 配 crimson 会显脏、mauve 配 amber 会显旧。
+    </div>
+
+    <!-- ② 三族概览 -->
+    <div class="cols" style="margin-bottom:15px">
+      <div>
+        <div class="shead" style="margin-bottom:6px">现代 UI 色板 · 12 个</div>
+        <div style="font-size:11px;color:var(--doc-t2);line-height:1.8">Radix Colors 体系 · 为界面设计，明度等距 12 档。面板层级清晰、柔和分层，是四者里最"现代"的一类。</div>
+        <div style="margin-top:6px"><span class="sw" style="background:#0090ff"></span> <span class="sw" style="background:#0090ff"></span> <span class="sw" style="background:#00a2c7"></span> <span class="sw" style="background:#00a2c7"></span> <span class="sw" style="background:#5b5bd6"></span> <span class="sw" style="background:#5b5bd6"></span> <span class="sw" style="background:#29a383"></span> <span class="sw" style="background:#29a383"></span></div>
+      </div>
+      <div>
+        <div class="shead" style="margin-bottom:6px">经典终端配色 · 18 个</div>
+        <div style="font-size:11px;color:var(--doc-t2);line-height:1.8">终端社区最常用的几套 · 为长时间读输出设计，硬对比、护眼。深色档尤其适合暗环境。</div>
+        <div style="margin-top:6px"><span class="sw" style="background:#bd93f9"></span> <span class="sw" style="background:#7057c7"></span> <span class="sw" style="background:#89b4fa"></span> <span class="sw" style="background:#1e66f5"></span> <span class="sw" style="background:#268bd2"></span> <span class="sw" style="background:#268bd2"></span> <span class="sw" style="background:#fe8019"></span> <span class="sw" style="background:#af3a03"></span></div>
+      </div>
+      <div>
+        <div class="shead" style="margin-bottom:6px">JetBrains 官方 · 3 个</div>
+        <div style="font-size:11px;color:var(--doc-t2);line-height:1.8">IDEA 的三个默认 UI 主题 · 商标属 JetBrains，落地写"配色参考"不要冠产品名。</div>
+        <div style="margin-top:6px"><span class="sw" style="background:#3574f0"></span> <span class="sw" style="background:#3574f0"></span> <span class="sw" style="background:#589df6"></span></div>
+      </div>
+    </div>
+
+    <!-- ③ 授权 -->
+    <div class="cols" style="margin-bottom:15px">
+      <div>
+        <div class="shead" style="margin-bottom:7px">⚠️ 授权：两个常见的想当然</div>
+        <table>
+          <tr><th style="width:104px">色系</th><th style="width:88px">授权</th><th>说明</th></tr>
+          <tr><td class="c">Radix Colors</td>
+            <td class="c ok-c">MIT</td>
+            <td class="c">shadcn/ui 的色板底座，官方文档明示
+              "A gorgeous, accessible color system"</td></tr>
+          <tr><td class="c">Dracula / Catppuccin<br>Solarized / Nord<br>Everforest / Rosé Pine</td>
+            <td class="c ok-c">MIT</td>
+            <td class="c">仓库有 LICENSE，spdx_id 可查证</td></tr>
+          <tr><td class="c">One Dark</td>
+            <td class="c ok-c">ISC</td>
+            <td class="c">取的是 Atom 团队授权的终端移植
+              <code>atom-one-dark-terminal</code></td></tr>
+          <tr><td class="c">Tokyo Night</td>
+            <td class="c new-c">MIT / Apache-2.0</td>
+            <td class="c"><b>要分清</b>：官网配色与多数移植是 MIT，
+              但 <code>folke/tokyonight.nvim</code> 是 <b>Apache-2.0</b></td></tr>
+          <tr><td class="c">Gruvbox</td>
+            <td class="c no-c">未声明</td>
+            <td class="c"><b>仓库没有 LICENSE 文件</b>（API 返回 <code>null</code>），
+              README 写 "License MIT/X11" —— <b>声明但未落文件</b>。
+              个人 / 学习无碍，<b>要商用或分发应先向作者确认</b></td></tr>
+          <tr><td class="c">IDEA 三套</td>
+            <td class="c new-c">Apache-2.0 + 商标</td>
+            <td class="c">配色文件 Apache-2.0，但<b>品牌名属 JetBrains 商标</b>。
+              写"配色参考"，<b>不要命名为 "MeatShell IDEA"</b></td></tr>
+        </table>
+      </div>
+      <div>
+        <div class="shead" style="margin-bottom:7px">选型方法：星数实测 + 授权查仓库</div>
+        <div style="font-size:11.5px;color:var(--doc-t2);line-height:1.8">
+          星数用 <code>gh api repos/&lt;owner&gt;/&lt;repo&gt;</code> 于 2026-10-05
+          实测。<b class="new-c">星数量社区验证程度，不等于影响力</b> ——
+          One Dark 只有 1071★，但 VS Code 的 One Dark Pro
+          与大量 terminal 端口都从它派生。<br>
+          授权则查 <code>.license.spdx_id</code>：查得到就用它，
+          查不到就标"未声明"，<b>不要替作者猜</b>。
+        </div>
+        <div class="shead" style="margin:13px 0 6px">为什么不为每个色系硬凑明暗两档</div>
+        <div style="font-size:11.5px;color:var(--doc-t2);line-height:1.8">
+          <b class="new-c">不为色系硬凑它没有的档位</b>——
+          硬凑出来的不叫"这套主题"叫"仿制"，而且用户一眼能看出不对
+          （他记忆里 Darcula 亮档根本不存在）。<br>
+          实例：Catppuccin 官方四变体（Mocha / Macchiato / Frappé / Latte），
+          本方案只取<b>Mocha + Latte</b> 一对；
+          Everforest 是 <b>3×2 = 6 个</b>变体（hard/medium/soft × 明暗），
+          只取默认的 <b>medium</b> —— soft 会让侧栏与终端底太接近。
+        </div>
+      </div>
+    </div>
+
+    <div class="shead" style="margin:0 0 8px">33 个变体 · 下方 1:1 里可以直接点选</div>
+
 
     <div style="margin-top:16px" class="cols">
       <div style="flex:1.1">
@@ -300,7 +1611,7 @@
           <div class="dm-bar">
             <div class="dm-tab" id="dTab">ssh root@prod-01</div>
             <div style="flex:1"></div>
-            <div style="opacity:.7" id="dName">Meat Dark</div>
+            <div style="opacity:.7" id="dName">Dracula · 暗</div>
           </div>
           <div class="dm-term" id="dTerm">
             <div><span class="p">root@prod-01</span>:<span class="c">~</span>$ systemctl status meatshell</div>
@@ -319,22 +1630,434 @@
             <div><span class="p">root@prod-01</span>:<span class="c">~</span>$ <span style="opacity:.9">▊</span></div>
           </div>
         </div>
-        <div style="font-size:10.5px;color:var(--text-muted);margin-top:6px;line-height:1.7">
-          注意：切主题时<b>行数、列宽、字号、间距全部不变</b> —— 8 套主题用的是同一组尺寸 token，只换颜色。
+        <div style="font-size:10.5px;color:var(--doc-t3);margin-top:6px;line-height:1.7">
+          切主题时<b>行数、列宽、字号、间距全部不变</b> —— 21 个变体用的是同一组尺寸 token，只换颜色。
         </div>
       </div>
       <div>
         <div class="shead" style="margin-bottom:7px">当前选中：<span id="tkName">—</span></div>
-        <div style="font-size:11.5px;color:var(--text-secondary);line-height:1.8;margin-bottom:8px" id="tkDesc"></div>
+        <div style="font-size:11px;color:var(--doc-t2);line-height:1.75;margin-bottom:8px" id="tkLic"></div>
+        <div style="font-size:11.5px;color:var(--doc-t2);line-height:1.8;margin-bottom:8px" id="tkDesc"></div>
         <table class="tok" id="tkTok"></table>
-        <div style="font-size:10.5px;color:var(--text-muted);margin-top:8px;line-height:1.7">
-          现状全文件是 <code>dark ? #xxx : #yyy</code> 的三元式（126 处）。拆成 8 套后改成
+        <div style="font-size:10.5px;color:var(--doc-t3);margin-top:8px;line-height:1.7">
+          现状全文件是 <code>dark ? #xxx : #yyy</code> 的三元式（126 处）。拆成 21 个变体后改成
           <code>Theme.slot("panel")</code> 一张查表 + 每个变体一份 palette，<b>slint 侧调用点零改动</b>。
         </div>
       </div>
     </div>
   </div>
 </div>
+
+
+<!-- ══════════ §2b 达标数据 ══════════ -->
+<div class="sec">
+  <div class="sec-t">2b · 33 个变体逐个校验（非抽样）</div>
+  <div class="sec-d">
+    校验脚本 <code>scripts/theme_tokens_community.py</code>（终端族）与
+    <code>scripts/gen_radix_themes.py</code>（现代族），两族同一套阈值。<br>
+    列名：<b>tab</b> = tab 底对终端底的浮起 · <b>t1/t2/t3</b> = 三档正文 on 面板 ·
+    <b>×</b> = 关闭键前景 on tab 底 · <b>chA/chC</b> = 频道字母 on tab 底。<br>
+    除对比度外还有三条<b>语义断言</b>：<code>tab == 终端底</code>（tab 行无边界）、
+    <code>浮起 &lt; 1.08~1.10</code>（读成"和终端一样"）、
+    <code>侧栏与面板色差 &lt; 1.04</code>（侧栏无边界）。
+  </div>
+  <div class="card">
+    <div class="shead" style="margin:14px 0 7px">现代 UI 色板 · 12 个</div>
+    <table class="chk" style="margin-bottom:6px">
+      <tr><th style="width:36px">#</th><th style="width:104px">变体</th><th style="width:38px">档</th><th style="width:34px">强调</th>
+<th style="width:46px">浮起</th>
+<th style="width:46px">正文</th>
+<th style="width:46px">次文</th>
+<th style="width:46px">弱文</th>
+<th style="width:46px">×</th>
+<th style="width:54px">频道A</th>
+<th style="width:54px">频道C</th>
+      </tr>
+      <tr><td class="mono">1</td><td class="c" style="color:var(--doc-t1)">石墨</td><td class="c">暗</td>
+<td><span class="sw" style="background:#0090ff"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">8.5</td>
+<td class="mono ok-c">4.5</td>
+<td class="mono ok-c">4.5</td>
+<td class="mono ok-c">5.2</td>
+<td class="mono ok-c">6.5</td>
+<td class="mono ok-c">9.2</td>
+      </tr>
+      <tr><td class="mono">2</td><td class="c" style="color:var(--doc-t1)">石墨</td><td class="c">亮</td>
+<td><span class="sw" style="background:#0090ff"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">15.5</td>
+<td class="mono ok-c">5.6</td>
+<td class="mono ok-c">5.6</td>
+<td class="mono ok-c">3.0</td>
+<td class="mono ok-c">4.6</td>
+<td class="mono ok-c">4.6</td>
+      </tr>
+      <tr><td class="mono">3</td><td class="c" style="color:var(--doc-t1)">石板</td><td class="c">暗</td>
+<td><span class="sw" style="background:#00a2c7"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">8.4</td>
+<td class="mono ok-c">4.5</td>
+<td class="mono ok-c">4.5</td>
+<td class="mono ok-c">5.7</td>
+<td class="mono ok-c">6.5</td>
+<td class="mono ok-c">9.2</td>
+      </tr>
+      <tr><td class="mono">4</td><td class="c" style="color:var(--doc-t1)">石板</td><td class="c">亮</td>
+<td><span class="sw" style="background:#00a2c7"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">15.6</td>
+<td class="mono ok-c">5.6</td>
+<td class="mono ok-c">5.6</td>
+<td class="mono ok-c">3.0</td>
+<td class="mono ok-c">4.6</td>
+<td class="mono ok-c">4.6</td>
+      </tr>
+      <tr><td class="mono">5</td><td class="c" style="color:var(--doc-t1)">藕荷</td><td class="c">暗</td>
+<td><span class="sw" style="background:#5b5bd6"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">8.4</td>
+<td class="mono ok-c">4.5</td>
+<td class="mono ok-c">4.5</td>
+<td class="mono ok-c">3.2</td>
+<td class="mono ok-c">6.5</td>
+<td class="mono ok-c">9.1</td>
+      </tr>
+      <tr><td class="mono">6</td><td class="c" style="color:var(--doc-t1)">藕荷</td><td class="c">亮</td>
+<td><span class="sw" style="background:#5b5bd6"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">15.5</td>
+<td class="mono ok-c">5.6</td>
+<td class="mono ok-c">5.6</td>
+<td class="mono ok-c">4.7</td>
+<td class="mono ok-c">4.6</td>
+<td class="mono ok-c">4.6</td>
+      </tr>
+      <tr><td class="mono">7</td><td class="c" style="color:var(--doc-t1)">青苔</td><td class="c">暗</td>
+<td><span class="sw" style="background:#29a383"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">8.4</td>
+<td class="mono ok-c">4.5</td>
+<td class="mono ok-c">4.5</td>
+<td class="mono ok-c">5.4</td>
+<td class="mono ok-c">6.5</td>
+<td class="mono ok-c">9.1</td>
+      </tr>
+      <tr><td class="mono">8</td><td class="c" style="color:var(--doc-t1)">青苔</td><td class="c">亮</td>
+<td><span class="sw" style="background:#29a383"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">15.5</td>
+<td class="mono ok-c">5.6</td>
+<td class="mono ok-c">5.6</td>
+<td class="mono ok-c">3.0</td>
+<td class="mono ok-c">4.6</td>
+<td class="mono ok-c">4.7</td>
+      </tr>
+      <tr><td class="mono">9</td><td class="c" style="color:var(--doc-t1)">暖砂</td><td class="c">暗</td>
+<td><span class="sw" style="background:#ffc53d"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">8.4</td>
+<td class="mono ok-c">4.5</td>
+<td class="mono ok-c">4.5</td>
+<td class="mono ok-c">10.8</td>
+<td class="mono ok-c">6.5</td>
+<td class="mono ok-c">9.2</td>
+      </tr>
+      <tr><td class="mono">10</td><td class="c" style="color:var(--doc-t1)">暖砂</td><td class="c">亮</td>
+<td><span class="sw" style="background:#ffc53d"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">15.5</td>
+<td class="mono ok-c">5.7</td>
+<td class="mono ok-c">5.7</td>
+<td class="mono ok-c">3.0</td>
+<td class="mono ok-c">4.6</td>
+<td class="mono ok-c">4.7</td>
+      </tr>
+      <tr><td class="mono">11</td><td class="c" style="color:var(--doc-t1)">橄榄</td><td class="c">暗</td>
+<td><span class="sw" style="background:#e54d2e"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">8.4</td>
+<td class="mono ok-c">4.5</td>
+<td class="mono ok-c">4.5</td>
+<td class="mono ok-c">4.4</td>
+<td class="mono ok-c">6.5</td>
+<td class="mono ok-c">9.1</td>
+      </tr>
+      <tr><td class="mono">12</td><td class="c" style="color:var(--doc-t1)">橄榄</td><td class="c">亮</td>
+<td><span class="sw" style="background:#e54d2e"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">15.6</td>
+<td class="mono ok-c">5.7</td>
+<td class="mono ok-c">5.7</td>
+<td class="mono ok-c">3.4</td>
+<td class="mono ok-c">4.6</td>
+<td class="mono ok-c">4.7</td>
+      </tr>
+    </table>
+    <div class="shead" style="margin:14px 0 7px">经典终端配色 · 18 个</div>
+    <table class="chk" style="margin-bottom:6px">
+      <tr><th style="width:36px">#</th><th style="width:104px">变体</th><th style="width:38px">档</th><th style="width:34px">强调</th>
+<th style="width:46px">浮起</th>
+<th style="width:46px">正文</th>
+<th style="width:46px">次文</th>
+<th style="width:46px">弱文</th>
+<th style="width:46px">×</th>
+<th style="width:54px">频道A</th>
+<th style="width:54px">频道C</th>
+      </tr>
+      <tr><td class="mono">1</td><td class="c" style="color:var(--doc-t1)">德古拉</td><td class="c">暗</td>
+<td><span class="sw" style="background:#bd93f9"></span></td>
+<td class="mono ok-c">1.4</td>
+<td class="mono ok-c">13.4</td>
+<td class="mono ok-c">13.4</td>
+<td class="mono ok-c">3.0</td>
+<td class="mono ok-c">3.3</td>
+<td class="mono ok-c">5.0</td>
+<td class="mono ok-c">6.5</td>
+      </tr>
+      <tr><td class="mono">2</td><td class="c" style="color:var(--doc-t1)">德古拉</td><td class="c">亮</td>
+<td><span class="sw" style="background:#7057c7"></span></td>
+<td class="mono ok-c">1.5</td>
+<td class="mono ok-c">15.9</td>
+<td class="mono ok-c">15.9</td>
+<td class="mono ok-c">5.6</td>
+<td class="mono ok-c">3.1</td>
+<td class="mono ok-c">5.6</td>
+<td class="mono ok-c">3.8</td>
+      </tr>
+      <tr><td class="mono">3</td><td class="c" style="color:var(--doc-t1)">卡布奇诺</td><td class="c">暗</td>
+<td><span class="sw" style="background:#89b4fa"></span></td>
+<td class="mono ok-c">1.3</td>
+<td class="mono ok-c">11.3</td>
+<td class="mono ok-c">9.3</td>
+<td class="mono ok-c">7.4</td>
+<td class="mono ok-c">5.4</td>
+<td class="mono ok-c">6.0</td>
+<td class="mono ok-c">7.8</td>
+      </tr>
+      <tr><td class="mono">4</td><td class="c" style="color:var(--doc-t1)">卡布奇诺</td><td class="c">亮</td>
+<td><span class="sw" style="background:#1e66f5"></span></td>
+<td class="mono ok-c">1.4</td>
+<td class="mono ok-c">7.1</td>
+<td class="mono ok-c">5.5</td>
+<td class="mono ok-c">4.4</td>
+<td class="mono ok-c">3.5</td>
+<td class="mono ok-c">5.6</td>
+<td class="mono ok-c">3.8</td>
+      </tr>
+      <tr><td class="mono">5</td><td class="c" style="color:var(--doc-t1)">Solarized</td><td class="c">暗</td>
+<td><span class="sw" style="background:#268bd2"></span></td>
+<td class="mono ok-c">1.2</td>
+<td class="mono ok-c">13.9</td>
+<td class="mono ok-c">12.3</td>
+<td class="mono ok-c">5.6</td>
+<td class="mono ok-c">3.0</td>
+<td class="mono ok-c">6.2</td>
+<td class="mono ok-c">8.1</td>
+      </tr>
+      <tr><td class="mono">6</td><td class="c" style="color:var(--doc-t1)">Solarized</td><td class="c">亮</td>
+<td><span class="sw" style="background:#268bd2"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">13.9</td>
+<td class="mono ok-c">11.5</td>
+<td class="mono ok-c">8.5</td>
+<td class="mono ok-c">3.8</td>
+<td class="mono ok-c">7.1</td>
+<td class="mono ok-c">4.8</td>
+      </tr>
+      <tr><td class="mono">7</td><td class="c" style="color:var(--doc-t1)">Gruvbox</td><td class="c">暗</td>
+<td><span class="sw" style="background:#fe8019"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">10.7</td>
+<td class="mono ok-c">8.6</td>
+<td class="mono ok-c">6.8</td>
+<td class="mono ok-c">4.3</td>
+<td class="mono ok-c">7.0</td>
+<td class="mono ok-c">9.2</td>
+      </tr>
+      <tr><td class="mono">8</td><td class="c" style="color:var(--doc-t1)">Gruvbox</td><td class="c">亮</td>
+<td><span class="sw" style="background:#af3a03"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">7.8</td>
+<td class="mono ok-c">5.7</td>
+<td class="mono ok-c">4.3</td>
+<td class="mono ok-c">6.9</td>
+<td class="mono ok-c">6.9</td>
+<td class="mono ok-c">4.7</td>
+      </tr>
+      <tr><td class="mono">9</td><td class="c" style="color:var(--doc-t1)">东京夜</td><td class="c">暗</td>
+<td><span class="sw" style="background:#7aa2f7"></span></td>
+<td class="mono ok-c">1.2</td>
+<td class="mono ok-c">9.6</td>
+<td class="mono ok-c">7.4</td>
+<td class="mono ok-c">3.9</td>
+<td class="mono ok-c">5.5</td>
+<td class="mono ok-c">7.0</td>
+<td class="mono ok-c">9.1</td>
+      </tr>
+      <tr><td class="mono">10</td><td class="c" style="color:var(--doc-t1)">东京夜</td><td class="c">亮</td>
+<td><span class="sw" style="background:#2e7de9"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">4.5</td>
+<td class="mono ok-c">4.5</td>
+<td class="mono ok-c">3.6</td>
+<td class="mono ok-c">3.0</td>
+<td class="mono ok-c">5.9</td>
+<td class="mono ok-c">4.0</td>
+      </tr>
+      <tr><td class="mono">11</td><td class="c" style="color:var(--doc-t1)">北欧</td><td class="c">暗</td>
+<td><span class="sw" style="background:#88c0d0"></span></td>
+<td class="mono ok-c">1.2</td>
+<td class="mono ok-c">10.8</td>
+<td class="mono ok-c">9.2</td>
+<td class="mono ok-c">5.4</td>
+<td class="mono ok-c">3.0</td>
+<td class="mono ok-c">4.8</td>
+<td class="mono ok-c">6.3</td>
+      </tr>
+      <tr><td class="mono">12</td><td class="c" style="color:var(--doc-t1)">北欧</td><td class="c">亮</td>
+<td><span class="sw" style="background:#2f6bab"></span></td>
+<td class="mono ok-c">1.2</td>
+<td class="mono ok-c">10.8</td>
+<td class="mono ok-c">8.7</td>
+<td class="mono ok-c">6.4</td>
+<td class="mono ok-c">5.0</td>
+<td class="mono ok-c">6.4</td>
+<td class="mono ok-c">4.3</td>
+      </tr>
+      <tr><td class="mono">13</td><td class="c" style="color:var(--doc-t1)">常青</td><td class="c">暗</td>
+<td><span class="sw" style="background:#83c092"></span></td>
+<td class="mono ok-c">1.3</td>
+<td class="mono ok-c">7.4</td>
+<td class="mono ok-c">5.1</td>
+<td class="mono ok-c">3.8</td>
+<td class="mono ok-c">3.9</td>
+<td class="mono ok-c">5.2</td>
+<td class="mono ok-c">6.7</td>
+      </tr>
+      <tr><td class="mono">14</td><td class="c" style="color:var(--doc-t1)">常青</td><td class="c">亮</td>
+<td><span class="sw" style="background:#35a77c"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">4.9</td>
+<td class="mono ok-c">4.9</td>
+<td class="mono no-c">2.9</td>
+<td class="mono ok-c">3.1</td>
+<td class="mono ok-c">7.3</td>
+<td class="mono ok-c">4.9</td>
+      </tr>
+      <tr><td class="mono">15</td><td class="c" style="color:var(--doc-t1)">松玫瑰</td><td class="c">暗</td>
+<td><span class="sw" style="background:#31748f"></span></td>
+<td class="mono ok-c">1.2</td>
+<td class="mono ok-c">13.4</td>
+<td class="mono ok-c">5.5</td>
+<td class="mono ok-c">3.4</td>
+<td class="mono ok-c">5.2</td>
+<td class="mono ok-c">7.2</td>
+<td class="mono ok-c">9.4</td>
+      </tr>
+      <tr><td class="mono">16</td><td class="c" style="color:var(--doc-t1)">松玫瑰</td><td class="c">亮</td>
+<td><span class="sw" style="background:#286983"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">8.7</td>
+<td class="mono ok-c">5.5</td>
+<td class="mono ok-c">4.6</td>
+<td class="mono ok-c">3.5</td>
+<td class="mono ok-c">7.3</td>
+<td class="mono ok-c">4.9</td>
+      </tr>
+      <tr><td class="mono">17</td><td class="c" style="color:var(--doc-t1)">原子暗</td><td class="c">暗</td>
+<td><span class="sw" style="background:#61afef"></span></td>
+<td class="mono ok-c">1.5</td>
+<td class="mono ok-c">16.1</td>
+<td class="mono ok-c">7.6</td>
+<td class="mono ok-c">4.9</td>
+<td class="mono ok-c">3.3</td>
+<td class="mono ok-c">5.0</td>
+<td class="mono ok-c">6.6</td>
+      </tr>
+      <tr><td class="mono">18</td><td class="c" style="color:var(--doc-t1)">原子暗</td><td class="c">亮</td>
+<td><span class="sw" style="background:#4078f2"></span></td>
+<td class="mono ok-c">1.1</td>
+<td class="mono ok-c">10.8</td>
+<td class="mono ok-c">4.8</td>
+<td class="mono ok-c">3.3</td>
+<td class="mono ok-c">3.1</td>
+<td class="mono ok-c">7.3</td>
+<td class="mono ok-c">4.9</td>
+      </tr>
+    </table>
+    <div class="shead" style="margin:14px 0 7px">JetBrains 官方 · 3 个</div>
+    <table class="chk" style="margin-bottom:6px">
+      <tr><th style="width:36px">#</th><th style="width:104px">变体</th><th style="width:38px">档</th><th style="width:34px">强调</th>
+<th style="width:46px">浮起</th>
+<th style="width:46px">正文</th>
+<th style="width:46px">次文</th>
+<th style="width:46px">弱文</th>
+<th style="width:46px">×</th>
+<th style="width:54px">频道A</th>
+<th style="width:54px">频道C</th>
+      </tr>
+      <tr><td class="mono">1</td><td class="c" style="color:var(--doc-t1)">IDEA 暗</td><td class="c">暗</td>
+<td><span class="sw" style="background:#3574f0"></span></td>
+<td class="mono ok-c">1.6</td>
+<td class="mono ok-c">10.4</td>
+<td class="mono ok-c">7.4</td>
+<td class="mono ok-c">5.9</td>
+<td class="mono ok-c">3.0</td>
+<td class="mono ok-c">5.1</td>
+<td class="mono ok-c">6.6</td>
+      </tr>
+      <tr><td class="mono">2</td><td class="c" style="color:var(--doc-t1)">IDEA 亮</td><td class="c">亮</td>
+<td><span class="sw" style="background:#3574f0"></span></td>
+<td class="mono ok-c">1.2</td>
+<td class="mono ok-c">16.5</td>
+<td class="mono ok-c">4.9</td>
+<td class="mono ok-c">3.7</td>
+<td class="mono ok-c">5.0</td>
+<td class="mono ok-c">7.2</td>
+<td class="mono ok-c">4.9</td>
+      </tr>
+      <tr><td class="mono">3</td><td class="c" style="color:var(--doc-t1)">Darcula</td><td class="c">暗</td>
+<td><span class="sw" style="background:#589df6"></span></td>
+<td class="mono ok-c">1.6</td>
+<td class="mono ok-c">10.6</td>
+<td class="mono ok-c">5.5</td>
+<td class="mono ok-c">4.4</td>
+<td class="mono ok-c">3.0</td>
+<td class="mono ok-c">4.3</td>
+<td class="mono ok-c">5.7</td>
+      </tr>
+    </table>
+    <div class="warnbox" style="margin-top:12px">
+      <b>阈值分两档，别混用</b><br>
+      <b>3:1</b> 是<b>非文本元素</b>（图形）下限 —— 频道字母、关闭键 ×、插入线、分界线。<br>
+      <b>4.5:1</b> 是<b>文字</b>线 —— 正文、次要文本。<br>
+      <b class="no-c">别把文字的线套到图标上</b>：套了就永远在调色。
+    </div>
+    <div class="redbox" style="margin-top:11px">
+      <b>两项"色系能力不足"，如实标出而非硬凑</b><br>
+      <b>① Everforest 亮档</b>：官方前景系只有 4 档，在面板 <code>#F4F0D9</code> 上
+      <code>fg</code> = 4.87✓ 但 <code>gray3</code> = 2.90、<code>gray2</code> = 2.41 ——
+      <b>没有任何一档灰能当次文本</b>（要 4.5）。这是它"低对比护眼"的设计取舍，
+      硬凑出的次文本会<b>层级倒挂</b>。<br>
+      <b>② Radix 全系的"弱文本"</b>：12 档里<b>前 9 档都在做背景</b>
+      （亮档 #fb~#ce、暗档 #2a~#11），能当文字的只有 3~4 档。
+      界面要"主 / 次 / 弱"三档，官方只给得出两档够格的 ——
+      本方案在两档之间<b>插值补一档</b>（色相不变，仍在 Radix 色域内）。<br>
+      <b class="new-c">处理原则</b>：色系能力不足时<b>如实标注并给替代方案</b>，
+      不靠插值硬凑超过阈值。落地建议 —— Everforest 只推暗档。
+    </div>
+    <div class="box" style="margin-top:11px">
+      <b>阈值要问"这套色系能达到多少"，不是"我想要多少"</b><br>
+      IDEA 的两套面板相邻只差 1.06~1.12、One Light 官方只有一档面 ——
+      它们能给出的最大浮起就落在 1.12。要求 1.12 等于要求
+      <b>"必须比色系自己的下一档更远"</b>，那是<b>改色系</b>不是配色。
+      所以浮起阈值取 <code>1.10</code>（现代族 1.08，两者达标的档位不同），
+      并且<b>候选都不达标时在官方色阶内插值到刚够</b>（色相不变）。
+    </div>
+  </div>
+</div>
+
 
 <!-- ══════════ §3 设置页重排 ══════════ -->
 <div class="sec">
@@ -345,92 +2068,111 @@
     <div class="shead" style="margin-bottom:9px">调整 ①　设置面板左栏：新增「主题」页，壁纸页瘦身</div>
     <div class="ba">
       <div class="bax">
-        <div class="bax-h" style="background:var(--danger);color:#fff">现状 · 15 项导航，主题无处安放</div>
+        <div class="bax-h" style="background:var(--doc-dg);color:#fff">现状 · 15 项导航，主题无处安放</div>
         <div class="bax-b" style="padding:0">
           <div class="ifd" style="width:100%;border:0;border-radius:0;box-shadow:none">
-            <div class="ifd-nav" style="background:var(--bg-panel);border-right:1px solid var(--border-subtle)">
-              <div class="ifd-t" style="color:var(--text-primary)">设置</div>
+            <div class="ifd-nav" style="background:var(--doc-panel);border-right:1px solid var(--doc-line)">
+              <div class="ifd-t" style="color:var(--doc-t1)">设置</div>
               <div class="ifd-navlist">
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>显示与字体</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>输入</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>渲染</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>输出高亮</div>
-                <div class="ni on" style="background:var(--chip);color:var(--accent)"><span class="ic"></span>壁纸</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>SFTP</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>WSL</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>侧栏</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>欢迎页</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>会话同步</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>WebDAV</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>下载</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>窗口</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>数据目录</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>MCP</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>新版本提示</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>显示与字体</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>输入</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>渲染</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>输出高亮</div>
+                <div class="ni on" style="background:rgba(74,144,226,.22);color:var(--doc-ac)"><span class="ic"></span>壁纸</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>SFTP</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>WSL</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>侧栏</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>欢迎页</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>会话同步</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>WebDAV</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>下载</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>窗口</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>数据目录</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>MCP</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>新版本提示</div>
               </div>
             </div>
-            <div class="ifd-body" style="background:var(--bg-panel);color:var(--text-primary)">
+            <div class="ifd-body" style="background:var(--doc-panel);color:var(--doc-t1)">
               <div class="ifd-c">
-                <div class="shead" style="color:var(--text-muted)">壁纸页现在同时管三件事</div>
+                <div class="shead" style="color:var(--doc-t3)">壁纸页现在同时管三件事</div>
                 <div class="srow"><div><div class="sl">内置壁纸</div>
-                  <div class="sd" style="color:var(--text-muted)">选一张，界面会沉浸式适配它的颜色</div></div>
-                  <div style="font-size:10.5px;color:var(--danger)">← 主题被改写</div></div>
+                  <div class="sd" style="color:var(--doc-t3)">选一张，界面会沉浸式适配它的颜色</div></div>
+                  <div style="font-size:10.5px;color:var(--doc-dg)">← 主题被改写</div></div>
                 <div class="srow"><div><div class="sl">自定义</div>
-                  <div class="sd" style="color:var(--text-muted)">选择文件…</div></div></div>
+                  <div class="sd" style="color:var(--doc-t3)">选择文件…</div></div></div>
                 <div class="srow"><div><div class="sl">壁纸遮罩透明度</div>
-                  <div class="sd" style="color:var(--text-muted)">一个滑杆同时改面板 + 终端</div></div>
-                  <div style="font-size:10.5px;color:var(--danger)">← 一值多用</div></div>
-                <div class="srow"><div><div class="sl" style="color:var(--text-muted)">主题深浅</div>
-                  <div class="sd" style="color:var(--text-muted)">不在本页</div></div>
-                  <div style="font-size:10.5px;color:var(--danger)">← 无处可调</div></div>
+                  <div class="sd" style="color:var(--doc-t3)">一个滑杆同时改面板 + 终端</div></div>
+                  <div style="font-size:10.5px;color:var(--doc-dg)">← 一值多用</div></div>
+                <div class="srow"><div><div class="sl" style="color:var(--doc-t3)">主题深浅</div>
+                  <div class="sd" style="color:var(--doc-t3)">不在本页</div></div>
+                  <div style="font-size:10.5px;color:var(--doc-dg)">← 无处可调</div></div>
               </div>
             </div>
           </div>
         </div>
       </div>
       <div class="bax">
-        <div class="bax-h" style="background:var(--ok);color:#06231d">改后 · 16 项，「主题」独立成页</div>
+        <div class="bax-h" style="background:var(--doc-ok);color:#06231d">改后 · 16 项，「主题」独立成页</div>
         <div class="bax-b" style="padding:0">
           <div class="ifd" style="width:100%;border:0;border-radius:0;box-shadow:none">
-            <div class="ifd-nav" style="background:var(--bg-panel);border-right:1px solid var(--border-subtle)">
-              <div class="ifd-t" style="color:var(--text-primary)">设置</div>
+            <div class="ifd-nav" style="background:var(--doc-panel);border-right:1px solid var(--doc-line)">
+              <div class="ifd-t" style="color:var(--doc-t1)">设置</div>
               <div class="ifd-navlist">
-                <div class="ni on" style="background:var(--chip);color:var(--accent)"><span class="ic"></span>主题 <span class="tag tag-g" style="margin:0;vertical-align:0">新</span></div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>显示与字体</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>输入</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>渲染</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>输出高亮</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>壁纸</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>SFTP</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>WSL</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>侧栏</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>欢迎页</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>会话同步</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>WebDAV</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>下载</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>窗口</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>数据目录</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>MCP</div>
-                <div class="ni"><span class="ic" style="color:var(--text-secondary)"></span>新版本提示</div>
+                <div class="ni on" style="background:rgba(74,144,226,.22);color:var(--doc-ac)"><span class="ic"></span>主题 <span class="tag tag-g" style="margin:0;vertical-align:0">新</span></div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>显示与字体</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>输入</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>渲染</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>输出高亮</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>壁纸</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>SFTP</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>WSL</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>侧栏</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>欢迎页</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>会话同步</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>WebDAV</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>下载</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>窗口</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>数据目录</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>MCP</div>
+                <div class="ni"><span class="ic" style="color:var(--doc-t2)"></span>新版本提示</div>
               </div>
             </div>
-            <div class="ifd-body" style="background:var(--bg-panel);color:var(--text-primary)">
+            <div class="ifd-body" style="background:var(--doc-panel);color:var(--doc-t1)">
               <div class="ifd-c">
-                <div class="shead" style="color:var(--text-muted)">主题页</div>
+                <div class="shead" style="color:var(--doc-t3)">主题页</div>
                 <div class="srow" style="align-items:flex-start">
-                  <div style="flex:1"><div class="sl">主题</div>
-                    <div class="sd" style="color:var(--text-muted)">整套配色（含终端调色板），与壁纸无关</div>
-                    <div class="tpick" style="margin-top:8px" id="pick"></div>
+                  <div style="flex:1">
+                    <div class="sl">主题</div>
+                    <div class="sd">整套配色（含终端调色板），与壁纸无关</div>
+                    <div class="tpk" style="margin-top:9px">
+                  <div class="tpk-btn" id="tpkBtn">
+                    <div class="tpk-cur">
+                      <span class="tpk-thumb" id="tpkThumb"></span>
+                      <span class="tpk-txt">
+                        <span class="tpk-n1" id="tpkCurN1">—</span>
+                        <span class="tpk-n2" id="tpkCurN2">—</span>
+                      </span>
+                      <span class="tpk-caret">▼</span>
+                    </div>
+                    <div class="tpk-pop">
+                      <div class="tpk-search">
+                        <input class="tpk-si" id="tpkSearch" placeholder="搜索主题…">
+                      </div>
+                      <div class="tpk-list" id="tpkList"></div>
+                    </div>
+                  </div>
+                  <div class="tpk-prev" id="tpkPrev"></div>
+                </div>
                   </div>
                 </div>
                 <div class="gap"></div>
                 <div class="srow"><div><div class="sl">跟随系统</div>
-                  <div class="sd" style="color:var(--text-muted)">按系统的深浅自动选暗/亮变体</div></div>
-                  <div class="seg" style="background:var(--field);border-color:var(--border-control)">
-                    <button class="on" style="color:var(--accent)">开</button><button>关</button>
+                  <div class="sd" style="color:var(--doc-t3)">按系统的深浅自动选暗/亮变体</div></div>
+                  <div class="seg" style="background:var(--doc-elev);border-color:var(--doc-line2)">
+                    <button class="on" style="color:var(--doc-ac)">开</button><button>关</button>
                   </div></div>
                 <div class="srow"><div><div class="sl">强调色</div>
-                  <div class="sd" style="color:var(--text-muted)">选中态 / 主按钮 / 链接，独立于主题</div></div>
+                  <div class="sd" style="color:var(--doc-t3)">选中态 / 主按钮 / 链接，独立于主题</div></div>
                   <div class="accents" id="acc"></div></div>
               </div>
             </div>
@@ -449,9 +2191,9 @@
     <div class="shead" style="margin-bottom:9px">调整 ②　壁纸页瘦身：只管图 + 三个独立滑杆</div>
     <div class="ba">
       <div class="bax">
-        <div class="bax-h" style="background:var(--danger);color:#fff">现状</div>
+        <div class="bax-h" style="background:var(--doc-dg);color:#fff">现状</div>
         <div class="bax-b">
-          <div style="font-size:11px;color:var(--text-muted);line-height:1.9">
+          <div style="font-size:11px;color:var(--doc-t3);line-height:1.9">
             · 内置壁纸 6 张（选择即改主题）<br>
             · 自定义文件（选择即改强调色 + 深浅）<br>
             · 一个「壁纸遮罩透明度」滑杆 → 同时改面板 + 终端<br>
@@ -461,9 +2203,9 @@
         </div>
       </div>
       <div class="bax">
-        <div class="bax-h" style="background:var(--ok);color:#06231d">改后</div>
+        <div class="bax-h" style="background:var(--doc-ok);color:#06231d">改后</div>
         <div class="bax-b">
-          <div style="font-size:11px;color:var(--text-secondary);line-height:1.9">
+          <div style="font-size:11px;color:var(--doc-t2);line-height:1.9">
             · 内置壁纸 6 张（<b>不改任何主题</b>）<br>
             · 自定义文件（<b>不改主题</b>）<br>
             · <b>壁纸可见度</b> 0–100%（无壁纸时置灰不可拖）<br>
@@ -475,45 +2217,45 @@
       </div>
     </div>
     <div class="gap"></div>
-    <div style="border:1px solid var(--border-subtle);border-radius:9px;padding:12px 14px;background:var(--bg-root)">
+    <div style="border:1px solid var(--doc-line);border-radius:9px;padding:12px 14px;background:var(--doc-bg)">
       <div class="shead" style="margin-bottom:8px">改后壁纸页 1:1（沿用现有 SettingRow / SectionHeader 组件）</div>
-      <div style="background:var(--bg-panel);border:1px solid var(--border-subtle);border-radius:8px;padding:0 14px 12px">
-        <div style="font-size:10.5px;color:var(--text-muted);padding:10px 0 4px;line-height:1.6">
+      <div style="background:var(--doc-panel);border:1px solid var(--doc-line);border-radius:8px;padding:0 14px 12px">
+        <div style="font-size:10.5px;color:var(--doc-t3);padding:10px 0 4px;line-height:1.6">
           壁纸只作为背景显示，不再改变界面的强调色和深浅。
         </div>
         <div class="srow"><div style="flex:1"><div class="sl">内置壁纸</div>
-          <div class="sd" style="color:var(--text-muted)">简约·浅 / 简约·暗 / 幻想 3048 / MS / Miku / 无</div></div>
+          <div class="sd" style="color:var(--doc-t3)">简约·浅 / 简约·暗 / 幻想 3048 / MS / Miku / 无</div></div>
           <div style="display:flex;gap:5px">
-            <div style="width:34px;height:26px;border-radius:5px;border:2px solid var(--accent);background:linear-gradient(135deg,#10131a,#1b2233)"></div>
-            <div style="width:34px;height:26px;border-radius:5px;border:1px solid var(--border-control);background:linear-gradient(180deg,#05060f,#1a0a2e)"></div>
-            <div style="width:34px;height:26px;border-radius:5px;border:1px solid var(--border-control);background:#2a2d35"></div>
-            <div style="width:34px;height:26px;border-radius:5px;border:1px solid var(--border-control);background:#2a2d35"></div>
+            <div style="width:34px;height:26px;border-radius:5px;border:2px solid var(--doc-ac);background:linear-gradient(135deg,#10131a,#1b2233)"></div>
+            <div style="width:34px;height:26px;border-radius:5px;border:1px solid var(--doc-line2);background:linear-gradient(180deg,#05060f,#1a0a2e)"></div>
+            <div style="width:34px;height:26px;border-radius:5px;border:1px solid var(--doc-line2);background:#2a2d35"></div>
+            <div style="width:34px;height:26px;border-radius:5px;border:1px solid var(--doc-line2);background:#2a2d35"></div>
           </div></div>
         <div class="srow"><div style="flex:1"><div class="sl">自定义壁纸</div>
-          <div class="sd" style="color:var(--text-muted)">从文件选择，支持 PNG / JPG / WEBP / BMP</div></div>
-          <div style="border:1px solid var(--border-control);background:var(--field);border-radius:7px;
+          <div class="sd" style="color:var(--doc-t3)">从文件选择，支持 PNG / JPG / WEBP / BMP</div></div>
+          <div style="border:1px solid var(--doc-line2);background:var(--doc-elev);border-radius:7px;
                       padding:5px 13px;font-size:11.5px">选择文件…</div></div>
         <div class="srow"><div style="flex:1"><div class="sl">壁纸可见度</div>
-          <div class="sd" style="color:var(--text-muted)">壁纸自身的可见程度</div></div>
-          <div class="slider"><div class="trk" style="background:var(--bg-active)"><div class="fil" style="width:100%;background:var(--accent)"></div>
-            <div class="kn" style="left:100%;background:var(--accent);border-color:var(--bg-panel)"></div></div></div>
-          <div class="pct" style="color:var(--text-secondary)">100%</div></div>
+          <div class="sd" style="color:var(--doc-t3)">壁纸自身的可见程度</div></div>
+          <div class="slider"><div class="trk" style="background:var(--doc-act)"><div class="fil" style="width:100%;background:var(--doc-ac)"></div>
+            <div class="kn" style="left:100%;background:var(--doc-ac);border-color:var(--doc-panel)"></div></div></div>
+          <div class="pct" style="color:var(--doc-t2)">100%</div></div>
         <div class="srow"><div style="flex:1"><div class="sl">面板不透明度</div>
-          <div class="sd" style="color:var(--text-muted)">侧栏 / 标签栏 / 顶栏的雾面程度</div></div>
-          <div class="slider"><div class="trk" style="background:var(--bg-active)"><div class="fil" style="width:55%;background:var(--accent)"></div>
-            <div class="kn" style="left:55%;background:var(--accent);border-color:var(--bg-panel)"></div></div></div>
-          <div class="pct" style="color:var(--text-secondary)">85%</div></div>
+          <div class="sd" style="color:var(--doc-t3)">侧栏 / 标签栏 / 顶栏的雾面程度</div></div>
+          <div class="slider"><div class="trk" style="background:var(--doc-act)"><div class="fil" style="width:55%;background:var(--doc-ac)"></div>
+            <div class="kn" style="left:55%;background:var(--doc-ac);border-color:var(--doc-panel)"></div></div></div>
+          <div class="pct" style="color:var(--doc-t2)">85%</div></div>
         <div class="srow"><div style="flex:1"><div class="sl">终端不透明度</div>
-          <div class="sd" style="color:var(--text-muted)">仅终端区，最低 75% 以保证 ANSI 输出可读</div></div>
-          <div class="slider"><div class="trk" style="background:var(--bg-active)"><div class="fil" style="width:100%;background:var(--accent)"></div>
-            <div class="kn" style="left:100%;background:var(--accent);border-color:var(--bg-panel)"></div></div></div>
-          <div class="pct" style="color:var(--text-secondary)">100%</div></div>
+          <div class="sd" style="color:var(--doc-t3)">仅终端区，最低 75% 以保证 ANSI 输出可读</div></div>
+          <div class="slider"><div class="trk" style="background:var(--doc-act)"><div class="fil" style="width:100%;background:var(--doc-ac)"></div>
+            <div class="kn" style="left:100%;background:var(--doc-ac);border-color:var(--doc-panel)"></div></div></div>
+          <div class="pct" style="color:var(--doc-t2)">100%</div></div>
         <div class="srow"><div style="flex:1"><div class="sl">跟随图片取色</div>
-          <div class="sd" style="color:var(--text-muted)">用图片主色替换强调色（关闭时强调色只由主题决定）</div></div>
-          <div class="seg" style="background:var(--field);border-color:var(--border-control)">
-            <button>开</button><button class="on" style="color:var(--accent)">关</button></div></div>
+          <div class="sd" style="color:var(--doc-t3)">用图片主色替换强调色（关闭时强调色只由主题决定）</div></div>
+          <div class="seg" style="background:var(--doc-elev);border-color:var(--doc-line2)">
+            <button>开</button><button class="on" style="color:var(--doc-ac)">关</button></div></div>
       </div>
-      <div style="font-size:10.5px;color:var(--text-muted);margin-top:8px;line-height:1.7">
+      <div style="font-size:10.5px;color:var(--doc-t3);margin-top:8px;line-height:1.7">
         <span class="tag tag-g">修掉</span>现状「没设壁纸时不生效」只是文案说明，控件照样能拖，值会存进配置，下次开壁纸突然生效 —— 改为<b>无壁纸时置灰并吞掉事件</b>。
       </div>
     </div>
@@ -523,39 +2265,39 @@
     <div class="shead" style="margin-bottom:9px">调整 ③　顶栏主题控件：单 toggle → 主题速选面板</div>
     <div class="ba">
       <div class="bax">
-        <div class="bax-h" style="background:var(--danger);color:#fff">现状 · app.slint:1727 / 2974</div>
+        <div class="bax-h" style="background:var(--doc-dg);color:#fff">现状 · app.slint:1727 / 2974</div>
         <div class="bax-b">
           <div style="display:flex;align-items:center;gap:8px;height:38px;padding:0 10px;
-                      background:var(--bg-panel);border-radius:7px;border:1px solid var(--border-subtle)">
-            <span style="font-size:10.5px;color:var(--text-secondary)">新建会话</span>
-            <span style="font-size:10.5px;color:var(--text-secondary)">命令栏</span>
-            <span style="font-size:10.5px;color:var(--text-secondary)">同步</span>
+                      background:var(--doc-panel);border-radius:7px;border:1px solid var(--doc-line)">
+            <span style="font-size:10.5px;color:var(--doc-t2)">新建会话</span>
+            <span style="font-size:10.5px;color:var(--doc-t2)">命令栏</span>
+            <span style="font-size:10.5px;color:var(--doc-t2)">同步</span>
             <span style="display:flex;flex-direction:column;align-items:center;gap:1px;padding:4px 8px;
-                         background:var(--chip);border-radius:5px;color:var(--accent)">
+                         background:rgba(74,144,226,.22);border-radius:5px;color:var(--doc-ac)">
               <span style="width:11px;height:11px;border-radius:50%;border:1.6px solid currentColor;
                            box-shadow:inset -3px -1px 0 0 currentColor"></span>
               <span style="font-size:9px;font-weight:700">主题</span>
             </span>
-            <span style="font-size:10.5px;color:var(--text-secondary)">传输</span>
-            <span style="font-size:10.5px;color:var(--text-secondary)">更多</span>
+            <span style="font-size:10.5px;color:var(--doc-t2)">传输</span>
+            <span style="font-size:10.5px;color:var(--doc-t2)">更多</span>
           </div>
-          <div style="font-size:10.5px;color:var(--text-muted);margin-top:8px;line-height:1.75">
+          <div style="font-size:10.5px;color:var(--doc-t3);margin-top:8px;line-height:1.75">
             sun/moon 二态 toggle，只能在两个变体间跳；且图标由 <code>Theme.dark</code> 驱动，
             壁纸会改写 <code>dark</code> → <b>图标与用户实际看到的主题不符</b>。
           </div>
         </div>
       </div>
       <div class="bax">
-        <div class="bax-h" style="background:var(--ok);color:#06231d">改后 · 主题速选面板</div>
+        <div class="bax-h" style="background:var(--doc-ok);color:#06231d">改后 · 主题速选面板</div>
         <div class="bax-b">
           <div style="position:relative">
             <div style="display:flex;align-items:center;gap:8px;height:38px;padding:0 10px;
-                        background:var(--bg-panel);border-radius:7px;border:1px solid var(--border-subtle)">
-              <span style="font-size:10.5px;color:var(--text-secondary)">新建会话</span>
-              <span style="font-size:10.5px;color:var(--text-secondary)">命令栏</span>
-              <span style="font-size:10.5px;color:var(--text-secondary)">同步</span>
+                        background:var(--doc-panel);border-radius:7px;border:1px solid var(--doc-line)">
+              <span style="font-size:10.5px;color:var(--doc-t2)">新建会话</span>
+              <span style="font-size:10.5px;color:var(--doc-t2)">命令栏</span>
+              <span style="font-size:10.5px;color:var(--doc-t2)">同步</span>
               <span style="display:flex;flex-direction:column;align-items:center;gap:1px;padding:4px 8px;
-                           background:var(--chip);border-radius:5px;color:var(--accent)">
+                           background:rgba(74,144,226,.22);border-radius:5px;color:var(--doc-ac)">
                 <span style="width:11px;height:11px;border-radius:3px;display:grid;
                              grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:1.5px">
                   <i style="background:#e6e8ee;border-radius:1.5px"></i><i style="background:#4a90e2;border-radius:1.5px"></i>
@@ -563,29 +2305,29 @@
                 </span>
                 <span style="font-size:9px;font-weight:700">主题</span>
               </span>
-              <span style="font-size:10.5px;color:var(--text-secondary)">传输</span>
-              <span style="font-size:10.5px;color:var(--text-secondary)">更多</span>
+              <span style="font-size:10.5px;color:var(--doc-t2)">传输</span>
+              <span style="font-size:10.5px;color:var(--doc-t2)">更多</span>
             </div>
-            <div style="position:absolute;top:44px;left:118px;width:262px;background:var(--popup-bg,var(--bg-panel));
+            <div style="position:absolute;top:44px;left:118px;width:262px;background:var(--popup-bg,var(--doc-panel));
                         border:1px solid var(--border-strong);border-radius:9px;padding:9px;z-index:9;
                         box-shadow:0 14px 36px rgba(0,0,0,.55)">
-              <div style="font-size:10px;color:var(--text-muted);padding:2px 4px 7px;letter-spacing:.4px">主题</div>
-              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px" id="pop"></div>
-              <div style="height:1px;background:var(--border-subtle);margin:8px 2px"></div>
+              <div style="font-size:10px;color:var(--doc-t3);padding:2px 4px 7px;letter-spacing:.4px">主题</div>
+              <div id="pop"></div>
+              <div style="height:1px;background:var(--doc-line);margin:8px 2px"></div>
               <div style="display:flex;align-items:center;justify-content:space-between;padding:2px 4px">
                 <span style="font-size:11px">跟随系统深浅</span>
-                <div class="seg" style="background:var(--field);border-color:var(--border-control);padding:2px">
-                  <button class="on" style="color:var(--accent);font-size:10px;padding:2px 8px">开</button>
+                <div class="seg" style="background:var(--doc-elev);border-color:var(--doc-line2);padding:2px">
+                  <button class="on" style="color:var(--doc-ac);font-size:10px;padding:2px 8px">开</button>
                   <button style="font-size:10px;padding:2px 8px">关</button>
                 </div>
               </div>
               <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 4px 2px">
                 <span style="font-size:11px">更多主题…</span>
-                <span style="font-size:9.5px;color:var(--text-muted)">打开设置 › 主题</span>
+                <span style="font-size:9.5px;color:var(--doc-t3)">打开设置 › 主题</span>
               </div>
             </div>
           </div>
-          <div style="font-size:10.5px;color:var(--text-muted);margin-top:64px;line-height:1.75">
+          <div style="font-size:10.5px;color:var(--doc-t3);margin-top:64px;line-height:1.75">
             弹层复用现有的 <code>topbar-click-anchor</code> 跟随点击点机制（现成能力，不新增定位逻辑）。
             8 个变体一屏放得下，无需滚动。
           </div>
@@ -605,15 +2347,15 @@
     <div class="ba">
       <div class="bax">
         <div class="bax-h">现状 · 正确，但过于绝对</div>
-        <div class="bax-b" style="font-size:11px;color:var(--text-secondary);line-height:1.85">
+        <div class="bax-b" style="font-size:11px;color:var(--doc-t2);line-height:1.85">
           <code>popup-bg</code> 恒等于 <code>base-bg-panel</code>（不霜化）—— 20 处调用点全部依赖这一点。<br>
           <span class="tag tag-g">对</span>弹窗绝不能被图片透底，否则密集文字不可读。<br>
           <span class="tag tag-o">但</span>用户想要"全透玻璃"效果时无处可去。
         </div>
       </div>
       <div class="bax">
-        <div class="bax-h" style="color:var(--ok)">改后 · 增加一档，弹窗层单独可控</div>
-        <div class="bax-b" style="font-size:11px;color:var(--text-secondary);line-height:1.85">
+        <div class="bax-h" style="color:var(--doc-ok)">改后 · 增加一档，弹窗层单独可控</div>
+        <div class="bax-b" style="font-size:11px;color:var(--doc-t2);line-height:1.85">
           主题页新增「界面通透度」三档：<br>
           <b>标准</b>（默认）= 现状，弹窗实心<br>
           <b>通透</b> = 弹窗跟随面板不透明度（配深色遮罩兜底）<br>
@@ -638,9 +2380,9 @@
           <tr><td class="mono">app.rs:3256</td><td class="c"><code>toggle_theme</code> 翻 bool</td>
             <td class="c">改名为 <code>apply_theme(id)</code>，走同一条重渲染路径</td></tr>
         </table>
-        <div style="font-size:10.5px;color:var(--text-muted);margin-top:8px;line-height:1.75">
+        <div style="font-size:10.5px;color:var(--doc-t3);margin-top:8px;line-height:1.75">
           <b>为什么必须做</b>：Nord / Solarized / Tokyo Night 这类主题的 ANSI 16 色是主题身份的一部分。
-          若终端还用现成两套，主题切换后<span style="color:var(--danger)">终端配色会与界面脱节</span> —— 这是最容易被用户一眼看出的破绽。
+          若终端还用现成两套，主题切换后<span style="color:var(--doc-dg)">终端配色会与界面脱节</span> —— 这是最容易被用户一眼看出的破绽。
         </div>
       </div>
       <div>
@@ -651,11 +2393,11 @@
             <td class="c"><code>group-color-dark</code> / <code>group-color-light</code> 两组 24 色 →
               改为按主题查表；每套主题的 24 色按其明度重新取档，保证 1px 树线在各自背景上清晰</td></tr>
         </table>
-        <div style="font-size:10.5px;color:var(--text-muted);margin-top:8px;line-height:1.75">
+        <div style="font-size:10.5px;color:var(--doc-t3);margin-top:8px;line-height:1.75">
           这套取色面板（右键菜单 → 分组颜色）必须跟着主题走，否则会出现"在浅色主题里选了深红、在深色主题里选了亮红"的不一致。
         </div>
         <div class="shead" style="margin:14px 0 6px">单窗口主题的传播</div>
-        <div style="font-size:11.5px;color:var(--text-secondary);line-height:1.8">
+        <div style="font-size:11.5px;color:var(--doc-t2);line-height:1.8">
           现状 <code>broadcast_config_changed</code> 只在主题翻转时广播，壁纸不广播。
           拆开后<b>壁纸也要广播</b>（因为遮罩影响所有独立窗口的观感），
           独立窗口需同步的属性从 4 个（<code>wallpaper_active</code> / <code>wp_accent</code> / <code>wp_tint</code> / <code>dark</code>）
@@ -680,17 +2422,21 @@
       </tr>
       <tr>
         <td><span class="tag tag-g">L1</span></td>
-        <td class="c"><b>内置主题</b><br>8 个变体</td>
-        <td class="c">4 套色系 × 明/暗。切换即时生效，终端调色板、分组色、弹窗全部跟随。
-          设页与顶栏两处都能切。</td>
+        <td class="c"><b>内置主题</b><br>21 个变体</td>
+        <td class="c">9 套社区色系（Nord / Solarized / Tokyo Night / Gruvbox /
+          Dracula / Catppuccin / Everforest / One Dark / Rosé Pine）
+          + 3 套 IDEA 主题，按各自<b>真有的档位</b>生成。
+          切换即时生效，终端调色板、分组色、弹窗全部跟随。</td>
         <td class="mono">中<br>（1–2 天）</td>
         <td class="ok-c">必做</td>
       </tr>
       <tr>
         <td><span class="tag tag-b">L2</span></td>
-        <td class="c"><b>自定义强调色</b><br>预设 8 + 取色器</td>
-        <td class="c">8 个预设（海蓝 / 松石 / 琥珀 / 绯红 / 紫罗兰 / 柠檬 / 炭灰 / 跟随主题）。
-          取色器支持 <code>#RRGGBB</code> 直输 + 本地图片取色。<b>换色不换主题</b>，文字对比度自动校正（过暗自动提亮、过亮自动压暗）。</td>
+        <td class="c"><b>强调色</b><br>默认跟随主题</td>
+        <td class="c"><b>三态</b>：<code>跟随主题（默认）</code> / 预设 7 个 / 自定义。<br>
+          <b class="new-c">默认态是「跟随主题」</b> —— 用户不设置就用主题自带的强调色，
+          换主题时强调色跟着换。<b>换色不换主题</b>，
+          对比度自动校正（过暗提亮、过亮压暗）。</td>
         <td class="mono">小<br>（0.5 天）</td>
         <td class="ok-c">必做</td>
       </tr>
@@ -706,26 +2452,61 @@
 
     <div class="cols" style="margin-top:14px">
       <div>
-        <div class="shead" style="margin-bottom:7px">L2 强调色：8 预设 + 取色器（1:1）</div>
-        <div style="background:var(--bg-root);border:1px solid var(--border-subtle);border-radius:9px;padding:12px 14px">
-          <div class="accents" style="max-width:none;margin-bottom:10px" id="acc2"></div>
+        <div class="shead" style="margin-bottom:7px">L2 强调色：三态（1:1 · 可点）</div>
+        <div style="background:var(--doc-bg);border:1px solid var(--doc-line);border-radius:9px;padding:12px 14px">
+          <div class="accents" style="max-width:none;margin-bottom:9px" id="acc2"></div>
+          <div style="font-size:10.5px;color:var(--doc-ac);margin-bottom:9px;line-height:1.7"
+               id="accState">—</div>
           <div style="display:flex;align-items:center;gap:8px">
-            <div style="display:flex;align-items:center;gap:7px;background:var(--field);border:1px solid var(--border-control);
-                        border-radius:7px;padding:5px 10px;flex:1">
+            <div style="display:flex;align-items:center;gap:7px;background:var(--doc-elev);
+                        border:1px solid var(--doc-line2);border-radius:7px;padding:5px 10px;flex:1">
               <span style="width:13px;height:13px;border-radius:4px;background:#7c5cff"></span>
-              <span style="font-family:var(--mono);font-size:11px;color:var(--text-secondary)">#7C5CFF</span>
+              <span style="font-family:var(--mono);font-size:11px;color:var(--doc-t2)">#7C5CFF</span>
             </div>
-            <div style="background:var(--accent);color:#fff;border-radius:7px;padding:6px 14px;font-size:11.5px;font-weight:600">应用</div>
+            <div style="background:var(--doc-ac);color:#fff;border-radius:7px;padding:6px 14px;
+                        font-size:11.5px;font-weight:600">应用</div>
           </div>
-          <div style="font-size:10.5px;color:var(--text-muted);margin-top:8px;line-height:1.7">
-            对比度守卫：输入的强调色若与当前主题背景对比度 &lt; 3:1，自动调整明度后再应用，并在输入框下方提示实际生效值。
+          <div style="font-size:10.5px;color:var(--doc-t3);margin-top:8px;line-height:1.7">
+            对比度守卫：输入的强调色若与当前主题背景对比度 &lt; 3:1，
+            自动调整明度后再应用，并在输入框下方提示实际生效值。
           </div>
         </div>
-      </div>
+        <div class="box" style="margin-top:11px">
+          <b>为什么默认是「跟随主题」而不是「必须选一个」</b><br>
+          <b class="new-c">判据：一个可选设置项的默认值，应该等于"什么都不做"的结果。</b><br>
+          如果默认是某个预设色（哪怕是这套主题自己的强调色），
+          用户会得到一个<b>他没选过的颜色</b> —— 而"没设置就跟随主题"
+          才是<b>零操作即正确</b>的状态：装完就是这套主题该有的样子。<br>
+          <br><b class="new-c">配置项的默认值要问"用户什么都不做会得到什么"</b> ——
+          那是大多数人的真实路径，也是"设置项是否合理"的第一道检验。
+        </div>
+        <div class="redbox" style="margin-top:11px">
+          <b>实现上「跟随」不是一个 if，而是"没有覆盖"</b><br>
+          主题的 accent 写在 <code>[data-theme="xxx"]</code> 里；
+          强调色覆盖写在 <code>:root</code>（更高优先级，但<b>只在覆盖时才出现</b>）。<br>
+          <code>follow</code> 时做的是<b>移除覆盖属性</b>，CSS 自然回退到主题的值：
+          <table style="margin-top:5px;background:transparent">
+            <tr><th style="width:230px;background:transparent;border-color:rgba(128,128,128,.2)">写法</th>
+              <th style="background:transparent;border-color:rgba(128,128,128,.2)">结果</th></tr>
+            <tr><td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)">
+              removeProperty('--accent')</td>
+              <td class="c ok-c" style="background:transparent;border-color:rgba(128,128,128,.2)">
+                ✓ 回退到主题的accent —— 这就是"跟随"</td></tr>
+            <tr><td class="mono" style="background:transparent;border-color:rgba(128,128,128,.2)">
+              setProperty('--accent','')</td>
+              <td class="c no-c" style="background:transparent;border-color:rgba(128,128,128,.2)">
+                ✗ 空值让整个继承链失效 → 强调色变透明，
+                比"跟随"差得多</td></tr>
+          </table>
+          <br><b>⚠️ 别写成</b> <code>--accent: var(--user-accent, var(--theme-accent))</code>
+          且 <code>--user-accent</code> 永不赋值 —— 那样"跟随"能工作，
+          但多一层间接、且容易在别处被误设。
+          <b>直接用"覆盖属性在/不在"表达跟随</b>，少一个状态位、少一处可能出错。
+        </div>
       <div>
         <div class="shead" style="margin-bottom:7px">L3 自定义主题文件结构（草案）</div>
-        <div style="background:var(--field);border:1px solid var(--border-subtle);border-radius:9px;padding:12px 14px;
-                    font-family:var(--mono);font-size:10.5px;line-height:1.75;color:var(--text-secondary);
+        <div style="background:var(--doc-elev);border:1px solid var(--doc-line);border-radius:9px;padding:12px 14px;
+                    font-family:var(--mono);font-size:10.5px;line-height:1.75;color:var(--doc-t2);
                     white-space:pre;overflow:auto">{
   <span style="color:#7fb6ee">"id"</span>: <span style="color:#7fd9c6">"my-midnight"</span>,
   <span style="color:#7fb6ee">"name"</span>: <span style="color:#7fd9c6">"午夜蓝"</span>,
@@ -748,11 +2529,12 @@
   <span style="color:#7fb6ee">"ansi"</span>: [ <span style="color:#eec27a">"#e06c75"</span>, <span style="color:#eec27a">"#98c379"</span>, ... ],
   <span style="color:#7fb6ee">"group-colors"</span>: [ <span style="color:#eec27a">"#f87171"</span>, ... ]
 }</div>
-        <div style="font-size:10.5px;color:var(--text-muted);margin-top:8px;line-height:1.7">
+        <div style="font-size:10.5px;color:var(--doc-t3);margin-top:8px;line-height:1.7">
           缺槽位时回落到同 mode 的内置主题；<code>mode</code> 决定这套走明还是暗的分组色。
         </div>
       </div>
     </div>
+  </div>
   </div>
 </div>
 
@@ -773,7 +2555,7 @@
             （现状终端本来就更实，拆开后视觉不回退）</td></tr>
         </table>
         <div class="shead" style="margin:14px 0 6px">DEFAULTS_REV bump</div>
-        <div style="font-size:11.5px;color:var(--text-secondary);line-height:1.8">
+        <div style="font-size:11.5px;color:var(--doc-t2);line-height:1.8">
           <code>DEFAULTS_REV: 3 → 4</code>（<code>config_file.rs:40</code>）。<b>只对"一直在默认值上"的用户生效</b>：
           新装与未改过壁纸的用户 → <code>wallpaper = ""</code> + <code>follow_system = true</code>；
           已经手动挑过壁纸的用户保持原样。迁移后必须跑一次实机截图核对。
@@ -801,186 +2583,1518 @@
     </div>
     <div class="gap"></div>
     <div class="shead" style="margin-bottom:7px">验证清单（沿用项目既有纪律）</div>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:11px;color:var(--text-secondary)">
-      <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:8px 10px">① 8 套主题逐个切换，核对<b>顶栏 / 侧栏 / 标签 / 终端 / 弹窗 / 分组色</b>六处无错色</div>
-      <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:8px 10px">② 亮壁纸 + 暗主题、暗壁纸 + 亮主题，各打包实机截图核对比度</div>
-      <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:8px 10px">③ 老配置迁移后截图，与升级前逐像素比对（除刻意变更项）</div>
-      <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:8px 10px">④ 终端 ANSI 在 8 套下分别跑一遍 <code>ls --color</code> / <code>vim</code></div>
-      <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:8px 10px">⑤ 独立窗口（进程 / 编辑器 / 系统信息 / 托盘 / 关于）跟随主题，无遗漏</div>
-      <div style="border:1px solid var(--border-subtle);border-radius:7px;padding:8px 10px">⑥ 无壁纸时三个滑杆的禁用态确实吞事件（不写配置）</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:11px;color:var(--doc-t2)">
+      <div style="border:1px solid var(--doc-line);border-radius:7px;padding:8px 10px">① 8 套主题逐个切换，核对<b>顶栏 / 侧栏 / 标签 / 终端 / 弹窗 / 分组色</b>六处无错色</div>
+      <div style="border:1px solid var(--doc-line);border-radius:7px;padding:8px 10px">② 亮壁纸 + 暗主题、暗壁纸 + 亮主题，各打包实机截图核对比度</div>
+      <div style="border:1px solid var(--doc-line);border-radius:7px;padding:8px 10px">③ 老配置迁移后截图，与升级前逐像素比对（除刻意变更项）</div>
+      <div style="border:1px solid var(--doc-line);border-radius:7px;padding:8px 10px">④ 终端 ANSI 在 8 套下分别跑一遍 <code>ls --color</code> / <code>vim</code></div>
+      <div style="border:1px solid var(--doc-line);border-radius:7px;padding:8px 10px">⑤ 独立窗口（进程 / 编辑器 / 系统信息 / 托盘 / 关于）跟随主题，无遗漏</div>
+      <div style="border:1px solid var(--doc-line);border-radius:7px;padding:8px 10px">⑥ 无壁纸时三个滑杆的禁用态确实吞事件（不写配置）</div>
     </div>
   </div>
 </div>
 
 <!-- ══════════ §6 待定 ══════════ -->
 <div class="sec">
-  <div class="sec-t">6 · 需要你定的三件事</div>
+  <div class="sec-t">6 · 已定 / 还需你定的</div>
   <div class="card">
-    <div class="kv" style="grid-template-columns:150px 1fr;gap:10px 14px">
-      <b>① 4 套色系选哪 4 套</b>
-      <div class="c">方案给了「原味 Meat / 深海 Abyss / 松石 Verdigris / 炭焙 Charcoal」。也可以换成
-        Nord / Solarized / Tokyo Night / Gruvbox 这类社区成熟色系 —— 后者辨识度高但撞脸其它终端软件。
-        倾向哪一边？</div>
-      <b>② 是否保留"跟随图片取色"</b>
-      <div class="c">这是唯一让壁纸反向影响界面的开关。默认关能保证解耦干净；开则保留一点"惊艳感"。
-        我的建议：<b>保留但默认关</b>，并在取色时明确提示"强调色将跟随图片"。</div>
-      <b>③ L3 自定义主题文件做不做</b>
-      <div class="c">L1/L2 已能覆盖绝大多数人。L3 是 2–3 天的工程 + 长期格式兼容负担。
-        建议第一版只做 L1/L2，等有人真需要再上。</div>
-    </div>
-    <div class="gap"></div>
-    <div style="font-size:11.5px;color:var(--text-muted);line-height:1.8">
-      本页只是方案，<b>未改动任何代码</b>。定稿后按"先出这一页的确认 → 再改 theme.slint → 再改设置页 → 再迁移 → 最后打包"的顺序推进。
+    <div class="cols">
+      <div>
+        <div class="shead" style="margin-bottom:8px">本轮已定</div>
+        <table>
+          <tr><th style="width:118px">事项</th><th>结论</th></tr>
+          <tr><td class="c ok-c">选哪几套色系</td>
+            <td class="c"><b>3 个族共 33 个变体</b>：现代 UI 色板（Radix，12）
+              + 经典终端配色（9 套，18）+ JetBrains 官方（3）。
+              全部取官方调色板文件，按各自<b>真有的档位</b>生成</td></tr>
+          <tr><td class="c ok-c">为什么加Radix 那一族</td>
+            <td class="c">终端配色是<b>为 ANSI 16 色</b>设计的，
+              <b>没有三级面板底</b>（终端里只有"底+文字"），
+              铺满界面会掉一个档次。Radix 是<b>为界面</b>做的：
+              12 档等距阶梯 + APCA 对比度 + P3 色域</td></tr>
+          <tr><td class="c ok-c">怎么选主题</td>
+            <td class="c"><b>下拉框 + 悬停预览</b>（不再用网格）。
+              33 个平铺一屏放不下，且网格没有分组位置。
+              下拉内<b>按族分组</b>，让用户按风格找而不是逐个翻</td></tr>
+          <tr><td class="c ok-c">悬停是看还是选</td>
+            <td class="c"><b>悬停只更新右侧预览，不切主题</b>。
+              判据：悬停是"看"，点击才是"选" —— 悬停就切会让用户
+              无法"扫一眼列表找主题"</td></tr>
+          <tr><td class="c ok-c">强调色没设置怎么办</td>
+            <td class="c"><b>默认跟随主题色</b>，三态：
+              跟随主题 / 预设 9 个 / 自定义（见 §4 的 L2）</td></tr>
+          <tr><td class="c ok-c">强调色预设哪几个</td>
+            <td class="c">9 个预设<b>全部出自某套主题自己的 accent</b> ——
+              经典蓝（Radix石墨）、青（石板）、靛紫（藕荷）、翡翠（青苔）、
+              琥珀（暖砂）、番茄（橄榄）、霓蓝（Tokyo Night）、
+              霜青（Nord）、暮紫（Dracula）</td></tr>
+        </table>
+        <div class="shead" style="margin:14px 0 6px">连带要一起改的（别只改色值）</div>
+        <table>
+          <tr><th style="width:150px">位置</th><th>为什么必须跟着改</th></tr>
+          <tr><td class="mono">presentation.rs:654</td>
+            <td class="c"><code>ANSI16_DARK / LIGHT</code> 两套 →
+              <b>21 套</b>。否则主题换了、终端还是老配色</td></tr>
+          <tr><td class="mono">theme.slint:244-255</td>
+            <td class="c">分组色 <code>dark / light</code> 两套 → 按主题查表。
+              否则会出现"在亮色主题里选了深红"</td></tr>
+          <tr><td class="mono">theme.slint:15</td>
+            <td class="c"><code>dark: bool</code> + 全文件 126 处三元式 →
+              一张 <code>slot()</code> 查表</td></tr>
+        </table>
+      </div>
+      <div>
+        <div class="shead" style="margin-bottom:8px">还需要你定</div>
+        <div class="kv" style="grid-template-columns:22px 1fr;gap:9px 10px;font-size:11.5px">
+          <b>①</b>
+          <div class="c">是否保留「跟随图片取色」——这是唯一让壁纸反向影响界面的开关。
+            默认关能保证解耦干净；开则保留一点"惊艳感"。
+            <b>我的建议：保留但默认关</b>，
+            且开启时在取色处明确提示"强调色将跟随图片"。</div>
+          <b>②</b>
+          <div class="c">Everforest 亮档怎么处理？官方色阶<b>撑不起"主/次/弱"三档正文</b>
+            （次文本要 4.5，官方最深的一档灰只有 2.90）。
+            三选一：<b>a)</b> 只推暗档，亮档不上；
+            <b>b)</b> 单独把 panel 提深一档再用官方灰；
+            <b>c)</b> 接受次文本与主文本同色（层级会变平）。
+            <b>我倾向 a</b> —— 它的价值在暗档，亮档本来也不是它的主打。</div>
+          <b>④</b>
+          <div class="c">Gruvbox 要不要留？<b class="no-c">它是唯一授权未声明的一套</b>
+            （仓库无 LICENSE 文件）。留 = 承担商用分发风险；
+            删 = 少一套最有特色的暖色相主题。</div>
+          <b>⑤</b>
+          <div class="c">顶栏那个入口要不要也做悬停预览？
+            现在它是<b>纯列表</b>（空间只有 262px，塞不下预览面板）。
+            三选一：<b>a)</b> 顶栏也做浮出预览卡（宽屏够、窄屏会盖内容）；
+            <b>b)</b> 顶栏只管快速切换，详细预览去设置页；
+            <b>c)</b> 顶栏点"更多…"直接打开设置页。
+            <b>我倾向 b</b> —— 浮出卡在窄空间里必然会遮挡。</div>
+          <b>⑥</b>
+          <div class="c">L3 自定义主题文件做不做。L1/L2 已能覆盖绝大多数人，
+            L3 是 2–3 天工程 + 长期格式兼容负担。
+            <b>建议第一版只做 L1/L2。</b></div>
+        </div>
+        <div class="gap"></div>
+        <div style="font-size:11.5px;color:var(--doc-t3);line-height:1.8">
+          本页只是方案，<b>未改动任何业务代码</b>。定稿后按
+          "先出这一页的确认 → 再改 <code>theme.slint</code> → 再改设置页
+          → 再迁移 → 最后打包"的顺序推进。
+        </div>
+      </div>
     </div>
   </div>
 </div>
 
 <script>
-/* ─────────── 主题数据 ─────────── */
-const FAM = {
-  meat:  { n:"原味",  en:"Meat",       d:"沿用现有 MeatShell 配色，一档不差地搬进新模型。冷调炭灰 + 品牌蓝，兼容性零风险。" },
-  abyss: { n:"深海",  en:"Abyss",      d:"蓝调深色。面板带一点海蓝倾向，长时间盯屏比纯灰更柔和；适合暗环境主力使用。" },
-  verd:  { n:"松石",  en:"Verdigris",  d:"青绿调。终端的绿系与界面同源，ANSI 输出和 UI 混排时更整体。" },
-  char:  { n:"炭焙",  en:"Charcoal",   d:"暖中性。唯一带暖色相的暗色方案，长时间阅读输出文件的疲劳感最低。" }
-};
-const T = {
-  "meat-dark":  { f:"meat",  m:"暗", n:"原味 · 暗", root:"#1b1d23", panel:"#23262d", palt:"#2a2d35", elev:"#30333c",
-                  hov:"#373a44", act:"#3f4350", line:"#3a3d46", lstr:"#4a4e59",
-                  t1:"#e6e8ee", t2:"#b4b9c4", t3:"#9196a3", tbg:"#0e0f13", tfg:"#d4d4d4",
-                  ac:"#4a90e2", ac2:"#5aa0f2", ok:"#4ec9b0", wr:"#e2a84a", dg:"#e25c5c" },
-  "meat-light": { f:"meat",  m:"亮", n:"原味 · 亮", root:"#f5f5f7", panel:"#ffffff", palt:"#f2f2f7", elev:"#e8e8ed",
-                  hov:"#e0e0e6", act:"#d8d8de", line:"#e2e2e8", lstr:"#c7c7cc",
-                  t1:"#1d1d1f", t2:"#45454a", t3:"#606066", tbg:"#fafafa", tfg:"#2d2d2f",
-                  ac:"#0071e3", ac2:"#0077ed", ok:"#34c759", wr:"#ff9f0a", dg:"#ff3b30" },
-  "abyss-dark": { f:"abyss", m:"暗", n:"深海 · 暗", root:"#0e1620", panel:"#131d29", palt:"#18242f", elev:"#1e2c3a",
-                  hov:"#243646", act:"#2b4055", line:"#22323f", lstr:"#2e4356",
-                  t1:"#dbe7f0", t2:"#93a9bb", t3:"#6d8296", tbg:"#070d14", tfg:"#c8d6e2",
-                  ac:"#3fa9f5", ac2:"#5cbcf7", ok:"#3fd0a8", wr:"#e5a54b", dg:"#e5646e" },
-  "abyss-light":{ f:"abyss", m:"亮", n:"深海 · 亮", root:"#eef4f9", panel:"#ffffff", palt:"#e6eef6", elev:"#d9e5f0",
-                  hov:"#cfdeec", act:"#c3d5e6", line:"#d3e0ec", lstr:"#adc3d6",
-                  t1:"#0e1c28", t2:"#3c5468", t3:"#5b7488", tbg:"#f7fafd", tfg:"#16232e",
-                  ac:"#0b76c4", ac2:"#0a68b0", ok:"#0f9e7e", wr:"#b5760f", dg:"#cf3b47" },
-  "verd-dark":  { f:"verd",  m:"暗", n:"松石 · 暗", root:"#101a1a", panel:"#152222", palt:"#1a2b2b", elev:"#203534",
-                  hov:"#264140", act:"#2d4d4b", line:"#1e3332", lstr:"#2a4745",
-                  t1:"#dcf0ec", t2:"#94b8b2", t3:"#6d8f8a", tbg:"#0a1212", tfg:"#c8e2dc",
-                  ac:"#2ec4a6", ac2:"#48d6ba", ok:"#5fd39a", wr:"#dda84a", dg:"#e56b6b" },
-  "verd-light": { f:"verd",  m:"亮", n:"松石 · 亮", root:"#eef6f4", panel:"#ffffff", palt:"#e4f0ed", elev:"#d5e8e4",
-                  hov:"#c9e0db", act:"#bcd7d1", line:"#cfe3df", lstr:"#a5c8c1",
-                  t1:"#0c1f1c", t2:"#375852", t3:"#54746e", tbg:"#f7fbfa", tfg:"#142a26",
-                  ac:"#0e8f78", ac2:"#0b7d69", ok:"#128a5f", wr:"#a06e12", dg:"#c34a4a" },
-  "char-dark":  { f:"char",  m:"暗", n:"炭焙 · 暗", root:"#1e1c1a", panel:"#262320", palt:"#2d2a26", elev:"#35312c",
-                  hov:"#3d3833", act:"#463f39", line:"#38332d", lstr:"#4a443c",
-                  t1:"#efe9e1", t2:"#b8ada1", t3:"#8e8377", tbg:"#141210", tfg:"#ddd5c9",
-                  ac:"#d98d4a", ac2:"#e89f61", ok:"#c2a35e", wr:"#e0b45c", dg:"#dd6b5a" },
-  "char-light": { f:"char",  m:"亮", n:"炭焙 · 亮", root:"#f6f3f0", panel:"#ffffff", palt:"#f1ede8", elev:"#e7e1da",
-                  hov:"#ded7cf", act:"#d4ccc2", line:"#e6dfd6", lstr:"#c6bcb0",
-                  t1:"#241f1a", t2:"#544c43", t3:"#776d62", tbg:"#fbf9f7", tfg:"#2e2823",
-                  ac:"#a8621f", ac2:"#8f551a", ok:"#5f7a2e", wr:"#9a6a10", dg:"#b8443a" }
-};
-const IDS = Object.keys(T);
-const ACC = ["#4a90e2","#3fa9f5","#2ec4a6","#5fd39a","#d98d4a","#e5646e","#7c5cff","#8e8377"];
+  /* 33 个变体的色值（真源 scripts/theme-tokens.json + _radix-themes.json）*/
+  var THEME_IDS = ["graphite-dark", "graphite-light", "slate-dark", "slate-light", "mauve-dark", "mauve-light", "sage-dark", "sage-light", "sand-dark", "sand-light", "olive-dark", "olive-light", "dracula-dark", "dracula-light", "catppuccin-dark", "catppuccin-light", "solarized-dark", "solarized-light", "gruvbox-dark", "gruvbox-light", "tokyonight-dark", "tokyonight-light", "nord-dark", "nord-light", "everforest-dark", "everforest-light", "rosepine-dark", "rosepine-light", "onedark-dark", "onedark-light", "idea-dark", "idea-light", "darcula"];
+  var GROUPS = [["radix", "现代 UI 色板", "Radix Colors 体系 · 为界面设计，明度等距 12 档。面板层级清晰、柔和分层，是四者里最\"现代\"的一类。", ["graphite-dark", "graphite-light", "slate-dark", "slate-light", "mauve-dark", "mauve-light", "sage-dark", "sage-light", "sand-dark", "sand-light", "olive-dark", "olive-light"]],
+   ["terminal", "经典终端配色", "终端社区最常用的几套 · 为长时间读输出设计，硬对比、护眼。深色档尤其适合暗环境。", ["dracula-dark", "dracula-light", "catppuccin-dark", "catppuccin-light", "solarized-dark", "solarized-light", "gruvbox-dark", "gruvbox-light", "tokyonight-dark", "tokyonight-light", "nord-dark", "nord-light", "everforest-dark", "everforest-light", "rosepine-dark", "rosepine-light", "onedark-dark", "onedark-light"]],
+   ["idea", "JetBrains 官方", "IDEA 的三个默认 UI 主题 · 商标属 JetBrains，落地写\"配色参考\"不要冠产品名。", ["idea-dark", "idea-light", "darcula"]]];
+  var PAL = {
+   "graphite-dark": {
+    "f": "石墨",
+    "en": "Graphite",
+    "m": "暗",
+    "kind": "radix",
+    "group": "radix",
+    "star": 1686,
+    "lic": "MIT",
+    "repo": "radix-ui/colors",
+    "desc": "纯中性灰 + 经典蓝。<b>最稳的一套</b> —— 界面元素本身的颜色降到最低，只有强调色与状态色说话。适合长时间写代码，也最不容易挑。",
+    "root": "#111111",
+    "panel": "#191919",
+    "palt": "#222222",
+    "elev": "#2a2a2a",
+    "tab": "#1c1c1c",
+    "line": "#3a3a3a",
+    "t1": "#b4b4b4",
+    "t2": "#818181",
+    "t3": "#818181",
+    "tbg": "#111111",
+    "tfg": "#eeeeee",
+    "ac": "#0090ff",
+    "ac2": "#2870bd",
+    "ok": "#46a758",
+    "wr": "#a18072",
+    "dg": "#e93d82",
+    "ch": [
+     "#7c9cff",
+     "#3ecfb8",
+     "#e5b84c",
+     "#e8859f"
+    ]
+   },
+   "graphite-light": {
+    "f": "石墨",
+    "en": "Graphite",
+    "m": "亮",
+    "kind": "radix",
+    "group": "radix",
+    "star": 1686,
+    "lic": "MIT",
+    "repo": "radix-ui/colors",
+    "desc": "纯中性灰 + 经典蓝。<b>最稳的一套</b> —— 界面元素本身的颜色降到最低，只有强调色与状态色说话。适合长时间写代码，也最不容易挑。",
+    "root": "#fcfcfc",
+    "panel": "#f9f9f9",
+    "palt": "#f0f0f0",
+    "elev": "#e8e8e8",
+    "tab": "#f1f1f1",
+    "line": "#cecece",
+    "t1": "#202020",
+    "t2": "#646464",
+    "t3": "#646464",
+    "tbg": "#fcfcfc",
+    "tfg": "#202020",
+    "ac": "#0090ff",
+    "ac2": "#0588f0",
+    "ok": "#29a383",
+    "wr": "#ffc53d",
+    "dg": "#e93d82",
+    "ch": [
+     "#3e63dd",
+     "#0c8a7d",
+     "#946200",
+     "#c22a52"
+    ]
+   },
+   "slate-dark": {
+    "f": "石板",
+    "en": "Slate",
+    "m": "暗",
+    "kind": "radix",
+    "group": "radix",
+    "star": 1686,
+    "lic": "MIT",
+    "repo": "radix-ui/colors",
+    "desc": "带一点冷蓝倾向的灰 + 青。<b>比石墨\"有温度\"但不跳</b>，终端 ANSI 输出混排时整体感更强。",
+    "root": "#111113",
+    "panel": "#18191b",
+    "palt": "#212225",
+    "elev": "#272a2d",
+    "tab": "#1b1c1e",
+    "line": "#363a3f",
+    "t1": "#b0b4ba",
+    "t2": "#7d8189",
+    "t3": "#7d8189",
+    "tbg": "#111113",
+    "tfg": "#edeef0",
+    "ac": "#00a2c7",
+    "ac2": "#11809c",
+    "ok": "#46a758",
+    "wr": "#a18072",
+    "dg": "#e93d82",
+    "ch": [
+     "#7c9cff",
+     "#3ecfb8",
+     "#e5b84c",
+     "#e8859f"
+    ]
+   },
+   "slate-light": {
+    "f": "石板",
+    "en": "Slate",
+    "m": "亮",
+    "kind": "radix",
+    "group": "radix",
+    "star": 1686,
+    "lic": "MIT",
+    "repo": "radix-ui/colors",
+    "desc": "带一点冷蓝倾向的灰 + 青。<b>比石墨\"有温度\"但不跳</b>，终端 ANSI 输出混排时整体感更强。",
+    "root": "#fcfcfd",
+    "panel": "#f9f9fb",
+    "palt": "#f0f0f3",
+    "elev": "#e8e8ec",
+    "tab": "#f1f1f3",
+    "line": "#cdced6",
+    "t1": "#1c2024",
+    "t2": "#60646c",
+    "t3": "#60646c",
+    "tbg": "#fcfcfd",
+    "tfg": "#1c2024",
+    "ac": "#00a2c7",
+    "ac2": "#0797b9",
+    "ok": "#29a383",
+    "wr": "#ffc53d",
+    "dg": "#e93d82",
+    "ch": [
+     "#3e63dd",
+     "#0c8a7d",
+     "#946200",
+     "#c22a52"
+    ]
+   },
+   "mauve-dark": {
+    "f": "藕荷",
+    "en": "Mauve",
+    "m": "暗",
+    "kind": "radix",
+    "group": "radix",
+    "star": 1686,
+    "lic": "MIT",
+    "repo": "radix-ui/colors",
+    "desc": "极淡紫灰 + 靛紫。<b>三套里最\"柔\"的一套</b>，观感接近 Linear / Vercel 那类现代产品界面。",
+    "root": "#121113",
+    "panel": "#1a191b",
+    "palt": "#232225",
+    "elev": "#2b292d",
+    "tab": "#1d1c1e",
+    "line": "#3c393f",
+    "t1": "#b5b2bc",
+    "t2": "#82808a",
+    "t3": "#82808a",
+    "tbg": "#121113",
+    "tfg": "#eeeef0",
+    "ac": "#5b5bd6",
+    "ac2": "#5958b1",
+    "ok": "#46a758",
+    "wr": "#a18072",
+    "dg": "#e93d82",
+    "ch": [
+     "#7c9cff",
+     "#3ecfb8",
+     "#e5b84c",
+     "#e8859f"
+    ]
+   },
+   "mauve-light": {
+    "f": "藕荷",
+    "en": "Mauve",
+    "m": "亮",
+    "kind": "radix",
+    "group": "radix",
+    "star": 1686,
+    "lic": "MIT",
+    "repo": "radix-ui/colors",
+    "desc": "极淡紫灰 + 靛紫。<b>三套里最\"柔\"的一套</b>，观感接近 Linear / Vercel 那类现代产品界面。",
+    "root": "#fdfcfd",
+    "panel": "#faf9fb",
+    "palt": "#f2eff3",
+    "elev": "#eae7ec",
+    "tab": "#f3f0f4",
+    "line": "#d0cdd7",
+    "t1": "#211f26",
+    "t2": "#65636d",
+    "t3": "#65636d",
+    "tbg": "#fdfcfd",
+    "tfg": "#211f26",
+    "ac": "#5b5bd6",
+    "ac2": "#5151cd",
+    "ok": "#29a383",
+    "wr": "#ffc53d",
+    "dg": "#e93d82",
+    "ch": [
+     "#3e63dd",
+     "#0c8a7d",
+     "#946200",
+     "#c22a52"
+    ]
+   },
+   "sage-dark": {
+    "f": "青苔",
+    "en": "Sage",
+    "m": "暗",
+    "kind": "radix",
+    "group": "radix",
+    "star": 1686,
+    "lic": "MIT",
+    "repo": "radix-ui/colors",
+    "desc": "绿调中性 + 翡翠绿。低对比但不冷，护眼取向，与 Everforest 是同一个方向但**用界面级色阶做得更均匀**。",
+    "root": "#101211",
+    "panel": "#171918",
+    "palt": "#202221",
+    "elev": "#272a29",
+    "tab": "#1b1d1c",
+    "line": "#373b39",
+    "t1": "#adb5b2",
+    "t2": "#78837f",
+    "t3": "#78837f",
+    "tbg": "#101211",
+    "tfg": "#eceeed",
+    "ac": "#29a383",
+    "ac2": "#2a7e68",
+    "ok": "#46a758",
+    "wr": "#a18072",
+    "dg": "#e93d82",
+    "ch": [
+     "#7c9cff",
+     "#3ecfb8",
+     "#e5b84c",
+     "#e8859f"
+    ]
+   },
+   "sage-light": {
+    "f": "青苔",
+    "en": "Sage",
+    "m": "亮",
+    "kind": "radix",
+    "group": "radix",
+    "star": 1686,
+    "lic": "MIT",
+    "repo": "radix-ui/colors",
+    "desc": "绿调中性 + 翡翠绿。低对比但不冷，护眼取向，与 Everforest 是同一个方向但**用界面级色阶做得更均匀**。",
+    "root": "#fbfdfc",
+    "panel": "#f7f9f8",
+    "palt": "#eef1f0",
+    "elev": "#e6e9e8",
+    "tab": "#f0f2f2",
+    "line": "#cbcfcd",
+    "t1": "#1a211e",
+    "t2": "#5f6563",
+    "t3": "#5f6563",
+    "tbg": "#fbfdfc",
+    "tfg": "#1a211e",
+    "ac": "#29a383",
+    "ac2": "#26997b",
+    "ok": "#29a383",
+    "wr": "#ffc53d",
+    "dg": "#e93d82",
+    "ch": [
+     "#3e63dd",
+     "#0c8a7d",
+     "#946200",
+     "#c22a52"
+    ]
+   },
+   "sand-dark": {
+    "f": "暖砂",
+    "en": "Sand",
+    "m": "暗",
+    "kind": "radix",
+    "group": "radix",
+    "star": 1686,
+    "lic": "MIT",
+    "repo": "radix-ui/colors",
+    "desc": "暖灰 + 琥珀。<b>唯一带暖调的一套</b>，长时间读日志 / 看 diff 的疲劳感最低。",
+    "root": "#111110",
+    "panel": "#191918",
+    "palt": "#222221",
+    "elev": "#2a2a28",
+    "tab": "#1c1c1b",
+    "line": "#3b3a37",
+    "t1": "#b5b3ad",
+    "t2": "#83817b",
+    "t3": "#83817b",
+    "tbg": "#111110",
+    "tfg": "#eeeeec",
+    "ac": "#ffc53d",
+    "ac2": "#8f6424",
+    "ok": "#46a758",
+    "wr": "#a18072",
+    "dg": "#e93d82",
+    "ch": [
+     "#7c9cff",
+     "#3ecfb8",
+     "#e5b84c",
+     "#e8859f"
+    ]
+   },
+   "sand-light": {
+    "f": "暖砂",
+    "en": "Sand",
+    "m": "亮",
+    "kind": "radix",
+    "group": "radix",
+    "star": 1686,
+    "lic": "MIT",
+    "repo": "radix-ui/colors",
+    "desc": "暖灰 + 琥珀。<b>唯一带暖调的一套</b>，长时间读日志 / 看 diff 的疲劳感最低。",
+    "root": "#fdfdfc",
+    "panel": "#f9f9f8",
+    "palt": "#f1f0ef",
+    "elev": "#e9e8e6",
+    "tab": "#f2f2f1",
+    "line": "#cfceca",
+    "t1": "#21201c",
+    "t2": "#63635e",
+    "t3": "#63635e",
+    "tbg": "#fdfdfc",
+    "tfg": "#21201c",
+    "ac": "#ffc53d",
+    "ac2": "#ffba18",
+    "ok": "#29a383",
+    "wr": "#ffc53d",
+    "dg": "#e93d82",
+    "ch": [
+     "#3e63dd",
+     "#0c8a7d",
+     "#946200",
+     "#c22a52"
+    ]
+   },
+   "olive-dark": {
+    "f": "橄榄",
+    "en": "Olive",
+    "m": "暗",
+    "kind": "radix",
+    "group": "radix",
+    "star": 1686,
+    "lic": "MIT",
+    "repo": "radix-ui/colors",
+    "desc": "黄绿灰 + 番茄红。对比最强的一套，状态色（成功/警告/危险）之间分得最开。",
+    "root": "#111210",
+    "panel": "#181917",
+    "palt": "#212220",
+    "elev": "#282a27",
+    "tab": "#1c1d1b",
+    "line": "#383a36",
+    "t1": "#afb5ad",
+    "t2": "#7c837a",
+    "t3": "#7c837a",
+    "tbg": "#111210",
+    "tfg": "#eceeec",
+    "ac": "#e54d2e",
+    "ac2": "#ac4d39",
+    "ok": "#46a758",
+    "wr": "#a18072",
+    "dg": "#e93d82",
+    "ch": [
+     "#7c9cff",
+     "#3ecfb8",
+     "#e5b84c",
+     "#e8859f"
+    ]
+   },
+   "olive-light": {
+    "f": "橄榄",
+    "en": "Olive",
+    "m": "亮",
+    "kind": "radix",
+    "group": "radix",
+    "star": 1686,
+    "lic": "MIT",
+    "repo": "radix-ui/colors",
+    "desc": "黄绿灰 + 番茄红。对比最强的一套，状态色（成功/警告/危险）之间分得最开。",
+    "root": "#fcfdfc",
+    "panel": "#f8faf8",
+    "palt": "#eff1ef",
+    "elev": "#e7e9e7",
+    "tab": "#f1f2f1",
+    "line": "#cccfcc",
+    "t1": "#1d211c",
+    "t2": "#60655f",
+    "t3": "#60655f",
+    "tbg": "#fcfdfc",
+    "tfg": "#1d211c",
+    "ac": "#e54d2e",
+    "ac2": "#dd4425",
+    "ok": "#29a383",
+    "wr": "#ffc53d",
+    "dg": "#e93d82",
+    "ch": [
+     "#3e63dd",
+     "#0c8a7d",
+     "#946200",
+     "#c22a52"
+    ]
+   },
+   "dracula-dark": {
+    "f": "德古拉",
+    "en": "Dracula",
+    "m": "暗",
+    "kind": "community",
+    "group": "terminal",
+    "star": 23598,
+    "lic": "MIT",
+    "repo": "dracula/dracula-theme",
+    "desc": "GitHub <b>星数第一</b>的配色（23598★）。特点：<b>紫调</b>中性色 + 高饱和口音色，官方对比度BG/FG 高达 13.6:1。<br>唯一同时被 JetBrains、VS Code、iTerm、Slack、Xcode 等 400+ 应用收录的方案，生态最广。<br><b>暗色 Dracula + 亮色 Alucard</b>（官方给的两个名字，不是明暗两套配色）。",
+    "root": "#282a36",
+    "panel": "#282a36",
+    "palt": "#343746",
+    "elev": "#3d3f4e",
+    "tab": "#3d3f4e",
+    "line": "#44475a",
+    "t1": "#f8f8f2",
+    "t2": "#f8f8f2",
+    "t3": "#6272a4",
+    "tbg": "#282a36",
+    "tfg": "#f8f8f2",
+    "ac": "#bd93f9",
+    "ac2": "#8be9fd",
+    "ok": "#50fa7b",
+    "wr": "#f1fa8c",
+    "dg": "#ff5555",
+    "ch": [
+     "#80b8ef",
+     "#80efd3",
+     "#efc680",
+     "#ef809c"
+    ]
+   },
+   "dracula-light": {
+    "f": "德古拉",
+    "en": "Dracula",
+    "m": "亮",
+    "kind": "community",
+    "group": "terminal",
+    "star": 23598,
+    "lic": "MIT",
+    "repo": "dracula/dracula-theme",
+    "desc": "GitHub <b>星数第一</b>的配色（23598★）。特点：<b>紫调</b>中性色 + 高饱和口音色，官方对比度BG/FG 高达 13.6:1。<br>唯一同时被 JetBrains、VS Code、iTerm、Slack、Xcode 等 400+ 应用收录的方案，生态最广。<br><b>暗色 Dracula + 亮色 Alucard</b>（官方给的两个名字，不是明暗两套配色）。",
+    "root": "#fffbeb",
+    "panel": "#fffbeb",
+    "palt": "#f7f5e8",
+    "elev": "#f3f1e3",
+    "tab": "#cfcfde",
+    "line": "#cfcfde",
+    "t1": "#1f1f1f",
+    "t2": "#1f1f1f",
+    "t3": "#6c664b",
+    "tbg": "#fffbeb",
+    "tfg": "#1f1f1f",
+    "ac": "#7057c7",
+    "ac2": "#036a96",
+    "ok": "#14710a",
+    "wr": "#846e15",
+    "dg": "#cf3f3f",
+    "ch": [
+     "#114c88",
+     "#158468",
+     "#885c11",
+     "#88112f"
+    ]
+   },
+   "catppuccin-dark": {
+    "f": "卡布奇诺",
+    "en": "Catppuccin",
+    "m": "暗",
+    "kind": "community",
+    "group": "terminal",
+    "star": 19807,
+    "lic": "MIT",
+    "repo": "catppuccin/palette",
+    "desc": "19807★，<b>柔和的粉彩系</b>。26 个语义色名跨四个变体共用（Mauve / Pink / Sky / Peach…），所以切明暗不用重新学配色对应关系。<br><b>Mocha（暗）与Latte（亮）是官方主推的一对</b>，本方案只取这两个 —— Frappé / Macchiato 是中间深浅档，对整窗配色来说与 Mocha 差异过小，收益不抵占用位。",
+    "root": "#1e1e2e",
+    "panel": "#1e1e2e",
+    "palt": "#181825",
+    "elev": "#313244",
+    "tab": "#313244",
+    "line": "#45475a",
+    "t1": "#cdd6f4",
+    "t2": "#bac2de",
+    "t3": "#a6adc8",
+    "tbg": "#1e1e2e",
+    "tfg": "#cdd6f4",
+    "ac": "#89b4fa",
+    "ac2": "#b4befe",
+    "ok": "#a6e3a1",
+    "wr": "#f9e2af",
+    "dg": "#f38ba8",
+    "ch": [
+     "#80b8ef",
+     "#80efd3",
+     "#efc680",
+     "#ef809c"
+    ]
+   },
+   "catppuccin-light": {
+    "f": "卡布奇诺",
+    "en": "Catppuccin",
+    "m": "亮",
+    "kind": "community",
+    "group": "terminal",
+    "star": 19807,
+    "lic": "MIT",
+    "repo": "catppuccin/palette",
+    "desc": "19807★，<b>柔和的粉彩系</b>。26 个语义色名跨四个变体共用（Mauve / Pink / Sky / Peach…），所以切明暗不用重新学配色对应关系。<br><b>Mocha（暗）与Latte（亮）是官方主推的一对</b>，本方案只取这两个 —— Frappé / Macchiato 是中间深浅档，对整窗配色来说与 Mocha 差异过小，收益不抵占用位。",
+    "root": "#eff1f5",
+    "panel": "#eff1f5",
+    "palt": "#e6e9ef",
+    "elev": "#ccd0da",
+    "tab": "#ccd0da",
+    "line": "#bcc0cc",
+    "t1": "#4c4f69",
+    "t2": "#5c5f77",
+    "t3": "#6c6f85",
+    "tbg": "#eff1f5",
+    "tfg": "#4c4f69",
+    "ac": "#1e66f5",
+    "ac2": "#7287fd",
+    "ok": "#40a02b",
+    "wr": "#df8e1d",
+    "dg": "#d20f39",
+    "ch": [
+     "#114c88",
+     "#158468",
+     "#885c11",
+     "#88112f"
+    ]
+   },
+   "solarized-dark": {
+    "f": "Solarized",
+    "en": "Solarized",
+    "m": "暗",
+    "kind": "community",
+    "group": "terminal",
+    "star": 16019,
+    "lic": "MIT",
+    "repo": "altercation/solarized",
+    "desc": "Ethan Schoonover 出品，<b>唯一用 CIELAB 精确推导过明度关系</b>的方案。16 档色的色相在明暗两档里几乎相同、只有明度差 —— 所以<b>切明暗时界面观感几乎不变，只有亮度变</b>，这是它十年不腻的原因。",
+    "root": "#002b36",
+    "panel": "#002b36",
+    "palt": "#073642",
+    "elev": "#586e75",
+    "tab": "#073642",
+    "line": "#586e75",
+    "t1": "#fdf6e3",
+    "t2": "#eee8d5",
+    "t3": "#93a1a1",
+    "tbg": "#002b36",
+    "tfg": "#eee8d5",
+    "ac": "#268bd2",
+    "ac2": "#2aa198",
+    "ok": "#859900",
+    "wr": "#b58900",
+    "dg": "#dc322f",
+    "ch": [
+     "#80b8ef",
+     "#80efd3",
+     "#efc680",
+     "#ef809c"
+    ]
+   },
+   "solarized-light": {
+    "f": "Solarized",
+    "en": "Solarized",
+    "m": "亮",
+    "kind": "community",
+    "group": "terminal",
+    "star": 16019,
+    "lic": "MIT",
+    "repo": "altercation/solarized",
+    "desc": "Ethan Schoonover 出品，<b>唯一用 CIELAB 精确推导过明度关系</b>的方案。16 档色的色相在明暗两档里几乎相同、只有明度差 —— 所以<b>切明暗时界面观感几乎不变，只有亮度变</b>，这是它十年不腻的原因。",
+    "root": "#fdf6e3",
+    "panel": "#fdf6e3",
+    "palt": "#eee8d5",
+    "elev": "#eee8d5",
+    "tab": "#eee8d5",
+    "line": "#93a1a1",
+    "t1": "#002b36",
+    "t2": "#123944",
+    "t3": "#2a4d56",
+    "tbg": "#fdf6e3",
+    "tfg": "#657b83",
+    "ac": "#268bd2",
+    "ac2": "#2aa198",
+    "ok": "#859900",
+    "wr": "#b58900",
+    "dg": "#dc322f",
+    "ch": [
+     "#114c88",
+     "#11886a",
+     "#885c11",
+     "#88112f"
+    ]
+   },
+   "gruvbox-dark": {
+    "f": "Gruvbox",
+    "en": "Gruvbox",
+    "m": "暗",
+    "kind": "community",
+    "group": "terminal",
+    "star": 15778,
+    "lic": "未声明（README 写 MIT/X11）",
+    "repo": "morhetz/gruvbox",
+    "desc": "15778★，社区主题里<b>唯一带暖色相</b>的一套（底色是偏黄的深棕）。长时间读输出文件的疲劳感最低。<br>⚠️ <b>授权注意</b>：仓库<b>没有 LICENSE 文件</b>（GitHub API 返回 null），README 里写 \"License MIT/X11\" —— 属<b>声明但未落文件</b>。个人/学习用无碍，<b>要商用或分发就应先向作者确认</b>，或改用其他授权明确的方案。",
+    "root": "#1d2021",
+    "panel": "#282828",
+    "palt": "#32302f",
+    "elev": "#3c3836",
+    "tab": "#282828",
+    "line": "#504945",
+    "t1": "#ebdbb2",
+    "t2": "#d5c4a1",
+    "t3": "#bdae93",
+    "tbg": "#1d2021",
+    "tfg": "#ebdbb2",
+    "ac": "#fe8019",
+    "ac2": "#fabd2f",
+    "ok": "#b8bb26",
+    "wr": "#fabd2f",
+    "dg": "#fb4934",
+    "ch": [
+     "#80b8ef",
+     "#80efd3",
+     "#efc680",
+     "#ef809c"
+    ]
+   },
+   "gruvbox-light": {
+    "f": "Gruvbox",
+    "en": "Gruvbox",
+    "m": "亮",
+    "kind": "community",
+    "group": "terminal",
+    "star": 15778,
+    "lic": "未声明（README 写 MIT/X11）",
+    "repo": "morhetz/gruvbox",
+    "desc": "15778★，社区主题里<b>唯一带暖色相</b>的一套（底色是偏黄的深棕）。长时间读输出文件的疲劳感最低。<br>⚠️ <b>授权注意</b>：仓库<b>没有 LICENSE 文件</b>（GitHub API 返回 null），README 里写 \"License MIT/X11\" —— 属<b>声明但未落文件</b>。个人/学习用无碍，<b>要商用或分发就应先向作者确认</b>，或改用其他授权明确的方案。",
+    "root": "#f9f5d7",
+    "panel": "#fbf1c7",
+    "palt": "#f2e5bc",
+    "elev": "#ebdbb2",
+    "tab": "#f2e5bc",
+    "line": "#d5c4a1",
+    "t1": "#504945",
+    "t2": "#665c54",
+    "t3": "#7c6f64",
+    "tbg": "#f9f5d7",
+    "tfg": "#504945",
+    "ac": "#af3a03",
+    "ac2": "#b57614",
+    "ok": "#79740e",
+    "wr": "#b57614",
+    "dg": "#9d0006",
+    "ch": [
+     "#114c88",
+     "#11886a",
+     "#885c11",
+     "#88112f"
+    ]
+   },
+   "tokyonight-dark": {
+    "f": "东京夜",
+    "en": "Tokyo Night",
+    "m": "暗",
+    "kind": "community",
+    "group": "terminal",
+    "star": 8212,
+    "lic": "MIT（官网）/ Apache-2.0（nvim 实现）",
+    "repo": "tokyonight-theme/tokyonight",
+    "desc": "8212★，<b>色阶跨度最大</b>的一套：背景压到极暗 #1a1b26、前景提到 #c0caf5，是几套里对比度最高的（≈9.5:1）。<br>代价是中间层偏蓝紫，界面观感偏\"冷\"。<br>⚠️ 授权要分清：官网配色与多数移植是 MIT，而 <code>folke/tokyonight.nvim</code> 的 spdx_id 是 <b>Apache-2.0</b>。",
+    "root": "#1a1b26",
+    "panel": "#1f2335",
+    "palt": "#292e42",
+    "elev": "#323247",
+    "tab": "#24283b",
+    "line": "#292e42",
+    "t1": "#c0caf5",
+    "t2": "#a9b1d6",
+    "t3": "#787f9e",
+    "tbg": "#1a1b26",
+    "tfg": "#c0caf5",
+    "ac": "#7aa2f7",
+    "ac2": "#7dcfff",
+    "ok": "#9ece6a",
+    "wr": "#e0af68",
+    "dg": "#f7768e",
+    "ch": [
+     "#80b8ef",
+     "#80efd3",
+     "#efc680",
+     "#ef809c"
+    ]
+   },
+   "tokyonight-light": {
+    "f": "东京夜",
+    "en": "Tokyo Night",
+    "m": "亮",
+    "kind": "community",
+    "group": "terminal",
+    "star": 8212,
+    "lic": "MIT（官网）/ Apache-2.0（nvim 实现）",
+    "repo": "tokyonight-theme/tokyonight",
+    "desc": "8212★，<b>色阶跨度最大</b>的一套：背景压到极暗 #1a1b26、前景提到 #c0caf5，是几套里对比度最高的（≈9.5:1）。<br>代价是中间层偏蓝紫，界面观感偏\"冷\"。<br>⚠️ 授权要分清：官网配色与多数移植是 MIT，而 <code>folke/tokyonight.nvim</code> 的 spdx_id 是 <b>Apache-2.0</b>。",
+    "root": "#e1e2e7",
+    "panel": "#e1e2e7",
+    "palt": "#d0d5e3",
+    "elev": "#c4c8da",
+    "tab": "#d0d5e3",
+    "line": "#c4c8da",
+    "t1": "#3760bf",
+    "t2": "#3760bf",
+    "t3": "#6172b0",
+    "tbg": "#e1e2e7",
+    "tfg": "#6172b0",
+    "ac": "#2e7de9",
+    "ac2": "#007197",
+    "ok": "#587539",
+    "wr": "#8c6c3e",
+    "dg": "#f52a65",
+    "ch": [
+     "#114c88",
+     "#11886a",
+     "#885c11",
+     "#88112f"
+    ]
+   },
+   "nord-dark": {
+    "f": "北欧",
+    "en": "Nord",
+    "m": "暗",
+    "kind": "community",
+    "group": "terminal",
+    "star": 6886,
+    "lic": "MIT",
+    "repo": "nordtheme/nord",
+    "desc": "6886★，<b>最不刺眼</b>的一套 —— 官方设计目标就是\"连续看 8 小时不累\"，色阶刻意压缩（16 档里真正用到的只有 6 个）。<br><b>常见抱怨</b>：低饱和让语法元素显得\"糊在一起\"、彼此不够分明。<br>⚠️ 亮档（bright ambiance）官方文档给了配色原则，<b>但没有提供独立的亮档文件</b> —— 本方案的亮档是按官方原则（nord6 作底 / nord4 作面板）在官方色阶内排的。",
+    "root": "#2e3440",
+    "panel": "#2e3440",
+    "palt": "#3b4252",
+    "elev": "#434c5e",
+    "tab": "#3b4252",
+    "line": "#434c5e",
+    "t1": "#eceff4",
+    "t2": "#d8dee9",
+    "t3": "#a3aab9",
+    "tbg": "#2e3440",
+    "tfg": "#d8dee9",
+    "ac": "#88c0d0",
+    "ac2": "#8fbcbb",
+    "ok": "#a3be8c",
+    "wr": "#ebcb8b",
+    "dg": "#bf616a",
+    "ch": [
+     "#80b8ef",
+     "#80efd3",
+     "#efc680",
+     "#ef809c"
+    ]
+   },
+   "nord-light": {
+    "f": "北欧",
+    "en": "Nord",
+    "m": "亮",
+    "kind": "community",
+    "group": "terminal",
+    "star": 6886,
+    "lic": "MIT",
+    "repo": "nordtheme/nord",
+    "desc": "6886★，<b>最不刺眼</b>的一套 —— 官方设计目标就是\"连续看 8 小时不累\"，色阶刻意压缩（16 档里真正用到的只有 6 个）。<br><b>常见抱怨</b>：低饱和让语法元素显得\"糊在一起\"、彼此不够分明。<br>⚠️ 亮档（bright ambiance）官方文档给了配色原则，<b>但没有提供独立的亮档文件</b> —— 本方案的亮档是按官方原则（nord6 作底 / nord4 作面板）在官方色阶内排的。",
+    "root": "#eceff4",
+    "panel": "#eceff4",
+    "palt": "#e5e9f0",
+    "elev": "#d8dee9",
+    "tab": "#d8dee9",
+    "line": "#b6c2d4",
+    "t1": "#2e3440",
+    "t2": "#3b4252",
+    "t3": "#4c566a",
+    "tbg": "#eceff4",
+    "tfg": "#2e3440",
+    "ac": "#2f6bab",
+    "ac2": "#2f7d90",
+    "ok": "#4f7a3d",
+    "wr": "#8a6d1f",
+    "dg": "#a3324a",
+    "ch": [
+     "#114c88",
+     "#11886a",
+     "#885c11",
+     "#88112f"
+    ]
+   },
+   "everforest-dark": {
+    "f": "常青",
+    "en": "Everforest",
+    "m": "暗",
+    "kind": "community",
+    "group": "terminal",
+    "star": 4244,
+    "lic": "MIT",
+    "repo": "sainnhe/everforest",
+    "desc": "4244★，绿调但<b>偏暖</b>—— 官方说得很直接：\"designed to be warm and soft in order to protect developers' eyes\"。绿调里最容易做到护眼的就是它。<br>⚠️ <b>它是 3×2 = 6 个变体</b>（hard/medium/soft × dark/light），比别家多。本方案只取默认的 <b>medium</b> 档 —— soft 会让侧栏与终端底太接近，hard 又太极端。",
+    "root": "#232a2e",
+    "panel": "#2d353b",
+    "palt": "#343f44",
+    "elev": "#3d484d",
+    "tab": "#343f44",
+    "line": "#475258",
+    "t1": "#d3c6aa",
+    "t2": "#9da9a0",
+    "t3": "#859289",
+    "tbg": "#232a2e",
+    "tfg": "#d3c6aa",
+    "ac": "#83c092",
+    "ac2": "#7fbbb3",
+    "ok": "#a7c080",
+    "wr": "#dbbc7f",
+    "dg": "#e67e80",
+    "ch": [
+     "#80b8ef",
+     "#80efd3",
+     "#efc680",
+     "#ef809c"
+    ]
+   },
+   "everforest-light": {
+    "f": "常青",
+    "en": "Everforest",
+    "m": "亮",
+    "kind": "community",
+    "group": "terminal",
+    "star": 4244,
+    "lic": "MIT",
+    "repo": "sainnhe/everforest",
+    "desc": "4244★，绿调但<b>偏暖</b>—— 官方说得很直接：\"designed to be warm and soft in order to protect developers' eyes\"。绿调里最容易做到护眼的就是它。<br>⚠️ <b>它是 3×2 = 6 个变体</b>（hard/medium/soft × dark/light），比别家多。本方案只取默认的 <b>medium</b> 档 —— soft 会让侧栏与终端底太接近，hard 又太极端。",
+    "root": "#fdf6e3",
+    "panel": "#f4f0d9",
+    "palt": "#efeBD4",
+    "elev": "#e6e2cc",
+    "tab": "#efeBD4",
+    "line": "#e0dcc7",
+    "t1": "#5c6a72",
+    "t2": "#5c6a72",
+    "t3": "#829181",
+    "tbg": "#fdf6e3",
+    "tfg": "#5c6a72",
+    "ac": "#35a77c",
+    "ac2": "#3a94c5",
+    "ok": "#8da101",
+    "wr": "#dfa000",
+    "dg": "#f85552",
+    "ch": [
+     "#114c88",
+     "#11886a",
+     "#885c11",
+     "#88112f"
+    ]
+   },
+   "rosepine-dark": {
+    "f": "松玫瑰",
+    "en": "Rosé Pine",
+    "m": "暗",
+    "kind": "community",
+    "group": "terminal",
+    "star": 1623,
+    "lic": "MIT",
+    "repo": "rose-pine/rose-pine-theme",
+    "desc": "1623★，<b>低饱和的梅子紫</b>。13 个角色色跨三变体同名同义（base / surface / overlay / muted / subtle / text / love / gold / rose / pine / foam / iris），语义设计是几套里最规整的。<br>本方案取<b>主变体pine（暗）与 dawn（亮）</b>；moon 是介于两者之间的第三档，收益不抵占位。",
+    "root": "#191724",
+    "panel": "#191724",
+    "palt": "#1f1d2e",
+    "elev": "#26233a",
+    "tab": "#26233a",
+    "line": "#26233a",
+    "t1": "#e0def4",
+    "t2": "#908caa",
+    "t3": "#6e6a86",
+    "tbg": "#191724",
+    "tfg": "#e0def4",
+    "ac": "#31748f",
+    "ac2": "#9ccfd8",
+    "ok": "#c4a7e7",
+    "wr": "#f6c177",
+    "dg": "#eb6f92",
+    "ch": [
+     "#80b8ef",
+     "#80efd3",
+     "#efc680",
+     "#ef809c"
+    ]
+   },
+   "rosepine-light": {
+    "f": "松玫瑰",
+    "en": "Rosé Pine",
+    "m": "亮",
+    "kind": "community",
+    "group": "terminal",
+    "star": 1623,
+    "lic": "MIT",
+    "repo": "rose-pine/rose-pine-theme",
+    "desc": "1623★，<b>低饱和的梅子紫</b>。13 个角色色跨三变体同名同义（base / surface / overlay / muted / subtle / text / love / gold / rose / pine / foam / iris），语义设计是几套里最规整的。<br>本方案取<b>主变体pine（暗）与 dawn（亮）</b>；moon 是介于两者之间的第三档，收益不抵占位。",
+    "root": "#faf4ed",
+    "panel": "#faf4ed",
+    "palt": "#fffaf3",
+    "elev": "#f2e9e1",
+    "tab": "#f2e9e1",
+    "line": "#f2e9e1",
+    "t1": "#464261",
+    "t2": "#64607e",
+    "t3": "#6f6b89",
+    "tbg": "#faf4ed",
+    "tfg": "#464261",
+    "ac": "#286983",
+    "ac2": "#56949f",
+    "ok": "#907aa9",
+    "wr": "#ea9d34",
+    "dg": "#b4637a",
+    "ch": [
+     "#114c88",
+     "#11886a",
+     "#885c11",
+     "#88112f"
+    ]
+   },
+   "onedark-dark": {
+    "f": "原子暗",
+    "en": "One Dark",
+    "m": "暗",
+    "kind": "community",
+    "group": "terminal",
+    "star": 1071,
+    "lic": "ISC",
+    "repo": "nathanbuchar/atom-one-dark-terminal",
+    "desc": "Atom 编辑器的招牌配色，<b>中立灰调</b>（不带任何色相倾向），是\"最不出错\"的选择。<br>⚠️ star 数只有 1071，但 <b>它是引用最广的方案之一</b> —— VS Code 的 One Dark Pro、各种 terminal 端口都从它派生。判据：<b>star 数量社区验证，不等于影响力</b>；有大量下游衍生的方案即使自身 star 不高也值得收录。<br>本方案取的是 <code>atom-one-dark-terminal</code>（Atom 团队授权的终端移植，ISC 许可），不是社区众多 fork。",
+    "root": "#1e2127",
+    "panel": "#1e2127",
+    "palt": "#3a3f4b",
+    "elev": "#4d535f",
+    "tab": "#3a3f4b",
+    "line": "#5c6370",
+    "t1": "#ffffff",
+    "t2": "#abb2bf",
+    "t3": "#878e9b",
+    "tbg": "#1e2127",
+    "tfg": "#abb2bf",
+    "ac": "#61afef",
+    "ac2": "#56b6c2",
+    "ok": "#98c379",
+    "wr": "#d19a66",
+    "dg": "#e06c75",
+    "ch": [
+     "#80b8ef",
+     "#80efd3",
+     "#efc680",
+     "#ef809c"
+    ]
+   },
+   "onedark-light": {
+    "f": "原子暗",
+    "en": "One Dark",
+    "m": "亮",
+    "kind": "community",
+    "group": "terminal",
+    "star": 1071,
+    "lic": "ISC",
+    "repo": "nathanbuchar/atom-one-dark-terminal",
+    "desc": "Atom 编辑器的招牌配色，<b>中立灰调</b>（不带任何色相倾向），是\"最不出错\"的选择。<br>⚠️ star 数只有 1071，但 <b>它是引用最广的方案之一</b> —— VS Code 的 One Dark Pro、各种 terminal 端口都从它派生。判据：<b>star 数量社区验证，不等于影响力</b>；有大量下游衍生的方案即使自身 star 不高也值得收录。<br>本方案取的是 <code>atom-one-dark-terminal</code>（Atom 团队授权的终端移植，ISC 许可），不是社区众多 fork。",
+    "root": "#f9f9f9",
+    "panel": "#f9f9f9",
+    "palt": "#f0f0f1",
+    "elev": "#f0f0f1",
+    "tab": "#ebebeb",
+    "line": "#e5e5e6",
+    "t1": "#383a42",
+    "t2": "#6c6e73",
+    "t3": "#898a8f",
+    "tbg": "#f9f9f9",
+    "tfg": "#383a42",
+    "ac": "#4078f2",
+    "ac2": "#0184bc",
+    "ok": "#50a14f",
+    "wr": "#986801",
+    "dg": "#e45649",
+    "ch": [
+     "#114c88",
+     "#11886a",
+     "#885c11",
+     "#88112f"
+    ]
+   },
+   "idea-dark": {
+    "f": "IDEA 暗",
+    "en": "IntelliJ Dark",
+    "m": "暗",
+    "kind": "idea",
+    "group": "idea",
+    "star": null,
+    "lic": "Apache-2.0（配色）/ 商标属 JetBrains",
+    "repo": "JetBrains IntelliJ Platform",
+    "desc": "IDEA 2026.1 新 UI 的<b>默认暗色主题</b>。面板分区清晰（工具窗口与编辑器用底色差分开），比 Darcula 的层次更分明。<br>⚠️ <b>商标注意</b>：配色文件 Apache-2.0，但<b>\"IntelliJ IDEA\" 是 JetBrains 的商标</b>。落地写\"配色参考 IntelliJ IDEA Dark\"，<b>不要命名为 \"MeatShell IDEA\"</b>。",
+    "root": "#2b2d30",
+    "panel": "#2b2d30",
+    "palt": "#33353a",
+    "elev": "#3c3f41",
+    "tab": "#3c3f41",
+    "line": "#393b40",
+    "t1": "#dfdfe0",
+    "t2": "#bcbec4",
+    "t3": "#a8ac94",
+    "tbg": "#1e1f22",
+    "tfg": "#dfdfe0",
+    "ac": "#3574f0",
+    "ac2": "#548af7",
+    "ok": "#499c54",
+    "wr": "#c77d2e",
+    "dg": "#d54e53",
+    "ch": [
+     "#80b8ef",
+     "#80efd3",
+     "#efc680",
+     "#ef809c"
+    ]
+   },
+   "idea-light": {
+    "f": "IDEA 亮",
+    "en": "IntelliJ Light",
+    "m": "亮",
+    "kind": "idea",
+    "group": "idea",
+    "star": null,
+    "lic": "Apache-2.0（配色）/ 商标属 JetBrains",
+    "repo": "JetBrains IntelliJ Platform",
+    "desc": "IDEA 2026.1 新 UI 的默认亮色主题。与暗档同源（同一套色阶反相），所以明暗切换时界面观感一致、只有亮度变 —— 与 Solarized 同一个思路。<br>⚠️ 同 IDEA 暗：<b>商标属 JetBrains</b>，写\"配色参考\"不要冠产品名。",
+    "root": "#ffffff",
+    "panel": "#ffffff",
+    "palt": "#f7f8fa",
+    "elev": "#f2f3f5",
+    "tab": "#e9eaec",
+    "line": "#ebecf0",
+    "t1": "#1e1f22",
+    "t2": "#6c707e",
+    "t3": "#818594",
+    "tbg": "#ffffff",
+    "tfg": "#1e1f22",
+    "ac": "#3574f0",
+    "ac2": "#1f6feb",
+    "ok": "#3d8b40",
+    "wr": "#9a6700",
+    "dg": "#c50f1f",
+    "ch": [
+     "#114c88",
+     "#11886a",
+     "#885c11",
+     "#88112f"
+    ]
+   },
+   "darcula": {
+    "f": "Darcula",
+    "en": "Darcula",
+    "m": "暗",
+    "kind": "idea",
+    "group": "idea",
+    "star": null,
+    "lic": "Apache-2.0（配色）/ 商标属 JetBrains",
+    "repo": "JetBrains IntelliJ Platform",
+    "desc": "IDEA 使用最久的经典暗色主题（2009 年至今）。<b>低对比</b>是它的刻意选择 —— 长时间写代码不累眼，这也是它十几年不过时的原因。<br>⚠️ <b>只有暗档</b>：官方 Theme 列表里 Darcula 只有暗色，<b>没有 Darcula 亮档</b>。硬凑一个会得到\"仿制品\"。<br>⚠️ 商标属 JetBrains，写\"配色参考 Darcula\"不要冠产品名。",
+    "root": "#3c3f41",
+    "panel": "#3c3f41",
+    "palt": "#313335",
+    "elev": "#45494a",
+    "tab": "#45494a",
+    "line": "#515151",
+    "t1": "#ffffff",
+    "t2": "#bbbbbb",
+    "t3": "#a9a7a3",
+    "tbg": "#2b2b2b",
+    "tfg": "#ffffff",
+    "ac": "#589df6",
+    "ac2": "#287bde",
+    "ok": "#499c54",
+    "wr": "#c77d2e",
+    "dg": "#e06c75",
+    "ch": [
+     "#80b8ef",
+     "#80efd3",
+     "#efc680",
+     "#ef809c"
+    ]
+   }
+  };
 
-function mini(t){
-  return `<div class="inner" style="background:${t.root}">
-    <div class="tbar" style="background:${t.panel};border-bottom:1px solid ${t.line}">
-      <i style="background:${t.accent}"></i><i style="background:${t.t3}"></i><i style="background:${t.t3}"></i>
-    </div>
-    <div class="tbody">
-      <div class="tside" style="background:${t.palt}"></div>
-      <div class="tmain">
-        <i style="background:${t.accent};width:34%"></i>
-        <i style="background:${t.t2};width:78%"></i>
-        <i style="background:${t.t3};width:60%"></i>
-        <i style="background:${t.elev};width:88%"></i>
-        <span class="tchip" style="background:${t.accent};opacity:.85"></span>
-      </div>
-    </div></div>`;
-}
-function cur(id){ return T[id]; }
+/* ── 文档区色（不随主题变）────────────────────────────────────
+   说明这张页面自己的配色。与主题变量是**两套独立定义** ——
+   否则切主题时连对照表本身都变色，读不了。 */
+var DOC={bg:'#1b1d23',panel:'#23262d',alt:'#2a2d35',line:'#3a3d46',
+  line2:'#4a4e59',t1:'#e6e8ee',t2:'#b4b9c4',t3:'#9196a3',
+  ac:'#4a90e2',ok:'#4ec9b0',wr:'#e2a84a',dg:'#e25c5c',hov:'#2e323a'};
+function docVars(){var r=document.documentElement.style;
+  for(var k in DOC) r.setProperty('--doc-'+k,DOC[k]);}
 
-function sel(id){
-  IDS.forEach(k=>{ const e=document.querySelector(`.tcard[data-id="${k}"]`); if(e) e.classList.toggle("on", k===id); });
-  const t=cur(id), dm=document.getElementById("demo");
-  dm.style.background=t.root; dm.style.borderColor=t.line;
-  const bar=dm.querySelector(".dm-bar"); bar.style.background=t.panel; bar.style.color=t.t1; bar.style.borderBottom="1px solid "+t.line;
-  const tab=document.getElementById("dTab"); tab.style.background=t.tbg; tab.style.color=t.tfg;
-  document.getElementById("dName").textContent=t.n;
-  document.getElementById("dName").style.color=t.t2;
-  const term=document.getElementById("dTerm");
-  term.style.background=t.tbg; term.style.color=t.tfg;
-  term.style.setProperty("--t-accent",t.ac); term.style.setProperty("--t-accent2",t.ac2);
-  term.style.setProperty("--t-ok",t.ok); term.style.setProperty("--t-warn",t.wr);
-  term.style.setProperty("--t-danger",t.dg); term.style.setProperty("--t-mut",t.t3);
-  document.getElementById("tkName").textContent=t.n;
-  document.getElementById("tkDesc").innerHTML=FAM[t.f].d;
-  const rows=[["bg-root",t.root],["bg-panel",t.panel],["bg-panel-alt",t.palt],["bg-elevated",t.elev],
-              ["bg-hover",t.hov],["bg-active",t.act],["line-subtle",t.line],["line-strong",t.lstr],
-              ["text-primary",t.t1],["text-secondary",t.t2],["text-muted",t.t3],
-              ["term-bg",t.tbg],["term-fg",t.tfg],["accent",t.ac]];
-  document.getElementById("tkTok").innerHTML=rows.map(r=>
-    `<tr><td class="k">${r[0]}</td><td class="v"><span class="sw" style="background:${r[1]}"></span>${r[1]}</td></tr>`).join("");
-  document.querySelectorAll("#pick .tp").forEach(e=>e.classList.toggle("sel", e.dataset.id===id));
-  document.querySelectorAll("#pop .tcell").forEach(e=>e.style.outline = e.dataset.id===id ? "2px solid "+t.ac : "none");
-}
+/* ── 强调色三态 ───────────────────────────────────────────────
+   ★ 用户需求：强调色**没设置时跟随主题色**。
+   实现：主题的 accent 写在 [data-theme] 里，用户覆盖写在 :root
+   （更高优先级，但**只在覆盖时才出现**）。follow = 移除覆盖。 */
+var accentState={mode:'follow',value:null}, curId=null;
 
-/* 主卡片 */
-document.getElementById("tgrip").innerHTML = IDS.map(id=>{
-  const t=T[id];
-  return `<div class="tcard" data-id="${id}" onclick="sel('${id}')">
-    <div class="tprev" style="background:${t.root}">
-      <div class="bar" style="background:${t.panel};border-bottom:1px solid ${t.line}">
-        <i style="background:${t.accent}"></i><i style="background:${t.t3}"></i><i style="background:${t.t3}"></i>
-      </div>
-      <div class="body">
-        <div class="side" style="background:${t.palt}"></div>
-        <div class="main">
-          <span class="ln" style="background:${t.accent};width:38%"></span>
-          <span class="ln" style="background:${t.t2};width:82%"></span>
-          <span class="ln" style="background:${t.t3};width:62%"></span>
-          <span class="ln" style="background:${t.elev};width:90%;height:14px;border-radius:3px"></span>
-          <span class="chip" style="background:${t.accent};opacity:.85"></span>
-        </div>
-      </div>
-    </div>
-    <div class="tmeta">
-      <div class="tname">${t.n}</div>
-      <div class="ten">${FAM[t.f].en} · ${t.m}</div>
-    </div>
-  </div>`;
-}).join("");
+var PRESETS=[
+  {n:'跟随主题',v:null},
+  {n:'经典蓝',   v:'#0090ff',from:'graphite-dark'},
+  {n:'青',v:'#00a2c7',from:'slate-dark'},
+  {n:'靛紫',     v:'#5b5bd6',from:'mauve-dark'},
+  {n:'翡翠',     v:'#29a383',from:'sage-dark'},
+  {n:'琥珀',     v:'#ffc53d',from:'sand-dark'},
+  {n:'番茄',     v:'#e54d2e',from:'olive-dark'},
+  {n:'霓蓝',     v:'#7aa2f7',from:'tokyonight-dark'},
+  {n:'霜青',     v:'#88c0d0',from:'nord-dark'},
+  {n:'暮紫',     v:'#bd93f9',from:'dracula-dark'}
+];
 
-/* 设置页内选择网格 */
-document.getElementById("pick").innerHTML = IDS.map(id=>{
-  const t=T[id];
-  return `<div><div class="tp" data-id="${id}" onclick="sel('${id}')" style="border-color:${t.line};background:${t.root}">
-      ${mini(t)}
-      <span class="tchip" style="background:${t.ac}"></span>
-      <span class="tick" style="background:${t.ac}">✓</span>
-    </div><div class="tp-name" style="color:var(--text-secondary)">${t.n}</div></div>`;
-}).join("");
+function hexA(h,a){var n=parseInt(h.slice(1),16);
+  return'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+a+')';}
 
-/* 顶栏弹层 */
-document.getElementById("pop").innerHTML = IDS.map(id=>{
-  const t=T[id];
-  return `<div class="tcell" data-id="${id}" onclick="sel('${id}')"
-    style="border-radius:5px;overflow:hidden;height:34px;position:relative;background:${t.root};
-           border:1px solid ${t.line};cursor:pointer">
-    <div style="position:absolute;inset:0">${mini(t)}</div>
-  </div>`;
-}).join("");
-
-/* 强调色 */
-const accHTML = ACC.map((c,i)=>`<div class="ac${i===0?" on":""}" style="background:${c}" title="${c}"></div>`).join("");
-document.getElementById("acc").innerHTML = accHTML;
-document.getElementById("acc2").innerHTML = accHTML;
-document.querySelectorAll(".accents").forEach(g=>g.addEventListener("click",e=>{
-  if(e.target.classList.contains("ac")){
-    g.querySelectorAll(".ac").forEach(x=>x.classList.remove("on"));
-    e.target.classList.add("on");
+function applyAccent(){
+  var r=document.documentElement.style;
+  /* ⚠️ setProperty / removeProperty 是 CSSStyleDeclaration 的方法，
+     不是 Element 的 —— 直接在 element 上调会抛 is not a function。 */
+  if(accentState.mode==='follow'){
+    /* ★ 回退的关键：**移除**覆盖属性，而不是设成空串。
+       空串会让 var(--accent) 解析失败 → 整条继承链断掉。 */
+    ['--accent','--accent-soft','--accent-soft-hi',
+     '--accent-chip','--accent-line'].forEach(function(k){
+      r.removeProperty(k);
+    });
+  }else{
+    var c=accentState.value;
+    r.setProperty('--accent',c);
+    r.setProperty('--accent-soft',    hexA(c,.15));
+    r.setProperty('--accent-soft-hi', hexA(c,.24));
+    r.setProperty('--accent-chip',    hexA(c,.22));
+    r.setProperty('--accent-line',    hexA(c,.34));
   }
-}));
+  document.querySelectorAll('.ac').forEach(function(e){
+    var v=e.getAttribute('data-v');
+    e.classList.toggle('on',
+      (accentState.mode==='follow'&&v==='')||
+      (accentState.mode!=='follow'&&v===accentState.value));
+  });
+  var st=document.getElementById('accState');
+  if(st) st.textContent = accentState.mode==='follow'
+    ? '跟随主题 · 当前生效 '+A()+'（来自'+PAL[curId].f+' · '+PAL[curId].m+'）'
+    : '已自定义 · '+accentState.value;
+}
 
-sel("meat-dark");
+var demoEl=null;
+function A(){ return demoEl
+  ? getComputedStyle(demoEl).getPropertyValue('--accent').trim() : ''; }
+
+/* ── 缩略图（触发器 / 列表行 共用）── */
+function thumb(t,w,h){
+  return '<span class="tpk-th" style="width:'+w+'px;height:'+h+'px;'+
+    'flex-basis:'+w+'px;background:'+t.root+'">'+
+    '<i style="position:absolute;left:0;top:0;right:0;height:22%;background:'+
+      t.panel+'"></i>'+
+    '<i style="position:absolute;left:0;top:22%;right:0;height:26%;background:'+
+      t.tbg+'"></i>'+
+    '<i style="position:absolute;left:5%;top:30%;width:34%;height:10%;'+
+      'background:'+t.ac+';border-radius:1px"></i>'+
+    '<i style="position:absolute;left:5%;bottom:8%;width:52%;height:8%;'+
+      'background:'+t.t2+';opacity:.75;border-radius:1px"></i></span>';
+}
+
+/* ── 预览面板（右侧固定位）── */
+function renderPrev(id){
+  var t=PAL[id], box=document.getElementById('tpkPrev');
+  var star=t.star?('<span class="tpk-pv-star">'+t.star+'★</span>'):'';
+  var slots=[['bg-root',t.root],['bg-panel',t.panel],['bg-tab',t.tab],
+             ['line',t.line],['text-primary',t.t1],['text-secondary',t.t2],
+             ['term-bg',t.tbg],['accent',t.ac]];
+  box.innerHTML =
+    '<div class="tpk-pv-hd"><span class="tpk-pv-n1">'+t.f+' · '+t.m+'</span>'+
+    '<span class="tpk-pv-n2">'+t.en+'</span>'+star+'</div>'+
+    '<div class="tpk-pv-bar">'+
+      [t.root,t.panel,t.palt,t.elev,t.tab,t.tbg].map(function(c){
+        return '<i style="background:'+c+'"></i>';}).join('')+
+    '</div>'+
+    /* 迷你界面：结构与真实界面同构造（标题栏 + 标签行 + 侧栏 + 终端） */
+    '<div class="pv" style="background:'+t.tbg+';color:'+t.tfg+'">'+
+      '<div class="pv-bar" style="background:'+t.panel+
+        ';border-bottom:1px solid '+t.line+'">'+
+        '<i style="background:'+t.dg+'"></i><i style="background:'+t.wr+
+        '"></i><i style="background:'+t.ok+'"></i></div>'+
+      '<div class="pv-tab" style="background:'+t.tbg+'">'+
+        '<span class="pt" style="background:'+t.tab+';color:'+t.t1+'">'+
+          '<i class="ltr" style="background:'+t.ac+'"></i>'+
+          '<i class="lb" style="color:'+t.ch[0]+'">A</i>'+
+          '<i class="tx">ssh root@prod-01</i></span>'+
+        '<span class="pt on" style="background:'+t.tab+';color:'+t.t1+'">'+
+          '<i class="ltr" style="background:'+t.ac+'"></i>'+
+          '<i class="lb" style="color:'+t.ch[1]+'">B</i>'+
+          '<i class="tx">deploy · tail -f</i></span>'+
+        '<span class="add" style="color:'+t.t3+'">＋</span></div>'+
+      '<div style="flex:1;display:flex;min-height:0">'+
+        '<div class="pv-side" style="background:'+t.palt+'">'+
+          [0,1,2,3,4].map(function(i){return '<i class="'+(i===1?'on':'')+
+            '" style="background:'+(i===1?t.ac:t.t3)+
+            ';opacity:'+(i===1?1:.5)+'"></i>';}).join('')+'</div>'+
+        '<div class="pv-main">'+
+          '<i class="ln" style="background:'+t.t2+';width:74%"></i>'+
+          '<i class="ln" style="background:'+t.t3+';width:52%"></i>'+
+          '<i class="ln" style="background:'+t.ok+';width:38%"></i>'+
+          '<i class="mk" style="background:'+t.elev+';width:92%"></i>'+
+        '</div></div></div>'+
+    '<div class="tpk-pv-desc">'+t.desc+'</div>'+
+    '<div class="tpk-slots">'+slots.map(function(s){
+      return '<div class="tpk-sl"><span class="sq" style="background:'+s[1]+
+        '"></span><b>'+s[0]+'</b>'+s[1]+'</div>';}).join('')+'</div>'+
+    '<div class="tpk-pv-lic">授权：'+(t.lic||'—')+
+      (t.repo?'<br><span style="color:var(--doc-t3)">'+t.repo+'</span>':'')+'</div>';
+}
+
+/* ── 下拉列表（按族分组 + 搜索）── */
+var filterKw='';
+function renderList(){
+  var box=document.getElementById('tpkList');
+  var html='', hit=0;
+  GROUPS.forEach(function(g){
+    var ids=g[3].filter(function(id){
+      if(!filterKw) return true;
+      var t=PAL[id];
+      return (t.f+t.en+t.m+t.repo).toLowerCase().indexOf(filterKw)>=0;
+    });
+    if(!ids.length) return;
+    hit+=ids.length;
+    html+='<div class="tpk-grp">'+g[1]+' · '+ids.length+'</div>';
+    html+=ids.map(function(id){
+      var t=PAL[id];
+      return '<div class="tpk-row'+(id===curId?' on':'')+'" data-id="'+id+'">'+
+        thumb(t,34,22)+
+        '<span class="tpk-nm">'+t.f+' · '+t.m+'</span>'+
+        '<span class="tpk-r2">'+(t.star?t.star+'★':t.en.slice(0,6))+'</span>'+
+        '</div>';
+    }).join('');
+  });
+  box.innerHTML = hit? html
+    : '<div class="tpk-empty">没有匹配「'+filterKw+'」的主题</div>';
+  box.querySelectorAll('.tpk-row').forEach(function(r){
+    /* 悬停 = **只更新右侧预览**，不碰 curId、不切主题。
+       判据：**悬停是"看"，点击才是"选"**。
+       ⚠️ 第一版写的是 `if(!pickerOpen) sel(id,{silent:true})` ——
+       那会让用户**扫一眼列表就换了主题**（curId 被改），
+       而下拉关闭时又要还原 —— 于是"看过的最后一个"变成"选中的"，
+       行为完全不可预期。
+       正确做法：悬停只调 renderPrev()，它是**纯展示**，
+       不碰任何状态。这样"扫一眼找主题"与"点一下选它"互不干扰。 */
+    r.addEventListener('mouseenter', function(){
+      hoverId = r.getAttribute('data-id');
+      renderPrev(hoverId);
+    });
+    r.addEventListener('click', function(){
+      sel(r.getAttribute('data-id'));
+      closePicker();
+    });
+  });
+}
+
+var hoverId=null, pickerOpen=false;
+
+/* ── 选主题 ── */
+function sel(id){
+  curId=id;
+  document.documentElement.setAttribute('data-theme',id);
+  /* ⚠️ 换主题时**清掉强调色覆盖** —— 自定义色在上一套底色上
+     可能刚好达标，换一套就未必。判据：任何由某个底色推导出来的值，
+     换底色都要重算。 */
+  accentState.mode='follow'; accentState.value=null;
+  var t=PAL[id];
+
+  /* 演示区（顶栏那条）跟随主题 */
+  if(demoEl){
+    demoEl.style.background=t.root; demoEl.style.borderColor=t.line;
+    var bar=demoEl.querySelector('.dm-bar');
+    if(bar){ bar.style.background=t.panel;
+      bar.style.color=t.t1; bar.style.borderBottom='1px solid '+t.line; }
+    var tb=document.getElementById('dTab');
+    if(tb){ tb.style.background=t.tab; tb.style.color=t.t1; }
+    var nm=document.getElementById('dName');
+    if(nm){ nm.textContent=t.f+' · '+t.m; nm.style.color=t.t2; }
+    var tm=document.getElementById('dTerm');
+    if(tm){ tm.style.background=t.tbg; tm.style.color=t.tfg;
+      tm.style.setProperty('--t-accent',t.ac);
+      tm.style.setProperty('--t-accent2',t.ac2);
+      tm.style.setProperty('--t-ok',t.ok);
+      tm.style.setProperty('--t-warn',t.wr);
+      tm.style.setProperty('--t-danger',t.dg);
+      tm.style.setProperty('--t-mut',t.t3); }
+  }
+
+  /* 触发器当前项 */
+  var th=document.getElementById('tpkThumb');
+  if(th) th.outerHTML=thumb(t,44,30).replace('tpk-th','tpk-thumb');
+  var n1=document.getElementById('tpkCurN1'), n2=document.getElementById('tpkCurN2');
+  if(n1) n1.textContent=t.f+' · '+t.m;
+  if(n2) n2.textContent=t.en+(t.star?' · '+t.star+'★':'')+
+    ' · '+t.group;
+
+  renderPrev(id);
+  renderList();
+  applyAccent();
+  return t;
+}
+
+/* ── 开合 ── */
+/* fixed 浮层不会自动跟随按钮，要自己算视口坐标。
+   ⚠️ 还要处理"下方空间不够就往上翻" —— 贴着视口底边会被截断。 */
+function placePop(){
+  var b=document.getElementById('tpkBtn'), p=b.querySelector('.tpk-pop');
+  var r=b.getBoundingClientRect();
+  p.style.left=r.left+'px';
+  p.style.width=r.width+'px';
+  var h=p.offsetHeight||300;
+  var below=window.innerHeight-r.bottom;
+  if(below<h+12 && r.top>h+12) p.style.top=(r.top-h-5)+'px';
+  else p.style.top=(r.bottom+5)+'px';
+}
+
+function openPicker(){ pickerOpen=true;
+  var b=document.getElementById('tpkBtn');
+  b.classList.add('open');
+  placePop();
+  window.addEventListener('scroll', placePop, true);
+  window.addEventListener('resize', placePop); }
+function closePicker(){ pickerOpen=false;
+  hoverId=null;
+  document.getElementById('tpkBtn').classList.remove('open');
+  window.removeEventListener('scroll', placePop, true);
+  window.removeEventListener('resize', placePop);
+  /* ⚠️ 这里**不需要**"还原" —— 悬停只改预览区（renderPrev），
+     curId 与 data-theme 全程没被碰过。
+     第一版有个"关闭时还原"的逻辑，恰恰是因为悬停偷偷改了 curId；
+     去掉那个偷改之后，还原也就成了多余的副作用源。 */
+  if(curId) renderPrev(curId);
+}
+
+/* ── 顶栏弹层（紧凑：窄空间用更小的缩略图）── */
+document.getElementById('pop').innerHTML=GROUPS.map(function(g){
+  return '<div class="tpk-grp" style="padding:7px 2px 3px">'+g[1]+'</div>'+
+    g[3].map(function(id){
+      var t=PAL[id];
+      return '<div class="tpk-row" data-id="'+id+'" style="padding:4px 5px">'+
+        thumb(t,26,16)+
+        '<span class="tpk-nm" style="font-size:11px">'+t.f+' · '+t.m+'</span>'+
+        '<span class="tpk-r2">'+(t.star?t.star+'★':'')+'</span></div>';
+    }).join('');
+}).join('');
+document.getElementById('pop').style.maxHeight='340px';
+document.getElementById('pop').style.overflowY='auto';
+document.getElementById('pop').querySelectorAll('.tpk-row').forEach(function(r){
+  r.addEventListener('click',function(){
+    sel(r.getAttribute('data-id'));
+    document.getElementById('pop').parentNode.style.display='none';
+  });
+});
+
+/* ── 强调色色点 ── */
+function accentHtml(){
+  return PRESETS.map(function(p,i){
+    var mark=p.v?'':'background:repeating-linear-gradient(45deg,#3a3d46 0 4px,#4a4e59 4px 8px)';
+    var fromN=(p.from&&PAL[p.from])?PAL[p.from].f:null;
+    return '<div class="ac'+(i===0?' on':'')+'" data-v="'+(p.v||'')+
+      '" title="'+p.n+(fromN?'（出自'+fromN+'）':' · 默认')+'" style="'+
+      (p.v?'background:'+p.v:'')+'"><i style="'+mark+'"></i></div>';
+  }).join('');
+}
+document.querySelectorAll('.accents').forEach(function(g){
+  g.innerHTML=accentHtml();
+  g.addEventListener('click',function(ev){
+    var e=ev.target.closest('.ac'); if(!e) return;
+    var v=e.getAttribute('data-v');
+    accentState.mode = v===''?'follow':'custom';
+    accentState.value = v===''?null:v;
+    applyAccent();
+  });
+});
+
+/* ── 绑定 ── */
+document.getElementById('tpkBtn').addEventListener('click',function(e){
+  e.stopPropagation();
+  pickerOpen?closePicker():openPicker();
+});
+document.getElementById('tpkSearch').addEventListener('input',function(e){
+  e.stopPropagation();
+  filterKw=e.target.value.trim().toLowerCase();
+  renderList();
+});
+document.getElementById('tpkSearch').addEventListener('click',function(e){
+  e.stopPropagation();
+});
+document.addEventListener('click',function(){ if(pickerOpen) closePicker(); });
+
+demoEl=document.getElementById('demo');
+docVars();
+sel(THEME_IDS[0]);
+
 </script>
 </body>
 </html>
