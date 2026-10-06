@@ -22,6 +22,7 @@ mod session;
 mod sftp;
 mod ssh;
 mod terminal;
+mod theme;
 mod tunnel;
 mod ui;
 mod wallpaper;
