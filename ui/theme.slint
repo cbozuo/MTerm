@@ -1,53 +1,93 @@
 // Central design tokens for meatshell.
 //
-// All colour values are reactive: change `dark` and every widget repaints
-// automatically via Slint's property-binding system.
+// (#theme-split 2026-10-07) 主题/强调色/壁纸三层解耦后的 token 层。
 //
-// Dark palette  — high-contrast charcoal (original meatshell look).
-// Light palette — Apple macOS-inspired:
-//   • Backgrounds use #f5f5f7 (Apple page gray) instead of pure white to
-//     avoid eye-strain.
-//   • Primary text is #1d1d1f (Apple near-black) not #000000.
-//   • Accent is #0071e3 (Apple blue), consistent across both themes.
+// ★ 色槽的取值来源变了：20 个语义色槽（slot-*）由 **Rust 侧查表写入**
+//   （src/theme/ → palettes.rs，38 套官方色表），不再是 `dark ? x : y`
+//   三元式。属性名全部保持不变——所有调用点零改动。Rust 在
+//   apply_theme() 里一次性写入当前套的槽位，切主题 = 重写属性。
+//
+// 三层模型（design/theme-wallpaper-split-2026-10-05.html §1）：
+//   L1 主题 Theme   = 整套中性色阶 + 语义色 + 终端 ANSI（唯一的对比度责任人）
+//   L2 强调色 Accent = 独立于主题（跟随主题 / 9 预设 / 自定义，3:1 守卫在 Rust）
+//   L3 壁纸 Wallpaper = 一张图 + 三个独立透明度，不读不写主题
+//
+// 绘制栈：z0 窗口底色(不透明) → z1 壁纸图(受"壁纸可见度") → z2 面板雾面
+// (主题面色 + 面板不透明度) → z3 终端底(主题 tbg + 终端不透明度，下限 0.75)
+// → z4 弹窗(主题面色，通透度三档可选)。
 
 export global Theme {
-    // Set by Rust on startup (system detection) and on user toggle.
+    // ── 当前主题（Rust 在 apply_theme 里写）──────────────────────────
+    // 主题 id（palettes.rs 的 38 套之一）；空串 = 尚未应用（仅启动瞬间）。
+    in-out property <string> theme-id: "";
+    // 明暗：不再是用户开关，而是**当前主题的属性**（派生自表内 dark 列，
+    // 由 Rust 写入）。子窗口的 `dark-mode <=> Theme.dark` 绑定与
+    // std-widgets 色彩方案联动保持原样。
     in-out property <bool> dark: true;
 
-    // --- Immersive wallpaper (set by Rust from the wallpaper module) -------
-    // When a wallpaper is active the window paints `wallpaper` behind everything
-    // (see app.slint), panels/terminal frost over it, accent + surfaces shift
-    // toward the image's colours, and Rust sets `dark` from the image luminance.
+    // ── 20 语义色槽（★Rust 写入★，0xRRGGBB → color）────────────────
+    in-out property <color> slot-root:  #1b1d23;
+    in-out property <color> slot-panel: #23262d;
+    in-out property <color> slot-palt:  #2a2d35;
+    in-out property <color> slot-elev:  #25282f;
+    in-out property <color> slot-hov:   #373a44;
+    in-out property <color> slot-act:   #3f4350;
+    in-out property <color> slot-line:  #3a3d46;
+    in-out property <color> slot-lstr:  #4a4e59;
+    in-out property <color> slot-t1:    #e6e8ee;
+    in-out property <color> slot-t2:    #b4b9c4;
+    in-out property <color> slot-t3:    #9196a3;
+    in-out property <color> slot-tbg:   #0e0f13;
+    in-out property <color> slot-tfg:   #d4d4d4;
+    // 强调色：最终生效值（三层叠加已算完——跟随=表 ac，覆盖=守卫校正后的色）。
+    in-out property <color> slot-ac:    #4a90e2;
+    in-out property <color> slot-ok:    #4ec9b0;
+    in-out property <color> slot-wr:    #e2a84a;
+    in-out property <color> slot-dg:    #e25c5c;
+
+    // ── 分组色 24 / 频道色 4（★Rust 按主题写入★，声明见文件后段）──────
+
+    // ── L3 壁纸：只负责"背后那张图"，不参与任何颜色决策 ───────────────
     in-out property <image> wallpaper;
     in-out property <bool>  wallpaper-active: false;
-    in-out property <color> wp-accent: #4a90e2;   // vivid accent from the image
-    in-out property <color> wp-tint:   #808080;   // average colour, tints surfaces
-    // Frosted-panel opacity over a wallpaper (0.30–1.00). User-adjustable via the
-    // Interface › Wallpaper opacity slider; bg-root / term-bg derive from it so one
-    // control scales the whole wallpaper wash. Default 0.85 (15% transparency).
+    // 壁纸图自身可见度（0–100 滑杆；无壁纸时置灰）。Rust 写入，app.slint
+    // 的壁纸 Image 的 alpha 读它。
+    in-out property <float> wallpaper-visible: 1.0;
+    // 「跟随图片取色」开启时，Rust 把图片主色写进来（仅作 accent 来源，
+    // 不再染面板、不再反写深浅）。wp-tint 保留仅为兼容既有桥属性/同步代码
+    // （frost 已不再混色——界面被壁纸染色的根源已拆）。
+    in-out property <color> wp-accent: #4a90e2;
+    in-out property <color> wp-tint: #808080;
+    // 面板雾面不透明度（30–100 滑杆）。不再混图片平均色（wp-tint 已删——
+    // "界面被壁纸染色"的根源，§0）。
     in-out property <float> panel-alpha: 0.85;
-    property <float> tint-amt: 0.10;              // how far surfaces pull to wp-tint
+    // 终端不透明度（75–100 滑杆，config 层钳下限 0.75——终端是唯一承载
+    // 不可控 ANSI 输出的区域，浅色终端在亮壁纸上文字发飘的坑，§1）。
+    in-out property <float> term-alpha: 1.0;
+    // 弹窗通透度三档：0 标准（实心，现状）/ 1 通透（跟随面板不透明度）/
+    // 2 全透（88% + 强遮罩）。§3-调整④。
+    in-out property <int> popup-transparency: 0;
 
-    // Frost a base surface: pull it slightly toward the wallpaper tint and make
-    // it translucent so the image shows through. Returns the plain base colour
-    // when no wallpaper is active (so the normal opaque theme is unchanged).
+    // Frost a base surface: with a wallpaper active it becomes translucent so
+    // the image shows through; otherwise the plain opaque base (#theme-split:
+    // 不再向 wp-tint 混色——那是"面板被壁纸染色"的根源，已拆)。
     pure function frost(base: color, alpha: float) -> brush {
         return root.wallpaper-active
-            ? base.mix(root.wp-tint, 1.0 - root.tint-amt).with-alpha(alpha)
+            ? base.with-alpha(alpha)
             : base;
     }
 
     // --- Palette -----------------------------------------------------------
     // Opaque window base — the wallpaper Image covers it when active, so panels
     // frost over the image rather than over this.
-    out property <brush> window-base: dark ? #1b1d23 : #f5f5f7;
+    out property <brush> window-base: root.slot-root;
 
-    property <color> base-bg-root:      dark ? #1b1d23 : #f5f5f7;
-    property <color> base-bg-panel:     dark ? #23262d : #ffffff;
-    property <color> base-bg-panel-alt: dark ? #2a2d35 : #f2f2f7;
-    property <color> base-bg-elevated:  dark ? #30333c : #e8e8ed;
-    property <color> base-bg-hover:     dark ? #373a44 : #e0e0e6;
-    property <color> base-bg-active:    dark ? #3f4350 : #d8d8de;
+    property <color> base-bg-root:      root.slot-root;
+    property <color> base-bg-panel:     root.slot-panel;
+    property <color> base-bg-panel-alt: root.slot-palt;
+    property <color> base-bg-elevated:  root.slot-elev;
+    property <color> base-bg-hover:     root.slot-hov;
+    property <color> base-bg-active:    root.slot-act;
 
     // bg-root frosts lighter (lower alpha) so the wallpaper reads clearly in
     // empty / inset areas; panels stay mostly opaque for legible text.
@@ -60,30 +100,36 @@ export global Theme {
     // Settings dialog: 20% less transparent than the other panels so its dense
     // grey labels stay legible even at a low wallpaper overlay (user request).
     out property <brush> bg-panel-strong: frost(base-bg-panel, min(1.0, root.panel-alpha + 0.20));
-    // Menus, editors and modal cards must stay readable independently of the
-    // wallpaper transparency selected for ordinary application panels (#287).
-    out property <brush> popup-bg: base-bg-panel;
-    out property <brush> popup-bg-alt: base-bg-panel-alt;
 
-    // (#tab-flush 2026-09-14) 选中标签底色 = 内容区底色(term-bg)，与终端完全同源。
-    // 标签下沿方角贴住终端区顶边后，只有底色也一致才真正"连成一片"；早先这里独立
-    // 取 #171a20(比终端 #0e0f13 浅一档)/ 亮色 #ffffff(比终端 #fafafa 更白)，贴合处
-    // 会留一条色带，等于白贴。壁纸模式下 term-bg 自身霜化，直接引用即自动跟随。
+    // (#popup-transparency §3-调整④) 弹窗层从"恒不透明"改为三档：
+    //   标准(0) = 实心（现状，20 处调用点的默认观感不变）
+    //   通透(1) = 弹窗跟随面板不透明度（配深色遮罩兜底）
+    //   全透(2) = 88% + 强遮罩（仅建议深色主题）
+    // 无壁纸时透明没有意义（露出的是纯窗口底色），回落实心。
+    out property <float> popup-alpha: root.popup-transparency == 2 ? 0.88
+        : root.popup-transparency == 1 ? root.panel-alpha
+        : 1.0;
+    out property <brush> popup-bg: root.wallpaper-active
+        ? base-bg-panel.with-alpha(root.popup-alpha)
+        : base-bg-panel;
+    out property <brush> popup-bg-alt: root.wallpaper-active
+        ? base-bg-panel-alt.with-alpha(root.popup-alpha)
+        : base-bg-panel-alt;
+
+    // (#tab-flush 2026-09-14 / #tab-32 2026-10-07) 选中标签底色与标签栏底色
+    // 都 = 终端底色（tab-row-idia 稿：条带底色 = term-bg，选中态全靠 3px 横线，
+    // 三者同色）。壁纸模式下 term-bg 自身半透明，直接引用即自动跟随。
     out property <brush> tab-active-bg: root.term-bg;
-    out property <brush> tab-active-border: root.wallpaper-active
-        ? root.wp-accent.with-alpha(0.72)
-        : (dark ? #06070a : #c7c7cc);
-    // (#tab-bar-bg 2026-09-14) 标签栏底色。**独立于 base-bg-panel-alt**：亮色下
-    // 后者(#f2f2f7)与白色选中标签只有 1.05:1，而选中态已去掉 2px accent 外框、
-    // 改为靠"背景分野"辨识，所以浅色档单独加深到 #eaeaef。不动全局 token，
-    // 其它使用 bg-panel-alt 的面板不受影响。
-    out property <brush> tab-bar-bg: dark ? #2a2d35 : #eaeaef;
+    out property <brush> tab-bar-bg: root.term-bg;
+    // (#tab-32) 旧 tab-active-border（1px 灰线）删除：零引用死 token，选中
+    // 标识已改为顶部 3px accent 横线（tabs.slint）。
 
-    out property <brush> border-subtle: dark ? #3a3d46 : #e2e2e8;
-    out property <brush> border-strong: dark ? #4a4e59 : #c7c7cc;
+    out property <brush> border-subtle: root.slot-line;
+    out property <brush> border-strong: root.slot-lstr;
     // (#hifi-v17 2026-09-18) 控件常态边框:高保真 .control 的 --line,比
     // border-subtle 亮半档、比 border-strong 淡一档 —— 输入框"看得见但不
     // 抢眼"。新建会话对话框用;终端等既有界面仍用上面两档。
+    // 会话对话框专用槽不属于主题 20 槽体系（设计稿未覆盖），按明暗保留常量。
     out property <brush> border-control: dark ? #31353e : #dcdce3;
     // (#hifi-v17) 新建会话对话框专用面/线:原型 --field / --field-2 / --line-2 /
     // --panel-hi。独立于 bg-elevated,避免把终端面板一起改暗。
@@ -94,46 +140,59 @@ export global Theme {
     // "消失"(实测);加深到 #eef0f4(= field-2 亮色值)。panel-hi 为会话弹窗专用。
     out property <brush> panel-hi: dark ? #282b34 : #eef0f4;
 
-    out property <brush> text-primary:   dark ? #e6e8ee : #1d1d1f;
+    out property <brush> text-primary:   root.slot-t1;
     // Light-mode secondary/muted darkened further (was #55555a / #7c7c82): over a
     // see-through frosted-wallpaper panel the greys were still too faint to read.
-    out property <brush> text-secondary: dark ? #b4b9c4 : #45454a;
-    out property <brush> text-muted:     dark ? #9196a3 : #606066;
+    out property <brush> text-secondary: root.slot-t2;
+    out property <brush> text-muted:     root.slot-t3;
 
-    // (#default-group-accent 2026-09-10) 强调色的 color 单一来源:brush 不能
-    // 当 color 用(组色函数返回 color、且调用处要 .with-alpha()),故先定义
-    // color 版,accent(brush)再基于它——避免两处各写一份取值。
-    out property <color> accent-solid:   root.wallpaper-active ? root.wp-accent          : (dark ? #4a90e2 : #0071e3);
+    // (#default-group-accent 2026-09-10) 强调色三态叠加后的**最终值**由 Rust
+    // 写入 slot-ac（跟随=表 ac；预设/自定义=3:1 守卫校正后）。hover/pressed
+    // 就地派生——覆盖任意强调色时也能得到正确的悬停/按压层次。
+    out property <color> accent-solid:   root.slot-ac;
     out property <brush> accent:         root.accent-solid;
-    out property <brush> accent-hover:   root.wallpaper-active ? root.wp-accent.brighter(0.12) : (dark ? #5aa0f2 : #0077ed);
-    out property <brush> accent-pressed: root.wallpaper-active ? root.wp-accent.darker(0.12)   : (dark ? #3a80d2 : #006adb);
+    out property <brush> accent-hover:   root.accent-solid.brighter(0.12);
+    out property <brush> accent-pressed: root.accent-solid.darker(0.12);
 
     // (#close-behavior) 关闭键语义红:世界通用的「关闭」红,与通用
-    // danger(#e25c5c,偏柔和的告警色)刻意分开 —— 关闭键要一眼可辨。
+    // danger(按主题查表)刻意分开 —— 关闭键要一眼可辨。
     // UI/app.slint 的 WinBtn 与确认卡的「完全退出」卡片共用这两档。
     out property <color> close-red:         dark ? #e81123 : #c42b1c;
     out property <color> close-red-pressed: dark ? #c50f1f : #a52216;
+    // (#tab-32) tab 关闭键 hover 前景（tab-row-idia 稿新增 token；只染红 ×、
+    // 不染底。不要复用 #e81123——那是"红底白字"方案的底色，作前景在亮色
+    // 档只有 3.59:1）。值 = palettes.rs 的 DANGER_STRONG，这里保持同步。
+    out property <color> danger-strong: #dc4b44;
 
     // (#v4-session-dialog) 选择器选中态 / 开关淡染 / 弹窗遮罩。chip 与 accent-soft
     // 跟强调色走，避免实心 accent 和「创建」主按钮抢层级。modal-scrim 是方案 A：
     // 低 alpha 纯色，无 blur（Slint 无元素级 backdrop-filter）。全屏弹窗要
     // 看得出遮罩，alpha 略高于原型舞台值（暗 0.32 / 亮 0.36）。
+    // (#popup-transparency) 弹窗通透/全透档位下遮罩自动上调（稿约束：无论
+    // 哪档，弹窗之上文字对比度要兜住），封顶 0.60。
     out property <brush> chip:        root.accent-solid.with-alpha(root.dark ? 0.22 : 0.14);
     out property <brush> accent-soft: root.accent-solid.with-alpha(root.dark ? 0.16 : 0.12);
-    out property <brush> modal-scrim: root.dark ? #0c0d11.with-alpha(0.32) : #f4f5f8.with-alpha(0.36);
+    out property <float> scrim-alpha: min(0.60, (root.dark ? 0.32 : 0.36)
+        + (root.popup-transparency == 2 ? 0.18 : 0.0)
+        + (root.popup-transparency == 1 ? 0.10 : 0.0));
+    out property <brush> modal-scrim: (root.dark ? #0c0d11 : #f4f5f8).with-alpha(root.scrim-alpha);
     // 滚动渐隐用的不透明面板色（不能走 frost 后的 brush，否则渐变混成灰）。
     out property <color> panel-solid: root.base-bg-panel;
 
-    out property <brush> success: dark ? #4ec9b0 : #34c759;
-    out property <brush> warning: dark ? #e2a84a : #ff9f0a;
-    out property <brush> danger:  dark ? #e25c5c : #ff3b30;
+    // 语义色按主题查表（§3-调整⑤：否则"换了主题、状态色还是老配色"）。
+    out property <brush> success: root.slot-ok;
+    out property <brush> warning: root.slot-wr;
+    out property <brush> danger:  root.slot-dg;
 
     // Terminal uses its own background so it stays readable regardless of
     // what the shell / remote app outputs via ANSI colour codes. With a
-    // wallpaper it frosts (kept neutral, not tinted) so text stays legible.
-    property <color> base-term-bg: dark ? #0e0f13 : #fafafa;
-    out property <brush> term-bg: root.wallpaper-active ? base-term-bg.with-alpha(max(0.0, root.panel-alpha - 0.14)) : base-term-bg;
-    out property <brush> term-fg: dark ? #d4d4d4 : #2d2d2f;
+    // wallpaper it frosts (kept neutral, not tinted) at the **terminal's own**
+    // opacity（不再与面板共用一个 alpha；下限 0.75 由 config 层钳制）。
+    property <color> base-term-bg: root.slot-tbg;
+    out property <brush> term-bg: root.wallpaper-active
+        ? base-term-bg.with-alpha(root.term-alpha)
+        : base-term-bg;
+    out property <brush> term-fg: root.slot-tfg;
 
     // True on macOS (set by Rust). App shortcuts use Cmd (⌘) here instead of
     // Ctrl, so the physical Ctrl key stays free for the shell (^C/^X…) (#158).
@@ -238,20 +297,21 @@ export global Theme {
         return has-color ? value : root.text-secondary;
     }
 
-    // (#group-color 2026-09-14) 取色面板的 24 色候选:色环上均匀取 18 档 +
-    // 6 档中性灰。明暗主题各一套 —— 暗底取亮档、浅底取深档,保证 1px 树线
-    // 与组头图标在各自背景上都清晰可辨。面板按索引取色,两套长度必须一致。
-    out property <[color]> group-color-dark: [
+    // (#group-color 2026-09-14 / #theme-split 2026-10-07) 取色面板的 24 色
+    // 候选：色环上均匀取 18 档 + 6 档中性灰。原 dark/light 两套常量退役——
+    // 改为**按当前主题查表**（Rust 写入 group-colors，见 §3-调整⑤：每套
+    // 主题的 24 色按其明度重新取档，保证 1px 树线在各自背景上清晰）。
+    // 面板按索引取色，长度恒 24。默认值 = meat-dark 档（启动瞬间/Rust 未写时）。
+    in-out property <[color]> group-colors: [
         #f87171, #fb923c, #fbbf24, #facc15, #a3e635, #4ade80,
         #34d399, #2dd4bf, #22d3ee, #38bdf8, #60a5fa, #818cf8,
         #a78bfa, #c084fc, #e879f9, #f472b6, #fb7185, #fda4af,
         #f1f5f9, #e2e8f0, #cbd5e1, #a8a29e, #94a3b8, #64748b,
     ];
-    out property <[color]> group-color-light: [
-        #dc2626, #ea580c, #d97706, #ca8a04, #65a30d, #16a34a,
-        #059669, #0d9488, #0891b2, #0284c7, #2563eb, #4f46e5,
-        #7c3aed, #9333ea, #c026d3, #db2777, #e11d48, #f43f5e,
-        #475569, #334155, #1e293b, #57534e, #78716c, #a8a29e,
+    // 频道色 4 槽（tab-row-idia：A 海蓝 / B 松石 / C 琥珀 / D 玫红；按主题
+    // 查表——换主题时频道色随主题走，每套在该套 tab 底与选中底双 ≥3.0）。
+    in-out property <[color]> channel-colors: [
+        #378add, #1d9e75, #ba7517, #993556,
     ];
 
     // --- Geometry ----------------------------------------------------------

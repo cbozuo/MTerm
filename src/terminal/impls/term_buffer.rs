@@ -673,7 +673,7 @@ impl TermBuffer {
                     last_content = r as i32;
                 }
                 for hs in runs {
-                    spans.extend(render_term_span(&hs, r as i32, self.is_dark));
+                    spans.extend(render_term_span(&hs, r as i32, self.is_dark, self.palette));
                 }
                 displayed.push(plain.trim_end().to_string());
             }
@@ -726,7 +726,7 @@ impl TermBuffer {
                 &self.custom_highlight_rules,
             );
             for hs in &runs {
-                spans.extend(render_term_span(hs, d as i32, self.is_dark));
+                spans.extend(render_term_span(hs, d as i32, self.is_dark, self.palette));
             }
             displayed.push(line.0.trim_end().to_string());
         }

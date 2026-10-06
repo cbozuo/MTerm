@@ -16,6 +16,9 @@ pub(crate) struct TermBuffer {
     pub(crate) parser: vt100::Parser,
     pub(crate) find_query: String,
     pub(crate) is_dark: bool,
+    /// 当前主题的色表（#theme-split）：ANSI 16 色与默认前景/背景按它查表——
+    /// 换主题时 UI 与终端同源换装（presentation.rs 的 render_term_span 读它）。
+    pub(crate) palette: &'static crate::theme::palettes::Palette,
     pub(crate) output_highlight: OutputHighlightPreset,
     pub(crate) custom_highlight_rules: Vec<CompiledOutputRule>,
     pub(crate) json_format_output: bool,

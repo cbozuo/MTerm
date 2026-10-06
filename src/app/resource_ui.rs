@@ -528,15 +528,52 @@ pub(super) fn local_system_details(snap: &SystemSnapshot) -> SystemDetails {
     }
 }
 
+/// (#theme-split) 把主窗口 Theme global 的全部主题槽位拷到子窗口的
+/// Theme global。Theme 是每窗口一份的 Slint global，子窗口不吃主窗口的
+/// 属性变更——apply_theme 只写主窗口，独立窗口靠这里的整表拷贝跟上。
+macro_rules! copy_theme_slots {
+    ($src:expr, $dst:expr) => {{
+        let s = $src.global::<crate::ui::Theme<'_>>();
+        let d = $dst.global::<crate::ui::Theme<'_>>();
+        d.set_theme_id(s.get_theme_id());
+        d.set_dark(s.get_dark());
+        d.set_slot_root(s.get_slot_root());
+        d.set_slot_panel(s.get_slot_panel());
+        d.set_slot_palt(s.get_slot_palt());
+        d.set_slot_elev(s.get_slot_elev());
+        d.set_slot_hov(s.get_slot_hov());
+        d.set_slot_act(s.get_slot_act());
+        d.set_slot_line(s.get_slot_line());
+        d.set_slot_lstr(s.get_slot_lstr());
+        d.set_slot_t1(s.get_slot_t1());
+        d.set_slot_t2(s.get_slot_t2());
+        d.set_slot_t3(s.get_slot_t3());
+        d.set_slot_tbg(s.get_slot_tbg());
+        d.set_slot_tfg(s.get_slot_tfg());
+        d.set_slot_ac(s.get_slot_ac());
+        d.set_slot_ok(s.get_slot_ok());
+        d.set_slot_wr(s.get_slot_wr());
+        d.set_slot_dg(s.get_slot_dg());
+        d.set_group_colors(s.get_group_colors());
+        d.set_channel_colors(s.get_channel_colors());
+        d.set_panel_alpha(s.get_panel_alpha());
+        d.set_term_alpha(s.get_term_alpha());
+        d.set_wallpaper_visible(s.get_wallpaper_visible());
+        d.set_popup_transparency(s.get_popup_transparency());
+        d.set_wallpaper(s.get_wallpaper());
+        d.set_wallpaper_active(s.get_wallpaper_active());
+        d.set_wp_accent(s.get_wp_accent());
+    }};
+}
+
 /// Mirror the main window's theme/scale/UI-font onto the detached process
 /// window. Theme is a per-window Slint global, so a detached window keeps its
 /// compile-time (dark) defaults until we copy these across (#23).
 pub(super) fn sync_proc_theme(main: &AppWindow, proc: &ProcWindow) {
+    copy_theme_slots!(main, proc);
     proc.set_dark_mode(main.get_dark_mode());
     proc.set_ui_scale(main.get_ui_scale());
     proc.set_ui_font_family(main.get_ui_font_family());
-    // Mirror the immersive wallpaper so the detached window shares the frosted
-    // backdrop instead of a flat panel.
     proc.set_wallpaper_img(main.get_wallpaper_img());
     proc.set_wallpaper_active(main.get_wallpaper_active());
     proc.set_wp_accent(main.get_wp_accent());
@@ -544,6 +581,7 @@ pub(super) fn sync_proc_theme(main: &AppWindow, proc: &ProcWindow) {
 }
 
 pub(super) fn sync_system_info_theme(main: &AppWindow, sys: &SystemInfoWindow) {
+    copy_theme_slots!(main, sys);
     sys.set_dark_mode(main.get_dark_mode());
     sys.set_ui_scale(main.get_ui_scale());
     sys.set_ui_font_family(main.get_ui_font_family());
@@ -554,6 +592,7 @@ pub(super) fn sync_system_info_theme(main: &AppWindow, sys: &SystemInfoWindow) {
 }
 
 pub(super) fn sync_editor_theme(main: &AppWindow, editor: &EditorWindow) {
+    copy_theme_slots!(main, editor);
     editor.set_dark_mode(main.get_dark_mode());
     editor.set_ui_scale(main.get_ui_scale());
     editor.set_ui_font_family(main.get_ui_font_family());

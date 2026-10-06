@@ -213,6 +213,7 @@ pub(super) fn refresh_terminal_selection(win: &AppWindow, bufs: &TermBuffers, ta
 
 /// Resolve the user's saved theme preference to a dark/light bool (mirrors the
 /// startup logic): "light"/"dark" win; otherwise ask the OS, defaulting to dark.
+/// (#theme-split) 仅在 theme 为空（跟随系统）时作为 graphite 族的深浅依据。
 pub(super) fn theme_pref_is_dark(store: &ConfigStore) -> bool {
     match store.theme_pref() {
         "light" => false,
@@ -225,23 +226,51 @@ pub(super) fn theme_pref_is_dark(store: &ConfigStore) -> bool {
     }
 }
 
-/// Flip the whole app between light and dark. Setting `Theme.dark` alone only
-/// recolours the Slint chrome — each terminal bakes its ANSI/default colours
-/// from a per-buffer `is_dark` flag at render time, so we must also update every
-/// buffer and re-render it. Both the theme toggle and wallpaper switching route
-/// through here (the proc-window mirror stays with the toggle).
-pub(super) fn apply_dark_mode(window: &AppWindow, bufs: &TermBuffers, dark: bool) {
-    window.set_dark_mode(dark);
+/// (#theme-split) 从 config 组装主题状态（强调色三态 + 三透明度 + 主题 id）。
+/// 「跟随图片取色」开启且壁纸在场时，强调色来源切到图片主色——这是唯一
+/// 让壁纸反向影响界面的开关（默认关）。
+pub(super) fn theme_state_of(window: &AppWindow, store: &ConfigStore) -> crate::theme::ThemeState {
+    let mut accent_mode = crate::theme::AccentCfg::from_config(
+        store.accent_mode(),
+        store.accent_preset(),
+        store.accent_custom(),
+    );
+    if store.wallpaper_color_pickup() && window.get_wallpaper_active() {
+        let c = window.get_wp_accent();
+        accent_mode = crate::theme::AccentCfg::Custom(
+            ((c.red() as u32) << 16) | ((c.green() as u32) << 8) | c.blue() as u32,
+        );
+    }
+    crate::theme::ThemeState {
+        theme_id: store.theme().to_string(),
+        accent_mode,
+        panel_alpha: store.panel_alpha(),
+        term_alpha: store.term_alpha(),
+        wallpaper_visible: store.wallpaper_visible(),
+        popup_transparency: store.popup_transparency(),
+        dark_pref: theme_pref_is_dark(store),
+    }
+}
+
+/// (#theme-split) 应用当前主题（唯一入口）：整套槽位写进主窗口 Theme、
+/// 每个 terminal buffer 换色表（ANSI/默认前景背景随主题），并全量重渲染。
+/// 切主题 / 改强调色 / 改三滑杆 / 改通透度 / 广播同步都走这里。
+/// 返回生效的主题 id。
+pub(super) fn apply_theme(window: &AppWindow, bufs: &TermBuffers, store: &ConfigStore) -> String {
+    let st = theme_state_of(window, store);
+    let p = crate::theme::apply(window, &st);
     {
         let handles: Vec<_> = bufs.lock().unwrap().values().cloned().collect();
         for h in handles {
-            h.lock().unwrap().is_dark = dark;
+            h.lock().unwrap().palette = p;
+            h.lock().unwrap().is_dark = p.dark;
         }
     }
     let tab_ids: Vec<String> = bufs.lock().unwrap().keys().cloned().collect();
     for tid in tab_ids {
         rebuild_tab_display(window, bufs, &tid);
     }
+    p.id.to_string()
 }
 
 pub(super) fn apply_output_highlight(
@@ -281,32 +310,21 @@ pub(super) fn apply_custom_output_rules(
     }
 }
 
-/// Apply a wallpaper id to the window: load the image + derived palette, push the
-/// immersive Theme overrides (accent / tint / image) and set `dark` from the
-/// image luminance. An empty or undecodable id turns immersive mode off and
-/// restores the user's saved light/dark theme.
+/// Apply a wallpaper id to the window (#theme-split：壁纸只负责"背后那张
+/// 图"——加载图片、写 wallpaper-img / wp-accent（跟随图片取色的来源色），
+/// **不再反写主题深浅、不再顶替强调色**）。An empty or undecodable id turns
+/// immersive mode off.
 pub(super) fn apply_wallpaper(
     window: &AppWindow,
     store: &ConfigStore,
     bufs: &TermBuffers,
     id: &str,
-    apply_builtin_theme: bool,
 ) {
     match crate::wallpaper::load(id) {
         Some(wp) => {
             let (ar, ag, ab) = wp.palette.accent;
-            let (tr, tg, tb) = wp.palette.tint;
             window.set_wallpaper_img(wp.image);
             window.set_wp_accent(slint::Color::from_rgb_u8(ar, ag, ab));
-            window.set_wp_tint(slint::Color::from_rgb_u8(tr, tg, tb));
-            // Only the built-ins (designed as a light/dark pair) auto-set the
-            // theme. A custom photo keeps the user's light/dark choice so the
-            // theme toggle still governs text contrast — a light/white wallpaper
-            // reads best in light mode (crisp dark text) rather than being forced
-            // dark and greying the text out (#wallpaper).
-            if apply_builtin_theme && crate::wallpaper::is_builtin(id) {
-                apply_dark_mode(window, bufs, wp.palette.is_dark);
-            }
             window.set_wallpaper_active(true);
             window.set_current_wallpaper(id.into());
             let name = if crate::wallpaper::is_builtin(id) {
@@ -318,12 +336,16 @@ pub(super) fn apply_wallpaper(
                     .unwrap_or_default()
             };
             window.set_custom_wallpaper_name(name.into());
+            // 跟随图片取色开着：图片主色要立刻成为强调色来源（重算整套并刷
+            // 终端——强调色进了 ANSI 之外的 UI 各处）。
+            if store.wallpaper_color_pickup() {
+                apply_theme(window, bufs, store);
+            }
         }
         None => {
             window.set_wallpaper_active(false);
             window.set_current_wallpaper("".into());
             window.set_custom_wallpaper_name("".into());
-            apply_dark_mode(window, bufs, theme_pref_is_dark(store));
         }
     }
 }

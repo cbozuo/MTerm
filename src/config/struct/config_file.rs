@@ -37,13 +37,44 @@ fn default_wallpaper() -> String {
 }
 
 /// Bump when `migrate_defaults` gains a new one-time default-layout change.
-pub const DEFAULTS_REV: u32 = 3;
+pub const DEFAULTS_REV: u32 = 4;
 
 pub(crate) const PREVIOUS_DEFAULT_WALLPAPER_TRANSPARENCY: f32 = 0.38;
 pub(crate) const PREVIOUS_DEFAULT_WALLPAPER_OVERLAY: f32 =
     1.0 - PREVIOUS_DEFAULT_WALLPAPER_TRANSPARENCY;
 pub(crate) const DEFAULT_WALLPAPER_TRANSPARENCY: f32 = 0.15;
 pub(crate) const DEFAULT_WALLPAPER_OVERLAY: f32 = 1.0 - DEFAULT_WALLPAPER_TRANSPARENCY;
+
+// (#theme-split 2026-10-07) 主题/强调色/壁纸解耦后的新字段默认值。
+// rev4 迁移（只对「一直在默认值上」的用户生效，§5）：
+//   theme_pref = dark  → theme = graphite-dark
+//   theme_pref = light → theme = graphite-light
+//   theme_pref = system/"" → theme = ""（follow_system = true）
+//   wallpaper_overlay → panel_alpha(旧值) + term_alpha(1.0)
+//   wallpaper 仍在 serde 默认（builtin:tech，从未挑过）→ ""（默认无壁纸）
+pub(crate) const DEFAULT_PANEL_ALPHA: f32 = 0.85;
+pub(crate) const DEFAULT_TERM_ALPHA: f32 = 1.0;
+
+pub(crate) fn default_theme() -> String {
+    // 空 = 跟随系统（follow_system = true 时按探测的深浅取 graphite 族）。
+    // 设计稿 §5：默认壁纸改为无 + 跟随系统，「零操作即正确」。
+    String::new()
+}
+pub(crate) fn default_panel_alpha() -> f32 {
+    DEFAULT_PANEL_ALPHA
+}
+pub(crate) fn default_term_alpha() -> f32 {
+    DEFAULT_TERM_ALPHA
+}
+pub(crate) fn default_wallpaper_visible() -> f32 {
+    1.0
+}
+pub(crate) fn default_follow_system() -> bool {
+    true
+}
+pub(crate) fn default_channel_members() -> [String; 4] {
+    [String::new(), String::new(), String::new(), String::new()]
+}
 
 pub(crate) fn default_sidebar_width() -> f32 {
     220.0
@@ -294,6 +325,47 @@ pub struct ConfigFile {
     /// Interface › Wallpaper opacity slider. 0 = use the current default.
     #[serde(default)]
     pub wallpaper_overlay: f32,
+    // ── (#theme-split 2026-10-07) 主题/强调色/壁纸三层解耦 ──────────────
+    /// 主题 id（src/theme/palettes.rs 的 38 套之一）。空 = 跟随系统
+    /// （follow_system = true 时按探测深浅取 graphite 族）。
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    /// Follow the OS dark/light preference instead of a fixed theme id.
+    #[serde(default = "default_follow_system")]
+    pub follow_system: bool,
+    /// 强调色三态："follow"（默认，主题自带）| "preset" | "custom"。
+    #[serde(default)]
+    pub accent_mode: String,
+    /// accent_mode = "preset" 时的预设 key（ACCENT_PRESETS）。
+    #[serde(default)]
+    pub accent_preset: String,
+    /// accent_mode = "custom" 时的 "#RRGGBB"。
+    #[serde(default)]
+    pub accent_custom: String,
+    /// 面板不透明度（30–100 滑杆 → 0.30–1.00）。由旧 wallpaper_overlay 迁移。
+    #[serde(default = "default_panel_alpha")]
+    pub panel_alpha: f32,
+    /// 终端不透明度（75–100 滑杆 → 0.75–1.00，下限保护 ANSI 可读）。
+    #[serde(default = "default_term_alpha")]
+    pub term_alpha: f32,
+    /// 壁纸图自身可见度（0–100 滑杆 → 0.00–1.00）。
+    #[serde(default = "default_wallpaper_visible")]
+    pub wallpaper_visible: f32,
+    /// 弹窗通透度三档：0 标准（实心）| 1 通透 | 2 全透。
+    #[serde(default)]
+    pub popup_transparency: i32,
+    /// 「跟随图片取色」——唯一让壁纸反向影响界面的开关（默认关，§6-待定①）。
+    #[serde(default)]
+    pub wallpaper_color_pickup: bool,
+    /// 频道成员表：4 个固定槽（A 海蓝/B 松石/C 琥珀/D 玫红）各存一个**会话
+    /// 稳定 id**（Session.uuid / builtin "system:*"）；空 = 该槽无成员。
+    /// 跨重启保留（离线成员留在表里只跳过投递），tab 序号绝不入表。
+    #[serde(default)]
+    pub channel_members: [String; 4],
+    /// 已暂停参与频道的会话 id 集合（按会话粒度：既不发送也不接收，
+    /// 成员关系保留；换频道时跟着会话走）。
+    #[serde(default)]
+    pub channel_paused: Vec<String>,
     /// Settings-panel font scale, percent (80–160). 0 = 100% default (v0.5).
     #[serde(default)]
     pub panel_font: u32,

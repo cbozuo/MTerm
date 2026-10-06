@@ -1685,11 +1685,11 @@ fn open_window(
     window.set_lang_en(crate::i18n::is_en());
 
     // Apply the saved (or system-detected) theme.
-    // "dark" / "light" → use that directly; "system" or unset → ask the OS;
-    // OS unknown → fall back to dark.
+    // (#theme-split) 唯一入口：整套槽位（38 套查表 + 强调色三态 + 三透明度）
+    // 写进 Theme，terminal buffer 同步换 ANSI 色表。"dark"/"light"/system 的
+    // 解析在 rev4 迁移与 theme::apply 内完成。
     {
-        let is_dark = theme_pref_is_dark(&store.borrow());
-        window.set_dark_mode(is_dark);
+        apply_theme(&window, &bufs, &store.borrow());
     }
     // On macOS, app shortcuts use Cmd (⌘) so physical Ctrl stays free for the
     // shell (#158); on Windows/Linux they stay Ctrl-based.
@@ -1808,14 +1808,11 @@ fn open_window(
         });
     }
 
-    // Apply the saved immersive wallpaper (overrides dark/light when set; a
-    // missing custom file falls back to the plain theme).
+    // Apply the saved immersive wallpaper (a missing custom file falls back to
+    // the plain theme; #theme-split：壁纸不再反写主题)。
     {
         let id = store.borrow().wallpaper().to_string();
-        // Restoring a saved wallpaper must not override the user's persisted
-        // light/dark preference. Built-in wallpapers only suggest their paired
-        // theme when the user actively selects them (#theme-persistence).
-        apply_wallpaper(&window, &store.borrow(), &bufs, &id, false);
+        apply_wallpaper(&window, &store.borrow(), &bufs, &id);
     }
     // Command bar (#55): seed quick commands + history from the config. Groups
     // start collapsed by default (#55).
@@ -2578,12 +2575,10 @@ fn open_window(
         let registry = registry.clone();
         window.on_set_wallpaper(move |id: SharedString| {
             let id = id.to_string();
-            let mut selected_builtin_theme = None;
             if let Some(w) = weak.upgrade() {
-                apply_wallpaper(&w, &store.borrow(), &bufs_wp, &id, true);
-                if crate::wallpaper::is_builtin(&id) {
-                    selected_builtin_theme = Some(w.get_dark_mode());
-                }
+                // (#theme-split) 壁纸只负责背后那张图：不再反写主题深浅、
+                // 不再顶替强调色。
+                apply_wallpaper(&w, &store.borrow(), &bufs_wp, &id);
                 // Keep an already-open process window in sync with the change.
                 if let Some(p) = proc_weak.upgrade() {
                     sync_proc_theme(&w, &p);
@@ -2592,19 +2587,11 @@ fn open_window(
             {
                 let mut s = store.borrow_mut();
                 s.set_wallpaper(id);
-                // Choosing a built-in wallpaper applies its recommended palette once;
-                // persist that result so it too survives the next launch. A later
-                // manual theme toggle will overwrite this preference as expected.
-                if let Some(dark) = selected_builtin_theme {
-                    s.set_theme_pref(if dark { "dark" } else { "light" }.to_string());
-                }
                 let _ = s.save();
             }
-            // Only the theme flip needs cross-window propagation; the wallpaper
-            // image itself is not synced to other windows (YAGNI).
-            if selected_builtin_theme.is_some() {
-                registry.broadcast_config_changed();
-            }
+            // (#theme-split §3-调整⑤) 壁纸也跨窗口广播：遮罩/可见度影响所有
+            // 独立窗口的观感；子窗口主题槽位由各处 sync_*_theme 拷贝跟上。
+            registry.broadcast_config_changed();
         });
     }
     {
@@ -2620,7 +2607,7 @@ fn open_window(
             if let Some(path) = picked {
                 let id = path.to_string_lossy().to_string();
                 if let Some(w) = weak.upgrade() {
-                    apply_wallpaper(&w, &store.borrow(), &bufs_wp, &id, false);
+                    apply_wallpaper(&w, &store.borrow(), &bufs_wp, &id);
                     if let Some(p) = proc_weak.upgrade() {
                         sync_proc_theme(&w, &p);
                     }
@@ -2658,8 +2645,9 @@ fn open_window(
                 let Some(w) = weak.upgrade() else { return };
                 // Rebuild the list with the window's current search filter.
                 sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
-                // Re-apply the theme to the chrome AND every open terminal buffer.
-                apply_dark_mode(&w, &bufs, theme_pref_is_dark(&store.borrow()));
+                // Re-apply the theme to the chrome AND every open terminal buffer
+                // (#theme-split：整套查表 + 强调色 + 三透明度)。
+                apply_theme(&w, &bufs, &store.borrow());
                 // Language translations are process-global; refresh our flag only.
                 w.set_lang_en(crate::i18n::is_en());
                 // Command-bar visibility is a global preference.
@@ -3243,9 +3231,9 @@ fn open_window(
         });
     }
 
-    // Theme toggle: flip dark ↔ light, persist the preference, and re-render
-    // every open terminal with the new ANSI palette so historical output is
-    // also recoloured (not just new output).
+    // (#theme-split) set_theme / cycle_theme：顶栏速选面板与 Ctrl+Alt+T 的
+    // 入口。切主题 = 持久化 id + 整套槽位重写 + 每个终端 buffer 换 ANSI 色
+    // 表并重渲染（历史输出也跟着换装）+ 独立窗口镜像 + 跨窗口广播。
     {
         let weak = window.as_weak();
         let store = store.clone();
@@ -3253,26 +3241,157 @@ fn open_window(
         let proc_weak = proc_win.as_weak();
         let editor_weak = editor_win.as_weak();
         let registry = registry.clone();
-        window.on_toggle_theme(move || {
+        // cycle 闭包用各自的克隆（set_theme 闭包 move 走第一批）。
+        let weak_c = weak.clone();
+        let store_c = store.clone();
+        let bufs_c = bufs_theme.clone();
+        let proc_c = proc_weak.clone();
+        let editor_c = editor_weak.clone();
+        let registry_c = registry.clone();
+        window.on_set_theme(move |id: SharedString| {
             let Some(w) = weak.upgrade() else { return };
-            let next_dark = !w.get_dark_mode();
-            // Flip theme + every terminal buffer + re-render (shared with wallpaper).
-            apply_dark_mode(&w, &bufs_theme, next_dark);
-            // Mirror the flip onto the detached process window (its Theme global
-            // is a separate instance) so an open process window follows.
+            {
+                let mut s = store.borrow_mut();
+                s.set_theme(id.to_string());
+                // 显式选了主题 = 不再跟随系统（follow 与具体 id 互斥）。
+                s.set_follow_system(false);
+                let _ = s.save();
+            }
+            apply_theme(&w, &bufs_theme, &store.borrow());
+            // 分组取色面板的候选 24 色随新主题换（§3-调整⑤）。
+            if let Some(p) = crate::theme::by_id(id.as_str()) {
+                crate::theme::rebuild_group_palette(&w, p);
+            }
             if let Some(p) = proc_weak.upgrade() {
                 sync_proc_theme(&w, &p);
             }
             if let Some(editor) = editor_weak.upgrade() {
                 sync_editor_theme(&w, &editor);
             }
-            let pref = if next_dark { "dark" } else { "light" };
+            registry.broadcast_config_changed();
+        });
+        // Ctrl+Alt+T（§3-调整③可选）：在 graphite 暗/亮间循环（默认族快速
+        // 翻转；完整主题选择走速选面板/设置页）。
+        window.on_cycle_theme(move || {
+            let Some(w) = weak_c.upgrade() else { return };
+            let next = if w.get_dark_mode() { "graphite-light" } else { "graphite-dark" };
             {
-                let mut s = store.borrow_mut();
-                s.set_theme_pref(pref.to_string());
+                let mut s = store_c.borrow_mut();
+                s.set_theme(next.to_string());
+                s.set_follow_system(false);
                 let _ = s.save();
             }
+            apply_theme(&w, &bufs_c, &store_c.borrow());
+            if let Some(p) = proc_c.upgrade() {
+                sync_proc_theme(&w, &p);
+            }
+            if let Some(editor) = editor_c.upgrade() {
+                sync_editor_theme(&w, &editor);
+            }
+            registry_c.broadcast_config_changed();
+        });
+    }
+
+    // (#theme-split) 强调色三态 + 三滑杆 + 通透度 + 跟随系统 + 图片取色：
+    // 设置「主题」页 / 壁纸页 / 速选面板的写入入口。全部走 apply_theme
+    // 重算（强调色守卫、下限钳制都在 theme 模块），并广播到独立窗口。
+    //
+    // ⚠️ 每个回调前都在**子作用域**里从外层源 clone 捕获。不要用 macro_rules
+    // 合并这些——宏体内的局部变量是定义点上下文，解析不到调用点的 clone
+    // 绑定（实测 E0425）。
+    fn reapply_theme(
+        weak: &slint::Weak<crate::ui::AppWindow>,
+        bufs: &TermBuffers,
+        store: &ConfigStore,
+        registry: &WindowRegistry<AppWindow>,
+    ) {
+        if let Some(w) = weak.upgrade() {
+            apply_theme(&w, bufs, store);
             registry.broadcast_config_changed();
+        }
+    }
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let bufs_theme = bufs.clone();
+        let registry = registry.clone();
+        window.on_set_accent_mode({
+            let (weak, store, bufs, registry) =
+                (weak.clone(), store.clone(), bufs_theme.clone(), registry.clone());
+            move |mode: SharedString, value: SharedString| {
+                {
+                    let mut s = store.borrow_mut();
+                    s.set_accent_mode(mode.to_string());
+                    if mode == "preset" {
+                        s.set_accent_preset(value.to_string());
+                    }
+                    if mode == "custom" {
+                        s.set_accent_custom(value.to_string());
+                    }
+                    let _ = s.save();
+                }
+                reapply_theme(&weak, &bufs, &store.borrow(), &registry);
+            }
+        });
+        window.on_set_panel_alpha({
+            let (weak, store, bufs, registry) =
+                (weak.clone(), store.clone(), bufs_theme.clone(), registry.clone());
+            move |v: f32| {
+                store.borrow_mut().set_panel_alpha(v);
+                reapply_theme(&weak, &bufs, &store.borrow(), &registry);
+            }
+        });
+        window.on_set_term_alpha({
+            let (weak, store, bufs, registry) =
+                (weak.clone(), store.clone(), bufs_theme.clone(), registry.clone());
+            move |v: f32| {
+                store.borrow_mut().set_term_alpha(v);
+                reapply_theme(&weak, &bufs, &store.borrow(), &registry);
+            }
+        });
+        window.on_set_wallpaper_visible({
+            let (weak, store, bufs, registry) =
+                (weak.clone(), store.clone(), bufs_theme.clone(), registry.clone());
+            move |v: f32| {
+                store.borrow_mut().set_wallpaper_visible(v);
+                reapply_theme(&weak, &bufs, &store.borrow(), &registry);
+            }
+        });
+        window.on_set_popup_transparency({
+            let (weak, store, bufs, registry) =
+                (weak.clone(), store.clone(), bufs_theme.clone(), registry.clone());
+            move |v: i32| {
+                store.borrow_mut().set_popup_transparency(v);
+                reapply_theme(&weak, &bufs, &store.borrow(), &registry);
+            }
+        });
+        window.on_set_follow_system({
+            let (weak, store, bufs, registry) =
+                (weak.clone(), store.clone(), bufs_theme.clone(), registry.clone());
+            move |on: bool| {
+                {
+                    let mut s = store.borrow_mut();
+                    s.set_follow_system(on);
+                    if on {
+                        // 回到跟随系统：theme 清空（运行时按系统探测取 graphite 族）。
+                        s.set_theme(String::new());
+                    } else if s.theme().is_empty() {
+                        if let Some(w) = weak.upgrade() {
+                            s.set_theme(crate::theme::default_for(w.get_dark_mode()).to_string());
+                        }
+                    }
+                    let _ = s.save();
+                }
+                reapply_theme(&weak, &bufs, &store.borrow(), &registry);
+            }
+        });
+        window.on_set_wallpaper_color_pickup({
+            let (weak, store, bufs, registry) =
+                (weak.clone(), store.clone(), bufs_theme.clone(), registry.clone());
+            move |on: bool| {
+                store.borrow_mut().set_wallpaper_color_pickup(on);
+                reapply_theme(&weak, &bufs, &store.borrow(), &registry);
+            }
         });
     }
 
@@ -5935,22 +6054,15 @@ fn wire_session_callbacks(
     // 点击时用原文提交。之所以不把调色板定义在 .slint 侧:Slint 1.8 没有
     // color → "#RRGGBB" 的转换,点色格时拿不到可提交的 hex 字符串。
     {
-        // 明暗主题共用这一套:候选色是"用户将得到的颜色"本身,不随主题变,
-        // 取 500 档中等饱和,深底/浅底都清晰。前 18 个走色环,后 6 个中性灰。
-        const GROUP_PALETTE: [&str; 24] = [
-            "#ef4444", "#f97316", "#f59e0b", "#eab308", "#84cc16", "#22c55e",
-            "#10b981", "#14b8a6", "#06b6d4", "#0ea5e9", "#3b82f6", "#6366f1",
-            "#8b5cf6", "#a855f7", "#d946ef", "#ec4899", "#f43f5e", "#fb7185",
-            "#cbd5e1", "#94a3b8", "#64748b", "#475569", "#334155", "#1e293b",
-        ];
-        let swatches: Vec<GroupSwatch> = GROUP_PALETTE
-            .iter()
-            .map(|hex| GroupSwatch {
-                hex: (*hex).into(),
-                swatch: parse_hex_color(hex).unwrap_or_default(),
-            })
-            .collect();
-        window.set_group_palette(ModelRc::from(Rc::new(VecModel::from(swatches))));
+        // (#theme-split §3-调整⑤) 候选 24 色改为**按当前主题查表**（原「明暗
+        // 共用一套 500 档」退役）：「在浅色主题里选到深红、暗色主题里选到亮
+        // 红」的不一致由表内按各主题明度取档的 group24 消除。切主题时由
+        // on_set_theme 路径重跑 rebuild_group_palette。
+        let pal_now = crate::theme::by_id(&store.borrow().theme()).unwrap_or(
+            crate::theme::palette_or_default("", theme_pref_is_dark(&store.borrow())),
+        );
+        crate::theme::rebuild_group_palette(&window, pal_now);
+        // 切主题后的候选色刷新由 on_set_theme 主处理路径完成（见前）。
     }
 
     // (#group-color 2026-09-14) 提交分组颜色:name = 组名,hex = "#RRGGBB"
@@ -6936,6 +7048,12 @@ fn wire_session_callbacks(
                     parser: vt100::Parser::new(24, 80, 5000),
                     find_query: String::new(),
                     is_dark: is_dark_now,
+                    // (#theme-split) 新建 tab 继承当前主题的色表（ANSI/默认
+                    // 前景背景随主题走；apply_theme 切主题时统一刷新）。
+                    palette: crate::theme::palette_or_default(
+                        &store.borrow().theme(),
+                        is_dark_now,
+                    ),
                     output_highlight,
                     custom_highlight_rules,
                     json_format_output: store.borrow().json_format_output(),

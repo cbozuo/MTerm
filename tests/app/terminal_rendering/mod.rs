@@ -21,6 +21,7 @@ fn make_buf(
         parser,
         find_query: String::new(),
         is_dark: false,
+        palette: crate::theme::palette_or_default("", false),
         output_highlight: OutputHighlightPreset::Log,
         custom_highlight_rules: Vec::new(),
         json_format_output: false,

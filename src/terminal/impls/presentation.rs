@@ -348,11 +348,16 @@ fn ascii_word_boundary(bytes: &[u8], start: usize, end: usize) -> bool {
 /// 集成测试与体积评估认定 34MB 的全集嵌入不值(占 exe 体积约九成),emoji
 /// 交由 Slint 的字体回退渲染单色轮廓。终端列数仍来自网格(span.cells),
 /// 这里只做配色解析与 CJK 标记。
-pub(crate) fn render_term_span(span: &HistSpan, row: i32, is_dark: bool) -> Vec<TermSpan> {
+pub(crate) fn render_term_span(
+    span: &HistSpan,
+    row: i32,
+    is_dark: bool,
+    pal: &crate::theme::palettes::Palette,
+) -> Vec<TermSpan> {
     if span.cells <= 0 || span.text.is_empty() {
         return Vec::new();
     }
-    let (fg, bg) = vt_span_colors(span.fg, span.bg, span.bold, span.inverse, is_dark);
+    let (fg, bg) = vt_span_colors(span.fg, span.bg, span.bold, span.inverse, is_dark, pal);
     let cjk = contains_cjk(&span.text);
     vec![TermSpan {
         text: span.text.clone().into(),
@@ -464,16 +469,15 @@ const ANSI16_LIGHT_BG: [(u8, u8, u8); 16] = [
 ///
 /// In light mode, true-colour RGB foregrounds that are light (HSL lightness
 /// ≥ 0.55) are darkened so they remain readable on a near-white background.
-fn vt_color_to_slint(color: vt100::Color, bold: bool, is_dark: bool) -> slint::Color {
+fn vt_color_to_slint(
+    color: vt100::Color,
+    bold: bool,
+    is_dark: bool,
+    pal: &crate::theme::palettes::Palette,
+) -> slint::Color {
     let (r, g, b) = match color {
-        vt100::Color::Default => {
-            if is_dark {
-                (0xd4, 0xd4, 0xd4)
-            } else {
-                (0x2d, 0x2d, 0x2f)
-            }
-        }
-        vt100::Color::Idx(i) => idx_to_rgb(i, bold, is_dark),
+        vt100::Color::Default => fg_rgb_of(pal),
+        vt100::Color::Idx(i) => idx_to_rgb(i, bold, is_dark, pal),
         vt100::Color::Rgb(r, g, b) => {
             if is_dark {
                 (r, g, b)
@@ -485,20 +489,14 @@ fn vt_color_to_slint(color: vt100::Color, bold: bool, is_dark: bool) -> slint::C
     slint::Color::from_rgb_u8(r, g, b)
 }
 
-fn vt_default_fg_rgb(is_dark: bool) -> (u8, u8, u8) {
-    if is_dark {
-        (0xd4, 0xd4, 0xd4)
-    } else {
-        (0x2d, 0x2d, 0x2f)
-    }
+/// 主题默认前景/背景（#theme-split：按当前主题查表；meat 档即原
+/// #d4d4d4/#0e0f13，各主题用表内 tfg/tbg）。
+fn fg_rgb_of(pal: &crate::theme::palettes::Palette) -> (u8, u8, u8) {
+    ((pal.tfg >> 16) as u8, (pal.tfg >> 8) as u8, pal.tfg as u8)
 }
 
-fn vt_default_bg_rgb(is_dark: bool) -> (u8, u8, u8) {
-    if is_dark {
-        (0x0e, 0x0f, 0x13)
-    } else {
-        (0xfa, 0xfa, 0xfa)
-    }
+fn bg_rgb_of(pal: &crate::theme::palettes::Palette) -> (u8, u8, u8) {
+    ((pal.tbg >> 16) as u8, (pal.tbg >> 8) as u8, pal.tbg as u8)
 }
 
 pub(crate) fn vt_span_colors(
@@ -507,27 +505,28 @@ pub(crate) fn vt_span_colors(
     bold: bool,
     inverse: bool,
     is_dark: bool,
+    pal: &crate::theme::palettes::Palette,
 ) -> (slint::Color, slint::Color) {
     if !inverse {
         return (
-            vt_color_to_slint(fg, bold, is_dark),
-            vt_bg_to_slint(bg, is_dark),
+            vt_color_to_slint(fg, bold, is_dark, pal),
+            vt_bg_to_slint(bg, is_dark, pal),
         );
     }
 
     let fg_color = match bg {
         vt100::Color::Default => {
-            let (r, g, b) = vt_default_bg_rgb(is_dark);
+            let (r, g, b) = bg_rgb_of(pal);
             slint::Color::from_rgb_u8(r, g, b)
         }
-        _ => vt_color_to_slint(bg, false, is_dark),
+        _ => vt_color_to_slint(bg, false, is_dark, pal),
     };
     let bg_color = match fg {
         vt100::Color::Default => {
-            let (r, g, b) = vt_default_fg_rgb(is_dark);
+            let (r, g, b) = fg_rgb_of(pal);
             slint::Color::from_rgb_u8(r, g, b)
         }
-        _ => vt_bg_to_slint(fg, is_dark),
+        _ => vt_bg_to_slint(fg, is_dark, pal),
     };
     (fg_color, bg_color)
 }
@@ -553,11 +552,15 @@ fn darken_light_fg(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
 /// - ANSI 16 colours use `ANSI16_LIGHT_BG` (light pastels).
 /// - True-colour RGB backgrounds that are dark (HSL lightness < 0.45) are
 ///   remapped to light pastels so programs like btop feel light-themed.
-fn vt_bg_to_slint(color: vt100::Color, is_dark: bool) -> slint::Color {
+fn vt_bg_to_slint(
+    color: vt100::Color,
+    is_dark: bool,
+    pal: &crate::theme::palettes::Palette,
+) -> slint::Color {
     match color {
         vt100::Color::Default => slint::Color::from_argb_u8(0, 0, 0, 0), // transparent
         vt100::Color::Idx(i) => {
-            let (r, g, b) = idx_to_rgb_bg(i, is_dark);
+            let (r, g, b) = idx_to_rgb_bg(i, is_dark, pal);
             slint::Color::from_rgb_u8(r, g, b)
         }
         vt100::Color::Rgb(r, g, b) => {
@@ -649,9 +652,16 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
 }
 
 /// Map an xterm-256 palette index to RGB (16 ANSI + 6×6×6 cube + grayscale).
-fn idx_to_rgb(i: u8, bold: bool, is_dark: bool) -> (u8, u8, u8) {
+/// (#theme-split) ANSI 16 色按当前主题查表（38 套；meat 档即原 ANSI16_DARK /
+/// ANSI16_LIGHT 两常量值）。256 色立方 / 灰阶不随主题。
+fn idx_to_rgb(
+    i: u8,
+    bold: bool,
+    is_dark: bool,
+    pal: &crate::theme::palettes::Palette,
+) -> (u8, u8, u8) {
     let i = if bold && i < 8 { i + 8 } else { i };
-    let palette = if is_dark { &ANSI16_DARK } else { &ANSI16_LIGHT };
+    let palette = ansi16_of(pal);
     match i {
         0..=15 => palette[i as usize],
         16..=231 => {
@@ -672,12 +682,26 @@ fn idx_to_rgb(i: u8, bold: bool, is_dark: bool) -> (u8, u8, u8) {
     }
 }
 
-/// Same as [`idx_to_rgb`] but for **background** fills in light mode: the 16
-/// ANSI base colours use `ANSI16_LIGHT_BG` (light pastels) so TUI program
-/// backgrounds feel light.  256-colour cube / grayscale are used as-is.
-fn idx_to_rgb_bg(i: u8, is_dark: bool) -> (u8, u8, u8) {
-    if !is_dark && i < 16 {
-        return ANSI16_LIGHT_BG[i as usize];
+/// 该套主题的 ANSI 16 色表（u32 → (u8,u8,u8)；每次 span 渲染构造一次，
+/// 16 项拷贝可忽略）。
+fn ansi16_of(pal: &crate::theme::palettes::Palette) -> [(u8, u8, u8); 16] {
+    let mut out = [(0u8, 0u8, 0u8); 16];
+    for (i, v) in pal.ansi16.iter().enumerate() {
+        out[i] = ((*v >> 16) as u8, (*v >> 8) as u8, *v as u8);
     }
-    idx_to_rgb(i, false, is_dark)
+    out
+}
+
+/// Same as [`idx_to_rgb`] but for **background** fills in light mode: the 16
+/// ANSI base colours use the palette's own light-TUI background table
+/// （meat-light 的 ANSI16_LIGHT_BG 双表特性保留；其余亮档主题无此表时落回
+/// 前景表）.  256-colour cube / grayscale are used as-is.
+fn idx_to_rgb_bg(i: u8, is_dark: bool, pal: &crate::theme::palettes::Palette) -> (u8, u8, u8) {
+    if !is_dark && i < 16 {
+        if let Some(bg) = pal.ansi16bg {
+            let v = bg[i as usize];
+            return ((v >> 16) as u8, (v >> 8) as u8, v as u8);
+        }
+    }
+    idx_to_rgb(i, false, is_dark, pal)
 }

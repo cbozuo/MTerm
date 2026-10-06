@@ -102,12 +102,17 @@ fn normalize_hex_color(value: &str) -> Option<String> {
 /// new-user default layout (#new-user-defaults): ms wallpaper, welcome page as
 /// a left sidebar, resource panel docked right, 15% wallpaper transparency, and
 /// marks the migration done so it isn't re-applied.
+/// (#theme-split rev4) 壁纸默认改为**无**（§0：新用户装完是"幻想3048+被反写的
+/// dark"的坑）+ 跟随系统 + graphite 族默认主题（已确认决策：新老用户一律新底色）。
 fn fresh_config() -> ConfigFile {
     ConfigFile {
-        wallpaper: "builtin:ms".to_string(),
+        wallpaper: String::new(),
         welcome_as_sidebar: true,
         sidebar_dock: "right".to_string(),
         wallpaper_overlay: DEFAULT_WALLPAPER_OVERLAY,
+        panel_alpha: DEFAULT_PANEL_ALPHA,
+        term_alpha: DEFAULT_TERM_ALPHA,
+        follow_system: true,
         defaults_rev: DEFAULTS_REV,
         ..ConfigFile::default()
     }
@@ -155,8 +160,49 @@ fn migrate_defaults(cfg: &mut ConfigFile) -> bool {
     {
         cfg.wallpaper_overlay = DEFAULT_WALLPAPER_OVERLAY;
     }
+    // rev 4 (#theme-split): 主题/强调色/壁纸三层解耦（§5）。只动「一直在默认
+    // 值上」的项；用户显式选过的（含任意 builtin/自定义壁纸）原样保留。
+    if cfg.defaults_rev < 4 {
+        // 深浅偏好 → 具体主题 id（graphite 族，已确认决策：一律新底色）。
+        // 空/"system" = 跟随系统（follow_system = true），theme 留空运行时解析。
+        // （follow_system 的 serde 默认是 true——dark/light 分支必须显式关掉。）
+        if cfg.theme.is_empty() {
+            match cfg.theme_pref.as_str() {
+                "dark" => {
+                    cfg.theme = "graphite-dark".to_string();
+                    cfg.follow_system = false;
+                }
+                "light" => {
+                    cfg.theme = "graphite-light".to_string();
+                    cfg.follow_system = false;
+                }
+                _ => cfg.follow_system = true,
+            }
+        }
+        // 一个滑杆曾同时驱动面板+终端 → 拆成两个独立值（面板沿用旧值，
+        // 终端回满档不透明——现状终端本来就更实，视觉不回退，§5）。
+        if cfg.panel_alpha == default_panel_alpha_value() {
+            cfg.panel_alpha = if cfg.wallpaper_overlay > 0.0 {
+                cfg.wallpaper_overlay
+            } else {
+                DEFAULT_PANEL_ALPHA
+            };
+            cfg.term_alpha = DEFAULT_TERM_ALPHA;
+        }
+        // 从未挑过壁纸的用户 → 默认无壁纸（serde 默认 builtin:tech = 未动过）。
+        if cfg.wallpaper == "builtin:tech" {
+            cfg.wallpaper = String::new();
+        }
+    }
     cfg.defaults_rev = DEFAULTS_REV;
     true
+}
+
+/// 与 serde 默认区分的比较基准（panel_alpha 的 serde default 就是 DEFAULT，
+/// 所以「用户没动过」与「默认值」无法靠值区分——rev4 只对 defaults_rev<4 的
+/// 配置跑一次，覆盖旧配置里 panel_alpha 尚不存在（=serde 默认 0.85）的情况）。
+fn default_panel_alpha_value() -> f32 {
+    DEFAULT_PANEL_ALPHA
 }
 
 fn normalize_highlight_color(color: &str) -> &'static str {
@@ -649,6 +695,125 @@ impl ConfigStore {
 
     pub fn set_theme_pref(&mut self, pref: String) {
         self.cache.theme_pref = pref;
+    }
+
+    // ── (#theme-split 2026-10-07) 主题/强调色/壁纸三层解耦的新字段 ──────
+
+    /// 主题 id。空 = 跟随系统（follow_system）。合法值见 src/theme/palettes.rs。
+    pub fn theme(&self) -> &str {
+        &self.cache.theme
+    }
+    pub fn set_theme(&mut self, id: String) {
+        self.cache.theme = id;
+    }
+    pub fn follow_system(&self) -> bool {
+        self.cache.follow_system
+    }
+    pub fn set_follow_system(&mut self, on: bool) {
+        self.cache.follow_system = on;
+    }
+    /// 强调色三态："follow" | "preset" | "custom"。
+    pub fn accent_mode(&self) -> &str {
+        if self.cache.accent_mode.is_empty() {
+            "follow"
+        } else {
+            &self.cache.accent_mode
+        }
+    }
+    pub fn set_accent_mode(&mut self, mode: String) {
+        self.cache.accent_mode = mode;
+    }
+    pub fn accent_preset(&self) -> &str {
+        &self.cache.accent_preset
+    }
+    pub fn set_accent_preset(&mut self, key: String) {
+        self.cache.accent_preset = key;
+    }
+    pub fn accent_custom(&self) -> &str {
+        &self.cache.accent_custom
+    }
+    pub fn set_accent_custom(&mut self, hex: String) {
+        self.cache.accent_custom = hex;
+    }
+    /// 面板不透明度（0.30–1.00）。
+    pub fn panel_alpha(&self) -> f32 {
+        self.cache.panel_alpha
+    }
+    pub fn set_panel_alpha(&mut self, v: f32) {
+        self.cache.panel_alpha = v.clamp(0.30, 1.0);
+    }
+    /// 终端不透明度（0.75–1.00，下限保护 ANSI 可读）。
+    pub fn term_alpha(&self) -> f32 {
+        self.cache.term_alpha
+    }
+    pub fn set_term_alpha(&mut self, v: f32) {
+        self.cache.term_alpha = v.clamp(0.75, 1.0);
+    }
+    /// 壁纸图自身可见度（0.00–1.00）。
+    pub fn wallpaper_visible(&self) -> f32 {
+        self.cache.wallpaper_visible
+    }
+    pub fn set_wallpaper_visible(&mut self, v: f32) {
+        self.cache.wallpaper_visible = v.clamp(0.0, 1.0);
+    }
+    /// 弹窗通透度三档（0/1/2）。
+    pub fn popup_transparency(&self) -> i32 {
+        self.cache.popup_transparency.clamp(0, 2)
+    }
+    pub fn set_popup_transparency(&mut self, v: i32) {
+        self.cache.popup_transparency = v.clamp(0, 2);
+    }
+    /// 「跟随图片取色」（默认关——唯一让壁纸反向影响界面的开关）。
+    pub fn wallpaper_color_pickup(&self) -> bool {
+        self.cache.wallpaper_color_pickup
+    }
+    pub fn set_wallpaper_color_pickup(&mut self, on: bool) {
+        self.cache.wallpaper_color_pickup = on;
+    }
+    /// 频道成员表：4 槽各一个会话稳定 id（空 = 无成员）。
+    pub fn channel_members(&self) -> &[String; 4] {
+        &self.cache.channel_members
+    }
+    pub fn set_channel_member(&mut self, slot: usize, session_id: String) {
+        if slot < 4 {
+            self.cache.channel_members[slot] = session_id;
+        }
+    }
+    /// 把会话从全部 4 个频道清一遍（换频道是「移动」不是「复制」，§1：
+    /// 同一实体只能属于一处时，写入前从全部容器清一遍）。
+    pub fn detach_all_channels(&mut self, session_id: &str) {
+        for slot in self.cache.channel_members.iter_mut() {
+            if slot == session_id {
+                slot.clear();
+            }
+        }
+    }
+    /// 清空指定频道的成员（关闭频道只清这个频道的成员，别整表清）。
+    pub fn clear_channel(&mut self, slot: usize) {
+        if slot < 4 {
+            self.cache.channel_members[slot].clear();
+        }
+    }
+    /// 已暂停参与频道的会话 id 集合（按会话粒度）。
+    pub fn channel_paused(&self) -> &Vec<String> {
+        &self.cache.channel_paused
+    }
+    pub fn channel_is_paused(&self, session_id: &str) -> bool {
+        self.cache.channel_paused.iter().any(|s| s == session_id)
+    }
+    pub fn set_channel_paused(&mut self, session_id: &str, paused: bool) {
+        if paused {
+            if !self.channel_is_paused(session_id) {
+                self.cache.channel_paused.push(session_id.to_string());
+            }
+        } else {
+            self.cache.channel_paused.retain(|s| s != session_id);
+        }
+    }
+    /// 清掉某会话的暂停标记（离开频道/关闭 tab 时——用户已忘了暂停过，
+    /// 留着会在重新加入时莫名多一道删除线）。
+    pub fn clear_channel_pause(&mut self, session_id: &str) {
+        self.set_channel_paused(session_id, false);
     }
 
     /// Renderer preference for the current platform.
@@ -2413,14 +2578,22 @@ mod tests {
     }
 
     #[test]
-    fn wallpaper_defaults_to_ms_but_keeps_explicit_choice() {
-        // Fresh install (no file).
+    fn wallpaper_defaults_follow_the_migration_chain() {
+        // (#theme-split rev4) Fresh install: 默认无壁纸 + 跟随系统 + graphite 族
+        // + 三滑杆默认值（§0/§5：零操作即正确）。
         let fresh = fresh_config();
-        assert_eq!(fresh.wallpaper, "builtin:ms");
+        assert_eq!(fresh.wallpaper, "");
         assert!((fresh.wallpaper_overlay - 0.85).abs() < f32::EPSILON);
-        // User upgrading from before the feature: JSON without the key.
+        assert!((fresh.panel_alpha - 0.85).abs() < f32::EPSILON);
+        assert!((fresh.term_alpha - 1.0).abs() < f32::EPSILON);
+        assert!(fresh.follow_system);
+        assert_eq!(fresh.theme, "");
+        // User upgrading from before the feature: JSON without the key keeps the
+        // serde default (builtin:tech) so rev4 can tell "never chose" apart.
         let cfg: ConfigFile = serde_json::from_str("{}").unwrap();
         assert_eq!(cfg.wallpaper, "builtin:tech");
+        assert_eq!(cfg.theme, "");
+        assert!((cfg.panel_alpha - 0.85).abs() < f32::EPSILON);
         // An explicit "无"/none (stored as "") is preserved, not re-defaulted.
         let cfg: ConfigFile = serde_json::from_str(r#"{"wallpaper":""}"#).unwrap();
         assert_eq!(cfg.wallpaper, "");
@@ -2434,6 +2607,54 @@ mod tests {
             ..ConfigFile::default()
         };
         assert!(!migrate_defaults(&mut cfg));
+        assert_eq!(cfg.wallpaper, "builtin:miku");
+    }
+
+    #[test]
+    fn rev4_migrates_theme_pref_and_splits_overlay() {
+        // (#theme-split rev4 §5) 一直在默认值上的老用户：
+        // theme_pref=dark → graphite-dark；overlay → panel(旧值)+term(1.0)；
+        // 默认壁纸 → 无。
+        let mut cfg: ConfigFile = serde_json::from_str(
+            r#"{"theme_pref":"dark","defaults_rev":3}"#,
+        )
+        .unwrap();
+        // serde 默认 wallpaper = builtin:tech（从未挑过）。
+        assert_eq!(cfg.wallpaper, "builtin:tech");
+        assert!(migrate_defaults(&mut cfg));
+        assert_eq!(cfg.theme, "graphite-dark");
+        assert!(!cfg.follow_system);
+        assert!((cfg.panel_alpha - 0.85).abs() < f32::EPSILON);
+        assert!((cfg.term_alpha - 1.0).abs() < f32::EPSILON);
+        assert_eq!(cfg.wallpaper, "");
+
+        // 亮色偏好 → graphite-light。
+        let mut cfg: ConfigFile =
+            serde_json::from_str(r#"{"theme_pref":"light","defaults_rev":3}"#).unwrap();
+        assert!(migrate_defaults(&mut cfg));
+        assert_eq!(cfg.theme, "graphite-light");
+
+        // 跟随系统 → theme 留空 + follow_system=true。
+        let mut cfg: ConfigFile =
+            serde_json::from_str(r#"{"theme_pref":"","defaults_rev":3}"#).unwrap();
+        assert!(migrate_defaults(&mut cfg));
+        assert_eq!(cfg.theme, "");
+        assert!(cfg.follow_system);
+
+        // 用户调过滑杆：panel 沿用旧 overlay 值，不覆盖。
+        let mut cfg: ConfigFile = serde_json::from_str(
+            r#"{"theme_pref":"dark","wallpaper_overlay":0.62,"defaults_rev":3}"#,
+        )
+        .unwrap();
+        assert!(migrate_defaults(&mut cfg));
+        assert!((cfg.panel_alpha - 0.62).abs() < f32::EPSILON);
+
+        // 用户挑过壁纸：不被清成无。
+        let mut cfg: ConfigFile = serde_json::from_str(
+            r#"{"theme_pref":"dark","wallpaper":"builtin:miku","defaults_rev":3}"#,
+        )
+        .unwrap();
+        assert!(migrate_defaults(&mut cfg));
         assert_eq!(cfg.wallpaper, "builtin:miku");
     }
 

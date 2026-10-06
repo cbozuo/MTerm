@@ -8,6 +8,8 @@ fn inverse_default_colours_paint_a_visible_background() {
         false,
         true,
         true,
+        // 本测试锁定的是 meat 档（迁移保留档）的观感回归
+        crate::theme::palette_or_default("meat-dark", true),
     );
     assert_eq!(fg.as_argb_encoded(), 0xff0e0f13);
     assert_eq!(bg.as_argb_encoded(), 0xffd4d4d4);

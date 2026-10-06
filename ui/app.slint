@@ -4,6 +4,9 @@ import { Icon } from "icons.slint";
 // system-resolved at startup (src/app.rs) — nothing is embedded anymore.
 
 import { Theme } from "theme.slint";
+// (#theme-split) 从入口再导出 Theme，让生成的 Rust 侧拿到 global 类型
+// （src/theme/mod.rs 用 window.global::<Theme>() 直接写槽位，免桥属性）。
+export { Theme }
 import { Sidebar, DiskInfo } from "sidebar.slint";
 import { TabBar, TabInfo } from "tabs.slint";
 import { Welcome, SessionInfo, CtxRowHit } from "welcome.slint";
@@ -1206,7 +1209,19 @@ export component AppWindow inherits Window {
     // 即时回显(点色格 / 手输 hex 都要让色块跟着变),但此时还不该写配置。
     // hex 非法时返回全透明,由色块的描边兜底(仍是"空"的样子)。
     callback resolve-color(string /* hex */) -> color;
-    callback toggle-theme();               // flip dark ↔ light
+    // (#theme-split) toggle-theme 退役：顶栏改主题速选面板（§3-调整③）。
+    // set-theme = 速选面板/设置页的选主题入口；cycle-theme = Ctrl+Alt+T 在
+    // graphite 暗/亮间快速翻转。
+    callback set-theme(string /* theme id */);
+    callback cycle-theme();
+    // 强调色三态与三滑杆/通透度的设置入口（设置「主题」页 + 速选面板用）。
+    callback set-accent-mode(string /* follow|preset|custom */, string /* preset key or #hex */);
+    callback set-panel-alpha(float);
+    callback set-term-alpha(float);
+    callback set-wallpaper-visible(float);
+    callback set-popup-transparency(int);
+    callback set-follow-system(bool);
+    callback set-wallpaper-color-pickup(bool);
     // Session sync / broadcast input (#78 pt.4): mirror keystrokes to every
     // online session. Default off (it types into ALL sessions at once).
     in-out property <bool> sync-input: false;
@@ -1579,6 +1594,8 @@ export component AppWindow inherits Window {
         height: parent.height;
         source: Theme.wallpaper;
         image-fit: cover;
+        // (#theme-split) 图自身可见度由「壁纸可见度」滑杆独立控制（0–100）。
+        opacity: Theme.wallpaper-visible;
     }
 
     // Zen (focus) mode keyboard toggle — same persist path as the Settings
@@ -1733,7 +1750,7 @@ export component AppWindow inherits Window {
                     TopbarBtn { height: parent.height;
                         icon: Theme.dark ? "sun" : "moon";
                         label: root.lang-en ? "Theme" : "主题";
-                        clicked => { root.toggle-theme(); }
+                        clicked => { root.cycle-theme(); }
                     }
                     // 传输管理 —— 呼吸灯 + 下载弹层锚点(transfer-btn)。
                     transfer-btn := TopbarBtn { height: parent.height;
@@ -2982,7 +2999,7 @@ export component AppWindow inherits Window {
         // (#polish-topbar) 去彩色(原黄/紫特例),统一单色图标体系。
         icon-color: Theme.text-secondary;
         tooltip: root.lang-en ? "Toggle theme" : "切换主题";
-        clicked => { root.toggle-theme(); }
+        clicked => { root.cycle-theme(); }
     }
     IconBtn {
         visible: !root.custom-titlebar;
