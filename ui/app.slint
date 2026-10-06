@@ -4,6 +4,8 @@ import { Icon } from "icons.slint";
 // system-resolved at startup (src/app.rs) — nothing is embedded anymore.
 
 import { Theme } from "theme.slint";
+import { ThemeEntry } from "theme_entry.slint";
+export { ThemeEntry }
 // (#theme-split) 从入口再导出 Theme，让生成的 Rust 侧拿到 global 类型
 // （src/theme/mod.rs 用 window.global::<Theme>() 直接写槽位，免桥属性）。
 export { Theme }
@@ -661,6 +663,12 @@ export component AppWindow inherits Window {
 
     // --- Top-right popups --------------------------------------------------
     in-out property <bool> download-open: false;  // download manager popup
+    // (#theme-split §3-调整③) 顶栏主题速选面板开关 + 8 个代表变体。
+    in-out property <bool> theme-quick-open: false;
+    in-out property <bool> wallpaper-color-pickup: false;
+    in property <[ThemeEntry]> quick-theme-entries;
+    // 设置面板当前页（速选面板的「更多主题」直达主题页）。
+    in-out property <string> ifd-page: "theme";
     in-out property <bool> settings-open: false;  // settings menu popup
 
     // Immersive custom title bar (#119). Rust sets `custom-titlebar` true on
@@ -977,6 +985,18 @@ export component AppWindow inherits Window {
     // User-adjustable wallpaper overlay opacity (0.30–1.00), persisted.
     in-out property <float> wallpaper-overlay <=> Theme.panel-alpha;
     callback persist-wallpaper-overlay(float);
+    // ── (#theme-split) 主题/强调色/壁纸三层解耦的设置数据 ──────────────
+    // 38 套主题的清单（Rust 从 palettes.rs 构建；含分组/预览色）。
+    in property <[ThemeEntry]> theme-entries;
+    // 当前主题 id / 跟随系统 / 强调色三态的快照（设置页与速选面板显示）。
+    in-out property <string> theme-chosen <=> Theme.theme-id;
+    in-out property <bool> follow-system: true;
+    in-out property <string> accent-mode: "follow";
+    in-out property <string> accent-preset: "";
+    in-out property <string> accent-custom: "";
+    in-out property <float> term-alpha <=> Theme.term-alpha;
+    in-out property <float> wallpaper-visible <=> Theme.wallpaper-visible;
+    in-out property <int> popup-transparency <=> Theme.popup-transparency;
     in property <[string]> term-fonts;             // installed monospace families
     in property <string> term-font-chosen;         // raw stored choice ("" = chain default)
     in property <string> term-font-default-name;   // resolved chain mono, labels the 默认 row
@@ -1747,10 +1767,22 @@ export component AppWindow inherits Window {
                         clicked => { root.sync-input = !root.sync-input; root.set-sync-input(root.sync-input); }
                     }
                     // 主题切换 —— 单色图标(去彩色特例)。
-                    TopbarBtn { height: parent.height;
-                        icon: Theme.dark ? "sun" : "moon";
+                    // (#theme-split §3-调整③) 主题速选 —— 图标从 sun/moon 换成
+                    // 四宫格调色板（语义 =「配色」而非「亮暗」），点击弹 262px
+                    // 速选面板（8 个代表变体 + 跟随系统 + 更多主题）。
+                    theme-btn := TopbarBtn { height: parent.height;
+                        icon: "palette-grid";
                         label: root.lang-en ? "Theme" : "主题";
-                        clicked => { root.cycle-theme(); }
+                        active: root.theme-quick-open;
+                        clicked => {
+                            root.topbar-click-x = self.click-x;
+                            root.topbar-click-y = self.click-y;
+                            root.topbar-anchor-x = self.btn-x;
+                            root.topbar-anchor-y = self.btn-y;
+                            root.topbar-anchor-w = self.btn-w;
+                            root.topbar-anchor-h = self.btn-h;
+                            root.theme-quick-open = !root.theme-quick-open;
+                        }
                     }
                     // 传输管理 —— 呼吸灯 + 下载弹层锚点(transfer-btn)。
                     transfer-btn := TopbarBtn { height: parent.height;
@@ -4395,6 +4427,125 @@ export component AppWindow inherits Window {
     // Click-outside-to-close: a full-window transparent sensor sitting *under*
     // the popup. Clicking anywhere outside the popup hits this and closes it;
     // clicks inside the popup are caught by the popup's own TouchArea first.
+    // (#theme-split §3-调整③) 主题速选面板：262px、8 个代表变体 + 跟随
+    // 系统 + 更多主题（直达设置 › 主题）。定位同 transfer 弹层（跟随点击点）。
+    if root.theme-quick-open : TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => { root.theme-quick-open = false; }
+    }
+    Rectangle {
+        x: max(8px, min(root.topbar-click-x - 200px, parent.width - self.width - 12px));
+        y: min(root.topbar-click-y, parent.height - self.height - 12px);
+        width: 262px;
+        height: quick-lay.preferred-height + 16px;
+        visible: root.theme-quick-open;
+        background: Theme.popup-bg;
+        border-radius: 9px;
+        border-width: 1px; border-color: Theme.border-strong;
+        drop-shadow-blur: 16px; drop-shadow-color: #00000060;
+        VerticalLayout {
+            quick-lay := VerticalLayout {
+                padding: 9px;
+                spacing: 2px;
+                Text {
+                    text: root.lang-en ? "Theme" : "主题";
+                    color: Theme.text-muted; font-size: 10px * Theme.panel-font;
+                    padding-bottom: 4px;
+                }
+                for e in root.quick-theme-entries : Rectangle {
+                    height: 30px; border-radius: 6px;
+                    background: quick-ta.has-hover ? Theme.bg-hover : transparent;
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px;
+                        spacing: 8px; alignment: start;
+                        Rectangle {
+                            width: 14px; height: 14px; border-radius: 4px;
+                            background: e.panel;
+                            border-width: 1px; border-color: Theme.border-subtle;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        Text {
+                            text: e.zh + " · " + e.mode;
+                            color: e.id == root.theme-chosen ? Theme.accent-solid : Theme.text-primary;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        if e.id == root.theme-chosen : Text {
+                            text: "✓"; color: Theme.accent-solid; font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    quick-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.theme-chosen = e.id;
+                            root.set-theme(e.id);
+                            root.theme-quick-open = false;
+                        }
+                    }
+                }
+                Rectangle { height: 7px; }
+                Rectangle { height: 1px; background: Theme.border-subtle; }
+                Rectangle { height: 3px; }
+                HorizontalLayout {
+                    height: 28px;
+                    padding-left: 8px; padding-right: 6px;
+                    alignment: start;
+                    spacing: 6px;
+                    Text {
+                        text: root.lang-en ? "Follow system" : "跟随系统深浅";
+                        color: Theme.text-primary; font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Rectangle {
+                        width: 64px; height: 22px; border-radius: 5px;
+                        background: Theme.bg-active;
+                        border-width: 1px;
+                        border-color: root.follow-system ? Theme.accent-solid : Theme.border-subtle;
+                        Text {
+                            text: root.follow-system ? (root.lang-en ? "On" : "开") : (root.lang-en ? "Off" : "关");
+                            color: root.follow-system ? Theme.accent-solid : Theme.text-secondary;
+                            font-size: 10px;
+                            horizontal-alignment: center; vertical-alignment: center;
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.set-follow-system(!root.follow-system); }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    height: 28px;
+                    padding-left: 8px; padding-right: 6px;
+                    alignment: start;
+                    spacing: 6px;
+                    Text {
+                        text: root.lang-en ? "More themes…" : "更多主题…";
+                        color: Theme.text-secondary; font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text {
+                        text: root.lang-en ? "Settings › Theme" : "设置 › 主题";
+                        color: Theme.text-muted; font-size: 9.5px;
+                        vertical-alignment: center;
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.theme-quick-open = false;
+                            root.ifd-page = "theme";
+                            root.interface-open = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
     if root.download-open : TouchArea {
         width: parent.width;
         height: parent.height;
@@ -7086,6 +7237,27 @@ export component AppWindow inherits Window {
                     vertical-stretch: 1;
                     lang-en: root.lang-en;
                     is-windows: root.is-windows;
+                    // (#theme-split) 主题/强调色/三滑杆/通透度
+                    theme-entries: root.theme-entries;
+                    theme-chosen <=> root.theme-chosen;
+                    follow-system <=> root.follow-system;
+                    accent-mode <=> root.accent-mode;
+                    accent-preset <=> root.accent-preset;
+                    accent-custom <=> root.accent-custom;
+                    wallpaper-active <=> root.wallpaper-active;
+                    term-alpha <=> root.term-alpha;
+                    wallpaper-visible <=> root.wallpaper-visible;
+                    popup-transparency <=> root.popup-transparency;
+                    wallpaper-color-pickup <=> root.wallpaper-color-pickup;
+                    ifd-page <=> root.ifd-page;
+                    set-theme(id) => { root.set-theme(id); }
+                    set-follow-system(v) => { root.set-follow-system(v); }
+                    set-accent-mode(m, v) => { root.set-accent-mode(m, v); }
+                    set-panel-alpha(v) => { root.set-panel-alpha(v); }
+                    set-term-alpha(v) => { root.set-term-alpha(v); }
+                    set-wallpaper-visible(v) => { root.set-wallpaper-visible(v); }
+                    set-popup-transparency(v) => { root.set-popup-transparency(v); }
+                    set-wallpaper-color-pickup(v) => { root.set-wallpaper-color-pickup(v); }
                     // (#settings-divider-line) Nav switching rebuilds the right
                     // pane's whole subtree; one clean full frame per page change
                     // keeps the title divider from being composited out of

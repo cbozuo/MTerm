@@ -1691,6 +1691,73 @@ fn open_window(
     {
         apply_theme(&window, &bufs, &store.borrow());
     }
+    // (#theme-split) 主题选择器的数据源 + 设置快照桥初值。
+    {
+        // 组头行（kind == "header"）随族顺序插入：现代 UI 色板 / 品牌官方 /
+        // 经典终端配色 / 迁移保留档。
+        let header = |name: &str| crate::ui::ThemeEntry {
+            id: "".into(),
+            zh: name.into(),
+            mode: "".into(),
+            kind: "header".into(),
+            root: Default::default(),
+            panel: Default::default(),
+            tbg: Default::default(),
+            tfg: Default::default(),
+            ac: Default::default(),
+        };
+        let mut entries: Vec<crate::ui::ThemeEntry> = Vec::new();
+        let mut last_kind = "";
+        for p in crate::theme::palettes::PALETTES {
+            if p.kind != last_kind {
+                entries.push(header(match p.kind {
+                    "radix" => "现代 UI 色板",
+                    "brand" => "品牌官方",
+                    "terminal" => "经典终端配色",
+                    _ => "迁移保留档",
+                }));
+                last_kind = p.kind;
+            }
+            entries.push(crate::ui::ThemeEntry {
+                id: p.id.into(),
+                zh: p.zh.into(),
+                mode: if p.dark { "暗".into() } else { "亮".into() },
+                kind: p.kind.into(),
+                root: crate::theme::color(p.root),
+                panel: crate::theme::color(p.panel),
+                tbg: crate::theme::color(p.tbg),
+                tfg: crate::theme::color(p.tfg),
+                ac: crate::theme::color(p.ac),
+            });
+        }
+        window.set_theme_entries(ModelRc::from(Rc::new(VecModel::from(entries))));
+        // 顶栏速选面板的 8 个代表变体（覆盖四族；§3-调整③）。
+        const QUICK: [&str; 8] = [
+            "meat-dark", "graphite-dark", "graphite-light", "dracula-dark",
+            "tokyonight-dark", "github-dark", "github-light", "nord-dark",
+        ];
+        let quick: Vec<crate::ui::ThemeEntry> = crate::theme::palettes::PALETTES
+            .iter()
+            .filter(|p| QUICK.contains(&p.id))
+            .map(|p| crate::ui::ThemeEntry {
+                id: p.id.into(),
+                zh: p.zh.into(),
+                mode: if p.dark { "暗".into() } else { "亮".into() },
+                kind: p.kind.into(),
+                root: crate::theme::color(p.root),
+                panel: crate::theme::color(p.panel),
+                tbg: crate::theme::color(p.tbg),
+                tfg: crate::theme::color(p.tfg),
+                ac: crate::theme::color(p.ac),
+            })
+            .collect();
+        window.set_quick_theme_entries(ModelRc::from(Rc::new(VecModel::from(quick))));
+        let s = store.borrow();
+        window.set_follow_system(s.follow_system());
+        window.set_accent_mode(s.accent_mode().into());
+        window.set_accent_preset(s.accent_preset().into());
+        window.set_accent_custom(s.accent_custom().into());
+    }
     // On macOS, app shortcuts use Cmd (⌘) so physical Ctrl stays free for the
     // shell (#158); on Windows/Linux they stay Ctrl-based.
     window.set_is_mac(cfg!(target_os = "macos"));
@@ -3258,6 +3325,7 @@ fn open_window(
                 let _ = s.save();
             }
             apply_theme(&w, &bufs_theme, &store.borrow());
+            w.set_follow_system(store.borrow().follow_system());
             // 分组取色面板的候选 24 色随新主题换（§3-调整⑤）。
             if let Some(p) = crate::theme::by_id(id.as_str()) {
                 crate::theme::rebuild_group_palette(&w, p);
