@@ -1320,31 +1320,37 @@ component GroupCombo inherits VerticalLayout {
 // 20px 方块,hover 点亮;删除(danger)悬停染红。hov 暴露给父级 —— 嵌套
 // TouchArea 抢占:鼠标进按钮时外层 has-hover 变 false,ops 显隐必须并上
 // 内层 hov 才稳定(否则出现→消失→出现抖动)。
-// (#chain-cell-r3 2026-10-05) on 属性:off 时 **opacity 0 但仍占位**(visible
-// 会塌陷导致悬停时 chip 宽度跳变、自适应宽没法按「IP+序号+三图标」预留);
-// ta.enabled 同步关掉,off 状态点不到。
+// (#chain-cell-r4) visible 按边界方向(调用方定),dim 只管悬停点亮;
+// ta.enabled 跟随 dim,off 状态点不到。
+// (#chain-cell-r6 2026-10-05) **Slint 的 visible:false 是「不绘制但仍占位」**
+// (visibility:hidden 语义,非 display:none)——末 chip 隐藏的 ↓ 占着 20px 把
+// ↑/🗑 撑开(用户截图:末 chip 两图标间距异常)。show=false 时**width 归零**
+// 才真正塌陷占位;dim 管 opacity、ta.enabled 随 show&&dim。
 component JumpChipOp inherits Rectangle {
     in property <string> glyph;
     in property <bool> danger: false;
-    in property <bool> on: true;
+    in property <bool> show: true;
+    in property <bool> dim: true;
     callback clicked();
     out property <bool> hov: ta.has-hover;
-    width: 20px;
+    width: root.show ? 20px : 0px;
     height: 20px;
     border-radius: 5px;
-    opacity: root.on ? 1.0 : 0.0;
+    opacity: root.dim ? 1.0 : 0.0;
     animate opacity { duration: 90ms; }
     background: ta.has-hover
         ? (root.danger ? Theme.danger.with-alpha(0.15) : Theme.bg-hover)
         : transparent;
     animate background { duration: 90ms; }
-    Icon {
+    // (#chain-cell-r7 2026-10-05) Icon 必须**条件渲染**:width=0 挡不住子元素
+    // 溢出绘制(用户截图:首/末 chip 的隐藏钮图标仍画出来=「多一个图标」)。
+    if root.show : Icon {
         glyph: root.glyph;
         size: 13px;
         tint: ta.has-hover ? (root.danger ? Theme.danger : Theme.text-primary) : Theme.text-muted;
     }
     ta := TouchArea {
-        enabled: root.on;
+        enabled: root.show && root.dim;
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
@@ -1359,12 +1365,17 @@ component ChainArrow inherits Text {
     color: Theme.text-muted;
     font-size: Theme.fs-sm;
     vertical-alignment: center;
+    // (#chain-cell-r11 2026-10-06) **Slint 布局里未显式声明的子项默认
+    // horizontal-stretch:1 参与剩余空间均分**——链行里端点/箭头/chip 全被
+    // 拉宽、ops 区被撑开(🗑 距右缘忽大忽小)。全链路显式归零,空间只给 spacer。
+    horizontal-stretch: 0;
 }
 
 component ChainEndpoint inherits Rectangle {
     in property <string> label;
     in property <color> tint;
     height: 32px;
+    horizontal-stretch: 0;
     border-radius: 8px;
     border-width: 1px;
     border-color: root.tint.with-alpha(0.45);
@@ -1382,7 +1393,8 @@ component ChainEndpoint inherits Rectangle {
 
 // 链上的单个跳板机 chip:序号圆标 + 别名/IP + 悬停出 ↑↓×。边界方向**不渲染**
 // (高保真规则:首个无上移、末个无下移、单 chip 只有删除;删除悬停红)。
-// 悬停 150ms 后请求集中信息卡(tip-show 带链位),moved 让卡片跟随鼠标。
+// 悬停 150ms 后请求集中信息卡(tip-show 带链位),pointer-event move 让卡片
+// 贴指针右上角(r13)。
 // 注意 ta 必须先于 ops 声明(下层),否则按钮收不到点击。
 component JumpChip inherits Rectangle {
     in property <JumpEntry> entry;
@@ -1395,9 +1407,12 @@ component JumpChip inherits Rectangle {
     callback tip-move(length, length);
     callback tip-hide();
     height: 32px;
-    // (#chain-cell-r3 2026-10-05) **自适应宽**:按「完整 IP + 序号徽章 + 三个
-    // 悬停图标(常驻占位)」自然撑开,不再固定 210px(固定宽把长 IP elide 失去
-    // 意义、短会话又留大空白,用户两条反馈同源)。极端长域名 max-width 兜底。
+    // (#chain-cell-r12 2026-10-06) **min-width 180 + 内容自然撑开**:固定 180
+    // 装不下满位 IP(「192.168.100.202」≈103px 文字,固定后 elide,用户截图)。
+    // r11 已把全链路默认 stretch 均分修掉,自然宽不会再被拉宽——短会话保持
+    // 180 等宽,长 IP 完整显示(280 上限兜底)。
+    min-width: 180px;
+    horizontal-stretch: 0;
     border-radius: 8px;
     border-width: 1px;
     border-color: Theme.border-control;
@@ -1406,10 +1421,17 @@ component JumpChip inherits Rectangle {
         changed has-hover => {
             if (!self.has-hover) { root.tip-hide(); }
         }
-        moved => {
-            if (self.has-hover) {
-                root.tip-move(self.absolute-position.x + self.mouse-x,
-                              self.absolute-position.y + self.mouse-y);
+        // (#jumptip-pos-r13 2026-10-06) 贴指针右上角:定位用悬停坐标。探针实证
+        // (slint 1.18):mouse-x/y 在纯悬停移动时实时更新;moved 回调才只在按住时
+        // 触发——r12「moved 与 mouse-x/y 都只在按住时更新、悬停拿不到轨迹」是误判
+        // (当年走 moved 路径:悬停时回调不调、赋值不发生,读到的全是旧值)。跟手
+        // 驱动用 pointer-event 的 move 通知(悬停移动时每次都触发),Timer 只负责
+        // 150ms 延迟弹出与首锚。
+        pointer-event(e) => {
+            // move 事件只派发给 hit-test 命中的本 chip,has-hover 即门控。
+            if (e.kind == PointerEventKind.move && !self.pressed) {
+                root.tip-move(ta.absolute-position.x + ta.mouse-x,
+                              ta.absolute-position.y + ta.mouse-y);
             }
         }
     }
@@ -1426,7 +1448,10 @@ component JumpChip inherits Rectangle {
         // (#chain-cell 2026-10-05) 序号徽章 18×18 **正圆**(原 vertical-stretch
         // 把 18 宽拉成 24 高的椭圆,用户红框);HL 对固定高子项顶对齐,包一层
         // alignment:center 的 VL 垂直居中。
+        // (#chain-cell-r11 2026-10-06) 徽章/文字/ops 全显式 stretch:0——默认 1
+        // 会参与剩余空间均分(ops 被撑大 → 🗑 距右缘忽大忽小);空间只给 spacer。
         VerticalLayout {
+            horizontal-stretch: 0;
             alignment: center;
             Rectangle {
                 width: 18px;
@@ -1445,35 +1470,54 @@ component JumpChip inherits Rectangle {
             }
         }
         Text {
+            horizontal-stretch: 0;
             vertical-alignment: center;
             // (#chain-cell) chip 直接显示**主机 IP/域名**(用户要求「显示主机ip」);
-            // (#chain-cell-r3) 自适应宽下自然撑开,280px 兜底防极端长域名撑爆行。
+            // 280px 兜底防极端长域名撑爆行。
             text: root.entry.host != "" ? root.entry.host : root.entry.name;
             color: Theme.text-primary;
             font-size: Theme.fs-sm;
             overflow: elide;
             max-width: 280px;
         }
+        // (#chain-cell-r8 2026-10-05) 弹性空隙**只由这个 spacer 吃**:文字有
+        // max-width,到顶后剩余空间原方案没人接 → 堆在 ops 后面(🗑 到右边线
+        // 间距忽大忽小,用户截图);spacer 恒 stretch,ops 恒贴右缘、间距恒定。
+        Rectangle {
+            horizontal-stretch: 1;
+        }
         ops := HorizontalLayout {
+            horizontal-stretch: 0;
             spacing: 1px;
             alignment: center;
-            // (#chain-cell-r3) 三钮**常驻占位**(opacity 0/1 切换,不用 visible——
-            // visible 塌陷会让悬停瞬间 chip 宽度跳变、行溢出)。
-            op-up := JumpChipOp {
-                on: root.index > 0 && root.ops-on;
-                glyph: "arrow-up";
-                clicked => { root.up(); }
-            }
-            op-down := JumpChipOp {
-                on: root.index < root.total - 1 && root.ops-on;
-                glyph: "arrow-down";
-                clicked => { root.down(); }
-            }
-            op-del := JumpChipOp {
-                on: root.ops-on;
-                glyph: "delete";
-                danger: true;
-                clicked => { root.remove(); }
+            // (#chain-cell-r4 2026-10-05) 三钮:visible 按边界方向(塌陷=按实际
+            // 数量自适应占位),dim 只管悬停点亮;**外包 alignment:center 的 VL
+            // 垂直居中** —— HL 对固定高子项顶对齐,原写法整组偏上(用户反馈
+            // 「右侧图标上移、上下间距不一致」,同序号徽章的修法)。
+            VerticalLayout {
+                alignment: center;
+                HorizontalLayout {
+                    spacing: 1px;
+                    alignment: center;
+                    op-up := JumpChipOp {
+                        show: root.index > 0;
+                        dim: root.ops-on;
+                        glyph: "arrow-up";
+                        clicked => { root.up(); }
+                    }
+                    op-down := JumpChipOp {
+                        show: root.index < root.total - 1;
+                        dim: root.ops-on;
+                        glyph: "arrow-down";
+                        clicked => { root.down(); }
+                    }
+                    op-del := JumpChipOp {
+                        dim: root.ops-on;
+                        glyph: "delete";
+                        danger: true;
+                        clicked => { root.remove(); }
+                    }
+                }
             }
         }
     }
@@ -1481,9 +1525,7 @@ component JumpChip inherits Rectangle {
         interval: 150ms;
         running: ta.has-hover;
         triggered => {
-            // (#jumptip-wire 2026-10-05) show 同时锚定当前指针位置:鼠标停住
-            // 不动时 moved 不触发、tip-move 不会来,卡落在 (0,0)(用户截图
-            // 「离鼠标太远」的根因)。
+            // (#jumptip-pos-r13) 首锚 = 悬停指针位置,此后 pointer-event move 逐帧跟手。
             root.tip-move(ta.absolute-position.x + ta.mouse-x,
                           ta.absolute-position.y + ta.mouse-y);
             root.tip-show(root.entry, root.index + 1);
@@ -1555,6 +1597,14 @@ component ChainPicker inherits Rectangle {
     callback tip-show(JumpEntry, int);
     callback tip-move(length, length);
     callback tip-hide();
+    // (#jumptip-pos-r14 2026-10-06) 候选行 tip 的坐标系换算基点:e-ta 在
+    // PopupWindow(独立顶层窗口)里,absolute-position/mouse-x/y 是 popup 局部
+    // 坐标,直接给主窗口卡片层必然错位(r12「乱跳」真凶)。PopupWindow 边界
+    // 内外互引被编译器禁止(试过引用 pop.x 直接 CompileError),只能经 root
+    // 属性把偏移带进去。pop 定位为 x:0 / y:parent.height+6px —— **改 pop
+    // 定位须同步此绑定**。
+    out property <length> popup-base-x: self.absolute-position.x;
+    out property <length> popup-base-y: self.absolute-position.y + self.height + 6px;
     property <bool> exhausted: root.pool.length == 0;
     height: 36px;
     border-radius: 9px;
@@ -1612,10 +1662,17 @@ component ChainPicker inherits Rectangle {
                             mouse-cursor: pointer;
                             clicked => { root.pick(e.id); pop.close(); root.tip-hide(); }
                             changed has-hover => { if (!self.has-hover) { root.tip-hide(); } }
-                            moved => {
-                                if (self.has-hover) {
-                                    root.tip-move(self.absolute-position.x + self.mouse-x,
-                                                  self.absolute-position.y + self.mouse-y);
+                            // (#jumptip-pos-r15 2026-10-06) 候选 tip 恒显示在**下拉框
+                            // 顶缘上方**:popup 是独立顶层窗口,主窗口里画的 tip 伸进
+                            // popup 矩形必被盖住(r14 实测:贴指针右上角时下半截被下拉
+                            // 列表盖掉,用户截图)——指针本身就在 popup 矩形内,「贴指
+                            // 针」物理上无解,唯一不被盖的落位是 popup 上方的主窗口区
+                            // 域。故 x 仍跟指针(mouse-x 悬停实时更新,pointer-event
+                            // move 每次都触发;y 锚 popup 顶缘。
+                            pointer-event(e) => {
+                                if (e.kind == PointerEventKind.move && !self.pressed) {
+                                    root.tip-move(e-ta.absolute-position.x + e-ta.mouse-x + root.popup-base-x,
+                                                  root.popup-base-y);
                                 }
                             }
                         }
@@ -1623,9 +1680,10 @@ component ChainPicker inherits Rectangle {
                             interval: 150ms;
                             running: e-ta.has-hover;
                             triggered => {
-                                // (#jumptip-wire) 同 JumpChip:show 时锚定指针位置。
-                                root.tip-move(e-ta.absolute-position.x + e-ta.mouse-x,
-                                              e-ta.absolute-position.y + e-ta.mouse-y);
+                                // (#jumptip-pos-r15) 首锚:x = 悬停指针 x,y = popup 顶缘,
+                                // 卡片层把卡底缘放在顶缘上方 10px → 整卡在下拉框之上。
+                                root.tip-move(e-ta.absolute-position.x + e-ta.mouse-x + root.popup-base-x,
+                                              root.popup-base-y);
                                 root.tip-show(e, 0);
                             }
                         }
@@ -1685,6 +1743,9 @@ export component SessionDialog inherits Rectangle {
     // 全局序号(0-based),ChainRow 用来算 chip 链位。
     in property <[[JumpEntry]]> jump-chain-rows;
     in property <[int]> jump-chain-row-offsets;
+    // (#chain-width 2026-10-06) 链容器实际宽度上报(链容器 changed width 触发),
+    // Rust 分行按真实宽度装箱。
+    callback chain-width-changed(float);
     callback chain-add(string);
     callback chain-remove(int);
     callback chain-up(int);
@@ -3152,6 +3213,11 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                 // 损坏(rustc 0xc0000409),与本方案无关——重试前
                                 // 先删 target/debug/incremental。
                                 if root.jump-chain.length > 0 : Rectangle {
+                                    // (#chain-width) 链容器。宽度经回调上报
+                                    // Rust 触发重算(r12);warn 日志验证触发。
+                                    changed width => {
+                                        root.chain-width-changed(self.width / 1px);
+                                    }
                                     height: root.jump-chain-rows.length * 40px + 8px;
                                     border-radius: 8px;
                                     border-width: 1px;
@@ -3185,26 +3251,6 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                     tip-hide => { root.tip-hide(); }
                                     pick(id) => { root.chain-add(id); }
                                 }
-                                // 警告:链长 > 2(暖橙,不阻断)
-                                if root.jump-chain.length > 2 : HorizontalLayout {
-                                    spacing: 6px;
-                                    Icon {
-                                        glyph: "warning";
-                                        tint: Theme.warning;
-                                        size: 13px;
-                                    }
-                                    Text {
-                                        text: @tr("Too many jump hosts may hurt connection speed and stability.");
-                                        color: Theme.warning;
-                                        font-size: Theme.fs-xs;
-                                        vertical-alignment: center;
-                                        // (#jump-tips-left 2026-10-04) 显式靠左:Text 默认
-                                        // 拉伸填充,不绑 alignment 时文字在剩余宽里居中,图标
-                                        // 与文字之间空出一大截(用户截图)。
-                                        horizontal-stretch: 1;
-                                        horizontal-alignment: left;
-                                    }
-                                }
                                 // 两条常驻说明(同构对齐)
                                 HorizontalLayout {
                                     spacing: 6px;
@@ -3234,6 +3280,28 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                         color: Theme.text-muted;
                                         font-size: Theme.fs-xs;
                                         vertical-alignment: center;
+                                        horizontal-stretch: 1;
+                                        horizontal-alignment: left;
+                                    }
+                                }
+                                // 警告:链长 > 2(暖橙,不阻断)。
+                                // (#jump-warn-order 2026-10-05) 移到两条说明**之后**
+                                // (用户要求:警告出现在「支持多级跳转」下面一行)。
+                                if root.jump-chain.length > 2 : HorizontalLayout {
+                                    spacing: 6px;
+                                    Icon {
+                                        glyph: "warning";
+                                        tint: Theme.warning;
+                                        size: 13px;
+                                    }
+                                    Text {
+                                        text: @tr("Too many jump hosts may hurt connection speed and stability.");
+                                        color: Theme.warning;
+                                        font-size: Theme.fs-xs;
+                                        vertical-alignment: center;
+                                        // (#jump-tips-left 2026-10-04) 显式靠左:Text 默认
+                                        // 拉伸填充,不绑 alignment 时文字在剩余宽里居中,图标
+                                        // 与文字之间空出一大截(用户截图)。
                                         horizontal-stretch: 1;
                                         horizontal-alignment: left;
                                     }
@@ -3778,18 +3846,24 @@ if root.draft-kind == "serial" : HorizontalLayout {
 
         // (#conn-path 2026-10-04 高保真 #proxy-fields) 跳板悬浮信息卡:键值对
         // 「K：V」,名称/分组/备注非空才显示;链位行仅在链 chip 上出现(候选无)。
-        // 跟随鼠标、**水平居中**对齐指针(用户要求正上方);居中后左溢贴左缘、
-        // 右溢贴右缘(自适应翻转);贴顶翻到下方。挂在 SessionDialog 根(全屏
-        // 坐标系,jumptip-x/y 即窗口坐标)且无 TouchArea —— 指针事件穿透。
+        // (#jumptip-pos-r14 2026-10-06) 贴指针**右上角**:卡左下角锚在指针
+        // (x+12px / y-卡高-10px),右缘溢出翻指针左侧、顶缘溢出翻指针下方。
+        // **本浮层挂在 dlg-card(卡片层)内,坐标系是卡片局部**;而 jumptip-x/y
+        // 是窗口绝对坐标(chip/候选行的 absolute-position 累加)——r8 起恒偏
+        // dlg-card 的窗口位置(用户截图:卡飘在指针右侧远处),先减
+        // parent.absolute-position 换算成卡片局部再定位,钳制边距同系。
+        // 无 TouchArea —— 指针事件穿透。
         if root.jumptip-on : Rectangle {
             property <length> pw: jumptip-lay.preferred-width + 24px;
             property <length> ph: jumptip-lay.preferred-height + 18px;
-            x: root.jumptip-x - self.pw / 2 < 8px ? 8px
-                : (root.jumptip-x + self.pw / 2 > parent.width - 8px
-                    ? parent.width - self.pw - 8px
-                    : root.jumptip-x - self.pw / 2);
-            y: root.jumptip-y - ph - 12px < 8px
-                ? root.jumptip-y + 20px : root.jumptip-y - ph - 12px;
+            property <length> base-x: parent.absolute-position.x;
+            property <length> base-y: parent.absolute-position.y;
+            x: root.jumptip-x + 12px + self.pw > base-x + parent.width - 8px
+                ? max(base-x + 8px, root.jumptip-x - self.pw - 12px) - base-x
+                : root.jumptip-x + 12px - base-x;
+            y: root.jumptip-y - ph - 10px < base-y + 8px
+                ? root.jumptip-y + 20px - base-y
+                : root.jumptip-y - ph - 10px - base-y;
             width: pw;
             height: ph;
             background: Theme.bg-elevated;

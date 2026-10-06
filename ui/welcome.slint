@@ -382,6 +382,16 @@ component SessionRow inherits Rectangle {
         // Connect is handled in pointer-event below so a finished drag never
         // counts as a click.
         pointer-event(e) => {
+            // (#hover-card-follow 2026-10-06) 信息卡悬停跟手:pointer-event 的
+            // move 通知在**纯悬停移动时每次都触发**(slint 1.18 探针实证);moved
+            // 回调只在按住时触发——旧「moved 跟随」从不工作,卡只锚在弹出瞬间,
+            // 指针移动卡不动(用户感知「离鼠标太远」)。按下/拖拽期间不跟。
+            if (e.kind == PointerEventKind.move && !self.pressed
+                && !root.list-dragging
+                && root.card-out-name == root.session.name) {
+                root.card-out-x = self.absolute-position.x + self.mouse-x;
+                root.card-out-y = self.absolute-position.y + self.mouse-y;
+            }
             // Built-in PowerShell/CMD/WSL rows have no edit/move/delete actions.
             // All menu items are conditional on !system-row, so opening the
             // popup for them only produces an empty rectangle (#336).
@@ -442,11 +452,8 @@ component SessionRow inherits Rectangle {
             }
         }
         moved => {
-            // (#conn-path) 信息卡跟随指针(Timer 只定首次锚点)。
-            if (self.has-hover && !root.list-dragging && root.card-out-name == root.session.name) {
-                root.card-out-x = self.absolute-position.x + self.mouse-x;
-                root.card-out-y = self.absolute-position.y + self.mouse-y;
-            }
+            // (#hover-card-follow) 旧「moved 跟手」已迁 pointer-event move 分支
+            // (moved 只在按住时触发,悬停从不工作)。本回调只剩拖拽职责。
             if (!root.pressing) { return; }
             if (!root.grab-dragging) {
                 // (#drag-threshold-omni 2026-09-11) 阈值对齐交互设计(§1②):

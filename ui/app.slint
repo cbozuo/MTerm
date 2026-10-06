@@ -1339,6 +1339,8 @@ export component AppWindow inherits Window {
     in property <[[JumpEntry]]> jump-chain-rows;
     in property <[int]> jump-chain-row-offsets;
     callback dialog-chain-add(string);
+    // (#chain-width 2026-10-06) 链容器实际宽度(弹框打开/窗口变化时上报)。
+    callback dialog-chain-width(float);
     callback dialog-chain-remove(int);
     callback dialog-chain-up(int);
     callback dialog-chain-down(int);
@@ -3747,15 +3749,22 @@ export component AppWindow inherits Window {
     // 固定宽左列对齐),备注有内容才显示。
     // (#conn-path 2026-10-04 高保真 #proxy-fields) 信息卡升级:键值对带全角
     // 冒号(名称：/主机：/用户：/认证：/备注：),用户与认证行新增(非空才显示;
-    // 无分组行 —— 列表已按分组组织);**跟随鼠标、光标上方**(welcome 侧
-    // Timer 150ms 锚定 + moved 跟随;此处按卡宽/卡高做右缘/顶缘翻转)。
-    if session-card-name != "" : Rectangle {
+    // 无分组行 —— 列表已按分组组织);**跟随鼠标、光标右上角**(welcome 侧
+    // Timer 150ms 首锚 + pointer-event move 跟手;此处按卡宽/卡高做翻转)。
+    // (#session-hover-card-r4 2026-10-06) 更贴近指针:右偏 14→10px、上偏
+    // 12→8px;翻转阈值 8px 不变。
+    // (#jumptip-pos-r3 2026-10-05) **弹框打开时隐藏**:SessionDialog 是后渲染
+    // 的全屏遮罩,但本卡挂根尾部 z 序更高——悬停列表后开弹框,卡残留浮在
+    // 弹框标题上(用户截图);会话弹框/删除确认等任一打开即不显示。
+    if session-card-name != "" && !root.dialog-open
+        && !root.confirm-delete-open && !root.paste-confirm-open
+        && !root.hostkey-prompt-open : Rectangle {
         property <int> row-n: 2 + (session-card-user != "" ? 1 : 0)
             + (session-card-auth != "" ? 1 : 0) + (session-card-note != "" ? 1 : 0);
-        x: session-card-x + 14px + self.width > parent.width - 8px
-            ? max(8px, session-card-x - self.width - 14px) : session-card-x + 14px;
-        y: session-card-y - self.height - 12px < 8px
-            ? session-card-y + 20px : session-card-y - self.height - 12px;
+        x: session-card-x + 10px + self.width > parent.width - 8px
+            ? max(8px, session-card-x - self.width - 10px) : session-card-x + 10px;
+        y: session-card-y - self.height - 8px < 8px
+            ? session-card-y + 20px : session-card-y - self.height - 8px;
         // 卡宽 = 最宽行内容 + 键列 44 + 内边距;备注长则 elide。上限钳到窗宽。
         width: min(parent.width - 60px,
             Math.max(sc-host.preferred-width, sc-name.preferred-width) + 76px);
@@ -6570,6 +6579,7 @@ export component AppWindow inherits Window {
         jump-chain-rows: root.jump-chain-rows;
         jump-chain-row-offsets: root.jump-chain-row-offsets;
         chain-add(id) => { root.dialog-chain-add(id); }
+        chain-width-changed(w) => { root.dialog-chain-width(w); }
         chain-remove(i) => { root.dialog-chain-remove(i); }
         chain-up(i) => { root.dialog-chain-up(i); }
         chain-down(i) => { root.dialog-chain-down(i); }

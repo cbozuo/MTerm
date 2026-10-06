@@ -5004,6 +5004,14 @@ fn wire_session_callbacks(
     let edit_jump_chain: Rc<RefCell<Vec<Session>>> = Rc::new(RefCell::new(Vec::new()));
     let jump_pool_model: Rc<VecModel<JumpEntry>> = Rc::new(VecModel::default());
     let jump_chain_model: Rc<VecModel<JumpEntry>> = Rc::new(VecModel::default());
+    // (#chain-width 2026-10-06) 链容器实际宽度(slint changed width 上报):
+    // 分行按真实宽度装箱——固定估算在窗口/弹框宽度变化下必然失准
+    // (用户两轮截图:同一行容量参数下 2 跳时而过行时而溢出)。
+    let chain_width: Rc<std::cell::Cell<f32>> = Rc::new(std::cell::Cell::new(0.0));
+    {
+        let cw = chain_width.clone();
+        window.on_dialog_chain_width(move |w| cw.set(w));
+    }
     // (#jump-pool-bind 2026-10-05) 两个 model 必须在此**绑定到窗口属性**,
     // 否则 refresh_jump_chain 的 set_vec 改的是没人看的 VecModel —— 弹框的
     // jump-pool/jump-chain 恒空,「＋添加跳板机」因 pool.length==0 永远禁用,
@@ -5017,42 +5025,57 @@ fn wire_session_callbacks(
     // 2 chip/行」升级为**按估算宽度贪心**:chip 自适应宽(完整 IP+ops 三图标)
     // 后固定分组会溢出弹框(用户截图);host 按 ascii 8px/全角 13px 粗估,
     // 行容量 460px(弹框内容最窄场景,偏保守——宽窗口下换行偏早不溢出)。
-    let refresh_jump_chain =
-        |window: &AppWindow,
+    let refresh_jump_chain = {
+        // (#chain-width) 闭包被三个调用点共用(new/edit/rename),非 Copy——
+        // 调用点各自 clone。
+        let cw = chain_width.clone();
+        move |window: &AppWindow,
          store: &ConfigStore,
          exclude_id: &str,
          chain: &Rc<RefCell<Vec<Session>>>,
          pool: &Rc<VecModel<JumpEntry>>,
          chain_model: &Rc<VecModel<JumpEntry>>| {
+            // (#chain-width 2026-10-06) 行容量 = **实际容器宽**(slint changed
+            // width 上报;上报后 on_dialog_chain_width 会重跑本闭包)。精确行
+            // 模型(逻辑px):首行头「本机75+gap8+箭头20+gap8」= 111 + 末行尾
+            // 「gap8+箭头20+gap8+目标110」= 146 + 容器 padding 24。
+            let mut row_cap = cw.get() as f64;
+            if row_cap < 100.0 {
+                row_cap = 470.0; // 兜底:容器宽未上报前(首帧)
+            }
+            // (#chain-cell-r12) chip 宽 = **min-width 180 + 内容自然撑开**
+            // (r11 修掉默认 stretch 均分后自然宽可靠):固定部分 85(pad9+徽章18
+            // +sp12+ops42+pad4),文字按 host 估(ascii 8px/全角 13px,min 100)。
             fn text_w(s: &str) -> f64 {
                 s.chars().map(|c| if c.is_ascii() { 8.0 } else { 13.0 }).sum()
             }
-            const ROW_CAP: f64 = 460.0;
-            const CHIP_FIXED: f64 = 105.0; // padding9+徽章18+spacing12+ops三钮62
-            const ARROW: f64 = 20.0; // 箭头 + spacing
-            const SRC_HEAD: f64 = 80.0; // 首行:本机端点 + 箭头
-            const DST_TAIL: f64 = 110.0; // 末行尾:箭头 + 目标主机端点
+            fn chip_w(e: &JumpEntry) -> f64 {
+                let text = if e.host.is_empty() { &e.name } else { &e.host };
+                85.0 + (text_w(text)).max(100.0)
+            }
+            const SRC_HEAD: f64 = 111.0; // 首行:本机端点 + 箭头(含 gap)
+            const DST_TAIL: f64 = 146.0; // 末行尾:箭头 + 目标主机端点(含 gap)
+            const PAD: f64 = 24.0; // 容器左右 padding
             let entries: Vec<JumpEntry> =
                 chain.borrow().iter().map(session_models::jump_entry).collect();
             chain_model.set_vec(entries.clone());
 
-            // 贪心装箱:行首第一行计本机开销;「目标主机」视作挂在末行尾的
-            // 虚拟项(110px)——末行装不下就把末行最后一个 chip 下移一行。
+            // 贪心装箱:「目标主机」视作挂在末行尾的虚拟项(用户要求:第一行
+            // 放不下目标主机就整体下移)。
             let mut rows: Vec<Vec<JumpEntry>> = Vec::new();
             let mut cur: Vec<JumpEntry> = Vec::new();
             let mut cur_w = 0.0f64;
             for e in &entries {
-                let w = CHIP_FIXED + text_w(&e.host) + ARROW;
-                let prefix = if rows.is_empty() && cur.is_empty() { SRC_HEAD } else { 0.0 };
-                if !cur.is_empty() && cur_w + w > ROW_CAP {
+                let w = chip_w(e);
+                if !cur.is_empty() && cur_w + w > row_cap - PAD {
                     rows.push(std::mem::take(&mut cur));
                     cur_w = 0.0;
                 }
                 cur.push(e.clone());
-                let prefix2 = if rows.is_empty() && cur.len() == 1 { SRC_HEAD } else { 0.0 };
-                cur_w += prefix2 + w;
+                let prefix = if rows.is_empty() && cur.len() == 1 { SRC_HEAD } else { 0.0 };
+                cur_w += prefix + w;
             }
-            if !cur.is_empty() && cur_w + DST_TAIL > ROW_CAP && cur.len() > 1 {
+            if !cur.is_empty() && cur_w + DST_TAIL > row_cap - PAD && cur.len() > 1 {
                 let last = cur.pop().unwrap();
                 rows.push(std::mem::take(&mut cur));
                 cur = vec![last];
@@ -5078,8 +5101,38 @@ fn wire_session_callbacks(
             let skip: HashSet<String> = chain.borrow().iter().map(|s| s.id.clone()).collect();
             let pool_entries = session_models::build_jump_pool(store, exclude_id, &skip);
             pool.set_vec(pool_entries);
-        };
-    // on_connect_session moves the panes_model binding into its closure; the
+        }
+    };
+    // (#chain-width 2026-10-06) 容器宽上报后**立即按新宽度重跑分行**——首次
+    // 添加 chip 时分行用的还是兜底宽,changed width 上报晚于首次 refresh,
+    // 不重算会停留在错误分行(用户截图:宽窗口下 2 跳被拆行)。
+    {
+        let cw = chain_width.clone();
+        let store_cw = store.clone();
+        let ejc_cw = edit_jump_chain.clone();
+        let jpm_cw = jump_pool_model.clone();
+        let jcm_cw = jump_chain_model.clone();
+        let refresh_cw = refresh_jump_chain.clone();
+        let window_cw = window.as_weak();
+        window.on_dialog_chain_width(move |w| {
+            cw.set(w);
+            tracing::warn!(w, "chain container width reported");
+            // changed width 仅在值变化时触发,每次都重算(首次上报 = 弹框刚出
+            // 链容器,正是首帧兜底分行需要纠正的时刻;窗口缩放同理)。
+            let Some(window) = window_cw.upgrade() else {
+                return;
+            };
+            let exclude = window.get_dialog_id().to_string();
+            refresh_cw(
+                &window,
+                &store_cw.borrow(),
+                &exclude,
+                &ejc_cw,
+                &jpm_cw,
+                &jcm_cw,
+            );
+        });
+    }    // on_connect_session moves the panes_model binding into its closure; the
     // rename handler below needs its own handle, so clone up front.
     let panes_model_rename = panes_model.clone();
 
@@ -5115,7 +5168,9 @@ fn wire_session_callbacks(
     let jpm_new = jump_pool_model.clone();
     let jcm_new = jump_chain_model.clone();
     let store_ng = store.clone();
-    window.on_new_session_clicked(move || {
+    window.on_new_session_clicked({
+        let refresh_jump_chain = refresh_jump_chain.clone();
+        move || {
         if let Some(w) = weak.upgrade() {
             *ef_new.borrow_mut() = Vec::new();
             *et_new.borrow_mut() = Vec::new();
@@ -5126,7 +5181,7 @@ fn wire_session_callbacks(
             let empty = Session::new_empty();
             // (#conn-path) 链编辑状态清空 + 候选池刷新。
             *ejc_new.borrow_mut() = Vec::new();
-            refresh_jump_chain(
+            refresh_jump_chain.clone()(
                 &w,
                 &store_ng.borrow(),
                 &empty.id,
@@ -5172,6 +5227,7 @@ fn wire_session_callbacks(
             w.set_dialog_rdp_height("720".into());
             w.set_dialog_editing(false);
             w.set_dialog_open(true);
+        }
         }
     });
 
@@ -5355,7 +5411,9 @@ fn wire_session_callbacks(
         let ejc_edit = edit_jump_chain.clone();
         let jpm_edit = jump_pool_model.clone();
         let jcm_edit = jump_chain_model.clone();
-        window.on_edit_session(move |id: SharedString| {
+        window.on_edit_session({
+            let refresh_jump_chain = refresh_jump_chain.clone();
+            move |id: SharedString| {
             let id = id.to_string();
             let store = store.borrow();
             let Some(session) = store.get(&id) else {
@@ -5408,7 +5466,7 @@ fn wire_session_callbacks(
                 w.set_dialog_proxy_port(pport.into());
                 w.set_dialog_proxy_user(puser.into());
                 w.set_dialog_proxy_pass("".into());
-                refresh_jump_chain(
+                refresh_jump_chain.clone()(
                     &w,
                     &store,
                     &session.id,
@@ -5438,6 +5496,7 @@ fn wire_session_callbacks(
                 w.set_dialog_editing(true);
                 w.set_dialog_open(true);
             }
+        }
         });
     }
 
@@ -6059,9 +6118,12 @@ fn wire_session_callbacks(
             let ejc_r = edit_jump_chain.clone();
             let jpm_r = jump_pool_model.clone();
             let jcm_r = jump_chain_model.clone();
-            let refresh: Rc<dyn Fn(&AppWindow)> = Rc::new(move |w: &AppWindow| {
+            let refresh: Rc<dyn Fn(&AppWindow)> = Rc::new({
+                let refresh_jump_chain = refresh_jump_chain.clone();
+                move |w: &AppWindow| {
                 let exclude = w.get_dialog_id().to_string();
                 refresh_jump_chain(w, &store_r.borrow(), &exclude, &ejc_r, &jpm_r, &jcm_r);
+                }
             });
             window.on_dialog_chain_add({
                 let store = store.clone();
