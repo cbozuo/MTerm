@@ -1,0 +1,116 @@
+// 频道状态条（tab-row-idia 稿：ui/channel_bar.slint）——属于当前 pane 一条。
+// 三条硬约束（稿「三·频道语义与状态条」）：
+//   ① 底色 = term-bg，与 tab 行条带、终端区三者同色；暂停态**不转暖底**，
+//      用左缘 3px 暖竖条（CHANNEL_PAUSE_BAR）表达。
+//   ② 上下各 1px 分界线（暗 #3a3d46 / 亮 #bfbfc8，上下同值等重）；
+//      顶线 absolute 全宽贯通——不依赖 tab 位置，任何变化都无需刷新。
+//   ③ 操作区「离开 / 关闭频道(红字) / 隐藏」默认全部平铺在右端；
+//      宽度不够时整块换成 ⋮（不挤掉一个留一个）；平铺与 ⋮ 共用处理函数。
+import { Theme } from "theme.slint";
+
+export component ChannelBar inherits Rectangle {
+    in property <string> channel-letter;   // "A".."D"，空 = 不在频道（父级应不渲染）
+    in property <color> channel-color;
+    in property <bool> paused;             // 本会话暂停（双向停发停收）
+    in property <int> online-count;        // 频道内在线会话数（含自己）
+    in property <int> member-total;        // 成员总数（含离线）
+    callback leave-channel();
+    callback close-channel();
+    callback pause-channel();
+    callback pause-resume();
+    callback hide-bar();
+
+    height: 32px;
+    background: Theme.term-bg;
+
+    // ② 顶线：absolute 1px、全宽、y:-1px —— 画在条带上沿，父容器需允许出界
+    // （Slint 默认不裁剪）。上下同值等重。
+    Rectangle {
+        x: 0; y: -1px;
+        width: parent.width; height: 1px;
+        background: Theme.border-subtle;
+    }
+    Rectangle {
+        x: 0; y: parent.height;
+        width: parent.width; height: 1px;
+        background: Theme.border-subtle;
+    }
+    // ① 暂停态左缘 3px 暖竖条（竖条比转色更克制——只占 3px，不破坏整条面）
+    Rectangle {
+        visible: root.paused;
+        x: 0; y: 0; width: 3px; height: parent.height;
+        background: #e2a84a;
+    }
+
+    HorizontalLayout {
+        // 暂停时 padding-left 12→9（给暖竖条让位，稿内数值）
+        padding-left: root.paused ? 9px : 12px;
+        padding-right: 8px;
+        spacing: 8px;
+        alignment: center;
+
+        // 频道色块 + 字母（与 tab 行同源）
+        Rectangle {
+            width: 14px; height: 14px; border-radius: 4px;
+            background: root.channel-color;
+            Text {
+                text: root.channel-letter;
+                color: white; font-size: 10px; font-weight: 800;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+        }
+        Text {
+            text: root.lang-en ? "Channel " + root.channel-letter : "频道 " + root.channel-letter;
+            color: root.paused ? #e2a84a : Theme.text-primary;
+            font-size: 12px; vertical-alignment: center;
+        }
+        if root.paused : Text {
+            text: root.lang-en ? "Paused · not sending or receiving (others still linked)"
+                : "本会话已暂停与频道内其它会话的通信，它们之间仍互通";
+            color: Theme.text-secondary; font-size: 11px; vertical-alignment: center;
+            overflow: elide;
+        }
+        if !root.paused : Text {
+            // 文案四要素（稿：主体+动作+方向+对象）；「另外」解释了为什么是 N 不是 N+1；
+            // 裸 0 读成故障 → 文字描述。
+            text: root.online-count <= 1
+                ? (root.lang-en ? "No other session in the channel" : "频道里没有其它会话，输入不会同步")
+                : root.lang-en
+                    ? "Sending input to " + (root.online-count - 1) + " other session(s)"
+                    : "正在把输入发往另外 " + (root.online-count - 1) + " 个会话";
+            color: Theme.text-secondary; font-size: 11px; vertical-alignment: center;
+            overflow: elide;
+        }
+        Rectangle { horizontal-stretch: 1; }
+
+        // 操作区：全平铺（稿：降低权重而不是增加层级；破坏项红字不给主色）
+        HorizontalLayout {
+            spacing: 2px; alignment: start;
+            op-btn := Rectangle {
+                width: 72px; height: 24px; border-radius: 5px;
+                background: ta.has-hover ? Theme.bg-hover : transparent;
+                Text { text: root.lang-en ? "Pause" : "暂停参与"; color: root.paused ? Theme.accent-solid : Theme.text-primary; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                ta := TouchArea { mouse-cursor: pointer; clicked => { root.paused ? root.pause-resume() : root.pause-channel(); } }
+            }
+            Rectangle {
+                width: 64px; height: 24px; border-radius: 5px;
+                background: ta2.has-hover ? Theme.bg-hover : transparent;
+                Text { text: root.lang-en ? "Leave" : "离开频道"; color: Theme.text-primary; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                ta2 := TouchArea { mouse-cursor: pointer; clicked => { root.leave-channel(); } }
+            }
+            Rectangle {
+                width: 64px; height: 24px; border-radius: 5px;
+                background: ta3.has-hover ? Theme.bg-hover : transparent;
+                Text { text: root.lang-en ? "Close" : "关闭频道"; color: #ef8b8b; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                ta3 := TouchArea { mouse-cursor: pointer; clicked => { root.close-channel(); } }
+            }
+            Rectangle {
+                width: 68px; height: 24px; border-radius: 5px;
+                background: ta4.has-hover ? Theme.bg-hover : transparent;
+                Text { text: root.lang-en ? "Hide bar" : "隐藏状态条"; color: Theme.text-secondary; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                ta4 := TouchArea { mouse-cursor: pointer; clicked => { root.hide-bar(); } }
+            }
+        }
+    }
+    in-out property <bool> lang-en: false;
+}

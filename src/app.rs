@@ -78,6 +78,68 @@ const INTERACTIVE_ECHO_WINDOW: std::time::Duration = std::time::Duration::from_m
 /// needs occasional model refreshes for its scrollbar metadata (#306).
 const SCROLLED_RENDER_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// (#tab-32) 按 pane 计算频道状态条数据：取该 pane 活动 tab 的频道，
+/// online = 频道成员里当前有打开 tab 的数量（含自己），total = 成员总数。
+/// 触发点：频道 join/pause/leave、tab 选择/关闭、启动。
+pub(crate) fn refresh_channel_bars(
+    window: &AppWindow,
+    store: &ConfigStore,
+    panes: &Rc<slint::VecModel<crate::ui::PaneInfo>>,
+    tabs: &Rc<slint::VecModel<crate::ui::TabInfo>>,
+) {
+    let bars: Vec<crate::ui::ChannelBarInfo> = panes
+        .iter()
+        .map(|pane| {
+            let active = pane
+                .tabs
+                .iter()
+                .find(|t| t.id == pane.active_id);
+            let letter = active
+                .as_ref()
+                .map(|t| t.channel_letter.to_string())
+                .unwrap_or_default();
+            if letter.is_empty() {
+                return crate::ui::ChannelBarInfo {
+                    visible: false, letter: String::new().into(),
+                    color: slint::Color::default(), paused: false,
+                    online: 0, total: 0, slot: 0,
+                };
+            }
+            let slot = (letter.as_bytes()[0] - b'A') as usize;
+            let members = &store.channel_members()[slot];
+            let total = members.len();
+            let online = members
+                .iter()
+                .filter(|m| {
+                    window
+                        .get_tabs()
+                        .iter()
+                        .any(|t| t.session_id.as_str() == m.as_str())
+                })
+                .count();
+            let color = window
+                .global::<crate::ui::Theme<'_>>()
+                .get_channel_colors()
+                .row_data(slot)
+                .unwrap_or_default();
+            crate::ui::ChannelBarInfo {
+                visible: true,
+                letter: letter.into(),
+                color,
+                paused: active.as_ref().map(|t| t.channel_paused).unwrap_or(false),
+                online: online as i32,
+                total: total as i32,
+                slot: slot as i32,
+            }
+        })
+        .collect();
+    for (i, bar) in bars.iter().enumerate() {
+        if i < panes.row_count() {
+            panes.set_row_data(i, panes.row_data(i).unwrap().clone());
+        }
+    }
+    window.set_pane_channel_bars(ModelRc::from(Rc::new(VecModel::from(bars))));
+}
 fn term_buf(bufs: &TermBuffers, tab_id: &str) -> Option<TermBufferHandle> {
     bufs.lock().unwrap().get(tab_id).cloned()
 }
@@ -2878,6 +2940,8 @@ fn open_window(
     // and the splitter keeps its pointer-grab during a drag).
     let panes_model: Rc<VecModel<PaneInfo>> = Rc::new(VecModel::default());
     window.set_panes(ModelRc::from(panes_model.clone()));
+        // (#tab-32) 启动时初始化频道状态条数据（已在频道的会话建 tab 后显示）。
+        refresh_channel_bars(&window, &store.borrow(), &panes_model, &tabs_model);
     let splitters_model: Rc<VecModel<SplitterInfo>> = Rc::new(VecModel::default());
     window.set_splitters(ModelRc::from(splitters_model.clone()));
     refresh_panes(
@@ -3355,6 +3419,7 @@ fn open_window(
             .map(|t| t.session_id.to_string())
             .unwrap_or_default()
     }
+
     fn refresh_tab_channel_row(
         window: &AppWindow,
         store: &ConfigStore,
@@ -3392,10 +3457,12 @@ fn open_window(
     {
         let weak = window.as_weak();
         let store = store.clone();
+        let panes_model_c = panes_model.clone();
         let tabs_model_c = tabs_model.clone();
         window.on_tab_join_channel({
-            let (weak, store, tabs_model_c) =
-                (weak.clone(), store.clone(), tabs_model_c.clone());
+            let (weak, store, tabs_model_c, panes_model_c) = (
+                weak.clone(), store.clone(), tabs_model_c.clone(), panes_model_c.clone(),
+            );
             move |tab_id: SharedString, slot: i32| {
             let Some(w) = weak.upgrade() else { return };
             let sid = tab_session_id(&w, &tab_id);
@@ -3408,14 +3475,16 @@ fn open_window(
                 let _ = s.save();
             }
             refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &tab_id);
+            refresh_channel_bars(&w, &store.borrow(), &panes_model_c, &tabs_model_c);
                 w.set_menu_channel_letter(["A", "B", "C", "D"][slot].into());
                 // 频道成员 = 同步激活（三态按钮的数据源；阶段-5 对话框接管后语义不变）。
                 w.set_sync_input(true);
             }
         });
         window.on_tab_pause_channel({
-            let (weak, store, tabs_model_c) =
-                (weak.clone(), store.clone(), tabs_model_c.clone());
+            let (weak, store, tabs_model_c, panes_model_c) = (
+                weak.clone(), store.clone(), tabs_model_c.clone(), panes_model_c.clone(),
+            );
             move |tab_id: SharedString| {
             let Some(w) = weak.upgrade() else { return };
             let sid = tab_session_id(&w, &tab_id);
@@ -3424,12 +3493,14 @@ fn open_window(
             store.borrow_mut().set_channel_paused(&sid, now_paused);
             let _ = store.borrow().save();
             refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &tab_id);
+            refresh_channel_bars(&w, &store.borrow(), &panes_model_c, &tabs_model_c);
                 w.set_menu_channel_paused(now_paused);
             }
         });
         window.on_tab_leave_channel({
-            let (weak, store, tabs_model_c) =
-                (weak.clone(), store.clone(), tabs_model_c.clone());
+            let (weak, store, tabs_model_c, panes_model_c) = (
+                weak.clone(), store.clone(), tabs_model_c.clone(), panes_model_c.clone(),
+            );
             move |tab_id: SharedString| {
             let Some(w) = weak.upgrade() else { return };
             let sid = tab_session_id(&w, &tab_id);
@@ -3441,8 +3512,27 @@ fn open_window(
                 let _ = s.save();
             }
             refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &tab_id);
+            refresh_channel_bars(&w, &store.borrow(), &panes_model_c, &tabs_model_c);
                 w.set_menu_channel_letter("".into());
                 w.set_menu_channel_paused(false);
+            }
+        });
+        window.on_pane_close_channel({
+            let (weak_cc, store_c, panes_model_c, tabs_model_c) = (
+                weak.clone(), store.clone(), panes_model_c.clone(), tabs_model_c.clone(),
+            );
+            move |slot: i32| {
+            let slot = slot.clamp(0, 3) as usize;
+            {
+                let mut s = store.borrow_mut();
+                s.clear_channel(slot);
+                // 关频道清该槽每个会话的暂停（§三：粒度一改，清/不清全重称）
+                for m in s.channel_members()[slot].clone() { s.clear_channel_pause(&m); }
+                let _ = s.save();
+            }
+            if let Some(w) = weak_cc.upgrade() {
+                refresh_channel_bars(&w, &store_c.borrow(), &panes_model_c, &tabs_model_c);
+            }
             }
         });
         window.on_show_channel_bar(move || {

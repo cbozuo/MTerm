@@ -55,6 +55,7 @@ pub(super) fn wire_tab_callbacks(
         let panes_model = panes_model.clone();
         let splitters_model = splitters_model.clone();
         let bufs_tab_sel = bufs.clone();
+        let core_sel = core.clone();
         window.on_pane_tab_selected(move |pane_id: i32, id: SharedString| {
             let id = id.to_string();
             {
@@ -65,6 +66,15 @@ pub(super) fn wire_tab_callbacks(
                         l.active = id.clone();
                     }
                 }
+            }
+            // (#tab-32) 活动 tab 变了 → 频道状态条描述对象变。
+            if let Some(w) = weak.upgrade() {
+                crate::app::refresh_channel_bars(
+                    &w,
+                    &core_sel.store.borrow(),
+                    &panes_model,
+                    &tabs_model,
+                );
             }
             if let Some(w) = weak.upgrade() {
                 refresh_panes(

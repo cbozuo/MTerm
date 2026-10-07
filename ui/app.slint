@@ -1,3 +1,14 @@
+// (#tab-32) 每个 pane 的频道状态条数据（Rust 计算）。
+export struct ChannelBarInfo {
+    visible: bool,
+    letter: string,
+    color: color,
+    paused: bool,
+    online: int,   // 频道内在线会话数（含自己；条上显示「另外 N 个」= online-1）
+    total: int,    // 成员总数（含离线）
+    slot: int,     // 频道槽位（关闭频道用）
+}
+
 import { Icon } from "icons.slint";
 // (#icon-svg-migration 2026-10-02) Embedded Material icon font removed: every
 // icon now renders from assets/icons/*.svg via ui/icons.slint. Text fonts are
@@ -11,6 +22,7 @@ export { ThemeEntry }
 export { Theme }
 import { Sidebar, DiskInfo } from "sidebar.slint";
 import { TabBar, TabInfo } from "tabs.slint";
+import { ChannelBar } from "channel_bar.slint";
 import { Welcome, SessionInfo, CtxRowHit } from "welcome.slint";
 import { SessionDialog, SessionDraft, PortFwd, TriggerDraft, GroupEntry, JumpEntry } from "session_dialog.slint";
 import { ConfirmDialog } from "confirm_dialog.slint";
@@ -987,6 +999,8 @@ export component AppWindow inherits Window {
     // ── (#theme-split) 主题/强调色/壁纸三层解耦的设置数据 ──────────────
     // 38 套主题的清单（Rust 从 palettes.rs 构建；含分组/预览色）。
     in property <[ThemeEntry]> theme-entries;
+    in property <[ChannelBarInfo]> pane-channel-bars;
+    callback pane-close-channel(int /* slot */);
     // (#theme-split v2) 主题下拉浮层桥：InterfacePanel 的触发按钮开此浮层，
     // 悬停行 → preview-theme 实时预览主界面（不落盘），点击行 → set-theme 确认。
     in-out property <bool> theme-pick-open: false;
@@ -2520,6 +2534,21 @@ export component AppWindow inherits Window {
                     }
                 }
 
+                // (#tab-32) 频道状态条：Rust 按 pane 计算（活动 tab 在频道时
+                // visible），数据在 pane-channel-bars[pi]。
+                if root.pane-channel-bars[pi].visible : ChannelBar {
+                    channel-letter: root.pane-channel-bars[pi].letter;
+                    channel-color: root.pane-channel-bars[pi].color;
+                    paused: root.pane-channel-bars[pi].paused;
+                    online-count: root.pane-channel-bars[pi].online;
+                    member-total: root.pane-channel-bars[pi].total;
+                    lang-en: root.lang-en;
+                    leave-channel() => { root.tab-leave-channel(pane.active-id); }
+                    pause-channel() => { root.tab-pause-channel(pane.active-id); }
+                    pause-resume() => { root.tab-pause-channel(pane.active-id); }
+                    close-channel() => { root.pane-close-channel(root.pane-channel-bars[pi].slot); }
+                    hide-bar() => { root.channel-bar-hidden = true; }
+                }
                 // Content area swaps based on active tab kind.
                 Rectangle {
                     vertical-stretch: 1;

@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MTerm 左侧会话面板 · 树形列表高保真方案（2026-10-08）</title>
+<style>
+  /* ============ 全局 ============ */
+  :root{
+    /* MTerm 主题 token（theme.slint 默认暗主题） */
+    --bg-root:#1b1d23; --bg-panel:#23262d; --bg-panel-alt:#2a2d35; --bg-elev:#25282f;
+    --bg-hover:#373a44; --bg-active:#3f4350;
+    --line:#3a3d46; --line-strong:#4a4e59;
+    --t1:#e6e8ee; --t2:#b4b9c4; --t3:#9196a3;
+    --accent:#4a90e2; --ok:#4ec9b0; --warn:#e2a84a; --danger:#e25c5c;
+    --r-sm:4px; --r-md:6px; --r-lg:10px;
+    --fs-xs:11px; --fs-sm:13px; --fs-lg:15px;
+    --purple:#a78bfa;
+    --font:"Segoe UI","Microsoft YaHei UI","PingFang SC",sans-serif;
+    --mono:"Cascadia Mono",Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:#141519; color:var(--t1); font-family:var(--font);
+    padding:36px 48px 64px; font-size:14px; line-height:1.6;
+  }
+  .page-head{max-width:1560px;margin:0 auto 8px}
+  .page-head h1{font-size:22px;font-weight:600;letter-spacing:.5px}
+  .page-head h1 small{color:var(--t3);font-size:13px;font-weight:400;margin-left:12px}
+  .page-head .sub{color:var(--t3);font-size:13px;margin-top:6px}
+  .chips{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+  .chip{
+    font-size:12px;color:var(--t2);background:var(--bg-panel);
+    border:1px solid var(--line);border-radius:99px;padding:4px 12px;
+  }
+  .chip b{color:var(--accent);font-weight:600}
+
+  .wrap{max-width:1560px;margin:26px auto 0;display:flex;flex-direction:column;gap:40px}
+  .sec-title{
+    display:flex;align-items:baseline;gap:10px;margin-bottom:14px;
+    font-size:15px;font-weight:600;color:var(--t1)
+  }
+  .sec-title .no{
+    font-size:11px;color:var(--accent);background:rgba(74,144,226,.14);
+    border:1px solid rgba(74,144,226,.35);border-radius:4px;padding:1px 7px;font-weight:600
+  }
+  .sec-title small{color:var(--t3);font-weight:400;font-size:12.5px}
+
+  /* ============ 完整窗口 mock ============ */
+  .win{
+    width:1000px;border-radius:10px;overflow:hidden;flex:none;
+    border:1px solid #30333c; box-shadow:0 24px 60px rgba(0,0,0,.5);
+    background:var(--bg-root);
+  }
+  .win-titlebar{
+    height:34px;display:flex;align-items:center;gap:10px;padding:0 12px;
+    background:var(--bg-panel);border-bottom:1px solid var(--line);
+  }
+  .win-titlebar .logo{width:14px;height:14px;border-radius:4px;background:linear-gradient(135deg,var(--accent),#7ab8ff)}
+  .win-titlebar .t{font-size:12px;color:var(--t2)}
+  .win-ctrl{margin-left:auto;display:flex;gap:6px}
+  .win-ctrl i{width:11px;height:11px;border-radius:50%;display:block}
+  .win-ctrl i:nth-child(1){background:#3a3d46}
+  .win-ctrl i:nth-child(2){background:#3a3d46}
+  .win-ctrl i:nth-child(3){background:#3a3d46}
+
+  /* tab 行（含频道段，还原 32px 重设计后的形态） */
+  .tabbar{height:32px;display:flex;align-items:flex-end;gap:2px;padding:0 8px;background:var(--bg-root);border-bottom:1px solid var(--line)}
+  .tab{
+    height:26px;display:flex;align-items:center;gap:6px;padding:0 10px;border-radius:5px 5px 0 0;
+    font-size:12px;color:var(--t2);position:relative;
+  }
+  .tab.on{background:var(--bg-panel);color:var(--t1)}
+  .tab.on::before{content:"";position:absolute;left:8px;right:8px;top:0;height:2px;border-radius:1px;background:var(--accent)}
+  .tab svg{width:12px;height:12px}
+  .tab .dot{width:5px;height:5px;border-radius:50%}
+
+  .win-body{display:flex;height:660px}
+  .term{
+    flex:1;position:relative;background:#101115;font-family:var(--mono);font-size:12.5px;
+    color:#d4d4d4;padding:14px 16px;line-height:1.55;
+  }
+  .term .p{color:var(--ok)}
+  .term .dim{color:#6b7080}
+
+  /* ============ 会话面板（新方案本体） ============ */
+  .panel{
+    width:240px;flex:none;background:var(--bg-root);
+    padding:10px;display:flex;flex-direction:column;
+  }
+  .panel-card{
+    flex:1;background:var(--bg-panel);border:1px solid var(--line);border-radius:var(--r-md);
+    display:flex;flex-direction:column;overflow:hidden;min-height:0;
+  }
+  /* --- 工具头 --- */
+  .p-head{
+    height:38px;flex:none;display:flex;align-items:center;gap:6px;padding:0 6px 0 12px;
+  }
+  .p-head .title{font-size:13px;font-weight:600;color:var(--t1);letter-spacing:.3px}
+  .p-head .count{font-size:11px;color:var(--t3);margin-left:2px}
+  .p-head .sp{flex:1}
+  .ibtn{
+    width:24px;height:24px;border-radius:var(--r-sm);display:flex;align-items:center;justify-content:center;
+    color:var(--t2);cursor:pointer;position:relative;
+  }
+  .ibtn:hover{background:var(--bg-hover);color:var(--t1)}
+  .ibtn svg{width:14px;height:14px}
+  .ibtn.primary{background:var(--accent);color:#fff}
+  .ibtn.primary:hover{background:#5b9ce6}
+
+  /* --- 搜索框 --- */
+  .p-search{
+    height:30px;flex:none;margin:0 10px;display:flex;align-items:center;gap:6px;
+    background:var(--bg-root);border:1px solid var(--line);border-radius:5px;padding:0 8px;
+  }
+  .p-search:focus-within{border-color:var(--accent)}
+  .p-search svg{width:13px;height:13px;color:var(--t3);flex:none}
+  .p-search input{
+    flex:1;background:none;border:none;outline:none;color:var(--t1);
+    font-size:12px;font-family:var(--font);min-width:0;
+  }
+  .p-search input::placeholder{color:var(--t3)}
+  .p-search kbd{
+    font-size:10px;color:var(--t3);border:1px solid var(--line);border-radius:3px;
+    padding:0 4px;line-height:14px;font-family:var(--font);flex:none;
+  }
+
+  /* --- 列表 --- */
+  .p-list{flex:1;overflow:auto;padding:6px 6px 4px;min-height:0}
+  .p-list::-webkit-scrollbar{width:8px}
+  .p-list::-webkit-scrollbar-thumb{background:transparent;border-radius:4px}
+  .p-list:hover::-webkit-scrollbar-thumb{background:#3f4350}
+  .grp{margin-bottom:2px}
+  .grp + .grp{margin-top:8px}
+
+  .ghead{
+    height:30px;display:flex;align-items:center;gap:6px;padding:0 6px 0 8px;border-radius:var(--r-sm);
+    cursor:pointer;position:relative;user-select:none;
+  }
+  .ghead:hover{background:var(--bg-hover)}
+  .ghead .chev{width:14px;height:14px;color:var(--t3);flex:none;transition:transform .15s}
+  .grp.closed .ghead .chev{transform:rotate(-90deg)}
+  .ghead .fold{width:16px;height:16px;flex:none}
+  .ghead .gname{
+    font-size:13px;font-weight:600;color:var(--t1);flex:1;min-width:0;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .ghead .gcount{font-size:11px;color:var(--t3);flex:none}
+
+  .members{overflow:hidden}
+  .grp.closed .members{display:none}
+
+  .mrow{
+    height:30px;display:flex;align-items:center;gap:8px;padding:0 8px 0 28px;border-radius:var(--r-sm);
+    position:relative;cursor:default;margin-top:2px;
+  }
+  .mrow:hover{background:var(--bg-hover)}
+  /* 树形引导线：竖脊线（组色）+ ├ 横枝 */
+  .mrow .spine{
+    position:absolute;left:17px;top:-2px;bottom:0;width:2px;border-radius:1px;opacity:.32;
+  }
+  .mrow:hover .spine{opacity:.9}
+  .mrow .branch{
+    position:absolute;left:19px;top:50%;width:8px;height:1px;opacity:.32;
+  }
+  .mrow:hover .branch{opacity:.9}
+  .mrow .pico{width:16px;height:16px;flex:none;color:var(--t2);position:relative}
+  .mrow .pico svg{width:16px;height:16px}
+  .mrow .mname{
+    font-size:13px;color:var(--t1);flex:1;min-width:0;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .mrow .st{width:6px;height:6px;border-radius:50%;flex:none;margin-right:2px}
+  .st.up{background:var(--ok);box-shadow:0 0 5px rgba(78,201,176,.55)}
+  .st.conn{background:var(--warn)}
+
+  /* 激活会话（当前正在查看的终端） */
+  .mrow.act{background:rgba(74,144,226,.13)}
+  .mrow.act::before{
+    content:"";position:absolute;left:2px;top:6px;bottom:6px;width:2.5px;border-radius:2px;background:var(--accent);
+  }
+  .mrow.act .pico{color:var(--accent)}
+
+  /* 空组占位 */
+  .empty-hint{height:22px;display:flex;align-items:center;padding-left:28px;font-size:11px;color:var(--t3)}
+  .empty-hint i{display:inline-block;width:8px;height:1px;background:var(--line-strong);margin-right:6px}
+
+  /* --- 底部信息条（新） --- */
+  .p-foot{
+    height:30px;flex:none;border-top:1px solid var(--line);
+    display:flex;align-items:center;gap:4px;padding:0 6px 0 12px;
+  }
+  .p-foot .sum{font-size:11px;color:var(--t3);flex:1}
+  .p-foot .ibtn{width:22px;height:22px}
+  .p-foot .ibtn svg{width:12px;height:12px}
+
+  /* ============ 状态变体 ============ */
+  .variants{display:flex;gap:24px;flex-wrap:wrap}
+  .vcell{display:flex;flex-direction:column;gap:10px}
+  .vtag{
+    font-size:12px;color:var(--t2);display:flex;align-items:center;gap:8px;
+  }
+  .vtag b{color:var(--t1);font-weight:600}
+  .vtag .k{
+    font-size:10px;color:var(--accent);border:1px solid rgba(74,144,226,.4);
+    border-radius:3px;padding:0 5px;line-height:14px;font-weight:600;
+  }
+
+  /* 右键菜单浮层 */
+  .ctx{
+    position:absolute;width:168px;background:var(--bg-panel);border:1px solid var(--line-strong);
+    border-radius:var(--r-md);box-shadow:0 10px 28px rgba(0,0,0,.55);padding:4px;z-index:30;
+  }
+  .ctx .ci{
+    height:26px;display:flex;align-items:center;gap:8px;padding:0 8px;border-radius:4px;
+    font-size:12px;color:var(--t1);
+  }
+  .ctx .ci:hover{background:var(--bg-hover)}
+  .ctx .ci svg{width:13px;height:13px;color:var(--t2);flex:none}
+  .ctx .ci .sc{margin-left:auto;font-size:10px;color:var(--t3)}
+  .ctx .ci.danger{color:#ef7a74}
+  .ctx .ci.danger svg{color:#ef7a74}
+  .ctx hr{border:none;border-top:1px solid var(--line);margin:4px 6px}
+
+  /* 搜索命中高亮 */
+  .hl{color:var(--accent);font-weight:600}
+  /* 折叠组遮罩行数徽标 */
+  .fold-pill{
+    font-size:10px;color:var(--t3);border:1px solid var(--line);border-radius:8px;
+    padding:0 6px;line-height:15px;margin-right:2px;
+  }
+
+  /* 拖拽示意：ghost 卡 + 组色空槽 */
+  .ghost{
+    position:absolute;left:34px;width:196px;height:28px;z-index:40;
+    background:rgba(55,58,68,.92);border:1px solid var(--line-strong);border-radius:var(--r-sm);
+    display:flex;align-items:center;gap:8px;padding:0 8px;
+    box-shadow:0 12px 26px rgba(0,0,0,.5);font-size:13px;color:var(--t1);
+  }
+  .ghost svg{width:14px;height:14px;color:var(--t2)}
+  .slotbox{
+    position:absolute;left:28px;right:8px;height:28px;border-radius:var(--r-sm);
+    border:1px solid rgba(226,92,92,.55);background:rgba(226,92,92,.07);
+  }
+  .shifted{transform:translateY(-32px)}
+
+  /* ============ 对照说明 ============ */
+  .notes{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;max-width:1560px}
+  .note{
+    background:var(--bg-panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:16px 18px;
+  }
+  .note h3{font-size:13.5px;font-weight:600;color:var(--t1);display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .note h3 .n{font-size:10px;color:var(--accent);background:rgba(74,144,226,.14);border-radius:4px;padding:1px 6px;font-weight:700}
+  .note p{font-size:12.5px;color:var(--t2)}
+  .note p b{color:var(--t1);font-weight:600}
+  .note .was{color:var(--t3);font-size:11.5px;margin-top:6px}
+  .note .was::before{content:"现状：";color:var(--warn)}
+</style>
+</head>
+<body>
+
+<!-- SVG 图标库 -->
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.4 10.4L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+  <symbol id="i-import" viewBox="0 0 16 16"><path d="M8 2v7m0 0L5.4 6.4M8 9l2.6-2.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M2.8 11.5v1.2c0 .7.6 1.3 1.3 1.3h7.8c.7 0 1.3-.6 1.3-1.3v-1.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/></symbol>
+  <symbol id="i-collapse" viewBox="0 0 16 16"><path d="M6 3L2.5 8 6 13M10 3l3.5 5L10 13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 16 16"><path d="M4.5 6l3.5 4 3.5-4" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 16 16"><path d="M1.8 4.2c0-.7.6-1.2 1.2-1.2h3l1.5 1.7h5.5c.7 0 1.2.6 1.2 1.2v6c0 .7-.6 1.2-1.2 1.2H3c-.7 0-1.2-.6-1.2-1.2v-7.7z" fill="currentColor" opacity=".9"/></symbol>
+  <symbol id="i-folder-open" viewBox="0 0 16 16"><path d="M1.8 4.2c0-.7.6-1.2 1.2-1.2h3l1.5 1.7h5.5c.7 0 1.2.6 1.2 1.2v1H4.2L1.8 12z" fill="currentColor" opacity=".9"/><path d="M1.4 12l2.2-4.6c.15-.3.45-.5.8-.5h9.9c.6 0 1 .6.8 1.1L13.6 12c-.14.3-.45.5-.8.5H2.2c-.6 0-1-.6-.8-1.1z" fill="currentColor"/></symbol>
+  <symbol id="i-ssh" viewBox="0 0 16 16"><rect x="1.8" y="2.6" width="12.4" height="10.8" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4.4 6.2l2 1.8-2 1.8M7.8 10.2h3.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
+  <symbol id="i-local" viewBox="0 0 16 16"><rect x="1.8" y="2.6" width="12.4" height="10.8" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4.4 6l1.8 2-1.8 2M7.6 10.4h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
+  <symbol id="i-rdp" viewBox="0 0 16 16"><rect x="1.8" y="2.4" width="12.4" height="8.4" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.5 13.4h5M8 10.8v2.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+  <symbol id="i-telnet" viewBox="0 0 16 16"><rect x="4.4" y="1.8" width="7.2" height="12.4" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7 12h2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+  <symbol id="i-serial" viewBox="0 0 16 16"><rect x="4" y="2" width="8" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6 4.4h.01M8 4.4h.01M10 4.4h.01M6 6.6h.01M8 6.6h.01M10 6.6h.01" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M8 9v3.4M5.6 14h4.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+  <symbol id="i-jump" viewBox="0 0 16 16"><path d="M2.5 12.5L6.5 8.5l2.6 2.6 4.4-5.6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="13.5" cy="5.5" r="1.4" fill="currentColor"/></symbol>
+  <symbol id="i-connect" viewBox="0 0 16 16"><path d="M3 13L13 3M4.5 3H3v1.5M11.5 13H13v-1.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none" opacity="0"/><path d="M6.2 9.8a3.4 3.4 0 010-4.8l2-2a3.4 3.4 0 014.8 4.8l-1.2 1.2" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M9.8 6.2a3.4 3.4 0 010 4.8l-2 2a3.4 3.4 0 01-4.8-4.8l1.2-1.2" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 16 16"><path d="M11.3 2.6l2.1 2.1L5.6 12.5l-2.8.7.7-2.8 7.8-7.8z" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 16 16"><rect x="5.2" y="5.2" width="8" height="8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M10.8 5.2V3.6c0-.7-.6-1.3-1.3-1.3H3.6c-.7 0-1.3.6-1.3 1.3v5.9c0 .7.6 1.3 1.3 1.3h1.6" stroke="currentColor" stroke-width="1.3" fill="none"/></symbol>
+  <symbol id="i-move" viewBox="0 0 16 16"><path d="M2.5 5h8m0 0L8.2 2.7M10.5 5L8.2 7.3M13.5 11h-8m0 0l2.3-2.3M5.5 11l2.3 2.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 16 16"><path d="M2.8 4.2h10.4M6.5 4V2.8h3V4M4.2 4.4l.7 8.4c0 .7.6 1.2 1.3 1.2h3.6c.7 0 1.3-.5 1.3-1.2l.7-8.4" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round"/></symbol>
+  <symbol id="i-palette" viewBox="0 0 16 16"><path d="M8 1.8A6.2 6.2 0 001.8 8c0 3.4 2.8 6.2 6.2 6.2.9 0 1.5-.7 1.2-1.5-.3-.8.2-1.6 1.1-1.6h1.5c1.9 0 3.4-1.5 3.4-3.4C15.2 4.2 12 1.8 8 1.8z" stroke="currentColor" stroke-width="1.3" fill="none"/><circle cx="5" cy="6" r="1" fill="currentColor"/><circle cx="8.2" cy="4.4" r="1" fill="currentColor"/><circle cx="11.2" cy="6" r="1" fill="currentColor"/></symbol>
+  <symbol id="i-fold-all" viewBox="0 0 16 16"><path d="M3 6.2L8 10l5-3.8" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 2.8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+  <symbol id="i-unfold-all" viewBox="0 0 16 16"><path d="M3 9.8L8 6l5 3.8" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 13.2h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+  <symbol id="i-dots" viewBox="0 0 16 16"><circle cx="3.4" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="12.6" cy="8" r="1.2" fill="currentColor"/></symbol>
+  <symbol id="i-info" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 7.4v3.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="8" cy="5" r=".9" fill="currentColor"/></symbol>
+</svg>
+
+<div class="page-head">
+  <h1>左侧会话面板 · 树形列表重构方案 <small>高保真 · 2026-10-08 · 仅设计稿，未动代码</small></h1>
+  <div class="sub">目标：在保留现有全部交互（折叠 / 拖拽排序 / 右键菜单 / 悬停信息卡 / 组色脊线）的前提下，收敛视觉层级、补齐结构缺口，让 240px 窄栏更透气、更协调。</div>
+  <div class="chips">
+    <span class="chip"><b>①</b> 头部工具化：标题+图标钮，省出两行空间</span>
+    <span class="chip"><b>②</b> 组头去底色块，层级改由 字重+缩进+间距 表达</span>
+    <span class="chip"><b>③</b> 连接状态点上移到行右缘，一眼可扫</span>
+    <span class="chip"><b>④</b> 新增「正在使用」常驻高亮（现版本没有）</span>
+    <span class="chip"><b>⑤</b> 新增底部信息条：统计 + 全部折叠/展开</span>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <!-- ================= 第一部分：完整窗口嵌入效果 ================= -->
+  <section>
+    <div class="sec-title"><span class="no">A</span>嵌入效果 · 完整窗口 <small>240px 面板 / 暗主题 / 搜索框可输入试用（试试输入 “prod” 或 “db”）</small></div>
+    <div class="win">
+      <div class="win-titlebar">
+        <div class="logo"></div><div class="t">meatshell</div>
+        <div class="win-ctrl"><i></i><i></i><i></i></div>
+      </div>
+      <div class="tabbar">
+        <div class="tab on"><svg><use href="#i-local"/></svg>本地终端</div>
+        <div class="tab"><svg><use href="#i-ssh"/></svg>prod-web-01<span class="dot" style="background:var(--ok)"></span></div>
+        <div class="tab"><svg><use href="#i-ssh"/></svg>prod-db-01<span class="dot" style="background:var(--warn)"></span></div>
+        <div class="tab" style="color:var(--t3)"><svg><use href="#i-plus"/></svg></div>
+      </div>
+      <div class="win-body">
+
+        <!-- ===== 新方案面板 ===== -->
+        <div class="panel">
+          <div class="panel-card">
+            <!-- 工具头 -->
+            <div class="p-head">
+              <span class="title">会话</span><span class="count">13 台</span>
+              <span class="sp"></span>
+              <div class="ibtn" title="新建会话"><svg><use href="#i-plus"/></svg></div>
+              <div class="ibtn" title="导入 ssh config"><svg><use href="#i-import"/></svg></div>
+              <div class="ibtn" title="收起面板"><svg><use href="#i-collapse"/></svg></div>
+            </div>
+            <!-- 搜索 -->
+            <div class="p-search">
+              <svg><use href="#i-search"/></svg>
+              <input id="mainSearch" placeholder="搜索名称或主机…">
+              <kbd>Ctrl F</kbd>
+            </div>
+            <!-- 列表 -->
+            <div class="p-list" id="mainList">
+
+              <!-- 本地终端 -->
+              <div class="grp" data-grp>
+                <div class="ghead" onclick="toggleGrp(this)">
+                  <svg class="chev"><use href="#i-chev"/></svg>
+                  <svg class="fold" style="color:var(--t2)"><use href="#i-folder-open"/></svg>
+                  <span class="gname">本地终端</span><span class="gcount">3</span>
+                </div>
+                <div class="members">
+                  <div class="mrow" data-k="powershell">
+                    <i class="spine" style="background:var(--t2)"></i><i class="branch" style="background:var(--t2)"></i>
+                    <span class="pico"><svg><use href="#i-local"/></svg></span>
+                    <span class="mname">PowerShell</span>
+                  </div>
+                  <div class="mrow" data-k="cmd">
+                    <i class="spine" style="background:var(--t2)"></i><i class="branch" style="background:var(--t2)"></i>
+                    <span class="pico"><svg><use href="#i-local"/></svg></span>
+                    <span class="mname">CMD</span>
+                  </div>
+                  <div class="mrow" data-k="wsl ubuntu">
+                    <i class="spine" style="background:var(--t2)"></i><i class="branch" style="background:var(--t2)"></i>
+                    <span class="pico"><svg><use href="#i-local"/></svg></span>
+                    <span class="mname">WSL · Ubuntu</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 生产环境（红） -->
+              <div class="grp" data-grp>
+                <div class="ghead" onclick="toggleGrp(this)">
+                  <svg class="chev"><use href="#i-chev"/></svg>
+                  <svg class="fold" style="color:var(--danger)"><use href="#i-folder-open"/></svg>
+                  <span class="gname">生产环境</span><span class="gcount">4</span>
+                </div>
+                <div class="members">
+                  <div class="mrow act" data-k="prod-web-01 10.0.1.11">
+                    <i class="spine" style="background:var(--danger)"></i><i class="branch" style="background:var(--danger)"></i>
+                    <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                    <span class="mname">prod-web-01</span>
+                    <i class="st up" title="已连接"></i>
+                  </div>
+                  <div class="mrow" data-k="prod-web-02 10.0.1.12">
+                    <i class="spine" style="background:var(--danger)"></i><i class="branch" style="background:var(--danger)"></i>
+                    <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                    <span class="mname">prod-web-02</span>
+                    <i class="st up" title="已连接"></i>
+                  </div>
+                  <div class="mrow" data-k="prod-db-01 10.0.2.21">
+                    <i class="spine" style="background:var(--danger)"></i><i class="branch" style="background:var(--danger)"></i>
+                    <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                    <span class="mname">prod-db-01</span>
+                    <i class="st conn" title="连接中"></i>
+                  </div>
+                  <div class="mrow" data-k="prod-redis 10.0.2.22">
+                    <i class="spine" style="background:var(--danger)"></i><i class="branch" style="background:var(--danger)"></i>
+                    <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                    <span class="mname">prod-redis</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 测试环境（绿） -->
+              <div class="grp" data-grp>
+                <div class="ghead" onclick="toggleGrp(this)">
+                  <svg class="chev"><use href="#i-chev"/></svg>
+                  <svg class="fold" style="color:var(--ok)"><use href="#i-folder-open"/></svg>
+                  <span class="gname">测试环境</span><span class="gcount">2</span>
+                </div>
+                <div class="members">
+                  <div class="mrow" data-k="test-web 192.168.3.11">
+                    <i class="spine" style="background:var(--ok)"></i><i class="branch" style="background:var(--ok)"></i>
+                    <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                    <span class="mname">test-web</span>
+                  </div>
+                  <div class="mrow" data-k="test-api 192.168.3.12">
+                    <i class="spine" style="background:var(--ok)"></i><i class="branch" style="background:var(--ok)"></i>
+                    <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                    <span class="mname">test-api</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 数据库（蓝） -->
+              <div class="grp" data-grp>
+                <div class="ghead" onclick="toggleGrp(this)">
+                  <svg class="chev"><use href="#i-chev"/></svg>
+                  <svg class="fold" style="color:var(--accent)"><use href="#i-folder-open"/></svg>
+                  <span class="gname">数据库</span><span class="gcount">3</span>
+                </div>
+                <div class="members">
+                  <div class="mrow" data-k="mysql-main 10.1.0.5">
+                    <i class="spine" style="background:var(--accent)"></i><i class="branch" style="background:var(--accent)"></i>
+                    <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                    <span class="mname">mysql-main</span>
+                  </div>
+                  <div class="mrow" data-k="pg-replica 10.1.0.6">
+                    <i class="spine" style="background:var(--accent)"></i><i class="branch" style="background:var(--accent)"></i>
+                    <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                    <span class="mname">pg-replica</span>
+                  </div>
+                  <div class="mrow" data-k="redis-cache 10.1.0.7">
+                    <i class="spine" style="background:var(--accent)"></i><i class="branch" style="background:var(--accent)"></i>
+                    <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                    <span class="mname">redis-cache</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 折叠组示例 -->
+              <div class="grp closed" data-grp>
+                <div class="ghead" onclick="toggleGrp(this)">
+                  <svg class="chev"><use href="#i-chev"/></svg>
+                  <svg class="fold" style="color:var(--purple)"><use href="#i-folder"/></svg>
+                  <span class="gname">边缘节点</span><span class="gcount">4</span>
+                </div>
+                <div class="members">
+                  <div class="mrow" data-k="edge-bj"><i class="spine" style="background:var(--purple)"></i><i class="branch" style="background:var(--purple)"></i><span class="pico"><svg><use href="#i-ssh"/></svg></span><span class="mname">edge-bj</span></div>
+                  <div class="mrow" data-k="edge-sh"><i class="spine" style="background:var(--purple)"></i><i class="branch" style="background:var(--purple)"></i><span class="pico"><svg><use href="#i-ssh"/></svg></span><span class="mname">edge-sh</span></div>
+                  <div class="mrow" data-k="edge-gz"><i class="spine" style="background:var(--purple)"></i><i class="branch" style="background:var(--purple)"></i><span class="pico"><svg><use href="#i-ssh"/></svg></span><span class="mname">edge-gz</span></div>
+                  <div class="mrow" data-k="edge-hk"><i class="spine" style="background:var(--purple)"></i><i class="branch" style="background:var(--purple)"></i><span class="pico"><svg><use href="#i-ssh"/></svg></span><span class="mname">edge-hk</span></div>
+                </div>
+              </div>
+
+              <!-- 空组 -->
+              <div class="grp" data-grp>
+                <div class="ghead" onclick="toggleGrp(this)">
+                  <svg class="chev"><use href="#i-chev"/></svg>
+                  <svg class="fold" style="color:var(--t2)"><use href="#i-folder-open"/></svg>
+                  <span class="gname">新分组</span><span class="gcount">0</span>
+                </div>
+                <div class="members">
+                  <div class="empty-hint"><i></i>空分组</div>
+                </div>
+              </div>
+
+            </div>
+            <!-- 底部信息条 -->
+            <div class="p-foot">
+              <span class="sum">6 组 · 13 台 · 2 台在线</span>
+              <div class="ibtn" title="全部折叠"><svg><use href="#i-fold-all"/></svg></div>
+              <div class="ibtn" title="全部展开"><svg><use href="#i-unfold-all"/></svg></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 终端 -->
+        <div class="term">
+          <div><span class="p">➜  ~</span> ssh prod-web-01</div>
+          <div class="dim">Last login: Thu Oct  8 09:41:02 2026 from 192.168.1.20</div>
+          <div><span class="p">[deploy@prod-web-01</span> <span class="dim">~</span><span class="p">]$</span> systemctl status nginx --no-pager | head -5</div>
+          <div class="dim">● nginx.service - A high performance web server and a reverse proxy server</div>
+          <div class="dim">&nbsp;&nbsp; Active: <span style="color:var(--ok)">active (running)</span> since Thu 2026-10-08 08:02:11 CST; 2h 03min ago</div>
+          <div><span class="p">[deploy@prod-web-01</span> <span class="dim">~</span><span class="p">]$</span> <span style="display:inline-block;width:7px;height:14px;background:#d4d4d4;vertical-align:-2px"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 第二部分：四个状态变体 ================= -->
+  <section>
+    <div class="sec-title"><span class="no">B</span>关键状态 <small>同一方案的四种运行时状态（static 示意）</small></div>
+    <div class="variants">
+
+      <!-- V1 悬停 + 激活 -->
+      <div class="vcell">
+        <div class="vtag"><span class="k">V1</span><b>悬停</b> — 组脊线联动点亮、行高亮</div>
+        <div class="panel" style="height:440px">
+          <div class="panel-card">
+            <div class="p-head">
+              <span class="title">会话</span><span class="count">13 台</span><span class="sp"></span>
+              <div class="ibtn"><svg><use href="#i-plus"/></svg></div>
+              <div class="ibtn"><svg><use href="#i-import"/></svg></div>
+              <div class="ibtn"><svg><use href="#i-collapse"/></svg></div>
+            </div>
+            <div class="p-search"><svg><use href="#i-search"/></svg><input placeholder="搜索名称或主机…"></div>
+            <div class="p-list">
+              <div class="grp" style="margin-bottom:8px">
+                <div class="ghead"><svg class="chev"><use href="#i-chev"/></svg><svg class="fold" style="color:var(--danger)"><use href="#i-folder-open"/></svg><span class="gname">生产环境</span><span class="gcount">4</span></div>
+                <div class="mrow" style="background:var(--bg-hover)">
+                  <i class="spine" style="background:var(--danger);opacity:.9"></i><i class="branch" style="background:var(--danger);opacity:.9"></i>
+                  <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                  <span class="mname">prod-web-02</span><i class="st up"></i>
+                </div>
+                <div class="mrow">
+                  <i class="spine" style="background:var(--danger)"></i><i class="branch" style="background:var(--danger)"></i>
+                  <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                  <span class="mname">prod-db-01</span><i class="st conn"></i>
+                </div>
+              </div>
+              <div class="grp" style="margin-bottom:8px">
+                <div class="ghead" style="background:var(--bg-hover)">
+                  <svg class="chev" style="color:var(--t1)"><use href="#i-chev"/></svg>
+                  <svg class="fold" style="color:var(--accent)"><use href="#i-folder-open"/></svg>
+                  <span class="gname">数据库</span><span class="gcount">3</span>
+                </div>
+                <div class="mrow">
+                  <i class="spine" style="background:var(--accent)"></i><i class="branch" style="background:var(--accent)"></i>
+                  <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                  <span class="mname">mysql-main</span>
+                </div>
+              </div>
+              <div class="grp" style="margin-bottom:8px">
+                <div class="ghead"><svg class="chev"><use href="#i-chev"/></svg><svg class="fold" style="color:var(--ok)"><use href="#i-folder-open"/></svg><span class="gname">测试环境</span><span class="gcount">2</span></div>
+                <div class="mrow">
+                  <i class="spine" style="background:var(--ok)"></i><i class="branch" style="background:var(--ok)"></i>
+                  <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                  <span class="mname">test-web</span>
+                </div>
+              </div>
+              <div class="grp closed" style="margin-bottom:8px">
+                <div class="ghead"><svg class="chev"><use href="#i-chev"/></svg><svg class="fold" style="color:var(--purple)"><use href="#i-folder"/></svg><span class="gname">边缘节点</span><span class="gcount">4</span></div>
+              </div>
+            </div>
+            <div class="p-foot"><span class="sum">6 组 · 13 台</span>
+              <div class="ibtn"><svg><use href="#i-fold-all"/></svg></div>
+              <div class="ibtn"><svg><use href="#i-unfold-all"/></svg></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- V2 激活会话 + 右键菜单 -->
+      <div class="vcell">
+        <div class="vtag"><span class="k">V2</span><b>激活 + 右键菜单</b> — 常驻高亮 / 菜单分组</div>
+        <div class="panel" style="height:452px">
+          <div class="panel-card" style="position:relative">
+            <div class="p-head">
+              <span class="title">会话</span><span class="count">13 台</span><span class="sp"></span>
+              <div class="ibtn"><svg><use href="#i-plus"/></svg></div>
+              <div class="ibtn"><svg><use href="#i-import"/></svg></div>
+              <div class="ibtn"><svg><use href="#i-collapse"/></svg></div>
+            </div>
+            <div class="p-search"><svg><use href="#i-search"/></svg><input placeholder="搜索名称或主机…"></div>
+            <div class="p-list" style="position:static">
+              <div class="grp" style="margin-bottom:8px">
+                <div class="ghead"><svg class="chev"><use href="#i-chev"/></svg><svg class="fold" style="color:var(--t2)"><use href="#i-folder-open"/></svg><span class="gname">本地终端</span><span class="gcount">3</span></div>
+              </div>
+              <div class="grp" style="margin-bottom:8px">
+                <div class="ghead"><svg class="chev"><use href="#i-chev"/></svg><svg class="fold" style="color:var(--danger)"><use href="#i-folder-open"/></svg><span class="gname">生产环境</span><span class="gcount">4</span></div>
+                <div class="mrow">
+                  <i class="spine" style="background:var(--danger)"></i><i class="branch" style="background:var(--danger)"></i>
+                  <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                  <span class="mname">prod-web-02</span><i class="st up"></i>
+                </div>
+                <div class="mrow act">
+                  <i class="spine" style="background:var(--danger)"></i><i class="branch" style="background:var(--danger)"></i>
+                  <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                  <span class="mname" style="font-weight:600">prod-db-01</span><i class="st conn"></i>
+                </div>
+                <div class="mrow">
+                  <i class="spine" style="background:var(--danger)"></i><i class="branch" style="background:var(--danger)"></i>
+                  <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                  <span class="mname">prod-redis</span>
+                </div>
+              </div>
+              <!-- 右键菜单浮层（AppWindow 根集中浮层的形态沿用） -->
+              <div class="ctx" style="left:30px;top:208px">
+                <div class="ci"><svg><use href="#i-connect"/></svg>连接<span class="sc">⏎</span></div>
+                <div class="ci"><svg><use href="#i-edit"/></svg>编辑会话</div>
+                <div class="ci"><svg><use href="#i-copy"/></svg>创建副本</div>
+                <hr>
+                <div class="ci"><svg><use href="#i-move"/></svg>移动到分组 <span class="sc">▸</span></div>
+                <div class="ci"><svg><use href="#i-palette"/></svg>分组颜色 <span class="sc">▸</span></div>
+                <hr>
+                <div class="ci danger"><svg><use href="#i-trash"/></svg>删除会话</div>
+              </div>
+            </div>
+            <div class="p-foot"><span class="sum">6 组 · 13 台</span>
+              <div class="ibtn"><svg><use href="#i-fold-all"/></svg></div>
+              <div class="ibtn"><svg><use href="#i-unfold-all"/></svg></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- V3 搜索态 -->
+      <div class="vcell">
+        <div class="vtag"><span class="k">V3</span><b>搜索</b> — 命中描亮、组头显示过滤计数</div>
+        <div class="panel" style="height:440px">
+          <div class="panel-card">
+            <div class="p-head">
+              <span class="title">会话</span><span class="count">13 台</span><span class="sp"></span>
+              <div class="ibtn"><svg><use href="#i-plus"/></svg></div>
+              <div class="ibtn"><svg><use href="#i-import"/></svg></div>
+              <div class="ibtn"><svg><use href="#i-collapse"/></svg></div>
+            </div>
+            <div class="p-search" style="border-color:var(--accent)">
+              <svg style="color:var(--accent)"><use href="#i-search"/></svg>
+              <input value="db" style="color:var(--t1)">
+              <kbd style="border:none;color:var(--t3)">✕</kbd>
+            </div>
+            <div class="p-list">
+              <div class="grp" style="margin-bottom:8px">
+                <div class="ghead"><svg class="chev"><use href="#i-chev"/></svg><svg class="fold" style="color:var(--danger)"><use href="#i-folder-open"/></svg><span class="gname">生产环境</span><span class="gcount">1 / 4</span></div>
+                <div class="mrow">
+                  <i class="spine" style="background:var(--danger)"></i><i class="branch" style="background:var(--danger)"></i>
+                  <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                  <span class="mname">prod-<span class="hl">db</span>-01</span><i class="st conn"></i>
+                </div>
+              </div>
+              <div class="grp" style="margin-bottom:8px">
+                <div class="ghead"><svg class="chev"><use href="#i-chev"/></svg><svg class="fold" style="color:var(--accent)"><use href="#i-folder-open"/></svg><span class="gname">数据库</span><span class="gcount">2 / 3</span></div>
+                <div class="mrow">
+                  <i class="spine" style="background:var(--accent)"></i><i class="branch" style="background:var(--accent)"></i>
+                  <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                  <span class="mname">mysql-main · <span class="hl">db</span></span>
+                </div>
+                <div class="mrow">
+                  <i class="spine" style="background:var(--accent)"></i><i class="branch" style="background:var(--accent)"></i>
+                  <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                  <span class="mname">pg-replica · <span class="hl">db</span></span>
+                </div>
+              </div>
+              <div style="padding:14px 8px;text-align:center;font-size:12px;color:var(--t3)">
+                3 个匹配结果<br><span style="font-size:11px">搜索时自动展开所有分组</span>
+              </div>
+            </div>
+            <div class="p-foot"><span class="sum">匹配 3 台</span>
+              <div class="ibtn"><svg><use href="#i-fold-all"/></svg></div>
+              <div class="ibtn"><svg><use href="#i-unfold-all"/></svg></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- V4 拖拽态 -->
+      <div class="vcell">
+        <div class="vtag"><span class="k">V4</span><b>拖拽排序</b> — ghost 卡 + 组色空槽 + 邻行让位（机制不变）</div>
+        <div class="panel" style="height:452px">
+          <div class="panel-card" style="position:relative">
+            <div class="p-head">
+              <span class="title">会话</span><span class="count">13 台</span><span class="sp"></span>
+              <div class="ibtn"><svg><use href="#i-plus"/></svg></div>
+              <div class="ibtn"><svg><use href="#i-import"/></svg></div>
+              <div class="ibtn"><svg><use href="#i-collapse"/></svg></div>
+            </div>
+            <div class="p-search"><svg><use href="#i-search"/></svg><input placeholder="搜索名称或主机…"></div>
+            <div class="p-list" style="position:static">
+              <div class="grp" style="margin-bottom:8px">
+                <div class="ghead"><svg class="chev"><use href="#i-chev"/></svg><svg class="fold" style="color:var(--danger)"><use href="#i-folder-open"/></svg><span class="gname">生产环境</span><span class="gcount">4</span></div>
+                <div class="mrow">
+                  <i class="spine" style="background:var(--danger)"></i><i class="branch" style="background:var(--danger)"></i>
+                  <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                  <span class="mname">prod-web-01</span><i class="st up"></i>
+                </div>
+                <!-- 被拖行 prod-db-01 的原槽 = 组色空槽（本体隐形留洞） -->
+                <div style="position:relative;height:30px;margin-top:2px">
+                  <div class="slotbox" style="top:1px"></div>
+                  <i style="position:absolute;left:17px;top:-2px;bottom:0;width:2px;border-radius:1px;background:var(--danger);opacity:.32"></i>
+                  <i style="position:absolute;left:19px;top:50%;width:8px;height:1px;background:var(--danger);opacity:.32"></i>
+                </div>
+                <div class="mrow">
+                  <i class="spine" style="background:var(--danger)"></i><i class="branch" style="background:var(--danger)"></i>
+                  <span class="pico"><svg><use href="#i-ssh"/></svg></span>
+                  <span class="mname">prod-redis</span>
+                </div>
+              </div>
+              <!-- ghost 卡（跟手浮动卡，悬在目标行上） -->
+              <div class="ghost" style="top:170px">
+                <svg><use href="#i-ssh"/></svg>prod-db-01
+                <span style="margin-left:auto;font-size:10px;color:var(--t3);background:var(--bg-root);border:1px solid var(--line);border-radius:8px;padding:0 6px;line-height:14px">生产环境 · #3</span>
+              </div>
+            </div>
+            <div class="p-foot"><span class="sum">6 组 · 13 台</span>
+              <div class="ibtn"><svg><use href="#i-fold-all"/></svg></div>
+              <div class="ibtn"><svg><use href="#i-unfold-all"/></svg></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ================= 第三部分：改动对照 ================= -->
+  <section>
+    <div class="sec-title"><span class="no">C</span>现状 → 新案 对照说明</div>
+    <div class="notes">
+      <div class="note">
+        <h3><span class="n">1</span>头部工具化</h3>
+        <p>「Quick connect」大标题 + 全宽「+ 新建会话」主按钮，压成一行 <b>38px 工具条</b>：左「会话 · N 台」，右三个 24px 图标钮（新建 / 导入 ssh config / 收起）。新建降级为图标钮——它是低频动作，不值得常驻一个实心主按钮。</p>
+        <p class="was">标题 28px 高 + 主按钮 30px 高共占两行，列表可视区少 ~72px</p>
+      </div>
+      <div class="note">
+        <h3><span class="n">2</span>组头去底色、权重重排</h3>
+        <p>去掉组头整行 <b>bg-panel-alt 底色块</b>，层级改由三件事表达：组名 <b>600 字重</b>提亮为 text-primary、成员缩进 + 组色脊线、组间净距 8px。chevron 从组色改为灰色 14px——组色收敛到<b>文件夹 + 脊线</b>两处，不再三处同色（箭头/文件夹/脊线）互相抢。计数徽章去掉胶囊底，改为纯文字淡色。</p>
+        <p class="was">底色块 + 组色×3 + 胶囊徽章，视觉手段过多、窄栏里显重</p>
+      </div>
+      <div class="note">
+        <h3><span class="n">3</span>连接状态点移到行右缘</h3>
+        <p>黄/绿状态点从协议图标右上角小徽章，改为<b>行右缘 6px 圆点</b>：右缘是扫读列表时视线的固定停靠位，多台在线时一列绿点可比对；绿点带微光晕。协议图标保持纯语义（协议种类），不再混入状态语义。</p>
+        <p class="was">状态点叠在 16px 图标角上，黄绿小点与图标糊在一起、难以扫读</p>
+      </div>
+      <div class="note">
+        <h3><span class="n">4</span>新增「正在使用」常驻态</h3>
+        <p>当前 tab 正在查看的会话，在树里给 <b>accent 淡底 + 左缘 2.5px accent 圆头条</b>。这是现版本缺失的状态——开了 5 个连接后，树里完全看不出自己站在哪台机器上；标签页有 accent 顶线，树里给同语义的左条，两处互相印证。</p>
+        <p class="was">树里只有 hover/右键两种临时高亮，无任何常驻选中态</p>
+      </div>
+      <div class="note">
+        <h3><span class="n">5</span>底部信息条</h3>
+        <p>新增 30px footer：<b>「6 组 · 13 台 · 2 台在线」</b> + 右侧全部折叠 / 全部展开两个图标钮。原来这两个动作只藏在空白处右键菜单里，不可发现；面板也借它形成「头—内容—底」闭环，列表滚动区边界更清晰。</p>
+        <p class="was">全部折叠/展开仅空白右键可达；面板底部戛然而止无收边</p>
+      </div>
+      <div class="note">
+        <h3><span class="n">6</span>保留不动的打磨成果</h3>
+        <p>组色脊线（2px、悬停整条联动点亮）、├ 横枝、拖拽 ghost 卡 + 组色落点空槽 + 邻行弹簧让位、悬停信息卡、右键菜单集中浮层、空组「空分组」占位——这些是多轮反馈磨出来的，<b>形态与机制原样保留</b>，只随行高微调。</p>
+        <p class="was">—</p>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+  // 组头折叠/展开
+  function toggleGrp(head){
+    head.parentElement.classList.toggle('closed');
+    const fold = head.querySelector('.fold use');
+    const open = !head.parentElement.classList.contains('closed');
+    fold.setAttribute('href', open ? '#i-folder-open' : '#i-folder');
+  }
+  // 主窗口搜索过滤
+  const box = document.getElementById('mainSearch');
+  if (box) box.addEventListener('input', e => {
+    const q = e.target.value.trim().toLowerCase();
+    document.querySelectorAll('#mainList [data-grp]').forEach(grp => {
+      let hit = 0, total = 0;
+      grp.querySelectorAll('.mrow').forEach(r => {
+        const show = !q || r.dataset.k.includes(q);
+        r.style.display = show ? '' : 'none';
+        total++;
+        if (show) hit++;
+        const name = r.querySelector('.mname');
+        // 简易命中描亮
+        if (q && show) {
+          const idx = r.dataset.k.indexOf(q);
+          const raw = name.dataset.raw || (name.dataset.raw = name.textContent);
+          const i = raw.toLowerCase().indexOf(q);
+          name.innerHTML = i >= 0
+            ? raw.slice(0,i) + '<span class="hl">' + raw.slice(i, i+q.length) + '</span>' + raw.slice(i+q.length)
+            : raw;
+        } else {
+          const raw = name.dataset.raw || (name.dataset.raw = name.textContent);
+          name.textContent = raw;
+        }
+      });
+      const cnt = grp.querySelector('.gcount');
+      if (q) cnt.textContent = hit + ' / ' + total; else cnt.textContent = total;
+      grp.style.display = (q && hit === 0) ? 'none' : '';
+    });
+  });
+</script>
+</body>
+</html>
