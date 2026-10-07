@@ -1775,7 +1775,7 @@ fn open_window(
         let mut last_dark: Option<bool> = None;
         for p in crate::theme::palettes::PALETTES {
             if last_dark != Some(p.dark) {
-                entries.push(header(if p.dark { "深色主题" } else { "浅色主题" }));
+                entries.push(header(if p.dark { "暗主题" } else { "亮主题" }));
                 last_dark = Some(p.dark);
             }
             entries.push(crate::ui::ThemeEntry {
@@ -3382,47 +3382,27 @@ fn open_window(
         window.on_theme_search_filter(move |q: SharedString| {
             let Some(w) = weak.upgrade() else { return };
             let q = q.to_lowercase();
-            // (#theme-split v4) 从 PALETTES 全量重建（从被过滤的 model 恢复
-            // 会丢全量——实测「搜索后下拉只剩匹配项」）。非空词只发匹配行。
-            let mut out: Vec<crate::ui::ThemeEntry> = Vec::new();
-            for dark in [true, false] {
-                let gname = if dark { "深色主题" } else { "浅色主题" };
-                let group: Vec<_> = crate::theme::palettes::PALETTES
+            let model = w.get_theme_entries();
+            let Some(vec_model) = model.as_any().downcast_ref::<slint::VecModel<crate::ui::ThemeEntry>>() else { return };
+            if q.is_empty() {
+                // 恢复：matched 恒 true 的全量（含组头）
+                let all: Vec<crate::ui::ThemeEntry> = model
                     .iter()
-                    .filter(|p| p.dark == dark
-                        && (q.is_empty()
-                            || p.zh.to_lowercase().contains(q.as_str())
-                            || p.id.to_lowercase().contains(q.as_str())))
+                    .map(|mut r| { r.matched = true; r })
                     .collect();
-                if group.is_empty() {
-                    continue;
-                }
-                if q.is_empty() {
-                    out.push(crate::ui::ThemeEntry {
-                        id: "".into(), zh: gname.into(), mode: "".into(),
-                        kind: "header".into(),
-                        root: Default::default(), panel: Default::default(),
-                        tbg: Default::default(), tfg: Default::default(),
-                        ac: Default::default(), matched: true,
-                    });
-                }
-                for p in group {
-                    out.push(crate::ui::ThemeEntry {
-                        id: p.id.into(), zh: p.zh.into(),
-                        mode: if p.dark { "暗".into() } else { "亮".into() },
-                        kind: p.kind.into(),
-                        root: crate::theme::color(p.root),
-                        panel: crate::theme::color(p.panel),
-                        tbg: crate::theme::color(p.tbg),
-                        tfg: crate::theme::color(p.tfg),
-                        ac: crate::theme::color(p.ac),
-                        matched: true,
-                    });
-                }
+                vec_model.set_vec(all);
+                return;
             }
-            if let Some(vm) = w.get_theme_entries().as_any().downcast_ref::<slint::VecModel<crate::ui::ThemeEntry>>() {
-                vm.set_vec(out);
-            }
+            let filtered: Vec<crate::ui::ThemeEntry> = model
+                .iter()
+                .filter(|row| {
+                    row.kind != "header"
+                        && (row.zh.to_lowercase().contains(q.as_str())
+                            || row.id.to_lowercase().contains(q.as_str()))
+                })
+                .map(|mut r| { r.matched = true; r })
+                .collect();
+            vec_model.set_vec(filtered);
         });
     }
     // ── (#tab-32) 频道（tab-row-idia 稿）：加入/暂停/离开 + 状态条恢复 ──
@@ -3445,7 +3425,6 @@ fn open_window(
         store: &ConfigStore,
         tabs: &Rc<slint::VecModel<crate::ui::TabInfo>>,
         tab_id: &str,
-        panes: &Rc<slint::VecModel<crate::ui::PaneInfo>>,
     ) {
         let sid = tab_session_id(window, tab_id);
         let letters = ["A", "B", "C", "D"];
@@ -3474,23 +3453,6 @@ fn open_window(
                 }
             }
         }
-        // 页签显示的是 pane.tabs 副本（TabBar.tabs: pane.tabs）——不同步则字母
-        // 不出现在页签上（实测）。副本同步后一并刷新状态条。
-        for pi in 0..panes.row_count() {
-            let Some(pane) = panes.row_data(pi) else { continue };
-            let Some(sub) = pane.tabs.as_any().downcast_ref::<slint::VecModel<crate::ui::TabInfo>>() else { continue };
-            for i in 0..sub.row_count() {
-                if let Some(mut row) = sub.row_data(i) {
-                    if row.id.as_str() == tab_id {
-                        row.channel_letter = letter.into();
-                        row.channel_color = color;
-                        row.channel_paused = paused;
-                        sub.set_row_data(i, row);
-                    }
-                }
-            }
-        }
-        refresh_channel_bars(window, store, panes, tabs);
     }
     {
         let weak = window.as_weak();
@@ -3512,7 +3474,7 @@ fn open_window(
                 s.set_channel_member(slot, &sid);
                 let _ = s.save();
             }
-            refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &tab_id, &panes_model_c);
+            refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &tab_id);
             refresh_channel_bars(&w, &store.borrow(), &panes_model_c, &tabs_model_c);
                 w.set_menu_channel_letter(["A", "B", "C", "D"][slot].into());
                 // 频道成员 = 同步激活（三态按钮的数据源；阶段-5 对话框接管后语义不变）。
@@ -3530,7 +3492,7 @@ fn open_window(
             let now_paused = !store.borrow().channel_is_paused(&sid);
             store.borrow_mut().set_channel_paused(&sid, now_paused);
             let _ = store.borrow().save();
-            refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &tab_id, &panes_model_c);
+            refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &tab_id);
             refresh_channel_bars(&w, &store.borrow(), &panes_model_c, &tabs_model_c);
                 w.set_menu_channel_paused(now_paused);
             }
@@ -3549,7 +3511,7 @@ fn open_window(
                 s.clear_channel_pause(&sid);
                 let _ = s.save();
             }
-            refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &tab_id, &panes_model_c);
+            refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &tab_id);
             refresh_channel_bars(&w, &store.borrow(), &panes_model_c, &tabs_model_c);
                 w.set_menu_channel_letter("".into());
                 w.set_menu_channel_paused(false);
@@ -7322,30 +7284,6 @@ fn wire_session_callbacks(
                 group_color_hex: tab_gc_hex.into(),
                 group_color: tab_gc,
             });
-            // (#tab-32) 重启恢复：该会话已在频道成员表里 → 回填页签字母/色。
-            {
-                let sid = id.as_str();
-                let letters = ["A", "B", "C", "D"];
-                if let Some(slot) = store
-                    .borrow()
-                    .channel_members()
-                    .iter()
-                    .position(|m| m.iter().any(|x| x == sid))
-                {
-                    let n = tabs_model.row_count() - 1;
-                    if let Some(mut row) = tabs_model.row_data(n) {
-                        row.channel_letter = letters[slot].into();
-                        row.channel_color = {
-                            let tid = store.borrow().theme().to_string();
-                            let follow = store.borrow().follow_system();
-                            let pal = crate::theme::palette_or_default(&tid, follow);
-                            crate::theme::color(pal.channel[slot])
-                        };
-                        row.channel_paused = store.borrow().channel_is_paused(sid);
-                        tabs_model.set_row_data(n, row);
-                    }
-                }
-            }
             // Each session keeps its own SFTP collapse state + sizes, seeded from
             // the global defaults (the "collapse SFTP by default" pref and the
             // persisted panel sizes) so they no longer bleed across panes (#v0.5).
