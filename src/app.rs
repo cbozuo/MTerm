@@ -1755,11 +1755,28 @@ fn open_window(
             })
             .collect();
         window.set_quick_theme_entries(ModelRc::from(Rc::new(VecModel::from(quick))));
-        let s = store.borrow();
-        window.set_follow_system(s.follow_system());
-        window.set_accent_mode(s.accent_mode().into());
-        window.set_accent_preset(s.accent_preset().into());
-        window.set_accent_custom(s.accent_custom().into());
+        {
+            let s = store.borrow();
+            window.set_follow_system(s.follow_system());
+            window.set_theme_chosen(s.theme().into());
+            // (#theme-split) 启动归一化：旧版本曾把「点了自定义但没填色」落盘成
+            // accent_mode=custom+空 hex——实际强调色一直在跟随主题，显示却停在
+            // 「自定义」。这里清回 follow（一次性的脏数据修复）。
+            if s.accent_mode() == "custom"
+                && crate::theme::parse_hex(s.accent_custom()).is_none()
+            {
+                drop(s);
+                let mut s2 = store.borrow_mut();
+                s2.set_accent_mode("follow".to_string());
+                let _ = s2.save();
+                window.set_accent_mode("follow".into());
+            } else {
+                let s = store.borrow();
+                window.set_accent_mode(s.accent_mode().into());
+                window.set_accent_preset(s.accent_preset().into());
+                window.set_accent_custom(s.accent_custom().into());
+            }
+        }
     }
     // On macOS, app shortcuts use Cmd (⌘) so physical Ctrl stays free for the
     // shell (#158); on Windows/Linux they stay Ctrl-based.
@@ -3485,6 +3502,7 @@ fn open_window(
                 let _ = s.save();
             }
             apply_theme(&w, &bufs_theme, &store.borrow());
+            w.set_theme_chosen(id.clone());
             w.set_follow_system(store.borrow().follow_system());
             // 分组取色面板的候选 24 色随新主题换（§3-调整⑤）。
             if let Some(p) = crate::theme::by_id(id.as_str()) {
@@ -3510,6 +3528,7 @@ fn open_window(
                 let _ = s.save();
             }
             apply_theme(&w, &bufs_c, &store_c.borrow());
+            w.set_theme_chosen(next.into());
             if let Some(p) = proc_c.upgrade() {
                 sync_proc_theme(&w, &p);
             }
