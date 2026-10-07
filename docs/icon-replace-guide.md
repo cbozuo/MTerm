@@ -8,29 +8,29 @@
 
 | 文件 | 用在哪里 | 格式 / 尺寸 | 谁来加载 |
 |---|---|---|---|
-| `assets/meatshell.ico` | ① exe 文件图标（资源管理器/快捷方式/任务栏）② **系统托盘图标** | Windows ICO，多尺寸合集 | exe 资源（资源 ID 1）→ 托盘代码按小图标尺寸加载 |
+| `assets/mterm.ico` | ① exe 文件图标（资源管理器/快捷方式/任务栏）② **系统托盘图标** | Windows ICO，多尺寸合集 | exe 资源（资源 ID 1）→ 托盘代码按小图标尺寸加载 |
 | `assets/icon.png` | 应用内窗口标题栏左上角 logo（主窗口/进程/系统信息/编辑器等所有窗口） | PNG 256×256 RGBA | Slint `@image-url`，编译期打包 |
 | `assets/icon@512.png` | Linux：任务栏/窗口图标 + 系统应用图标（deb 安装） | PNG 512×512 RGBA | `include_bytes!` + `.desktop` 安装脚本 |
 | `assets/Info.plist` 指向的 icns | macOS Dock/访达图标 | icns（macOS 打包时生成） | macOS 应用包 |
 
-## 1. Windows：`assets/meatshell.ico`（托盘图标 + exe 图标）
+## 1. Windows：`assets/mterm.ico`（托盘图标 + exe 图标）
 
 **一个文件管两处**：`build.rs` 里 `winresource::WindowsResource::set_icon()` 把它嵌入 exe 资源段（资源 ID **1**）；`src/app/tray.rs` 的 `add_icon()` 用 `LoadImageW(exe句柄, MAKEINTRESOURCE(1), IMAGE_ICON, SM_CXSMICON, SM_CYSMICON)` 加载它作为托盘图标。
 
 **格式要求**：
 - ICO 容器，**必须包含这些尺寸层**：`16×16`、`24×24`、`32×32`、`48×48`、`64×64`、`128×128`、`256×256`（层内用 PNG 压缩即可，256 层必须是 PNG）
 - **托盘图标实际读取的是 16×16 / 32×32 两层**（100% DPI 用 16px，150%/200% DPI 用 32px；Windows 按系统 DPI 自动选层）——这两层必须清晰，不要只塞一张 256 大图让系统缩放
-- RGBA 全彩 + 透明背景，圆角/内容比例参考现有 `assets/meatshell.ico`
+- RGBA 全彩 + 透明背景，圆角/内容比例参考现有 `assets/mterm.ico`
 - 单层没有透明度托盘上会显示白底方块
 
 **替换方法**（任选）：
 ```sh
 # ImageMagick（推荐，一条命令生成全尺寸层）
-magick 源图-1024.png -define icon:auto-resize=256,128,64,48,32,24,16 assets/meatshell.ico
+magick 源图-1024.png -define icon:auto-resize=256,128,64,48,32,24,16 assets/mterm.ico
 ```
 或在线工具（icoconvert / convertio 等）上传 1024 源图勾选全部尺寸导出。
 
-**替换后**：重新 `cargo build`（build.rs 已声明 `rerun-if-changed=assets/meatshell.ico`，会自动重嵌资源）。验证托盘图标：任务栏时钟左侧（已提升显示时）或 ^ 溢出弹窗里；资源管理器里看 exe 图标（有系统图标缓存，必要时改名 exe 或重启资源管理器刷新）。
+**替换后**：重新 `cargo build`（build.rs 已声明 `rerun-if-changed=assets/mterm.ico`，会自动重嵌资源）。验证托盘图标：任务栏时钟左侧（已提升显示时）或 ^ 溢出弹窗里；资源管理器里看 exe 图标（有系统图标缓存，必要时改名 exe 或重启资源管理器刷新）。
 
 ## 2. 应用内窗口 Logo：`assets/icon.png`
 
@@ -67,7 +67,7 @@ iconutil -c icns icon.iconset -o meatshell.icns
 
 替换完所有文件后：
 
-- [ ] `assets/meatshell.ico` 含 16/24/32/48/64/128/256 七个尺寸层
+- [ ] `assets/mterm.ico` 含 16/24/32/48/64/128/256 七个尺寸层
 - [ ] `assets/icon.png` 256×256、`assets/icon@512.png` 512×512
 - [ ] 所有文件名未改动（代码与脚本按文件名引用）
 - [ ] `cargo build` 全量重编通过

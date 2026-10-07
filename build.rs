@@ -18,10 +18,10 @@ fn main() {
     // Explorer, the taskbar and shortcuts. No-op on non-Windows targets.
     #[cfg(windows)]
     {
-        println!("cargo:rerun-if-changed=assets/meatshell.ico");
+        println!("cargo:rerun-if-changed=assets/mterm.ico");
         println!("cargo:rerun-if-changed=assets/meatshell.exe.manifest");
         let mut res = winresource::WindowsResource::new();
-        res.set_icon("assets/meatshell.ico");
+        res.set_icon("assets/mterm.ico");
         // Embed an application manifest declaring Per-Monitor DPI Awareness V2.
         // Without it the DPI-awareness level depends on winit's runtime
         // SetProcessDpiAwarenessContext call, which races: if anything touches a

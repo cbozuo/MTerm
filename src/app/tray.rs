@@ -302,7 +302,7 @@ mod win {
     /// 「最小化到托盘」没有可唤回的入口,调用方必须换路径而不是隐藏窗口。
     unsafe fn add_icon(hwnd: HWND) -> bool {
         // (#tray-icon-real 2026-09-19) 优先加载 **exe 内嵌的软件图标**
-        // （build.rs 的 winresource 以资源 ID 1 嵌入 assets/meatshell.ico）。
+        // （build.rs 的 winresource 以资源 ID 1 嵌入 assets/mterm.ico）。
         // 托盘按小图标渲染,按 SM_CXSMICON/SM_CYSMICON 尺寸加载最清晰。
         // 09-18 的教训仍成立:加载资源图标必须传 exe 模块句柄;系统预定义
         // 图标（IDI_APPLICATION）必须传 NULL —— 两者分开,失败时回落占位,
@@ -343,7 +343,7 @@ mod win {
             hIcon: HICON(icon.0),
             ..Default::default()
         };
-        let tip: Vec<u16> = "meatshell"
+        let tip: Vec<u16> = "MTerm"
             .encode_utf16()
             .chain(std::iter::once(0))
             .take(TIP_LEN)

@@ -360,7 +360,7 @@ pub(super) fn wire_tab_callbacks(
                         &tabs_model,
                         &panes_model,
                         &splitters_model,
-                    );
+                        );
                 }
             },
         );

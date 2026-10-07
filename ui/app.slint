@@ -589,6 +589,121 @@ component TopbarBtn inherits Rectangle {
     }
 }
 
+    // (#logo-brand-btn 2026-10-08) 标题栏左上角的品牌 LOGO 按钮：黑底白 M
+    // 徽章（assets/icons/logo-m.svg，深浅主题同一份）平时静默展示品牌；
+    // 悬浮时徽章淡出、淡入 sidebar-left-collapse/expand 收/展面板图标
+    // （复用图标库现成 SVG），同时弹「收起侧边栏 / 展开侧边栏」提示气泡
+    // （文案随目标面板状态）；点击切换左侧面板（welcome-collapsed，含持久
+    // 化）并**立即取消本次悬浮提示**（suppress 规则：has-hover 回落 false
+    // 才复位——鼠标停在按钮上不再弹泡，移出再进才恢复）。
+    // 徽章是彩色图（黑底渐变+白 M），不走 Icon 的单色 colorize 管道，直接
+    // Image 引用；dark 主题下由 UI 层补 0.5px 半透明白亮边勾轮廓（黑底贴
+    // 深灰标题栏对比不足），亮主题黑底对比天然够、无边框（对齐 ZCode）。
+    // 气泡自带渲染（不接 topbar-tip-* 管道）：该机制目前 tip-out-* 与
+    // topbar-tip-* 之间没有桥接绑定，且 suppress 规则需要按钮自己持有状态。
+    // 气泡向下溢出标题栏：本组件实例声明在 dock-area 之后（根层末尾），
+    // 天然盖住下方内容，标题栏与 dock-area 均无 clip 不裁剪。
+    component BrandLogoBtn inherits Rectangle {
+        in property <bool> collapsed;        // 目标面板收起态（决定图标与文案）
+        in property <bool> lang-en;          // 实例处从 AppWindow 传入
+        callback clicked();
+        width: 36px;
+        height: 38px;
+        border-radius: Theme.radius-sm;
+        background: ta.has-hover ? Theme.bg-hover : transparent;
+        animate background { duration: 120ms; }
+
+        property <bool> tip-hover: ta.has-hover;
+        property <bool> tip-suppressed: false;
+        property <bool> tip-open: false;
+        tip-delay := Timer {
+            interval: 300ms;
+            triggered => {
+                // changed 回调在元素初始求值时也会跑一次（has-hover 尚为
+                // false），会误启动本定时器——触发时必须复查确实悬浮着，
+                // 否则启动即凭空弹泡。
+                if (ta.has-hover) { root.tip-open = !root.tip-suppressed; }
+            }
+        }
+        changed tip-hover => {
+            if (root.tip-hover) {
+                root.tip-suppressed = false;
+                tip-delay.restart();
+            } else {
+                tip-delay.running = false;
+                root.tip-open = false;
+            }
+        }
+
+        // 徽章（黑底白 M）——悬浮淡出，让位给收/展图标。22px：标题栏其它
+        // 图标为 16px 线性字形，实底徽章略大半档（~1.4×）读作「品牌块」而
+        // 不抢行高；30px 实测压过整行，已弃。
+        badge := Image {
+            source: @image-url("../assets/icons/logo-m.svg");
+            width: 22px;
+            height: 22px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            opacity: ta.has-hover ? 0 : 1;
+            animate opacity { duration: 120ms; }
+        }
+        // dark 主题细亮边：0.5px 半透明白勾出黑底轮廓（徽章淡出时同步隐藏）。
+        Rectangle {
+            x: (parent.width - 22px) / 2;
+            y: (parent.height - 22px) / 2;
+            width: 22px;
+            height: 22px;
+            border-radius: 5px;
+            border-width: 0.5px;
+            border-color: #ffffff3d;
+            visible: Theme.dark;
+            opacity: ta.has-hover ? 0 : 1;
+            animate opacity { duration: 120ms; }
+        }
+        // 收/展面板图标——悬浮淡入（图标库现成 SVG，24 网格单色）。
+        Icon {
+            glyph: root.collapsed ? "sidebar-left-expand" : "sidebar-left-collapse";
+            tint: Theme.text-primary;
+            size: 22px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            opacity: ta.has-hover ? 1 : 0;
+            animate opacity { duration: 120ms; }
+        }
+        ta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.tip-suppressed = true;   // 点击即取消本次悬浮提示
+                root.tip-open = false;
+                root.clicked();
+            }
+        }
+        // 提示气泡：按钮正下方，样式与顶栏 tip 浮层同款（bg-elevated + 边 +
+        // 投影）。文案随目标面板状态；suppress 期间不显示。
+        if root.tip-open : Rectangle {
+            x: 2px;
+            y: parent.height + 5px;
+            width: logo-tip-txt.preferred-width + 16px;
+            height: 22px;
+            background: Theme.bg-elevated;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 8px;
+            drop-shadow-color: #00000070;
+            logo-tip-txt := Text {
+                text: root.collapsed ? (root.lang-en ? "Expand sidebar" : "展开侧边栏")
+                                     : (root.lang-en ? "Collapse sidebar" : "收起侧边栏");
+                color: Theme.text-primary;
+                font-size: Theme.fs-xs;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: parent.width;
+                height: parent.height;
+            }
+        }
+    }
+
 // One row in the keyboard-shortcuts dialog: a key chip + a description (#103).
 component ShortcutRow inherits Rectangle {
     in property <string> keys;
@@ -630,7 +745,7 @@ component ShortcutRow inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
-    title: "meatshell";
+    title: "MTerm";
     icon: @image-url("../assets/icon.png");
     // Frameless when we draw our own title bar (#119); Rust sets custom-titlebar
     // true on Windows/Linux. Slint maps no-frame → winit set_decorations(false).
@@ -1772,6 +1887,10 @@ export component AppWindow inherits Window {
                     // (#polish-topbar-r5) 贴合窗口左缘:去掉标题栏左 padding,
                     // 呼吸空间由按钮自身的 padding-left(8px)提供。
                     spacing: 8px;
+                    // (#logo-brand-btn 2026-10-08) 左上角品牌 LOGO 按钮的占位：
+                    // BrandLogoBtn 以根层绝对定位盖在这里(36px),无热区垫片把
+                    // 「新建会话」右移让位;垫片不带 TouchArea,点击落到 tb-drag。
+                    Rectangle { width: 36px; }
                     // (#polish-topbar-r3 2026-09-05) DBeaver 式「图标 + 文字」
                     // 工具栏:品牌名移除(窗口标题/任务栏已可辨),文字自明故
                     // 无 tooltip;按钮组左对齐,右侧弹性,窗口控制靠右。
@@ -3133,6 +3252,21 @@ export component AppWindow inherits Window {
             vertical-alignment: center;
             width: parent.width;
             height: parent.height;
+        }
+    }
+
+    // (#logo-brand-btn) 标题栏左上角品牌 LOGO 按钮：平时静默展示品牌徽章，
+    // 悬浮淡入收/展图标 +「收起/展开侧边栏」提示，点击切换左侧面板（快速
+    // 连接 welcome 侧栏，走 set-welcome-collapsed 持久化）。声明在 dock-area
+    // 之后 → 徽章与提示气泡天然盖在下方内容之上。
+    if root.custom-titlebar : BrandLogoBtn {
+        x: 0;
+        y: 0;
+        collapsed: root.welcome-collapsed;
+        lang-en: root.lang-en;
+        clicked => {
+            root.welcome-collapsed = !root.welcome-collapsed;
+            root.set-welcome-collapsed(root.welcome-collapsed);
         }
     }
 
