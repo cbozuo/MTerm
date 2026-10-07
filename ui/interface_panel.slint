@@ -627,18 +627,14 @@ export component InterfacePanel inherits Rectangle {
     in-out property <float> term-alpha: 1.0;
     in-out property <float> wallpaper-visible: 1.0;
     in-out property <int> popup-transparency: 0;
-    // 主题下拉的弹层状态与悬停预览（§6：悬停只更新右侧预览）。
-    // ⚠️ Slint 的 pure function 里没有循环——「按 id 查表」不可行，因此
-    // 当前主题名与悬停预览的五色都由**事件直接写入**：Rust apply_theme 写
-    // theme-name + 当前套五色；下拉行的 has-hover 写 preview-*。
-    in-out property <bool> tpk-open: false;
-    in-out property <string> theme-name: "";
-    in-out property <string> preview-name: "";
-    in-out property <color> preview-root: #1b1d23;
-    in-out property <color> preview-panel: #23262d;
-    in-out property <color> preview-tbg: #0e0f13;
-    in-out property <color> preview-tfg: #d4d4d4;
-    in-out property <color> preview-ac: #4a90e2;
+    // (#theme-split v2) 主题下拉浮层桥（浮层本体在 AppWindow 根层，ChainPicker
+    // 同款模式）：open 开关 + 按钮窗口坐标 + 悬停预览回调。当前主题名由
+    // Rust apply_theme 写 theme-name（按钮显示）。
+    in-out property <bool> theme-pick-open: false;
+    in-out property <length> theme-pick-x: 0px;
+    in-out property <length> theme-pick-y: 0px;
+    in-out property <string> theme-name;   // <=> app（Rust apply 写）
+    callback preview-theme(string /* id — 悬停实时预览，不落盘 */);
     // Active wallpaper id: "" / "builtin:light" / "builtin:dark" / a file path.
     in property <string> current-wallpaper;
     in property <string> custom-wallpaper-name;   // basename for the file row
@@ -1284,82 +1280,50 @@ export component InterfacePanel inherits Rectangle {
                 spacing: 0;
                 alignment: start;
 
-
                 Text {
                     text: root.lang-en
                         ? "Theme = the whole colour system (incl. terminal ANSI), independent of the wallpaper."
-                        : "整套配色（含终端 ANSI 调色板），与壁纸无关。";
+                        : "整套配色（含终端 ANSI 调色板），与壁纸无关。悬停下拉项可在主界面实时预览，点击确认。";
                     color: Theme.text-muted; font-size: 11px * Theme.panel-font; wrap: word-wrap;
                 }
                 Rectangle { height: 12px; }
 
-                // ── 主题选择：下拉（按族分组 + 悬停预览）──────────────────
+                // ── 主题选择：下拉（按族分组）。悬停 = 主界面实时预览（不落
+                // 盘），点击 = 确认；浮层本体在 AppWindow 根层（theme-pick-open
+                // 桥，ChainPicker 同款——popup 独立作用域定位/事件都不可靠）。
                 SettingRow {
                     label: root.lang-en ? "Theme" : "主题";
                     desc: root.lang-en ? "36 presets in four families" : "四族 36 套预设";
-                    VerticalLayout {
-                        spacing: 8px;
+                    tpk-btn := Rectangle {
+                        width: 240px; height: 34px;
+                        border-radius: 7px;
+                        border-width: 1px; border-color: Theme.border-control;
+                        background: Theme.field;
                         HorizontalLayout {
-                            spacing: 11px;
-                            alignment: start;
-                            // 触发按钮：当前主题名 + ▼
+                            padding-left: 10px; padding-right: 8px;
+                            alignment: center;
+                            spacing: 6px;
                             Rectangle {
-                                width: 218px; height: 34px;
-                                border-radius: 7px;
-                                border-width: 1px; border-color: Theme.border-control;
-                                background: Theme.field;
-                                HorizontalLayout {
-                                    padding-left: 10px; padding-right: 8px;
-                                    alignment: center;
-                                    spacing: 6px;
-                                    Rectangle {
-                                        width: 12px; height: 12px; border-radius: 3px;
-                                        background: Theme.accent-solid;
-                                    }
-                                    Text {
-                                        text: root.theme-name;
-                                        color: Theme.text-primary; font-size: 12px * Theme.panel-font;
-                                        vertical-alignment: center;
-                                        overflow: elide;
-                                    }
-                                    Rectangle { horizontal-stretch: 1; }
-                                    Text { text: "▼"; color: Theme.text-muted; font-size: 9px; }
-                                }
-                                TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => { tpk-pop.show(); }
-                                }
+                                width: 12px; height: 12px; border-radius: 3px;
+                                background: Theme.accent-solid;
                             }
-                            // 右侧预览卡：悬停行更新（不切换）
-                            Rectangle {
-                                width: 210px; height: 34px;
-                                border-radius: 7px;
-                                border-width: 1px; border-color: Theme.border-subtle;
-                                background: root.preview-root;
-                                HorizontalLayout {
-                                    padding-left: 9px; padding-right: 9px;
-                                    spacing: 7px; alignment: center;
-                                    Rectangle {
-                                        width: 26px; height: 20px; border-radius: 4px;
-                                        background: root.preview-tbg;
-                                        border-width: 1px; border-color: root.preview-panel;
-                                        Text {
-                                            text: "▍terminal";
-                                            color: root.preview-tfg;
-                                            font-size: 8px * Theme.panel-font;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                            overflow: elide;
-                                        }
-                                    }
-                                    Text {
-                                        text: root.preview-name;
-                                        color: root.preview-tfg; font-size: 11px * Theme.panel-font;
-                                        vertical-alignment: center;
-                                        overflow: elide;
-                                    }
-                                    Rectangle { width: 10px; height: 10px; border-radius: 2px; background: root.preview-ac; }
-                                }
+                            Text {
+                                text: root.theme-name;
+                                color: Theme.text-primary; font-size: 12px * Theme.panel-font;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            Text { text: "▼"; color: Theme.text-muted; font-size: 9px; }
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                // 上报按钮的窗口坐标（布局期 absolute-position 恒 0，
+                                // 必须在事件期取——ChainPicker 的 report-pos 结论）。
+                                root.theme-pick-open = !root.theme-pick-open;
+                                root.theme-pick-x = self.absolute-position.x;
+                                root.theme-pick-y = self.absolute-position.y + self.height;
                             }
                         }
                     }
@@ -1461,8 +1425,7 @@ export component InterfacePanel inherits Rectangle {
                 }
                 Rectangle { height: 6px; }
 
-                // ── 界面通透度三档（§3-调整④：标准实心 / 通透跟随面板 /
-                //    全透 88% + 强遮罩，modal-scrim 随档自动上调）───────────
+                // ── 界面通透度三档（§3-调整④）────────────────────────────
                 SettingRow {
                     label: root.lang-en ? "Translucency" : "界面通透度";
                     desc: root.lang-en ? "Dialogs: solid (default) / follow panel / 88% glass" : "弹窗：标准（实心）/ 通透（跟随面板）/ 全透（88% + 强遮罩）";
@@ -1478,76 +1441,6 @@ export component InterfacePanel inherits Rectangle {
                             border-color: root.popup-transparency == seg-v ? Theme.accent-solid : Theme.border-subtle;
                             Text { text: t.name; color: Theme.text-primary; font-size: 11px * Theme.panel-font; horizontal-alignment: center; vertical-alignment: center; }
                             TouchArea { mouse-cursor: pointer; clicked => { root.popup-transparency = seg-v; root.set-popup-transparency(seg-v); } }
-                        }
-                    }
-                }
-            }
-            // 主题下拉弹层：按族分组的 38 行（Rust entries 已按族顺序 + 组头行
-            // kind=="header"），行悬停写 preview-id、点击选主题并关闭。
-            tpk-pop := PopupWindow {
-                width: 300px;
-                height: min(432px, root.theme-entries.length * 31px + 60px);
-                close-policy: close-on-click-outside;
-                Rectangle {
-                    border-radius: 9px;
-                    background: Theme.popup-bg;
-                    border-width: 1px; border-color: Theme.border-strong;
-                    drop-shadow-blur: 14px; drop-shadow-color: #00000060;
-                    Flickable {
-                        x: 0; y: 6px; width: parent.width; height: parent.height - 12px;
-                        content-height: tpk-pop-lay.preferred-height;
-                        tpk-pop-lay := VerticalLayout {
-                            spacing: 1px; alignment: start;
-                            for e in root.theme-entries : Rectangle {
-                                height: e.kind == "header" ? 24px : 30px;
-                                HorizontalLayout {
-                                    padding-left: e.kind == "header" ? 8px : 10px;
-                                    padding-right: 8px;
-                                    spacing: 8px; alignment: start;
-                                    if e.kind == "header" : Text {
-                                        text: e.zh;
-                                        color: Theme.text-muted; font-size: 10px * Theme.panel-font;
-                                        vertical-alignment: center;
-                                    }
-                                    if e.kind != "header" : Rectangle {
-                                        width: 14px; height: 14px; border-radius: 4px;
-                                        background: e.panel;
-                                        border-width: 1px; border-color: Theme.border-subtle;
-                                        y: (parent.height - self.height) / 2;
-                                    }
-                                    if e.kind != "header" : Text {
-                                        text: e.zh + " · " + e.mode;
-                                        color: e.id == root.theme-chosen ? Theme.accent-solid : Theme.text-primary;
-                                        font-size: 12px * Theme.panel-font;
-                                        vertical-alignment: center;
-                                        overflow: elide;
-                                    }
-                                    Rectangle { horizontal-stretch: 1; }
-                                    if e.kind != "header" && e.id == root.theme-chosen : Text {
-                                        text: "✓"; color: Theme.accent-solid; font-size: 12px;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                                if e.kind != "header" : TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.theme-chosen = e.id;
-                                        root.set-theme(e.id);
-                                        root.tpk-open = false;
-                                    }
-                                    changed has-hover => {
-                                        if (self.has-hover) {
-                                            // 悬停只更新预览（§6：看 ≠ 选）
-                                            root.preview-name = e.zh + " · " + e.mode;
-                                            root.preview-root = e.root;
-                                            root.preview-panel = e.panel;
-                                            root.preview-tbg = e.tbg;
-                                            root.preview-tfg = e.tfg;
-                                            root.preview-ac = e.ac;
-                                        }
-                                    }
-                                }
-                            }
                         }
                     }
                 }

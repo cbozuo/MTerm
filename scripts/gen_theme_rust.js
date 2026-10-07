@@ -1,12 +1,9 @@
 // ═════════════════════════════════════════════════════════════════════
-// 生成 src/theme/palettes.rs：38 套主题色表（Rust 常量）
+// 生成 src/theme/palettes.rs：36 套主题色表（Rust 常量）
 //
 // 输入（真源，均可由各自生成器重跑）：
 //   theme-tokens.json + _radix-themes.json + _extra-themes.json  → UI 20 槽
 //   _ansi-group.json（gen_ansi_group.js 产出）                    → ANSI16/分组色24/频道色4
-// meat-dark/meat-light 的 UI 槽取 ui/theme.slint 现值（迁移保留档，
-// 观感零变化），其中 base-bg-elevated 按 tab-row-idia 稿重取：
-//   暗 #30333c→#25282f、亮 #d8d8de→#e2e2e8（非选中 tab 底降对比）。
 //
 // ⚠️ 生成文件，勿手改。用法：node scripts/gen_theme_rust.js
 // ═════════════════════════════════════════════════════════════════════
@@ -19,7 +16,9 @@ const EXTRA = JSON.parse(fs.readFileSync(path.join(__dirname, '_extra-themes.jso
 const AG = JSON.parse(fs.readFileSync(path.join(__dirname, '_ansi-group.json'), 'utf8'));
 const ALL_UI = { ...TOKENS, ...RADIX_T, ...EXTRA };
 
-// 与 gen_ansi_group.js 的 GROUPS_DEF/VARIANTS 一致（radix 10 → brand 4 → terminal 22 → meat 2）
+// 与 gen_ansi_group.js 的 GROUPS_DEF/VARIANTS 一致（radix 10 → brand 4 → terminal 22）
+// （2026-10-07 用户决策：迁移保留档 meat-dark/light 不进选择器——真源数据仍在
+//  _ansi-group.json，如需恢复在 ORDER 尾部加回即可）
 const ORDER = [
   'graphite-dark', 'graphite-light', 'slate-dark', 'slate-light', 'mauve-dark', 'mauve-light',
   'sage-dark', 'sage-light', 'sand-dark', 'sand-light',
@@ -29,49 +28,27 @@ const ORDER = [
   'gruvbox-material-dark', 'gruvbox-material-light',
   'tokyonight-dark', 'tokyonight-light', 'nord-dark', 'nord-light', 'everforest-dark',
   'rosepine-dark', 'rosepine-light', 'onedark-dark', 'flexoki-dark', 'flexoki-light',
-  'meat-dark', 'meat-light',
 ];
-
-// meat 迁移档的 UI 槽（ui/theme.slint 现值；elev = tab 稿重取）
-const MEAT_UI = {
-  'meat-dark': {
-    f: 'MeatShell', m: '暗', dark: true, kind: 'meat',
-    root: '#1b1d23', panel: '#23262d', palt: '#2a2d35', elev: '#25282f',
-    hov: '#373a44', act: '#3f4350', tab: '#0e0f13', line: '#3a3d46', lstr: '#4a4e59',
-    t1: '#e6e8ee', t2: '#b4b9c4', t3: '#9196a3', tbg: '#0e0f13', tfg: '#d4d4d4',
-    ac: '#4a90e2', ac2: '#4a90e2', ok: '#4ec9b0', wr: '#e2a84a', dg: '#e25c5c', dgS: '#e25c5c',
-    note: '槽位=ui/theme.slint 现值；elev 按 tab-row-idia 稿重取（非选中 tab 底降对比）',
-  },
-  'meat-light': {
-    f: 'MeatShell', m: '亮', dark: false, kind: 'meat',
-    root: '#f5f5f7', panel: '#ffffff', palt: '#f2f2f7', elev: '#e2e2e8',
-    hov: '#e0e0e6', act: '#d8d8de', tab: '#fafafa', line: '#e2e2e8', lstr: '#c7c7cc',
-    t1: '#1d1d1f', t2: '#45454a', t3: '#606066', tbg: '#fafafa', tfg: '#2d2d2f',
-    ac: '#0071e3', ac2: '#0071e3', ok: '#34c759', wr: '#ff9f0a', dg: '#ff3b30', dgS: '#ff3b30',
-    note: '同上（亮档）',
-  },
-};
 
 const hx = (s) => '0x' + s.replace('#', '').toUpperCase();
 const arr = (a) => '[' + a.map(hx).join(', ') + ']';
 
 const out = [];
 out.push('// ═════════════════════════════════════════════════════════════════════');
-out.push('// 38 套主题色表（★生成文件，勿手改★）——scripts/gen_theme_rust.js 产出');
+out.push('// 36 套主题色表（★生成文件，勿手改★）——scripts/gen_theme_rust.js 产出');
 out.push('// 真源：scripts/theme-tokens.json + _radix-themes.json + _extra-themes.json');
 out.push('//       + _ansi-group.json（ANSI16 / 分组色24 / 频道色4，含来源与校验）');
-out.push('// 全部色值为官方发布原样（个别派生档在 _ansi-group.json 的 src 字段标注）；');
-out.push('// meat-dark/meat-light 为迁移保留档（ui/theme.slint 现值，elev 按稿重取）。');
+out.push('// 全部色值为官方发布原样（个别派生档在 _ansi-group.json 的 src 字段标注）。');
 out.push('// ═════════════════════════════════════════════════════════════════════');
 out.push('');
 out.push('/// 单套主题的全部色槽。色值为 0xRRGGBB。');
-out.push('pub struct Palette {');
-out.push('    pub id: &\'static str,');
+out.push("pub struct Palette {");
+out.push("    pub id: &'static str,");
 out.push('    /// 中文名（不含明暗后缀，如「石墨」）');
-out.push('    pub zh: &\'static str,');
+out.push("    pub zh: &'static str,");
 out.push('    pub dark: bool,');
-out.push('    /// radix | brand | terminal | meat');
-out.push('    pub kind: &\'static str,');
+out.push('    /// radix | brand | terminal');
+out.push("    pub kind: &'static str,");
 out.push('    pub root: u32, pub panel: u32, pub palt: u32, pub elev: u32,');
 out.push('    pub hov: u32, pub act: u32, pub tab: u32, pub line: u32, pub lstr: u32,');
 out.push('    pub t1: u32, pub t2: u32, pub t3: u32,');
@@ -83,12 +60,12 @@ out.push('    /// 分组色 24 色（on panel ≥3.0）');
 out.push('    pub group24: [u32; 24],');
 out.push('    /// 终端 ANSI 16 色（前景用）');
 out.push('    pub ansi16: [u32; 16],');
-out.push('    /// 亮色 TUI 背景填充表（仅 meat-light 有——双表特性保留）');
+out.push('    /// 亮色 TUI 背景填充表（官方发布即有；当前 36 套均为 None）');
 out.push('    pub ansi16bg: Option<[u32; 16]>,');
 out.push('}');
 out.push('');
 out.push('/// 9 个强调色预设（§4-L2/§6 已定：全部出自某套主题自己的 accent）');
-out.push('pub static ACCENT_PRESETS: &[(&str, &str, u32)] = &[');
+out.push("pub static ACCENT_PRESETS: &[(&str, &str, u32)] = &[");
 out.push('    ("classic-blue", "经典蓝", 0x0090FF), // Radix 石墨');
 out.push('    ("cyan", "青", 0x00A2C7),           // Radix 石板');
 out.push('    ("iris", "靛紫", 0x5B5BD6),         // Radix 藕荷');
@@ -106,13 +83,13 @@ out.push('pub const DANGER_STRONG: u32 = 0xDC4B44;');
 out.push('/// 频道暂停态的暖色竖条（状态条左缘；不用暖底色——一转暖就成「另一个面板」）');
 out.push('pub const CHANNEL_PAUSE_BAR: u32 = 0xE2A84A;');
 out.push('');
-out.push('/// 全部 38 套：radix 10 → brand 4 → terminal 22 → meat 2（选择器分组顺序）');
+out.push('/// 全部 36 套：radix 10 → brand 4 → terminal 22（选择器分组顺序）');
 out.push('pub static PALETTES: &[Palette] = &[');
 
 for (const id of ORDER) {
   const ag = AG[id];
   if (!ag) { console.error('缺 _ansi-group:', id); process.exit(1); }
-  const ui = MEAT_UI[id] || ALL_UI[id];
+  const ui = ALL_UI[id];
   if (!ui) { console.error('缺 UI 槽:', id); process.exit(1); }
   const dark = ui.m === '暗' || ui.dark === true;
   const kind = ui.kind || ui.group || 'terminal';
@@ -134,8 +111,8 @@ for (const id of ORDER) {
 }
 out.push('];');
 out.push('');
-out.push('/// 按 id 查表（线性 38 项，调用点均为低频切主题路径）');
-out.push('pub fn find(id: &str) -> Option<&\'static Palette> {');
+out.push('/// 按 id 查表（线性 36 项，调用点均为低频切主题路径）');
+out.push("pub fn find(id: &str) -> Option<&'static Palette> {");
 out.push('    PALETTES.iter().find(|p| p.id == id)');
 out.push('}');
 out.push('');
@@ -145,5 +122,5 @@ out.push('pub const DEFAULT_LIGHT: &str = "graphite-light";');
 
 fs.writeFileSync(path.join(__dirname, '..', 'src', 'theme', 'palettes.rs'), out.join('\n') + '\n', 'utf8');
 console.log('src/theme/palettes.rs 生成：', out.length, '行，', ORDER.length, '套');
-const bad = ORDER.filter(id => !AG[id] || (!MEAT_UI[id] && !ALL_UI[id]));
+const bad = ORDER.filter(id => !AG[id] || !ALL_UI[id]);
 if (bad.length) { console.error('缺数据:', bad); process.exit(1); }

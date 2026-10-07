@@ -536,6 +536,7 @@ macro_rules! copy_theme_slots {
         let s = $src.global::<crate::ui::Theme<'_>>();
         let d = $dst.global::<crate::ui::Theme<'_>>();
         d.set_theme_id(s.get_theme_id());
+        d.set_theme_name(s.get_theme_name());
         d.set_dark(s.get_dark());
         d.set_slot_root(s.get_slot_root());
         d.set_slot_panel(s.get_slot_panel());

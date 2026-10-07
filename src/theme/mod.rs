@@ -113,6 +113,7 @@ macro_rules! impl_theme_apply {
             let p = r.palette;
             let t = win.global::<Theme<'_>>();
             t.set_theme_id(p.id.into());
+            t.set_theme_name(format!("{} · {}", p.zh, if p.dark { "暗" } else { "亮" }).into());
             t.set_dark(p.dark);
             t.set_slot_root(color(p.root));
             t.set_slot_panel(color(p.panel));
@@ -262,29 +263,15 @@ mod tests {
 
     #[test]
     fn table_shape() {
-        assert_eq!(PALETTES.len(), 38);
+        assert_eq!(PALETTES.len(), 36);
         assert!(find("graphite-dark").is_some());
-        assert!(find("meat-light").is_some());
+        assert!(find("meat-light").is_none(), "迁移保留档不进选择器（用户决策）");
         assert!(find("dracula-light").is_none(), "已删套不得回潮");
         // id 唯一
         let mut ids: Vec<_> = PALETTES.iter().map(|p| p.id).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 38);
-    }
-
-    #[test]
-    fn meat_light_keeps_bg_table() {
-        let m = find("meat-light").unwrap();
-        assert!(m.ansi16bg.is_some(), "亮色 TUI 背景双表特性保留");
-        assert!(find("meat-dark").unwrap().ansi16bg.is_none());
-    }
-
-    #[test]
-    fn meat_elev_refit() {
-        // tab 稿：非选中 tab 底降对比（暗 #25282f / 亮 #e2e2e8）
-        assert_eq!(find("meat-dark").unwrap().elev, 0x25282F);
-        assert_eq!(find("meat-light").unwrap().elev, 0xE2E2E8);
+        assert_eq!(ids.len(), 36);
     }
 
     #[test]

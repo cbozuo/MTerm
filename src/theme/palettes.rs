@@ -1,9 +1,8 @@
 // ═════════════════════════════════════════════════════════════════════
-// 38 套主题色表（★生成文件，勿手改★）——scripts/gen_theme_rust.js 产出
+// 36 套主题色表（★生成文件，勿手改★）——scripts/gen_theme_rust.js 产出
 // 真源：scripts/theme-tokens.json + _radix-themes.json + _extra-themes.json
 //       + _ansi-group.json（ANSI16 / 分组色24 / 频道色4，含来源与校验）
-// 全部色值为官方发布原样（个别派生档在 _ansi-group.json 的 src 字段标注）；
-// meat-dark/meat-light 为迁移保留档（ui/theme.slint 现值，elev 按稿重取）。
+// 全部色值为官方发布原样（个别派生档在 _ansi-group.json 的 src 字段标注）。
 // ═════════════════════════════════════════════════════════════════════
 
 /// 单套主题的全部色槽。色值为 0xRRGGBB。
@@ -12,7 +11,7 @@ pub struct Palette {
     /// 中文名（不含明暗后缀，如「石墨」）
     pub zh: &'static str,
     pub dark: bool,
-    /// radix | brand | terminal | meat
+    /// radix | brand | terminal
     pub kind: &'static str,
     pub root: u32, pub panel: u32, pub palt: u32, pub elev: u32,
     pub hov: u32, pub act: u32, pub tab: u32, pub line: u32, pub lstr: u32,
@@ -25,7 +24,7 @@ pub struct Palette {
     pub group24: [u32; 24],
     /// 终端 ANSI 16 色（前景用）
     pub ansi16: [u32; 16],
-    /// 亮色 TUI 背景填充表（仅 meat-light 有——双表特性保留）
+    /// 亮色 TUI 背景填充表（官方发布即有；当前 36 套均为 None）
     pub ansi16bg: Option<[u32; 16]>,
 }
 
@@ -48,7 +47,7 @@ pub const DANGER_STRONG: u32 = 0xDC4B44;
 /// 频道暂停态的暖色竖条（状态条左缘；不用暖底色——一转暖就成「另一个面板」）
 pub const CHANNEL_PAUSE_BAR: u32 = 0xE2A84A;
 
-/// 全部 38 套：radix 10 → brand 4 → terminal 22 → meat 2（选择器分组顺序）
+/// 全部 36 套：radix 10 → brand 4 → terminal 22（选择器分组顺序）
 pub static PALETTES: &[Palette] = &[
     // 石墨·暗 —— 派生：Radix 色阶确定性映射（normal=idx10/bright=idx11）
     Palette {
@@ -518,35 +517,9 @@ pub static PALETTES: &[Palette] = &[
         ansi16: [0x100F0F, 0xD14D41, 0x879A39, 0xD0A215, 0x4385BE, 0xCE5D97, 0x3AA99F, 0xFFFCF0, 0x100F0F, 0xD14D41, 0x879A39, 0xD0A215, 0x4385BE, 0xCE5D97, 0x3AA99F, 0xFFFCF0],
         ansi16bg: None,
     },
-    // MeatShell·暗 —— 现状原样（presentation.rs ANSI16_DARK = VS Code Dark+）
-    Palette {
-        id: "meat-dark", zh: "MeatShell", dark: true, kind: "meat",
-        root: 0x1B1D23, panel: 0x23262D, palt: 0x2A2D35, elev: 0x25282F,
-        hov: 0x373A44, act: 0x3F4350, tab: 0x0E0F13, line: 0x3A3D46, lstr: 0x4A4E59,
-        t1: 0xE6E8EE, t2: 0xB4B9C4, t3: 0x9196A3,
-        tbg: 0x0E0F13, tfg: 0xD4D4D4,
-        ac: 0x4A90E2, ac2: 0x4A90E2, ok: 0x4EC9B0, wr: 0xE2A84A, dg: 0xE25C5C, dg_s: 0xE25C5C,
-        channel: [0x378ADD, 0x1D9E75, 0xBA7517, 0xC24E75],
-        group24: [0xF87171, 0xFB923C, 0xFBBF24, 0xFACC15, 0xA3E635, 0x4ADE80, 0x34D399, 0x2DD4BF, 0x22D3EE, 0x38BDF8, 0x60A5FA, 0x818CF8, 0xA78BFA, 0xC084FC, 0xE879F9, 0xF472B6, 0xFB7185, 0xFDA4AF, 0xF1F5F9, 0xE2E8F0, 0xCBD5E1, 0xA8A29E, 0x94A3B8, 0x64748B],
-        ansi16: [0x000000, 0xCD3131, 0x0DBC79, 0xE5E510, 0x2472C8, 0xBC3FBC, 0x11A8CD, 0xE5E5E5, 0x666666, 0xF14C4C, 0x23D18B, 0xF5F543, 0x3B8EEA, 0xD670D6, 0x29B8DB, 0xFFFFFF],
-        ansi16bg: None,
-    },
-    // MeatShell·亮 —— 现状原样（ANSI16_LIGHT 前景表 + ANSI16_LIGHT_BG TUI 背景表，双表特性保留）
-    Palette {
-        id: "meat-light", zh: "MeatShell", dark: false, kind: "meat",
-        root: 0xF5F5F7, panel: 0xFFFFFF, palt: 0xF2F2F7, elev: 0xE2E2E8,
-        hov: 0xE0E0E6, act: 0xD8D8DE, tab: 0xFAFAFA, line: 0xE2E2E8, lstr: 0xC7C7CC,
-        t1: 0x1D1D1F, t2: 0x45454A, t3: 0x606066,
-        tbg: 0xFAFAFA, tfg: 0x2D2D2F,
-        ac: 0x0071E3, ac2: 0x0071E3, ok: 0x34C759, wr: 0xFF9F0A, dg: 0xFF3B30, dg_s: 0xFF3B30,
-        channel: [0x3387DC, 0x1B956F, 0xBA7517, 0x993556],
-        group24: [0xDC2626, 0xEA580C, 0xD97706, 0xC58704, 0x65A30D, 0x16A34A, 0x059669, 0x0D9488, 0x0891B2, 0x0284C7, 0x2563EB, 0x4F46E5, 0x7C3AED, 0x9333EA, 0xC026D3, 0xDB2777, 0xE11D48, 0xF43F5E, 0x475569, 0x334155, 0x1E293B, 0x57534E, 0x78716C, 0x9A938E],
-        ansi16: [0x1C1C1E, 0xC0392B, 0x1A7F37, 0x856404, 0x0451A5, 0x800080, 0x0E725C, 0x3A3A3C, 0x555555, 0xE74C3C, 0x27AE60, 0xD4AC0D, 0x2E86C1, 0x9B59B6, 0x1ABC9C, 0x2C2C2E],
-        ansi16bg: Some([0xE8E8ED, 0xFFD5D5, 0xD5F5D5, 0xFFF8D5, 0xD5E8F8, 0xF5D5F5, 0xD5F5F8, 0xF5F5F7, 0xD1D1D6, 0xFFBEBE, 0xBEF5BE, 0xF5F5BE, 0xBEDDFF, 0xF0BEFF, 0xBEF5FF, 0xFFFFFF]),
-    },
 ];
 
-/// 按 id 查表（线性 38 项，调用点均为低频切主题路径）
+/// 按 id 查表（线性 36 项，调用点均为低频切主题路径）
 pub fn find(id: &str) -> Option<&'static Palette> {
     PALETTES.iter().find(|p| p.id == id)
 }

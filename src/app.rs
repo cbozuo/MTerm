@@ -1733,8 +1733,8 @@ fn open_window(
         window.set_theme_entries(ModelRc::from(Rc::new(VecModel::from(entries))));
         // 顶栏速选面板的 8 个代表变体（覆盖四族；§3-调整③）。
         const QUICK: [&str; 8] = [
-            "meat-dark", "graphite-dark", "graphite-light", "dracula-dark",
-            "tokyonight-dark", "github-dark", "github-light", "nord-dark",
+            "graphite-dark", "graphite-light", "dracula-dark", "tokyonight-dark",
+            "kanagawa-wave", "github-dark", "github-light", "nord-dark",
         ];
         let quick: Vec<crate::ui::ThemeEntry> = crate::theme::palettes::PALETTES
             .iter()
@@ -3301,6 +3301,19 @@ fn open_window(
         });
     }
 
+    // (#theme-split v2) 悬停实时预览：临时 apply（不落盘/不广播/不刷终端
+    // 色表——只动 UI 槽位，让用户在主界面上「看到」效果）。移出/关闭浮层时
+    // 传当前主题 id 恢复。
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        window.on_preview_theme(move |id: SharedString| {
+            let Some(w) = weak.upgrade() else { return };
+            let mut st = crate::app::terminal_ui::theme_state_of(&w, &store.borrow());
+            st.theme_id = id.to_string();
+            crate::theme::apply(&w, &st);
+        });
+    }
     // ── (#tab-32) 频道（tab-row-idia 稿）：加入/暂停/离开 + 状态条恢复 ──
     // 成员表 key = 会话稳定 id（Session.uuid / builtin "system:*"；tab id 每次
     // 连接重新生成，绝不入表）。tab↔session 映射走 window.get_tabs()。
