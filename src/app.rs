@@ -1708,16 +1708,13 @@ fn open_window(
             matched: true,
         };
         let mut entries: Vec<crate::ui::ThemeEntry> = Vec::new();
-        let mut last_kind = "";
+        // (#theme-split) 下拉分组按用户要求：**暗主题 / 亮主题** 两档（不再按
+        // 族分——族信息对选主题没有帮助，明暗才是第一决策）。
+        let mut last_dark: Option<bool> = None;
         for p in crate::theme::palettes::PALETTES {
-            if p.kind != last_kind {
-                entries.push(header(match p.kind {
-                    "radix" => "现代 UI 色板",
-                    "brand" => "品牌官方",
-                    "terminal" => "经典终端配色",
-                    _ => "迁移保留档",
-                }));
-                last_kind = p.kind;
+            if last_dark != Some(p.dark) {
+                entries.push(header(if p.dark { "暗主题" } else { "亮主题" }));
+                last_dark = Some(p.dark);
             }
             entries.push(crate::ui::ThemeEntry {
                 id: p.id.into(),
