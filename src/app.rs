@@ -1705,6 +1705,7 @@ fn open_window(
             tbg: Default::default(),
             tfg: Default::default(),
             ac: Default::default(),
+            matched: true,
         };
         let mut entries: Vec<crate::ui::ThemeEntry> = Vec::new();
         let mut last_kind = "";
@@ -1728,6 +1729,7 @@ fn open_window(
                 tbg: crate::theme::color(p.tbg),
                 tfg: crate::theme::color(p.tfg),
                 ac: crate::theme::color(p.ac),
+                matched: true,
             });
         }
         window.set_theme_entries(ModelRc::from(Rc::new(VecModel::from(entries))));
@@ -1749,6 +1751,7 @@ fn open_window(
                 tbg: crate::theme::color(p.tbg),
                 tfg: crate::theme::color(p.tfg),
                 ac: crate::theme::color(p.ac),
+                matched: true,
             })
             .collect();
         window.set_quick_theme_entries(ModelRc::from(Rc::new(VecModel::from(quick))));
@@ -3312,6 +3315,38 @@ fn open_window(
             let mut st = crate::app::terminal_ui::theme_state_of(&w, &store.borrow());
             st.theme_id = id.to_string();
             crate::theme::apply(&w, &st);
+        });
+    }
+    // (#theme-split v3) 主题搜索过滤：Slint 字符串无 contains 且绑定里不能
+    // 调回调——输入词变化时由 Rust **重发过滤后的 theme-entries**（非空词不发
+    // 组头行；空词全量恢复）。matched 标记行级显隐（当前恒 true，行已在 Rust
+    // 侧过滤）。
+    {
+        let weak = window.as_weak();
+        window.on_theme_search_filter(move |q: SharedString| {
+            let Some(w) = weak.upgrade() else { return };
+            let q = q.to_lowercase();
+            let model = w.get_theme_entries();
+            let Some(vec_model) = model.as_any().downcast_ref::<slint::VecModel<crate::ui::ThemeEntry>>() else { return };
+            if q.is_empty() {
+                // 恢复：matched 恒 true 的全量（含组头）
+                let all: Vec<crate::ui::ThemeEntry> = model
+                    .iter()
+                    .map(|mut r| { r.matched = true; r })
+                    .collect();
+                vec_model.set_vec(all);
+                return;
+            }
+            let filtered: Vec<crate::ui::ThemeEntry> = model
+                .iter()
+                .filter(|row| {
+                    row.kind != "header"
+                        && (row.zh.to_lowercase().contains(q.as_str())
+                            || row.id.to_lowercase().contains(q.as_str()))
+                })
+                .map(|mut r| { r.matched = true; r })
+                .collect();
+            vec_model.set_vec(filtered);
         });
     }
     // ── (#tab-32) 频道（tab-row-idia 稿）：加入/暂停/离开 + 状态条恢复 ──
