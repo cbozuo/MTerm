@@ -1730,30 +1730,8 @@ fn open_window(
             });
         }
         window.set_theme_entries(ModelRc::from(Rc::new(VecModel::from(entries))));
-        // 顶栏速选面板的 8 个代表变体（覆盖四族；§3-调整③）。
-        const QUICK: [&str; 8] = [
-            "graphite-dark", "graphite-light", "dracula-dark", "tokyonight-dark",
-            "kanagawa-wave", "github-dark", "github-light", "nord-dark",
-        ];
-        let quick: Vec<crate::ui::ThemeEntry> = crate::theme::palettes::PALETTES
-            .iter()
-            .filter(|p| QUICK.contains(&p.id))
-            .map(|p| crate::ui::ThemeEntry {
-                id: p.id.into(),
-                zh: p.zh.into(),
-                mode: if p.dark { "暗".into() } else { "亮".into() },
-                kind: p.kind.into(),
-                root: crate::theme::color(p.root),
-                panel: crate::theme::color(p.panel),
-                tbg: crate::theme::color(p.tbg),
-                tfg: crate::theme::color(p.tfg),
-                ac: crate::theme::color(p.ac),
-                matched: true,
-            })
-            .collect();
-        window.set_quick_theme_entries(ModelRc::from(Rc::new(VecModel::from(quick))));
         {
-            let s = store.borrow();
+        let s = store.borrow();
             window.set_follow_system(s.follow_system());
             window.set_theme_chosen(s.theme().into());
             // (#theme-split) 启动归一化：旧版本曾把「点了自定义但没填色」落盘成
@@ -8529,13 +8507,22 @@ fn wire_key_input(
                             if store.borrow().channel_is_paused(member) {
                                 continue;
                             }
-                            if let Some(handle) = h.get(member.as_str()) {
-                                if let Some(buffer) = term_buf(&bufs, member) {
-                                    buffer.lock().unwrap().interactive_echo_until =
-                                        std::time::Instant::now()
-                                            + INTERACTIVE_ECHO_WINDOW;
+                            // ⚠️ handles 的 key 是 **tab_id**（session_runtime.rs
+                            // insert(tab_id, handle)），成员表存的是**会话稳定 id**
+                            // ——必须经 tabs 反查该会话打开的 tab（可能多开，全投）。
+                            // 之前直接 h.get(member) 恒 miss，频道投递静默失效。
+                            for t in w_sk.get_tabs().iter() {
+                                if t.session_id.as_str() != member.as_str() {
+                                    continue;
                                 }
-                                handle.send_raw(bytes.clone());
+                                if let Some(handle) = h.get(t.id.as_str()) {
+                                    if let Some(buffer) = term_buf(&bufs, t.id.as_str()) {
+                                        buffer.lock().unwrap().interactive_echo_until =
+                                            std::time::Instant::now()
+                                                + INTERACTIVE_ECHO_WINDOW;
+                                    }
+                                    handle.send_raw(bytes.clone());
+                                }
                             }
                         }
                         // 自己的缓冲也要提帧（本 tab 回显即时）。
