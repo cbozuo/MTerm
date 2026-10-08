@@ -16,22 +16,80 @@ pub(super) static TRAY_WINDOW_NEXT: AtomicBool = AtomicBool::new(false);
 /// 运行时改无效 —— 与 TRAY_WINDOW_NEXT 同一套注入机制。
 pub(super) static TRAY_TRANSPARENT_NEXT: AtomicBool = AtomicBool::new(false);
 
-#[cfg(target_os = "linux")]
-pub(super) fn set_window_icon(window: &AppWindow) {
-    use i_slint_backend_winit::winit::window::Icon;
-    const ICON_PNG: &[u8] = include_bytes!("../../assets/icon@512.png");
-    let Ok(img) = image::load_from_memory(ICON_PNG) else {
-        return;
-    };
-    let rgba = img.into_rgba8();
-    let (w, h) = rgba.dimensions();
-    let Ok(icon) = Icon::from_rgba(rgba.into_raw(), w, h) else {
-        return;
-    };
-    window
-        .window()
-        .with_winit_window(|ww| ww.set_window_icon(Some(icon)));
+/// Set the window icon at runtime. winit 的窗口类不带图标(WNDCLASSEX hIcon=0),
+/// 不主动设置的话任务管理器子行/alt-tab 会显示空白图标,不会回退到 exe 资源。
+/// - Windows: 从 exe 内嵌的 .ico(winresource 资源 ID 1,含 16..256 官方多档
+///   尺寸)按系统小/大图标尺寸加载。不走 winit 的 RGBA→CreateIcon 手绘路径 ——
+///   那条路生成的 HICON 在任务管理器子行会渲染成花屏。
+/// - Linux: 没有 exe 资源,仍用 512px PNG 写 _NET_WM_ICON(dock 需要大图)。
+#[cfg(any(windows, target_os = "linux"))]
+fn set_window_icon(window: &slint::Window) {
+    #[cfg(windows)]
+    {
+        use i_slint_backend_winit::winit::dpi::PhysicalSize;
+        use i_slint_backend_winit::winit::platform::windows::{IconExtWindows, WindowExtWindows};
+        use i_slint_backend_winit::winit::window::Icon;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetrics, SM_CXICON, SM_CXSMICON,
+        };
+
+        window.with_winit_window(|ww| {
+            let small = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16) as u32;
+            let big = unsafe { GetSystemMetrics(SM_CXICON) }.max(32) as u32;
+            match (
+                Icon::from_resource(1, Some(PhysicalSize::new(small, small))),
+                Icon::from_resource(1, Some(PhysicalSize::new(big, big))),
+            ) {
+                (Ok(small_icon), Ok(big_icon)) => {
+                    ww.set_window_icon(Some(small_icon));
+                    ww.set_taskbar_icon(Some(big_icon));
+                }
+                (bad, _) => {
+                    tracing::warn!("window icon: load from exe resource failed: {bad:?}");
+                }
+            }
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use i_slint_backend_winit::winit::window::Icon;
+
+        const ICON_PNG: &[u8] = include_bytes!("../../assets/icon@512.png");
+        let Ok(img) = image::load_from_memory(ICON_PNG) else {
+            return;
+        };
+        let rgba = img.into_rgba8();
+        let (w, h) = rgba.dimensions();
+        let Ok(icon) = Icon::from_rgba(rgba.into_raw(), w, h) else {
+            return;
+        };
+        window.with_winit_window(|ww| ww.set_window_icon(Some(icon)));
+    }
 }
+
+/// 在窗口的**首个 winit 事件**时设置图标。with_winit_window 只在事件循环
+/// 激活后才拿得到 winit 窗口(vendored lib.rs 的 trait 文档写明),show()
+/// 返回后立刻同步调用会静默空转 —— 必须挂到事件回调里。
+#[cfg(any(windows, target_os = "linux"))]
+pub(super) fn arm_window_icon(window: &slint::Window) {
+    use i_slint_backend_winit::EventResult;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let done = Rc::new(Cell::new(false));
+    let fired = done.clone();
+    window.on_winit_window_event(move |slint_win, _event| {
+        if !fired.replace(true) {
+            set_window_icon(slint_win);
+        }
+        EventResult::Propagate
+    });
+}
+
+/// macOS 走原生标题栏 + bundle icns,无需运行时设窗口图标。
+#[cfg(target_os = "macos")]
+pub(super) fn arm_window_icon(_window: &slint::Window) {}
 
 /// On Windows, keep the frameless Slint surface and the native hit-test surface
 /// aligned. Some Win10 systems expose winit's undecorated-shadow compatibility

@@ -1,13 +1,8 @@
 //! Session / application configuration.
 //!
-//! Persists a simple JSON file in the app's data directory. Resolution is
-//! **portable-first** (#141): a `config/` folder next to the executable is
-//! preferred so the whole app can ride along on a USB stick and never litters
-//! the user profile. When the executable lives somewhere read-only (a
-//! system-wide install under Program Files / `/usr`), it falls back to the
-//! per-user OS config dir (e.g. `%APPDATA%/meatshell`, `~/.config/meatshell`),
-//! which is also where every pre-0.4.15 version stored its data — so existing
-//! installs keep working untouched. See [`data_dir`].
+//! Persists a simple JSON file in the app's data directory. The default data
+//! dir is `~/.mterm`; a `data-dir.txt` bootstrap file next to the executable
+//! (written by Settings) overrides it. See [`data_dir`].
 //!
 //! ## Password encryption
 //!
@@ -41,54 +36,6 @@ use super::structs::*;
 // Directory resolution lives in the dedicated `datastore` module
 // (src/datastore/); config.rs only consumes `data_dir()` / `log_dir()` from it.
 
-
-fn sessions_file_has_connections(path: &Path) -> bool {
-    let Ok(raw) = fs::read_to_string(path) else {
-        return false;
-    };
-    serde_json::from_str::<ConfigFile>(&raw)
-        .map(|cfg| !cfg.sessions.is_empty())
-        .unwrap_or(false)
-}
-
-fn restore_user_backup_if_needed(primary_dir: &Path, backup_dir: &Path) {
-    if primary_dir == backup_dir {
-        return;
-    }
-    let primary_sessions = primary_dir.join("sessions.json");
-    let backup_sessions = backup_dir.join("sessions.json");
-    if sessions_file_has_connections(&primary_sessions)
-        || !sessions_file_has_connections(&backup_sessions)
-    {
-        return;
-    }
-    let _ = fs::create_dir_all(primary_dir);
-    for name in ["sessions.json", "secret.key", "known_hosts"] {
-        let src = backup_dir.join(name);
-        let dst = primary_dir.join(name);
-        if src.exists() {
-            match fs::copy(&src, &dst) {
-                Ok(_) => {
-                    #[cfg(unix)]
-                    if name == "secret.key" {
-                        use std::os::unix::fs::PermissionsExt;
-                        let _ = fs::set_permissions(&dst, fs::Permissions::from_mode(0o600));
-                    }
-                    tracing::info!(
-                        "restored {name} from user config backup {}",
-                        backup_dir.display()
-                    );
-                }
-                Err(e) => tracing::warn!(
-                    "failed to restore {} from {} to {}: {e}",
-                    name,
-                    src.display(),
-                    dst.display()
-                ),
-            }
-        }
-    }
-}
 
 fn normalize_hex_color(value: &str) -> Option<String> {
     let digits = value.trim().strip_prefix('#').unwrap_or(value.trim());
@@ -320,7 +267,7 @@ impl ConfigStore {
 
     /// Fixed 32-byte key for portable exports. Baked into the binary so an
     /// exported file decrypts on any machine. Obfuscation only — see `ExportFile`.
-    const EXPORT_KEY: [u8; 32] = *b"meatshell.export.portable.key.01";
+    const EXPORT_KEY: [u8; 32] = *b"mterm.export.portable.key.000001";
 
     // ── Encryption helpers ────────────────────────────────────────────────
 
@@ -407,11 +354,6 @@ impl ConfigStore {
         fs::create_dir_all(&config_dir)
             .with_context(|| format!("failed to create config dir {}", config_dir.display()))?;
 
-        let backup_dir = legacy_data_dir().filter(|dir| dir != &config_dir);
-        if let Some(ref backup) = backup_dir {
-            restore_user_backup_if_needed(&config_dir, backup);
-        }
-
         let key = Self::load_or_create_key(&config_dir)?;
 
         let mut migrated = false;
@@ -469,7 +411,6 @@ impl ConfigStore {
 
         let store = Self {
             path,
-            backup_dir,
             cache,
             key,
         };
@@ -1363,13 +1304,6 @@ impl ConfigStore {
     pub fn set_welcome_collapsed(&mut self, v: bool) {
         self.cache.welcome_collapsed = Some(v);
     }
-    /// Whether the startup new-version check is enabled (#184).
-    pub fn update_check_enabled(&self) -> bool {
-        !self.cache.update_check_disabled
-    }
-    pub fn set_update_check_enabled(&mut self, enabled: bool) {
-        self.cache.update_check_disabled = !enabled;
-    }
     pub fn mcp_enabled(&self) -> bool {
         self.cache.mcp_enabled
     }
@@ -1535,7 +1469,7 @@ impl ConfigStore {
 
     pub fn webdav_remote_path(&self) -> &str {
         if self.cache.webdav_remote_path.trim().is_empty() {
-            "meatshell-connections.json"
+            "mterm-connections.json"
         } else {
             &self.cache.webdav_remote_path
         }
@@ -1559,7 +1493,7 @@ impl ConfigStore {
         self.cache.webdav_username = username.trim().to_string();
         self.cache.webdav_password = Secret::new(password);
         self.cache.webdav_remote_path = if remote_path.trim().is_empty() {
-            "meatshell-connections.json".to_string()
+            "mterm-connections.json".to_string()
         } else {
             remote_path.trim().trim_start_matches('/').to_string()
         };
@@ -1871,57 +1805,7 @@ impl ConfigStore {
         }
         fs::rename(&tmp, &self.path)
             .with_context(|| format!("failed to finalise {}", self.path.display()))?;
-        self.sync_backup(&raw);
         Ok(())
-    }
-
-    fn sync_backup(&self, raw: &str) {
-        let Some(backup_dir) = &self.backup_dir else {
-            return;
-        };
-        if let Err(e) = fs::create_dir_all(backup_dir) {
-            tracing::warn!(
-                "failed to create user config backup dir {}: {e}",
-                backup_dir.display()
-            );
-            return;
-        }
-
-        let backup_sessions = backup_dir.join("sessions.json");
-        let tmp = backup_sessions.with_extension("json.tmp");
-        if let Err(e) = fs::write(&tmp, raw) {
-            tracing::warn!("failed to write {}: {e}", tmp.display());
-            return;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
-        }
-        if let Err(e) = fs::rename(&tmp, &backup_sessions) {
-            tracing::warn!("failed to finalise {}: {e}", backup_sessions.display());
-        }
-
-        if let Some(config_dir) = self.path.parent() {
-            for name in ["secret.key", "known_hosts"] {
-                let src = config_dir.join(name);
-                let dst = backup_dir.join(name);
-                if src.exists() {
-                    if let Err(e) = fs::copy(&src, &dst) {
-                        tracing::warn!(
-                            "failed to sync {} to user config backup {}: {e}",
-                            src.display(),
-                            dst.display()
-                        );
-                    }
-                    #[cfg(unix)]
-                    if name == "secret.key" {
-                        use std::os::unix::fs::PermissionsExt;
-                        let _ = fs::set_permissions(&dst, fs::Permissions::from_mode(0o600));
-                    }
-                }
-            }
-        }
     }
 
     // ── Portable export / import (issue #46) ──────────────────────────────
@@ -1961,7 +1845,7 @@ impl ConfigStore {
     /// file is human-readable and editable. Returns the number of sessions.
     pub fn export_json(&self) -> Result<(String, usize)> {
         let mut out = ExportFile {
-            meatshell_export: 1,
+            mterm_export: 1,
             sessions: self.cache.sessions.clone(),
         };
         for s in &mut out.sessions {
@@ -1995,18 +1879,18 @@ impl ConfigStore {
         Ok(count)
     }
 
-    /// Import sessions from a MeatShell portable export or a FinalShell connection
+    /// Import sessions from a MTerm portable export or a FinalShell connection
     /// export. New sessions get fresh ids; duplicates (same host+user+port+kind)
     /// are skipped.
     /// Returns `(added, skipped)`. The store is saved if anything was added.
     pub fn import_json(&mut self, raw: &str) -> Result<(usize, usize)> {
-        let (sessions, decrypt_meatshell_secrets) =
+        let (sessions, decrypt_mterm_secrets) =
             match serde_json::from_str::<ExportFile>(raw) {
                 Ok(file) => (file.sessions, true),
-                Err(meatshell_error) => (
+                Err(mterm_error) => (
                     super::finalshell::parse_export(raw).with_context(|| {
                         format!(
-                            "not a valid MeatShell or FinalShell export file; MeatShell parser: {meatshell_error}"
+                            "not a valid MTerm or FinalShell export file; MTerm parser: {mterm_error}"
                         )
                     })?,
                     false,
@@ -2020,7 +1904,7 @@ impl ConfigStore {
             // export blob, our local enc:v1 blob, or a legacy plaintext value.
             // FinalShell's parser has already decrypted its DES password, so avoid
             // interpreting a coincidental `enc:*` plaintext prefix as ours.
-            if decrypt_meatshell_secrets {
+            if decrypt_mterm_secrets {
                 if let Some(plain) = Self::decrypt_export(s.password.as_str()) {
                     s.password = Secret::new(plain);
                 } else if let Some(plain) = Self::try_decrypt(&self.key, s.password.as_str()) {
@@ -2060,7 +1944,7 @@ impl ConfigStore {
         Ok((added, skipped))
     }
 
-    /// Import sessions from a MeatShell or FinalShell JSON export file.
+    /// Import sessions from a MTerm or FinalShell JSON export file.
     pub fn import_from(&mut self, path: &Path) -> Result<(usize, usize)> {
         let raw = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
@@ -2076,7 +1960,6 @@ mod tests {
         let path = std::env::temp_dir().join(format!("ms-test-{}.json", Uuid::new_v4()));
         ConfigStore {
             path,
-            backup_dir: None,
             cache: ConfigFile::default(),
             key: [7u8; 32],
         }
@@ -2528,55 +2411,6 @@ mod tests {
     }
 
     #[test]
-    fn restores_and_syncs_user_config_backup() {
-        let base = std::env::temp_dir().join(format!("ms-backup-{}", Uuid::new_v4()));
-        let primary = base.join("portable");
-        let backup = base.join("user");
-        std::fs::create_dir_all(&primary).unwrap();
-        std::fs::create_dir_all(&backup).unwrap();
-
-        let backup_cfg = ConfigFile {
-            sessions: vec![sample_session("saved")],
-            ..ConfigFile::default()
-        };
-        std::fs::write(
-            backup.join("sessions.json"),
-            serde_json::to_string_pretty(&backup_cfg).unwrap(),
-        )
-        .unwrap();
-        std::fs::write(backup.join("secret.key"), [9u8; 32]).unwrap();
-
-        restore_user_backup_if_needed(&primary, &backup);
-        assert!(sessions_file_has_connections(
-            &primary.join("sessions.json")
-        ));
-        assert_eq!(
-            std::fs::read(primary.join("secret.key")).unwrap(),
-            [9u8; 32]
-        );
-
-        let store = ConfigStore {
-            path: primary.join("sessions.json"),
-            backup_dir: Some(backup.clone()),
-            cache: ConfigFile {
-                sessions: vec![sample_session("new")],
-                ..ConfigFile::default()
-            },
-            key: [7u8; 32],
-        };
-        std::fs::write(primary.join("secret.key"), [7u8; 32]).unwrap();
-        store.save().unwrap();
-
-        let raw = std::fs::read_to_string(backup.join("sessions.json")).unwrap();
-        let cfg: ConfigFile = serde_json::from_str(&raw).unwrap();
-        assert_eq!(cfg.sessions.len(), 1);
-        assert_eq!(cfg.sessions[0].name, "new");
-        assert_eq!(std::fs::read(backup.join("secret.key")).unwrap(), [7u8; 32]);
-
-        let _ = std::fs::remove_dir_all(base);
-    }
-
-    #[test]
     fn wallpaper_defaults_follow_the_migration_chain() {
         // (#theme-split rev4) Fresh install: 默认无壁纸 + 跟随系统 + graphite 族
         // + 三滑杆默认值（§0/§5：零操作即正确）。
@@ -2868,4 +2702,3 @@ mod tests {
     }
 }
 
-use crate::datastore::legacy_data_dir;

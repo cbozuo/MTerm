@@ -1,4 +1,4 @@
-# meatshell
+# MTerm
 
 **简体中文** | [English](./README.en.md)
 
@@ -22,25 +22,25 @@ JVM 压到几十 MB 原生级别。
 ## 下载与安装
 
 每次打 `v*` 标签，GitHub Actions 会自动构建 **Windows / Linux / macOS** 三平台二进制，
-发布到 [Releases](https://github.com/yituorou/meatshell/releases) 页面。
+发布到 [Releases](https://github.com/cbozuo/MTerm/releases) 页面。
 
 ### Windows
 
-下载 `meatshell-*-windows-x86_64.zip`，解压后双击 `meatshell.exe`。
+下载 `MTerm-*-windows-x86_64.zip`，解压后双击 `MTerm.exe`。
 
 ### Linux
 
 ```bash
-tar -xzf meatshell-*-linux-x86_64.tar.gz
-cd meatshell-*-linux-x86_64
-./meatshell                                  # 直接运行
+tar -xzf MTerm-*-linux-x86_64.tar.gz
+cd MTerm-*-linux-x86_64
+./MTerm                                  # 直接运行
 # 可选：系统级安装程序、图标和启动器入口（需要 sudo）
 chmod +x install-linux.sh && ./install-linux.sh
 ```
 
-一键安装会将程序安装到 `/usr/local/bin/meatshell`，启动器安装到
-`/usr/local/share/applications/meatshell.desktop`，图标安装到
-`/usr/local/share/icons/hicolor/512x512/apps/meatshell.png`，并清理旧版 tar 包留下的用户级同名启动器。
+一键安装会将程序安装到 `/usr/local/bin/MTerm`，启动器安装到
+`/usr/local/share/applications/MTerm.desktop`，图标安装到
+`/usr/local/share/icons/hicolor/512x512/apps/MTerm.png`，并清理旧版 tar 包留下的用户级同名启动器。
 
 > 需要 glibc ≥ 2.35（Ubuntu 22.04+ / Debian 12+）。Wayland 下首次装完图标可能要注销重登一次。
 
@@ -59,20 +59,20 @@ sudo apt install -y --no-install-recommends \
 
 ### macOS
 
-下载得到的是 `.zip`，里面是 `meatshell.app` 应用程序包：
+下载得到的是 `.zip`，里面是 `MTerm.app` 应用程序包：
 
 ```bash
 # 解压(aarch64 = Apple 芯片，x86_64 = Intel)
-unzip meatshell-*-macos-*.zip
+unzip MTerm-*-macos-*.zip
 # 移到「应用程序」(可选，留在原地也行)
-mv meatshell.app /Applications/
-# 去掉「未签名应用」的隔离属性，否则会提示「meatshell 已损坏，无法打开」
-xattr -dr com.apple.quarantine /Applications/meatshell.app
+mv MTerm.app /Applications/
+# 去掉「未签名应用」的隔离属性，否则会提示「MTerm 已损坏，无法打开」
+xattr -dr com.apple.quarantine /Applications/MTerm.app
 # 打开(或在「访达」里双击)
-open /Applications/meatshell.app
+open /Applications/MTerm.app
 ```
 
-> 若未移到 `/Applications`，把上面两条路径换成 `.app` 实际所在位置(如 `~/Downloads/meatshell.app`)即可。
+> 若未移到 `/Applications`，把上面两条路径换成 `.app` 实际所在位置(如 `~/Downloads/MTerm.app`)即可。
 
 > 需要 macOS 11 Big Sur 或更高版本，支持 Apple Silicon 和 Intel Mac。
 
@@ -89,9 +89,9 @@ open /Applications/meatshell.app
 - [x] 彩色 emoji（支持肤色、旗帜及 ZWJ 组合序列）
 - [x] 多标签页（欢迎页 + 多个会话）
 - [x] 会话管理：新建 / 编辑 / 删除 / 分组，本地 JSON 持久化，导出 / 导入（兼容 FinalShell 连接文件）
-  - 配置位置：`%APPDATA%/meatshell/sessions.json`（Windows）
-    / `~/.config/meatshell/sessions.json`（Linux）
-    / `~/Library/Application Support/meatshell/sessions.json`（macOS）
+  - 配置位置：`%APPDATA%/MTerm/sessions.json`（Windows）
+    / `~/.config/MTerm/sessions.json`（Linux）
+    / `~/Library/Application Support/MTerm/sessions.json`（macOS）
 - [x] SSH（`russh`，纯 Rust）：密码 / 私钥 / 加密私钥（密码短语）
 - [x] SFTP 文件浏览 + 上传 / 下载（拖拽）+ 终端内 ZMODEM（`sz` 下载 / `rz` 多文件上传）
 - [x] SSH 端口转发 / 隧道：本地 -L / 远程 -R / 动态 -D（SOCKS5）
@@ -126,12 +126,12 @@ open /Applications/meatshell.app
 cargo run --release
 ```
 
-首次启动会在 `%APPDATA%/meatshell/sessions.json` 建立空的会话库。点击右上
+首次启动会在 `%APPDATA%/MTerm/sessions.json` 建立空的会话库。点击右上
 角 **“＋ 新建会话”** 添加第一台服务器。
 
 ## CLI 与 MCP 自动化
 
-MeatShell 的 CLI 和 MCP 共用 GUI 中保存的会话及 SSH / SFTP 实现。CLI 适合脚本、
+MTerm 的 CLI 和 MCP 共用 GUI 中保存的会话及 SSH / SFTP 实现。CLI 适合脚本、
 CI 和手动执行明确的命令；MCP 则让支持 MCP 的 AI 客户端通过自然语言完成服务器
 巡检、日志分析和文件传输。两者只是调用入口不同，不需要重新维护一份服务器配置。
 
@@ -143,57 +143,57 @@ CI 和手动执行明确的命令；MCP 则让支持 MCP 的 AI 客户端通过�
 查看所有可用命令：
 
 ```bash
-meatshell cli help
+MTerm cli help
 ```
 
 常用示例：
 
 ```bash
 # 列出已保存的会话，第一列是后续命令使用的 session-id
-meatshell cli sessions
-meatshell cli sessions --json
+MTerm cli sessions
+MTerm cli sessions --json
 
 # 查看单个会话的非敏感信息
-meatshell cli session <session-id>
+MTerm cli session <session-id>
 
 # 执行非交互式 SSH 命令；远端命令必须放在 -- 后面
-meatshell cli exec <session-id> -- free -h
-meatshell cli exec <session-id> --timeout 60 --json -- journalctl -n 100 --no-pager
+MTerm cli exec <session-id> -- free -h
+MTerm cli exec <session-id> --timeout 60 --json -- journalctl -n 100 --no-pager
 
 # 浏览、读取和传输远端文件
-meatshell cli files <session-id> /var/log
-meatshell cli read <session-id> /var/log/example.log
-meatshell cli upload <session-id> ./local.txt /tmp
-meatshell cli download <session-id> /tmp/result.txt ./downloads
+MTerm cli files <session-id> /var/log
+MTerm cli read <session-id> /var/log/example.log
+MTerm cli upload <session-id> ./local.txt /tmp
+MTerm cli download <session-id> /tmp/result.txt ./downloads
 ```
 
-CLI 的 `<session-id>` 可由 `meatshell cli sessions` 获取。文件下载要求本地目标目录已经
+CLI 的 `<session-id>` 可由 `MTerm cli sessions` 获取。文件下载要求本地目标目录已经
 存在，且不会覆盖同名文件。
 
 ### MCP
 
-先打开 MeatShell 的 **设置 → 界面 → MCP**：
+先打开 MTerm 的 **设置 → 界面 → MCP**：
 
 1. 启用 MCP。
 2. 根据需要允许使用已保存的凭据。
 3. 需要远程诊断时允许执行任意 SSH 命令。
 4. 需要上传或下载文件时允许文件传输。
 
-然后在支持 stdio MCP 的客户端中添加名为 `meatshell` 的服务：
+然后在支持 stdio MCP 的客户端中添加名为 `MTerm` 的服务：
 
 ```json
 {
   "mcpServers": {
-    "meatshell": {
-      "command": "/absolute/path/to/meatshell",
+    "MTerm": {
+      "command": "/absolute/path/to/MTerm",
       "args": ["mcp", "serve"]
     }
   }
 }
 ```
 
-Windows 下 `command` 可以填写 `C:\\path\\to\\meatshell.exe`。重启或刷新 MCP 客户端
-后，应能看到 `meatshell` 服务以及会话查询、远程命令、目录浏览、文本读取、上传和下载
+Windows 下 `command` 可以填写 `C:\\path\\to\\MTerm.exe`。重启或刷新 MCP 客户端
+后，应能看到 `MTerm` 服务以及会话查询、远程命令、目录浏览、文本读取、上传和下载
 等工具。不同 AI 客户端的 MCP 配置文件位置不同，请以对应客户端文档为准。
 
 #### MCP JSON-RPC 示例
@@ -224,7 +224,7 @@ Windows 下 `command` 可以填写 `C:\\path\\to\\meatshell.exe`。重启或刷�
 读取日志或下载一个堆文件：
 
 ```jsonl
-{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_remote_text_file","arguments":{"session_id":"<session-id>","path":"/home/jeff/test/logs/meatshell-log-demo-error.log"}}}
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_remote_text_file","arguments":{"session_id":"<session-id>","path":"/home/jeff/test/logs/MTerm-log-demo-error.log"}}}
 {"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"download_file","arguments":{"session_id":"<session-id>","remote_path":"/home/jeff/test/heapdumps/example.hprof","local_directory":"/existing/local/directory","timeout_seconds":120}}}
 ```
 
@@ -233,7 +233,7 @@ Windows 下 `command` 可以填写 `C:\\path\\to\\meatshell.exe`。重启或刷�
 
 配置完成后，可以直接对 AI 客户端说：
 
-> 用 `meatshell` MCP 排查一下：我的 `192.168.100.41` 服务器出现 OOM，堆转储位于
+> 用 `MTerm` MCP 排查一下：我的 `192.168.100.41` 服务器出现 OOM，堆转储位于
 > `/home/jeff/test/heapdumps`。请检查系统内存、内核 OOM 记录、Java 进程、应用日志和
 > HPROF 文件，判断根因；先只读排查，不要重启服务或删除文件。
 
@@ -244,7 +244,7 @@ SFTP 工具。若存在多条同主机会话，可在提示词中补充 GUI 中�
 ## 项目布局
 
 ```
-meatshell/
+MTerm/
 ├── Cargo.toml
 ├── build.rs                 # Slint 编译器入口
 ├── ui/
@@ -281,7 +281,7 @@ meatshell/
 .\scripts\release.ps1 v0.6.0 -Push
 ```
 
-脚本会更新 `Cargo.toml` / `Cargo.lock`，运行 `cargo check --locked`，验证 `meatshell --version`，提交 `Release v0.6.0`，创建 annotated tag，并推送当前分支和 tag。更多细节见 [docs/release.md](docs/release.md)。
+脚本会更新 `Cargo.toml` / `Cargo.lock`，运行 `cargo check --locked`，验证 `MTerm --version`，提交 `Release v0.6.0`，创建 annotated tag，并推送当前分支和 tag。更多细节见 [docs/release.md](docs/release.md)。
 
 ## 相关群组
 

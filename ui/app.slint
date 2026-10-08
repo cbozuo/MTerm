@@ -642,33 +642,22 @@ component TopbarBtn inherits Rectangle {
 
         // 徽章（黑底白 M）——悬浮淡出，让位给收/展图标。
         // (#logo-unify 2026-10-08) 标题栏图标统一 16px 后，用户反馈 LOGO 本体
-        // 应更大气：20px（标题栏 32px 的 62%），配 5px 圆角方框为品牌块。
-        // 20px 在 125%/150% 缩放下均为整数物理像素，无重采样鬼影。
-        // (#logo-crisp) 徽章为原生渐变矩形 + Path（几何从 logo-m.svg 照抄，
-        // 512 viewbox），矢量化渲染任意缩放都清晰；几何经 Theme.snap-to-device
-        // 对齐设备像素网格。
-        badge := Rectangle {
-            width: Theme.snap-to-device(20px);
-            height: Theme.snap-to-device(20px);
+        // 应更大气：20px（标题栏 32px 的 62%）。
+        // (#logo-asset 2026-10-08) 直接引用 **assets/icons/logo-m.svg**（与托盘
+        // ICO / exe 图标同源的那份源图），不再在 Slint 里手抄几何 —— 手抄版本
+        // 几经调整已与源图偏离（用户反馈"完全变样"）。资源引用保证三处
+        // （窗内徽章 / 托盘 / exe）永远同一形状，改 LOGO 只需改源文件。
+        // SVG 是矢量，Slint 按目标尺寸栅格化，任意 DPI 都清晰。
+        // (#logo-18px 2026-10-08) 用户反馈 20px 偏大 → 18px（56%）；
+        // 亮边圆角 5px → 4px 同步比例（112/512×18 ≈ 3.9）。
+        badge := Image {
+            source: @image-url("../assets/icons/logo-m.svg");
+            width: Theme.snap-to-device(18px);
+            height: Theme.snap-to-device(18px);
             x: Theme.snap-to-device((parent.width - self.width) / 2);
             y: Theme.snap-to-device((parent.height - self.height) / 2);
-            border-radius: 5px;
-            background: @linear-gradient(180deg, #2a2a33 0%, #121218 100%);
             opacity: ta.has-hover ? 0 : 1;
             animate opacity { duration: 120ms; }
-            Path {
-                width: 100%;
-                height: 100%;
-                viewbox-width: 512;
-                viewbox-height: 512;
-                fill: transparent;
-                stroke: #f4f5f7;
-                // stroke-width 是**元素逻辑 px**（femtovg 渲染只乘 DPI，不随
-                // viewbox 映射缩放，见 itemrenderer.rs draw_path）——58 是
-                // logo-m.svg 里 512 viewbox 下的笔宽，按元素宽/512 折算。
-                stroke-width: 58 / 512 * parent.width;
-                commands: "M 150 368 L 150 152 L 256 296 L 362 152 L 362 368";
-            }
         }
         // dark 主题细亮边：勾出黑底徽章的方框轮廓（参照 ZCode 主界面左上角
         // 的徽章框；黑底贴深灰标题栏对比不足，亮主题黑底对比天然够、无框）。
@@ -679,7 +668,7 @@ component TopbarBtn inherits Rectangle {
             height: badge.height;
             x: badge.x;
             y: badge.y;
-            border-radius: 5px;
+            border-radius: 4px;
             border-width: 1px;
             border-color: #ffffff47;
             visible: Theme.dark;
@@ -779,7 +768,6 @@ component ShortcutRow inherits Rectangle {
 
 export component AppWindow inherits Window {
     title: "MTerm";
-    icon: @image-url("../assets/icon.png");
     // Frameless when we draw our own title bar (#119); Rust sets custom-titlebar
     // true on Windows/Linux. Slint maps no-frame → winit set_decorations(false).
     no-frame: root.custom-titlebar;
@@ -1156,6 +1144,9 @@ export component AppWindow inherits Window {
     in-out property <length> theme-pick-y: 0px;
     in-out property <string> theme-name <=> Theme.theme-name;
     in-out property <string> theme-pick-search: "";
+    // (#theme-search-empty) 搜索过滤后是否有命中行（Rust 在 theme-search-filter
+    // 里回写）——浮层据此显示「未找到匹配的主题」占位。
+    in-out property <bool> theme-has-match: true;
     // 当前主题 id / 跟随系统 / 强调色三态的快照（设置页与速选面板显示）。
     // 当前主题 id——**只认确认动作**（set_theme/启动读 config）。不能绑到
     // Theme.theme-id：apply() 写它时会把「预览中的主题」污染成「当前主题」
@@ -1281,8 +1272,6 @@ export component AppWindow inherits Window {
     // Render the welcome/session list as a left sidebar instead of a tab (v0.5).
     in-out property <bool> welcome-as-sidebar: false;
     callback set-welcome-as-sidebar(bool);         // apply + persist
-    in-out property <bool> update-check-enabled: true;   // startup new-version check (#184)
-    callback set-update-check-enabled(bool);       // apply + persist
     in-out property <bool> mcp-enabled: true;
     in-out property <bool> mcp-use-saved-credentials: true;
     in-out property <bool> mcp-allow-commands: true;
@@ -1449,13 +1438,6 @@ export component AppWindow inherits Window {
     callback clear-transfers();              // wipe the transfer history
     callback cancel-transfer(string);        // cancel an in-progress transfer by id (#100)
     callback set-language(string);           // switch UI language ("zh" / "en")
-
-    // --- Update check (#48) ------------------------------------------------
-    // Set by Rust after a background GitHub-releases query; purely informational
-    // (the app keeps working on the current version).
-    in-out property <bool> update-available: false;
-    in property <string> update-version;     // e.g. "v0.3.3"
-    callback open-update-url();              // open the release page in a browser
 
     // --- Built-in file viewer/editor (#70) --------------------------------
     in-out property <bool> editor-open: false;
@@ -1963,12 +1945,16 @@ export component AppWindow inherits Window {
                         label: root.lang-en ? "Theme" : "主题";
                         active: root.theme-pick-open;
                         clicked => {
-                            // 与设置页同款浮层（同一个 theme-pick 浮层本体，
-                            // 定位取本按钮坐标）；打开时先清搜索恢复全量。
+                            // 与设置页同款浮层（同一个 theme-pick 浮层本体）。
+                            // (#theme-pick-anchor 2026-10-08) 旧锚点 = 点击点
+                            //（click-y 在按钮内部）——浮层从按钮中间盖上来，
+                            // 把「主题」标题都挡住（用户截图）。改锚到**按钮
+                            // 矩形下缘** +4px：浮层永远在按钮下方展开。
+                            // 打开时先清搜索恢复全量。
                             root.theme-pick-search = "";
                             root.theme-search-filter("");
                             root.theme-pick-x = self.click-x - 120px;
-                            root.theme-pick-y = self.click-y;
+                            root.theme-pick-y = self.btn-y + self.btn-h + 4px;
                             root.theme-pick-open = !root.theme-pick-open;
                         }
                     }
@@ -4216,63 +4202,6 @@ export component AppWindow inherits Window {
             moved => {
                 root.win-resize-move(self.absolute-position.x + self.mouse-x,
                                      self.absolute-position.y + self.mouse-y);
-            }
-        }
-    }
-
-    // --- Update-available banner (#48) ------------------------------------
-    // A dismissible top-centre banner; the app stays usable on the current
-    // version. "Download" opens the GitHub release page in the browser.
-    if root.update-available : Rectangle {
-        x: (parent.width - 384px) / 2;
-        y: 8px;
-        width: 384px;
-        height: 38px;
-        background: Theme.accent;
-        border-radius: Theme.radius-md;
-        border-width: 1px;
-        border-color: Theme.border-strong;
-        drop-shadow-blur: 14px;
-        drop-shadow-color: #00000060;
-        HorizontalLayout {
-            padding-left: 12px;
-            padding-right: 6px;
-            spacing: 8px;
-            Text {
-                text: "🎉 " + @tr("Update available:") + " " + root.update-version;
-                color: #ffffff;
-                font-size: Theme.fs-sm;
-                font-family: Theme.ui-font-family;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-                overflow: elide;
-            }
-            Rectangle {
-                width: 68px; height: 26px;
-                y: (parent.height - self.height) / 2;
-                border-radius: Theme.radius-sm;
-                background: upd-dl-ta.has-hover ? #ffffff45 : #ffffff28;
-                upd-dl-ta := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => { root.open-update-url(); }
-                }
-                Text { text: @tr("Download"); color: #ffffff; font-size: Theme.fs-sm;
-                       horizontal-alignment: center; vertical-alignment: center; }
-            }
-            Rectangle {
-                width: 26px; height: 26px;
-                y: (parent.height - self.height) / 2;
-                border-radius: Theme.radius-sm;
-                background: upd-cl-ta.has-hover ? #ffffff45 : transparent;
-                upd-cl-ta := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => { root.update-available = false; }
-                }
-                Icon {
-    glyph: "close";
-    tint: #ffffff;
-    size: Theme.fs-sm;
-}
             }
         }
     }
@@ -6781,7 +6710,7 @@ export component AppWindow inherits Window {
                         alignment: start;
                         spacing: 8px;
                         Text {
-                            text: "meatshell";
+                            text: "MTerm";
                             color: Theme.text-primary;
                             font-size: 22px;
                             font-weight: Theme.fw-strong;
@@ -6793,7 +6722,7 @@ export component AppWindow inherits Window {
                     }
 
                     Text {
-                        text: @tr("meatshell — a lightweight Rust + Slint SSH client by 'lil meatball'");
+                        text: @tr("MTerm — a lightweight Rust + Slint SSH client by 'lil meatball'");
                         color: Theme.text-secondary;
                         font-size: Theme.fs-sm;
                         wrap: word-wrap;
@@ -6815,7 +6744,7 @@ export component AppWindow inherits Window {
                             HorizontalLayout {
                                 padding-left: 4px; padding-right: 4px;
                                 Text {
-                                    text: "github.com/yituorou/meatshell";
+                                    text: "github.com/cbozuo/MTerm";
                                     color: Theme.accent;
                                     font-size: Theme.fs-sm;
                                     vertical-alignment: center;
@@ -7433,7 +7362,6 @@ export component AppWindow inherits Window {
                     zen-mode <=> root.zen-mode;
                     welcome-as-sidebar <=> root.welcome-as-sidebar;
                     quick-commands-as-sidebar <=> root.quick-commands-as-sidebar;
-                    update-check-enabled <=> root.update-check-enabled;
                     mcp-enabled <=> root.mcp-enabled;
                     mcp-use-saved-credentials <=> root.mcp-use-saved-credentials;
                     mcp-allow-commands <=> root.mcp-allow-commands;
@@ -7490,7 +7418,6 @@ export component AppWindow inherits Window {
                         }
                         root.set-quick-commands-as-sidebar(v);
                     }
-                    set-update-check-enabled(v) => { root.set-update-check-enabled(v); }
                     set-mcp-permissions(enabled, credentials, commands, files) => {
                         root.set-mcp-permissions(enabled, credentials, commands, files);
                     }
@@ -7576,7 +7503,10 @@ export component AppWindow inherits Window {
     // 框（稿内 tpk-search）、行色块=该套**强调色**（panel 底色白/黑不可辨）。
     // 悬停行=主界面实时预览，点击=确认，点浮层外=关闭并恢复当前主题。
     if root.theme-pick-open : Rectangle {
-        property <length> list-h: min(430px, pick-lay.preferred-height + 10px);
+        // (#theme-empty-h 2026-10-08) 无结果态下 preferred-height 只算到
+        // 占位条的一小截，浮层被压得比占位文字还矮（用户截图：提示被底边
+        // 裁掉）——钳一个能完整放下「搜索框 + 占位提示」的最小高度。
+        property <length> list-h: max(min(430px, pick-lay.preferred-height + 10px), 110px);
         width: parent.width;
         height: parent.height;
         TouchArea { clicked => { root.theme-pick-open = false; root.theme-pick-search = ""; root.theme-search-filter(""); root.preview-theme(root.theme-chosen); } }
@@ -7621,8 +7551,17 @@ export component AppWindow inherits Window {
                     content-height: pick-lay.preferred-height;
                     pick-lay := VerticalLayout {
                         spacing: 1px; alignment: start;
-                        for e in root.theme-entries : Rectangle {
+                        for e in root.theme-entries : row-rect := Rectangle {
                             height: e.kind == "header" ? 22px : 28px;
+                            // (#theme-hover-bg 2026-10-08) 滑动选中背景：鼠标
+                            // 悬浮哪行哪行亮，高亮块随指针在行间"滑动"；选中
+                            // 行的 ✓ 与强调色文字不变。高亮色用 (#menu-hover)
+                            // —— bg-hover 底色是写死的深灰，浅色主题下几乎
+                            // 看不见（用户反馈）。
+                            property <bool> row-hover: false;
+                            background: e.kind != "header" && row-rect.row-hover
+                                ? Theme.menu-hover : transparent;
+                            border-radius: 6px;
                             // 搜索过滤：组头仅在无搜索词时显示；行按 zh/id 匹配
                             visible: e.kind == "header"
                                 ? root.theme-pick-search == ""
@@ -7657,7 +7596,7 @@ export component AppWindow inherits Window {
                                     vertical-alignment: center;
                                 }
                             }
-                            if e.kind != "header" : TouchArea {
+                            if e.kind != "header" : row-hit := TouchArea {
                                 mouse-cursor: pointer;
                                 clicked => {
                                     root.theme-chosen = e.id;
@@ -7666,18 +7605,44 @@ export component AppWindow inherits Window {
                                     root.theme-pick-search = "";
                                     root.theme-search-filter("");
                                 }
+                                // (#theme-hover-delay 2026-10-08) 悬停预览：
+                                // **延迟触发**，鼠标快速划过列表时不预览（避免
+                                // 主界面跟着闪），停留够久才预览。两个入口（顶栏
+                                // 下拉 / 设置页）行为统一。300ms 用户仍觉太快
+                                // → 1500ms。
+                                // 移出行即取消定时器并恢复当前主题。
+                                row-delay := Timer {
+                                    interval: 1500ms;
+                                    triggered => {
+                                        // 复查仍悬浮（changed 初始求值会误启一次）
+                                        if (row-hit.has-hover) { root.preview-theme(e.id); }
+                                    }
+                                }
                                 changed has-hover => {
-                                    // 顶栏快速切换：不预览（设置页下拉才悬停预览
-                                    // ——interface-open 区分两处入口）。
-                                    if (self.has-hover && root.interface-open) {
-                                        root.preview-theme(e.id);
-                                    } else if (!self.has-hover) {
-                                        // 移出行即恢复当前主题（用户要求：
-                                        // 不点击就不变更；同帧 out→in 时
-                                        // 最终值是 in 行的预览，不闪）
+                                    row-rect.row-hover = self.has-hover;
+                                    if (self.has-hover) {
+                                        row-delay.restart();
+                                    } else {
+                                        row-delay.running = false;
+                                        // 恢复当前主题（不点击就不变更；同帧
+                                        // out→in 时最终值是 in 行的预览，不闪）
                                         root.preview-theme(root.theme-chosen);
                                     }
                                 }
+                            }
+                        }
+                        // (#theme-search-empty 2026-10-08) 无结果占位：搜索词非空
+                        // 且没有任何可见行时显示（旧实现只留一个空搜索框，用户
+                        // 反馈「搜不到就只剩搜索框」）。theme-has-match 由 Rust
+                        // 过滤后回写——Slint 侧遍历模型判空代价高且时机不稳。
+                        if root.theme-pick-search != "" && !root.theme-has-match : Rectangle {
+                            height: 64px;
+                            Text {
+                                width: 100%;
+                                text: root.lang-en ? "No matching themes" : "未找到匹配的主题";
+                                color: Theme.text-muted; font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
                             }
                         }
                     }

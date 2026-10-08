@@ -92,7 +92,7 @@ pub(crate) async fn send(
     }
 
     let _ = events.send(SessionEvent::Output(format!(
-        "\r\n[meatshell] {} {}\r\n",
+        "\r\n[MTerm] {} {}\r\n",
         files.len(),
         t("个文件已通过 rz 上传", "file(s) uploaded via rz")
     )));

@@ -588,7 +588,7 @@ fn show_about_window(main: &slint::Weak<AppWindow>) {
         hide_about_window();
     });
     about.on_open_repo(move || {
-        let url = "https://github.com/yituorou/meatshell";
+        let url = "https://github.com/cbozuo/MTerm";
         #[cfg(windows)]
         let _ = std::process::Command::new("explorer").arg(url).spawn();
         #[cfg(target_os = "macos")]
@@ -603,6 +603,7 @@ fn show_about_window(main: &slint::Weak<AppWindow>) {
         slint::CloseRequestResponse::HideWindow
     });
     let _ = about.show();
+    arm_window_icon(about.window());
     center_window(about.window());
     // (#tray-flyout-r7) 关于窗的任务栏/owner 已在**创建时**经后端钩子注入
     //(TRAY_WINDOW_NEXT → with_owner_window + with_skip_taskbar),无需运行时补设。
@@ -1253,7 +1254,7 @@ pub fn run(intent: crate::app::launch::LaunchIntent) -> Result<()> {
     setup_macos_platform(config.renderer_mode());
 
     // --- Single-instance coordination -------------------------------------
-    // A second `meatshell --new-window` forwards to us and exits; we never
+    // A second `MTerm --new-window` forwards to us and exits; we never
     // run two GUI instances for that entry point (Chrome-style). Plain
     // launches pass forward=false and never forward: if the endpoint is
     // taken they run as an independent second instance. IPC failures fall
@@ -1286,7 +1287,6 @@ pub fn run(intent: crate::app::launch::LaunchIntent) -> Result<()> {
         registry: Rc::new(WindowRegistry::default()),
         window_states: Rc::new(RefCell::new(HashMap::new())),
         tab_routes: Arc::new(Mutex::new(HashMap::new())),
-        first_window_done: Cell::new(false),
     });
 
     // IPC listener: forwarded "new-window" requests arrive on the listener
@@ -1349,9 +1349,9 @@ pub fn run(intent: crate::app::launch::LaunchIntent) -> Result<()> {
 
     // Set the Wayland app_id / X11 WM_CLASS *before* the window is created so
     // the Linux desktop shell can match the running window to the installed
-    // `meatshell.desktop` entry and show our icon in the dock/taskbar.  (On
+    // `mterm.desktop` entry and show our icon in the dock/taskbar.  (On
     // Windows the icon comes from the embedded .ico, so this is a no-op there.)
-    let _ = slint::set_xdg_app_id("meatshell");
+    let _ = slint::set_xdg_app_id("MTerm");
 
     // Taskbar jump list ("新建窗口") on Windows: register before the first
     // window shows so the entry is available immediately. Failure is
@@ -1472,12 +1472,8 @@ fn open_window(
     // so the footer never drifts out of sync with the actual build.
     window.set_app_version(env!("CARGO_PKG_VERSION").into());
 
-    // Set the window icon from the PNG embedded in the binary so the dock
-    // shows the correct icon even without a system-installed .desktop entry
-    // (e.g. AppImage without AppImageLauncher, or plain binary in ~/bin).
-    #[cfg(target_os = "linux")]
-    set_window_icon(&window);
-
+    // 窗口图标在 show() 之后设置：Slint 的 winit 窗口是 show 时才真正建成，
+    // 之前调 with_winit_window 会静默空转（见 apply_window_chrome 的注释）。
     // The window defaults to frameless + custom title bar (#119). macOS keeps
     // its native decorations, so turn the custom bar off there.
     #[cfg(target_os = "macos")]
@@ -1706,6 +1702,7 @@ fn open_window(
             pw.set_host(main.get_connection_state());
             sync_proc_theme(&main, &pw);
             let _ = pw.show();
+            arm_window_icon(pw.window());
             place_process_window(&main, &pw);
             pw.window().with_winit_window(|ww| ww.focus_window());
         });
@@ -1767,6 +1764,7 @@ fn open_window(
             sw.set_resource_title(main.get_resource_title());
             sync_system_info_theme(&main, &sw);
             let _ = sw.show();
+            arm_window_icon(sw.window());
             place_system_info_window(&main, &sw);
             sw.window().with_winit_window(|ww| ww.focus_window());
         });
@@ -1919,8 +1917,8 @@ fn open_window(
 
     // Apply the saved terminal font (Interface settings). An empty family keeps
     // the resolved chain default; the size always applies (defaults to 13). A
-    // stale name that no longer resolves (e.g. configs still naming the removed
-    // embedded "Meatshell Mono") migrates to the chain default once, in config.
+    // stale name that no longer resolves (e.g. configs naming a no-longer
+    // installed font name) migrates to the chain default once, in config.
     {
         let mut s = store.borrow_mut();
         let mut fam = s.font_family().to_string();
@@ -2175,7 +2173,6 @@ fn open_window(
         window.set_welcome_collapsed(welcome_collapsed);
         window.set_sidebar_collapsed(sidebar_collapsed);
         window.set_wallpaper_overlay(s.wallpaper_overlay());
-        window.set_update_check_enabled(s.update_check_enabled()); // #184
         if collapse_sftp {
             window.set_sftp_collapsed(true);
             window.set_sftp_saved_height(s.sftp_panel_height());
@@ -2200,16 +2197,6 @@ fn open_window(
         window.on_set_quick_commands_as_sidebar(move |v| {
             let mut s = store.borrow_mut();
             s.set_quick_commands_as_sidebar(v);
-            let _ = s.save();
-        });
-    }
-    {
-        // Toggle the startup new-version check (#184). Takes effect next launch
-        // for the check itself; the banner just won't appear once it's off.
-        let store = store.clone();
-        window.on_set_update_check_enabled(move |v| {
-            let mut s = store.borrow_mut();
-            s.set_update_check_enabled(v);
             let _ = s.save();
         });
     }
@@ -3417,6 +3404,9 @@ fn open_window(
     // 调回调——输入词变化时由 Rust **重发过滤后的 theme-entries**（非空词不发
     // 组头行；空词全量恢复）。matched 标记行级显隐（当前恒 true，行已在 Rust
     // 侧过滤）。
+    // (#theme-search-mode 2026-10-08) 匹配范围：主题名（zh / id）+ **明暗**
+    // （暗/亮、深/浅、dark/light——用户要求）。明暗词按整词匹配 mode 字段，
+    // 避免「深」这种单字误伤含该字的主题名（如「深海」）。
     {
         let weak = window.as_weak();
         // (#theme-search-restore 2026-10-08) 旧实现搜索时 set_vec(过滤结果)
@@ -3428,24 +3418,36 @@ fn open_window(
         ));
         window.on_theme_search_filter(move |q: SharedString| {
             let Some(w) = weak.upgrade() else { return };
-            let q = q.to_lowercase();
+            let q = q.trim().to_lowercase();
             let model = w.get_theme_entries();
             let Some(vec_model) = model.as_any().downcast_ref::<slint::VecModel<crate::ui::ThemeEntry>>() else { return };
             let all: Vec<crate::ui::ThemeEntry> = full.borrow().clone();
             if q.is_empty() {
                 // 恢复：全量快照（含组头）
                 vec_model.set_vec(all);
+                w.set_theme_has_match(true);
                 return;
             }
+            // 明暗关键词 → 目标 mode 值（"暗"/"亮"）。命中即按 mode 过滤，
+            // 与主题名是「或」关系（输入「暗 石墨」任一命中即显示）。
+            let want_dark = ["暗", "深", "dark"].iter().any(|k| q.contains(k));
+            let want_light = ["亮", "浅", "light"].iter().any(|k| q.contains(k));
             let filtered: Vec<crate::ui::ThemeEntry> = all
                 .into_iter()
                 .filter(|row| {
-                    row.kind != "header"
-                        && (row.zh.to_lowercase().contains(q.as_str())
-                            || row.id.to_lowercase().contains(q.as_str()))
+                    if row.kind == "header" {
+                        return false;
+                    }
+                    let name_hit = row.zh.to_lowercase().contains(q.as_str())
+                        || row.id.to_lowercase().contains(q.as_str());
+                    let mode_hit = (want_dark && row.mode == "暗")
+                        || (want_light && row.mode == "亮");
+                    name_hit || mode_hit
                 })
                 .map(|mut r| { r.matched = true; r })
                 .collect();
+            // 无命中 → 浮层显示占位（#theme-search-empty）
+            w.set_theme_has_match(!filtered.is_empty());
             vec_model.set_vec(filtered);
         });
     }
@@ -3884,20 +3886,9 @@ fn open_window(
         });
     }
 
-    // --- In-app update check (#48) -----------------------------------------
-    // "Download" on the banner opens the latest-release page in the browser.
-    window.on_open_update_url(move || {
-        let url = "https://github.com/yituorou/meatshell/releases/latest";
-        #[cfg(windows)]
-        let _ = std::process::Command::new("explorer").arg(url).spawn();
-        #[cfg(target_os = "macos")]
-        let _ = std::process::Command::new("open").arg(url).spawn();
-        #[cfg(all(not(windows), not(target_os = "macos")))]
-        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-    });
     // The open-source link in the About dialog opens the project page.
     window.on_open_repo(move || {
-        let url = "https://github.com/yituorou/meatshell";
+        let url = "https://github.com/cbozuo/MTerm";
         #[cfg(windows)]
         let _ = std::process::Command::new("explorer").arg(url).spawn();
         #[cfg(target_os = "macos")]
@@ -3905,46 +3896,6 @@ fn open_window(
         #[cfg(all(not(windows), not(target_os = "macos")))]
         let _ = std::process::Command::new("xdg-open").arg(url).spawn();
     });
-    // Query the GitHub releases API on a background thread; if a newer version
-    // exists, flip the banner on. Best-effort: any network/parse error is
-    // silently ignored and the app keeps working on the current version.
-    // Skipped entirely when the user turned the check off (#184). Runs only
-    // for the first window of the process: the old `registry.count() == 1`
-    // guard re-fired the check whenever the count returned to 1 after a
-    // close-then-open. The flag is set regardless of the enabled setting, so
-    // a disabled check is never deferred to a later window either.
-    let first_window = !core.first_window_done.get();
-    core.first_window_done.set(true);
-    if first_window && store.borrow().update_check_enabled() {
-        let weak = window.as_weak();
-        std::thread::spawn(move || {
-            let body =
-                match ureq::get("https://api.github.com/repos/yituorou/meatshell/releases/latest")
-                    .set("User-Agent", "meatshell-update-check")
-                    .timeout(std::time::Duration::from_secs(8))
-                    .call()
-                {
-                    Ok(resp) => resp.into_string().unwrap_or_default(),
-                    Err(_) => return,
-                };
-            let json: serde_json::Value = match serde_json::from_str(&body) {
-                Ok(v) => v,
-                Err(_) => return,
-            };
-            let tag = json["tag_name"].as_str().unwrap_or("").to_string();
-            let newer = matches!(
-                (parse_version(&tag), parse_version(env!("CARGO_PKG_VERSION"))),
-                (Some(latest), Some(cur)) if latest > cur
-            );
-            if !newer {
-                return;
-            }
-            let _ = weak.upgrade_in_event_loop(move |w| {
-                w.set_update_version(tag.into());
-                w.set_update_available(true);
-            });
-        });
-    }
 
     // Transfer records (download/upload progress + history) shown in the popup.
     let transfers_model: Rc<VecModel<TransferInfo>> = Rc::new(VecModel::default());
@@ -4926,6 +4877,9 @@ fn open_window(
     // spinning the loop. run_event_loop() does not, so display it here —
     // without this the app starts but no window ever appears (#multi-window).
     window.show().context("failed to show window")?;
+    // winit 窗口 show 时才建成;此刻设置图标,任务管理器子行/任务栏/alt-tab
+    // 才不会显示空白(winit 窗口类本身不带图标)。
+    arm_window_icon(window.window());
 
     // (#tray-persist 2026-09-21) 托盘图标**全程常驻**:启动即随主窗口创建
     // (TRAY_ENSURE 闭包内建 is_some 去重,多窗口只建一次)。之前是"最小化到
@@ -5819,7 +5773,7 @@ fn wire_session_callbacks(
         let store = store.clone();
         window.on_export_sessions(move || {
             if let Some(path) = rfd::FileDialog::new()
-                .set_file_name("meatshell-connections.json")
+                .set_file_name("mterm-connections.json")
                 .add_filter("JSON", &["json"])
                 .save_file()
             {
@@ -8664,6 +8618,15 @@ fn wire_key_input(
                             buffer.lock().unwrap().interactive_echo_until =
                                 std::time::Instant::now() + INTERACTIVE_ECHO_WINDOW;
                         }
+                        // (#tab-32-fix 2026-10-08) 自己也在频道里 —— 同步输入
+                        // 语义是一次输入、**全组（含自己）**执行。之前这个分支
+                        // 只投给其他成员、唯独漏发自己：在频道里的会话完全无法
+                        // 输入（重开持久化的频道成员会话必现 —— 用户反馈"打开
+                        // 一个连接无法输入命令"）。给自己补一次单发（仅一次，
+                        // 与 ③ 的"跳过自己"不冲突——那是指别把它再投递一遍）。
+                        if let Some(handle) = h.get(tab_id.as_str()) {
+                            handle.send_raw(bytes.clone());
+                        }
                     }
                     _ => {
                         // 不在任何频道 / 本会话已暂停（④遍历前返回——只让本会话
@@ -9437,13 +9400,13 @@ fn resolve_ui_font_family(
     saved: &str,
 ) -> slint::SharedString {
     // Diagnostic / escape hatch (#129): force a specific UI font without a rebuild.
-    // e.g. MEATSHELL_UI_FONT="Microsoft YaHei". Empty value is ignored. Wins over
+    // e.g. MTERM_UI_FONT="Microsoft YaHei". Empty value is ignored. Wins over
     // both the saved choice and the chain so a bad face can be worked around
     // without touching config.
-    if let Some(f) = std::env::var_os("MEATSHELL_UI_FONT") {
+    if let Some(f) = std::env::var_os("MTERM_UI_FONT") {
         let f = f.to_string_lossy().into_owned();
         if !f.trim().is_empty() {
-            tracing::debug!(font = %f, "ui-font: overridden via MEATSHELL_UI_FONT");
+            tracing::debug!(font = %f, "ui-font: overridden via MTERM_UI_FONT");
             return f.into();
         }
     }
@@ -9469,7 +9432,7 @@ fn resolve_ui_font_family(
     // ship on every macOS, so we prefer them and keep PingFang only as a late
     // fallback. (Verified on an M2/macOS 26: Heiti SC/STHeiti/Songti SC render,
     // PingFang/Hiragino don't.) Power users can still force one via
-    // MEATSHELL_UI_FONT. Heiti SC is a clean sans-serif (better for UI than the
+    // MTERM_UI_FONT. Heiti SC is a clean sans-serif (better for UI than the
     // serif Songti), so it leads.
     #[cfg(target_os = "macos")]
     let candidates: &[&str] = &[
@@ -9705,25 +9668,6 @@ fn system_ui_fonts(db: &fontdb::Database) -> Vec<slint::SharedString> {
     // filtering first would re-read a family once per face (regular/bold/...).
     names.retain(|n| family_covers(db, n, SANS_PROBE));
     names.into_iter().map(slint::SharedString::from).collect()
-}
-
-/// Split a stored proxy URL into `(type, host:port)` for the session dialog.
-///
-/// Parse a "vX.Y.Z" / "X.Y.Z" tag into a comparable tuple, or None if it isn't
-/// a three-part numeric version. A pre-release suffix on the patch (e.g.
-/// "3-rc1") is tolerated by taking its leading digits (#48).
-fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
-    let s = s.trim().trim_start_matches('v');
-    let mut it = s.split('.');
-    let major = it.next()?.parse().ok()?;
-    let minor = it.next()?.parse().ok()?;
-    let patch = it
-        .next()?
-        .split(|c: char| !c.is_ascii_digit())
-        .next()?
-        .parse()
-        .ok()?;
-    Some((major, minor, patch))
 }
 
 // (#conn-path 2026-10-04) 旧的 split_proxy 单串拆解已升级为

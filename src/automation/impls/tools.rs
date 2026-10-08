@@ -164,7 +164,7 @@ fn sftp_context(
 }
 
 fn load_store(frontend: Frontend) -> Result<ConfigStore> {
-    let store = ConfigStore::load().context("load MeatShell configuration")?;
+    let store = ConfigStore::load().context("load MTerm configuration")?;
     if frontend == Frontend::Mcp && !store.mcp_enabled() {
         return Err(anyhow!("MCP is disabled in Settings > Interface > MCP"));
     }

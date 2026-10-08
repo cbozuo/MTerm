@@ -557,7 +557,7 @@ async fn run_sftp(
     // can therefore open the same remote basename without sharing one temp
     // file or editor document (#318).
     let external_edit_prefix = sanitize_filename(&session.host);
-    let external_edit_dir = std::env::temp_dir().join("meatshell").join(format!(
+    let external_edit_dir = std::env::temp_dir().join("mterm").join(format!(
         "{}-{}-{}",
         external_edit_prefix,
         session.port,
@@ -1129,7 +1129,7 @@ async fn run_sftp(
                     // the multi-select download button and the right-click single-file
                     // "打包下载" go through this same DownloadArchive path, so changing
                     // it here covers them all uniformly (#sftp-archive-zip).
-                    let tmp = format!("/tmp/meatshell-{}.zip", Uuid::new_v4());
+                    let tmp = format!("/tmp/mterm-{}.zip", Uuid::new_v4());
                     // Name the archive after the first item's stem, per the user:
                     // 11.txt + several others → "11等文件.zip". A SINGLE file reads
                     // better as "<name>.zip" (e.g. "11.txt.zip"), so only the
@@ -2092,7 +2092,7 @@ async fn stage_remote_for_copy(
     events: &UnboundedSender<SessionEvent>,
 ) -> Result<(PathBuf, PathBuf)> {
     let cleanup_root =
-        std::env::temp_dir().join(format!("meatshell-remote-copy-{}", Uuid::new_v4()));
+        std::env::temp_dir().join(format!("mterm-remote-copy-{}", Uuid::new_v4()));
     tokio::fs::create_dir_all(&cleanup_root)
         .await
         .with_context(|| format!("failed to create temp dir {}", cleanup_root.display()))?;
@@ -2228,7 +2228,7 @@ async fn resolve_owner_names(
         format!("getent group {} 2>/dev/null", gid_args.join(" "))
     };
     let command = format!(
-        "{passwd}; printf '\\n--MEATSHELL-GROUPS--\\n'; {group}"
+        "{passwd}; printf '\\n--MTERM-GROUPS--\\n'; {group}"
     );
     let Ok(Ok(output)) = tokio::time::timeout(
         std::time::Duration::from_secs(2),
@@ -2242,7 +2242,7 @@ async fn resolve_owner_names(
     let mut groups = HashMap::new();
     let mut in_groups = false;
     for line in output.lines() {
-        if line == "--MEATSHELL-GROUPS--" {
+        if line == "--MTERM-GROUPS--" {
             in_groups = true;
             continue;
         }
@@ -2983,7 +2983,7 @@ mod sanitize_tests {
 
     #[test]
     fn keep_both_uses_the_first_available_numbered_name() {
-        let dir = std::env::temp_dir().join(format!("meatshell-download-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("mterm-download-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let requested = download_target_path("/remote/report.txt", dir.to_str().unwrap());
         std::fs::write(&requested, b"old").unwrap();

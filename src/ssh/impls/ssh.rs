@@ -204,10 +204,10 @@ const ZMODEM_CANCEL: [u8; 16] = [
 
 const PROMPT_SETUP_PREFIX: &str = "test -z \"$FISH_VERSION\"";
 const PROMPT_SETUP_SUFFIX: &str = "__ms7'";
-const PROMPT_SETUP_HISTORY_MARKER: &str = "__MEATSHELL_INTERNAL_SETUP_1";
+const PROMPT_SETUP_HISTORY_MARKER: &str = "__MTERM_INTERNAL_SETUP_1";
 const PROMPT_SETUP_DONE: &str = "\u{1b}]699;ready\u{07}";
-const PROMPT_BODY: &str = "test -z \"$FISH_VERSION\" && eval '__msc(){ __c=\"$(fc -ln -1 2>/dev/null)\"; [ -n \"$__c\" ] && [ \"$__c\" != \"$__cl\" ] && { __cl=\"$__c\"; printf \"\\033]697;%s\\007\" \"$__c\"; }; }; __ms7(){ printf \"\\033]7;file://%s%s\\007\" \"$HOSTNAME\" \"$PWD\"; __msc; }; if [ -n \"$ZSH_VERSION\" ]; then autoload -Uz add-zsh-hook 2>/dev/null; add-zsh-hook precmd __ms7; else PROMPT_COMMAND=\"__ms7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; fi; : __MEATSHELL_INTERNAL_SETUP_1; if [ -n \"$BASH_VERSION\" ]; then __md=\"$(history 2>/dev/null | { __md=\"\"; while read -r __mn __mr; do case \"$__mr\" in *\"__ms7()\"*\"PROMPT_COMMAND=\"*) __mn=\"${__mn%\\*}\"; __md=\"$__mn $__md\";; esac; done; printf \"%s\" \"$__md\"; })\"; for __mn in $__md; do history -d \"$__mn\" 2>/dev/null; done; unset __md __mn __mr; fi; __cl=\"$(fc -ln -1 2>/dev/null)\"; printf \"\\033]699;ready\\007\"; __ms7'";
-const PROMPT_SHELL_PROBE: &[u8] = b"if [ -n \"$BASH_VERSION\" ]; then printf '__MEATSHELL_SHELL__:bash\\n'; elif [ -n \"$ZSH_VERSION\" ]; then printf '__MEATSHELL_SHELL__:zsh\\n'; else printf '__MEATSHELL_SHELL__:other\\n'; fi";
+const PROMPT_BODY: &str = "test -z \"$FISH_VERSION\" && eval '__msc(){ __c=\"$(fc -ln -1 2>/dev/null)\"; [ -n \"$__c\" ] && [ \"$__c\" != \"$__cl\" ] && { __cl=\"$__c\"; printf \"\\033]697;%s\\007\" \"$__c\"; }; }; __ms7(){ printf \"\\033]7;file://%s%s\\007\" \"$HOSTNAME\" \"$PWD\"; __msc; }; if [ -n \"$ZSH_VERSION\" ]; then autoload -Uz add-zsh-hook 2>/dev/null; add-zsh-hook precmd __ms7; else PROMPT_COMMAND=\"__ms7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; fi; : __MTERM_INTERNAL_SETUP_1; if [ -n \"$BASH_VERSION\" ]; then __md=\"$(history 2>/dev/null | { __md=\"\"; while read -r __mn __mr; do case \"$__mr\" in *\"__ms7()\"*\"PROMPT_COMMAND=\"*) __mn=\"${__mn%\\*}\"; __md=\"$__mn $__md\";; esac; done; printf \"%s\" \"$__md\"; })\"; for __mn in $__md; do history -d \"$__mn\" 2>/dev/null; done; unset __md __mn __mr; fi; __cl=\"$(fc -ln -1 2>/dev/null)\"; printf \"\\033]699;ready\\007\"; __ms7'";
+const PROMPT_SHELL_PROBE: &[u8] = b"if [ -n \"$BASH_VERSION\" ]; then printf '__MTERM_SHELL__:bash\\n'; elif [ -n \"$ZSH_VERSION\" ]; then printf '__MTERM_SHELL__:zsh\\n'; else printf '__MTERM_SHELL__:other\\n'; fi";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AuxiliaryChannelKind {
@@ -319,11 +319,11 @@ async fn open_auxiliary_channel(
 }
 
 fn prompt_setup_supported(probe_output: &str) -> Option<bool> {
-    if probe_output.contains("__MEATSHELL_SHELL__:bash")
-        || probe_output.contains("__MEATSHELL_SHELL__:zsh")
+    if probe_output.contains("__MTERM_SHELL__:bash")
+        || probe_output.contains("__MTERM_SHELL__:zsh")
     {
         Some(true)
-    } else if probe_output.contains("__MEATSHELL_SHELL__:other") {
+    } else if probe_output.contains("__MTERM_SHELL__:other") {
         Some(false)
     } else {
         None
@@ -377,9 +377,9 @@ async fn remote_supports_prompt_setup(handle: &Handle<ClientHandler>) -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ZmodemDirection {
-    /// Remote `sz` sends files; MeatShell receives them.
+    /// Remote `sz` sends files; MTerm receives them.
     Download,
-    /// Remote `rz` receives files; MeatShell sends selected local files.
+    /// Remote `rz` receives files; MTerm sends selected local files.
     Upload,
 }
 
@@ -557,7 +557,7 @@ fn extract_osc7_end(text: &str) -> Option<(String, usize)> {
     None
 }
 
-/// Find a meatshell command-capture sequence (`ESC ] 697 ; <command> BEL|ST`)
+/// Find a MTerm command-capture sequence (`ESC ] 697 ; <command> BEL|ST`)
 /// emitted by the shell hook (#113). Returns the command text and the byte
 /// range of the whole escape sequence, so the caller can strip it before the
 /// text is rendered. An incomplete sequence (terminator not yet received)
@@ -1416,7 +1416,7 @@ pub struct CommandExecution {
 }
 
 /// Execute one command through the same transport, proxy, jump-host, host-key,
-/// and authentication path as an interactive MeatShell session.
+/// and authentication path as an interactive MTerm session.
 ///
 /// The caller must only pass a session after enforcing its own permission
 /// policy. Missing credentials and unknown/changed host keys fail closed because
@@ -1745,7 +1745,7 @@ async fn run_session(
         match handle.tcpip_forward(bind.clone(), f.bind_port as u32).await {
             Ok(_) => {
                 let _ = events.send(SessionEvent::Output(format!(
-                    "\r\n[meatshell] -R {bind}:{} → {}:{}\r\n",
+                    "\r\n[MTerm] -R {bind}:{} → {}:{}\r\n",
                     f.bind_port, f.host, f.host_port
                 )));
                 runtime_forwards.insert(
@@ -1758,7 +1758,7 @@ async fn run_session(
             }
             Err(e) => {
                 let _ = events.send(SessionEvent::Output(format!(
-                    "\r\n[meatshell] -R {bind}:{} 请求失败 / request failed: {e}\r\n",
+                    "\r\n[MTerm] -R {bind}:{} 请求失败 / request failed: {e}\r\n",
                     f.bind_port
                 )));
                 runtime_forwards.insert(
@@ -1908,7 +1908,7 @@ async fn run_session(
                             emit_tunnel_update(&runtime_forwards, &events);
                         } else {
                             let _ = events.send(SessionEvent::Output(format!(
-                                "\r\n[meatshell] {}\r\n",
+                                "\r\n[MTerm] {}\r\n",
                                 t("运行时暂不支持新增远程转发 -R", "runtime remote forwarding (-R) is not supported yet")
                             )));
                         }
@@ -1968,14 +1968,14 @@ async fn run_session(
                                     if files.is_empty() {
                                         let _ = channel.data(&ZMODEM_CANCEL[..]).await;
                                         let _ = events.send(SessionEvent::Output(format!(
-                                            "\r\n[meatshell] {}\r\n",
+                                            "\r\n[MTerm] {}\r\n",
                                             t("已取消 rz 上传", "rz upload cancelled")
                                         )));
                                         zmodem_done_at = Some(std::time::Instant::now());
                                         continue;
                                     }
                                     let _ = events.send(SessionEvent::Output(format!(
-                                        "\r\n[meatshell] {} {}...\r\n",
+                                        "\r\n[MTerm] {} {}...\r\n",
                                         t("开始上传", "Uploading"),
                                         files
                                             .iter()
@@ -2012,7 +2012,7 @@ async fn run_session(
                                     tracing::warn!("zmodem {direction:?} failed: {e:#}");
                                     let _ = channel.data(&ZMODEM_CANCEL[..]).await;
                                     let _ = events.send(SessionEvent::Output(format!(
-                                        "\r\n[meatshell] {}: {e:#}\r\n",
+                                        "\r\n[MTerm] {}: {e:#}\r\n",
                                         match direction {
                                             ZmodemDirection::Download => t(
                                                 "ZMODEM 接收失败,已取消",
@@ -2510,12 +2510,12 @@ fn parse_monitor_block(
             0.0
         };
         // (#sftp-…) Field diagnostics for the "remote CPU always 0%" complaint:
-        // enabled only when the user sets RUST_LOG=meatshell=debug (the binary's
+        // enabled only when the user sets RUST_LOG=mterm=debug (the binary's
         // default filter is `warn`, so the release build stays quiet). Output the
         // six values that decide whether the sample will report a meaningful CPU
         // %, so the next run can be inspected without rebuilding.
         tracing::debug!(
-            target: "meatshell::ssh::mon",
+            target: "mterm::ssh::mon",
             have_cpu,
             prev_set = prev.is_some(),
             cpu_total,
@@ -2532,7 +2532,7 @@ fn parse_monitor_block(
         // /proc/stat was unreadable. Surface it so a debug run tells us
         // immediately instead of looking like the parser is fine.
         tracing::debug!(
-            target: "meatshell::ssh::mon",
+            target: "mterm::ssh::mon",
             have_cpu,
             "ssh monitor sample had no cpu line"
         );
@@ -3076,7 +3076,7 @@ impl Handler for ClientHandler {
                 }
                 Err(e) => {
                     let _ = events.send(SessionEvent::Output(format!(
-                        "\r\n[meatshell] -R {host}:{port} 连接失败 / connect failed: {e}\r\n"
+                        "\r\n[MTerm] -R {host}:{port} 连接失败 / connect failed: {e}\r\n"
                     )));
                 }
             }
@@ -3104,15 +3104,15 @@ mod prompt_setup_echo_tests {
     #[test]
     fn only_bash_and_zsh_receive_prompt_setup() {
         assert_eq!(
-            prompt_setup_supported("__MEATSHELL_SHELL__:bash\n"),
+            prompt_setup_supported("__MTERM_SHELL__:bash\n"),
             Some(true)
         );
         assert_eq!(
-            prompt_setup_supported("__MEATSHELL_SHELL__:zsh\n"),
+            prompt_setup_supported("__MTERM_SHELL__:zsh\n"),
             Some(true)
         );
         assert_eq!(
-            prompt_setup_supported("__MEATSHELL_SHELL__:other\n"),
+            prompt_setup_supported("__MTERM_SHELL__:other\n"),
             Some(false)
         );
         assert_eq!(prompt_setup_supported("ash: syntax error\n"), None);

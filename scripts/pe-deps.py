@@ -4,7 +4,7 @@
 `+crt-static` 时会动态依赖 libgcc_s_seh-1.dll / libwinpthread-1.dll 等 —— 这类
 DLL 不在系统里，分发时必须随包附带，否则目标机直接起不来。
 
-用法:  python scripts/pe-deps.py target/release/meatshell.exe
+用法:  python scripts/pe-deps.py target/release/MTerm.exe
 """
 import struct
 import sys

@@ -51,7 +51,7 @@ fn main() -> anyhow::Result<()> {
 
     let mode = StartMode::detect(&args);
     if matches!(mode, StartMode::Version) {
-        println!("meatshell {}", env!("CARGO_PKG_VERSION"));
+        println!("MTerm {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
 
@@ -154,23 +154,23 @@ mod tests {
     #[test]
     fn detects_start_mode() {
         let mcp = vec![
-            "meatshell".to_string(),
+            "MTerm".to_string(),
             "mcp".to_string(),
             "serve".to_string(),
         ];
         assert!(matches!(StartMode::detect(&mcp), StartMode::Mcp));
 
         let cli = vec![
-            "meatshell".to_string(),
+            "MTerm".to_string(),
             "cli".to_string(),
             "sessions".to_string(),
         ];
         assert!(matches!(StartMode::detect(&cli), StartMode::Cli));
 
-        let version = vec!["meatshell".to_string(), "--version".to_string()];
+        let version = vec!["MTerm".to_string(), "--version".to_string()];
         assert!(matches!(StartMode::detect(&version), StartMode::Version));
 
-        let app = vec!["meatshell".to_string()];
+        let app = vec!["MTerm".to_string()];
         assert!(matches!(StartMode::detect(&app), StartMode::App));
     }
 }

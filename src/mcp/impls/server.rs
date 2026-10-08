@@ -70,11 +70,11 @@ fn initialize(params: &Value) -> Value {
         "protocolVersion": protocol_version,
         "capabilities": { "tools": { "listChanged": false } },
         "serverInfo": {
-            "name": "meatshell",
-            "title": "MeatShell MCP",
+            "name": "mterm",
+            "title": "MTerm MCP",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Manage saved MeatShell sessions and run permitted SSH automation without exposing stored secrets."
+        "instructions": "Manage saved MTerm sessions and run permitted SSH automation without exposing stored secrets."
     })
 }
 
@@ -136,7 +136,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(response["result"]["protocolVersion"], "2025-06-18");
-        assert_eq!(response["result"]["serverInfo"]["name"], "meatshell");
+        assert_eq!(response["result"]["serverInfo"]["name"], "mterm");
     }
 
     #[tokio::test]

@@ -31,7 +31,7 @@ cat > "$OUT" <<'HEAD'
 <html lang="zh">
 <head>
 <meta charset="utf-8">
-<title>MeatShell · 项目图标预览（高保真）</title>
+<title>MTerm · 项目图标预览（高保真）</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -65,7 +65,7 @@ cat > "$OUT" <<'HEAD'
 </style>
 </head>
 <body>
-<h1>MeatShell · 项目图标预览</h1>
+<h1>MTerm · 项目图标预览</h1>
 HEAD
 
 # 图标数量动态取，避免改了图标库忘了同步文案（曾长期停留在过期数字）。

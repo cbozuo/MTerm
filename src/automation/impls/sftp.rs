@@ -56,7 +56,7 @@ pub(super) async fn list(
                 SessionEvent::SftpStatus(status) => last_status = status,
                 SessionEvent::HostKeyPrompt { responder, .. } => {
                     responder.respond(false);
-                    return Err(anyhow!("remote host key is not trusted by MeatShell"));
+                    return Err(anyhow!("remote host key is not trusted by MTerm"));
                 }
                 SessionEvent::CredentialPrompt { responder, .. } => {
                     responder.respond(None);
@@ -118,7 +118,7 @@ pub(super) async fn read_text(
                 SessionEvent::SftpStatus(status) => last_status = status,
                 SessionEvent::HostKeyPrompt { responder, .. } => {
                     responder.respond(false);
-                    return Err(anyhow!("remote host key is not trusted by MeatShell"));
+                    return Err(anyhow!("remote host key is not trusted by MTerm"));
                 }
                 SessionEvent::CredentialPrompt { responder, .. } => {
                     responder.respond(None);
@@ -190,7 +190,7 @@ pub(super) async fn transfer(
                 SessionEvent::SftpStatus(status) => last_status = status,
                 SessionEvent::HostKeyPrompt { responder, .. } => {
                     responder.respond(false);
-                    return Err(anyhow!("remote host key is not trusted by MeatShell"));
+                    return Err(anyhow!("remote host key is not trusted by MTerm"));
                 }
                 SessionEvent::CredentialPrompt { responder, .. } => {
                     responder.respond(None);

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# 在 Debian 13 (trixie) / KDE 机器上一键构建并打包 meatshell 的 .deb 验证包。
+# 在 Debian 13 (trixie) / KDE 机器上一键构建并打包 MTerm 的 .deb 验证包。
 # 与 CI (.github/workflows/release.yml 的 "Build Debian package" 步骤) 逻辑一致：
 #   1. 安装 GUI 构建依赖 (Slint/rfd/arboard 需要的系统库)
 #   2. 确保 Rust 工具链存在 (没有就走 rustup 装 stable)
@@ -9,9 +9,9 @@
 #
 # 用法：
 #   sudo apt-get install -y git
-#   git clone <你的 fork> meatshell && cd meatshell
+#   git clone <你的 fork> MTerm && cd MTerm
 #   bash scripts/build-deb-debian13.sh
-# 产物：当前目录下的  meatshell-<版本>-linux-amd64.deb
+# 产物：当前目录下的  MTerm-<版本>-linux-amd64.deb
 #
 # 说明：本脚本只做“验证包”，不 bump 版本号、不打 tag。
 
@@ -53,47 +53,47 @@ VERSION_NUM="$(sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' Cargo.to
 echo "    版本: ${VERSION_NUM}"
 
 ROOT="deb-root"
-BIN="target/release/meatshell"
-install -Dm755 "$BIN" "$ROOT/usr/bin/meatshell"
-install -Dm644 assets/meatshell.desktop "$ROOT/usr/share/applications/meatshell.desktop"
-install -Dm644 assets/icon@512.png "$ROOT/usr/share/icons/hicolor/512x512/apps/meatshell.png"
-install -Dm644 THIRD_PARTY_NOTICES.md "$ROOT/usr/share/doc/meatshell/THIRD_PARTY_NOTICES.md" 2>/dev/null || true
+BIN="target/release/MTerm"
+install -Dm755 "$BIN" "$ROOT/usr/bin/MTerm"
+install -Dm644 assets/mterm.desktop "$ROOT/usr/share/applications/mterm.desktop"
+install -Dm644 assets/icon@512.png "$ROOT/usr/share/icons/hicolor/512x512/apps/mterm.png"
+install -Dm644 THIRD_PARTY_NOTICES.md "$ROOT/usr/share/doc/mterm/THIRD_PARTY_NOTICES.md" 2>/dev/null || true
 install -d "$ROOT/DEBIAN"
 
 # dpkg-shlibdeps 需要源包元数据 debian/control 才能正常推导依赖
 install -d debian
 cat > debian/control <<'EOF'
-Source: meatshell
+Source: mterm
 Section: net
 Priority: optional
-Maintainer: MeatShell contributors
+Maintainer: MTerm contributors
 Standards-Version: 4.6.2
 
-Package: meatshell
+Package: mterm
 Architecture: any
 Depends: ${shlibs:Depends}
 Description: Lightweight SSH, SFTP, and terminal client
 EOF
 
 echo "==> 推导运行时依赖 (dpkg-shlibdeps)"
-DEPENDS="$(dpkg-shlibdeps -O -e"$ROOT/usr/bin/meatshell" | sed -n 's/^shlibs:Depends=//p')"
+DEPENDS="$(dpkg-shlibdeps -O -e"$ROOT/usr/bin/MTerm" | sed -n 's/^shlibs:Depends=//p')"
 test -n "$DEPENDS"
 echo "    Depends: ${DEPENDS}"
 
 cat > "$ROOT/DEBIAN/control" <<EOF
-Package: meatshell
+Package: mterm
 Version: ${VERSION_NUM}
 Section: net
 Priority: optional
 Architecture: amd64
-Maintainer: MeatShell contributors
+Maintainer: MTerm contributors
 Depends: ${DEPENDS}
-Homepage: https://github.com/yituorou/meatshell
+Homepage: https://github.com/cbozuo/MTerm
 Description: Lightweight SSH, SFTP, and terminal client
- MeatShell is a cross-platform terminal client written in Rust and Slint.
+ MTerm is a cross-platform terminal client written in Rust and Slint.
 EOF
 
-DEB="meatshell-${VERSION_NUM}-linux-amd64.deb"
+DEB="MTerm-${VERSION_NUM}-linux-amd64.deb"
 dpkg-deb --root-owner-group --build "$ROOT" "$DEB"
 echo
 echo "==> 完成: $(pwd)/$DEB"

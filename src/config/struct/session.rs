@@ -16,7 +16,7 @@ pub enum SessionKind {
     Telnet,
     /// Local shell process on this machine (PowerShell/CMD/WSL/$SHELL).
     Local,
-    /// Remote Desktop session: meatshell only stores the account details and
+    /// Remote Desktop session: MTerm only stores the account details and
     /// hands them to the system RDP client (`mstsc` / `xfreerdp`), which opens
     /// the desktop in its own native window — no tab is created.
     Rdp,

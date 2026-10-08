@@ -5,7 +5,7 @@ pub(super) fn definitions() -> Value {
     json!([
         {
             "name": "list_sessions",
-            "description": "List saved MeatShell sessions without exposing passwords, private keys, or other secrets.",
+            "description": "List saved MTerm sessions without exposing passwords, private keys, or other secrets.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -16,7 +16,7 @@ pub(super) fn definitions() -> Value {
         },
         {
             "name": "get_session",
-            "description": "Get non-secret connection metadata for one saved MeatShell session.",
+            "description": "Get non-secret connection metadata for one saved MTerm session.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -43,7 +43,7 @@ pub(super) fn definitions() -> Value {
         },
         {
             "name": "list_remote_files",
-            "description": "List a remote directory over MeatShell SFTP without exposing credentials.",
+            "description": "List a remote directory over MTerm SFTP without exposing credentials.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -57,7 +57,7 @@ pub(super) fn definitions() -> Value {
         },
         {
             "name": "read_remote_text_file",
-            "description": "Read a bounded UTF-8 text file over MeatShell SFTP. Binary, oversized, or excessively long files are rejected.",
+            "description": "Read a bounded UTF-8 text file over MTerm SFTP. Binary, oversized, or excessively long files are rejected.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -71,7 +71,7 @@ pub(super) fn definitions() -> Value {
         },
         {
             "name": "upload_file",
-            "description": "Upload one local file to a remote directory over MeatShell SFTP. Requires the MCP file-transfer permission.",
+            "description": "Upload one local file to a remote directory over MTerm SFTP. Requires the MCP file-transfer permission.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -86,7 +86,7 @@ pub(super) fn definitions() -> Value {
         },
         {
             "name": "download_file",
-            "description": "Download one remote file into an existing local directory over MeatShell SFTP. Existing files are not overwritten. Requires the MCP file-transfer permission.",
+            "description": "Download one remote file into an existing local directory over MTerm SFTP. Existing files are not overwritten. Requires the MCP file-transfer permission.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

@@ -1,4 +1,4 @@
-/// Entry point invoking the shared MeatShell automation capabilities.
+/// Entry point invoking the shared MTerm automation capabilities.
 ///
 /// MCP applies persisted permission gates because an external agent initiates
 /// calls. CLI commands are explicit local user actions and therefore do not

@@ -1,5 +1,5 @@
 // Single-instance coordination. All OS entry points (Windows jump list,
-// macOS dock menu, Linux desktop action) launch `meatshell --new-window`.
+// macOS dock menu, Linux desktop action) launch `MTerm --new-window`.
 // The first running instance owns a local endpoint under the data dir; later
 // `--new-window` launches connect, send "new-window\n" and exit, and the
 // primary opens the new window in-process (Chrome-style). Plain relaunches
@@ -158,14 +158,14 @@ pub fn socket_path() -> PathBuf {
     // The parent dir doesn't exist by default and write/bind won't create it —
     // without this the first acquire() fails and single-instance silently
     // degrades to a plain launch.
-    let _ = fs::create_dir_all(std::env::temp_dir().join("meatshell-ipc"));
+    let _ = fs::create_dir_all(std::env::temp_dir().join("mterm-ipc"));
     #[cfg(windows)]
     {
-        std::env::temp_dir().join("meatshell-ipc").join("ipc.port")
+        std::env::temp_dir().join("mterm-ipc").join("ipc.port")
     }
     #[cfg(not(windows))]
     {
-        std::env::temp_dir().join("meatshell-ipc").join("ipc.sock")
+        std::env::temp_dir().join("mterm-ipc").join("ipc.sock")
     }
 }
 

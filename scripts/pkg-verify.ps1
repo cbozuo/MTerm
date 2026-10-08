@@ -1,10 +1,10 @@
 # Local verify package (port of scripts/_pkg_win.py; no Python on this box).
 # Usage: powershell -ExecutionPolicy Bypass -File scripts\pkg-verify.ps1
-# Output: repo-root meatshell-win-verify\ + meatshell-win-verify.zip
+# Output: repo-root mterm-win-verify\ + mterm-win-verify.zip
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
 
-$exe = "target\release\meatshell.exe"
+$exe = "target\release\MTerm.exe"
 if (-not (Test-Path $exe)) { throw "release exe not found: $exe (run cargo build --release first)" }
 
 # 1) locate toolchain (llvm-mingw -> MSYS2 mingw64)
@@ -22,11 +22,11 @@ $deps = & $objdump -p $exe | Select-String "DLL Name:" | ForEach-Object {
 } | Sort-Object -Unique
 
 # 3) bundle non-system DLLs (not present in System32 -> toolchain runtime)
-$stage = "meatshell-win-verify"
+$stage = "mterm-win-verify"
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Path $stage | Out-Null
 
-Copy-Item $exe (Join-Path $stage "meatshell.exe")
+Copy-Item $exe (Join-Path $stage "MTerm.exe")
 foreach ($d in $deps) {
     $sys = Join-Path $env:SystemRoot "System32\$d"
     if (Test-Path $sys) { continue }

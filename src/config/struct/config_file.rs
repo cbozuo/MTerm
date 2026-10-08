@@ -369,15 +369,10 @@ pub struct ConfigFile {
     /// Settings-panel font scale, percent (80–160). 0 = 100% default (v0.5).
     #[serde(default)]
     pub panel_font: u32,
-    /// Disable the startup "new version available" check (#184). Default false =
-    /// keep checking (preserves existing behaviour for upgrading users); turning
-    /// it on stops the GitHub releases query and the banner.
-    #[serde(default)]
-    pub update_check_disabled: bool,
-    /// Enable the local stdio MCP server (`meatshell mcp serve`).
+    /// Enable the local stdio MCP server (`MTerm mcp serve`).
     #[serde(default = "default_mcp_preview_enabled")]
     pub mcp_enabled: bool,
-    /// Allow MCP tools to use credentials already stored by MeatShell. Secrets
+    /// Allow MCP tools to use credentials already stored by MTerm. Secrets
     /// remain internal and are never included in protocol responses.
     #[serde(default = "default_mcp_preview_enabled")]
     pub mcp_use_saved_credentials: bool,
@@ -397,7 +392,7 @@ pub struct ConfigFile {
 
 /// Portable export file (issue #46): sessions with everything in plaintext
 /// **except** the password, which is encrypted with a fixed key baked into the
-/// binary so the file opens on *any* machine running meatshell.
+/// binary so the file opens on *any* machine running MTerm.
 ///
 /// Security note: a built-in key in open-source code is **obfuscation, not real
 /// security** — anyone with the source can derive it. It only stops a casual
@@ -405,6 +400,6 @@ pub struct ConfigFile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ExportFile {
     /// Format marker / version so the schema can evolve later.
-    pub(crate) meatshell_export: u32,
+    pub(crate) mterm_export: u32,
     pub(crate) sessions: Vec<Session>,
 }

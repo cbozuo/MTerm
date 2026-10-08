@@ -1,4 +1,4 @@
-# meatshell
+# MTerm
 
 [简体中文](./README.md) | **English**
 
@@ -24,25 +24,25 @@ the tens-of-MB range of a native binary.
 
 Every `v*` tag triggers a GitHub Actions build that produces native binaries for
 **Windows / Linux / macOS**, published on the
-[Releases](https://github.com/yituorou/meatshell/releases) page.
+[Releases](https://github.com/cbozuo/MTerm/releases) page.
 
 ### Windows
 
-Download `meatshell-*-windows-x86_64.zip`, unzip, and run `meatshell.exe`.
+Download `MTerm-*-windows-x86_64.zip`, unzip, and run `MTerm.exe`.
 
 ### Linux
 
 ```bash
-tar -xzf meatshell-*-linux-x86_64.tar.gz
-cd meatshell-*-linux-x86_64
-./meatshell                                  # run it directly
+tar -xzf MTerm-*-linux-x86_64.tar.gz
+cd MTerm-*-linux-x86_64
+./MTerm                                  # run it directly
 # Optional: system-wide install of the binary, icon, and launcher (requires sudo)
 chmod +x install-linux.sh && ./install-linux.sh
 ```
 
-The installer places the binary at `/usr/local/bin/meatshell`, the launcher at
-`/usr/local/share/applications/meatshell.desktop`, and the icon at
-`/usr/local/share/icons/hicolor/512x512/apps/meatshell.png`. It also removes a
+The installer places the binary at `/usr/local/bin/MTerm`, the launcher at
+`/usr/local/share/applications/MTerm.desktop`, and the icon at
+`/usr/local/share/icons/hicolor/512x512/apps/MTerm.png`. It also removes a
 stale same-named user launcher left by older tarball installers.
 
 > Requires glibc ≥ 2.35 (Ubuntu 22.04+ / Debian 12+). On Wayland you may need to
@@ -64,20 +64,20 @@ sudo apt install -y --no-install-recommends \
 
 ### macOS
 
-The download is a `.zip` containing the `meatshell.app` bundle:
+The download is a `.zip` containing the `MTerm.app` bundle:
 
 ```bash
 # Unzip (aarch64 = Apple Silicon, x86_64 = Intel)
-unzip meatshell-*-macos-*.zip
+unzip MTerm-*-macos-*.zip
 # Move it to Applications (optional — it also runs in place)
-mv meatshell.app /Applications/
-# Clear the quarantine flag, otherwise macOS says "meatshell is damaged and can't be opened"
-xattr -dr com.apple.quarantine /Applications/meatshell.app
+mv MTerm.app /Applications/
+# Clear the quarantine flag, otherwise macOS says "MTerm is damaged and can't be opened"
+xattr -dr com.apple.quarantine /Applications/MTerm.app
 # Open it (or double-click in Finder)
-open /Applications/meatshell.app
+open /Applications/MTerm.app
 ```
 
-> If you didn't move it to `/Applications`, point both paths above at wherever the `.app` actually is (e.g. `~/Downloads/meatshell.app`).
+> If you didn't move it to `/Applications`, point both paths above at wherever the `.app` actually is (e.g. `~/Downloads/MTerm.app`).
 
 > Requires macOS 11 Big Sur or later. Both Apple Silicon and Intel Macs are supported.
 
@@ -94,9 +94,9 @@ open /Applications/meatshell.app
 - [x] Color emoji, including skin tones, flags, and ZWJ sequences
 - [x] Tabs (welcome page + multiple sessions)
 - [x] Session management: create / edit / delete / groups, local JSON, export / import (including FinalShell connection files)
-  - Config location: `%APPDATA%/meatshell/sessions.json` (Windows)
-    / `~/.config/meatshell/sessions.json` (Linux)
-    / `~/Library/Application Support/meatshell/sessions.json` (macOS)
+  - Config location: `%APPDATA%/MTerm/sessions.json` (Windows)
+    / `~/.config/MTerm/sessions.json` (Linux)
+    / `~/Library/Application Support/MTerm/sessions.json` (macOS)
 - [x] SSH (`russh`, pure Rust): password / private key / encrypted key (passphrase)
 - [x] SFTP browser + upload / download (drag-and-drop) + in-terminal ZMODEM (`sz` download / `rz` multi-file upload)
 - [x] SSH port forwarding / tunnels: local -L / remote -R / dynamic -D (SOCKS5)
@@ -131,12 +131,12 @@ cargo run --release
 ```
 
 On first launch an empty session store is created at
-`%APPDATA%/meatshell/sessions.json`. Click **"＋ New Session"** in the top-right
+`%APPDATA%/MTerm/sessions.json`. Click **"＋ New Session"** in the top-right
 to add your first server.
 
 ## CLI and MCP automation
 
-The MeatShell CLI and MCP server share the sessions and SSH/SFTP implementation
+The MTerm CLI and MCP server share the sessions and SSH/SFTP implementation
 used by the GUI. The CLI is suited to scripts, CI, and explicit commands, while
 MCP lets an MCP-capable AI client perform server inspection, log analysis, and
 file transfers from natural-language requests. They are two entry points to the
@@ -152,57 +152,57 @@ same saved server configuration.
 Show every available command:
 
 ```bash
-meatshell cli help
+MTerm cli help
 ```
 
 Common examples:
 
 ```bash
 # List saved sessions; the first column is the session-id used below
-meatshell cli sessions
-meatshell cli sessions --json
+MTerm cli sessions
+MTerm cli sessions --json
 
 # Show non-secret metadata for one session
-meatshell cli session <session-id>
+MTerm cli session <session-id>
 
 # Run a non-interactive SSH command; the remote command must follow --
-meatshell cli exec <session-id> -- free -h
-meatshell cli exec <session-id> --timeout 60 --json -- journalctl -n 100 --no-pager
+MTerm cli exec <session-id> -- free -h
+MTerm cli exec <session-id> --timeout 60 --json -- journalctl -n 100 --no-pager
 
 # Browse, read, and transfer remote files
-meatshell cli files <session-id> /var/log
-meatshell cli read <session-id> /var/log/example.log
-meatshell cli upload <session-id> ./local.txt /tmp
-meatshell cli download <session-id> /tmp/result.txt ./downloads
+MTerm cli files <session-id> /var/log
+MTerm cli read <session-id> /var/log/example.log
+MTerm cli upload <session-id> ./local.txt /tmp
+MTerm cli download <session-id> /tmp/result.txt ./downloads
 ```
 
-Get `<session-id>` from `meatshell cli sessions`. A download requires an existing
+Get `<session-id>` from `MTerm cli sessions`. A download requires an existing
 local destination directory and will not overwrite a file with the same name.
 
 ### MCP
 
-First open **Settings → Interface → MCP** in MeatShell:
+First open **Settings → Interface → MCP** in MTerm:
 
 1. Enable MCP.
 2. Allow saved credentials when required.
 3. Allow arbitrary SSH commands for remote diagnostics.
 4. Allow file transfers when uploads or downloads are required.
 
-Then register a stdio MCP server named `meatshell` in your MCP-capable client:
+Then register a stdio MCP server named `MTerm` in your MCP-capable client:
 
 ```json
 {
   "mcpServers": {
-    "meatshell": {
-      "command": "/absolute/path/to/meatshell",
+    "MTerm": {
+      "command": "/absolute/path/to/MTerm",
       "args": ["mcp", "serve"]
     }
   }
 }
 ```
 
-On Windows, `command` can be `C:\\path\\to\\meatshell.exe`. Restart or refresh
-the MCP client; the `meatshell` server should expose tools for session lookup,
+On Windows, `command` can be `C:\\path\\to\\MTerm.exe`. Restart or refresh
+the MCP client; the `MTerm` server should expose tools for session lookup,
 remote commands, directory listing, bounded text reads, uploads, and downloads.
 MCP configuration locations vary by AI client, so consult that client's docs.
 
@@ -235,7 +235,7 @@ Run read-only OOM diagnostics and browse the heap-dump directory:
 Read a log or download a heap dump:
 
 ```jsonl
-{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_remote_text_file","arguments":{"session_id":"<session-id>","path":"/home/jeff/test/logs/meatshell-log-demo-error.log"}}}
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_remote_text_file","arguments":{"session_id":"<session-id>","path":"/home/jeff/test/logs/MTerm-log-demo-error.log"}}}
 {"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"download_file","arguments":{"session_id":"<session-id>","remote_path":"/home/jeff/test/heapdumps/example.hprof","local_directory":"/existing/local/directory","timeout_seconds":120}}}
 ```
 
@@ -245,7 +245,7 @@ exist, and the tool will not overwrite a file with the same name.
 
 Once configured, give the AI client a request such as:
 
-> Use the `meatshell` MCP to investigate an OOM on my `192.168.100.41` server.
+> Use the `MTerm` MCP to investigate an OOM on my `192.168.100.41` server.
 > Heap dumps are in `/home/jeff/test/heapdumps`. Check system memory, kernel OOM
 > records, Java processes, application logs, and the HPROF files, then identify
 > the root cause. Perform read-only diagnostics first; do not restart services or
@@ -260,7 +260,7 @@ configuration changes, or file downloads are allowed.
 ## Project layout
 
 ```
-meatshell/
+MTerm/
 ├── Cargo.toml
 ├── build.rs                 # Slint compiler entry point
 ├── ui/
@@ -299,7 +299,7 @@ so the tag points at a commit that already contains the matching Cargo version:
 ```
 
 The script updates `Cargo.toml` / `Cargo.lock`, runs `cargo check --locked`,
-verifies `meatshell --version`, commits `Release v0.6.0`, creates an annotated
+verifies `MTerm --version`, commits `Release v0.6.0`, creates an annotated
 tag, and pushes the current branch plus the tag. See
 [docs/release.md](docs/release.md) for details.
 

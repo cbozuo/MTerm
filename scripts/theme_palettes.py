@@ -22,8 +22,8 @@ star 数只作"社区验证程度"的参考，不作质量排名——
 ② **商标 ≠ 许可**。
    Darcula / IntelliJ Light 的 Color Scheme 文件是 Apache-2.0，
    但**品牌名属商标**。落地时写"配色参考 IntelliJ IDEA Darcula"，
-   不要命名为 "MeatShell Darcula"（会读成官方出品或联名）。
-   社区主题同理：写"配色参考 Dracula"，不写"MeatShell Dracula"。
+   不要命名为 "MTerm Darcula"（会读成官方出品或联名）。
+   社区主题同理：写"配色参考 Dracula"，不写"MTerm Dracula"。
 
 ③ **不为色系硬凑它没有的档位**。
    IDEA 只有 Dark / Light / High Contrast，没有"Darcula 亮档"。
@@ -403,7 +403,7 @@ P['idea-dark'] = {
             '⚠️ <b>商标注意</b>：配色文件 Apache-2.0，但'
             '<b>"IntelliJ IDEA" 是 JetBrains 的商标</b>。'
             '落地写"配色参考 IntelliJ IDEA Dark"，'
-            '<b>不要命名为 "MeatShell IDEA"</b>。',
+            '<b>不要命名为 "MTerm IDEA"</b>。',
     'dark': {
         # JetBrains Darcula / 新 UI 的公开色值
         'panel': '#2b2d30', 'panel2': '#33353a', 'elev': '#3c3f41',

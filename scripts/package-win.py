@@ -1,4 +1,4 @@
-"""打 Windows 分发包：dist/meatshell-v<版本>-win-x64.zip
+"""打 Windows 分发包：dist/MTerm-v<版本>-win-x64.zip
 
 内容 = 单文件 exe + README.md + CHANGELOG.md。
 打包前先用 scripts/pe-deps.py 校验 exe 是否自足 —— mingw 工具链（windows-gnu）
@@ -18,7 +18,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-EXE = os.path.join(ROOT, "target", "release", "meatshell.exe")
+EXE = os.path.join(ROOT, "target", "release", "MTerm.exe")
 DIST = os.path.join(ROOT, "dist")
 EXTRA = ["README.md", "CHANGELOG.md"]
 
@@ -47,14 +47,14 @@ def main():
     print("[2/4] 校验 exe 依赖 ...")
     subprocess.call([sys.executable, os.path.join(ROOT, "scripts", "pe-deps.py"), EXE])
 
-    name = "meatshell-v%s-win-x64" % ver
+    name = "MTerm-v%s-win-x64" % ver
     stage = os.path.join(DIST, name)
     if os.path.isdir(stage):
         shutil.rmtree(stage)
     os.makedirs(stage)
 
     print("[3/4] 组装 %s ..." % os.path.relpath(stage, ROOT))
-    shutil.copy2(EXE, os.path.join(stage, "meatshell.exe"))
+    shutil.copy2(EXE, os.path.join(stage, "MTerm.exe"))
     for f in EXTRA:
         p = os.path.join(ROOT, f)
         if os.path.isfile(p):

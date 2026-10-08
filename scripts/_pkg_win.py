@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# 把 target/x86_64-pc-windows-gnu/release/meatshell.exe 打成一个可分发 zip 验证包。
+# 把 target/x86_64-pc-windows-gnu/release/MTerm.exe 打成一个可分发 zip 验证包。
 # 同时用 objdump 列出动态依赖，把非系统 DLL (libgcc_s/libstdc++/libwinpthread)
 # 从 llvm-mingw/bin 一并拷进包，避免目标机器缺运行时。
 import os, shutil, subprocess, zipfile, sys
@@ -11,8 +11,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 本仓库两条路都走过，所以两个候选都看，取**修改时间最新**的那个，
 # 避免拿到上一次另一种命令留下的陈旧 exe（踩过：包里打进了昨天的旧产物）。
 EXE_CANDIDATES = [
-    os.path.join(REPO, "target", "release", "meatshell.exe"),
-    os.path.join(REPO, "target", "x86_64-pc-windows-gnu", "release", "meatshell.exe"),
+    os.path.join(REPO, "target", "release", "MTerm.exe"),
+    os.path.join(REPO, "target", "x86_64-pc-windows-gnu", "release", "MTerm.exe"),
 ]
 _existing = [p for p in EXE_CANDIDATES if os.path.isfile(p)]
 EXE = max(_existing, key=os.path.getmtime) if _existing else EXE_CANDIDATES[0]
@@ -39,7 +39,7 @@ for _name in ["x86_64-w64-mingw32-objdump.exe", "llvm-objdump.exe", "objdump.exe
         break
 if OBJDUMP is None:
     sys.exit(f"ERROR: 在 {LLVM_MINGW_BIN} 下找不到 objdump，无法分析动态依赖")
-STAGE_NAME = "meatshell-win-verify"
+STAGE_NAME = "mterm-win-verify"
 STAGE = os.path.join(REPO, STAGE_NAME)
 ZIP_PATH = os.path.join(REPO, STAGE_NAME + ".zip")
 
@@ -50,7 +50,7 @@ shutil.rmtree(STAGE, ignore_errors=True)
 os.makedirs(STAGE, exist_ok=True)
 
 # 1) 复制主程序
-shutil.copy(EXE, os.path.join(STAGE, "meatshell.exe"))
+shutil.copy(EXE, os.path.join(STAGE, "MTerm.exe"))
 
 # 2) 复制文档
 for f in ["README.md", "README.en.md", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md"]:

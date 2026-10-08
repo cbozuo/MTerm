@@ -1,5 +1,5 @@
 //! Windows taskbar jump list: right-click the taskbar icon → "新建窗口",
-//! launching `meatshell --new-window`. The launch is forwarded to the
+//! launching `MTerm --new-window`. The launch is forwarded to the
 //! running primary instance over the single-instance IPC socket (see
 //! `single_instance.rs`), so the entry behaves like Chrome's "new window"
 //! task instead of spawning a second process.
@@ -19,8 +19,8 @@ use windows::Win32::UI::Shell::{
 };
 
 /// AppUserModelID used to attach the jump list to this application.
-/// Must stay in sync with the identity Explorer uses for meatshell.
-const APP_ID: &str = "meatshell";
+/// Must stay in sync with the identity Explorer uses for MTerm.
+const APP_ID: &str = "MTerm";
 
 /// Register the "新建窗口" user task on the taskbar jump list.
 ///
@@ -41,7 +41,7 @@ pub fn register_new_window_task() {
 /// The `w!` literal must equal `APP_ID` (the macro needs a string literal).
 /// Failure is warn-only, like everything else in this module.
 pub fn set_app_user_model_id() {
-    if let Err(e) = unsafe { SetCurrentProcessExplicitAppUserModelID(w!("meatshell")) } {
+    if let Err(e) = unsafe { SetCurrentProcessExplicitAppUserModelID(w!("MTerm")) } {
         tracing::warn!("SetCurrentProcessExplicitAppUserModelID failed: {e}");
     }
 }

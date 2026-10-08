@@ -1,4 +1,4 @@
-//! Minimal `~/.ssh/config` parser used to import hosts as meatshell sessions.
+//! Minimal `~/.ssh/config` parser used to import hosts as MTerm sessions.
 //!
 //! We only read the handful of fields a session needs — `HostName`, `User`,
 //! `Port`, `IdentityFile` — grouped under each concrete `Host` alias.  Wildcard
@@ -300,7 +300,7 @@ Host scheme
 
     #[test]
     fn expands_relative_globbed_includes_and_ignores_cycles() {
-        let home = std::env::temp_dir().join(format!("meatshell-ssh-config-{}", uuid::Uuid::new_v4()));
+        let home = std::env::temp_dir().join(format!("mterm-ssh-config-{}", uuid::Uuid::new_v4()));
         let ssh = home.join(".ssh");
         let config_d = ssh.join("config.d");
         std::fs::create_dir_all(&config_d).unwrap();

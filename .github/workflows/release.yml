@@ -29,7 +29,7 @@ jobs:
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           CARGO_VERSION="$(sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
           LOCK_VERSION="$(awk '
-            $0 == "name = \"meatshell\"" { found = 1; next }
+            $0 == "name = \"mterm\"" { found = 1; next }
             found && $1 == "version" {
               gsub(/"/, "", $3)
               print $3
@@ -42,7 +42,7 @@ jobs:
             exit 1
           fi
           if [ "$TAG_VERSION" != "$LOCK_VERSION" ]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match Cargo.lock meatshell version ${LOCK_VERSION}."
+            echo "Tag ${GITHUB_REF_NAME} does not match Cargo.lock mterm version ${LOCK_VERSION}."
             echo "Run: pwsh ./scripts/release.ps1 ${GITHUB_REF_NAME}"
             exit 1
           fi
@@ -58,23 +58,23 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             name: windows-x86_64
-            bin: meatshell.exe
+            bin: MTerm.exe
           - os: ubuntu-22.04            # build on the oldest supported runner for
             target: x86_64-unknown-linux-gnu   # broader glibc compatibility
             name: linux-x86_64
-            bin: meatshell
+            bin: MTerm
           - os: ubuntu-22.04-arm       # free native arm64 runner (public repos)
             target: aarch64-unknown-linux-gnu  # builds the Linux ARM64 .tar.gz (#82)
             name: linux-aarch64
-            bin: meatshell
+            bin: MTerm
           - os: macos-14               # Apple Silicon
             target: aarch64-apple-darwin
             name: macos-aarch64
-            bin: meatshell
+            bin: MTerm
           - os: macos-14               # Cross-compile Intel Mac on Apple Silicon
             target: x86_64-apple-darwin
             name: macos-x86_64
-            bin: meatshell
+            bin: MTerm
     steps:
       - uses: actions/checkout@v4
 
@@ -116,7 +116,7 @@ jobs:
             EXPECTED="$(sed -n '/^\[package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
           fi
           ACTUAL="$(target/${{ matrix.target }}/release/${{ matrix.bin }} --version)"
-          test "$ACTUAL" = "meatshell ${EXPECTED}"
+          test "$ACTUAL" = "MTerm ${EXPECTED}"
 
       - name: Build AppImage
         if: matrix.name == 'linux-x86_64'
@@ -132,15 +132,15 @@ jobs:
             https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage
           chmod +x linuxdeploy linuxdeploy-plugin-appimage
 
-          install -Dm755 target/${{ matrix.target }}/release/meatshell AppDir/usr/bin/meatshell
-          install -Dm644 assets/meatshell.desktop          AppDir/usr/share/applications/meatshell.desktop
-          install -Dm644 assets/icon@512.png               AppDir/usr/share/icons/hicolor/512x512/apps/meatshell.png
+          install -Dm755 target/${{ matrix.target }}/release/MTerm AppDir/usr/bin/MTerm
+          install -Dm644 assets/mterm.desktop          AppDir/usr/share/applications/mterm.desktop
+          install -Dm644 assets/icon@512.png               AppDir/usr/share/icons/hicolor/512x512/apps/mterm.png
 
           # --output appimage already invokes the plugin; --plugin appimage is redundant and causes an error
           ./linuxdeploy --appdir AppDir --output appimage
 
-          mv meatshell*.AppImage "meatshell-${VERSION}-linux-x86_64.AppImage"
-          echo "APPIMAGE=meatshell-${VERSION}-linux-x86_64.AppImage" >> "$GITHUB_ENV"
+          mv MTerm*.AppImage "MTerm-${VERSION}-linux-x86_64.AppImage"
+          echo "APPIMAGE=MTerm-${VERSION}-linux-x86_64.AppImage" >> "$GITHUB_ENV"
 
       - name: Install cargo-deb
         if: runner.os == 'Linux'
@@ -151,7 +151,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p target/release
-          cp target/${{ matrix.target }}/release/meatshell target/release/meatshell
+          cp target/${{ matrix.target }}/release/MTerm target/release/MTerm
           cargo deb --no-build
           echo "DEB=$(find target/debian -name '*.deb' -print -quit)" >> "$GITHUB_ENV"
 
@@ -160,7 +160,7 @@ jobs:
         run: |
           set -eu
           VERSION="${GITHUB_REF_NAME:-dev}"
-          STAGE="meatshell-${VERSION}-${{ matrix.name }}"
+          STAGE="MTerm-${VERSION}-${{ matrix.name }}"
           # CHANGELOG.md is the canonical release notes source; every platform
           # package must include it.
           test -f CHANGELOG.md || { echo "ERROR: CHANGELOG.md is required but missing"; exit 1; }
@@ -169,26 +169,26 @@ jobs:
             # ── Build a proper .app bundle ────────────────────────────────────
             # Without a bundle macOS opens raw binaries in Terminal.app, which
             # stays alive after the app exits and never shows a Dock icon.
-            APP="meatshell.app"
+            APP="MTerm.app"
             CONTENTS="$APP/Contents"
             mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 
-            cp "target/${{ matrix.target }}/release/meatshell" "$CONTENTS/MacOS/"
+            cp "target/${{ matrix.target }}/release/MTerm" "$CONTENTS/MacOS/"
             cp CHANGELOG.md README.md README.en.md THIRD_PARTY_NOTICES.md "$CONTENTS/Resources/"
 
             # Generate .icns from the 512×512 PNG using sips + iconutil (both
             # ship with every macOS, no extra tooling needed in CI).
-            mkdir -p meatshell.iconset
-            sips -z 16  16  "assets/icon@512.png" --out meatshell.iconset/icon_16x16.png       >/dev/null
-            sips -z 32  32  "assets/icon@512.png" --out meatshell.iconset/icon_16x16@2x.png    >/dev/null
-            sips -z 32  32  "assets/icon@512.png" --out meatshell.iconset/icon_32x32.png        >/dev/null
-            sips -z 64  64  "assets/icon@512.png" --out meatshell.iconset/icon_32x32@2x.png    >/dev/null
-            sips -z 128 128 "assets/icon@512.png" --out meatshell.iconset/icon_128x128.png     >/dev/null
-            sips -z 256 256 "assets/icon@512.png" --out meatshell.iconset/icon_128x128@2x.png  >/dev/null
-            sips -z 256 256 "assets/icon@512.png" --out meatshell.iconset/icon_256x256.png     >/dev/null
-            sips -z 512 512 "assets/icon@512.png" --out meatshell.iconset/icon_256x256@2x.png  >/dev/null
-            sips -z 512 512 "assets/icon@512.png" --out meatshell.iconset/icon_512x512.png     >/dev/null
-            iconutil -c icns meatshell.iconset -o "$CONTENTS/Resources/meatshell.icns"
+            mkdir -p mterm.iconset
+            sips -z 16  16  "assets/icon@512.png" --out mterm.iconset/icon_16x16.png       >/dev/null
+            sips -z 32  32  "assets/icon@512.png" --out mterm.iconset/icon_16x16@2x.png    >/dev/null
+            sips -z 32  32  "assets/icon@512.png" --out mterm.iconset/icon_32x32.png        >/dev/null
+            sips -z 64  64  "assets/icon@512.png" --out mterm.iconset/icon_32x32@2x.png    >/dev/null
+            sips -z 128 128 "assets/icon@512.png" --out mterm.iconset/icon_128x128.png     >/dev/null
+            sips -z 256 256 "assets/icon@512.png" --out mterm.iconset/icon_128x128@2x.png  >/dev/null
+            sips -z 256 256 "assets/icon@512.png" --out mterm.iconset/icon_256x256.png     >/dev/null
+            sips -z 512 512 "assets/icon@512.png" --out mterm.iconset/icon_256x256@2x.png  >/dev/null
+            sips -z 512 512 "assets/icon@512.png" --out mterm.iconset/icon_512x512.png     >/dev/null
+            iconutil -c icns mterm.iconset -o "$CONTENTS/Resources/mterm.icns"
 
             # Substitute __VERSION__ placeholder (strip leading 'v' from tag)
             VERSION_NUM="${VERSION#v}"
@@ -225,7 +225,7 @@ jobs:
             cp CHANGELOG.md "$STAGE/"
             cp README.md README.en.md THIRD_PARTY_NOTICES.md "$STAGE/" 2>/dev/null || true
             # Ship the desktop entry + installer + icon so the dock shows the icon.
-            cp assets/meatshell.desktop assets/install-linux.sh "assets/icon@512.png" "$STAGE/" 2>/dev/null || true
+            cp assets/mterm.desktop assets/install-linux.sh "assets/icon@512.png" "$STAGE/" 2>/dev/null || true
             tar -czf "${STAGE}.tar.gz" "$STAGE"
             echo "ASSET=${STAGE}.tar.gz" >> "$GITHUB_ENV"
           fi
@@ -244,8 +244,8 @@ jobs:
           $candle = Get-ChildItem "C:\Program Files (x86)\WiX Toolset*\bin\candle.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($candle) { $env:PATH = "$($candle.DirectoryName);$env:PATH" }
           cargo install cargo-wix --locked
-          cargo wix --no-build --nocapture --target ${{ matrix.target }} --output "meatshell-$VERSION-windows-x86_64.msi"
-          echo "MSI=meatshell-$VERSION-windows-x86_64.msi" >> $env:GITHUB_ENV
+          cargo wix --no-build --nocapture --target ${{ matrix.target }} --output "MTerm-$VERSION-windows-x86_64.msi"
+          echo "MSI=MTerm-$VERSION-windows-x86_64.msi" >> $env:GITHUB_ENV
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -324,28 +324,28 @@ jobs:
         run: |
           set -eu
           tar -xzf dist/*.tar.gz -C dist
-          BINARY="$(find dist -type f -name meatshell -perm -111 -print -quit)"
+          BINARY="$(find dist -type f -name MTerm -perm -111 -print -quit)"
           test -n "$BINARY"
-          install -Dm755 "$BINARY" target/x86_64-unknown-linux-gnu/release/meatshell
+          install -Dm755 "$BINARY" target/x86_64-unknown-linux-gnu/release/MTerm
 
       - name: Build Flatpak bundle
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
-          bundle: meatshell-${{ github.ref_name }}-linux-x86_64.flatpak
-          manifest-path: packaging/flatpak/io.github.yituorou.meatshell.yml
+          bundle: MTerm-${{ github.ref_name }}-linux-x86_64.flatpak
+          manifest-path: packaging/flatpak/io.github.cbozuo.mterm.yml
           cache-key: flatpak-builder-${{ github.sha }}
 
       - name: Upload Flatpak artifact
         uses: actions/upload-artifact@v4
         with:
           name: linux-x86_64-flatpak
-          path: meatshell-${{ github.ref_name }}-linux-x86_64.flatpak
+          path: MTerm-${{ github.ref_name }}-linux-x86_64.flatpak
 
       - name: Attach Flatpak to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: meatshell-${{ github.ref_name }}-linux-x86_64.flatpak
+          files: MTerm-${{ github.ref_name }}-linux-x86_64.flatpak
           fail_on_unmatched_files: true
 
   build-linux-aarch64-glibc228:
@@ -404,8 +404,8 @@ jobs:
         run: |
           set -eu
           ldd --version | sed -n '1p'
-          file target/aarch64-unknown-linux-gnu/release/meatshell
-          objdump -T target/aarch64-unknown-linux-gnu/release/meatshell \
+          file target/aarch64-unknown-linux-gnu/release/MTerm
+          objdump -T target/aarch64-unknown-linux-gnu/release/MTerm \
             | grep -o 'GLIBC_[0-9.]*' \
             | sort -Vu \
             | tail -n 10 || true
@@ -415,14 +415,14 @@ jobs:
         run: |
           set -eu
           VERSION="${GITHUB_REF_NAME:-dev}"
-          STAGE="meatshell-${VERSION}-linux-aarch64-glibc228"
+          STAGE="MTerm-${VERSION}-linux-aarch64-glibc228"
           test -f CHANGELOG.md || { echo "ERROR: CHANGELOG.md is required but missing"; exit 1; }
 
           mkdir "$STAGE"
-          cp "target/aarch64-unknown-linux-gnu/release/meatshell" "$STAGE/"
+          cp "target/aarch64-unknown-linux-gnu/release/MTerm" "$STAGE/"
           cp CHANGELOG.md "$STAGE/"
             cp README.md README.en.md THIRD_PARTY_NOTICES.md "$STAGE/" 2>/dev/null || true
-          cp assets/meatshell.desktop assets/install-linux.sh "assets/icon@512.png" "$STAGE/" 2>/dev/null || true
+          cp assets/mterm.desktop assets/install-linux.sh "assets/icon@512.png" "$STAGE/" 2>/dev/null || true
           tar -czf "${STAGE}.tar.gz" "$STAGE"
           echo "ASSET=${STAGE}.tar.gz" >> "$GITHUB_ENV"
 
@@ -495,8 +495,8 @@ jobs:
         run: |
           set -eu
           ldd --version | sed -n '1p'
-          file target/x86_64-unknown-linux-gnu/release/meatshell
-          objdump -T target/x86_64-unknown-linux-gnu/release/meatshell \
+          file target/x86_64-unknown-linux-gnu/release/MTerm
+          objdump -T target/x86_64-unknown-linux-gnu/release/MTerm \
             | grep -o 'GLIBC_[0-9.]*' \
             | sort -Vu \
             | tail -n 10 || true
@@ -506,14 +506,14 @@ jobs:
         run: |
           set -eu
           VERSION="${GITHUB_REF_NAME:-dev}"
-          STAGE="meatshell-${VERSION}-linux-x86_64-glibc228"
+          STAGE="MTerm-${VERSION}-linux-x86_64-glibc228"
           test -f CHANGELOG.md || { echo "ERROR: CHANGELOG.md is required but missing"; exit 1; }
 
           mkdir "$STAGE"
-          cp "target/x86_64-unknown-linux-gnu/release/meatshell" "$STAGE/"
+          cp "target/x86_64-unknown-linux-gnu/release/MTerm" "$STAGE/"
           cp CHANGELOG.md "$STAGE/"
             cp README.md README.en.md THIRD_PARTY_NOTICES.md "$STAGE/" 2>/dev/null || true
-          cp assets/meatshell.desktop assets/install-linux.sh "assets/icon@512.png" "$STAGE/" 2>/dev/null || true
+          cp assets/mterm.desktop assets/install-linux.sh "assets/icon@512.png" "$STAGE/" 2>/dev/null || true
           tar -czf "${STAGE}.tar.gz" "$STAGE"
           echo "ASSET=${STAGE}.tar.gz" >> "$GITHUB_ENV"
 

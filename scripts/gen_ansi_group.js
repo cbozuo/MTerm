@@ -357,7 +357,7 @@ function radixAnsi(famKey, mode) {
 // ——现状"亮色前景/背景双表"特性，迁移后必须保留）。
 const MEAT = {
   'meat-dark': {
-    f: 'MeatShell', m: '暗', kind: 'meat', group: 'meat',
+    f: 'MTerm', m: '暗', kind: 'meat', group: 'meat',
     tbg: '#0e0f13', tfg: '#d4d4d4', panel: '#23262d', tab: '#2a2d35',
     ch: ['#378add', '#1d9e75', '#ba7517', '#993556'],
     ansi16: ['#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5',
@@ -365,7 +365,7 @@ const MEAT = {
     src: '现状原样（presentation.rs ANSI16_DARK = VS Code Dark+）',
   },
   'meat-light': {
-    f: 'MeatShell', m: '亮', kind: 'meat', group: 'meat',
+    f: 'MTerm', m: '亮', kind: 'meat', group: 'meat',
     tbg: '#fafafa', tfg: '#2d2d2f', panel: '#ffffff', tab: '#eaeaef',
     ch: ['#378add', '#1d9e75', '#ba7517', '#993556'],
     ansi16: ['#1c1c1e', '#c0392b', '#1a7f37', '#856404', '#0451a5', '#800080', '#0e725c', '#3a3a3c',

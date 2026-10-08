@@ -335,6 +335,7 @@ pub(super) fn apply_session_event_to_window(
                 editor.set_editor_dirty(false);
                 editor.set_editor_open(true);
                 let _ = editor.show();
+                super::window::arm_window_icon(editor.window());
                 editor.window().with_winit_window(|ww| ww.focus_window());
             } else {
                 // Couldn't open as text. The SFTP status line alone is easy to
@@ -346,7 +347,7 @@ pub(super) fn apply_session_event_to_window(
                     window_id,
                     tab_id,
                     SessionEvent::Output(format!(
-                        "\r\n[meatshell] {} {}: {}\r\n",
+                        "\r\n[MTerm] {} {}: {}\r\n",
                         crate::i18n::t("无法打开", "Cannot open"),
                         name,
                         error

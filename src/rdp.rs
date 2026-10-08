@@ -1,6 +1,6 @@
 //! Launching RDP sessions in a remote desktop client that already speaks RDP.
 //!
-//! RDP follows FinalShell's model: meatshell never implements the protocol
+//! RDP follows FinalShell's model: MTerm never implements the protocol
 //! itself. It only stores the account details — host, port, user, password,
 //! domain, resolution — and hands them over, so the session opens in the
 //! client's own native window instead of one of our tabs.
@@ -96,7 +96,7 @@ fn split_user_domain(user: &str) -> (String, String) {
 #[cfg(windows)]
 fn rdp_file_path(session_id: &str) -> std::path::PathBuf {
     // Session ids are UUIDs, so they are safe as a file name.
-    std::env::temp_dir().join(format!("meatshell-rdp-{session_id}.rdp"))
+    std::env::temp_dir().join(format!("mterm-rdp-{session_id}.rdp"))
 }
 
 /// Build the `.rdp` payload for `account`.
@@ -591,7 +591,7 @@ fn start_client(account: &Account<'_>, _session_id: &str) -> Result<String, Stri
             ));
         }
         // Detached reaper: `Child` does not wait on drop, so without this every
-        // connect would leave a zombie behind for as long as meatshell runs.
+        // connect would leave a zombie behind for as long as MTerm runs.
         // The stderr pipe is drained in the same thread — a full pipe would
         // block the client.
         let stderr = child.stderr.take();
@@ -605,8 +605,8 @@ fn start_client(account: &Account<'_>, _session_id: &str) -> Result<String, Stri
     }
     Err(if freerdp::in_flatpak_sandbox() {
         t(
-            "Flatpak 版自带 FreeRDP 客户端，找不到说明安装损坏，请重新安装 meatshell 的 Flatpak 包",
-            "the Flatpak bundle ships its own FreeRDP client — it is missing, so please reinstall the meatshell Flatpak",
+            "Flatpak 版自带 FreeRDP 客户端，找不到说明安装损坏，请重新安装 MTerm 的 Flatpak 包",
+            "the Flatpak bundle ships its own FreeRDP client — it is missing, so please reinstall the MTerm Flatpak",
         )
     } else {
         t(

@@ -1,6 +1,6 @@
 # 图标 / Logo 替换指南
 
-本文说明 meatshell 各处图标的位置、格式与尺寸要求。替换后**必须重新编译**才生效（图标都是编译期打进产物或由 exe 资源承载的，没有运行时加载路径）。
+本文说明 MTerm 各处图标的位置、格式与尺寸要求。替换后**必须重新编译**才生效（图标都是编译期打进产物或由 exe 资源承载的，没有运行时加载路径）。
 
 建议：准备一张 **1024×1024 的 PNG 方形源图**（透明背景、内容居中、四周留 5~10% 空白），由它统一导出下面所有格式。
 
@@ -44,7 +44,7 @@ magick 源图-1024.png -define icon:auto-resize=256,128,64,48,32,24,16 assets/mt
 
 三处使用：
 - 窗口/任务栏图标：`src/app/window.rs` 的 `set_window_icon()`（`include_bytes!("../../assets/icon@512.png")`，仅 Linux 编译生效）
-- deb 包安装：`scripts/build-deb-debian13.sh` 装到 `/usr/share/icons/hicolor/512x512/apps/meatshell.png`
+- deb 包安装：`scripts/build-deb-debian13.sh` 装到 `/usr/share/icons/hicolor/512x512/apps/MTerm.png`
 - tar 包安装：`assets/install-linux.sh` 的 `ICON_SRC`
 
 **格式要求**：PNG，**512×512**，RGBA 透明背景。文件名保持 `icon@512.png` 不变（代码/脚本按名字引用）。
@@ -53,14 +53,14 @@ magick 源图-1024.png -define icon:auto-resize=256,128,64,48,32,24,16 assets/mt
 
 ## 4. macOS
 
-`assets/Info.plist` 声明 `CFBundleIconFile=meatshell`，需要应用包内的 `meatshell.icns`（当前 assets 下没有，构建 macOS 包时从 1024 源图生成）：
+`assets/Info.plist` 声明 `CFBundleIconFile=MTerm`，需要应用包内的 `MTerm.icns`（当前 assets 下没有，构建 macOS 包时从 1024 源图生成）：
 ```sh
 mkdir icon.iconset
 for s in 16 32 64 128 256 512 1024; do
   magick 源图-1024.png -resize ${s}x${s} icon.iconset/icon_${s}x${s}.png
 done
 # 再补 @2x 命名后
-iconutil -c icns icon.iconset -o meatshell.icns
+iconutil -c icns icon.iconset -o MTerm.icns
 ```
 
 ## 5. 检查清单

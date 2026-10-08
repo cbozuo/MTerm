@@ -262,7 +262,7 @@ mod win {
 
         unsafe {
             let hinstance = GetModuleHandleW(None).expect("GetModuleHandleW failed");
-            let class = w!("MeatshellTrayHost");
+            let class = w!("MTermTrayHost");
             let wc = WNDCLASSW {
                 lpfnWndProc: Some(wnd_proc),
                 hInstance: HINSTANCE(hinstance.0),
@@ -275,7 +275,7 @@ mod win {
             let hwnd = CreateWindowExW(
                 WS_EX_TOOLWINDOW,
                 class,
-                w!("meatshell tray"),
+                w!("MTerm tray"),
                 WS_OVERLAPPED,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
