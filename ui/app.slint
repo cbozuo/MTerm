@@ -314,8 +314,11 @@ component WinBtn inherits Rectangle {
     in property <string> icon;
     in property <bool> danger: false;
     callback clicked();
-    width: 46px;
-    // (#winbtn-seamless 2026-09-06) 三键无缝:hover 高亮占满 46px 热区且
+    // (#titlebar-slim 2026-10-08) 46px → 40px：标题栏改矮(32px)后 46px 宽的
+    // 悬浮高亮块显得方胖，收窄到 40px 与整条标题栏比例更协调（Windows 原生
+    // 46px 是按 32px 标题栏+更大字号的度量，这里按自家比例走）。
+    width: 40px;
+    // (#winbtn-seamless 2026-09-06) 三键无缝:hover 高亮占满 40px 热区且
     // 相邻按钮贴连(Windows 原生样式);图标仍居中,视觉间隔由字形留白
     // 提供。间距控制在标题栏 win-controls 的 HL spacing(=0)。
     background: ta.has-hover ? (root.danger ? #e81123 : Theme.bg-hover) : transparent;
@@ -607,8 +610,10 @@ component TopbarBtn inherits Rectangle {
         in property <bool> collapsed;        // 目标面板收起态（决定图标与文案）
         in property <bool> lang-en;          // 实例处从 AppWindow 传入
         callback clicked();
-        width: 36px;
-        height: 38px;
+        // (#titlebar-slim 2026-10-08) 跟随标题栏高度 32px（占位矩形 1922 行
+        // 的宽度须与此处 width 一致）。
+        width: 32px;
+        height: 32px;
         border-radius: Theme.radius-sm;
         background: ta.has-hover ? Theme.bg-hover : transparent;
         animate background { duration: 120ms; }
@@ -635,38 +640,62 @@ component TopbarBtn inherits Rectangle {
             }
         }
 
-        // 徽章（黑底白 M）——悬浮淡出，让位给收/展图标。22px：标题栏其它
-        // 图标为 16px 线性字形，实底徽章略大半档（~1.4×）读作「品牌块」而
-        // 不抢行高；30px 实测压过整行，已弃。
-        badge := Image {
-            source: @image-url("../assets/icons/logo-m.svg");
-            width: 22px;
-            height: 22px;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
+        // 徽章（黑底白 M）——悬浮淡出，让位给收/展图标。
+        // (#logo-unify 2026-10-08) 标题栏图标统一 16px 后，用户反馈 LOGO 本体
+        // 应更大气：20px（标题栏 32px 的 62%），配 5px 圆角方框为品牌块。
+        // 20px 在 125%/150% 缩放下均为整数物理像素，无重采样鬼影。
+        // (#logo-crisp) 徽章为原生渐变矩形 + Path（几何从 logo-m.svg 照抄，
+        // 512 viewbox），矢量化渲染任意缩放都清晰；几何经 Theme.snap-to-device
+        // 对齐设备像素网格。
+        badge := Rectangle {
+            width: Theme.snap-to-device(20px);
+            height: Theme.snap-to-device(20px);
+            x: Theme.snap-to-device((parent.width - self.width) / 2);
+            y: Theme.snap-to-device((parent.height - self.height) / 2);
+            border-radius: 5px;
+            background: @linear-gradient(180deg, #2a2a33 0%, #121218 100%);
             opacity: ta.has-hover ? 0 : 1;
             animate opacity { duration: 120ms; }
+            Path {
+                width: 100%;
+                height: 100%;
+                viewbox-width: 512;
+                viewbox-height: 512;
+                fill: transparent;
+                stroke: #f4f5f7;
+                // stroke-width 是**元素逻辑 px**（femtovg 渲染只乘 DPI，不随
+                // viewbox 映射缩放，见 itemrenderer.rs draw_path）——58 是
+                // logo-m.svg 里 512 viewbox 下的笔宽，按元素宽/512 折算。
+                stroke-width: 58 / 512 * parent.width;
+                commands: "M 150 368 L 150 152 L 256 296 L 362 152 L 362 368";
+            }
         }
-        // dark 主题细亮边：0.5px 半透明白勾出黑底轮廓（徽章淡出时同步隐藏）。
+        // dark 主题细亮边：勾出黑底徽章的方框轮廓（参照 ZCode 主界面左上角
+        // 的徽章框；黑底贴深灰标题栏对比不足，亮主题黑底对比天然够、无框）。
+        // (#logo-unify) 0.5px #ffffff3d 实测太淡看不出"方框"，加到 1px/28% 白。
+        // (#logo-crisp) 几何与徽章同源同 snap，保证方框始终勾在徽章边上。
         Rectangle {
-            x: (parent.width - 22px) / 2;
-            y: (parent.height - 22px) / 2;
-            width: 22px;
-            height: 22px;
+            width: badge.width;
+            height: badge.height;
+            x: badge.x;
+            y: badge.y;
             border-radius: 5px;
-            border-width: 0.5px;
-            border-color: #ffffff3d;
+            border-width: 1px;
+            border-color: #ffffff47;
             visible: Theme.dark;
             opacity: ta.has-hover ? 0 : 1;
             animate opacity { duration: 120ms; }
         }
         // 收/展面板图标——悬浮淡入（图标库现成 SVG，24 网格单色）。
+        // (#logo-unify) 22px → 16px：与标题栏其它 TopbarBtn 图标同尺寸，
+        // 描边同为 2/24×16 ≈ 1.33px；同时 16px=整数物理像素，消除底边
+        // 重采样鬼影（用户反馈的"图标下面多了一条线条"）。
         Icon {
             glyph: root.collapsed ? "sidebar-left-expand" : "sidebar-left-collapse";
             tint: Theme.text-primary;
-            size: 22px;
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
+            size: 16px;
+            x: Theme.snap-to-device((parent.width - self.width) / 2);
+            y: Theme.snap-to-device((parent.height - self.height) / 2);
             opacity: ta.has-hover ? 1 : 0;
             animate opacity { duration: 120ms; }
         }
@@ -680,12 +709,16 @@ component TopbarBtn inherits Rectangle {
         }
         // 提示气泡：按钮正下方，样式与顶栏 tip 浮层同款（bg-elevated + 边 +
         // 投影）。文案随目标面板状态；suppress 期间不显示。
+        // (#logo-tip-solid 2026-10-08) 底色改 panel-solid（实色）：bg-elevated
+        // 在壁纸开启时是 frost 半透明，深色壁纸上气泡体几乎隐形，只剩 1px
+        // 边框悬在按钮下方——用户反馈"底部有条横线"。实色后是一张完整的
+        // 气泡卡，边框回归卡片轮廓的正常观感。
         if root.tip-open : Rectangle {
             x: 2px;
             y: parent.height + 5px;
             width: logo-tip-txt.preferred-width + 16px;
             height: 22px;
-            background: Theme.bg-elevated;
+            background: Theme.panel-solid;
             border-radius: Theme.radius-sm;
             border-width: 1px;
             border-color: Theme.border-strong;
@@ -1873,7 +1906,10 @@ export component AppWindow inherits Window {
             // window controls on the right. macOS keeps its native title bar and
             // shows the toolbar icons via the overlay further below.
             if root.custom-titlebar : Rectangle {
-                height: 38px;
+                // (#titlebar-slim 2026-10-08) 38px → 32px：用户反馈标题栏偏厚，
+                // 窄一些 + 左上角 LOGO 放大更协调（Rust app_content_area 的
+                // 32.0 与此处联动，改一处必须同步另一处）。
+                height: 32px;
                 background: Theme.bg-panel;
                 tb-drag := TouchArea {
                     pointer-event(e) => {
@@ -1888,9 +1924,9 @@ export component AppWindow inherits Window {
                     // 呼吸空间由按钮自身的 padding-left(8px)提供。
                     spacing: 8px;
                     // (#logo-brand-btn 2026-10-08) 左上角品牌 LOGO 按钮的占位：
-                    // BrandLogoBtn 以根层绝对定位盖在这里(36px),无热区垫片把
+                    // BrandLogoBtn 以根层绝对定位盖在这里(32px),无热区垫片把
                     // 「新建会话」右移让位;垫片不带 TouchArea,点击落到 tb-drag。
-                    Rectangle { width: 36px; }
+                    Rectangle { width: 32px; }
                     // (#polish-topbar-r3 2026-09-05) DBeaver 式「图标 + 文字」
                     // 工具栏:品牌名移除(窗口标题/任务栏已可辨),文字自明故
                     // 无 tooltip;按钮组左对齐,右侧弹性,窗口控制靠右。

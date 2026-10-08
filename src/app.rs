@@ -615,6 +615,39 @@ fn sync_tray_theme(main: &AppWindow, tray: &TrayMenuWindow) {
     tray.set_ui_font_family(main.get_ui_font_family());
     tray.set_wallpaper_active(main.get_wallpaper_active());
     tray.set_wp_accent(main.get_wp_accent());
+    // (#theme-split 2026-10-08) 20 语义色槽/透明度/分组色由 apply_theme 写在
+    // **主窗口实例**的 Theme global 上 —— Slint global 按组件实例各自独立，
+    // 上面的 5 个桥属性同步不到它们，托盘菜单从此永远停在 theme.slint 的
+    // 默认暗色档（切任何主题托盘都不跟）。弹层是瞬态窗口（每次打开现建），
+    // 打开时把整套主题从主窗口抄过来即可，无需监听变更。
+    let from = main.global::<crate::ui::Theme<'_>>();
+    let to = tray.global::<crate::ui::Theme<'_>>();
+    to.set_theme_id(from.get_theme_id());
+    to.set_theme_name(from.get_theme_name());
+    to.set_dark(from.get_dark());
+    to.set_slot_root(from.get_slot_root());
+    to.set_slot_panel(from.get_slot_panel());
+    to.set_slot_palt(from.get_slot_palt());
+    to.set_slot_elev(from.get_slot_elev());
+    to.set_slot_hov(from.get_slot_hov());
+    to.set_slot_act(from.get_slot_act());
+    to.set_slot_line(from.get_slot_line());
+    to.set_slot_lstr(from.get_slot_lstr());
+    to.set_slot_t1(from.get_slot_t1());
+    to.set_slot_t2(from.get_slot_t2());
+    to.set_slot_t3(from.get_slot_t3());
+    to.set_slot_tbg(from.get_slot_tbg());
+    to.set_slot_tfg(from.get_slot_tfg());
+    to.set_slot_ac(from.get_slot_ac());
+    to.set_slot_ok(from.get_slot_ok());
+    to.set_slot_wr(from.get_slot_wr());
+    to.set_slot_dg(from.get_slot_dg());
+    to.set_group_colors(from.get_group_colors());
+    to.set_channel_colors(from.get_channel_colors());
+    to.set_panel_alpha(from.get_panel_alpha());
+    to.set_term_alpha(from.get_term_alpha());
+    to.set_wallpaper_visible(from.get_wallpaper_visible());
+    to.set_popup_transparency(from.get_popup_transparency());
 }
 
 fn active_session_count(core: &AppCore) -> i32 {
@@ -1755,8 +1788,8 @@ fn open_window(
     }
     // (#theme-split) 主题选择器的数据源 + 设置快照桥初值。
     {
-        // 组头行（kind == "header"）随族顺序插入：现代 UI 色板 / 品牌官方 /
-        // 经典终端配色 / 迁移保留档。
+        // 组头行（kind == "header"）：见下方 #theme-picker-groups —— 只分
+        // 深色/浅色两组。
         let header = |name: &str| crate::ui::ThemeEntry {
             id: "".into(),
             zh: name.into(),
@@ -1770,26 +1803,33 @@ fn open_window(
             matched: true,
         };
         let mut entries: Vec<crate::ui::ThemeEntry> = Vec::new();
-        // (#theme-split) 下拉分组按用户要求：**暗主题 / 亮主题** 两档（不再按
-        // 族分——族信息对选主题没有帮助，明暗才是第一决策）。
-        let mut last_dark: Option<bool> = None;
-        for p in crate::theme::palettes::PALETTES {
-            if last_dark != Some(p.dark) {
-                entries.push(header(if p.dark { "暗主题" } else { "亮主题" }));
-                last_dark = Some(p.dark);
+        // (#theme-picker-groups 2026-10-08) 用户定稿：选择器只分**两组**——
+        // 「深色主题 / 浅色主题」。旧逻辑按族序遍历、遇明暗翻转就插组头，
+        // 而 palettes.rs 是族内 dark/light 交替排列，36 套会插出十几个组头。
+        // 现按明暗各扫一遍，组内保持 palettes.rs 的族顺序；暗组在前（默认
+        // 主题为暗族）。标签走 i18n（en: Dark/Light themes）。
+        for dark in [true, false] {
+            entries.push(header(crate::i18n::t(
+                if dark { "深色主题" } else { "浅色主题" },
+                if dark { "Dark themes" } else { "Light themes" },
+            )));
+            for p in crate::theme::palettes::PALETTES {
+                if p.dark != dark {
+                    continue;
+                }
+                entries.push(crate::ui::ThemeEntry {
+                    id: p.id.into(),
+                    zh: p.zh.into(),
+                    mode: if p.dark { "暗".into() } else { "亮".into() },
+                    kind: p.kind.into(),
+                    root: crate::theme::color(p.root),
+                    panel: crate::theme::color(p.panel),
+                    tbg: crate::theme::color(p.tbg),
+                    tfg: crate::theme::color(p.tfg),
+                    ac: crate::theme::color(p.ac),
+                    matched: true,
+                });
             }
-            entries.push(crate::ui::ThemeEntry {
-                id: p.id.into(),
-                zh: p.zh.into(),
-                mode: if p.dark { "暗".into() } else { "亮".into() },
-                kind: p.kind.into(),
-                root: crate::theme::color(p.root),
-                panel: crate::theme::color(p.panel),
-                tbg: crate::theme::color(p.tbg),
-                tfg: crate::theme::color(p.tfg),
-                ac: crate::theme::color(p.ac),
-                matched: true,
-            });
         }
         window.set_theme_entries(ModelRc::from(Rc::new(VecModel::from(entries))));
         {
@@ -3379,22 +3419,26 @@ fn open_window(
     // 侧过滤）。
     {
         let weak = window.as_weak();
+        // (#theme-search-restore 2026-10-08) 旧实现搜索时 set_vec(过滤结果)
+        // **覆盖**模型，清词"恢复"却从当前（已过滤）模型收集 —— 被滤掉的行
+        // 已不在模型里，永远回不来；重开选择器只剩上次搜索命中的几行（实测）。
+        // 改为闭包持有全量快照：过滤与恢复都从快照出发，模型本身只是投影。
+        let full: Rc<RefCell<Vec<crate::ui::ThemeEntry>>> = Rc::new(RefCell::new(
+            window.get_theme_entries().iter().collect(),
+        ));
         window.on_theme_search_filter(move |q: SharedString| {
             let Some(w) = weak.upgrade() else { return };
             let q = q.to_lowercase();
             let model = w.get_theme_entries();
             let Some(vec_model) = model.as_any().downcast_ref::<slint::VecModel<crate::ui::ThemeEntry>>() else { return };
+            let all: Vec<crate::ui::ThemeEntry> = full.borrow().clone();
             if q.is_empty() {
-                // 恢复：matched 恒 true 的全量（含组头）
-                let all: Vec<crate::ui::ThemeEntry> = model
-                    .iter()
-                    .map(|mut r| { r.matched = true; r })
-                    .collect();
+                // 恢复：全量快照（含组头）
                 vec_model.set_vec(all);
                 return;
             }
-            let filtered: Vec<crate::ui::ThemeEntry> = model
-                .iter()
+            let filtered: Vec<crate::ui::ThemeEntry> = all
+                .into_iter()
                 .filter(|row| {
                     row.kind != "header"
                         && (row.zh.to_lowercase().contains(q.as_str())
@@ -5062,7 +5106,7 @@ fn app_content_area(win: &AppWindow) -> LogicalRect {
     let mut area = LogicalRect {
         x: 0.0,
         y: if win.get_custom_titlebar() {
-            38.0
+            32.0
         } else if win.get_is_mac() {
             28.0
         } else {
