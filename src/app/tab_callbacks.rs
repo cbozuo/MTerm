@@ -20,6 +20,7 @@ pub(super) fn wire_tab_callbacks(
     // Ctrl+Tab / Ctrl+Shift+Tab cycle within the currently focused pane (#294).
     {
         let weak = window.as_weak();
+        let core_cx = core.clone();
         let layout = layout.clone();
         let content_size = content_size.clone();
         let tabs_model = tabs_model.clone();
@@ -36,6 +37,7 @@ pub(super) fn wire_tab_callbacks(
                     &w,
                     &layout.borrow(),
                     content_size.get(),
+                    &core_cx.store.borrow(),
                     &tabs_model,
                     &panes_model,
                     &splitters_model,
@@ -81,6 +83,7 @@ pub(super) fn wire_tab_callbacks(
                     &w,
                     &layout.borrow(),
                     content_size.get(),
+                    &core_sel.store.borrow(),
                     &tabs_model,
                     &panes_model,
                     &splitters_model,
@@ -98,6 +101,7 @@ pub(super) fn wire_tab_callbacks(
     // pane's own tab order changes; content still shows by active id.
     {
         let weak = window.as_weak();
+        let core_cx = core.clone();
         let layout = layout.clone();
         let content_size = content_size.clone();
         let tabs_model = tabs_model.clone();
@@ -116,6 +120,7 @@ pub(super) fn wire_tab_callbacks(
                     &w,
                     &layout.borrow(),
                     content_size.get(),
+                    &core_cx.store.borrow(),
                     &tabs_model,
                     &panes_model,
                     &splitters_model,
@@ -142,6 +147,7 @@ pub(super) fn wire_tab_callbacks(
         let splitters_model = splitters_model.clone();
         let tab_titles = tab_titles.clone();
         let tab_routes = core.tab_routes.clone();
+        let core_cx = core.clone();
         window.on_pane_tab_closed(move |_pane_id: i32, id: SharedString| {
             let id = id.to_string();
             if id == "welcome" {
@@ -202,6 +208,7 @@ pub(super) fn wire_tab_callbacks(
                     &w,
                     &layout.borrow(),
                     content_size.get(),
+                    &core_cx.store.borrow(),
                     &tabs_model,
                     &panes_model,
                     &splitters_model,
@@ -214,6 +221,7 @@ pub(super) fn wire_tab_callbacks(
     // tab; move focus to whichever pane owns it and make it active).
     {
         let weak = window.as_weak();
+        let core_cx = core.clone();
         let layout = layout.clone();
         let content_size = content_size.clone();
         let tabs_model = tabs_model.clone();
@@ -246,6 +254,7 @@ pub(super) fn wire_tab_callbacks(
                     &w,
                     &layout.borrow(),
                     content_size.get(),
+                    &core_cx.store.borrow(),
                     &tabs_model,
                     &panes_model,
                     &splitters_model,
@@ -259,6 +268,7 @@ pub(super) fn wire_tab_callbacks(
     // until splits exist.
     {
         let weak = window.as_weak();
+        let core_cx = core.clone();
         let layout = layout.clone();
         let content_size = content_size.clone();
         let tabs_model = tabs_model.clone();
@@ -276,6 +286,7 @@ pub(super) fn wire_tab_callbacks(
                     &w,
                     &layout.borrow(),
                     content_size.get(),
+                    &core_cx.store.borrow(),
                     &tabs_model,
                     &panes_model,
                     &splitters_model,
@@ -289,6 +300,7 @@ pub(super) fn wire_tab_callbacks(
     // the split's axis window up from a fresh flatten and convert it to a ratio.
     {
         let weak = window.as_weak();
+        let core_cx = core.clone();
         let layout = layout.clone();
         let content_size = content_size.clone();
         let tabs_model = tabs_model.clone();
@@ -314,6 +326,7 @@ pub(super) fn wire_tab_callbacks(
                     &w,
                     &layout.borrow(),
                     content_size.get(),
+                    &core_cx.store.borrow(),
                     &tabs_model,
                     &panes_model,
                     &splitters_model,
@@ -327,6 +340,7 @@ pub(super) fn wire_tab_callbacks(
     // doesn't empty and immediately collapse back.
     {
         let weak = window.as_weak();
+        let core_cx = core.clone();
         let layout = layout.clone();
         let content_size = content_size.clone();
         let tabs_model = tabs_model.clone();
@@ -357,6 +371,7 @@ pub(super) fn wire_tab_callbacks(
                         &w,
                         &layout.borrow(),
                         content_size.get(),
+                        &core_cx.store.borrow(),
                         &tabs_model,
                         &panes_model,
                         &splitters_model,
@@ -370,6 +385,7 @@ pub(super) fn wire_tab_callbacks(
     // appended to the first remaining pane, then the emptied source collapses.
     {
         let weak = window.as_weak();
+        let core_cx = core.clone();
         let layout = layout.clone();
         let content_size = content_size.clone();
         let tabs_model = tabs_model.clone();
@@ -385,6 +401,7 @@ pub(super) fn wire_tab_callbacks(
                     &w,
                     &layout.borrow(),
                     content_size.get(),
+                    &core_cx.store.borrow(),
                     &tabs_model,
                     &panes_model,
                     &splitters_model,
@@ -470,6 +487,7 @@ pub(super) fn wire_tab_callbacks(
     // / tab strip (IDEA-style merge by dragging onto the tab row).
     {
         let weak = window.as_weak();
+        let core_cx = core.clone();
         let layout = layout.clone();
         let content_size = content_size.clone();
         let tabs_model = tabs_model.clone();
@@ -525,6 +543,7 @@ pub(super) fn wire_tab_callbacks(
                     &w,
                     &layout.borrow(),
                     content_size.get(),
+                    &core_cx.store.borrow(),
                     &tabs_model,
                     &panes_model,
                     &splitters_model,

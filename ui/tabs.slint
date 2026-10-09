@@ -150,12 +150,12 @@ component SingleTab inherits Rectangle {
     // (#tab-32 2026-10-07) 内容布局：padding 12/8 → **20/20**（标题动态居中
     // 的基准是内容盒中心 = (PL+W−PR)/2，只由左右内边距之差决定，左右必须
     // 相等）；spacing 8 → 7。竖条/字母已 absolute 脱流（见下），不参与居中。
-    // ⚠️ padding-left 必须 ≥ 19px（3px 竖条 + 3px 间隙 + 13px 字母右缘），
-    // 否则窄 tab 上标题压到字母。
-    HorizontalLayout {
-        width: parent.width;
-        padding-left: 20px;
-        padding-right: 20px;
+        // ⚠️ padding-left 必须 ≥ 21px（3px 竖条 + 3px 间隙 + 14px 药丸右缘 +
+        // 1px 呼吸），否则窄 tab 上标题压到字母。左右对称（22/22）保标题居中。
+        HorizontalLayout {
+            width: parent.width;
+            padding-left: 22px;
+            padding-right: 22px;
         spacing: 7px;
         // (#tab-32) alignment: center = 标题动态居中（padding 对称的前提下，
         // 内容盒中心 = tab 中心；有频道/无频道两类 tab 的标题中心完全一致）。
@@ -180,29 +180,34 @@ component SingleTab inherits Rectangle {
 
     }
 
-    // (#tab-32) 频道字母（tab-row-idia 稿）：absolute left:6px 脱流（= 3px 竖条
-    // + 3px 间隙），与分组色竖条并列成"连续的两条标记线"。11px/800 字重、
-    // 禁止 opacity（半透明混色压低对比度）；暂停态加 1.5px 删除线（跟随频道
-    // 色，不新增 token）。元素常驻，无频道时 visible=false（absolute 不占流）。
-    channel-letter := Text {
+    // (#tab-32) 频道字母（tab-row-idia 稿）：absolute left:6px 脱流。(#tab-32-
+    // pill 2026-10-08) 裸字母(彩色文字)在浅色 tab 底上区分不明显（用户反馈
+    // "加入和未加入区分不明显"）→ 改 **频道色药丸 + 白字**：一眼可辨加入的
+    // 频道槽位；暂停态画白色删除线（对比度优于色字叠色线）。
+    channel-letter := Rectangle {
         x: 6px;
         y: (parent.height - self.height) / 2;
-        width: 13px;
-        text: info.channel_letter;
+        width: 14px;
+        height: 14px;
+        border-radius: 4px;
+        background: info.channel_color;
         visible: info.channel_letter != "";
-        font-size: 11px;
-        font-weight: 800;
-        color: info.channel_color;
-        vertical-alignment: center;
-        // 暂停态删除线：1.5px 矩形盖在字母中线上（跟随频道色，height 1.5px
-        // 在 100% 缩放下取整为 1–2 设备像素，hairline 用不上这里）。
+        Text {
+            width: 100%;
+            height: 100%;
+            text: info.channel_letter;
+            color: white; font-size: 9px; font-weight: 800;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        // 暂停态删除线：白色横线盖在药丸中线上（药丸已是频道色实底）。
         Rectangle {
             visible: info.channel_paused;
-            x: -1px;
+            x: 1.5px;
             y: (parent.height - 1.5px) / 2;
-            width: parent.width + 2px;
+            width: parent.width - 3px;
             height: 1.5px;
-            background: parent.color;
+            background: white;
         }
     }
 
@@ -814,17 +819,22 @@ export component TabBar inherits Rectangle {
                         padding-left: 10px;
                         spacing: 8px;
                         alignment: start;
-                        // 4 个 16px 色块（固定 4 槽；常驻、点选归频道；当前频道
-                        // 显示勾选）。色值 = Theme.channel-colors（按主题查表）。
+                        // 4 个 16px 色块（固定 4 槽；常驻、点选归频道——点任意
+                        // 色块即**切换**到该频道，已加入的再点其它色块=换频道）。
+                        // (#tab-32-join-distinct 2026-10-08) 加入态 = 2px 描边环
+                        //（文字主色）；未加入 = 1px 细描边。不再降透明（旧版
+                        // 未加入位 35% 透明读成"禁用不可点"，用户反馈）。色值 =
+                        // Theme.channel-colors（按主题自适应，见 theme.slint）。
                         for cs in [
                             { slot: 0, letter: "A" }, { slot: 1, letter: "B" },
                             { slot: 2, letter: "C" }, { slot: 3, letter: "D" },
                         ] : Rectangle {
                             property <color> cc: Theme.channel-colors[cs.slot];
+                            property <bool> joined: root.menu-channel-letter == cs.letter;
                             width: 16px; height: 16px; border-radius: 4px;
                             background: cc;
-                            border-width: root.menu-channel-letter == cs.letter ? 2px : 0px;
-                            border-color: Theme.text-primary;
+                            border-width: self.joined ? 2px : 1px;
+                            border-color: self.joined ? Theme.text-primary : Theme.border-subtle;
                             Text {
                                 text: cs.letter;
                                 color: white; font-size: 10px; font-weight: 800;

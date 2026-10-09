@@ -23,6 +23,11 @@ export { Theme }
 import { Sidebar, DiskInfo } from "sidebar.slint";
 import { TabBar, TabInfo } from "tabs.slint";
 import { ChannelBar } from "channel_bar.slint";
+// (#sync-dialog-r2) 同步输入：状态全局 + 宿主 + 对话框本体 + 数据结构，
+// 全部在 sync_input_dialog.slint（app.slint 只剩按钮接线 + 宿主实例化）。
+import { SyncInputDialog, SyncSessionInfo, SyncInputState, SyncDialogHost } from "sync_input_dialog.slint";
+// Rust 侧经 window.global::<SyncInputState>() 访问，必须再导出。
+export { SyncInputState }
 import { Welcome, SessionInfo, CtxRowHit } from "welcome.slint";
 import { SessionDialog, SessionDraft, PortFwd, TriggerDraft, GroupEntry, JumpEntry } from "session_dialog.slint";
 import { ConfirmDialog } from "confirm_dialog.slint";
@@ -1147,6 +1152,9 @@ export component AppWindow inherits Window {
     // (#theme-search-empty) 搜索过滤后是否有命中行（Rust 在 theme-search-filter
     // 里回写）——浮层据此显示「未找到匹配的主题」占位。
     in-out property <bool> theme-has-match: true;
+    // (#sync-dialog-r2 2026-10-08) 同步输入的状态/回调已拆到
+    // ui/sync_input_dialog.slint 的 **SyncInputState** 全局 + SyncDialogHost
+    // 宿主（本文件只保留根层一行实例化与顶栏按钮接线）。
     // 当前主题 id / 跟随系统 / 强调色三态的快照（设置页与速选面板显示）。
     // 当前主题 id——**只认确认动作**（set_theme/启动读 config）。不能绑到
     // Theme.theme-id：apply() 写它时会把「预览中的主题」污染成「当前主题」
@@ -1929,12 +1937,13 @@ export component AppWindow inherits Window {
                         active: !root.cmd-bar-hidden;
                         clicked => { root.toggle-cmd-bar-active(); }
                     }
-                    // 会话同步 —— 激活 = 广播输入中。
+                    // 会话同步 —— (#sync-dialog 2026-10-08) 点击弹**同步输入**
+                    // 对话框（WindTerm 式：四频道页签 + 双栏成员管理）。
                     TopbarBtn { height: parent.height;
                         icon: "link";
-                        label: root.lang-en ? "Sync" : "同步";
-                        active: root.sync-input;
-                        clicked => { root.sync-input = !root.sync-input; root.set-sync-input(root.sync-input); }
+                        label: root.lang-en ? "Sync input" : "同步输入";
+                        active: SyncInputState.dialog-open;
+                        clicked => { SyncInputState.open-dialog(); }
                     }
                     // 主题切换 —— 单色图标(去彩色特例)。
                     // (#theme-split §3-调整③) 主题速选 —— 图标从 sun/moon 换成
@@ -7649,6 +7658,12 @@ export component AppWindow inherits Window {
                 }
             }
         }
+
     }
+
+    // (#sync-dialog-r2 2026-10-08) 同步输入对话框宿主：**根层末尾**（z 序最上）。
+    // ⚠️ 不能放进主题选择浮层内部 —— 那样只有主题选择器开着时才渲染，
+    // 单独点「同步输入」永远不弹（上一版实测的 bug）。
+    SyncDialogHost { }
 
 }

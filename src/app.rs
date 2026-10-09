@@ -22,6 +22,7 @@ mod sftp_ui;
 mod sidebar;
 mod single_instance;
 mod storage_callbacks;
+mod sync_input;
 mod tab_callbacks;
 mod tab_transfer;
 mod terminal_ui;
@@ -84,8 +85,8 @@ const SCROLLED_RENDER_MIN_INTERVAL: std::time::Duration = std::time::Duration::f
 pub(crate) fn refresh_channel_bars(
     window: &AppWindow,
     store: &ConfigStore,
-    panes: &Rc<slint::VecModel<crate::ui::PaneInfo>>,
-    tabs: &Rc<slint::VecModel<crate::ui::TabInfo>>,
+    panes: &slint::VecModel<crate::ui::PaneInfo>,
+    tabs: &slint::VecModel<crate::ui::TabInfo>,
 ) {
     let bars: Vec<crate::ui::ChannelBarInfo> = panes
         .iter()
@@ -2975,6 +2976,7 @@ fn open_window(
         &window,
         &layout.borrow(),
         content_size.get(),
+        &store.borrow(),
         &tabs_model,
         &panes_model,
         &splitters_model,
@@ -2986,6 +2988,7 @@ fn open_window(
         let tabs_model = tabs_model.clone();
         let panes_model = panes_model.clone();
         let splitters_model = splitters_model.clone();
+        let store = store.clone();
         window.on_content_resized(move |w: f32, h: f32| {
             let next = (w.max(1.0), h.max(1.0));
             if content_size.get() == next {
@@ -2997,6 +3000,7 @@ fn open_window(
                     &win,
                     &layout.borrow(),
                     content_size.get(),
+                    &store.borrow(),
                     &tabs_model,
                     &panes_model,
                     &splitters_model,
@@ -3034,6 +3038,7 @@ fn open_window(
             let tabs_model = tabs_model.clone();
             let panes_model = panes_model.clone();
             let splitters_model = splitters_model.clone();
+            let store = store.clone();
             slint::Timer::single_shot(std::time::Duration::ZERO, move || {
                 if let Some(w) = weak.upgrade() {
                     w.set_welcome_as_sidebar(v);
@@ -3045,6 +3050,7 @@ fn open_window(
                         &w,
                         &layout.borrow(),
                         content_size.get(),
+                        &store.borrow(),
                         &tabs_model,
                         &panes_model,
                         &splitters_model,
@@ -3470,6 +3476,7 @@ fn open_window(
         window: &AppWindow,
         store: &ConfigStore,
         tabs: &Rc<slint::VecModel<crate::ui::TabInfo>>,
+        panes: &Rc<slint::VecModel<crate::ui::PaneInfo>>,
         tab_id: &str,
     ) {
         let sid = tab_session_id(window, tab_id);
@@ -3488,15 +3495,26 @@ fn open_window(
             None => ("", slint::Color::default()),
         };
         let paused = !sid.is_empty() && store.channel_is_paused(&sid);
-        let tabs_model = window.get_tabs();
-        for i in 0..tabs_model.row_count() {
-            if let Some(mut row) = tabs_model.row_data(i) {
-                if row.id.as_str() == tab_id {
-                    row.channel_letter = letter.into();
-                    row.channel_color = color;
-                    row.channel_paused = paused;
-                    tabs_model.set_row_data(i, row);
+        // (#tab-32-fix2 2026-10-08) TabBar 读的是 **pane.tabs**（每窗格嵌套
+        // 模型，tabs.slint 由 `tabs: pane.tabs` 喂入）；根 tabs 只是聚合快照
+        // ——旧实现只更新根模型，tab 字母与频道状态条都不显示（用户实测
+        // "加入频道 tab 没有显示频道"）。两处都要写。
+        let apply = |tabs: &slint::ModelRc<crate::ui::TabInfo>| {
+            for i in 0..tabs.row_count() {
+                if let Some(mut row) = tabs.row_data(i) {
+                    if row.id.as_str() == tab_id {
+                        row.channel_letter = letter.into();
+                        row.channel_color = color;
+                        row.channel_paused = paused;
+                        tabs.set_row_data(i, row);
+                    }
                 }
+            }
+        };
+        apply(&ModelRc::from(tabs.clone()));
+        for pi in 0..panes.row_count() {
+            if let Some(pane) = panes.row_data(pi) {
+                apply(&pane.tabs);
             }
         }
     }
@@ -3520,7 +3538,7 @@ fn open_window(
                 s.set_channel_member(slot, &sid);
                 let _ = s.save();
             }
-            refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &tab_id);
+            refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &panes_model_c, &tab_id);
             refresh_channel_bars(&w, &store.borrow(), &panes_model_c, &tabs_model_c);
                 w.set_menu_channel_letter(["A", "B", "C", "D"][slot].into());
                 // 频道成员 = 同步激活（三态按钮的数据源；阶段-5 对话框接管后语义不变）。
@@ -3538,7 +3556,7 @@ fn open_window(
             let now_paused = !store.borrow().channel_is_paused(&sid);
             store.borrow_mut().set_channel_paused(&sid, now_paused);
             let _ = store.borrow().save();
-            refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &tab_id);
+            refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &panes_model_c, &tab_id);
             refresh_channel_bars(&w, &store.borrow(), &panes_model_c, &tabs_model_c);
                 w.set_menu_channel_paused(now_paused);
             }
@@ -3557,7 +3575,7 @@ fn open_window(
                 s.clear_channel_pause(&sid);
                 let _ = s.save();
             }
-            refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &tab_id);
+            refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &panes_model_c, &tab_id);
             refresh_channel_bars(&w, &store.borrow(), &panes_model_c, &tabs_model_c);
                 w.set_menu_channel_letter("".into());
                 w.set_menu_channel_paused(false);
@@ -3586,6 +3604,9 @@ fn open_window(
             w.set_channel_bar_hidden(false);
         });
     }
+    // ── (#sync-dialog 2026-10-08) 同步输入对话框回调：装配入口（实现见
+    // sync_input.rs，app.rs 只保留一行注册）。
+    sync_input::wire_sync_input(&window, store.clone(), tabs_model.clone(), panes_model.clone());
     // (#theme-split) set_theme / cycle_theme：顶栏速选面板与 Ctrl+Alt+T 的
     // 入口。切主题 = 持久化 id + 整套槽位重写 + 每个终端 buffer 换 ANSI 色
     // 表并重渲染（历史输出也跟着换装）+ 独立窗口镜像 + 跨窗口广播。
@@ -7401,6 +7422,7 @@ fn wire_session_callbacks(
                     &w,
                     &layout.borrow(),
                     content_size.get(),
+                    &store.borrow(),
                     &tabs_model,
                     &panes_model,
                     &splitters_model,
@@ -7657,6 +7679,7 @@ fn refresh_panes(
     window: &AppWindow,
     layout: &crate::layout::Layout,
     content: (f32, f32),
+    store: &ConfigStore,
     tabs_model: &VecModel<TabInfo>,
     panes_model: &VecModel<PaneInfo>,
     splitters_model: &VecModel<SplitterInfo>,
@@ -7763,6 +7786,11 @@ fn refresh_panes(
             window.set_active_tab_id(fp.active.clone().into());
         }
     }
+    // (#tab-32-fix3 2026-10-08) 频道状态条随活动 tab 联动：所有 tab 结构/
+    // 激活变化都流经 refresh_panes，在这里统一刷新（旧实现只在加入/暂停/
+    // 离开/关闭频道时刷新 —— 新开会话或切 tab 后状态条滞留在旧 tab 上，
+    // 跑到未加入频道的 tab 下面，用户实测）。
+    crate::app::refresh_channel_bars(window, store, panes_model, tabs_model);
 }
 
 /// Hit-test a drag point (pane-area coords) to a target pane + drop zone, plus
