@@ -19,7 +19,7 @@ path = "src/main.rs"
 # compat-1-2 removed (#compat-1-2-cleanup): in 1.18 it is an empty feature
 # plus linuxkms-only pass-through (libseat/libinput) — nothing this Windows
 # winit build ever compiles. Default features already cover everything used.
-slint = { version = "1.18" }
+slint = { version = "1.18.1" }
 
 # ICU4X (pulled in by Slint's text layout) spams stderr with raw `eprintln!`
 # ("ICU4X data error: No segmentation model for language: ja") because its
@@ -28,7 +28,8 @@ slint = { version = "1.18" }
 # subscriber, where init_tracing silences the `icu_provider` target.
 icu_provider = { version = "2", features = ["logging"] }
 # Direct access to the winit window/events (OS file-drop for drag-and-drop upload).
-i-slint-backend-winit = "1.18"
+# Must match the version vendored under vendor/i-slint-backend-winit ([patch] below).
+i-slint-backend-winit = "1.18.1"
 # Raw HWND access (matches winit's rwh 0.6) for the Win11 rounded-corner + shadow
 # DWM tweaks on the frameless window (#162 / #166). Only used under cfg(windows).
 raw-window-handle = "0.6"
@@ -57,7 +58,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = "0.8"
 async-trait = "0.1"
 futures = "0.3"
-vt100 = "0.15"
+vt100 = "0.16.2"
 portable-pty = "0.8"
 # East Asian width detection for terminal copy/find column math. Pinned to the
 # same version vt100 uses so "is this glyph 2 cells wide?" agrees with how vt100
@@ -138,10 +139,10 @@ jemallocator = "0.5"
 # Windows/Linux never compile Skia; on Windows it conflicts with another ICU
 # import library at link time when using the MSVC toolchain (#224).
 [target.'cfg(target_os = "macos")'.dependencies]
-slint = { version = "1.18", features = ["renderer-skia"] }
+slint = { version = "1.18.1", features = ["renderer-skia"] }
 
 [build-dependencies]
-slint-build = "1.18"
+slint-build = "1.18.1"
 
 # Embeds assets/mterm.ico into the .exe so Explorer / taskbar / shortcuts
 # show the app icon. Windows-only; ignored on other targets.
@@ -203,4 +204,15 @@ opt-level = 1
 [patch.crates-io]
 # Avoid Slint/winit's AppKit DisplayLink selector on old macOS. The local
 # patched backend falls back to timer throttling on macOS only.
+#
+# The vendored copy carries local additions (FULL_REDRAW_PENDING /
+# force_full_redraw_all_windows / set_full_redraw_hold / on_scale_factor_changed,
+# see the header comments in vendor/.../lib.rs) that upstream does not have, and
+# it pins the rest of the Slint family with `=`, so it MUST be re-synced to the
+# matching upstream version on every Slint upgrade — otherwise dependency
+# resolution fails outright. Upgrade recipe: extract the pristine crate for the
+# new version, three-way merge the 4 patched files
+# (lib.rs, winitwindowadapter.rs, frame_throttle.rs, renderer/sw.rs) against the
+# previous pristine release, keep both upstream's and our full-redraw hook in
+# show().
 i-slint-backend-winit = { path = "vendor/i-slint-backend-winit" }
