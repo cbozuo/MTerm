@@ -1,5 +1,5 @@
 // ═════════════════════════════════════════════════════════════════════
-// 生成 src/theme/palettes.rs：36 套主题色表（Rust 常量）
+// 生成 src/theme/palettes.rs：37 套主题色表（Rust 常量）
 //
 // 输入（真源，均可由各自生成器重跑）：
 //   theme-tokens.json + _radix-themes.json + _extra-themes.json  → UI 20 槽
@@ -16,13 +16,15 @@ const EXTRA = JSON.parse(fs.readFileSync(path.join(__dirname, '_extra-themes.jso
 const AG = JSON.parse(fs.readFileSync(path.join(__dirname, '_ansi-group.json'), 'utf8'));
 const ALL_UI = { ...TOKENS, ...RADIX_T, ...EXTRA };
 
-// 与 gen_ansi_group.js 的 GROUPS_DEF/VARIANTS 一致（radix 10 → brand 4 → terminal 22）
+// 与 gen_ansi_group.js 的 GROUPS_DEF/VARIANTS 一致（品牌族 github/idea/islands
+// 紧随 radix 之后，终端族在后 —— 即选择器里的族顺序）
 // （2026-10-07 用户决策：迁移保留档 meat-dark/light 不进选择器——真源数据仍在
 //  _ansi-group.json，如需恢复在 ORDER 尾部加回即可）
 const ORDER = [
   'graphite-dark', 'graphite-light', 'slate-dark', 'slate-light', 'mauve-dark', 'mauve-light',
   'sage-dark', 'sage-light', 'sand-dark', 'sand-light',
   'github-dark', 'github-light', 'idea-dark', 'idea-light',
+  'islands-dark',
   'dracula-dark', 'catppuccin-dark', 'catppuccin-light', 'solarized-dark', 'solarized-light',
   'kanagawa-wave', 'kanagawa-lotus', 'ayu-dark', 'ayu-mirage', 'ayu-light',
   'gruvbox-material-dark', 'gruvbox-material-light',
@@ -35,9 +37,10 @@ const arr = (a) => '[' + a.map(hx).join(', ') + ']';
 
 const out = [];
 out.push('// ═════════════════════════════════════════════════════════════════════');
-out.push('// 36 套主题色表（★生成文件，勿手改★）——scripts/gen_theme_rust.js 产出');
+out.push('// 37 套主题色表（★生成文件，勿手改★）——scripts/gen_theme_rust.js 产出');
 out.push('// 真源：scripts/theme-tokens.json + _radix-themes.json + _extra-themes.json');
-out.push('//       + _ansi-group.json（ANSI16 / 分组色24 / 频道色4，含来源与校验）');
+out.push('//       + _islands-dark.json（MTerm 套的上游原样副本，仅取证）+ _ansi-group.json');
+out.push('//       （ANSI16 / 分组色24 / 频道色4，含来源与校验）');
 out.push('// 全部色值为官方发布原样（个别派生档在 _ansi-group.json 的 src 字段标注）。');
 out.push('// ═════════════════════════════════════════════════════════════════════');
 out.push('');
@@ -60,7 +63,7 @@ out.push('    /// 分组色 24 色（on panel ≥3.0）');
 out.push('    pub group24: [u32; 24],');
 out.push('    /// 终端 ANSI 16 色（前景用）');
 out.push('    pub ansi16: [u32; 16],');
-out.push('    /// 亮色 TUI 背景填充表（官方发布即有；当前 36 套均为 None）');
+out.push('    /// 亮色 TUI 背景填充表（官方发布即有；当前 37 套均为 None）');
 out.push('    pub ansi16bg: Option<[u32; 16]>,');
 out.push('}');
 out.push('');
@@ -83,7 +86,8 @@ out.push('pub const DANGER_STRONG: u32 = 0xDC4B44;');
 out.push('/// 频道暂停态的暖色竖条（状态条左缘；不用暖底色——一转暖就成「另一个面板」）');
 out.push('pub const CHANNEL_PAUSE_BAR: u32 = 0xE2A84A;');
 out.push('');
-out.push('/// 全部 36 套：radix 10 → brand 4 → terminal 22（选择器分组顺序）');
+out.push('/// 全部 37 套（选择器实际只按明暗分两组，组内即本表顺序）；kind 即族：');
+out.push('/// radix 10 / brand 2（GitHub）/ idea 2 / mterm 1 / community 22');
 out.push('pub static PALETTES: &[Palette] = &[');
 
 for (const id of ORDER) {
@@ -111,7 +115,7 @@ for (const id of ORDER) {
 }
 out.push('];');
 out.push('');
-out.push('/// 按 id 查表（线性 36 项，调用点均为低频切主题路径）');
+out.push('/// 按 id 查表（线性 37 项，调用点均为低频切主题路径）');
 out.push("pub fn find(id: &str) -> Option<&'static Palette> {");
 out.push('    PALETTES.iter().find(|p| p.id == id)');
 out.push('}');

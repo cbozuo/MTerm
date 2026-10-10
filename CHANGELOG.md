@@ -6,6 +6,12 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **新增「MTerm」主题（上游 Islands Dark 移植）。** 设置 → 主题的「深色主题」组新增一套：深底浮岛造型，界面本体几乎无彩色、只有强调色与状态色说话。留白面、文字、成功/警告/危险与终端 ANSI 均采用上游原色（12 个彩色槽在该套底色上全部达到 4.5:1）；强调色按本项目的观感定档为上游的**青** `#2aacb8`（上游 `textLink`/`button` 原本用蓝，与既有「经典蓝/霓蓝」重复，故改用该套自己的青）。切换时终端调色板一并生效，独立进程/编辑器窗口同步跟随。
+- **Add the "MTerm" theme (a port of Islands Dark).** The Dark themes group gains a deep-canvas, floating-panel look where the chrome stays almost colorless and only the accent and status colours speak. Canvas, text, success/warning/danger and the terminal ANSI palette all use upstream's values (all twelve coloured slots clear 4.5:1 on that theme's own background); the accent is set to that theme's own **cyan** `#2aacb8` (upstream's `textLink`/`button` used blue, which duplicated the existing "classic blue / neon blue" presets). The terminal palette switches together with the UI, and the detached process/editor windows follow along.
+
+- **统一鼠标悬浮背景并让它跟随主题强调色。** 此前悬浮高亮有两套互不相干的实现——列表行用写死的反色蒙版，工具栏图标用主题里的固定灰色——同一屏里是两种观感，且各主题的"重"程度相差最多 12 倍。现在合并为一个跟随强调色的浅染（强调色压暗 10% 后叠 8%），列表行、工具栏、按钮、标签的悬浮完全一致；参数按 37 套主题 × 4 种底面的正文对比度逐一核算选出，可读性不劣于改动前。
+- **Unify hover highlighting and make it follow the theme accent.** Hover used to be two unrelated implementations — a hard-coded inverted overlay for list rows and a fixed theme grey for toolbar icons — so one screen showed two different looks, and the "weight" of a hover varied by up to 12× across themes. They are now a single accent-tinted wash (the accent darkened 10%, laid down at 8%), identical on list rows, toolbars, buttons and tabs; the values were picked by checking body-text contrast across all 37 themes × 4 surfaces, so legibility is no worse than before.
+
 - **修复分组脊线上的亮点与分组拖动的浮卡错位。** 组内成员之间的组色竖线不再因上下两段重叠而出现比线身更亮的短段；把一个分组拖到末位后再拖动它时，跟手的浮起卡片不再飞到列表顶部，落点判定也同步恢复正常。
 - **Fix the bright spot on group spines and the misplaced drag card when dragging a group.** The group-colored spine no longer shows a brighter 2px segment between rows, and the floating drag card no longer jumps to the top of the list — the drop target tracks correctly again — when a group that was just moved to the end is dragged once more.
 

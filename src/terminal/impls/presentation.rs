@@ -652,7 +652,7 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
 }
 
 /// Map an xterm-256 palette index to RGB (16 ANSI + 6×6×6 cube + grayscale).
-/// (#theme-split) ANSI 16 色按当前主题查表（38 套；meat 档即原 ANSI16_DARK /
+/// (#theme-split) ANSI 16 色按当前主题查表（37 套；meat 档即原 ANSI16_DARK /
 /// ANSI16_LIGHT 两常量值）。256 色立方 / 灰阶不随主题。
 fn idx_to_rgb(
     i: u8,

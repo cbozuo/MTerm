@@ -1,5 +1,5 @@
 // ═════════════════════════════════════════════════════════════════════
-// 补全设计稿缺口：33 套主题的「终端 ANSI 16 色」+「分组色 24 色」
+// 补全设计稿缺口：37 套主题的「终端 ANSI 16 色」+「分组色 24 色」
 //
 // 为什么要有这个文件：theme-wallpaper-split 设计稿 §3 调整⑤要求
 // "ANSI16_DARK/LIGHT 两套 → 按主题查表"，分组色要求 "每套主题的 24 色
@@ -253,6 +253,13 @@ const OFFICIAL_ANSI = {
            '#57606a', '#a40e26', '#1a7f37', '#9e6a03', '#218bff', '#a475f9', '#3192aa', '#8c959f'],
     tbg: '#ffffff', tfg: '#1f2328',
   },
+  // bwya77/vscode-dark-islands（MIT）官方 themes/islands-dark.json 的 terminal 色
+  'islands-dark': {
+    src: 'Islands Dark 官方主题（bwya77/vscode-dark-islands）terminal 色原样',
+    ansi: ['#181a1d', '#f75464', '#73b00a', '#e8a33e', '#548af7', '#c77dbb', '#2aacb8', '#bcbec4',
+           '#6f737a', '#f9667a', '#8ccf15', '#f0b95e', '#7cacf8', '#d79fd2', '#42c6d2', '#d4d5d9'],
+    tbg: '#181a1d', tfg: '#bcbec4',
+  },
   // ayu 官方收录移植（alacritty-theme ayu_dark/mirage/light 三档）
   // （ayu-vim 的 term/*.itermcolors 是 2018 老 8 位值，亮底不可读，不采用）
   'ayu-dark': {
@@ -398,7 +405,7 @@ const SKIP = new Set([
 ]);
 const GROUPS_DEF = [
   ['radix', ['graphite', 'slate', 'mauve', 'sage', 'sand']],
-  ['brand', ['github-dark', 'github-light', 'idea-dark', 'idea-light']],
+  ['brand', ['github-dark', 'github-light', 'idea-dark', 'idea-light', 'islands-dark']],
   ['terminal', ['dracula', 'catppuccin', 'solarized', 'kanagawa', 'ayu', 'gruvbox-material',
                 'tokyonight', 'nord', 'everforest', 'rosepine', 'onedark', 'flexoki']],
 ];
@@ -409,7 +416,7 @@ const VARIANTS = { kanagawa: ['wave', 'lotus'], ayu: ['dark', 'mirage', 'light']
 
 const out = { _meta: {
   generated: '2026-10-07',
-  purpose: '主题重构后全量：36 预设（Radix 10 + 品牌官方 4 + 经典终端 22）+ 2 迁移档的 ANSI 16 色 + 分组色 24 色 + 频道色',
+  purpose: '主题重构后全量：37 预设（Radix 10 + 品牌官方 4 + Islands Dark 1 + 经典终端 22）+ 2 迁移档的 ANSI 16 色 + 分组色 24 色 + 频道色',
   ansi_sources: {}, group_rule: '基准=theme.slint group-color-dark/light 24 色，保 H/S 二分 L 至 on(panel) ≥ 3.0:1',
   ansi_check: '12 彩色槽(1-6,9-14) ≥ 4.5:1 为达标线；0/7/8/15 槽按终端惯例只记录不判失败',
 } };
@@ -512,7 +519,7 @@ for (const [id, mk] of Object.entries(MEAT)) {
 fs.writeFileSync(path.join(__dirname, '_ansi-group.json'), JSON.stringify(out, null, 1), 'utf8');
 
 // 控制台报告
-console.log('══ 33 套 ANSI / 分组色生成完毕 → scripts/_ansi-group.json ══\n');
+console.log('══ 37 套 ANSI / 分组色生成完毕 → scripts/_ansi-group.json ══\n');
 for (const r of report) {
   const flag = r.fails.length ? '✗' : '✓';
   console.log(`${flag} ${r.id.padEnd(18)} ${r.name.padEnd(10)} 彩槽最低对比 ${r.minC.toFixed(2)}  分组色未达标 ${r.gFails}`);

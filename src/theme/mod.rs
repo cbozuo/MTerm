@@ -263,15 +263,19 @@ mod tests {
 
     #[test]
     fn table_shape() {
-        assert_eq!(PALETTES.len(), 36);
+        assert_eq!(PALETTES.len(), 37);
         assert!(find("graphite-dark").is_some());
         assert!(find("meat-light").is_none(), "迁移保留档不进选择器（用户决策）");
         assert!(find("dracula-light").is_none(), "已删套不得回潮");
+        assert!(find("islands-dark").is_some(), "MTerm 套（Islands Dark 移植）");
+        assert!(find("islands-light").is_none(), "上游只有暗色档（用户决策）");
+        // 显示名不带明暗后缀：后缀由 theme_name/选择器统一拼（界面显示「MTerm · 暗」）。
+        assert_eq!(find("islands-dark").unwrap().zh, "MTerm");
         // id 唯一
         let mut ids: Vec<_> = PALETTES.iter().map(|p| p.id).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 36);
+        assert_eq!(ids.len(), 37);
     }
 
     #[test]
@@ -303,6 +307,17 @@ mod tests {
         let fitted2 = fit_contrast(0xFFC53D, 0xFCFCFC, 3.0);
         assert!(contrast(fitted2, 0xFCFCFC) >= 3.0);
         assert!(luminance(fitted2) < luminance(0xFFC53D));
+    }
+
+    #[test]
+    fn islands_accent_survives_guard() {
+        // MTerm 套的强调色是**项目定档**的上游青 #2AACB8（terminal.ansiCyan）：
+        // 在 panel #181A1D 上对比 6.39 ≥ 3.0，故「跟随主题」时 fit_contrast
+        // 原样返回、不产生色相漂移。守卫若改色，说明该套的 panel/ac 被改坏了。
+        let p = find("islands-dark").unwrap();
+        assert_eq!(p.ac, 0x2AACB8);
+        assert_eq!(fit_contrast(p.ac, p.panel, 3.0), p.ac);
+        assert!(contrast(p.ac, p.panel) >= 3.0);
     }
 
     #[test]

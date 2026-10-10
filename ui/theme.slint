@@ -88,7 +88,6 @@ export global Theme {
     property <color> base-bg-panel:     root.slot-panel;
     property <color> base-bg-panel-alt: root.slot-palt;
     property <color> base-bg-elevated:  root.slot-elev;
-    property <color> base-bg-hover:     root.slot-hov;
     property <color> base-bg-active:    root.slot-act;
 
     // bg-root frosts lighter (lower alpha) so the wallpaper reads clearly in
@@ -97,7 +96,24 @@ export global Theme {
     out property <brush> bg-panel:     frost(base-bg-panel, root.panel-alpha);
     out property <brush> bg-panel-alt: frost(base-bg-panel-alt, root.panel-alpha);
     out property <brush> bg-elevated:  frost(base-bg-elevated, root.panel-alpha);
-    out property <brush> bg-hover:     frost(base-bg-hover, min(1.0, root.panel-alpha + 0.04));
+    // (#hover-accent 2026-10-10) 悬浮高亮统一跟随强调色（用户定稿），
+    // 取代原来「frost(slot-hov)」的绝对色写法。原写法的两个问题：
+    //   ① slot-hov 是绝对色，各套取值随意，相对底色亮度倍率实测从 0.60 抖到
+    //      7.28（12 倍）——换主题就换一种"重的程度"；
+    //   ② 同时另有一个写死的 `menu-hover`（12% 白/8% 黑反色蒙版）用在列表行，
+    //      于是同一屏左侧列表与右侧工具栏是两套语言，同一套内两者能差 4.72
+    //      （solarized-dark）——用户反馈的"很乱"。
+    // 现策略：取 accent **压暗 10%** 后叠 8% —— 同一屏里所有悬浮点（列表行、
+    // 工具栏图标、按钮、标签）都是"同色系的一点染色"，不再有两种语言。
+    // 参数是扫出来的，不是在几种里挑的：37 套 × 4 种底面（panel/palt/elev/root）
+    // 共 148 个组合逐一算 t1 正文对比度，要求**不劣于现网基线**再取 ΔRGB 最大者。
+    // 为什么方向是"压暗"而不是"提亮"：深色主题正文 t1 本来就是浅灰（如 #b4b4b4），
+    // 悬浮底一提亮就贴上文字——实测提亮方案把 t1 压到 2.08（69/148 低于 4.5），
+    // 压暗则远离文字。最终 mix=0.10/alpha=0.08：t1 最低 3.25、低于 4.5 的组合
+    // 7/148，比现网 bg-hover 基线的 8 个还少一个。
+    // 需要更实的"选中态"仍走 accent-soft / chip，悬浮只做一眼可辨的浅染。
+    property <color> hover-tint: root.accent-solid.darker(0.10);
+    out property <brush> bg-hover: root.hover-tint.with-alpha(0.08);
     out property <brush> bg-active:    frost(base-bg-active, min(1.0, root.panel-alpha + 0.08));
     // Settings dialog: 20% less transparent than the other panels so its dense
     // grey labels stay legible even at a low wallpaper overlay (user request).
@@ -174,12 +190,11 @@ export global Theme {
     // 哪档，弹窗之上文字对比度要兜住），封顶 0.60。
     out property <brush> chip:        root.accent-solid.with-alpha(root.dark ? 0.22 : 0.14);
     out property <brush> accent-soft: root.accent-solid.with-alpha(root.dark ? 0.16 : 0.12);
-    // (#menu-hover 2026-10-08) 菜单/列表行的悬浮高亮：旧 bg-hover 的底色
-    // slot-hov(#373a44) 是写死的深灰，浅色主题下白底叠低透明深灰几乎不可见
-    //（用户反馈"浅色主题悬浮背景不明显"，深色也偏淡）。改按明暗用**反色
-    // 半透明**——深色叠白、浅色叠黑，任何 popup 底色上都清晰可辨：
-    // 深 12% 白 / 浅 8% 黑。
-    out property <brush> menu-hover: root.dark ? #ffffff1f : #00000014;
+
+    // (#menu-hover 2026-10-08 → 2026-10-10 退役) 旧 `menu-hover` token 已删除：
+    // 它是写死的反色蒙版（深 12% 白 / 浅 8% 黑），与 bg-hover 并存导致同一屏
+    // 出现两套悬浮语言。14 处引用已全部迁到 `bg-hover`（定义在文件上方），
+    // 不再保留别名（`bg-hover` 本身已是 out property，重复声明会编译报错）。
     out property <float> scrim-alpha: min(0.60, (root.dark ? 0.32 : 0.36)
         + (root.popup-transparency == 2 ? 0.18 : 0.0)
         + (root.popup-transparency == 1 ? 0.10 : 0.0));
