@@ -1,0 +1,1494 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MTerm 右侧工作台 · 视觉重构 v2（对齐真实代码框架 · 2026-10-09）</title>
+<style>
+/* ══════════════════════════════════════════════════════════════════════════
+   ① 主题 token —— 逐值取自真实代码，不是"好看"的估值
+   ─────────────────────────────────────────────────────────────────────────
+   语义色  : src/theme/palettes.rs  PALETTES["graphite-dark"|"graphite-light"]
+             (L53-64 / L66-77)，由 src/theme/mod.rs apply_theme() 写入
+             ui/theme.slint 的 20 个 slot-*，再派生为 Theme.bg-* / text-*。
+   派生色  : ui/theme.slint L135-203 (border-control / field / panel-hi /
+             menu-hover / accent-soft / chip …) 的 dark? A : B 表达式。
+   频道色  : palettes.rs `channel: [A,B,C,D]`。
+
+   ⚠ v1 稿用的是 theme.slint 里**已废弃的旧内置默认**（#1b1d23 蓝调石墨），
+     而 palettes.rs 的 graphite 是**中性灰**（#111111/#191919，R=G=B）。
+     两者明度接近但色相完全不同，v1 的所有配色判断都建立在错误前提上。
+     本稿按真实值重排。
+   ⚠ graphite 的 **t2 === t3**（两套主题都是）。所以三级文字层次
+     **不能靠 t2/t3 的明度差**去建立——必须靠字号 + 字重。本稿据此设计。
+   ════════════════════════════════════════════════════════════════════════ */
+:root[data-theme="light"]{
+  /* 20 槽语义色 · graphite-light */
+  --root:#FCFCFC; --panel:#F9F9F9; --palt:#F0F0F0; --elev:#E8E8E8;
+  --hov:#E0E0E0; --act:#D9D9D9;  --line:#CECECE; --lstr:#BBBBBB;
+  --t1:#202020; --t2:#646464; --t3:#646464;
+  --tbg:#FCFCFC; --tfg:#202020;
+  --ac:#0090FF; --ac2:#0588F0; --ok:#29A383; --wr:#FFC53D; --dg:#E93D82;
+  --ch-a:#3E63DD; --ch-b:#0C8A7D; --ch-c:#946200; --ch-d:#C22A52;
+  /* theme.slint 派生 */
+  --field:#f4f5f8; --ctrl:#dcdce3; --panel-hi:#eef0f4; --line2:#c7c7cc;
+  --hover:#00000014;          /* menu-hover */
+  --close-red:#c42b1c;
+  --accent-soft:rgba(0,144,255,.12);   /* accent-soft α0.12 */
+  --chip:rgba(0,144,255,.14);         /* chip α0.14 */
+  --seg-on:#F9F9F9;  /* 分段控件选中态：比容器 elev 亮 = 凸起 */
+  --seg-shadow:0 1px 2px rgba(0,0,0,.10);
+  --dock-shadow:0 1px 3px rgba(0,0,0,.06);
+}
+:root[data-theme="dark"]{
+  --root:#111111; --panel:#191919; --palt:#222222; --elev:#2A2A2A;
+  --hov:#313131; --act:#3A3A3A;  --line:#3A3A3A; --lstr:#313131;
+  --t1:#B4B4B4; --t2:#818181; --t3:#818181;
+  --tbg:#111111; --tfg:#EEEEEE;
+  --ac:#0090FF; --ac2:#2870BD; --ok:#46A758; --wr:#A18072; --dg:#E93D82;
+  --ch-a:#7C9CFF; --ch-b:#3ECFB8; --ch-c:#E5B84C; --ch-d:#E8859F;
+  --field:#191b21; --ctrl:#31353e; --panel-hi:#282b34; --line2:#3f444f;
+  --hover:#ffffff1f;          /* menu-hover */
+  --close-red:#e81123;
+  --accent-soft:rgba(0,144,255,.16);   /* accent-soft α0.16 */
+  --chip:rgba(0,144,255,.22);          /* chip α0.22 */
+  --seg-on:#3A3A3A;  /* 分段控件选中态：比容器 elev 亮 = 凸起 */
+  --seg-shadow:0 1px 2px rgba(0,0,0,.30);
+  --dock-shadow:none;
+}
+
+/* ── 度量：全部取自 ui/theme.slint，无一凭感觉给值 ─────────────────────
+   字号  L242-247  fs-2xs 10 / fs-xs 11 / fs-sm 13 / fs-md 13 / fs-lg 15 / fs-xl 18
+   圆角  L330-333  radius-sm 4 / radius-md 6 / radius-lg 10 / radius-xl 16
+   间距  L335-338  gap-xs 4 / gap-sm 8 / gap-md 12 / gap-lg 16
+   ⚠ 真实体系**没有 5px / 7px / 10.5px / 11.5px**。v1 稿大量使用这些值，
+     在 ×ui-scale 缩放下会产生半像素发虚。本稿只用表内档位。          */
+:root{
+  --f-2xs:10px; --f-xs:11px; --f-sm:13px; --f-md:13px; --f-lg:15px; --f-xl:18px;
+  --r-sm:4px;  --r-md:6px;  --r-lg:10px; --r-xl:16px;
+  --g-xs:4px;  --g-sm:8px;  --g-md:12px; --g-lg:16px;
+  --ui:"Segoe UI","Microsoft YaHei UI","PingFang SC",sans-serif;
+  --mono:"Cascadia Mono",Consolas,"Courier New",monospace;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ② 页面舞台（仅用于摆放稿件本身，与 MTerm 无关）
+   ════════════════════════════════════════════════════════════════════════ */
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:#0f1013; color:#c9ccd6;
+  font-family:var(--ui); font-size:13px; line-height:1.6;
+  padding:32px 44px 64px;
+}
+.page-head{max-width:1280px;margin:0 auto 6px;display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap}
+.page-head h1{font-size:21px;font-weight:600;letter-spacing:.4px;color:#e4e7ef}
+.page-head h1 small{color:#7f8494;font-size:12.5px;font-weight:400;margin-left:10px}
+.theme-switch{margin-left:auto;display:flex;border:1px solid #33363f;border-radius:var(--r-md);overflow:hidden}
+.theme-switch button{
+  background:#15171c;color:#a8adbc;border:0;padding:6px 15px;font-size:12px;
+  cursor:pointer;font-family:inherit;transition:background .15s,color .15s
+}
+.theme-switch button.on{background:#0090FF;color:#fff}
+
+.chips{display:flex;gap:7px;margin:14px auto 0;max-width:1280px;flex-wrap:wrap}
+.chip{font-size:11.5px;color:#9aa0b0;background:#171920;border:1px solid #2b2e37;border-radius:99px;padding:4px 12px}
+.chip b{color:#4ea6ff;font-weight:600}
+.chip.fix{color:#8fd9c4;border-color:#2a4a42;background:#131d1b}
+.chip.fix b{color:#4ec9a8}
+
+.wrap{max-width:1280px;margin:22px auto 0;display:flex;flex-direction:column;gap:40px}
+.sec-title{display:flex;align-items:baseline;gap:10px;margin-bottom:13px;font-size:14.5px;font-weight:600;color:#e4e7ef}
+.sec-title .no{font-size:11px;color:#4ea6ff;background:rgba(0,144,255,.14);border:1px solid rgba(0,144,255,.35);border-radius:var(--r-sm);padding:1px 7px;font-weight:600}
+.sec-title small{color:#7f8494;font-weight:400;font-size:12.5px}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ③ 应用外壳 —— 尺寸对齐 ui/app.slint
+   ════════════════════════════════════════════════════════════════════════ */
+.win{
+  width:100%;border-radius:var(--r-lg);overflow:hidden;position:relative;
+  border:1px solid #262932;box-shadow:0 22px 54px rgba(0,0,0,.55);
+  background:var(--root);
+}
+/* app.slint:1902 → 32px */
+.titlebar{height:32px;display:flex;align-items:center;gap:var(--g-sm);padding-left:10px;background:var(--panel);border-bottom:1px solid var(--line)}
+.titlebar .logo{width:15px;height:15px;border-radius:var(--r-sm);background:linear-gradient(135deg,var(--ac),#7ab8ff);flex:none}
+.titlebar .t{font-size:var(--f-sm);color:var(--t2);white-space:nowrap}
+.win-ctrl{margin-left:auto;display:flex;height:100%}
+/* app.slint:325 → WinBtn 40px，无缝贴连 */
+.win-ctrl .wb{width:40px;display:grid;place-items:center;color:var(--t2);cursor:pointer;transition:background .12s,color .12s}
+.win-ctrl .wb:hover{background:var(--hover);color:var(--t1)}
+.win-ctrl .wb.close:hover{background:var(--close-red);color:#fff}
+.win-ctrl .panel-toggle{border-right:1px solid var(--line)}
+.win-ctrl .panel-toggle.on{background:var(--palt);color:var(--t1)}
+
+.tabbar{height:32px;display:flex;align-items:flex-end;gap:2px;padding:0 var(--g-sm);background:var(--tbg);border-bottom:1px solid var(--line)}
+.tab{height:26px;display:flex;align-items:center;gap:var(--g-xs);padding:0 10px;border-radius:var(--r-sm) var(--r-sm) 0 0;font-size:var(--f-sm);color:var(--t2);position:relative;max-width:190px}
+.tab.on{background:var(--palt);color:var(--t1)}
+.tab.on::before{content:"";position:absolute;left:var(--g-sm);right:var(--g-sm);top:0;height:2px;border-radius:1px;background:var(--ac)}
+.tab .ico{width:9px;height:9px;border-radius:2px;background:var(--t3);opacity:.75;flex:none}
+.tab .x{width:14px;height:14px;border-radius:var(--r-sm);display:grid;place-items:center;font-size:9px;opacity:0;color:var(--t2)}
+.tab:hover .x{opacity:.7}
+.tabbar .plus{width:24px;height:24px;margin-bottom:2px;display:grid;place-items:center;color:var(--t2);border-radius:var(--r-sm);font-size:15px;cursor:pointer}
+.tabbar .plus:hover{background:var(--hover)}
+.tabbar .free{flex:1}
+
+.win-body{display:flex;height:648px;min-height:0}
+.term{flex:1;min-width:0;background:var(--tbg);font-family:var(--mono);font-size:var(--f-sm);line-height:1.75;padding:var(--g-md) var(--g-lg);color:var(--tfg);overflow:hidden;white-space:pre}
+.term .p{color:var(--ok)}
+.term .d{color:var(--t3)}
+.term .c{display:inline-block;width:7px;height:14px;background:var(--tfg);vertical-align:-2px;animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ④ 右侧工作台
+   ─────────────────────────────────────────────────────────────────────────
+   容器形态**照搬 ui/sidebar.slint:532-541**（#panel-gap-symmetry）：
+     外层 bg-root · 内缩 12px · bg-panel 卡片 · radius-md(6px) · 1px border-subtle
+   v1 稿主张"三面贴边、去圆角去留白"，与全应用既有面板语言相反 ——
+   同一个窗口里出现两种面板边框语法，本身就是不协调的根源。
+   ════════════════════════════════════════════════════════════════════════ */
+/* app.slint:1049 quick-panel-width = 260px */
+.dock{
+  width:260px;flex:none;background:var(--root);
+  display:flex;padding:var(--g-md);min-width:0;   /* 12px gutter */
+}
+.dock-card{
+  flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden;
+  background:var(--panel);border:1px solid var(--line);
+  border-radius:var(--r-md);box-shadow:var(--dock-shadow);
+}
+
+/* ── 面板头：34px（QuickDockPanel:103 header height）+ 底部发丝线 ─────── */
+.dock-head{
+  height:34px;flex:none;display:flex;align-items:center;gap:var(--g-sm);
+  padding:0 var(--g-xs) 0 var(--g-sm);
+  background:var(--palt);border-bottom:1px solid var(--line);
+  cursor:grab;user-select:none;
+}
+.dock-head:active{cursor:grabbing}
+.dock-head .grip{flex:none;width:12px;display:grid;place-items:center;color:var(--t3);opacity:.75}
+.dock-head .sp{flex:1}
+
+/* 分段控件：容器 = bg-elevated，选中 = --seg-on（两套主题下都"凸起"） */
+.seg{display:flex;background:var(--elev);border-radius:var(--r-md);padding:2px;gap:2px;flex:none}
+.seg button{
+  border:0;background:transparent;color:var(--t2);font-size:var(--f-xs);
+  font-family:inherit;font-weight:700;padding:0 10px;height:20px;
+  border-radius:var(--r-sm);cursor:pointer;
+  display:flex;align-items:center;gap:var(--g-xs);
+  transition:background .14s,color .14s,box-shadow .14s;
+}
+.seg button:hover{color:var(--t1)}
+.seg button.on{background:var(--seg-on);color:var(--t1);box-shadow:var(--seg-shadow)}
+.seg svg{flex:none;opacity:.9}
+.seg .cnt{
+  font-size:var(--f-2xs);font-weight:700;color:var(--t2);
+  background:var(--palt);border-radius:var(--r-sm);padding:0 4px;line-height:14px;
+}
+.seg button.on .cnt{background:var(--chip);color:var(--ac)}
+
+.ico-btn{
+  width:24px;height:24px;flex:none;border-radius:var(--r-sm);
+  display:grid;place-items:center;color:var(--t2);cursor:pointer;
+  transition:background .12s,color .12s;
+}
+.ico-btn:hover{background:var(--hover);color:var(--t1)}
+.ico-btn.sm{width:20px;height:20px}
+
+/* ── 内容区 ───────────────────────────────────────────────────────────── */
+.pane{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin}
+.pane::-webkit-scrollbar{width:8px}
+.pane::-webkit-scrollbar-track{background:transparent}
+.pane::-webkit-scrollbar-thumb{background:var(--elev);border-radius:4px;border:2px solid var(--panel)}
+
+/* 连接状态条：恒驻顶部，不随内容滚动。
+   底色用 accent-soft（theme.slint L176），只此一处——面板里唯一的彩色面。 */
+.hero{
+  flex:none;margin:var(--g-sm) var(--g-sm) 0;padding:var(--g-sm);
+  background:var(--accent-soft);border-radius:var(--r-md);
+  display:flex;flex-direction:column;gap:var(--g-xs);
+}
+.hero-r1{display:flex;align-items:center;gap:var(--g-sm);min-width:0}
+.hero .dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 20%,transparent)}
+.hero.warn .dot{background:var(--wr);box-shadow:0 0 0 3px color-mix(in srgb,var(--wr) 20%,transparent)}
+.hero.off  .dot{background:var(--t2);box-shadow:none}
+.hero .host{
+  font-family:var(--mono);font-size:var(--f-md);font-weight:700;color:var(--t1);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1
+}
+.hero .proto{
+  flex:none;font-size:var(--f-2xs);font-weight:700;color:var(--ac);
+  background:var(--chip);border-radius:var(--r-sm);padding:1px 6px;letter-spacing:.3px
+}
+.hero-r2{display:flex;align-items:center;gap:var(--g-xs);font-size:var(--f-2xs);color:var(--t2);min-width:0}
+.hero-r2 .v{font-family:var(--mono);color:var(--t1);font-weight:700}
+.hero-r2 .sep{color:var(--t3)}
+.hero-r2 .cp{
+  margin-left:auto;flex:none;display:flex;align-items:center;gap:3px;
+  color:var(--t2);border-radius:var(--r-sm);padding:1px 5px;cursor:pointer;
+  transition:background .12s,color .12s
+}
+.hero-r2 .cp:hover{background:var(--hover);color:var(--t1)}
+.hero-r2 .cp.ok{color:var(--ok)}
+
+/* ── 分区标题：10px / 700 / 字距 .6px + 延伸发丝线 ─────────────────────
+   graphite 的 t2===t3，第三级层次只能靠字号+字重建立，不能靠颜色深浅。 */
+.sec{padding:var(--g-md) var(--g-sm) var(--g-xs)}
+.sec-h{display:flex;align-items:center;gap:var(--g-sm);height:18px;margin-bottom:var(--g-xs)}
+.sec-h .t{font-size:var(--f-2xs);font-weight:700;letter-spacing:.6px;color:var(--t2);white-space:nowrap}
+.sec-h .rule{flex:1;height:1px;background:var(--line);min-width:var(--g-sm)}
+.sec-h .hint{font-size:var(--f-2xs);color:var(--t2);white-space:nowrap;font-family:var(--mono)}
+.hair{height:1px;background:var(--line);margin:0 var(--g-sm)}
+
+/* ── 资源行：StatRow(sidebar.slint:14) 重排 ────────────────────────────
+   标签 46px 定宽 · 进度条 flex(min 52) · 百分比 40px 右对齐 · 行高 24px
+   v1 用的是 10.5/11.5px 与 5px 圆角，均不在真实档位内。            */
+.stats{padding:0 var(--g-sm)}
+.st{display:flex;align-items:center;gap:var(--g-sm);height:24px}
+.st .lb{width:46px;flex:none;font-size:var(--f-xs);color:var(--t2);white-space:nowrap}
+.st .track{
+  flex:1;min-width:var(--g-lg);height:4px;border-radius:2px;
+  background:var(--root);overflow:hidden
+}
+.st .track i{
+  display:block;height:100%;border-radius:2px;background:var(--ac);
+  width:0;transition:width .7s cubic-bezier(.22,1,.36,1)
+}
+.st .pc{
+  width:40px;flex:none;text-align:right;font-size:var(--f-xs);
+  font-family:var(--mono);font-weight:700;color:var(--t1)
+}
+.st.warn .track i{background:var(--wr)} .st.warn .pc{color:var(--wr)}
+.st.dgr .track i{background:var(--dg)} .st.dgr .pc{color:var(--dg)}
+.st-extra{padding:2px 0 var(--g-xs);font-size:var(--f-2xs);color:var(--t2);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* ── 网络：Sparkline(widgets.slint:375) 扩为双序列 ───────────────────── */
+.seg-mini{display:flex;background:var(--root);border-radius:var(--r-sm);padding:1px;gap:1px;flex:none}
+.seg-mini button{
+  border:0;background:transparent;color:var(--t2);font-size:var(--f-2xs);
+  font-family:inherit;padding:1px 7px;border-radius:3px;cursor:pointer;
+  transition:background .12s,color .12s
+}
+.seg-mini button.on{background:var(--palt);color:var(--t1);font-weight:700}
+.net{padding:0 var(--g-sm)}
+.net-chart{width:100%;height:62px;display:block;border-radius:var(--r-sm)}
+.net-legend{display:flex;align-items:center;gap:var(--g-xs);margin-top:var(--g-xs);font-size:var(--f-2xs);color:var(--t2);min-width:0}
+.net-legend .sw{width:7px;height:7px;border-radius:2px;flex:none}
+.net-legend .vv{font-family:var(--mono);color:var(--t1);font-weight:700}
+.net-legend .if{
+  margin-left:auto;flex:none;display:flex;align-items:center;gap:3px;
+  color:var(--t2);border-radius:var(--r-sm);padding:1px 5px;cursor:pointer;
+  transition:background .12s,color .12s
+}
+.net-legend .if:hover{background:var(--hover);color:var(--t1)}
+.net-total{
+  margin-top:var(--g-xs);padding-top:var(--g-xs);border-top:1px solid var(--line);
+  font-size:var(--f-2xs);color:var(--t2);font-family:var(--mono);white-space:nowrap
+}
+
+/* ── 磁盘：DiskBlock(sidebar.slint:384) + DiskInfo{path,detail,percent} ── */
+.disks{padding:0 var(--g-sm)}
+.disk{padding:var(--g-xs) 0}
+.disk-r1{display:flex;align-items:baseline;gap:var(--g-sm);min-width:0}
+.disk-r1 .pth{font-family:var(--mono);font-size:var(--f-xs);font-weight:700;color:var(--t1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.disk-r1 .dt{font-size:var(--f-2xs);color:var(--t2);font-family:var(--mono);white-space:nowrap}
+.disk-r1 .pc{margin-left:auto;flex:none;font-size:var(--f-xs);font-family:var(--mono);font-weight:700;color:var(--t1)}
+.disk .track{height:3px;border-radius:2px;background:var(--root);overflow:hidden;margin-top:5px}
+.disk .track i{display:block;height:100%;border-radius:2px;background:var(--ac);width:0;transition:width .7s cubic-bezier(.22,1,.36,1)}
+.disk.warn .track i{background:var(--wr)} .disk.warn .pc{color:var(--wr)}
+.disk.dgr .track i{background:var(--dg)} .disk.dgr .pc{color:var(--dg)}
+
+/* ── 快捷命令 ────────────────────────────────────────────────────────── */
+.q{padding:0 var(--g-sm) var(--g-sm)}
+.q-group + .q-group{margin-top:var(--g-xs)}
+.q-head{
+  display:flex;align-items:center;gap:var(--g-xs);height:26px;  /* QuickDockPanel:158 */
+  border-radius:var(--r-sm);cursor:pointer;padding:0 var(--g-xs);margin:0 calc(var(--g-xs) * -1)
+}
+.q-head:hover{background:var(--hover)}
+.q-head .chev{flex:none;color:var(--t2);display:grid;place-items:center;transition:transform .16s ease}
+.q-group.col .q-head .chev{transform:rotate(-90deg)}
+.q-head .nm{font-size:var(--f-xs);font-weight:700;color:var(--t2)}
+.q-head .n{font-size:var(--f-2xs);color:var(--t2);font-family:var(--mono)}
+.q-head .ops{margin-left:auto;display:none;gap:2px}
+.q-head:hover .ops{display:flex}
+.q-items{display:flex;flex-direction:column;gap:1px}
+.q-group.col .q-items{display:none}
+.qitem{
+  position:relative;display:flex;flex-direction:column;gap:1px;
+  padding:var(--g-xs) var(--g-sm);border-radius:var(--r-sm);cursor:pointer;min-width:0;
+  transition:background .12s
+}
+.qitem:hover{background:var(--hover)}
+.qitem:active{transform:translateY(1px)}
+.qitem .nm{font-size:var(--f-sm);color:var(--t1);display:flex;align-items:center;gap:var(--g-xs);min-width:0}
+.qitem .nm .txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qitem .tag{
+  flex:none;font-size:var(--f-2xs);font-weight:700;color:var(--ok);
+  background:color-mix(in srgb,var(--ok) 14%,transparent);
+  border-radius:var(--r-sm);padding:0 4px;line-height:14px
+}
+.qitem .cmd{
+  font-family:var(--mono);font-size:var(--f-xs);color:var(--t2);
+  white-space:normal;overflow-wrap:anywhere;line-height:1.4
+}
+/* 命令正文换行完整展示：真实 QuickDockPanel:199 是 elide + ui-font-family，
+   长路径会被截断。本稿改为 mono + 换行 —— 需同步改这两行。 */
+.qitem .ops{
+  position:absolute;right:var(--g-sm);top:50%;transform:translateY(-50%);
+  display:none;gap:2px;background:var(--panel);
+  border:1px solid var(--line);border-radius:var(--r-sm);padding:1px;
+  box-shadow:0 2px 8px rgba(0,0,0,.18)
+}
+.qitem:hover .ops{display:flex}
+.qitem .ops span{width:20px;height:20px;display:grid;place-items:center;border-radius:3px;color:var(--t2);cursor:pointer}
+.qitem .ops span:hover{background:var(--hover);color:var(--t1)}
+.qitem .ops span.send{color:var(--ac)}
+
+.q-empty{
+  margin:var(--g-sm);padding:var(--g-lg) var(--g-md);
+  border:1px dashed var(--lstr);border-radius:var(--r-md);
+  display:flex;flex-direction:column;align-items:center;gap:var(--g-xs);text-align:center
+}
+.q-empty .ic{color:var(--t3)}
+.q-empty .a{font-size:var(--f-sm);color:var(--t2)}
+.q-empty .b{font-size:var(--f-2xs);color:var(--t2);line-height:1.5}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ⑤ 命令条 —— 原 TerminalView 内 cmd-bar(terminal_view.slint:1285) 迁入
+   ════════════════════════════════════════════════════════════════════════ */
+.dock-cmd{
+  flex:none;border-top:1px solid var(--line);background:var(--panel);
+  padding:var(--g-sm);display:flex;flex-direction:column;gap:var(--g-xs);position:relative
+}
+.cmd-row{display:flex;align-items:center;gap:var(--g-xs)}
+.cmd-box{
+  flex:1;min-width:0;display:flex;align-items:center;
+  background:var(--field);border:1px solid transparent;border-radius:var(--r-sm);
+  height:26px;transition:border-color .14s,box-shadow .14s
+}
+.cmd-box:focus-within{border-color:var(--ac);box-shadow:0 0 0 2px var(--chip)}
+.cmd-box .dollar{
+  flex:none;width:20px;text-align:center;font-family:var(--mono);
+  font-size:var(--f-sm);font-weight:700;color:var(--ac)
+}
+.cmd-box input{
+  flex:1;min-width:0;height:100%;border:0;outline:0;background:transparent;
+  color:var(--t1);font-family:var(--mono);font-size:var(--f-xs);padding:0 var(--g-xs) 0 0
+}
+.cmd-box input::placeholder{color:var(--t2);font-family:var(--ui)}
+.cmd-ico{
+  flex:none;width:26px;height:26px;border-radius:var(--r-sm);display:grid;place-items:center;
+  color:var(--t2);background:var(--palt);cursor:pointer;transition:background .12s,color .12s
+}
+.cmd-ico:hover{background:var(--hov);color:var(--t1)}
+.cmd-send{
+  flex:none;height:26px;padding:0 var(--g-md);border-radius:var(--r-sm);border:0;cursor:pointer;
+  background:var(--ac);color:#fff;font-size:var(--f-xs);font-family:inherit;font-weight:700;
+  transition:filter .12s
+}
+.cmd-send:hover{filter:brightness(1.1)}
+.cmd-send:active{transform:translateY(1px)}
+
+.cmd-tgt{display:flex;align-items:center;gap:var(--g-xs)}
+.ch-target{
+  flex:1;min-width:0;display:flex;align-items:center;gap:var(--g-xs);
+  height:22px;padding:0 var(--g-sm);cursor:pointer;
+  background:var(--field);border:1px solid transparent;border-radius:var(--r-sm);
+  color:var(--t2);font-size:var(--f-2xs);transition:border-color .14s,background .14s
+}
+.ch-target:hover{background:var(--hov);color:var(--t1)}
+.ch-target .lead{flex:none;color:var(--t2)}
+.ch-slots{display:flex;align-items:center;gap:3px;min-width:0;overflow:hidden}
+.ch-chip{
+  flex:none;min-width:17px;height:16px;padding:0 4px;border-radius:var(--r-sm);
+  display:grid;place-items:center;font-size:var(--f-2xs);font-weight:700;
+  font-family:var(--mono);color:var(--t2);background:var(--palt)
+}
+.ch-target.multi{background:var(--accent-soft);border-color:var(--ac)}
+.ch-target.multi .lead{color:var(--t1);font-weight:700}
+.mgr{flex:none;font-size:var(--f-2xs);color:var(--ac);cursor:pointer;padding:1px 5px;border-radius:var(--r-sm);white-space:nowrap}
+.mgr:hover{background:var(--hover)}
+
+/* ── 浮层 ─────────────────────────────────────────────────────────────── */
+.pop{
+  position:absolute;left:var(--g-sm);right:var(--g-sm);bottom:calc(100% - 1px);z-index:40;
+  background:var(--panel);border:1px solid var(--lstr);border-radius:var(--r-md);
+  box-shadow:0 10px 30px rgba(0,0,0,.35);padding:var(--g-xs);display:none
+}
+.pop.show{display:block}
+.pop .hint{
+  font-size:var(--f-2xs);color:var(--t2);padding:var(--g-xs) var(--g-sm) var(--g-xs);
+  display:flex;align-items:center;gap:var(--g-xs)
+}
+.pop .hint .sp{flex:1}
+.pop kbd{
+  font-size:var(--f-2xs);color:var(--t2);border:1px solid var(--line);
+  border-radius:3px;padding:0 4px;line-height:14px;font-family:var(--mono)
+}
+.pop .pi{
+  border-radius:var(--r-sm);padding:5px var(--g-sm);cursor:pointer;
+  display:flex;align-items:center;gap:var(--g-sm)
+}
+.pop .pi:hover,.pop .pi.sel{background:var(--hover)}
+.pop .pi .n{font-size:var(--f-xs);color:var(--t1);white-space:nowrap;flex:none}
+.pop .pi .c{
+  flex:1;min-width:0;font-family:var(--mono);font-size:var(--f-2xs);color:var(--t2);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;direction:rtl
+}
+.pop .pi .go{font-size:var(--f-2xs);color:var(--ac);font-weight:700;flex:none}
+.pop .pop-sep{height:1px;background:var(--line);margin:var(--g-xs) 2px}
+.pop .opt{display:flex;align-items:center;gap:var(--g-sm);padding:5px var(--g-sm);border-radius:var(--r-sm);cursor:pointer}
+.pop .opt:hover{background:var(--hover)}
+.pop .opt.on{background:var(--accent-soft)}
+.pop .box{
+  flex:none;width:14px;height:14px;border-radius:3px;border:1px solid var(--lstr);
+  display:grid;place-items:center;color:transparent;background:var(--field)
+}
+.pop .opt.on .box{background:var(--ac);border-color:var(--ac);color:#fff}
+.pop .lt{
+  flex:none;width:17px;height:16px;border-radius:var(--r-sm);display:grid;place-items:center;
+  font-size:var(--f-2xs);font-weight:700;font-family:var(--mono);color:#fff
+}
+.pop .nm{font-size:var(--f-xs);color:var(--t1);flex:none}
+.pop .n{font-size:var(--f-2xs);color:var(--t2);font-family:var(--mono);flex:none}
+.pop .st{margin-left:auto;font-size:var(--f-2xs);color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pop .acts{display:flex;gap:var(--g-xs);padding:0 var(--g-sm) var(--g-xs)}
+.pop .acts a{font-size:var(--f-2xs);color:var(--ac);cursor:pointer;text-decoration:none}
+.pop .acts a:hover{text-decoration:underline}
+.pop .acts .sp{flex:1}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ⑥ 收起态：ToolStrip(widgets.slint:404) 36px + DockExpandButton(:486)
+   ════════════════════════════════════════════════════════════════════════ */
+.rail{
+  width:36px;flex:none;background:var(--root);
+  display:flex;flex-direction:column;align-items:center;gap:var(--g-xs);padding:var(--g-md) 0
+}
+.rail .rbtn{
+  width:28px;height:28px;border-radius:var(--r-sm);display:grid;place-items:center;
+  color:var(--t2);cursor:pointer;transition:background .12s,color .12s
+}
+.rail .rbtn:hover{background:var(--hov);color:var(--t1)}
+.rail .rbtn.on{background:var(--palt);color:var(--ac)}
+.rail .sp{flex:1}
+.rail .exp{
+  width:24px;height:22px;border-radius:var(--r-sm);display:grid;place-items:center;
+  color:var(--t2);cursor:pointer;background:var(--palt)
+}
+.rail .exp:hover{background:var(--hov);color:var(--t1)}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ⑦ 标注 / 状态小稿 / 表格
+   ════════════════════════════════════════════════════════════════════════ */
+.mark{
+  position:absolute;z-index:30;width:15px;height:15px;border-radius:50%;
+  background:#ff8a3d;color:#fff;font-size:9.5px;font-weight:700;
+  display:grid;place-items:center;box-shadow:0 0 0 2px rgba(255,138,61,.28);pointer-events:none
+}
+.legend{display:grid;grid-template-columns:1fr 1fr;gap:11px 26px;max-width:1280px;margin:16px auto 0}
+.lg{display:flex;gap:9px;font-size:12.5px;color:#9aa0b0;line-height:1.55}
+.lg .no{
+  flex:none;width:16px;height:16px;border-radius:50%;background:rgba(255,138,61,.15);
+  border:1px solid rgba(255,138,61,.5);color:#ffab77;font-size:10px;font-weight:700;
+  display:grid;place-items:center;margin-top:2px
+}
+.lg b{color:#dfe3ee;font-weight:600}
+.lg code{font-family:var(--mono);font-size:11.5px;background:#1c1e25;padding:1px 5px;border-radius:3px;color:#b9c0d0}
+.lg .new{font-size:10px;color:#4ec9b0;border:1px solid rgba(78,201,176,.4);border-radius:3px;padding:0 4px;margin-left:4px;vertical-align:1px}
+.lg .chg{font-size:10px;color:#4ea6ff;border:1px solid rgba(78,166,255,.4);border-radius:3px;padding:0 4px;margin-left:4px;vertical-align:1px}
+
+.row3{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap}
+.mini{background:#171920;border:1px solid #2b2e37;border-radius:var(--r-lg);padding:16px;flex:none}
+.mini .cap{font-size:11.5px;color:#9aa0b0;text-align:center;margin-top:11px;max-width:320px;line-height:1.5}
+.mini-scene{background:var(--root);border-radius:var(--r-md);border:1px solid var(--line);display:flex;overflow:hidden}
+
+.toast{
+  position:absolute;right:284px;bottom:var(--g-lg);z-index:60;pointer-events:none;
+  background:var(--palt);color:var(--t1);border:1px solid var(--lstr);border-radius:var(--r-md);
+  box-shadow:0 8px 26px rgba(0,0,0,.4);padding:7px var(--g-md);font-size:var(--f-sm);
+  display:flex;align-items:center;gap:var(--g-sm);
+  opacity:0;transform:translateY(6px);transition:opacity .2s ease,transform .2s ease
+}
+.toast.show{opacity:1;transform:translateY(0)}
+.toast .tick{color:var(--ok);font-weight:700}
+
+table.spec{width:100%;border-collapse:collapse;font-size:12.5px;color:#9aa0b0}
+table.spec th{text-align:left;font-weight:600;color:#dfe3ee;padding:8px 11px;border-bottom:1px solid #2b2e37;font-size:12px;white-space:nowrap}
+table.spec td{padding:8px 11px;border-bottom:1px solid #1d1f26;vertical-align:top;line-height:1.55}
+table.spec tr:hover td{background:#14161b}
+table.spec td:first-child{color:#dfe3ee;white-space:nowrap;font-weight:600}
+table.spec code{font-family:var(--mono);font-size:11.5px;color:#7fb4e8}
+table.spec .sub{display:block;color:#6f7484;font-size:11.5px;font-weight:400;white-space:normal;margin-top:2px}
+.pill{font-size:10px;border-radius:3px;padding:0 5px;display:inline-block;vertical-align:1px;font-weight:700}
+.pill.keep{color:#4ec9b0;border:1px solid rgba(78,201,176,.4)}
+.pill.new{color:#e2a84a;border:1px solid rgba(226,168,74,.45)}
+.pill.chg{color:#4ea6ff;border:1px solid rgba(78,166,255,.45)}
+.pill.del{color:#e25c5c;border:1px solid rgba(226,92,92,.45)}
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <h1>MTerm 右侧工作台 · 视觉重构 v2<small>对齐真实代码框架 · 2026-10-09 · 交互可点</small></h1>
+  <div class="theme-switch">
+    <button class="on" id="th-light">石墨·亮</button>
+    <button id="th-dark">石墨·暗</button>
+  </div>
+</div>
+
+<div class="chips">
+  <span class="chip fix">配色<b>换成 palettes.rs 真实值</b>（中性灰石墨 + #0090FF）<span class="new">v1 用的是废弃的蓝调旧默认</span></span>
+  <span class="chip fix">字号/圆角/间距<b>全部回到 theme.slint 档位</b>（10·11·13·15 / 4·6·10 / 4·8·12）</span>
+  <span class="chip fix">面板<b>改回 12px 内缩卡片</b>，与 Sidebar / 欢迎侧栏同一种边框语法</span>
+  <span class="chip fix">三级层次<b>改由字号字重承担</b> —— graphite 的 t2 === t3，颜色分层无效</span>
+  <span class="chip fix">宽度 <b>260px</b>（= <code>quick-panel-width</code>），收起态 <b>36px</b>（= ToolStrip）</span>
+  <span class="chip">双 Tab：<b>监控 / 快捷</b>，共用一套层级语言</span>
+  <span class="chip">底部命令条<b>跨 Tab 常驻</b>，发送目标 = <b>频道多选</b></span>
+  <span class="chip">全部颜色走 <b>Theme 语义槽</b>，36 套主题自动适配</span>
+</div>
+
+<div class="wrap">
+
+  <!-- ═══════════════ A · 主窗口 ═══════════════ -->
+  <div>
+    <div class="sec-title">
+      <span class="no">A</span>整窗效果
+      <small>点分段 Tab / 标题栏开关 / 命令条 / 磁盘行试试 —— 小稿区可切主题对照</small>
+    </div>
+
+    <div class="win" id="win">
+      <div class="titlebar">
+        <div class="logo"></div>
+        <div class="t">MTerm</div>
+        <div class="win-ctrl">
+          <span class="wb panel-toggle on" id="panel-toggle" title="收起右侧面板">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/><path d="m8 9 3 3-3 3"/>
+            </svg>
+          </span>
+          <span class="wb" title="最小化"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></span>
+          <span class="wb" title="最大化"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/></svg></span>
+          <span class="wb close" title="关闭"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
+        </div>
+      </div>
+
+      <div class="tabbar">
+        <div class="tab on"><span class="ico" style="background:var(--ac)"></span>web-01<span class="x">✕</span></div>
+        <div class="tab"><span class="ico"></span>local<span class="x">✕</span></div>
+        <div class="tab"><span class="ico"></span>build-02<span class="x">✕</span></div>
+        <div class="plus">＋</div><div class="free"></div>
+      </div>
+
+      <div class="win-body">
+        <div class="term" id="term"><div><span class="d">$</span> ssh root@192.168.1.108</div>
+<div><span class="p">root@web-01:~#</span> uptime</div>
+<div class="d">&nbsp; 14:32:05 up 16 days,  3:12,  2 users,  load average: 0.14, 0.09, 0.05</div>
+<div><span class="p">root@web-01:~#</span> systemctl status nginx</div>
+<div>● nginx.service - A high performance web server</div>
+<div class="d">&nbsp;&nbsp; Active: active (running) since Tue 2026-10-07 09:12:33 CST</div>
+<div><span class="p">root@web-01:~#</span> <span class="c"></span></div></div>
+
+        <!-- ───── 右侧工作台 ───── -->
+        <div class="dock" id="dock">
+          <div class="dock-card">
+            <div class="dock-head" title="拖拽可改停靠边">
+              <span class="grip"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><circle cx="6" cy="4" r="1.2"/><circle cx="10" cy="4" r="1.2"/><circle cx="6" cy="8" r="1.2"/><circle cx="10" cy="8" r="1.2"/><circle cx="6" cy="12" r="1.2"/><circle cx="10" cy="12" r="1.2"/></svg></span>
+              <div class="seg" id="seg">
+                <button class="on" data-tab="mon">
+                  <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="12" height="12" rx="2"/><path d="M2 6.5h12M6 6.5V14"/></svg>
+                  监控
+                </button>
+                <button data-tab="quick">
+                  <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2.5 4 9h4l-1 4.5L15 7h-4l2-4.5z"/></svg>
+                  快捷 <span class="cnt">9</span>
+                </button>
+              </div>
+              <span class="sp"></span>
+              <span class="ico-btn" title="面板选项：宽度 / 停靠边" onclick="toast('面板选项：宽度 · 停靠边 · 恢复默认')">
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.35"/><circle cx="8" cy="8" r="1.35"/><circle cx="13" cy="8" r="1.35"/></svg>
+              </span>
+            </div>
+
+            <!-- ══ Tab 1 · 监控 ══ -->
+            <div class="pane" id="pane-mon">
+              <!-- ① 连接状态条：恒驻，不随内容滚动 -->
+              <div class="hero" style="position:relative">
+                <div class="mark" style="left:-6px;top:2px">1</div>
+                <div class="hero-r1">
+                  <span class="dot"></span>
+                  <span class="host">root@192.168.1.108</span>
+                  <span class="proto">SSH</span>
+                </div>
+                <div class="hero-r2">
+                  <span>已连接</span><span class="v" id="conn-dur">02:34:17</span>
+                  <span class="sep">·</span>
+                  <span>延迟</span><span class="v">12ms</span>
+                  <span class="cp" id="copy-host">
+                    <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="5" width="9" height="9" rx="2"/><path d="M11 5V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h1"/></svg>
+                    <span>复制</span>
+                  </span>
+                </div>
+              </div>
+
+              <!-- ② 资源 -->
+              <div class="sec" style="position:relative">
+                <div class="mark" style="left:-6px;top:11px">2</div>
+                <div class="sec-h">
+                  <span class="t">资源占用</span><span class="rule"></span>
+                  <span class="ico-btn sm" title="系统信息窗口（现有入口）" onclick="toast('打开系统信息窗口')">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.4v3.6M8 5.1v.2"/></svg>
+                  </span>
+                </div>
+                <div class="stats" id="stats">
+                  <div class="st" data-pc="23">
+                    <span class="lb">CPU</span>
+                    <span class="track"><i></i></span><span class="pc">23%</span>
+                  </div>
+                  <div class="st" data-pc="46">
+                    <span class="lb">内存</span>
+                    <span class="track"><i style="background:var(--ok)"></i></span><span class="pc">46%</span>
+                  </div>
+                  <div class="st" data-pc="0">
+                    <span class="lb">交换</span>
+                    <span class="track"><i style="background:var(--wr)"></i></span><span class="pc">0%</span>
+                  </div>
+                </div>
+                <div class="st-extra">内存 14.5 / 31.3 G · 交换 0 / 10.0 G</div>
+              </div>
+
+              <div class="hair"></div>
+
+              <!-- ③ 网络 -->
+              <div class="sec" style="position:relative">
+                <div class="mark" style="left:-6px;top:11px">3</div>
+                <div class="sec-h">
+                  <span class="t">网络吞吐</span><span class="rule"></span>
+                  <div class="seg-mini" id="net-seg">
+                    <button class="on" data-src="sess">会话</button>
+                    <button data-src="local">本机</button>
+                  </div>
+                </div>
+                <div class="net">
+                  <svg class="net-chart" viewBox="0 0 224 62" preserveAspectRatio="none">
+                    <defs>
+                      <linearGradient id="g-rx" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0" style="stop-color:var(--ac);stop-opacity:.26"/>
+                        <stop offset="1" style="stop-color:var(--ac);stop-opacity:0"/>
+                      </linearGradient>
+                      <linearGradient id="g-tx" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0" style="stop-color:var(--ok);stop-opacity:.20"/>
+                        <stop offset="1" style="stop-color:var(--ok);stop-opacity:0"/>
+                      </linearGradient>
+                    </defs>
+                    <path d="M0 15.5H224M0 31H224M0 46.5H224" stroke="var(--line)" stroke-width=".6" stroke-dasharray="2 4" opacity=".6" fill="none"/>
+                    <path id="a-rx" fill="url(#g-rx)"/>
+                    <path id="l-rx" fill="none" style="stroke:var(--ac)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path id="a-tx" fill="url(#g-tx)"/>
+                    <path id="l-tx" fill="none" style="stroke:var(--ok)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  <div class="net-legend">
+                    <span class="sw" style="background:var(--ac)"></span><span class="vv" id="rx-v">1.2 MB/s</span>
+                    <span class="sw" style="background:var(--ok);margin-left:2px"></span><span class="vv" id="tx-v">128.4 KB/s</span>
+                    <span class="if" onclick="toast('选择网卡：eth0 / eth1 / lo…')">eth0
+                      <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 6l4 4 4-4"/></svg>
+                    </span>
+                  </div>
+                  <div class="net-total">本次连接  ↓ 2.1 GB · ↑ 86 MB</div>
+                </div>
+              </div>
+
+              <div class="hair"></div>
+
+              <!-- ④ 磁盘 -->
+              <div class="sec" style="position:relative;padding-bottom:var(--g-sm)">
+                <div class="mark" style="left:-6px;top:11px">4</div>
+                <div class="sec-h">
+                  <span class="t">磁盘</span><span class="rule"></span><span class="hint">已用 / 总量</span>
+                </div>
+                <div class="disks" id="disks">
+                  <div class="disk" data-pc="44">
+                    <div class="disk-r1"><span class="pth">/</span><span class="dt">88G / 198G</span><span class="pc">44%</span></div>
+                    <div class="track"><i></i></div>
+                  </div>
+                  <div class="disk" data-pc="61">
+                    <div class="disk-r1"><span class="pth">/data</span><span class="dt">1.4T / 3.6T</span><span class="pc">61%</span></div>
+                    <div class="track"><i></i></div>
+                  </div>
+                  <div class="disk dgr" data-pc="92">
+                    <div class="disk-r1"><span class="pth">/backup</span><span class="dt">92G / 100G</span><span class="pc">92%</span></div>
+                    <div class="track"><i></i></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ══ Tab 2 · 快捷命令 ══ -->
+            <div class="pane" id="pane-quick" style="display:none">
+              <div class="sec" style="padding-bottom:0;position:relative">
+                <div class="mark" style="left:-6px;top:11px">5</div>
+                <div class="sec-h">
+                  <span class="t">快捷命令</span><span class="rule"></span>
+                  <span class="ico-btn sm" title="新建快捷命令" onclick="toast('打开「新建命令」对话框')">
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
+                  </span>
+                </div>
+              </div>
+
+              <div class="q" id="q-list">
+                <div class="q-group">
+                  <div class="q-head">
+                    <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg></span>
+                    <span class="nm">部署</span><span class="n">3</span>
+                    <span class="ops">
+                      <span class="ico-btn sm" onclick="event.stopPropagation();toast('新建命令 → 部署')"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg></span>
+                      <span class="ico-btn sm" onclick="event.stopPropagation();toast('组菜单：重命名 / 删除')"><svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></span>
+                    </span>
+                  </div>
+                  <div class="q-items">
+                    <div class="qitem" onclick="send('systemctl restart nginx')">
+                      <div class="nm"><span class="txt">重启 Nginx</span><span class="tag">回车</span></div>
+                      <div class="cmd">systemctl restart nginx</div>
+                      <div class="ops">
+                        <span class="send" title="发送"><svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.8v10.4a.5.5 0 0 0 .76.43l8.2-5.2a.5.5 0 0 0 0-.86l-8.2-5.2A.5.5 0 0 0 4 2.8z"/></svg></span>
+                        <span title="编辑 / 复制 / 移动组 / 删除" onclick="event.stopPropagation();toast('命令菜单：编辑 / 复制 / 移动到组 / 删除')"><svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></span>
+                      </div>
+                    </div>
+                    <div class="qitem" onclick="send('nginx -t')">
+                      <div class="nm"><span class="txt">检查配置</span><span class="tag">回车</span></div>
+                      <div class="cmd">nginx -t</div>
+                      <div class="ops">
+                        <span class="send"><svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.8v10.4a.5.5 0 0 0 .76.43l8.2-5.2a.5.5 0 0 0 0-.86l-8.2-5.2A.5.5 0 0 0 4 2.8z"/></svg></span>
+                        <span onclick="event.stopPropagation();toast('命令菜单')"><svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></span>
+                      </div>
+                    </div>
+                    <div class="qitem" onclick="send('tail -f /var/log/nginx/error.log')">
+                      <div class="nm"><span class="txt">跟踪错误日志</span></div>
+                      <div class="cmd">tail -f /var/log/nginx/error.log</div>
+                      <div class="ops">
+                        <span class="send"><svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.8v10.4a.5.5 0 0 0 .76.43l8.2-5.2a.5.5 0 0 0 0-.86l-8.2-5.2A.5.5 0 0 0 4 2.8z"/></svg></span>
+                        <span onclick="event.stopPropagation();toast('命令菜单')"><svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="q-group">
+                  <div class="q-head">
+                    <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg></span>
+                    <span class="nm">运维</span><span class="n">4</span>
+                    <span class="ops">
+                      <span class="ico-btn sm"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg></span>
+                      <span class="ico-btn sm"><svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></span>
+                    </span>
+                  </div>
+                  <div class="q-items">
+                    <div class="qitem" onclick="send('df -h')">
+                      <div class="nm"><span class="txt">磁盘占用</span></div>
+                      <div class="cmd">df -h</div>
+                      <div class="ops">
+                        <span class="send"><svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.8v10.4a.5.5 0 0 0 .76.43l8.2-5.2a.5.5 0 0 0 0-.86l-8.2-5.2A.5.5 0 0 0 4 2.8z"/></svg></span>
+                        <span><svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></span>
+                      </div>
+                    </div>
+                    <div class="qitem" onclick="send('free -h')">
+                      <div class="nm"><span class="txt">内存占用</span></div>
+                      <div class="cmd">free -h</div>
+                      <div class="ops">
+                        <span class="send"><svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.8v10.4a.5.5 0 0 0 .76.43l8.2-5.2a.5.5 0 0 0 0-.86l-8.2-5.2A.5.5 0 0 0 4 2.8z"/></svg></span>
+                        <span><svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></span>
+                      </div>
+                    </div>
+                    <div class="qitem" onclick="send('docker ps')">
+                      <div class="nm"><span class="txt">容器列表</span></div>
+                      <div class="cmd">docker ps</div>
+                      <div class="ops">
+                        <span class="send"><svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.8v10.4a.5.5 0 0 0 .76.43l8.2-5.2a.5.5 0 0 0 0-.86l-8.2-5.2A.5.5 0 0 0 4 2.8z"/></svg></span>
+                        <span><svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></span>
+                      </div>
+                    </div>
+                    <div class="qitem" onclick="send('htop')">
+                      <div class="nm"><span class="txt">进程监控</span></div>
+                      <div class="cmd">htop</div>
+                      <div class="ops">
+                        <span class="send"><svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.8v10.4a.5.5 0 0 0 .76.43l8.2-5.2a.5.5 0 0 0 0-.86l-8.2-5.2A.5.5 0 0 0 4 2.8z"/></svg></span>
+                        <span><svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="q-group col">
+                  <div class="q-head">
+                    <span class="chev"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg></span>
+                    <span class="nm">数据库</span><span class="n">2</span>
+                    <span class="ops">
+                      <span class="ico-btn sm"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg></span>
+                      <span class="ico-btn sm"><svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="13" cy="8" r="1.3"/></svg></span>
+                    </span>
+                  </div>
+                  <div class="q-items">
+                    <div class="qitem" onclick="send('mysql -u root -p')">
+                      <div class="nm"><span class="txt">MySQL 登录</span></div><div class="cmd">mysql -u root -p</div>
+                    </div>
+                    <div class="qitem" onclick="send('redis-cli -a ****')">
+                      <div class="nm"><span class="txt">Redis CLI</span></div><div class="cmd">redis-cli -a ****</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="q-empty" id="q-none" style="display:none">
+                <span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg></span>
+                <span class="a">还没有快捷命令</span>
+                <span class="b">把常用命令存成一条，点一下就能发到当前会话</span>
+              </div>
+            </div>
+
+            <!-- ══ 命令条：跨 Tab 常驻 ══ -->
+            <div class="dock-cmd" style="position:relative">
+              <div class="mark" style="left:-4px;top:-6px">6</div>
+              <div class="pop" id="cmd-pop"></div>
+
+              <div class="cmd-row">
+                <div class="cmd-box">
+                  <span class="dollar">$</span>
+                  <input id="cmd-input" placeholder="输入命令，回车发送" spellcheck="false" />
+                </div>
+                <span class="ico-btn" title="新建快捷命令" onclick="toast('打开「新建命令」对话框')">
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
+                </span>
+                <span class="ico-btn" title="历史记录（全局共享，跨会话）" onclick="toast('历史下拉：最近命令，全局共享')">
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 8a5.4 5.4 0 1 0 5.4-5.4A5.3 5.3 0 0 0 4 4.4L2.6 6"/><path d="M2.6 2.6V6H6"/><path d="M8 5.2V8l2.4 1.4"/></svg>
+                </span>
+                <button class="cmd-send" onclick="sendInput()">发送</button>
+              </div>
+
+              <div class="cmd-tgt">
+                <div class="mark" style="left:-4px;top:-4px">7</div>
+                <span class="ch-target" id="ch-target">
+                  <span class="lead">发送到</span>
+                  <span class="ch-slots" id="ch-slots"></span>
+                  <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" style="flex:none"><path d="M4 6l4 4 4-4"/></svg>
+                </span>
+                <span class="mgr" onclick="toast('打开快捷命令管理对话框（现有）')">管理…</span>
+                <div class="pop" id="ch-pop">
+                  <div class="hint"><span>快捷通道</span><span class="sp"></span><kbd>多选</kbd></div>
+                  <div id="ch-list"></div>
+                  <div class="pop-sep"></div>
+                  <div class="opt" id="ch-loose" onclick="toast('未加入频道的会话：3 个')">
+                    <span class="box"></span>
+                    <span class="nm" style="color:var(--t2)">未加入频道的会话</span>
+                    <span class="n">3 个</span>
+                  </div>
+                  <div class="acts">
+                    <a onclick="chPreset('cur');return false">仅当前</a>
+                    <span class="sp"></span>
+                    <a onclick="chPreset('all');return false">全部频道</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 收起态：36px ToolStrip + 24×22 DockExpandButton -->
+        <div class="rail" id="rail" style="display:none">
+          <div class="rbtn on" id="rail-mon" title="展开 · 监控" onclick="railGo('mon')">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="12" height="12" rx="2"/><path d="M2 6.5h12M6 6.5V14"/></svg>
+          </div>
+          <div class="rbtn" id="rail-quick" title="展开 · 快捷命令" onclick="railGo('quick')">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2.5 4 9h4l-1 4.5L15 7h-4l2-4.5z"/></svg>
+          </div>
+          <div class="sp"></div>
+          <div class="exp" title="展开面板" onclick="setDock(true)">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3l5 5-5 5"/></svg>
+          </div>
+        </div>
+      </div>
+
+      <div class="toast" id="toast-el"><span class="tick">✓</span><span id="toast-msg"></span></div>
+    </div>
+
+    <!-- 标注 -->
+    <div class="legend">
+      <div class="lg"><span class="no">1</span><div><b>连接状态条</b>：恒驻面板顶部、<b>不随内容滚动</b>。8px 状态点 + <code>user@host</code> + 协议徽章；第二行放连接时长与延迟，host 一键复制（复用 <code>StatusBlock</code> 的 <code>conn-state 0/1/2</code> 与 <code>copy-host</code>）。底色用 <code>accent-soft</code>，<b>是面板里唯一一处彩色面</b>，其余全部中性。</div></div>
+      <div class="lg"><span class="no">2</span><div><b>资源三行</b>：<code>StatRow</code> 重排为「标签 46px 定宽 · 进度条 flex · 百分比 40px 右对齐」，行高 24px。百分比从条内移到条外——条短时数字压在填充上会糊。容量明细压成底部一行 10px，等宽字。<b>≥70% 琥珀 / ≥90% 红</b>，条与数字同步染色。<span class="chg">改动</span></div></div>
+      <div class="lg"><span class="no">3</span><div><b>网络双序列</b>：<code>Sparkline</code> 从单序列扩为 ↓rx / ↑tx 双线同图，<b>Catmull-Rom 平滑</b>替代折线，60 点窗口。顶部分段切换「会话 / 本机」，网卡选择收进图例右侧，累计流量独立成行。</div></div>
+      <div class="lg"><span class="no">4</span><div><b>磁盘</b>：沿用 <code>DiskInfo{path, detail, percent}</code>，路径等宽加粗、明细与百分比右对齐，3px 细条独占下一行。阈值染色与资源条同一套规则。</div></div>
+      <div class="lg"><span class="no">5</span><div><b>快捷命令</b>：组头 26px、行 ≥44px 全部沿用 <code>QuickDockPanel</code> 真实尺寸。命令正文改为<b>等宽 + 换行完整展示</b>（真实代码是 <code>ui-font-family</code> + <code>elide</code>，长路径会被截断）。<span class="chg">改动</span></div></div>
+      <div class="lg"><span class="no">6</span><div><b>命令条</b>：<code>$</code> + 输入 + 新建 + 历史 + 发送，<b>跨 Tab 常驻</b>。输入框底色用 <code>field</code>（不是 <code>bg-root</code>）——输入控件与只读面要分属两套底色，聚焦时 1px accent 描边 + <code>chip</code> 光晕。</div></div>
+      <div class="lg"><span class="no">7</span><div><b>发送目标 = 频道多选</b>：任选单个频道或 A/B/C/D 任意组合，折叠态只显示已选色块，多选时整框转 <code>accent-soft</code> + accent 描边。色值取 <code>palettes.rs</code> 的 <code>channel[]</code>，亮暗各一套。</div></div>
+      <div class="lg"><span class="no">8</span><div><b>层级语言：标题 + 发丝线</b>。分区标题 10px/700/字距 .6px，右侧接一条延伸到底的 1px <code>border-subtle</code>，把散列的数据行收成一块。<b>关键：graphite 的 <code>t2 === t3</code>，第三级层次靠颜色是分不出来的</b>——所以层级只由字号（10 / 11 / 13）+ 字重（400 / 700）承担。</div></div>
+      <div class="lg"><span class="no">9</span><div><b>度量零估值</b>：字号取 <code>fs-2xs/xs/sm/lg</code> = 10/11/13/15，圆角取 <code>radius-sm/md</code> = 4/6，间距取 <code>gap-xs/sm/md</code> = 4/8/12。全部乘 <code>ui-scale</code>，<b>不引入表外中间值</b>（v1 里的 5 / 7 / 10.5 / 11.5 会在缩放下产生半像素发虚）。</div></div>
+      <div class="lg"><span class="no">10</span><div><b>容器形态回到既有约定</b>：外层 <code>bg-root</code> + <b>12px 内缩</b> + <code>bg-panel</code> 卡片 + <code>radius-md</code> + 1px <code>border-subtle</code>，与 <code>sidebar.slint:532-541</code> 的 <code>#panel-gap-symmetry</code> 完全一致。面板宽 <b>260px</b> = <code>quick-panel-width</code>；收起态 <b>36px</b> = <code>ToolStrip</code>。</div></div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ B · 状态小稿 ═══════════════ -->
+  <div>
+    <div class="sec-title"><span class="no">B</span>关键状态 — 标题栏开关 / 收起态 / 频道多选 / 未连接<small>小稿跟随上方主题切换</small></div>
+    <div class="row3">
+
+      <div class="mini">
+        <div class="mini-scene" style="flex-direction:column;width:300px">
+          <div class="titlebar" style="border-radius:var(--r-md) var(--r-md) 0 0">
+            <div class="logo" style="width:13px;height:13px"></div><div class="t">MTerm</div>
+            <div class="win-ctrl">
+              <span class="wb panel-toggle on"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/><path d="m8 9 3 3-3 3"/></svg></span>
+              <span class="wb"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></span>
+              <span class="wb"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/></svg></span>
+              <span class="wb close"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
+            </div>
+          </div>
+          <div style="height:1px;background:var(--line)"></div>
+          <div class="titlebar" style="border-radius:0 0 var(--r-md) var(--r-md);border-bottom:0">
+            <div class="logo" style="width:13px;height:13px"></div><div class="t">MTerm</div>
+            <div class="win-ctrl">
+              <span class="wb panel-toggle"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/><path d="m10 9-3 3 3 3"/></svg></span>
+              <span class="wb"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></span>
+              <span class="wb"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/></svg></span>
+              <span class="wb close"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></span>
+            </div>
+          </div>
+        </div>
+        <div class="cap">标题栏开关：展开态底色常亮 + 箭头朝左；收起态箭头朝右。40px 热区与三枚窗口键等宽</div>
+      </div>
+
+      <div class="mini">
+        <div class="mini-scene" style="width:56px;padding:12px 0">
+          <div class="rail" style="width:36px;padding:0">
+            <div class="rbtn on"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="12" height="12" rx="2"/><path d="M2 6.5h12M6 6.5V14"/></svg></div>
+            <div class="rbtn"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2.5 4 9h4l-1 4.5L15 7h-4l2-4.5z"/></svg></div>
+            <div class="sp"></div>
+            <div class="exp"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3l5 5-5 5"/></svg></div>
+          </div>
+        </div>
+        <div class="cap">收起态 36px 竖条 = <code>ToolStrip</code>；两枚 Tab 入口 + 底部 <code>DockExpandButton</code> 24×22</div>
+      </div>
+
+      <div class="mini">
+        <div class="mini-scene" style="width:280px">
+          <div class="dock" style="width:100%">
+            <div class="dock-card">
+              <div class="hero off" style="margin:var(--g-sm) var(--g-sm) 0">
+                <div class="hero-r1">
+                  <span class="dot"></span>
+                  <span class="host" style="color:var(--t2)">未连接</span>
+                </div>
+                <div class="hero-r2"><span>选择一个会话以查看其主机资源</span></div>
+              </div>
+              <div class="sec">
+                <div class="sec-h"><span class="t">本机资源</span><span class="rule"></span></div>
+                <div class="stats">
+                  <div class="st" data-pc="8"><span class="lb">CPU</span><span class="track"><i></i></span><span class="pc">8%</span></div>
+                  <div class="st" data-pc="61"><span class="lb">内存</span><span class="track"><i style="background:var(--ok)"></i></span><span class="pc">61%</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="cap">未连接态：状态点转灰、资源标题切「本机资源」，数值照常采集（本机 sysinfo 一直有）</div>
+      </div>
+
+      <div class="mini">
+        <div class="mini-scene" style="width:280px;flex-direction:column">
+          <div style="flex:1;min-height:56px;background:var(--panel)"></div>
+          <div style="position:relative">
+            <div class="pop show" style="position:static;box-shadow:0 10px 30px rgba(0,0,0,.35);border-radius:0 0 var(--r-md) var(--r-md);width:auto">
+              <div class="hint"><span>快捷通道</span><span class="sp"></span><kbd>多选</kbd></div>
+              <div class="opt on">
+                <span class="box"><svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.4l3.2 3.2L13 4.8"/></svg></span>
+                <span class="lt" style="background:var(--ch-a)">A</span><span class="nm">发布</span><span class="n">×3</span><span class="st">web-01 · web-02</span>
+              </div>
+              <div class="opt on">
+                <span class="box"><svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.4l3.2 3.2L13 4.8"/></svg></span>
+                <span class="lt" style="background:var(--ch-d)">D</span><span class="nm">值班</span><span class="n">×4</span><span class="st">web-01 · db-01</span>
+              </div>
+              <div class="opt">
+                <span class="box"></span>
+                <span class="lt" style="background:var(--ch-b)">B</span><span class="nm">数据库</span><span class="n">×2</span><span class="st">db-01 · db-02</span>
+              </div>
+              <div class="opt">
+                <span class="box"></span>
+                <span class="lt" style="background:var(--ch-c)">C</span><span class="nm">灰度</span><span class="n">×1</span><span class="st">web-03</span>
+              </div>
+              <div class="pop-sep"></div>
+              <div class="acts"><a>仅当前</a><span class="sp"></span><a>全部频道</a></div>
+            </div>
+            <div class="dock-cmd" style="border-radius:0">
+              <div class="cmd-row">
+                <div class="cmd-box"><span class="dollar">$</span><span style="flex:1;font-size:var(--f-xs);font-family:var(--mono);color:var(--t2)">输入命令，回车发送</span></div>
+                <button class="cmd-send">发送</button>
+              </div>
+              <div class="cmd-tgt">
+                <span class="ch-target multi">
+                  <span class="lead">发送到</span>
+                  <span class="ch-slots">
+                    <span class="ch-chip" style="background:var(--ch-a);color:#fff">A</span>
+                    <span class="ch-chip" style="background:var(--ch-d);color:#fff">D</span>
+                  </span>
+                  <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 6l4 4 4-4"/></svg>
+                </span>
+                <span class="mgr">管理…</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="cap">频道多选：A + D → 向两组成员各发一份（7 个会话），多选时触发框转 <code>accent-soft</code></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ C · 代码锚点 ═══════════════ -->
+  <div>
+    <div class="sec-title"><span class="no">C</span>设计元素 → 真实代码锚点<small>每一处都指到现有文件与标识符；<span class="pill keep">沿用</span> 不改代码 · <span class="pill chg">改动</span> 小改 · <span class="pill new">新增</span> 要写新代码</small></div>
+    <table class="spec">
+      <tr><th style="width:180px">设计元素</th><th>代码锚点（真实标识符）</th><th style="width:300px">改动量与要点</th></tr>
+
+      <tr>
+        <td>面板容器与卡片 <span class="pill keep">沿用</span></td>
+        <td><code>ui/sidebar.slint:446 Sidebar</code> → L532-541 的 12px 内缩 + <code>bg-panel</code> + <code>radius-md</code> + <code>border-subtle</code>（注释即 <code>#panel-gap-symmetry</code>）</td>
+        <td class="sub">零改动。把 <code>QuickDockPanel</code>(terminal_view.slint:95-98) 现有的 <code>border-width: 1px</code> 套上即可对齐。<b>这是 v1 最大的方向性错误</b>：v1 主张三面贴边去圆角，会让同一窗口出现两套面板边框语法。</td>
+      </tr>
+
+      <tr>
+        <td>面板头 34px <span class="pill keep">沿用</span></td>
+        <td><code>QuickDockPanel</code> L102-142（<code>height: 34px</code>、<code>bg-panel-alt</code>、<code>drag-grip</code> 图标）</td>
+        <td class="sub">零改动。把 <code>Text "Quick commands"</code> 换成双 Tab 分段控件即可，34px 高度与拖拽热区保持不变。</td>
+      </tr>
+
+      <tr>
+        <td>分组控件 20px 高 <span class="pill new">新增</span></td>
+        <td>无现成 Tab 停靠件。最接近的先例是 <code>ui/interface_panel.slint:34 NavItem</code> 与 <code>:102 Switch</code></td>
+        <td class="sub">需新建一个 <code>DockTabs</code> 组件。刻意做成 20px 高的紧凑分段，不与 Tab 栏的 26px 混淆。</td>
+      </tr>
+
+      <tr>
+        <td>连接状态条 <span class="pill chg">改动</span></td>
+        <td><code>ui/sidebar.slint:208 StatusBlock</code>：<code>conn-state</code>(0灰/1绿/2黄)、<code>connection-state</code>、<code>conn-host</code>、<code>copy-host</code>、1.4s "Copied" 徽章</td>
+        <td class="sub">复用全部字段与复制逻辑。<b>新增三项采集</b>：连接时长（连接时刻差）、延迟（心跳 RTT）、协议徽章。当前 <code>TabStatus</code> 已有 <code>host/user/state</code>，没有这三项。</td>
+      </tr>
+
+      <tr>
+        <td>资源三行 <span class="pill chg">改动</span></td>
+        <td><code>ui/sidebar.slint:14 StatRow</code>（label 52px / bar min 60 / detail min 64 / h22）· 数据 <code>SystemSnapshot{cpu_percent, mem_percent, swap_percent, mem_used_mib, mem_total_mib, …}</code></td>
+        <td class="sub">纯布局重排，数据零新增。label 46 + bar flex + pct 40；容量明细移到底部一行。阈值染色是 UI 派生（≥70 warning / ≥90 danger）。</td>
+      </tr>
+
+      <tr>
+        <td>网络双序列 <span class="pill chg">改动</span></td>
+        <td><code>ui/sidebar.slint:357 NetBlock</code> + <code>:76 NetGraph</code> + <code>ui/widgets.slint:375 Sparkline</code> · 数据 <code>net_rx_per_sec / net_tx_per_sec / net_hist / selected_iface</code></td>
+        <td class="sub"><code>Sparkline</code> 目前是单序列 Path，需扩为双序列 + 平滑曲线。累计流量需 Rust 侧对采样积分累加（新增字段）。网卡下拉的 <code>combo-clock</code> 失焦机制要一并搬过来。</td>
+      </tr>
+
+      <tr>
+        <td>磁盘 <span class="pill keep">沿用</span></td>
+        <td><code>ui/sidebar.slint:6 DiskInfo{path, detail, percent}</code> + <code>:384 DiskBlock</code> · <code>SystemSnapshot.disks: Vec&lt;(String,u64,u64)&gt;</code></td>
+        <td class="sub">零改动。路径字号 <code>fs-xs</code>→加粗 700，明细 <code>fs-2xs</code>，条高 3px。</td>
+      </tr>
+
+      <tr>
+        <td>快捷命令列表 <span class="pill chg">改动</span></td>
+        <td><code>QuickDockPanel</code> L144-207（组头 26px / 行 <code>max(44px, …)</code>）+ <code>struct QuickCmd{name, command, group, group-header, collapsed, orig-index, send-enter}</code></td>
+        <td class="sub">尺寸全沿用。<b>一处必改</b>：L197-201 命令正文现在是 <code>font-family: Theme.ui-font-family</code> + <code>overflow: elide</code>，<code>tail -f /var/log/nginx/error.log</code> 会被截断。改为等宽 + <code>wrap: word-wrap</code>。</td>
+      </tr>
+
+      <tr>
+        <td>命令条迁入 <span class="pill new">新增</span></td>
+        <td>现居 <code>TerminalView</code> 的 <code>VerticalLayout</code> 内（terminal_view.slint:1285），<b>每会话独立</b>，由 <code>TerminalState.cmd-bar-hidden</code> 控制</td>
+        <td class="sub"><b>本稿最大的架构改动。</b>面板是窗口级单例，cmd-bar 是会话级属性，两者不能同时存在。需先定：命令条跟随活动会话，还是新建 <code>PanelCmdBar</code> 单例并加 <code>focus-clock</code> 处理跨 Tab 焦点抢占。</td>
+      </tr>
+
+      <tr>
+        <td>发送目标多选 <span class="pill new">新增</span></td>
+        <td><code>ConfigFile.channel_members: [Vec&lt;String&gt;; 4]</code>、<code>channel_paused</code> · <code>config.rs:715 channel_members()</code>、<code>:719 set_channel_member()</code>、<code>:726 detach_all_channels()</code> · <code>ChannelBarInfo{letter, color, slot, online, total, paused}</code></td>
+        <td class="sub"><b>边界要写清楚</b>：<code>set_channel_member</code> 是「移动」（调用方先 <code>detach_all_channels</code>），所以<b>一个会话只属于一个槽</b>。多选发送 = 向这些槽的<b>成员各发一份</b>并去重，<b>不改变归属</b>——这是发送层的全新逻辑，不是 UI 层的勾选。频道色直接取 <code>palettes.rs</code> 的 <code>channel[]</code>。</td>
+      </tr>
+
+      <tr>
+        <td>收起态 36px <span class="pill keep">沿用</span></td>
+        <td><code>ui/widgets.slint:404 ToolStrip</code>（36px）+ <code>:486 DockExpandButton</code>（24×22）· <code>app.slint</code> 的 <code>quick-outer-strip</code> 几何</td>
+        <td class="sub">零改动，把 <code>ToolStrip</code> 换成两枚 Tab 图标。<b>不能沿用 v1 的 40px</b>，与既有 36px 差 4px 会在停靠时错位。</td>
+      </tr>
+
+      <tr>
+        <td>标题栏开关 <span class="pill chg">改动</span></td>
+        <td><code>ui/app.slint:318 WinBtn</code>（宽 40px，L325）· 图标 <code>assets/icons/sidebar-right-collapse.svg</code> / <code>-expand.svg</code></td>
+        <td class="sub">复用 <code>WinBtn</code> 加一枚 toggle，位置放最小化左侧，与三键无缝贴连。底色常亮表示面板已展开。</td>
+      </tr>
+
+      <tr>
+        <td>停靠边收窄 <span class="pill new">新增</span></td>
+        <td><code>app.slint:1051 quick-panel-dock</code> 现为 4 值，与 <code>dock-target</code> 吸附（:2065-2104）、<code>quick-merge-welcome</code>、<code>quick-merge-sidebar</code>、<code>quick-outer-strip</code>、<code>persist-*-dock</code> 回调全部耦合</td>
+        <td class="sub"><b>建议不改。</b>收窄到 left/right 要同时改吸附判定、Rust 持久化键与合并逻辑，收益仅是"横条下命令区不成立"。保留 4 值更稳妥。</td>
+      </tr>
+
+      <tr>
+        <td>全套配色 <span class="pill keep">沿用</span></td>
+        <td><code>src/theme/palettes.rs:53-77</code>（<code>graphite-dark</code> / <code>graphite-light</code>）· <code>src/theme/mod.rs apply_theme()</code> 写 20 个 <code>slot-*</code> · <code>ui/theme.slint:135-203</code> 派生</td>
+        <td class="sub">全部走语义槽，<code>PALETTES</code> 条目数 <b>36</b> 套自动适配。（<code>theme.slint</code> 顶部注释写"38 套"，与 <code>palettes.rs</code> 头注释的 36 不一致，属既有笔误，顺手改掉即可。）</td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- ═══════════════ D · v1 → v2 变更 ═══════════════ -->
+  <div>
+    <div class="sec-title"><span class="no">D</span>v1 → v2 变更对照<small>只列"更协调 / 更美观"的实际来源；每条都能指到代码依据</small></div>
+    <div class="legend" style="margin-top:0">
+      <div class="lg"><span class="no" style="background:rgba(0,144,255,.14);border-color:rgba(0,144,255,.5);color:#6ab5ff">1</span><div><b>配色全部推倒重来</b>：v1 用的是 <code>theme.slint</code> 里的<b>旧内置默认</b>（<code>#1b1d23</code> 蓝调石墨 / accent <code>#4a90e2</code>），而 <code>palettes.rs</code> 里的 graphite 是<b>中性纯灰</b>（<code>#111111</code>/<code>#191919</code>，R=G=B）+ <code>#0090FF</code>。明度接近但色相不同，v1 的"暗色偏蓝更沉稳"之类判断都建立在错误前提上。</div></div>
+      <div class="lg"><span class="no" style="background:rgba(0,144,255,.14);border-color:rgba(0,144,255,.5);color:#6ab5ff">2</span><div><b>字号与圆角归位</b>：v1 大量使用 10.5 / 11.5 / 12.5px 与 5px / 7px 圆角，<b>都不在 theme.slint 的档位表里</b>。这些值乘上 <code>ui-scale</code> 后会落到半像素，在 125% / 150% 缩放下发虚。v2 只用 10/11/13/15/18 与 4/6/10/16。</div></div>
+      <div class="lg"><span class="no" style="background:rgba(0,144,255,.14);border-color:rgba(0,144,255,.5);color:#6ab5ff">3</span><div><b>容器形态反了</b>：v1 主张「上/下/右三面贴边、去圆角、去留白」。但 <code>sidebar.slint</code> 从 L496 就明确写了 <code>bg-root</code> 外层 + 12px gutter + <code>bg-panel</code> 卡片，注释是 <code>#panel-gap-symmetry</code>。<b>同一窗口里两种边框语法并存，本身就是不协调的来源</b>。v2 回到既有约定。</div></div>
+      <div class="lg"><span class="no" style="background:rgba(0,144,255,.14);border-color:rgba(0,144,255,.5);color:#6ab5ff">4</span><div><b>层级表达换了依据</b>：v1 靠 t2 / t3 的明度差做三级层次，但 graphite 两套主题 <b>t2 === t3</b>，那条路根本走不通。v2 改为 10px/700 的分区标题 + 延伸发丝线，层次由<b>字号与字重</b>承担——这是该调色板下唯一可靠的做法。</div></div>
+      <div class="lg"><span class="no" style="background:rgba(0,144,255,.14);border-color:rgba(0,144,255,.5);color:#6ab5ff">5</span><div><b>宽度与收起态对齐真实常量</b>：v1 用 268px、收起 40px；代码里是 <code>quick-panel-width: 260px</code>（app.slint:1049）与 <code>ToolStrip</code> 36px。差值虽小，但拖拽停靠时 4px 错位是可见的。</div></div>
+      <div class="lg"><span class="no" style="background:rgba(0,144,255,.14);border-color:rgba(0,144,255,.5);color:#6ab5ff">6</span><div><b>彩色面收敛到一处</b>：v1 里 hero、协议徽章、pill、chip、多选框、转运轨道都在用彩色，整栏显得忙。v2 只保留状态条的 <code>accent-soft</code> 底 + 交互元素的 accent，<b>其余全部中性</b>，颜色只在"可点"和"告警"两件事上出现。</div></div>
+      <div class="lg"><span class="no" style="background:rgba(0,144,255,.14);border-color:rgba(0,144,255,.5);color:#6ab5ff">7</span><div><b>百分比移出进度条</b>：<code>StatRow</code> 现在把 <code>%</code> 画在条内（<code>x: 6px</code>），条短时数字压在填充色上很难读。v2 移到条右侧独立列，条只管长度。</div></div>
+      <div class="lg"><span class="no" style="background:rgba(0,144,255,.14);border-color:rgba(0,144,255,.5);color:#6ab5ff">8</span><div><b>命令正文可读性</b>：真实代码 L197-201 用 <code>ui-font-family</code> + <code>elide</code>，等宽命令与比例字体混排本身就不可靠，长路径还会被截断。v2 改等宽 + 换行完整展示（<b>这一条要同步改代码</b>）。</div></div>
+      <div class="lg"><span class="no" style="background:rgba(0,144,255,.14);border-color:rgba(0,144,255,.5);color:#6ab5ff">9</span><div><b>停靠边不再收窄</b>：v1 主张把 <code>quick-panel-dock</code> 从 4 值收成 2 值。但它与 <code>dock-target</code> 吸附、<code>quick-merge-*</code>、<code>quick-outer-strip</code>、Rust 持久化键全都耦合，收益只是"横条下命令区不成立"。v2 建议<b>保留 4 值</b>，横条形态下命令区改成单行排布即可。</div></div>
+      <div class="lg"><span class="no" style="background:rgba(0,144,255,.14);border-color:rgba(0,144,255,.5);color:#6ab5ff">10</span><div><b>多频道发送的语义写准了</b>：<code>set_channel_member</code> 是「移动」语义（<code>config.rs:719</code>，调用方先 <code>detach_all_channels</code>），<b>一个会话只属于一个槽</b>。所以"多选发送"= 向选中各槽的<b>成员各发一份并去重</b>，属于<b>发送层新逻辑</b>，与"频道归属"是两条独立的线。v1 把两者混在一起描述，容易被实现成改归属。</div></div>
+      <div class="lg"><span class="no" style="background:rgba(0,144,255,.14);border-color:rgba(0,144,255,.5);color:#6ab5ff">11</span><div><b>补了未连接态</b>：v1 只有一个虚线占位卡。v2 里 <code>conn-state==0</code> 时状态点转灰、资源标题切「本机资源」——本机 <code>sysinfo</code> 一直有数据，没有理由整栏变空。</div></div>
+      <div class="lg"><span class="no" style="background:rgba(0,144,255,.14);border-color:rgba(0,144,255,.5);color:#6ab5ff">12</span><div><b>修掉 v1 的编号错误</b>：v1 的 D 区交互规则里 5/6/7 各出现两次，读者无法对号；C 区"38 套主题"与 <code>palettes.rs</code> 实际的 36 条不符。v2 统一编号并以代码为准。</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ═══════════ 主题切换 ═══════════ */
+const thL = document.getElementById('th-light'), thD = document.getElementById('th-dark');
+function setTheme(t){
+  document.documentElement.dataset.theme = t;
+  thL.classList.toggle('on', t === 'light');
+  thD.classList.toggle('on', t === 'dark');
+}
+thL.onclick = () => setTheme('light');
+thD.onclick = () => setTheme('dark');
+
+/* ═══════════ 分段 Tab ═══════════ */
+const segBtns = document.querySelectorAll('#seg button');
+const paneMon = document.getElementById('pane-mon');
+const paneQuick = document.getElementById('pane-quick');
+const cmdInput = document.getElementById('cmd-input');
+const cmdPop = document.getElementById('cmd-pop');
+let curTab = 'mon';
+
+function switchTab(name){
+  curTab = name;
+  segBtns.forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  paneMon.style.display   = name === 'mon'   ? '' : 'none';
+  paneQuick.style.display = name === 'quick' ? '' : 'none';
+  if (name === 'quick' && !dockHidden()) setTimeout(() => cmdInput.focus(), 60);
+}
+segBtns.forEach(b => b.onclick = () => switchTab(b.dataset.tab));
+
+/* ═══════════ 标题栏开关（收起 / 展开） ═══════════ */
+const ICO_COLLAPSE = '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/><path d="m8 9 3 3-3 3"/>';
+const ICO_EXPAND   = '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/><path d="m10 9-3 3 3 3"/>';
+const dock = document.getElementById('dock');
+const rail = document.getElementById('rail');
+const toggle = document.getElementById('panel-toggle');
+const dockHidden = () => dock.style.display === 'none';
+
+function setDock(open){
+  dock.style.display = open ? '' : 'none';
+  rail.style.display = open ? 'none' : '';
+  toggle.classList.toggle('on', open);
+  toggle.title = open ? '收起右侧面板' : '展开右侧面板';
+  toggle.querySelector('svg').innerHTML = open ? ICO_COLLAPSE : ICO_EXPAND;
+  document.getElementById('rail-mon').classList.toggle('on', open && curTab === 'mon');
+  document.getElementById('rail-quick').classList.toggle('on', open && curTab === 'quick');
+  if (open) setTimeout(() => cmdInput.focus(), 60);
+}
+toggle.onclick = () => setDock(dockHidden());
+function railGo(tab){
+  setDock(true);
+  switchTab(tab);
+  cmdInput.focus();
+}
+
+/* ═══════════ 阈值染色 + 入场动画 ═══════════
+   ≥70% 琥珀 / ≥90% 红 —— 与 sidebar.slint 的 bar-color 同源，纯 UI 派生 */
+function paintRows(sel, barSel){
+  document.querySelectorAll(sel).forEach(row => {
+    const pc = parseFloat(row.dataset.pc) || 0;
+    const bar = row.querySelector(barSel);
+    row.classList.toggle('warn', pc >= 70 && pc < 90);
+    row.classList.toggle('dgr',  pc >= 90);
+    bar.style.width = '0%';
+    requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.width = pc + '%'; }));
+  });
+}
+paintRows('#stats .st', '.track i');
+paintRows('#disks .disk', '.track i');
+/* 小稿里的条走同一套阈值与动画 */
+document.querySelectorAll('.mini-scene').forEach(scene => {
+  const rows = scene.querySelectorAll('.st, .disk');
+  if (!rows.length) return;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    scene.querySelectorAll('.st, .disk').forEach(row => {
+      const pc = parseFloat(row.dataset.pc) || 0;
+      row.classList.toggle('warn', pc >= 70 && pc < 90);
+      row.classList.toggle('dgr',  pc >= 90);
+      const bar = row.querySelector('.track i');
+      if (bar) bar.style.width = pc + '%';
+    });
+  }));
+});
+
+/* ═══════════ 网络双曲线（Catmull-Rom 平滑） ═══════════ */
+const N = 60, W = 224, H = 62;
+let rx = [], tx = [], netSrc = 'sess';
+function seed(arr, base, jitter, spike){
+  let v = base;
+  for (let i = 0; i < N; i++){
+    v = Math.max(2, v + (Math.random() - 0.48) * jitter);
+    arr.push(v * (Math.random() < spike ? 1.9 : 1));
+  }
+}
+seed(rx, 44, 15, 0.06);
+seed(tx, 15, 7, 0.04);
+
+function smooth(pts){
+  if (pts.length < 2) return '';
+  let d = `M${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++){
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || pts[i + 1];
+    d += ` C${(p1.x + (p2.x - p0.x) / 6).toFixed(1)} ${(p1.y + (p2.y - p0.y) / 6).toFixed(1)},`
+       + ` ${(p2.x - (p3.x - p1.x) / 6).toFixed(1)} ${(p2.y - (p3.y - p1.y) / 6).toFixed(1)},`
+       + ` ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
+  }
+  return d;
+}
+const fmt = v => v > 1024 ? (v / 1024).toFixed(1) + ' MB/s' : v.toFixed(1) + ' KB/s';
+
+function drawNet(){
+  const local = netSrc === 'local';
+  const scale = local ? 0.35 : 1;                 // 本机量级明显低于会话
+  const mx = Math.max(...rx, ...tx) * 1.2;
+  const toPts = arr => arr.map((v, i) => ({
+    x: (i / (N - 1)) * W,
+    y: H - Math.min(H - 3, (v * scale) / mx * H)
+  }));
+  const pr = toPts(rx), pt = toPts(tx);
+  const dr = smooth(pr), dt = smooth(pt);
+  document.getElementById('l-rx').setAttribute('d', dr);
+  document.getElementById('a-rx').setAttribute('d', dr + ` L${W} ${H} L0 ${H} Z`);
+  document.getElementById('l-tx').setAttribute('d', dt);
+  document.getElementById('a-tx').setAttribute('d', dt + ` L${W} ${H} L0 ${H} Z`);
+  document.getElementById('rx-v').textContent = fmt(rx[rx.length - 1] * scale);
+  document.getElementById('tx-v').textContent = fmt(tx[tx.length - 1] * scale);
+}
+drawNet();
+setInterval(() => {
+  rx.push(Math.max(2, rx[rx.length - 1] + (Math.random() - 0.48) * 15) * (Math.random() < 0.06 ? 1.9 : 1));
+  rx.shift();
+  tx.push(Math.max(2, tx[tx.length - 1] + (Math.random() - 0.48) * 7) * (Math.random() < 0.04 ? 1.7 : 1));
+  tx.shift();
+  drawNet();
+}, 1500);
+
+document.querySelectorAll('#net-seg button').forEach(b => b.onclick = () => {
+  netSrc = b.dataset.src;
+  document.querySelectorAll('#net-seg button').forEach(x => x.classList.toggle('on', x === b));
+  drawNet();
+});
+
+/* ═══════════ 走字：连接时长 ═══════════ */
+let dur = 2 * 3600 + 34 * 60 + 17;
+const pad = n => String(n).padStart(2, '0');
+setInterval(() => {
+  dur++;
+  document.getElementById('conn-dur').textContent =
+    pad(Math.floor(dur / 3600)) + ':' + pad(Math.floor(dur % 3600 / 60)) + ':' + pad(dur % 60);
+}, 1000);
+
+/* ═══════════ 复制 host（复用 StatusBlock 的 1.4s 徽章） ═══════════ */
+const copyBtn = document.getElementById('copy-host');
+copyBtn.onclick = () => {
+  copyBtn.classList.add('ok');
+  copyBtn.querySelector('span').textContent = '已复制';
+  clearTimeout(copyBtn._t);
+  copyBtn._t = setTimeout(() => {
+    copyBtn.classList.remove('ok');
+    copyBtn.querySelector('span').textContent = '复制';
+  }, 1400);
+};
+
+/* ═══════════ 发送目标：频道多选 ═══════════
+   channel 色值取自 palettes.rs 的 channel[A,B,C,D] */
+const CHANNELS = [
+  { id: 'cur', name: '当前会话', color: 'var(--ac)', members: ['web-01'], kind: 'single' },
+  { id: 'a', name: '发布',   color: 'var(--ch-a)', members: ['web-01', 'web-02', 'build-02'], kind: 'ch' },
+  { id: 'b', name: '数据库', color: 'var(--ch-b)', members: ['db-01', 'db-02'], kind: 'ch' },
+  { id: 'c', name: '灰度',   color: 'var(--ch-c)', members: ['web-03'], kind: 'ch' },
+  { id: 'd', name: '值班',   color: 'var(--ch-d)', members: ['web-01', 'db-01', 'web-03', 'ops-01'], kind: 'ch' }
+];
+let chOn = new Set(['cur']);
+const chById = id => CHANNELS.find(c => c.id === id);
+const chDests = () => [...chOn].map(chById).filter(Boolean);
+
+function chSummary(){
+  const d = chDests();
+  if (!d.length) return '未选择';
+  const n = d.reduce((s, c) => s + c.members.length, 0);
+  const label = d.length === 1 ? (d[0].kind === 'ch' ? '频道 ' + d[0].id.toUpperCase() : '当前会话')
+                                : d.filter(c => c.kind === 'ch').map(c => c.id.toUpperCase()).join('+');
+  return n > 1 ? label + ' · ' + n + ' 个会话' : label;
+}
+function renderChChips(){
+  const box = document.getElementById('ch-slots');
+  const d = chDests();
+  if (d.length === 1 && d[0].kind === 'single'){
+    box.innerHTML = '<span style="font-size:var(--f-2xs);font-weight:700;color:var(--t1)">当前会话</span>';
+  } else {
+    box.innerHTML = d.filter(c => c.kind === 'ch').map(c =>
+      '<span class="ch-chip" style="background:' + c.color + ';color:#fff" title="' + c.name + '">' +
+      c.id.toUpperCase() + '</span>').join('');
+  }
+  const tgt = document.getElementById('ch-target');
+  const multi = d.filter(c => c.kind === 'ch').length > 1 || (d.length > 1);
+  tgt.classList.toggle('multi', multi);
+  tgt.title = '发送目标：' + chSummary();
+}
+function renderChList(){
+  document.getElementById('ch-list').innerHTML = CHANNELS.map(c => {
+    const on = chOn.has(c.id);
+    const check = '<svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.4l3.2 3.2L13 4.8"/></svg>';
+    return '<div class="opt' + (on ? ' on' : '') + '" onclick="chToggle(\'' + c.id + '\');return false">'
+      + '<span class="box">' + (on ? check : '') + '</span>'
+      + '<span class="lt" style="background:' + c.color + '">' + (c.kind === 'ch' ? c.id.toUpperCase() : '·') + '</span>'
+      + '<span class="nm">' + c.name + '</span>'
+      + '<span class="n">×' + c.members.length + '</span>'
+      + '<span class="st">' + c.members.slice(0, 2).join(' · ') + (c.members.length > 2 ? ' …' : '') + '</span>'
+      + '</div>';
+  }).join('');
+}
+/* 「当前会话」与频道互斥；频道之间可任意组合 */
+function chToggle(id){
+  if (id === 'cur'){ chOn.clear(); chOn.add('cur'); }
+  else {
+    chOn.delete('cur');
+    if (chOn.has(id)) chOn.delete(id); else chOn.add(id);
+    if (!chOn.size) chOn.add('cur');
+  }
+  renderChChips(); renderChList();
+}
+function chPreset(kind){
+  chOn.clear();
+  if (kind === 'cur') chOn.add('cur');
+  else CHANNELS.forEach(c => { if (c.kind === 'ch') chOn.add(c.id); });
+  renderChChips(); renderChList();
+}
+const chPop = document.getElementById('ch-pop');
+/* 浮层内部一律吞掉冒泡。
+   坑：chToggle → renderChList() 会整块替换 #ch-list 的 innerHTML，等事件冒泡到
+   document 时 e.target 已经脱树，chPop.contains(e.target) 恒为 false → 点任意一
+   行浮层就自关，"多选"直接失效。必须在 chPop 这一层（稳定节点）截断冒泡。 */
+chPop.addEventListener('click', ev => ev.stopPropagation());
+document.getElementById('ch-target').onclick = ev => {
+  ev.stopPropagation();
+  const show = !chPop.classList.contains('show');
+  chPop.classList.toggle('show', show);
+  if (show) renderChList();
+};
+document.addEventListener('click', e => {
+  if (chPop.classList.contains('show')
+      && !chPop.contains(e.target)
+      && !(e.target.closest && e.target.closest('#ch-target'))) chPop.classList.remove('show');
+});
+renderChChips();
+
+/* ═══════════ 候选浮层：与快捷列表共用同一数据源 ═══════════ */
+function candidates(q){
+  const out = [];
+  document.querySelectorAll('#q-list .qitem').forEach(it => {
+    const nm = it.querySelector('.nm .txt'), cm = it.querySelector('.cmd');
+    if (!nm) return;
+    const name = nm.textContent.trim(), cmd = cm ? cm.textContent.trim() : '';
+    if (!q || (name + ' ' + cmd).toLowerCase().includes(q)) out.push({ name, cmd });
+  });
+  return out;
+}
+function renderPop(){
+  const q = cmdInput.value.trim().toLowerCase();
+  if (!q){ cmdPop.classList.remove('show'); cmdPop.innerHTML = ''; cmdPop._hits = []; return; }
+  const hits = candidates(q).slice(0, 5);
+  let html = '<div class="hint"><span>'
+           + (hits.length ? hits.length + ' 条匹配 · ↑↓ 选择 · ↵ 发送' : '无匹配 · ↵ 作为临时命令发送')
+           + '</span><span class="sp"></span><kbd>Esc</kbd></div>';
+  hits.forEach((h, i) => {
+    html += '<div class="pi" data-i="' + i + '" onclick="sendMatch(' + i + ')">'
+          + '<span class="n">' + h.name + '</span>'
+          + '<span class="c">' + h.cmd + '</span>'
+          + '<span class="go">↵</span></div>';
+  });
+  cmdPop.innerHTML = html;
+  cmdPop.classList.add('show');
+  cmdPop._hits = hits;
+}
+function sendText(text){
+  if (!text) return;
+  if (!chDests().length){ toast('先选择发送目标'); return; }
+  toast('已发送到 ' + chSummary() + '：' + text);
+  cmdInput.value = '';
+  cmdPop.classList.remove('show');
+  cmdInput.focus();
+}
+function sendMatch(i){
+  const hits = cmdPop._hits || [];
+  if (hits[i]) sendText(hits[i].cmd || hits[i].name);
+}
+function sendInput(){
+  const v = cmdInput.value.trim();
+  if (!v){ toast('先输入命令'); cmdInput.focus(); return; }
+  const hits = candidates(v.toLowerCase());
+  sendText(hits.length ? (hits[0].cmd || hits[0].name) : v);
+}
+/* 列表行点击走同一条发送链路 */
+function send(cmd){ sendText(cmd); }
+
+cmdInput.addEventListener('input', () => {
+  const v = cmdInput.value.trim();
+  renderPop();
+  let any = false;
+  document.querySelectorAll('#q-list .q-group').forEach(g => {
+    let gAny = false;
+    g.querySelectorAll('.qitem').forEach(it => {
+      const nm = it.querySelector('.nm .txt'), cm = it.querySelector('.cmd');
+      const hay = ((nm ? nm.textContent : '') + ' ' + (cm ? cm.textContent : '')).toLowerCase();
+      const hit = !v || hay.includes(v.toLowerCase());
+      it.style.display = hit ? '' : 'none';
+      if (hit) gAny = true;
+    });
+    g.style.display = gAny ? '' : 'none';
+    if (gAny) any = true;
+  });
+  document.getElementById('q-none').style.display = any ? 'none' : '';
+});
+cmdInput.addEventListener('keydown', e => {
+  if (e.key === 'Escape'){ cmdInput.value = ''; cmdInput.dispatchEvent(new Event('input')); cmdInput.blur(); }
+  if (e.key === 'Enter'){
+    const hits = cmdPop._hits;
+    if (hits && hits.length) sendText(hits[0].cmd || hits[0].name);
+    else sendInput();
+  }
+});
+document.addEventListener('keydown', e => {
+  if (e.key === '/' && document.activeElement !== cmdInput){
+    e.preventDefault();
+    if (dockHidden()) setDock(true);
+    cmdInput.focus();
+  }
+});
+
+/* ═══════════ Toast ═══════════ */
+let toastTimer;
+function toast(msg){
+  document.getElementById('toast-msg').textContent = msg;
+  const el = document.getElementById('toast-el');
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 1900);
+}
+</script>
+</body>
+</html>
