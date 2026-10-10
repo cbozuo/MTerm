@@ -318,6 +318,14 @@ component GroupColorField inherits VerticalLayout {
 component WinBtn inherits Rectangle {
     in property <string> icon;
     in property <bool> danger: false;
+    // (#winbtn-round-corner 2026-10-10) 关闭键是标题栏最右一个按钮,悬停高亮
+    // (红块)贴着窗口右上角 —— 窗口四角是 DWM 圆角 + 1px 描边
+    // (#win-edge-frame),直角高亮块会在角落顶出一块方角(用户截图"悬浮背景
+    // 还是正方形")。TR 圆角取 Theme.radius-win(8 物理像素,与描边/DWM 裁剪
+    // 弧重合;逻辑常量在高 DPI 下会被裁剪弧削出尖角);实例传
+    // !window-maximized —— 最大化后系统把窗口角改直角,高亮回方形。
+    // 只有贴角的按钮才传;中间键的高亮保持直角(Windows 原生同理)。
+    in property <bool> round-top-right: false;
     callback clicked();
     // (#titlebar-slim 2026-10-08) 46px → 40px：标题栏改矮(32px)后 46px 宽的
     // 悬浮高亮块显得方胖，收窄到 40px 与整条标题栏比例更协调（Windows 原生
@@ -326,6 +334,7 @@ component WinBtn inherits Rectangle {
     // (#winbtn-seamless 2026-09-06) 三键无缝:hover 高亮占满 40px 热区且
     // 相邻按钮贴连(Windows 原生样式);图标仍居中,视觉间隔由字形留白
     // 提供。间距控制在标题栏 win-controls 的 HL spacing(=0)。
+    border-top-right-radius: root.round-top-right ? Theme.radius-win : 0px;
     background: ta.has-hover ? (root.danger ? #e81123 : Theme.bg-hover) : transparent;
     animate background { duration: 90ms; }
     ta := TouchArea {
@@ -614,12 +623,18 @@ component TopbarBtn inherits Rectangle {
     component BrandLogoBtn inherits Rectangle {
         in property <bool> collapsed;        // 目标面板收起态（决定图标与文案）
         in property <bool> lang-en;          // 实例处从 AppWindow 传入
+        // (#winbtn-round-corner 2026-10-10) 悬停高亮块贴窗口**左上角**,与右上角
+        // 的关闭键同理:直角块会在 DWM 圆角处顶出方角。TL 取 Theme.radius-win
+        // (8 物理像素,与描边/DWM 裁剪弧重合),最大化回 Theme.radius-sm;
+        // 实例传 !window-maximized。
+        in property <bool> round-top-left: false;
         callback clicked();
         // (#titlebar-slim 2026-10-08) 跟随标题栏高度 32px（占位矩形 1922 行
         // 的宽度须与此处 width 一致）。
         width: 32px;
         height: 32px;
         border-radius: Theme.radius-sm;
+        border-top-left-radius: root.round-top-left ? Theme.radius-win : Theme.radius-sm;
         background: ta.has-hover ? Theme.bg-hover : transparent;
         animate background { duration: 120ms; }
 
@@ -2031,8 +2046,27 @@ export component AppWindow inherits Window {
                             icon: root.window-maximized ? "restore" : "maximize";
                             clicked => { root.win-maximize-toggle(); }
                         }
-                        WinBtn { height: parent.height; icon: "close"; danger: true; clicked => { root.win-close(); } }
+                        WinBtn {
+                            height: parent.height;
+                            icon: "close";
+                            danger: true;
+                            // (#winbtn-round-corner) 高亮块贴窗口右上角,圆角随
+                            // 最大化(系统改直角)收放,见组件注释。
+                            round-top-right: !root.window-maximized;
+                            clicked => { root.win-close(); }
+                        }
                     }
+                }
+                // (#titlebar-underline 2026-10-10) 标题栏底缘分隔线:1px
+                // border-subtle,与弹框内部分隔线同色同粗。标题栏(bg-panel)
+                // 与下方 dock 区(bg-root)之间此前没有任何分界,两块底色的
+                // 过渡含混(用户反馈缺一条边线条)。放在 HL 之后 → 盖在
+                // WinBtn 悬停高亮的最后一行像素上,1px 无感。
+                Rectangle {
+                    y: parent.height - self.height;
+                    width: 100%;
+                    height: 1px;
+                    background: Theme.border-subtle;
                 }
             }
 
@@ -3295,6 +3329,8 @@ export component AppWindow inherits Window {
         y: 0;
         collapsed: root.welcome-collapsed;
         lang-en: root.lang-en;
+        // (#winbtn-round-corner) 高亮块贴窗口左上角,圆角随最大化收放。
+        round-top-left: !root.window-maximized;
         clicked => {
             root.welcome-collapsed = !root.welcome-collapsed;
             root.set-welcome-collapsed(root.welcome-collapsed);
@@ -6218,11 +6254,18 @@ export component AppWindow inherits Window {
                 // ---- ② 关闭行为:卡片即操作 ----
                 VerticalLayout {
                     // (#close-dialog-lines) 固定段高,见头部注释。
-                    // 140 = 14 + 勾选行 18 + 间隙 12 + 卡片 82 + 14
-                    height: 140px;
+                    // (#close-footer-line-phase 2026-10-10) 段高 139:头部线与
+                    // 页脚线的间隔 = 段高 + 头部线 1px = 140 逻辑 px,取 4 的
+                    // 倍数 —— 1.25/1.5/2 倍 DPI 下乘出来都是整数设备像素,
+                    // 两条线永远落在同一亚像素相位,粗细观感一致。旧值 140
+                    // (间隔 141)在 125% 缩放下间隔 176.25 设备像素,页脚线
+                    // 比头部线偏 1/4 像素相位,发糊显粗(用户截图"页脚顶部
+                    // 横线粗了")。间隙 12 → 11 找出这 1px,勾选行仍 18px。
+                    // 139 = 14 + 勾选行 18 + 间隙 11 + 卡片 82 + 14
+                    height: 139px;
                     padding-left: 18px; padding-right: 18px;
                     padding-top: 14px; padding-bottom: 14px;
-                    spacing: 12px;
+                    spacing: 11px;
                     // 「记住我的选择」必须在卡片上方:卡片点击即执行,勾选要来得及。
                     // (#close-remember-align 2026-10-07) 复选框 14px 固定高在 HL 里
                     // **顶对齐**(文字行高更高),视觉上比文字偏上——包一层
@@ -7665,5 +7708,80 @@ export component AppWindow inherits Window {
     // ⚠️ 不能放进主题选择浮层内部 —— 那样只有主题选择器开着时才渲染，
     // 单独点「同步输入」永远不弹（上一版实测的 bug）。
     SyncDialogHost { }
+
+    // (#win-edge-frame 2026-10-10) 主窗口四边 1px 描边 + 圆角,与弹框卡片
+    // (border-strong + 圆角)同一套边线语言。窗口本体是无边框不透明窗口
+    // (no-frame + with_undecorated_shadow(false)),深色主题下与桌面融成
+    // 一片,四边轮廓不可辨;Rust apply_window_chrome 给的 DWMWCP_ROUND
+    // 圆角也因为没有边线而看不出来(用户反馈"四边缺少边线和圆角")。
+    // 这里在内容最上层画一圈**不接事件**的描边(Rectangle 无 TouchArea,
+    // 命中测试直接落到下面的自绘 resize 热区/内容)。
+    // 圆角取 Theme.radius-win(= 8 物理像素按 device-pixel-ratio 换算回
+    // 逻辑值):Win11 DWM 窗口圆角是固定 8 物理像素、不随 DPI 缩放,只有
+    // 按物理值对齐,描边弧才能与 DWM 裁剪弧同心(详见 theme.slint
+    // radius-win 注释)。不用 radius-lg(随 ui-scale 缩放,会跟 DWM 半径脱钩)。
+    // (#win-edge-frame-r2 2026-10-10) 整圈描边向内缩 1 设备像素(hairline),
+    // 半径同步减 1 保持与裁剪弧同心:描边外缘若正好压在 DWM 裁剪边界上,
+    // 弧线的抗锯齿外 fringe 会被硬裁掉,细线弧在对角段覆盖率跌破可见阈值
+    // —— 四个角统一断成虚点/折角(像素扫描实测:四角同在第 3、6-7 行缺
+    // 弧段)。缩进后整条弧完整参与 AA。
+    // (#win-edge-frame-r3 2026-10-10) 线宽同样取 hairline(1 **设备**像素):
+    // 逻辑 1px 在 125% 下占 1.25 设备行,内缩不被裁剪后"1 实行 + 25% 鬼影
+    // 行"整条显形,四条边看着发粗(用户截图)。整数设备行对齐的 1 设备
+    // 像素线只有一条实行,锐利不糊;弧段为 1 设备像素宽的同心环带(r∈[6,7]
+    // 物理px,裁剪弧 r=8),AA 完整、连续不断。缩进留出的缝隙填窗口底色,
+    // 与桌面同深,不可见。
+    // (#win-edge-frame-r4 2026-10-10) 四条边改画**四个"1 设备像素厚"的扁矩形**,
+    // 不再用一个带 border-radius 的矩形描一圈。原因(真机像素实测):
+    // r3 的"半像素内缩 + 亚像素线宽"在软件渲染器下确实只吃 1 个设备像素,但
+    // **真实应用走 femtovg(GPU),同一条 0.8 逻辑px 的边被渲染成 2 个物理像素**
+    // (亮度 58 + 81,合计墨量≈1.59px;四边完全一致——这就是用户看到的"边线加粗")。
+    // 半像素内缩 = 让一条**边**去凑设备网格,而描边的覆盖量由渲染器自己决定,
+    // 各后端不一致,靠不住了。
+    // 现在把线宽与位置都放进"设备网格整数"语义:每条边厚 1 设备像素 =
+    // hairline() 逻辑px,**左下角**贴设备网格,x/y 为**整数个** hairline()
+    // (0 或 -1 个),于是矩形的上下/左右边界天然落在设备像素整数坐标上,
+    // 不产生任何跨像素覆盖 —— 与后端无关。四者在四角互相重叠(同色,不可见);
+    // 圆角交给 DWM 的 DWMWCP_ROUND 裁剪弧切,不需要自绘弧线。
+    // 原 r2/r3 的注释保留在上,记录为什么走弯路:一个矩形描一圈时,弧段与直边
+    // 用的是同一条描边,想同时满足"弧段不被裁剪"和"直边不糊"在亚像素下无解。
+    // 最大化时系统把四角改直角、窗口贴满工作区,描边随 window-maximized
+    // 隐藏;macOS 走原生装饰(custom-titlebar=false),不画。
+    if root.custom-titlebar && !root.window-maximized : Rectangle {
+        background: transparent;
+
+        // ⚠️ 四条的 x/y 都取**1 个设备像素**（hairline()），不是 0：描边以路径
+        // 线为中心向两侧各铺半条，贴 0 会让外侧半条被窗口边界裁掉，剩下的
+        // 半条落在设备像素中间 → 反锯齿糊成 2 个物理像素。内移整 1 个设备
+        // 像素后，0.8 逻辑px 的线完整落在窗口内、边界对齐设备网格。
+        // 上边
+        Rectangle {
+            x: 0; y: Theme.hairline();
+            width: parent.width;
+            height: Theme.hairline();
+            background: Theme.border-strong;
+        }
+        // 下边
+        Rectangle {
+            x: 0; y: parent.height - 2 * Theme.hairline();
+            width: parent.width;
+            height: Theme.hairline();
+            background: Theme.border-strong;
+        }
+        // 左边
+        Rectangle {
+            x: Theme.hairline(); y: 0;
+            width: Theme.hairline();
+            height: parent.height;
+            background: Theme.border-strong;
+        }
+        // 右边
+        Rectangle {
+            x: parent.width - 2 * Theme.hairline(); y: 0;
+            width: Theme.hairline();
+            height: parent.height;
+            background: Theme.border-strong;
+        }
+    }
 
 }

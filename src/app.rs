@@ -4163,18 +4163,28 @@ fn open_window(
         let mut focused = true;
         let mut minimized = false;
         let mut occluded = false;
-        // Apply the Win11 rounded-corner hint once, on the first event (the HWND
-        // reliably exists by then, unlike a pre-run timer) (#166).
-        let mut chrome_done = false;
-        window
-            .window()
-            .on_winit_window_event(move |slint_window, event| {
-                if !chrome_done {
-                    chrome_done = true;
-                    if let Some(win) = weak.upgrade() {
-                        apply_window_chrome(win.window());
-                    }
-                }
+                // Apply the Win11 rounded-corner hint once, on the first event (the HWND
+                // reliably exists by then, unlike a pre-run timer) (#166).
+                let mut chrome_done = false;
+                window
+                    .window()
+                    .on_winit_window_event(move |slint_window, event| {
+                        if !chrome_done {
+                            chrome_done = true;
+                            if let Some(win) = weak.upgrade() {
+                                apply_window_chrome(win.window());
+                            }
+                            // (#win-icon-hook-merge 2026-10-10) 图标设置并入本钩子的
+                            // 首事件分支。on_winit_window_event 是**单槽**回调(后注册
+                            // 覆盖先注册):c84f221 把 arm_window_icon 挂在 show() 之后,
+                            // 把本钩子整个顶掉了 —— Resized→window-maximized 同步、
+                            // 原生关闭分流(CloseRequested)、焦点/遮挡跟踪、IME Ctrl
+                            // 补发全部失效,表现为拖拽 Snap 最大化/还原后右上角图标
+                            // 不切换(用户实测)。主窗口不再单独挂图标钩子;图标本就
+                            // 依赖"首个事件时 HWND 已建成",与 chrome 同一时机。
+                            #[cfg(any(windows, target_os = "linux"))]
+                            set_window_icon(slint_window);
+                        }
                 // (#tray-restore-blank 2026-09-28) 托盘唤回空白取证:焦点/遮挡/
                 // 尺寸/重绘的到达时序。RedrawRequested 可能高频(终端逐帧重绘),
                 // 只打 debug;Focused/Occluded/Resized 低频且是诊断关键,打 info。
@@ -4768,6 +4778,25 @@ fn open_window(
                 // 内容可能对不上，增量渲染会留下移动途中的残影/空白。移动不像 resize
                 // 那样有逐帧 move 事件可挂，所以只能在模态**返回后**请求一次整窗重绘。
                 i_slint_backend_winit::force_full_redraw_all_windows();
+                // (#win-snap-icon 2026-10-10) 拖拽可能以 Aero Snap 收尾(拖到屏幕
+                // 上缘最大化、从最大化拖离还原),状态翻转发生在模态循环退出**之后**
+                // 的 DWM 动画里,紧随其后的首个 Resized 可能仍读到旧值。分几拍
+                // 延迟对账 window-maximized,保证右上角图标最终与真实状态一致
+                // (与主钩子 Resized 同步互为兜底)。
+                for delay_ms in [0_u64, 150, 400, 800] {
+                    let weak2 = weak.clone();
+                    slint::Timer::single_shot(std::time::Duration::from_millis(delay_ms), move || {
+                        if let Some(w) = weak2.upgrade() {
+                            let maxed = w
+                                .window()
+                                .with_winit_window(|ww| ww.is_maximized())
+                                .unwrap_or(false);
+                            if maxed != w.get_window_maximized() {
+                                w.set_window_maximized(maxed);
+                            }
+                        }
+                    });
+                }
             }
         });
     }
@@ -4898,9 +4927,11 @@ fn open_window(
     // spinning the loop. run_event_loop() does not, so display it here —
     // without this the app starts but no window ever appears (#multi-window).
     window.show().context("failed to show window")?;
-    // winit 窗口 show 时才建成;此刻设置图标,任务管理器子行/任务栏/alt-tab
-    // 才不会显示空白(winit 窗口类本身不带图标)。
-    arm_window_icon(window.window());
+    // (#win-icon-hook-merge 2026-10-10) 主窗口**不再**在这里单独挂图标钩子:
+    // on_winit_window_event 是单槽回调,show() 之后再注册会把上面 4171 起的
+    // 主事件钩子(Resized→maximized 同步/原生关闭分流/焦点跟踪)整个顶掉。
+    // 图标改由主钩子首事件分支设置(见 #win-icon-hook-merge)。其余无钩子的
+    // 窗口(关于/进程/系统信息/编辑器)仍走 arm_window_icon。
 
     // (#tray-persist 2026-09-21) 托盘图标**全程常驻**:启动即随主窗口创建
     // (TRAY_ENSURE 闭包内建 is_some 去重,多窗口只建一次)。之前是"最小化到
@@ -9733,3 +9764,4 @@ mod log_highlight_tests;
 #[cfg(test)]
 #[path = "../tests/app/text_editor/mod.rs"]
 mod text_editor_tests;
+

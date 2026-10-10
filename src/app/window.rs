@@ -23,7 +23,7 @@ pub(super) static TRAY_TRANSPARENT_NEXT: AtomicBool = AtomicBool::new(false);
 ///   那条路生成的 HICON 在任务管理器子行会渲染成花屏。
 /// - Linux: 没有 exe 资源,仍用 512px PNG 写 _NET_WM_ICON(dock 需要大图)。
 #[cfg(any(windows, target_os = "linux"))]
-fn set_window_icon(window: &slint::Window) {
+pub(super) fn set_window_icon(window: &slint::Window) {
     #[cfg(windows)]
     {
         use i_slint_backend_winit::winit::dpi::PhysicalSize;
