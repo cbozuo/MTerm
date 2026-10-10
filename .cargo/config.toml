@@ -1,31 +1,57 @@
-# 本地构建提速(2026-09-09)
-# 用 llvm-mingw 自带的 ld.lld 替换慢速 bfd ld,链接阶段从数分钟降到秒级。
-# ld.lld.exe 位于 C:\llvm-mingw\bin(已加入用户 PATH;工具链解压自
-# llvm-mingw-20260908-ucrt-x86_64.zip)。
+# 本地构建配置(2026-10-10 重写;2026-09-09 的 ld.lld 提速方案作废,原因见下)
 #
-# 注意:lld 不继承 gcc 的内建库搜索路径,须显式补 -L:
-# - gcc 版本子目录:libgcc.a / libgcc_eh.a(Rust std 的展开依赖)
-# - mingw64/lib:libgcc_s.a 等运行时支持库
-# 这两个 -L 对路径不存在的机器无害(只是多余的搜索路径)。
+# 为什么不能用 llvm-mingw 的 ld.lld:Slint 1.18.1 升级后,依赖里的 windows 0.62
+# 在 windows-gnu 上改用 raw-dylib,rustc 需要现场用 dlltool 生成导入库。
+# 实测 ld.lld 链接 dlltool 导入库会产出"启动即段错误"(STATUS_ACCESS_VIOLATION)
+# 的 build script(i-slint-backend-selector 稳定复现,WER 记录 faulting
+# module=unknown);同样的导入集合换 rustup 自带 gcc/bfd 一切正常。
+# 想恢复 lld 提速,应验证 rust-lld(rustup 自带,rust 上游 CI 覆盖
+# dlltool+lld 组合),而不是 llvm-mingw 的 ld.lld。
 #
-# [target.*] 只作用于目标编译;构建脚本 / proc-macros 按 host 编译,须
-# 另配 [host.*](本机 host == target,两段内容相同)。缺 host 段时
-# build.rs 链接会报 lld: unable to find library -lgcc。
+# dlltool:raw-dylib 编译期 rustc 要调用它,只查 PATH 或 -C dlltool。rustup
+# 工具链 self-contained 里那份内部要起 as.exe 子进程(目录里没有)会
+# CreateProcess 失败,必须用 MSYS2 的 mingw-w64 binutils:
+#   C:\msys64\usr\bin\pacman.exe -S mingw-w64-x86_64-binutils
+# (镜像 404 时可从 mirrors.ustc.edu.cn/msys2 手动下包解压。)
+# 下面用 -C dlltool 绝对路径指定,不依赖 PATH。
+#
+# libdwmapi.a:rustup 的 self-contained 导入库是精简集,缺 dwmapi(Win11 圆角
+# #162 要用)。已把 llvm-mingw 的拷到
+#   ~/.rustup/toolchains/stable-x86_64-pc-windows-gnu/lib/rustlib/x86_64-pc-windows-gnu/lib/self-contained/
+# 重装 rustup 工具链后需要重新拷一次。
+#
+# CC:ring(ureq→rustls)和 mimalloc 的 C 代码需要编译器。本机没有独立
+# mingw gcc,用 llvm-mingw 的 gcc 兼容入口(绝对路径)。用带 target 后缀的
+# 变量名,不污染其它 target(CI 的 windows 包走 msvc,Linux/macOS 更不相干)。
+[build]
 # 本机 15.2GB 内存有限:并行 rustc 同峰时 OOM(2026-09-21 debug 链接阶段
 # rustc-LLVM out of memory / STATUS_STACK_BUFFER_OVERRUN),限并行编译进程数。
-[build]
 jobs = 2
+
+[env]
+CC_x86_64_pc_windows_gnu = "C:/llvm-mingw/bin/x86_64-w64-mingw32-gcc.exe"
+CC_x86_64-unknown-windows-gnu = "C:/llvm-mingw/bin/x86_64-w64-mingw32-gcc.exe"
+AR_x86_64_pc_windows_gnu = "C:/llvm-mingw/bin/x86_64-w64-mingw32-ar.exe"
+AR_x86_64-unknown-windows-gnu = "C:/llvm-mingw/bin/x86_64-w64-mingw32-ar.exe"
+# winresource（图标/DPI manifest 嵌入）在 GNU 工具链上按
+# x86_64-w64-mingw32-windres 前缀名搜 PATH，找不到会静默丢图标；
+# WINDRES 是它认的第一个变量，直接给绝对路径最稳（build.rs 里另有兜底探测）。
+# 注意必须用 llvm-mingw 的 windres：MSYS2 binutils 那份是 GNU windres，
+# 预处理 .rc 要起 gcc（本机没有），会以 "Could not compile resource file" 失败；
+# LLVM windres 自带预处理，--target pe-x86-64 也认。
+WINDRES = "C:/llvm-mingw/bin/x86_64-w64-mingw32-windres.exe"
 
 [target.x86_64-pc-windows-gnu]
 rustflags = [
-    "-C", "link-arg=-fuse-ld=lld",
-    "-C", "link-arg=-LC:/Users/Administrator/msys64/mingw64/lib/gcc/x86_64-w64-mingw32/16.2.0",
-    "-C", "link-arg=-LC:/Users/Administrator/msys64/mingw64/lib",
+    "-C", "dlltool=C:/msys64/mingw64/bin/dlltool.exe",
+    "-C", "linker=C:/Users/Administrator/.rustup/toolchains/stable-x86_64-pc-windows-gnu/lib/rustlib/x86_64-pc-windows-gnu/bin/self-contained/x86_64-w64-mingw32-gcc.exe",
 ]
 
+# [target.*] 只作用于目标编译;构建脚本 / proc-macros 按 host 编译,须
+# 另配 [host.*](本机 host == target,两段内容相同)。缺 host 段时
+# build script 不吃这段 rustflags。
 [host.x86_64-pc-windows-gnu]
 rustflags = [
-    "-C", "link-arg=-fuse-ld=lld",
-    "-C", "link-arg=-LC:/Users/Administrator/msys64/mingw64/lib/gcc/x86_64-w64-mingw32/16.2.0",
-    "-C", "link-arg=-LC:/Users/Administrator/msys64/mingw64/lib",
+    "-C", "dlltool=C:/msys64/mingw64/bin/dlltool.exe",
+    "-C", "linker=C:/Users/Administrator/.rustup/toolchains/stable-x86_64-pc-windows-gnu/lib/rustlib/x86_64-pc-windows-gnu/bin/self-contained/x86_64-w64-mingw32-gcc.exe",
 ]
