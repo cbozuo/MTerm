@@ -9,6 +9,21 @@
 //   见 #tab-32-fix2）与频道状态条。
 use super::*;
 
+// (#sync-dialog-hifi 2026-10-11) 每频道成员数重算：对话框页签成员数徽标 /
+// 双栏计数 / 空态都读 slot-counts。open/add/remove/add-all/remove-all 之后
+// 成员数可能变化，必须重算写入。
+fn recount_sync(w: &AppWindow) {
+    let g = w.global::<crate::ui::SyncInputState>();
+    let model = g.get_sessions();
+    let mut counts = [0i32; 4];
+    for r in model.iter() {
+        if (0..4).contains(&r.slot) {
+            counts[r.slot as usize] += 1;
+        }
+    }
+    g.set_slot_counts(ModelRc::from(Rc::new(VecModel::from(counts.to_vec()))));
+}
+
 pub(super) fn wire_sync_input(
     window: &AppWindow,
     store: Rc<RefCell<ConfigStore>>,
@@ -76,6 +91,7 @@ pub(super) fn wire_sync_input(
             let row_count = rows.len();
             w.global::<crate::ui::SyncInputState>().set_sessions(ModelRc::from(Rc::new(VecModel::from(rows))));
             w.global::<crate::ui::SyncInputState>().set_slot(0);
+            recount_sync(&w);
             tracing::info!("[SYNC_DIAG] sessions filled ({} rows), set dialog-open=true", row_count);
             w.global::<crate::ui::SyncInputState>().set_dialog_open(true);
         });
@@ -115,6 +131,7 @@ pub(super) fn wire_sync_input(
                     }
                 }
             }
+            recount_sync(&w);
         });
         }
         {
@@ -148,6 +165,7 @@ pub(super) fn wire_sync_input(
                     }
                 }
             }
+            recount_sync(&w);
         });
         }
         {
@@ -168,6 +186,7 @@ pub(super) fn wire_sync_input(
                     vec_model.set_row_data(i, r);
                 }
             }
+            recount_sync(&w);
         });
         }
         {
@@ -190,6 +209,7 @@ pub(super) fn wire_sync_input(
                     }
                 }
             }
+            recount_sync(&w);
         });
         }
     }

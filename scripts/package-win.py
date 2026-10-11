@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -54,7 +55,25 @@ def main():
     os.makedirs(stage)
 
     print("[3/4] 组装 %s ..." % os.path.relpath(stage, ROOT))
-    shutil.copy2(EXE, os.path.join(stage, "MTerm.exe"))
+    # (#pkg-copy-verify 2026-10-11) 拷贝后校验哈希：踩过"链接器刚写完即拷，
+    # 拷到大小相同但内容损坏的 exe"（0xc0000005 启动崩、用户实测）。不一致
+    # 时等 1 秒重拷，最多 3 次。
+    dst_exe = os.path.join(stage, "MTerm.exe")
+    import hashlib
+    def _sha(p):
+        h = hashlib.sha256()
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    for attempt in range(3):
+        shutil.copy2(EXE, dst_exe)
+        if _sha(EXE) == _sha(dst_exe):
+            break
+        print("      [warn] exe 拷贝校验不一致，重试 (%d/3) ..." % (attempt + 1))
+        time.sleep(1)
+    else:
+        raise SystemExit("!! exe 拷贝哈希校验多次不一致，中止打包")
     for f in EXTRA:
         p = os.path.join(ROOT, f)
         if os.path.isfile(p):

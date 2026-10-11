@@ -124,7 +124,13 @@ pub(crate) fn refresh_channel_bars(
                 .row_data(slot)
                 .unwrap_or_default();
             crate::ui::ChannelBarInfo {
-                visible: true,
+                // (#chbar-per-tab 2026-10-11) 「隐藏状态条」跟随 tab 走：读的是
+                // **本 pane 活动 tab** 的 channel-bar-hidden，不是窗口全局标志
+                // （旧全局实现切到另一个 tab 会误用上一 tab 的隐藏态）。
+                visible: !active
+                    .as_ref()
+                    .map(|t| t.channel_bar_hidden)
+                    .unwrap_or(false),
                 letter: letter.into(),
                 color,
                 paused: active.as_ref().map(|t| t.channel_paused).unwrap_or(false),
@@ -578,6 +584,9 @@ fn show_about_window(main: &slint::Weak<AppWindow>) {
         }
     };
     if let Some(w) = main.upgrade() {
+        // (#dpr-hairline 2026-10-11) 关于窗口同样写真实缩放,否则它的 1px 线
+        // 在高 DPI 屏上按 Theme 默认的 1.0 算,粗一倍。
+        crate::theme::set_dpr_about(&about, w.window().scale_factor() as f32);
         about.set_dark_mode(w.get_dark_mode());
         about.set_ui_scale(w.get_ui_scale());
         about.set_ui_font_family(w.get_ui_font_family());
@@ -1511,9 +1520,14 @@ fn open_window(
     window.set_sys_filesystem_rows(ModelRc::from(sys_filesystem_model.clone()));
     let proc_win = Rc::new(ProcWindow::new().context("failed to build process window")?);
     proc_win.set_custom_titlebar(cfg!(not(target_os = "macos")));
+    // (#dpr-hairline 2026-10-11) 子窗口同样要写真实缩放:Theme 的
+    // device-pixel-ratio 默认 1.0,子窗口的 1px 线在高 DPI 屏上会粗一倍。
+    crate::theme::set_dpr_proc(&proc_win, window.window().scale_factor() as f32);
     proc_win.set_proc_list(ModelRc::from(proc_rows_model.clone()));
     let sys_win = Rc::new(SystemInfoWindow::new().context("failed to build system info window")?);
+    crate::theme::set_dpr_system_info(&sys_win, window.window().scale_factor() as f32);
     let editor_win = Rc::new(EditorWindow::new().context("failed to build editor window")?);
+    crate::theme::set_dpr_editor(&editor_win, window.window().scale_factor() as f32);
     editor_win.set_custom_titlebar(cfg!(not(target_os = "macos")));
     sync_editor_theme(&window, &editor_win);
     // Every fallible construction has now succeeded — register the window.
@@ -2537,6 +2551,10 @@ fn open_window(
         let weak = window.as_weak();
         let mirror = move |f: f64| {
             if let Some(w) = weak.upgrade() {
+                // Theme global 的遮蔽属性才是 hairline()/snap-to-device() 的
+                // 基准(见 theme/mod.rs #dpr-hairline);窗口内建属性一并写上,
+                // 供 .slint 里直接引用处使用。
+                crate::theme::set_dpr(&w, f as f32);
                 w.set_device_pixel_ratio(f as f32);
             }
         };
@@ -2547,6 +2565,7 @@ fn open_window(
         let weak = window.as_weak();
         move || {
             if let Some(w) = weak.upgrade() {
+                crate::theme::set_dpr(&w, w.window().scale_factor() as f32);
                 w.set_device_pixel_ratio(w.window().scale_factor() as f32);
             }
         }
@@ -2932,6 +2951,10 @@ fn open_window(
                     channel_letter: "".into(),
                     channel_color: slint::Color::default(),
                     channel_paused: false,
+                    channel_bar_hidden: false,
+                    // (#tab-card) welcome tab 无会话信息，卡片只显示名称
+                    host: "".into(),
+                    note: "".into(),
         id: "welcome".into(),
         title_len: tab_title_len(&t("新标签页", "New tab")),
         title: t("新标签页", "New tab").into(),
@@ -3587,21 +3610,88 @@ fn open_window(
             );
             move |slot: i32| {
             let slot = slot.clamp(0, 3) as usize;
+            let letter = ["A", "B", "C", "D"][slot];
+            let members;
             {
-                let mut s = store.borrow_mut();
+                let mut s = store_c.borrow_mut();
+                // (#chbar-close-fix 2026-10-11) 成员表必须**先取后清**：原实现
+                // 在 clear_channel 之后才读 channel_members()[slot]——那时已经
+                // 是空表，暂停标记一个都没清掉。
+                members = s.channel_members()[slot].clone();
                 s.clear_channel(slot);
                 // 关频道清该槽每个会话的暂停（§三：粒度一改，清/不清全重称）
-                for m in s.channel_members()[slot].clone() { s.clear_channel_pause(&m); }
+                for m in members { s.clear_channel_pause(&m); }
                 let _ = s.save();
             }
             if let Some(w) = weak_cc.upgrade() {
+                // (#chbar-close-fix) 状态条显隐判据是 **tab 行上的字母**，
+                // clear_channel 只动存储。必须对该槽每个成员 tab 逐行刷新
+                // （refresh_tab_channel_row 会同时写根 tabs 与 pane.tabs），
+                // 否则字母残留、条永远不消失（用户实测「关闭频道没反应」）。
+                for pi in 0..panes_model_c.row_count() {
+                    let Some(pane) = panes_model_c.row_data(pi) else { continue };
+                    for t in pane.tabs.iter() {
+                        if t.channel_letter.as_str() == letter {
+                            refresh_tab_channel_row(
+                                &w, &store_c.borrow(), &tabs_model_c, &panes_model_c,
+                                &t.id.as_str(),
+                            );
+                        }
+                    }
+                }
+                if w.get_menu_channel_letter().as_str() == letter {
+                    w.set_menu_channel_letter("".into());
+                    w.set_menu_channel_paused(false);
+                }
                 refresh_channel_bars(&w, &store_c.borrow(), &panes_model_c, &tabs_model_c);
             }
             }
         });
-        window.on_show_channel_bar(move || {
-            let Some(w) = weak.upgrade() else { return };
-            w.set_channel_bar_hidden(false);
+        // (#chbar-per-tab 2026-10-11) 隐藏/显示状态条：写**指定 tab 行**的
+        // channel-bar-hidden（根 tabs + pane.tabs 两处），再重算状态条。
+        let set_bar_hidden = |w: &AppWindow,
+                              tabs: &Rc<VecModel<TabInfo>>,
+                              panes: &Rc<VecModel<crate::ui::PaneInfo>>,
+                              tab_id: &str,
+                              hidden: bool| {
+            let apply = |m: &slint::ModelRc<crate::ui::TabInfo>| {
+                for i in 0..m.row_count() {
+                    if let Some(mut row) = m.row_data(i) {
+                        if row.id.as_str() == tab_id {
+                            row.channel_bar_hidden = hidden;
+                            m.set_row_data(i, row);
+                        }
+                    }
+                }
+            };
+            apply(&slint::ModelRc::from(tabs.clone()));
+            for pi in 0..panes.row_count() {
+                if let Some(pane) = panes.row_data(pi) {
+                    apply(&pane.tabs);
+                }
+            }
+        };
+        window.on_tab_hide_channel_bar({
+            let (weak, store_c, panes_model_c, tabs_model_c) = (
+                weak.clone(), store.clone(), panes_model_c.clone(), tabs_model_c.clone(),
+            );
+            move |tab_id: SharedString| {
+                let Some(w) = weak.upgrade() else { return };
+                set_bar_hidden(&w, &tabs_model_c, &panes_model_c, &tab_id.as_str(), true);
+                refresh_channel_bars(&w, &store_c.borrow(), &panes_model_c, &tabs_model_c);
+            }
+        });
+        window.on_show_channel_bar({
+            let (weak, store_c, panes_model_c, tabs_model_c) = (
+                weak.clone(), store.clone(), panes_model_c.clone(), tabs_model_c.clone(),
+            );
+            move |tab_id: SharedString| {
+                let Some(w) = weak.upgrade() else { return };
+                set_bar_hidden(&w, &tabs_model_c, &panes_model_c, &tab_id.as_str(), false);
+                // 隐藏时 refresh 把 visible 算成 false 并写回了模型；恢复显示
+                // 必须重算一次，否则条在下次触发点之前一直不回来。
+                refresh_channel_bars(&w, &store_c.borrow(), &panes_model_c, &tabs_model_c);
+            }
         });
     }
     // ── (#sync-dialog 2026-10-08) 同步输入对话框回调：装配入口（实现见
@@ -4159,6 +4249,21 @@ fn open_window(
         let ev_tabs = tabs_model.clone();
         let mut last_cursor_logical: Option<(f32, f32)> = None;
         let mut macos_wheel_accum = 0.0_f32;
+        // (#dpr-mirror-realign 2026-10-11) device-pixel-ratio 的初值镜像发生在
+        // run() 之前 —— 那时 winit 窗口还没映射,scale_factor() **恒为 1.0**
+        // (同文件 monitor_scale_at 注释里记着这个坑:200% 屏首次创建返回 1.0)。
+        // 而 winit 只在缩放**变化**时派发 ScaleFactorChanged,真实值 2.0 不会
+        // 再补发一次,于是 Theme.device-pixel-ratio 永远停在 1.0。
+        // 后果:hairline() = 1px/1.0 = 1 **逻辑**px,在 200% 屏上等于 2 个物理
+        // 像素 —— 窗口四边框、面板外框、splitter/分隔线全比设计值粗一倍
+        // (真机 2662x1316 截图实测:窗口描边 2px 满覆盖 #4E5157,面板外框
+        // 2px 满覆盖 #232428,均为 islands-dark 的 lstr/line 原色,非 AA 稀释)。
+        // snap-to-device() 同样按错误栅格取整,一起失效。
+        // 这里在每个窗口事件上重问一次真实缩放(值相同时不写,避免每帧触发
+        // 全 UI 重绘);首个事件到达时 HWND 已映射,拿到的一定是真值。
+        // 初值 0.0 = "还没写过"(合法缩放恒 > 0),不能用 NaN:与 NaN 的比较
+        // 恒为 false,realign 会永远不触发。
+        let mut applied_dpr: f32 = 0.0;
         // Track the inputs that make up WinActivity; recompute on each change.
         let mut focused = true;
         let mut minimized = false;
@@ -4185,6 +4290,19 @@ fn open_window(
                             #[cfg(any(windows, target_os = "linux"))]
                             set_window_icon(slint_window);
                         }
+                // (#dpr-mirror-realign 2026-10-11) 见上面 applied_dpr 的说明:
+                // 用 winit 窗口自己的 scale_factor 纠正镜像初值,只在真变了才写。
+                {
+                    let real = slint_window.scale_factor() as f32;
+                    if real.is_finite() && real > 0.0 && (real - applied_dpr).abs() > 0.001 {
+                        applied_dpr = real;
+                        if let Some(w) = weak.upgrade() {
+                            tracing::info!(dpr = real, "main: device-pixel-ratio realigned");
+                            crate::theme::set_dpr(&w, real);
+                            w.set_device_pixel_ratio(real);
+                        }
+                    }
+                }
                 // (#tray-restore-blank 2026-09-28) 托盘唤回空白取证:焦点/遮挡/
                 // 尺寸/重绘的到达时序。RedrawRequested 可能高频(终端逐帧重绘),
                 // 只打 debug;Focused/Occluded/Resized 低频且是诊断关键,打 info。
@@ -4433,7 +4551,15 @@ fn open_window(
                                 .window()
                                 .with_winit_window(|ww| ww.is_maximized())
                                 .unwrap_or(false);
-                            win.set_window_maximized(maxed);
+                            if maxed != win.get_window_maximized() {
+                                win.set_window_maximized(maxed);
+                                // (#drag-restore-blank-top 2026-10-11) 从最大化拖拽
+                                // 还原时，状态翻转发生在这里（或 DWM 动画后的延迟
+                                // 对账里），而 on_win_drag 返回时的那次整绘早已做
+                                // 完；门控元素(window-maximized)重排后增量渲染会
+                                // 留下顶部空白条，必须伴随一次整窗强制重绘。
+                                i_slint_backend_winit::force_full_redraw_all_windows();
+                            }
                             if !ev_window_size_tracking_ready.get()
                                 && is_wayland_window(&win.window())
                             {
@@ -4778,6 +4904,10 @@ fn open_window(
                 // 内容可能对不上，增量渲染会留下移动途中的残影/空白。移动不像 resize
                 // 那样有逐帧 move 事件可挂，所以只能在模态**返回后**请求一次整窗重绘。
                 i_slint_backend_winit::force_full_redraw_all_windows();
+                // (#drag-restore-blank-top 2026-10-11) 一次性 pending 会被还原
+                // 过渡期的第一帧消费掉，随后尺寸变化的帧仍走增量渲染，顶部/
+                // 右下角留下旧 buffer 残条。改为电平持有整绘，直到对账结束。
+                i_slint_backend_winit::set_full_redraw_hold(true);
                 // (#win-snap-icon 2026-10-10) 拖拽可能以 Aero Snap 收尾(拖到屏幕
                 // 上缘最大化、从最大化拖离还原),状态翻转发生在模态循环退出**之后**
                 // 的 DWM 动画里,紧随其后的首个 Resized 可能仍读到旧值。分几拍
@@ -4793,6 +4923,13 @@ fn open_window(
                                 .unwrap_or(false);
                             if maxed != w.get_window_maximized() {
                                 w.set_window_maximized(maxed);
+                                // 同上：状态晚翻时（如拖拽还原的 DWM 动画后），
+                                // 门控重排需要伴随整绘，否则顶部留白条。
+                                i_slint_backend_winit::force_full_redraw_all_windows();
+                            }
+                            if delay_ms == 800 {
+                                // 还原动画与全部对账节拍已过，恢复增量渲染。
+                                i_slint_backend_winit::set_full_redraw_hold(false);
                             }
                         }
                     });
@@ -7300,6 +7437,15 @@ fn wire_session_callbacks(
             // Compatibility mode also suppresses the SFTP side-channel so
             // bastions that only permit one proxied PTY connection stay alive.
             let has_sftp = should_start_sftp(&session);
+            // (#tab-card 2026-10-11) 悬浮信息卡的主机行：与左侧会话行同格式
+            //（builtin 无端口；其余 port>0 拼 host:port）。备注原样。
+            let tab_host = if id.starts_with("system:") {
+                session.host.clone()
+            } else if session.port > 0 {
+                format!("{}:{}", session.host, session.port)
+            } else {
+                session.host.clone()
+            };
 
             // Seed the per-tab status so the sidebar shows "连接中 host" the
             // moment this tab becomes active (the `changed active-tab-id`
@@ -7324,6 +7470,9 @@ fn wire_session_callbacks(
                     channel_letter: "".into(),
                     channel_color: slint::Color::default(),
                     channel_paused: false,
+                    channel_bar_hidden: false,
+                    host: tab_host.into(),
+                    note: session.note.clone().into(),
                 id: tab_id.clone().into(),
                 title_len: tab_title_len(&tab_title),
                 title: tab_title.into(),

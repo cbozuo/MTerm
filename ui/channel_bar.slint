@@ -6,11 +6,30 @@
 //   ① 底色 = term-bg（与 tab 行条带、终端区三者同色）；暂停**不转暖底**，
 //      左缘 3px warn 竖条 + 色点降透明 35% + 「本会话已暂停」徽标表达。
 //   ② 上下各 1px 分界线；顶线全宽贯通。
-// 流向说明三种文案（稿 syncBar 三分支）：
+// 流向说明三种文案（稿 syncBar 三分支；2026-10-11 用户定稿：动词是**同步**
+// 不是发送——频道是双向会话同步，不是单push）：
 //   暂停 → 「本会话已暂停：与频道内其它 N 个会话互不收发（它们之间仍互通）」
-//   无人 → 「暂无可投递的会话（本频道只有这一个在线会话）」
-//   正常 → 「正在把输入发往另外 N 个会话」
+//   无人 → 「暂无可同步的会话（本频道只有这一个在线会话）」
+//   正常 → 「正在与另外 N 个会话同步输入」
 import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+
+// (#chbar-menu-root 2026-10-11) ⋮ 菜单上报告请求：ChannelBar 被 `if` 条件
+// 实例化，PopupWindow 在该作用域里定位/内容渲染均不可靠（用户实测出空框 +
+// 菜单项漂移；还原比对文档同结论）→ 菜单改**AppWindow 根层集中浮层**绘制
+// （welcome 悬浮卡/主题下拉同款模式）。本组件只在点击 ⋮ 的事件期上报
+// （absolute-position 事件期读可靠，ChainPicker 同结论）。
+export struct ChannelMenuRequest {
+    ax: length,          // 条身右缘（窗口坐标）——菜单右缘贴它 = 贴终端边线
+    ay: length,          // 条身底（窗口坐标）——菜单压其下 4px
+    paused: bool,
+    has-pause: bool,     // 四按钮当前是否平铺可见；菜单只列**被收起**的项
+    has-leave: bool,
+    has-close: bool,
+    has-hide: bool,
+    tab-id: string,      // 操作回调用（暂停/离开/隐藏按 tab，关闭按 slot）
+    slot: int,
+}
 
 export component ChannelBar inherits Rectangle {
     in property <string> channel-letter;   // "A".."D"，空 = 不在频道（父级应不渲染）
@@ -23,44 +42,94 @@ export component ChannelBar inherits Rectangle {
     callback pause-channel();
     callback pause-resume();
     callback hide-bar();
+    // ⋮ 点击上报（根层画菜单）；tab-id/slot 由实例处传入（组件内拿不到 pane）
+    callback menu-request(ChannelMenuRequest);
+    in property <string> menu-tab-id;
+    in property <int> menu-slot;
+    // (#chbar-tip-root 2026-10-11) 状态说明被截断时的悬浮提示：**根层渲染**。
+    // 旧实现画在组件内（y 出界到条身下方）被后声明的终端区盖住 → 悬浮无框
+    // （用户实测）。这里只负责上报（文字 + 指针坐标），渲染在 app.slint 根尾。
+    callback stat-tip(string /* full text */, length /* abs-x */, length /* abs-y */);
+    callback stat-tip-off();
 
     // 稿内语义色按明暗取值（.chbar 用 t1/t2/t3/line 系）
     out property <color> bar-line: Theme.dark ? #3a3d46 : #bfbfc8;
     out property <color> bar-line-strong: Theme.dark ? #4a4e59 : #c7c7cc;
     out property <color> bar-warn: Theme.dark ? #e2a84a : #ff9f0a;
     out property <color> bar-danger: Theme.dark ? #e25c5c : #e05252;
-    // (#chbar-fit 2026-10-08) 稿 fitBarOps 的**渐进式**变体（用户定稿）：
-    // 宽度不够时按钮**从右向左**逐个收进 ⋮（能展示几个展示几个），⋮ 常驻
-    // 最右侧；菜单里只出现被收起的项。可用宽 = 条宽 − 左侧固定内容
-    // （padding/色点/标题/徽标/分隔线）− 状态说明最小可读宽(140px)。
+    // (#chbar-fit 2026-10-08 → 2026-10-11 渐进式定稿；同日二轮改优先级)
+    // 宽度不够时**先收按钮**（从右向左逐个收进 ⋮，⋮ 常驻最右侧），左侧
+    // 状态说明**保持全文不省略**——可用宽按状态说明的**完整实宽**预留；
+    // 四个按钮全收进 ⋮ 后仍不够，弹性项（状态说明）才开始压缩出省略号，
+    // 此时悬停出截断提示框。可用宽 = 条宽 − 左侧固定内容（padding/色点/
+    // 标题/徽标/分隔线）− 状态说明完整宽。
     property <length> ops-avail: self.width
         - (root.paused ? 9px : 12px) - 8px - 8px
         - ch-title.preferred-width
         - (root.paused ? (root.lang-en ? 48px : 64px) + 8px : 0px)
         - 8px - 1px - 8px
-        - 140px
-        - 8px;
-    // 累计宽（含 6px 间距）：暂停 76 / +离开 146 / +关闭 216 / +隐藏 290；
-    // 有按钮被收起时 ⋮(24px)+间距(8px) 占 32px。
-    in-out property <bool> show-pause: ops-avail >= 108px;
-    in-out property <bool> show-leave: ops-avail >= 178px;
-    in-out property <bool> show-close: ops-avail >= 248px;
-    in-out property <bool> show-hide: ops-avail >= 290px;
-    in-out property <bool> ops-tight: !show-hide;
+        - stat-txt.preferred-width
+        - 16px;
+    // 按钮宽 = 文本实宽 + 20px（左右各 10px 内距）。
+    // (#chbar-if-ops 2026-10-11) ⚠️ HL 里 `visible: false` **不脱离布局**仍占位
+    // （icons.slint 同坑实测）——四个按钮与 ops-lay 原来用 visible 显隐，全收
+    // 进 ⋮ 时 ops-lay 不可见却占 ~270px，把最右的 ⋮ 挤出条外（用户实测 ⋮ 消
+    // 失）。显隐全部改 `if` 条件元素（保证不占位）；if 内 id 外部不可见，按钮
+    // 宽度改从顶层隐藏测量元素取。
+    m-pause-lbl := Text {
+        visible: false;
+        font-size: 10.5px;
+        text: root.paused
+            ? (root.lang-en ? "Resume" : "继续参与")
+            : (root.lang-en ? "Pause" : "暂停参与");
+    }
+    m-leave-lbl := Text {
+        visible: false;
+        font-size: 10.5px;
+        text: root.lang-en ? "Leave" : "离开频道";
+    }
+    m-close-lbl := Text {
+        visible: false;
+        font-size: 10.5px;
+        text: root.lang-en ? "Close" : "关闭频道";
+    }
+    m-hide-lbl := Text {
+        visible: false;
+        font-size: 10.5px;
+        text: root.lang-en ? "Hide bar" : "隐藏状态条";
+    }
+    // (#chbar-ghost 2026-10-11 → 同日 r2 淡底胶囊) 用户反馈纯文字 ghost"不像
+    // 按钮、不协调" → 改**淡底胶囊**：常态 = 分隔线同族色 35% 淡底（可点击感、
+    // 不抢状态视觉），悬停加深 + 主字色；危险项常态淡红底。宽度 = 文本 + 12px。
+    property <length> w-pause: m-pause-lbl.preferred-width + 12px;
+    property <length> w-leave: m-leave-lbl.preferred-width + 12px;
+    property <length> w-close: m-close-lbl.preferred-width + 12px;
+    property <length> w-hide: m-hide-lbl.preferred-width + 12px;
+    // 收纳态 ⋮(24px) + 间距(8px) 占 32px；按钮间 6px。阈值随文本宽自适应。
+    in-out property <bool> show-pause: ops-avail >= w-pause + 32px;
+    in-out property <bool> show-leave: ops-avail >= w-pause + 6px + w-leave + 32px;
+    in-out property <bool> show-close: ops-avail >= w-pause + 6px + w-leave + 6px + w-close + 32px;
+    in-out property <bool> show-hide: ops-avail >= w-pause + 6px + w-leave + 6px + w-close + 6px + w-hide;
+    in-out property <bool> ops-tight: !show-hide;   // 至少有一个按钮被收起 → ⋮ 出现
+    in-out property <bool> ops-any: show-pause || show-leave || show-close || show-hide;
 
     height: 32px;
     background: Theme.term-bg;
 
-    // ② 顶线：absolute 1px、全宽、y:-1px（父容器需允许出界，Slint 默认不裁剪）
+    // ② 顶线：absolute 1px、全宽、y:-1px（父容器需允许出界，Slint 默认不裁剪）。
+    // (#chbar-line-thin 2026-10-11) 高 DPI 下 1px 逻辑像素要占 1.25~1.5 设备像素，
+    // 实测读感偏粗 → 叠 0.55 alpha 减淡，视觉上回到"发丝线"。
     Rectangle {
         x: 0; y: -1px;
         width: parent.width; height: 1px;
-        background: bar-line;
+        background: bar-line.with-alpha(0.35);
     }
+    // (#chbar-line 2026-10-11) 底线画在条身**内部**（y=height-1）：原来放在
+    // y=height 超出条身 1px，被父级裁剪 → 用户截图里底线消失。
     Rectangle {
-        x: 0; y: parent.height;
+        x: 0; y: parent.height - 1px;
         width: parent.width; height: 1px;
-        background: bar-line;
+        background: bar-line.with-alpha(0.35);
     }
     // ① 暂停态左缘 3px warn 竖条
     Rectangle {
@@ -73,7 +142,10 @@ export component ChannelBar inherits Rectangle {
         padding-left: root.paused ? 9px : 12px;
         padding-right: 8px;
         spacing: 8px;
-        alignment: center;
+        // (#chbar-align 2026-10-11) 不能设 alignment: center —— Slint 里
+        // alignment 非 stretch 时会**忽略 stretch**，整行被居中（用户截图：
+        // 内容整体缩在中间不左对齐）。默认 stretch + 尾部 spacer 才是
+        // 「左对齐 + 按钮靠右」。
 
         // 色点 8×8（稿 .cdot；暂停降透明 35%——不是换色）
         Rectangle {
@@ -109,212 +181,213 @@ export component ChannelBar inherits Rectangle {
             background: bar-line;
             y: (parent.height - self.height) / 2;
         }
-        // 流向说明（稿 syncBar 三分支；四要素齐全）
-        stat-txt := Text {
-            text: root.paused
-                ? (root.lang-en
-                    ? "This session is paused: no send/receive with the other "
-                      + (root.online-count - 1) + " session(s) in the channel (they still sync)"
-                    : "本会话已暂停：与频道内其它 " + (root.online-count - 1)
-                      + " 个会话互不收发（它们之间仍互通）")
-                : root.online-count <= 1
+        // 流向说明（稿 syncBar 三分支；四要素齐全）。
+        // (#chbar-shrink-pri 2026-10-11) 收缩优先级（用户定稿）：**按钮先收、
+        // 文字后缩**——只要有任一按钮平铺（show-pause true），状态说明不参与
+        // 伸缩（stretch 0，保持全文），盈余交给尾部 spacer；四个按钮全收进 ⋮
+        // 后（show-pause false），状态说明才成为唯一弹性项，空间不足时压缩出
+        // 省略号（此时悬停有截断提示框）。
+        stat-wrap := Rectangle {
+            horizontal-stretch: root.show-pause ? 0 : 1;
+            stat-txt := Text {
+                width: 100%; height: 100%;
+                text: root.paused
                     ? (root.lang-en
-                        ? "No session to deliver to (this is the only online session in the channel)"
-                        : "暂无可投递的会话（本频道只有这一个在线会话）")
-                    : root.lang-en
-                        ? "Sending input to " + (root.online-count - 1) + " other session(s)"
-                        : "正在把输入发往另外 " + (root.online-count - 1) + " 个会话";
-            color: Theme.text-muted; font-size: 11px;
-            vertical-alignment: center;
-            overflow: elide;
+                        ? "This session is paused: no send/receive with the other "
+                          + (root.online-count - 1) + " session(s) in the channel (they still sync)"
+                        : "本会话已暂停：与频道内其它 " + (root.online-count - 1)
+                          + " 个会话互不收发（它们之间仍互通）")
+                    : root.online-count <= 1
+                        ? (root.lang-en
+                            ? "No session to sync with (this is the only online session in the channel)"
+                            : "暂无可同步的会话（本频道只有这一个在线会话）")
+                        : root.lang-en
+                            ? "Syncing input with " + (root.online-count - 1) + " other session(s)"
+                            : "正在与另外 " + (root.online-count - 1) + " 个会话同步输入";
+                color: Theme.text-muted; font-size: 11px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            stat-ta := TouchArea {
+                width: 100%; height: 100%;
+                changed has-hover => {
+                    // 移开即清（welcome SessionRow 同款）
+                    if (!self.has-hover) { root.stat-tip-off(); }
+                }
+                pointer-event(e) => {
+                    // (#chbar-tip-root) 纯悬停移动跟手（welcome 同款：pointer-event
+                    // 的 move 在纯悬停时每次都触发；moved 只在按住时触发）。
+                    // 只在截断态上报；坐标 = 指针位置（根层据此定位/翻转）。
+                    if (e.kind == PointerEventKind.move && !self.pressed && stat-truncated) {
+                        root.stat-tip(stat-txt.text,
+                            self.absolute-position.x + self.mouse-x,
+                            self.absolute-position.y + self.mouse-y);
+                    }
+                }
+            }
         }
-        Rectangle { horizontal-stretch: 1; }
+        // 弹性 spacer：与状态说明互补伸缩（按钮平铺态由它吸收盈余把按钮推到
+        // 右缘；全收进 ⋮ 态让位给状态说明自己伸缩）。
+        Rectangle { horizontal-stretch: root.show-pause ? 1 : 0; }
 
-        // 平铺操作块（**四按钮**：暂停参与(↔继续参与) / 离开频道 / 关闭频道(红)
-        // / 隐藏状态条；宽够时平铺，放不下整体收进右侧 ⋮）
-        ops-lay := HorizontalLayout {
-            visible: !root.ops-tight;
+        // 平铺操作块（**四按钮**，2026-10-11 用户要求重做更协调）：
+        // 统一规格 = 高 22px / 圆角 Theme.radius-sm（与全局控件一致，不再手写
+        // 5px）/ 常态 1px border-subtle 细描边 + 10.5px 次级字色（低权重、
+        // 不与状态抢视觉），悬停 = bg-panel-strong 底 + border-strong 边 +
+        // 主字色；「关闭频道」唯一变体 = 红字淡红边，悬停淡红底。
+        // (#chbar-vcenter 2026-10-11) HL 里固定高子项会**顶对齐**（TopbarBtn
+        // 注释同坑），按钮因此浮在条身上沿。外壳不再设高（交叉轴默认拉伸到
+        // 条身全高 32px），22px 视觉胶囊由内层 y 居中；点击区 = 整格。
+        // (#chbar-if-ops) 外壳与按钮全部用 `if`（见顶部 w-* 处的说明）。
+        if root.ops-any : HorizontalLayout {
             spacing: 6px;
             alignment: start;
-            Rectangle {
-                visible: root.show-pause;
-                width: 76px; height: 22px; border-radius: 5px;
-                border-width: 1px; border-color: Theme.border-strong;
-                background: pa-ta.has-hover ? Theme.bg-panel-alt : transparent;
-                Text {
-                    text: root.paused
-                        ? (root.lang-en ? "Resume" : "继续参与")
-                        : (root.lang-en ? "Pause" : "暂停参与");
-                    color: root.paused ? bar-warn : Theme.text-primary;
-                    font-size: 11px;
-                    horizontal-alignment: center; vertical-alignment: center;
+            if root.show-pause : Rectangle {
+                width: root.w-pause;
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: 100%; height: 22px;
+                    border-radius: Theme.radius-sm;
+                    background: pa-ta.has-hover ? bar-line.with-alpha(0.6) : bar-line.with-alpha(0.35);
+                    Text {
+                        width: 100%; height: 100%;
+                        text: root.paused
+                            ? (root.lang-en ? "Resume" : "继续参与")
+                            : (root.lang-en ? "Pause" : "暂停参与");
+                        color: pa-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        font-size: 10.5px;
+                        horizontal-alignment: center; vertical-alignment: center;
+                    }
                 }
                 pa-ta := TouchArea {
+                    width: 100%; height: 100%;
                     mouse-cursor: pointer;
                     clicked => { root.paused ? root.pause-resume() : root.pause-channel(); }
                 }
             }
-            Rectangle {
-                visible: root.show-leave;
-                width: 64px; height: 22px; border-radius: 5px;
-                border-width: 1px; border-color: Theme.border-strong;
-                background: lv-ta.has-hover ? Theme.bg-panel-alt : transparent;
-                Text {
-                    text: root.lang-en ? "Leave" : "离开频道";
-                    color: Theme.text-primary; font-size: 11px;
-                    horizontal-alignment: center; vertical-alignment: center;
+            if root.show-leave : Rectangle {
+                width: root.w-leave;
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: 100%; height: 22px;
+                    border-radius: Theme.radius-sm;
+                    background: lv-ta.has-hover ? bar-line.with-alpha(0.6) : bar-line.with-alpha(0.35);
+                    Text {
+                        width: 100%; height: 100%;
+                        text: root.lang-en ? "Leave" : "离开频道";
+                        color: lv-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        font-size: 10.5px;
+                        horizontal-alignment: center; vertical-alignment: center;
+                    }
                 }
                 lv-ta := TouchArea {
+                    width: 100%; height: 100%;
                     mouse-cursor: pointer;
                     clicked => { root.leave-channel(); }
                 }
             }
-            Rectangle {
-                visible: root.show-close;
-                width: 64px; height: 22px; border-radius: 5px;
-                border-width: 1px; border-color: bar-danger.with-alpha(0.45);
-                background: cl-ta.has-hover ? bar-danger.with-alpha(0.12) : transparent;
-                Text {
-                    text: root.lang-en ? "Close" : "关闭频道";
-                    color: bar-danger; font-size: 11px;
-                    horizontal-alignment: center; vertical-alignment: center;
+            if root.show-close : Rectangle {
+                width: root.w-close;
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: 100%; height: 22px;
+                    border-radius: Theme.radius-sm;
+                    background: cl-ta.has-hover ? bar-danger.with-alpha(0.18) : bar-danger.with-alpha(0.08);
+                    Text {
+                        width: 100%; height: 100%;
+                        text: root.lang-en ? "Close" : "关闭频道";
+                        color: bar-danger; font-size: 10.5px;
+                        horizontal-alignment: center; vertical-alignment: center;
+                    }
                 }
                 cl-ta := TouchArea {
+                    width: 100%; height: 100%;
                     mouse-cursor: pointer;
                     clicked => { root.close-channel(); }
                 }
             }
-            Rectangle {
-                visible: root.show-hide;
-                width: 68px; height: 22px; border-radius: 5px;
-                border-width: 1px; border-color: Theme.border-strong;
-                background: hd-ta.has-hover ? Theme.bg-panel-alt : transparent;
-                Text {
-                    text: root.lang-en ? "Hide bar" : "隐藏状态条";
-                    color: Theme.text-secondary; font-size: 11px;
-                    horizontal-alignment: center; vertical-alignment: center;
+            if root.show-hide : Rectangle {
+                width: root.w-hide;
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: 100%; height: 22px;
+                    border-radius: Theme.radius-sm;
+                    background: hd-ta.has-hover ? bar-line.with-alpha(0.6) : bar-line.with-alpha(0.35);
+                    Text {
+                        width: 100%; height: 100%;
+                        text: root.lang-en ? "Hide bar" : "隐藏状态条";
+                        color: hd-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        font-size: 10.5px;
+                        horizontal-alignment: center; vertical-alignment: center;
+                    }
                 }
                 hd-ta := TouchArea {
+                    width: 100%; height: 100%;
                     mouse-cursor: pointer;
                     clicked => { root.hide-bar(); }
                 }
             }
         }
 
-        // ⋮（收纳态：宽度放不下四按钮时整体出现在最右侧）
-        more-btn := Rectangle {
-            visible: root.ops-tight;
-            width: 24px; height: 22px; border-radius: 5px;
-            background: more-ta.has-hover ? Theme.bg-panel-alt : transparent;
-            y: (parent.height - self.height) / 2;
-            Text {
-                width: 100%; height: 100%;
-                text: "⋮";
-                color: more-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
-                font-size: 14px;
-                horizontal-alignment: center; vertical-alignment: center;
+        // ⋮（渐进收纳：任一按钮被收起就出现在最右侧，菜单里列出被收起的项）。
+        // (#chbar-kebab 2026-10-11) 文本字符 "⋮" 在部分字体下无字形 → 渲染空白
+        // （用户截图：收纳态右侧什么都不显示）。改走统一 SVG 图标集 more-vert。
+        if root.ops-tight : Rectangle {
+            width: 24px;
+            more-pill := Rectangle {
+                y: (parent.height - self.height) / 2;
+                width: 100%; height: 22px;
+                border-radius: Theme.radius-sm;
+                background: more-ta.has-hover ? Theme.bg-panel-strong : transparent;
+                Icon {
+                    glyph: "more-vert";
+                    tint: more-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                    size: 14px;
+                }
             }
             more-ta := TouchArea {
+                width: 100%; height: 100%;
                 mouse-cursor: pointer;
                 clicked => {
-                    // 事件期读 absolute-position（布局期恒 0，ChainPicker 同结论）
-                    menu-x = more-btn.absolute-position.x + more-btn.width - 140px;
-                    menu-y = more-btn.absolute-position.y + more-btn.height + 4px;
-                    ch-menu.show();
+                    // (#chbar-menu-root) 事件期读 absolute-position（布局期恒 0，
+                    // ChainPicker 同结论）。ax = 条身右缘（含 padding-right 8px）
+                    // → 根层菜单右缘贴它 = 贴终端右边线，随条宽自适应。
+                    root.menu-request({
+                        // if 条件元素不能挂 id → 用 self（TouchArea 铺满外壳，
+                        // 几何等同原 more-btn）
+                        ax: self.absolute-position.x + self.width + 8px,
+                        ay: self.absolute-position.y + self.height,
+                        paused: root.paused,
+                        has-pause: root.show-pause,
+                        has-leave: root.show-leave,
+                        has-close: root.show-close,
+                        has-hide: root.show-hide,
+                        tab-id: root.menu-tab-id,
+                        slot: root.menu-slot,
+                    });
                 }
             }
         }
     }
 
-    property <length> menu-x;
-    property <length> menu-y;
-    ch-menu := PopupWindow {
-        x: root.menu-x;
-        y: root.menu-y;
-        width: 150px;
-        height: ((root.show-pause ? 0 : 1) + (root.show-leave ? 0 : 1)
-                 + (root.show-close ? 0 : 1) + (root.show-hide ? 0 : 1)) * 29px + 13px;
-        Rectangle {
-            background: Theme.popup-bg;
-            border-radius: Theme.radius-sm;
-            border-width: 1px; border-color: Theme.border-strong;
-            drop-shadow-blur: 12px; drop-shadow-color: #00000060;
-            VerticalLayout {
-                padding: 4px;
-                spacing: 1px;
-                // 菜单里只列**被收起**的项（平铺可见的不重复出现）
-                Rectangle {
-                    visible: !root.show-pause;
-                    height: 29px;
-                    background: mi-pause-ta.has-hover ? Theme.bg-panel-alt : transparent;
-                    border-radius: 5px;
-                    Text {
-                        x: 10px;
-                        text: root.paused
-                            ? (root.lang-en ? "Resume channel" : "继续参与频道")
-                            : (root.lang-en ? "Pause channel" : "暂停参与频道");
-                        color: Theme.text-secondary; font-size: 11px;
-                        vertical-alignment: center;
-                    }
-                    mi-pause-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => {
-                            ch-menu.close();
-                            root.paused ? root.pause-resume() : root.pause-channel();
-                        }
-                    }
-                }
-                Rectangle {
-                    visible: !root.show-leave;
-                    height: 29px;
-                    background: mi-leave-ta.has-hover ? Theme.bg-panel-alt : transparent;
-                    border-radius: 5px;
-                    Text {
-                        x: 10px;
-                        text: root.lang-en ? "Leave channel" : "离开频道";
-                        color: Theme.text-secondary; font-size: 11px;
-                        vertical-alignment: center;
-                    }
-                    mi-leave-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { ch-menu.close(); root.leave-channel(); }
-                    }
-                }
-                Rectangle {
-                    visible: !root.show-close;
-                    height: 29px;
-                    background: mi-close-ta.has-hover ? #dc4b44.with-alpha(0.12) : transparent;
-                    border-radius: 5px;
-                    Text {
-                        x: 10px;
-                        text: root.lang-en ? "Close channel" : "关闭频道";
-                        color: bar-danger; font-size: 11px;
-                        vertical-alignment: center;
-                    }
-                    mi-close-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { ch-menu.close(); root.close-channel(); }
-                    }
-                }
-                Rectangle { height: 1px; background: bar-line; }
-                Rectangle {
-                    visible: !root.show-hide;
-                    height: 29px;
-                    background: mi-hide-ta.has-hover ? Theme.bg-panel-alt : transparent;
-                    border-radius: 5px;
-                    Text {
-                        x: 10px;
-                        text: root.lang-en ? "Hide status bar" : "隐藏状态条";
-                        color: Theme.text-secondary; font-size: 11px;
-                        vertical-alignment: center;
-                    }
-                    mi-hide-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { ch-menu.close(); root.hide-bar(); }
-                    }
-                }
+    // (#chbar-tip-root 2026-10-11) 截断判定 + 悬停首锚/清除。首锚 Timer 模式
+    // 与 IconBtn 的 tip-delay 相同（Timer 回调里读 absolute-position 可靠）；
+    // 渲染在根层（组件内出界浮层会被终端区盖住，用户实测）。
+    property <bool> stat-truncated: stat-txt.preferred-width > stat-txt.width + 0.5px;
+    stat-tip-delay := Timer {
+        interval: 150ms;
+        running: stat-ta.has-hover;
+        triggered => {
+            if (stat-truncated) {
+                root.stat-tip(stat-txt.text,
+                    stat-ta.absolute-position.x + stat-ta.mouse-x,
+                    stat-ta.absolute-position.y + stat-ta.mouse-y);
             }
         }
     }
+
+    // 菜单本体已迁 AppWindow 根层集中浮层（#chbar-menu-root）：本组件只负责
+    // 点击 ⋮ 时上报 ChannelMenuRequest（含四按钮平铺态，根层据此只列被收起
+    // 的项）。见 app.slint 根尾部的 chbar-menu 浮层。
     in-out property <bool> lang-en: false;
 }

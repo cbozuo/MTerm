@@ -26,6 +26,13 @@ export struct TabInfo {
     channel_letter: string,
     channel_color: color,
     channel_paused: bool,
+    // (#chbar-per-tab 2026-10-11) 「隐藏状态条」跟随 tab 走，不是全局：每个
+    // tab 各自记一份。右键菜单与状态条显隐都读它。
+    channel_bar_hidden: bool,
+    // (#tab-card 2026-10-11) 悬浮信息卡数据（左侧组内成员同款）：主机行与
+    // 备注行。welcome tab 为空串（不显示对应行）。
+    host: string,
+    note: string,
 }
 
 // --- SingleTab -------------------------------------------------------------
@@ -41,6 +48,13 @@ component SingleTab inherits Rectangle {
     callback duplicated();
     // Right-click (v0.5): request a context menu at the given absolute position.
     callback context-requested(length /* abs-x */, length /* abs-y */);
+    // (#tab-card 2026-10-11) 悬停信息卡上报（左侧组内成员同款）：Timer 150ms
+    // 首锚 + pointer-event move 跟手，移开即清。经 TabBar 中转到 AppWindow
+    // 根层集中浮层渲染。
+    callback card-out(string /* title */, string /* host */, string /* note */,
+                      string /* channel */, bool /* paused */,
+                      length /* abs-x */, length /* abs-y */);
+    callback card-clear();
     // Drag lifecycle (#408). The tab only *reports* the gesture; the strip owns
     // every bit of reorder state and the model is not touched before the drop, so
     // this element — and with it the pointer grab — survives the whole drag.
@@ -104,6 +118,13 @@ component SingleTab inherits Rectangle {
                 root.context-requested(
                     self.absolute-position.x + self.mouse-x,
                     self.absolute-position.y + self.mouse-y);
+            } else if (e.kind == PointerEventKind.move && !self.pressed && !root.dragging) {
+                // (#tab-card) 纯悬停移动跟手（welcome 同款；moved 只在按住时
+                // 触发，悬停跟随只能挂 pointer-event move）。
+                root.card-out(root.info.title, root.info.host, root.info.note,
+                              root.info.channel-letter, root.info.channel-paused,
+                              self.absolute-position.x + self.mouse-x,
+                              self.absolute-position.y + self.mouse-y);
             } else if (e.kind == PointerEventKind.up) {
                 if (root.pressing && !root.dragging) {
                     root.selected();
@@ -144,6 +165,28 @@ component SingleTab inherits Rectangle {
         }
         double-clicked => {
             if (root.info.kind != "welcome") { root.duplicated(); }
+        }
+        // (#tab-card 2026-10-11) 悬浮信息卡：悬停 150ms 首锚（welcome 同参），
+        // 纯悬停移动跟手（pointer-event move 分支，moved 只在按住时触发）；
+        // 移开/拖拽即清。频道行由渲染层按 letter 拼。
+        changed has-hover => {
+            if (!self.has-hover) { root.card-clear(); }
+        }
+    }
+
+    // 悬停信息卡首锚计时器（welcome SessionRow 同款 150ms）
+    card-delay := Timer {
+        interval: 150ms;
+        running: touch.has-hover && !root.dragging;
+        triggered => {
+            root.card-out(
+                root.info.title,
+                root.info.host,
+                root.info.note,
+                root.info.channel-letter,
+                root.info.channel-paused,
+                touch.absolute-position.x + touch.mouse-x,
+                touch.absolute-position.y + touch.mouse-y);
         }
     }
 
@@ -324,8 +367,13 @@ export component TabBar inherits Rectangle {
     callback tab-join-channel(string /* tab-id */, int /* slot 0..3 */);
     callback tab-pause-channel(string /* tab-id */);
     callback tab-leave-channel(string /* tab-id */);
-    callback show-channel-bar();
-    in-out property <bool> channel-bar-hidden: false;
+    callback show-channel-bar(string /* tab-id */);
+    // (#chbar-per-tab) 右键菜单读的是**被右击那个 tab** 的隐藏态，不是全局。
+    in-out property <bool> menu-channel-bar-hidden: false;
+    // (#tab-card) 悬浮信息卡中转槽：SingleTab 写入，实例侧绑到 AppWindow 根
+    // 集中浮层（SessionRow→Welcome→根 同一链路模式）。
+    callback tab-card-out(string, string, string, string, bool, length, length);
+    callback tab-card-clear();
     in property <bool> lang-en: false;   // 频道菜单双语（app.slint 转发）
     in-out property <string> menu-channel-letter: "";
     in-out property <bool> menu-channel-paused: false;
@@ -585,8 +633,22 @@ export component TabBar inherits Rectangle {
                         selected => { root.tab-selected(tab.id); }
                         closed => { root.tab-closed(tab.id); }
                         duplicated => { root.tab-duplicate(tab.id); }
+                        // (#tab-card) 信息卡上报中转到 TabBar 级（实例侧再绑根浮层）
+                        card-out(t, h, n, c, p, ax, ay) => {
+                            root.tab-card-out(t, h, n, c, p, ax, ay);
+                        }
+                        card-clear() => { root.tab-card-clear(); }
                         context-requested(ax, ay) => {
+                            // (#tab-card) 右键即视为离开悬停，信息卡先清
+                            root.tab-card-clear();
                             root.menu-target = tab.id;
+                            // (#chbar-menu-reset 2026-10-11) 频道相关菜单态必须
+                            // **从被右击的 tab 行重置**：旧实现沿用上一次 join/
+                            // pause 留下的全局值，新开 tab 右键会看到上一个 tab
+                            // 的频道被误勾选（用户实测）。
+                            root.menu-channel-letter = tab.channel-letter;
+                            root.menu-channel-paused = tab.channel-paused;
+                            root.menu-channel-bar-hidden = tab.channel-bar-hidden;
                             root.menu-x = ax - root.absolute-position.x;
                             root.menu-y = ay - root.absolute-position.y;
                             tab-menu.show();
@@ -789,12 +851,28 @@ export component TabBar inherits Rectangle {
     tab-menu := PopupWindow {
         x: root.menu-x;
         y: root.menu-y;
-        width: 140px;
-        // (#tab-32) 频道组动态加入：高度按菜单状态计算（基线 8 项 = 原 7 项
-        // + 加入频道行；已加入再加暂停/离开两行；barHidden 再加显示状态条一行）。
-        height: (8
-            + (root.menu-channel-letter != "" ? 2 : 0)
-            + (root.channel-bar-hidden ? 1 : 0)) * 29px + 13px + 30px;
+        // (#tab-menu-fit 2026-10-11) 宽度自适应（原 140px 固定太宽）：量最长
+        // 本地化文案（复制打开）+ 左右内距 20 + 余量；下限 102px 兜住色块行
+        // （左 padding 10 + 4×16 色块 + 3×8 间距）。
+        tm-m := Text {
+            visible: false;
+            font-size: Theme.fs-sm;
+            text: @tr("Duplicate connection");
+        }
+        width: max(102px, tm-m.preferred-width + 24px);
+        // 高度改**精确逐项**计算：旧公式 (8+2)*29+13+30 用 29px/项而 TabMenuItem
+        // 实际 28px，且没算标题行 20px —— 底部多出一截空白（用户实测）。
+        // 58 = padding8 + 标题20 + 色块30；57 = sep1+暂停28+离开28；
+        // 57 = sep+复制+重命名；85 = sep+右拆+下拆+合并；29 = sep+关闭；
+        // spacing = 项数-1 = 10 + 2(letter) + 1(bar-hidden)。
+        height: 58px
+            + (root.menu-channel-letter != "" ? 57px : 0px)
+            + (root.menu-channel-bar-hidden ? 28px : 0px)
+            + 57px
+            + 85px
+            + 29px
+            + (10px + (root.menu-channel-letter != "" ? 2px : 0px)
+                + (root.menu-channel-bar-hidden ? 1px : 0px));
         Rectangle {
             background: Theme.popup-bg;
             border-radius: Theme.radius-sm;
@@ -816,9 +894,10 @@ export component TabBar inherits Rectangle {
                 Rectangle {
                     height: 30px;
                     HorizontalLayout {
-                        padding-left: 10px;
+                        // (#tab-menu-fit-r2 2026-10-11) 色块行**居中**排（原贴左
+                        // + 大 padding，菜单收窄后与文字项不对齐、显挤）。
                         spacing: 8px;
-                        alignment: start;
+                        alignment: center;
                         // 4 个 16px 色块（固定 4 槽；常驻、点选归频道——点任意
                         // 色块即**切换**到该频道，已加入的再点其它色块=换频道）。
                         // (#tab-32-join-distinct 2026-10-08) 加入态 = 2px 描边环
@@ -860,9 +939,9 @@ export component TabBar inherits Rectangle {
                     label: root.lang-en ? "Leave channel" : "离开频道";
                     clicked => { root.tab-leave-channel(root.menu-target); }
                 }
-                if root.channel-bar-hidden : TabMenuItem {
+                if root.menu-channel-bar-hidden : TabMenuItem {
                     label: root.lang-en ? "Show channel bar" : "显示状态条";
-                    clicked => { root.show-channel-bar(); }
+                    clicked => { root.show-channel-bar(root.menu-target); }
                 }
                 Rectangle { height: 1px; background: Theme.border-subtle; }
                 TabMenuItem {

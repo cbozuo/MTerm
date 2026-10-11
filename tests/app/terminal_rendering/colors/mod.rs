@@ -72,3 +72,41 @@ fn islands_dark_ansi_indices_come_from_the_theme() {
     assert_eq!(fg.as_argb_encoded(), 0xffbcbec4);
     assert_eq!(bg.as_argb_encoded(), 0, "默认终端底必须是全透明、不携带颜色");
 }
+
+/// MTerm 亮色档「素纸」（islands-light —— id 与 islands-dark 配对，但色值是
+/// MTerm 自主设计，非上游移植）的终端 ANSI 回归：索引色原样查表命中该套
+/// ansi16，不走明度改写；**默认前景 = t1 = #33302C**（灰族唯一，与暗档
+/// #BCBEC4 各一套），默认背景仍全透明。亮底上 bright 档是**更深**的同色相
+/// （明度与暗底相反）—— 槽 12 若被改成更亮的色，这条会先炸。
+#[test]
+fn islands_light_ansi_indices_come_from_the_theme() {
+    let pal = crate::theme::by_id("islands-light").expect("MTerm · 亮必须在色表里");
+
+    // 槽 1/2/4/6 = 红/绿/蓝/青（青与强调色 #1f766b 同族，是该套的纪律之一）
+    for (idx, argb) in [
+        (1u8, 0xffb4483fu32),
+        (2, 0xff4f7d4a),
+        (4, 0xff4a6f96),
+        (6, 0xff1c7a72),
+    ] {
+        assert_eq!(
+            vt_span_colors(vt100::Color::Idx(idx), vt100::Color::Default, false, false, true, pal)
+                .0
+                .as_argb_encoded(),
+            argb,
+            "ANSI 槽 {idx} 查表值不对"
+        );
+    }
+    // 槽 12 = brightBlue：亮底上是**更深**的同色相（#2f5580 < #4a6f96 明度）
+    assert_eq!(
+        vt_span_colors(vt100::Color::Idx(12), vt100::Color::Default, false, false, true, pal)
+            .0
+            .as_argb_encoded(),
+        0xff2f5580
+    );
+    // 默认前景 = 该套 tfg（= t1，灰族唯一）；默认背景仍全透明
+    let (fg, bg) =
+        vt_span_colors(vt100::Color::Default, vt100::Color::Default, false, false, true, pal);
+    assert_eq!(fg.as_argb_encoded(), 0xff33302c);
+    assert_eq!(bg.as_argb_encoded(), 0, "默认终端底必须是全透明、不携带颜色");
+}

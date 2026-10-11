@@ -22,7 +22,7 @@ export { ThemeEntry }
 export { Theme }
 import { Sidebar, DiskInfo } from "sidebar.slint";
 import { TabBar, TabInfo } from "tabs.slint";
-import { ChannelBar } from "channel_bar.slint";
+import { ChannelBar, ChannelMenuRequest } from "channel_bar.slint";
 // (#sync-dialog-r2) 同步输入：状态全局 + 宿主 + 对话框本体 + 数据结构，
 // 全部在 sync_input_dialog.slint（app.slint 只剩按钮接线 + 宿主实例化）。
 import { SyncInputDialog, SyncSessionInfo, SyncInputState, SyncDialogHost } from "sync_input_dialog.slint";
@@ -1438,8 +1438,32 @@ export component AppWindow inherits Window {
     callback tab-join-channel(string, int);
     callback tab-pause-channel(string);
     callback tab-leave-channel(string);
-    callback show-channel-bar();
-    in-out property <bool> channel-bar-hidden: false;
+    callback show-channel-bar(string /* tab-id */);
+    callback tab-hide-channel-bar(string /* tab-id */);
+    // (#chbar-menu-root 2026-10-11) ⋮ 菜单的根层集中浮层槽：ChannelBar 被
+    // `if` 条件实例化，其内部 PopupWindow 定位/内容渲染不可靠（用户实测空框
+    // + 菜单项漂移）→ 改为点击 ⋮ 事件期上报请求，菜单在窗口根尾部绘制
+    // （welcome 悬浮卡/主题下拉同款模式），backdrop 点击即关。
+    in-out property <bool> chbar-menu-open: false;
+    in-out property <ChannelMenuRequest> chbar-menu: {
+        ax: 0px, ay: 0px, paused: false,
+        has-pause: false, has-leave: false, has-close: false, has-hide: false,
+        tab-id: "", slot: 0,
+    };
+    // (#tab-card 2026-10-11) tab 悬浮信息卡（左侧组内成员同款）的集中渲染槽：
+    // SingleTab 经 TabBar 中转写入，窗口根尾部渲染。
+    in-out property <string> tab-card-title;
+    in-out property <string> tab-card-host;
+    in-out property <string> tab-card-note;
+    in-out property <string> tab-card-channel;
+    in-out property <bool> tab-card-channel-paused;
+    in-out property <length> tab-card-x;
+    in-out property <length> tab-card-y;
+    // (#chbar-tip-root 2026-10-11) 频道状态条截断提示的集中渲染槽（ChannelBar
+    // 上报完整文案 + 指针坐标；组件内出界浮层会被终端区盖住，故走根层）。
+    in-out property <string> chbar-stat-tip;
+    in-out property <length> chbar-stat-tip-x;
+    in-out property <length> chbar-stat-tip-y;
     in-out property <string> menu-channel-letter: "";
     in-out property <bool> menu-channel-paused: false;
     // WebDAV config sync (#185): manual upload/download of portable session JSON.
@@ -2063,9 +2087,12 @@ export component AppWindow inherits Window {
                 // 过渡含混(用户反馈缺一条边线条)。放在 HL 之后 → 盖在
                 // WinBtn 悬停高亮的最后一行像素上,1px 无感。
                 Rectangle {
-                    y: parent.height - self.height;
+                    // (#panel-line-hairline 2026-10-11) 1 设备像素 + 贴设备网格,
+                    // 与窗口描边/面板外框同粗细(逻辑 1px 在 200% 屏上是 2 物理
+                    // 像素,是主界面上唯一还剩的粗线)。
+                    y: Theme.snap-to-device(parent.height) - Theme.hairline();
                     width: 100%;
-                    height: 1px;
+                    height: Theme.hairline();
                     background: Theme.border-subtle;
                 }
             }
@@ -2380,11 +2407,13 @@ export component AppWindow inherits Window {
                 // 1px visible line, centred inside the 4px hit-area. Lights up in
                 // the theme accent on hover / drag (Todo 3); otherwise a static
                 // `border-subtle` thin line so it matches the left edge (Todo 2).
+                // (#panel-line-hairline 2026-10-11) 线宽取 1 设备像素,与窗口描边/
+                // 面板外框统一(逻辑 1px 在 125% 下是 1.25 设备行,显粗)。
                 Rectangle {
-                    x: parent.width < parent.height ? (parent.width - 1px) / 2 : 0px;
-                    y: parent.width < parent.height ? 0px : (parent.height - 1px) / 2;
-                    width:  parent.width < parent.height ? 1px : parent.width;
-                    height: parent.width < parent.height ? parent.height : 1px;
+                    x: parent.width < parent.height ? (parent.width - Theme.hairline()) / 2 : 0px;
+                    y: parent.width < parent.height ? 0px : (parent.height - Theme.hairline()) / 2;
+                    width:  parent.width < parent.height ? Theme.hairline() : parent.width;
+                    height: parent.width < parent.height ? parent.height : Theme.hairline();
                     background: ws-split-ta.has-hover || dock-area.welcome-sidebar-dragging
                         ? Theme.accent : Theme.border-subtle;
                 }
@@ -2603,10 +2632,12 @@ export component AppWindow inherits Window {
                 Rectangle {
                     // (#splitter-v2) 居中于 4px 命中区（同 welcome 侧写法），
                     // 不再贴侧栏内缘。
-                    x: parent.width < parent.height ? (parent.width - 1px) / 2 : 0px;
-                    y: parent.width < parent.height ? 0px : (parent.height - 1px) / 2;
-                    width:  parent.width < parent.height ? 1px : parent.width;
-                    height: parent.width < parent.height ? parent.height : 1px;
+                    // (#panel-line-hairline 2026-10-11) 线宽取 1 设备像素,与窗口
+                    // 描边/面板外框统一(逻辑 1px 在 125% 下是 1.25 设备行,显粗)。
+                    x: parent.width < parent.height ? (parent.width - Theme.hairline()) / 2 : 0px;
+                    y: parent.width < parent.height ? 0px : (parent.height - Theme.hairline()) / 2;
+                    width:  parent.width < parent.height ? Theme.hairline() : parent.width;
+                    height: parent.width < parent.height ? parent.height : Theme.hairline();
                     background: sb-split-ta.has-hover || root.sidebar-dragging
                         ? Theme.accent : Theme.border-subtle;
                 }
@@ -2669,14 +2700,30 @@ export component AppWindow inherits Window {
                         reserve-right: root.custom-titlebar ? 0px : pane.reserve-right;
                         show-new-tab: !root.welcome-as-sidebar;
                         can-merge-pane: root.panes.length > 1;
-                    channel-bar-hidden <=> root.channel-bar-hidden;
                     lang-en: root.lang-en;
                     menu-channel-letter <=> root.menu-channel-letter;
                     menu-channel-paused <=> root.menu-channel-paused;
                     tab-join-channel(t, slot) => { root.tab-join-channel(t, slot); }
                     tab-pause-channel(t) => { root.tab-pause-channel(t); }
                     tab-leave-channel(t) => { root.tab-leave-channel(t); }
-                    show-channel-bar() => { root.show-channel-bar(); }
+                    show-channel-bar(t) => { root.show-channel-bar(t); }
+                    // (#tab-card) tab 悬浮信息卡中转到根层集中浮层
+                    tab-card-out(t, h, n, c, p, ax, ay) => {
+                        root.tab-card-title = t;
+                        root.tab-card-host = h;
+                        root.tab-card-note = n;
+                        root.tab-card-channel = c;
+                        root.tab-card-channel-paused = p;
+                        root.tab-card-x = ax;
+                        root.tab-card-y = ay;
+                    }
+                    tab-card-clear() => {
+                        root.tab-card-title = "";
+                        root.tab-card-host = "";
+                        root.tab-card-note = "";
+                        root.tab-card-channel = "";
+                        root.tab-card-channel-paused = false;
+                    }
                         tabs: pane.tabs;
                         active-id: pane.active-id;
                         ext-drag-over: root.tab-drag-live
@@ -2732,12 +2779,32 @@ export component AppWindow inherits Window {
                     pause-channel() => { root.tab-pause-channel(pane.active-id); }
                     pause-resume() => { root.tab-pause-channel(pane.active-id); }
                     close-channel() => { root.pane-close-channel(root.pane-channel-bars[pi].slot); }
-                    hide-bar() => { root.channel-bar-hidden = true; }
+                    hide-bar() => { root.tab-hide-channel-bar(pane.active-id); }
+                    // (#chbar-menu-root) 菜单操作走根层浮层：注入操作目标 + 接上报
+                    menu-tab-id: pane.active-id;
+                    menu-slot: root.pane-channel-bars[pi].slot;
+                    menu-request(r) => {
+                        root.chbar-menu = r;
+                        root.chbar-menu-open = true;
+                    }
+                    // (#chbar-tip-root) 截断提示上报转发到根层浮层
+                    stat-tip(t, ax, ay) => {
+                        root.chbar-stat-tip = t;
+                        root.chbar-stat-tip-x = ax;
+                        root.chbar-stat-tip-y = ay;
+                    }
+                    stat-tip-off() => { root.chbar-stat-tip = ""; }
                 }
                 // Content area swaps based on active tab kind.
                 Rectangle {
                     vertical-stretch: 1;
-                    background: Theme.bg-root;
+                    // (#tabbar-term-bg 2026-10-11) 必须是 term-bg,不是 bg-root:
+                    // TabBar 的条带底色恒为 term-bg(theme.slint #tab-flush:"三者
+                    // 同色")。有会话时 TerminalView(term-bg)盖满这块,两者看着
+                    // 一致;**无会话**时这里只剩容器底色,root≠tbg 的主题(自带
+                    // MTerm 套 root #161619 / tbg #181A1D、idea-dark、flexoki-dark,
+                    // 以及任何开壁纸的场景)就会露出一条深浅相反的条带(用户截图)。
+                    background: Theme.term-bg;
 
                     // Empty pane outside welcome-sidebar mode: keep a small hint for
                     // rare empty panes, but do not cover the wallpaper when the
@@ -4098,27 +4165,263 @@ export component AppWindow inherits Window {
             }
             sc-host := Text {
                 text: (root.lang-en ? "Host:" : "主机：") + root.session-card-host;
-                color: Theme.text-secondary;
+                // (#hover-card-uniform 2026-10-11) 各行亮度统一为**主文本色**
+                // （用户反馈：次级色比名称行暗一档不协调）。
+                color: Theme.text-primary;
                 font-size: Theme.fs-xs;
                 overflow: elide;
             }
             if session-card-user != "" : Text {
                 text: (root.lang-en ? "User:" : "用户：") + root.session-card-user;
-                color: Theme.text-secondary;
+                color: Theme.text-primary;
                 font-size: Theme.fs-xs;
                 overflow: elide;
             }
             if session-card-auth != "" : Text {
                 text: (root.lang-en ? "Auth:" : "认证：") + root.session-card-auth-display();
-                color: Theme.text-secondary;
+                color: Theme.text-primary;
                 font-size: Theme.fs-xs;
                 overflow: elide;
             }
             if session-card-note != "" : Text {
                 text: (root.lang-en ? "Note:" : "备注：") + root.session-card-note;
-                color: Theme.text-secondary;
+                color: Theme.text-primary;
                 font-size: Theme.fs-xs;
                 overflow: elide;
+            }
+        }
+    }
+
+    // (#tab-card 2026-10-11) tab 悬浮信息卡：与左侧组内成员信息卡同款视觉
+    // （elevated 底 / 9px 圆角 / subtle 边框 / 24px 投影 / 键值单行连排），
+    // 新增「频道」行（已加入频道才有；暂停态附注）。跟手/翻转公式同上卡。
+    // ⚠️ 行显隐用 `if`（visible:false 在 Slint 布局里仍占位会留空行）；卡宽
+    // 测量用**隐藏测量元素**（卡片层直挂、不在 VerticalLayout 内，不占布局，
+    // 读 preferred-width 即可——if 行的 id 在外层不可见，所以走这路）。
+    if tab-card-title != "" && !root.dialog-open : Rectangle {
+        property <int> row-n: 1 + (tab-card-host != "" ? 1 : 0)
+            + (tab-card-note != "" ? 1 : 0) + (tab-card-channel != "" ? 1 : 0);
+        x: tab-card-x + 10px + self.width > parent.width - 8px
+            ? max(8px, tab-card-x - self.width - 10px) : tab-card-x + 10px;
+        y: tab-card-y - self.height - 8px < 8px
+            ? tab-card-y + 20px : tab-card-y - self.height - 8px;
+        width: min(parent.width - 60px,
+            Math.max(tc-m-title.preferred-width, tc-m-host.preferred-width,
+                     tc-m-channel.preferred-width) + 76px);
+        height: 18px + self.row-n * 22px;
+        background: Theme.bg-elevated;
+        border-radius: 9px;
+        border-width: 1px;
+        border-color: Theme.border-subtle;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000045;
+        // 隐藏测量元素（不参与布局：直挂卡片层 + visible false）
+        tc-m-title := Text {
+            visible: false;
+            text: (root.lang-en ? "Name:" : "名称：") + root.tab-card-title;
+            font-size: Theme.fs-xs;
+        }
+        tc-m-host := Text {
+            visible: false;
+            text: (root.lang-en ? "Host:" : "主机：") + root.tab-card-host;
+            font-size: Theme.fs-xs;
+        }
+        tc-m-channel := Text {
+            visible: false;
+            text: (root.lang-en ? "Channel:" : "频道：")
+                + (root.lang-en ? "Channel " : "频道 ") + root.tab-card-channel
+                + (root.tab-card-channel-paused
+                    ? (root.lang-en ? " (paused)" : "（已暂停同步）") : "");
+            font-size: Theme.fs-xs;
+        }
+        VerticalLayout {
+            padding: 9px;
+            padding-left: 12px;
+            padding-right: 12px;
+            spacing: 2px;
+            Text {
+                text: (root.lang-en ? "Name:" : "名称：") + root.tab-card-title;
+                color: Theme.text-primary;
+                font-size: Theme.fs-xs;
+                overflow: elide;
+            }
+            if tab-card-host != "" : Text {
+                text: (root.lang-en ? "Host:" : "主机：") + root.tab-card-host;
+                // (#hover-card-uniform) 亮度与名称行统一（主文本色）
+                color: Theme.text-primary;
+                font-size: Theme.fs-xs;
+                overflow: elide;
+            }
+            if tab-card-note != "" : Text {
+                text: (root.lang-en ? "Note:" : "备注：") + root.tab-card-note;
+                color: Theme.text-primary;
+                font-size: Theme.fs-xs;
+                overflow: elide;
+            }
+            if tab-card-channel != "" : Text {
+                text: (root.lang-en ? "Channel:" : "频道：")
+                    + (root.lang-en ? "Channel " : "频道 ") + root.tab-card-channel
+                    + (root.tab-card-channel-paused
+                        ? (root.lang-en ? " (paused)" : "（已暂停同步）") : "");
+                color: Theme.text-primary;
+                font-size: Theme.fs-xs;
+                overflow: elide;
+            }
+        }
+    }
+
+    // (#chbar-tip-root 2026-10-11) 频道状态条截断提示：单行浮层跟随鼠标
+    // （指针上方，翻转公式同 session-card）；hover 离开即消失（text 清空）。
+    if chbar-stat-tip != "" : Rectangle {
+        property <length> tip-w: chbar-tip-txt.preferred-width + 16px;
+        x: chbar-stat-tip-x + 10px + self.tip-w > parent.width - 8px
+            ? max(8px, chbar-stat-tip-x - self.tip-w - 10px) : chbar-stat-tip-x + 10px;
+        y: chbar-stat-tip-y - self.height - 8px < 8px
+            ? chbar-stat-tip-y + 20px : chbar-stat-tip-y - self.height - 8px;
+        width: self.tip-w;
+        height: 22px;
+        background: Theme.bg-elevated;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: #00000070;
+        chbar-tip-txt := Text {
+            width: 100%; height: 100%;
+            text: root.chbar-stat-tip;
+            color: Theme.text-primary; font-size: Theme.fs-xs;
+            horizontal-alignment: center; vertical-alignment: center;
+        }
+    }
+
+    // (#chbar-menu-root 2026-10-11) 频道 ⋮ 菜单的根层集中浮层。结构 =
+    // 全窗透明 backdrop（点击即关）+ 菜单本体（backdrop 之后声明 = 更高层）。
+    // 定位：右缘贴 ChannelBar 上报的条身右缘 ax（= 终端右边线，随条宽自适应），
+    // y 压条身底 4px。菜单里只列**被收起**的项（has-* = 平铺可见态，取反）。
+    if root.chbar-menu-open : Rectangle {
+        width: 100%; height: 100%;
+        TouchArea {
+            clicked => { root.chbar-menu-open = false; }
+        }
+    }
+    if root.chbar-menu-open : Rectangle {
+        property <int> menu-n: (root.chbar-menu.has-pause ? 0 : 1)
+            + (root.chbar-menu.has-leave ? 0 : 1)
+            + (root.chbar-menu.has-close ? 0 : 1)
+            + (root.chbar-menu.has-hide ? 0 : 1);
+        property <bool> menu-sep: !root.chbar-menu.has-pause;
+        x: root.chbar-menu.ax - self.width;
+        y: root.chbar-menu.ay + 4px;
+        // (#chbar-menu-w 2026-10-11) 宽度自适应：原 150px 固定宽对 11px 字太空。
+        // 测量最长项文案（暂停/继续参与频道）+ 左右内距 20 + 边框余量 4。
+        cm-m := Text {
+            visible: false;
+            font-size: 11px;
+            text: root.chbar-menu.paused
+                ? (root.lang-en ? "Resume channel" : "继续参与频道")
+                : (root.lang-en ? "Pause channel" : "暂停参与频道");
+        }
+        width: max(cm-m.preferred-width + 24px, 96px);
+        // 稿 .mpop：padding 4px、行高 26px、间距 1px、分隔线 1px + 上下 3px
+        height: 8px + self.menu-n * 26px + (self.menu-sep ? 7px : 0px)
+                + (self.menu-n + (self.menu-sep ? 1 : 0) >= 2
+                    ? (self.menu-n + (self.menu-sep ? 1 : 0) - 1) * 1px : 0px);
+        background: Theme.popup-bg;
+        border-radius: 7px;
+        border-width: 1px; border-color: Theme.border-strong;
+        drop-shadow-blur: 12px; drop-shadow-color: #00000060;
+        VerticalLayout {
+            padding: 4px;
+            spacing: 1px;
+            // 暂停 = 主操作：稿 .mi.pri —— 强调色文字 + accent-soft 悬停
+            if !root.chbar-menu.has-pause : Rectangle {
+                height: 26px;
+                background: cmi-pause-ta.has-hover ? Theme.accent-soft : transparent;
+                border-radius: 5px;
+                Text {
+                    x: 10px;
+                    text: root.chbar-menu.paused
+                        ? (root.lang-en ? "Resume channel" : "继续参与频道")
+                        : (root.lang-en ? "Pause channel" : "暂停参与频道");
+                    color: Theme.accent; font-size: 11px; font-weight: 600;
+                    vertical-alignment: center;
+                }
+                cmi-pause-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.chbar-menu-open = false;
+                        root.tab-pause-channel(root.chbar-menu.tab-id);
+                    }
+                }
+            }
+            if !root.chbar-menu.has-pause : Rectangle {
+                height: 7px;
+                Rectangle {
+                    x: 6px; y: 3px;
+                    width: parent.width - 12px; height: 1px;
+                    background: Theme.border-subtle;
+                }
+            }
+            if !root.chbar-menu.has-leave : Rectangle {
+                height: 26px;
+                // (#chbar-menu-hover 2026-10-11) 普通项悬浮底用**中性蒙版**：
+                // bg-panel-strong 与 popup-bg 同族几乎无差（用户实测"移过去像
+                // 没移过去"）；中性蒙版深浅主题都一眼可辨。
+                background: cmi-leave-ta.has-hover
+                    ? (Theme.dark ? #ffffff.with-alpha(0.08) : #000000.with-alpha(0.06))
+                    : transparent;
+                border-radius: 5px;
+                Text {
+                    x: 10px;
+                    text: root.lang-en ? "Leave channel" : "离开频道";
+                    color: Theme.text-secondary; font-size: 11px;
+                    vertical-alignment: center;
+                }
+                cmi-leave-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.chbar-menu-open = false;
+                        root.tab-leave-channel(root.chbar-menu.tab-id);
+                    }
+                }
+            }
+            if !root.chbar-menu.has-close : Rectangle {
+                height: 26px;
+                background: cmi-close-ta.has-hover ? Theme.danger-strong.with-alpha(0.22) : transparent;
+                border-radius: 5px;
+                Text {
+                    x: 10px;
+                    text: root.lang-en ? "Close channel" : "关闭频道";
+                    color: Theme.danger-strong; font-size: 11px;
+                    vertical-alignment: center;
+                }
+                cmi-close-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.chbar-menu-open = false;
+                        root.pane-close-channel(root.chbar-menu.slot);
+                    }
+                }
+            }
+            if !root.chbar-menu.has-hide : Rectangle {
+                height: 26px;
+                background: cmi-hide-ta.has-hover
+                    ? (Theme.dark ? #ffffff.with-alpha(0.08) : #000000.with-alpha(0.06))
+                    : transparent;
+                border-radius: 5px;
+                Text {
+                    x: 10px;
+                    text: root.lang-en ? "Hide status bar" : "隐藏状态条";
+                    color: Theme.text-secondary; font-size: 11px;
+                    vertical-alignment: center;
+                }
+                cmi-hide-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.chbar-menu-open = false;
+                        root.tab-hide-channel-bar(root.chbar-menu.tab-id);
+                    }
+                }
             }
         }
     }
@@ -7762,8 +8065,12 @@ export component AppWindow inherits Window {
             background: Theme.border-strong;
         }
         // 下边
+        // (#win-edge-frame-r5 2026-10-11) 右/下两条的位置改走 snap-to-device:
+        // parent.width/height 是逻辑像素,在 125%/150% 这类分数缩放下换算回
+        // 物理像素会落在栅格中间,描边被摊到两个物理行(看着发粗)。对齐后
+        // hairline() 的 1 个设备像素才是完整的一行。
         Rectangle {
-            x: 0; y: parent.height - 2 * Theme.hairline();
+            x: 0; y: Theme.snap-to-device(parent.height) - 2 * Theme.hairline();
             width: parent.width;
             height: Theme.hairline();
             background: Theme.border-strong;
@@ -7777,7 +8084,7 @@ export component AppWindow inherits Window {
         }
         // 右边
         Rectangle {
-            x: parent.width - 2 * Theme.hairline(); y: 0;
+            x: Theme.snap-to-device(parent.width) - 2 * Theme.hairline(); y: 0;
             width: Theme.hairline();
             height: parent.height;
             background: Theme.border-strong;

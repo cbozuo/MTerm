@@ -1,5 +1,5 @@
 // ═════════════════════════════════════════════════════════════════════
-// 补全设计稿缺口：37 套主题的「终端 ANSI 16 色」+「分组色 24 色」
+// 补全设计稿缺口：38 套主题的「终端 ANSI 16 色」+「分组色 24 色」
 //
 // 为什么要有这个文件：theme-wallpaper-split 设计稿 §3 调整⑤要求
 // "ANSI16_DARK/LIGHT 两套 → 按主题查表"，分组色要求 "每套主题的 24 色
@@ -316,6 +316,26 @@ const OFFICIAL_ANSI = {
   // olive-dark/light：Radix 六中性系中独特性最弱（绿调有 sage、暖调有 sand）
 };
 
+// ── MTerm 自有设计（**非上游，无授权问题**）：自主配色，纪律自定 ──────
+// 与 OFFICIAL_ANSI 严格分开：那一张只放「官方发布文件采集」，授权纪律靠它兜底；
+// 自有设计放这里，src 里写明设计稿出处与规则，便于日后回溯为什么是这个色。
+// 三条纪律（2026-10-11 paper-neutral 稿定稿）：
+//   ① 饱和收进一档（32~45%）靠明度分层，不用「一色很艳」制造层级；
+//   ② 灰族唯一：7 white = t1、8 brightBlack = t3 —— 终端与界面共用同一套灰，
+//      杜绝「UI 暖灰 + 终端冷灰」双灰并存；
+//   ③ cyan 与强调色同族（整屏只有一种色相在说话）；
+//   ④ 亮底上 bright 档取**更深**同色相（明度与暗底相反，这是亮色终端的通例）。
+const OWN_ANSI = {
+  // MTerm · 亮「素纸」—— id 取 islands-light 与暗档配对（2026-10-11 用户决策）。
+  // ⚠️ 上游 Islands Dark **没有亮档**：这个 id 只是配对命名，色值是 MTerm 自主设计。
+  'islands-light': {
+    src: 'MTerm 自有设计（MTerm · 亮 / paper-neutral-2026-10-11 稿；id 与 islands-dark 配对，非上游移植）：饱和收一档、灰族与界面同源、cyan↔强调色 #1f766b 同族；亮底 bright 档为更深同色相',
+    ansi: ['#45423d', '#b4483f', '#4f7d4a', '#8a6218', '#4a6f96', '#83558a', '#1c7a72', '#33302c',
+           '#a49e95', '#a33f36', '#3d6b36', '#7a5311', '#2f5580', '#7a4a80', '#17706a', '#1f1c19'],
+    tbg: '#faf8f4', tfg: '#33302c',
+  },
+};
+
 // ── Radix 12 套派生（Radix 是界面色板，无官方 ANSI → 按色阶确定性映射）──
 // 规则（dark 变体）：彩色槽 normal = 该色系 idx10（亮端次高）、bright = idx11（最亮），
 //                   black = 中性 idx1、brightBlack = 中性 idx6、white = tfg、brightWhite = 中性 idx11。
@@ -393,7 +413,7 @@ const GROUP_LIGHT = ['#dc2626','#ea580c','#d97706','#ca8a04','#65a30d','#16a34a'
                      '#7c3aed','#9333ea','#c026d3','#db2777','#e11d48','#f43f5e',
                      '#475569','#334155','#1e293b','#57534e','#78716c','#a8a29e'];
 
-// ── 组装（2026-10-07 重构后 36 预设 + 2 迁移档） ───────────────────
+// ── 组装（2026-10-11 38 预设 + 2 迁移档） ───────────────────
 const EXTRA = JSON.parse(fs.readFileSync(path.join(__dirname, '_extra-themes.json'), 'utf8'));
 const SKIP = new Set([
   'gruvbox-dark', 'gruvbox-light',      // 授权未声明（→ gruvbox-material 替代）
@@ -405,7 +425,7 @@ const SKIP = new Set([
 ]);
 const GROUPS_DEF = [
   ['radix', ['graphite', 'slate', 'mauve', 'sage', 'sand']],
-  ['brand', ['github-dark', 'github-light', 'idea-dark', 'idea-light', 'islands-dark']],
+  ['brand', ['github-dark', 'github-light', 'idea-dark', 'idea-light', 'islands-dark', 'islands-light']],
   ['terminal', ['dracula', 'catppuccin', 'solarized', 'kanagawa', 'ayu', 'gruvbox-material',
                 'tokyonight', 'nord', 'everforest', 'rosepine', 'onedark', 'flexoki']],
 ];
@@ -415,8 +435,8 @@ const GROUPS_DEF = [
 const VARIANTS = { kanagawa: ['wave', 'lotus'], ayu: ['dark', 'mirage', 'light'] };
 
 const out = { _meta: {
-  generated: '2026-10-07',
-  purpose: '主题重构后全量：37 预设（Radix 10 + 品牌官方 4 + Islands Dark 1 + 经典终端 22）+ 2 迁移档的 ANSI 16 色 + 分组色 24 色 + 频道色',
+  generated: '2026-10-11',
+  purpose: '主题重构后全量：38 预设（Radix 10 + 品牌官方 4 + MTerm 自有 2 + 经典终端 22）+ 2 迁移档的 ANSI 16 色 + 分组色 24 色 + 频道色',
   ansi_sources: {}, group_rule: '基准=theme.slint group-color-dark/light 24 色，保 H/S 二分 L 至 on(panel) ≥ 3.0:1',
   ansi_check: '12 彩色槽(1-6,9-14) ≥ 4.5:1 为达标线；0/7/8/15 槽按终端惯例只记录不判失败',
 } };
@@ -447,6 +467,10 @@ for (const [_grp, ids] of GROUPS_DEF) {
           if (id === 'nord-light') notes.push('官方无亮档：UI 按 bright ambiance 派生，ANSI 彩色槽同自造规则调深至 4.5:1');
           if (id === 'onedark-light') notes.push('官方无亮档：彩色槽保 H/S 调 L 至 4.5:1（自造，已在 src 标注）');
         }
+      } else if (OWN_ANSI[id]) {
+        // 自有设计：色值即定稿，只做达标校验不自动改色（改色 = 改了设计）。
+        ansi = OWN_ANSI[id].ansi; src = OWN_ANSI[id].src;
+        notes.push('MTerm 自有设计（非上游移植）：色值为设计稿定稿，生成器只校验不改色');
       } else if (RADIX_T[id]) {
         const r = radixAnsi(base, id.endsWith('-dark') ? 'dark' : 'light');
         ansi = r.ansi; src = r.src; notes = r.notes;
@@ -519,7 +543,7 @@ for (const [id, mk] of Object.entries(MEAT)) {
 fs.writeFileSync(path.join(__dirname, '_ansi-group.json'), JSON.stringify(out, null, 1), 'utf8');
 
 // 控制台报告
-console.log('══ 37 套 ANSI / 分组色生成完毕 → scripts/_ansi-group.json ══\n');
+console.log('══ 38 套 ANSI / 分组色生成完毕 → scripts/_ansi-group.json ══\n');
 for (const r of report) {
   const flag = r.fails.length ? '✗' : '✓';
   console.log(`${flag} ${r.id.padEnd(18)} ${r.name.padEnd(10)} 彩槽最低对比 ${r.minC.toFixed(2)}  分组色未达标 ${r.gFails}`);

@@ -1,12 +1,22 @@
-// (#sync-dialog 2026-10-08) 同步输入对话框（WindTerm 式）：四个频道页签 +
-// 左「当前窗口中的会话」/ 右「当前频道成员」双栏 + 添加全部/全部删除 +
-// 确定/取消。成员增删由 Rust 落在 sync-sessions 模型上（slot 字段），确定
-// 时 Rust 一次性持久化。
+// (#sync-dialog 2026-10-08 / #sync-dialog-hifi 2026-10-11) 同步输入（频道管理）
+// 对话框 —— 高保真重设计：WindTerm 式四频道页签 + 左「当前窗口中的会话」/
+// 右「频道 X 成员」双栏 + 添加全部/全部移出 + 确定/取消。
+//
+// 重设计要点（原稿偏平：右栏标题笔误「加入：」、页签平铺无层次、行尾用
+// 文本 +/−、无计数与空态、按钮层级不一）：
+//   ① 标题区加图标徽标 + 副标题，交代「配置频道成员」语义；
+//   ② 频道页签改胶囊：频道色点 + 频道名 + 成员数徽标，选中态染频道色 +
+//      底部色条，频道身份一眼可辨；
+//   ③ 双栏标题统一（右栏「频道 X 成员」）并带计数徽标，右栏徽标染频道色；
+//   ④ 行尾动作从文本 +/− 换 SVG 图标（add/remove），悬停淡染强调/危险色；
+//   ⑤ 空列表给占位提示；底部主/次按钮层级化（accent 确定 / field 取消）。
+// 成员增删仍由 Rust 落在 sync-sessions 模型上（slot 字段），确定时 Rust 一次性
+// 持久化。slot-counts 由 Rust 维护（每频道成员数），供页签徽标/栏头计数/空态。
 import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
 
 // 一行 = 一个打开的终端 tab（或离线的持久频道成员）。slot -1 = 未加入，
-// 0..3 = 频道 A..D。离线成员 online=false（列表置灰、不可移出?? 可移出，
-// 只是图标置灰提示不在线）。
+// 0..3 = 频道 A..D。离线成员 online=false（标题由 Rust 追加「（离线）」）。
 export struct SyncSessionInfo {
     tab-id: string,
     session-id: string,
@@ -16,37 +26,66 @@ export struct SyncSessionInfo {
     online: bool,
 }
 
+// 频道页签（A/B/C/D）：色点 + 频道名 + 成员数徽标；选中态染频道色 + 底部色条。
 component SyncSlotTab inherits Rectangle {
     in property <int> slot;
     in property <string> letter;
     in property <int> active-slot;
     in property <color> dot;
+    in property <int> count;
     in property <bool> lang-en;
     callback picked(int);
-    height: 34px;
-    background: active-slot == slot ? Theme.bg-active : transparent;
+
+    height: 36px;
+    border-radius: 8px;
+    background: active-slot == slot
+        ? dot.with-alpha(Theme.dark ? 0.15 : 0.13)
+        : ta.has-hover ? Theme.bg-hover : transparent;
     animate background { duration: 100ms; }
+
     HorizontalLayout {
         alignment: center;
-        spacing: 6px;
+        spacing: 7px;
+        // 频道色点 10×10
         Rectangle {
             width: 10px; height: 10px; border-radius: 3px;
             background: dot;
             y: (parent.height - self.height) / 2;
         }
+        // 频道名
         Text {
-            text: (SyncInputState.lang-en ? "Channel " : "频道 ") + letter;
+            text: (root.lang-en ? "Channel " : "频道 ") + letter;
             color: active-slot == slot ? Theme.text-primary : Theme.text-secondary;
             font-size: 12px;
+            font-weight: active-slot == slot ? 600 : 400;
             vertical-alignment: center;
         }
+        // 成员数徽标
+        count-chip := Rectangle {
+            height: 17px;
+            width: max(17px, count-txt.preferred-width + 8px);
+            border-radius: 9px;
+            background: active-slot == slot
+                ? dot.with-alpha(Theme.dark ? 0.24 : 0.18)
+                : Theme.bg-panel-strong;
+            count-txt := Text {
+                width: 100%; height: 100%;
+                text: count;
+                color: active-slot == slot ? dot : Theme.text-muted;
+                font-size: 10px; font-weight: 600;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+        }
     }
-    // 选中页签底部 accent 指示条
+    // 选中页签底部 2px 频道色指示条
     Rectangle {
+        visible: active-slot == slot;
+        x: 8px;
         y: parent.height - 2px;
-        width: parent.width;
+        width: parent.width - 16px;
         height: 2px;
-        background: active-slot == slot ? Theme.accent-solid : transparent;
+        border-radius: 1px;
+        background: dot;
     }
     ta := TouchArea {
         mouse-cursor: pointer;
@@ -54,15 +93,15 @@ component SyncSlotTab inherits Rectangle {
     }
 }
 
+// 会话行：色点 + 标题 + 行尾动作图标（左栏 + / 右栏 −）。整行可点。
 component SyncRow inherits Rectangle {
     in property <SyncSessionInfo> entry;
-    in property <bool> member;         // 是否显示在右栏（已在当前频道）
-    callback row-add(string);
-    callback row-remove(string);
-    height: 26px;
-    border-radius: 5px;
+    in property <bool> member;         // true = 右栏（已在当前频道，点行移出）
+    height: 28px;
+    border-radius: 6px;
     background: ta.has-hover ? Theme.bg-hover : transparent;
     animate background { duration: 100ms; }
+
     HorizontalLayout {
         padding-left: 8px;
         padding-right: 6px;
@@ -73,6 +112,7 @@ component SyncRow inherits Rectangle {
             background: entry.slot >= 0 ? entry.color : Theme.border-subtle;
             y: (parent.height - self.height) / 2;
         }
+        // 标题
         Text {
             horizontal-stretch: 1;
             text: entry.title;
@@ -81,17 +121,16 @@ component SyncRow inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
         }
-        // 行尾动作键：左栏行 = 加入（+），右栏行 = 移出（−）。整行可点，
-        // 键只是可见提示。
+        // 行尾动作键（图标 +/−）
         Rectangle {
-            width: 18px; height: 18px; border-radius: 4px;
-            background: ta.has-hover ? Theme.accent-solid.with-alpha(0.18) : transparent;
-            Text {
-                width: 100%; height: 100%;
-                text: member ? "−" : "+";
-                color: member ? Theme.danger-strong : Theme.accent-solid;
-                font-size: 13px; font-weight: 700;
-                horizontal-alignment: center; vertical-alignment: center;
+            width: 20px; height: 20px; border-radius: 5px;
+            background: ta.has-hover
+                ? (member ? Theme.danger.with-alpha(0.16) : Theme.accent-soft)
+                : transparent;
+            Icon {
+                glyph: member ? "remove" : "add";
+                tint: member ? Theme.danger : (ta.has-hover ? Theme.accent : Theme.text-muted);
+                size: 14px;
             }
         }
     }
@@ -105,11 +144,9 @@ component SyncRow inherits Rectangle {
 }
 
 export component SyncInputDialog inherits Rectangle {
-    // 状态与动作全部来自 SyncInputState 全局（app.slint 只负责实例化宿主）。
-
     width: 680px;
-    height: 460px;
-    border-radius: 10px;
+    height: 480px;
+    border-radius: 12px;
     background: Theme.popup-bg;
     border-width: 1px;
     border-color: Theme.border-strong;
@@ -117,25 +154,55 @@ export component SyncInputDialog inherits Rectangle {
     drop-shadow-color: #00000066;
     clip: true;
 
+    // 当前频道字母 / 成员数 / 色（供栏头标题、徽标、空态用）
+    property <string> active-letter:
+        SyncInputState.slot == 0 ? "A" :
+        SyncInputState.slot == 1 ? "B" :
+        SyncInputState.slot == 2 ? "C" : "D";
+    property <int> active-count: SyncInputState.slot-counts[SyncInputState.slot];
+    property <int> left-count: SyncInputState.sessions.length - active-count;
+    property <color> active-color: Theme.channel-colors[SyncInputState.slot];
+
     VerticalLayout {
-        // ── 标题栏 ──
+        // ── 标题区 ──
         Rectangle {
-            height: 42px;
+            height: 60px;
+            // 图标徽标
+            Rectangle {
+                x: 16px; y: 13px;
+                width: 34px; height: 34px;
+                border-radius: 9px;
+                background: Theme.accent-soft;
+                Icon {
+                    glyph: "link";
+                    tint: Theme.accent-solid;
+                    size: 18px;
+                }
+            }
+            // 标题 + 副标题
             Text {
-                x: 14px;
+                x: 60px; y: 13px;
                 text: SyncInputState.lang-en ? "Sync input" : "同步输入";
                 color: Theme.text-primary; font-size: 13px; font-weight: 700;
-                vertical-alignment: center;
             }
+            Text {
+                x: 60px; y: 33px;
+                text: SyncInputState.lang-en
+                    ? "Configure channel membership for synced input"
+                    : "配置各频道会话成员，实现跨会话同步输入";
+                color: Theme.text-muted; font-size: 11px;
+            }
+            // 关闭
             close-btn := Rectangle {
-                x: parent.width - self.width - 10px;
-                y: (parent.height - self.height) / 2;
-                width: 24px; height: 24px; border-radius: 6px;
+                x: parent.width - self.width - 12px;
+                y: 16px;
+                width: 28px; height: 28px;
+                border-radius: 6px;
                 background: close-ta.has-hover ? Theme.bg-hover : transparent;
-                Text {
-                    width: 100%; height: 100%;
-                    text: "✕"; color: Theme.text-secondary; font-size: 12px;
-                    horizontal-alignment: center; vertical-alignment: center;
+                Icon {
+                    glyph: "close";
+                    tint: Theme.text-secondary;
+                    size: 14px;
                 }
                 close-ta := TouchArea {
                     mouse-cursor: pointer;
@@ -143,168 +210,245 @@ export component SyncInputDialog inherits Rectangle {
                 }
             }
         }
+        // 分隔线
+        Rectangle {
+            height: 1px;
+            background: Theme.border-subtle;
+        }
+
         // ── 频道页签（4 槽）──
         Rectangle {
-            height: 34px;
-            border-width: 1px; border-color: Theme.border-subtle;
+            height: 52px;
             HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 8px;
+                padding-bottom: 8px;
+                spacing: 8px;
                 for cs in [
                     { slot: 0, letter: "A" }, { slot: 1, letter: "B" },
                     { slot: 2, letter: "C" }, { slot: 3, letter: "D" },
                 ] : SyncSlotTab {
-                    width: parent.width / 4;
+                    width: parent.width / 4 - 6px;
                     slot: cs.slot;
                     letter: cs.letter;
                     active-slot: SyncInputState.slot;
                     dot: Theme.channel-colors[cs.slot];
+                    count: SyncInputState.slot-counts[cs.slot];
                     lang-en: SyncInputState.lang-en;
                     picked(s) => { SyncInputState.slot = s; }
                 }
             }
         }
+
         // ── 双栏 ──
         HorizontalLayout {
-            padding: 10px;
-            spacing: 10px;
-            height: parent.height - 42px - 34px - 52px;
-            // 左：当前窗口中的会话（全部；点行 = 加入当前频道）
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 10px;
+            padding-bottom: 10px;
+            spacing: 12px;
+            height: parent.height - 60px - 1px - 52px - 1px - 56px;
+            // 左：当前窗口中的会话（未加入当前频道的，点行加入）
+            // (#sync-dialog-cols 2026-10-11) 双栏改 stretch 平分（原显式
+            // width/2-6 在内容挤压下会把右栏挤窄，"全部移出"被卡缘截断）。
             VerticalLayout {
-                width: parent.width / 2 - 5px;
-                spacing: 6px;
-                Text {
-                    text: SyncInputState.lang-en ? "Sessions in this window" : "当前窗口中的会话";
-                    color: Theme.text-secondary; font-size: 11px;
+                horizontal-stretch: 1;
+                spacing: 8px;
+                // 栏头
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: SyncInputState.lang-en ? "Sessions in this window" : "当前窗口中的会话";
+                        color: Theme.text-secondary; font-size: 11px; font-weight: 600;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    left-count-chip := Rectangle {
+                        height: 16px;
+                        width: max(16px, left-count-txt.preferred-width + 10px);
+                        border-radius: 8px;
+                        background: Theme.bg-panel-strong;
+                        y: (parent.height - self.height) / 2;
+                        left-count-txt := Text {
+                            width: 100%; height: 100%;
+                            text: left-count;
+                            color: Theme.text-secondary; font-size: 10px; font-weight: 600;
+                            horizontal-alignment: center; vertical-alignment: center;
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    // 添加全部
+                    add-all-btn := Rectangle {
+                        height: 22px;
+                        border-radius: 5px;
+                        background: add-all-ta.has-hover ? Theme.accent-soft : transparent;
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 3px;
+                            padding-left: 6px;
+                            padding-right: 8px;
+                            Icon { glyph: "add"; tint: Theme.accent; size: 12px; }
+                            Text {
+                                text: SyncInputState.lang-en ? "Add all" : "添加全部";
+                                color: Theme.accent; font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                        }
+                        add-all-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { SyncInputState.add-all(); }
+                        }
+                    }
                 }
+                // 列表
                 Rectangle {
                     clip: true;
-                    border-radius: 6px;
+                    border-radius: 8px;
                     border-width: 1px; border-color: Theme.border-control;
                     background: Theme.field;
                     vertical-stretch: 1;
                     Flickable {
                         VerticalLayout {
                             spacing: 0px;
+                            padding: 2px;
                             // 左栏 = 未加入当前频道的会话（点行加入）。Slint 的
                             // for:if 链式语法不支持 → 隐藏行用 0 高折叠（clip）。
                             for r in SyncInputState.sessions: Rectangle {
-                                height: r.slot != SyncInputState.slot ? 27px : 0px;
+                                height: r.slot != SyncInputState.slot ? 29px : 0px;
                                 clip: true;
                                 SyncRow {
                                     width: 100%;
-                                    height: 26px;
+                                    height: 28px;
                                     entry: r;
                                     member: false;
-                                    row-add(tid) => { SyncInputState.add-row(tid); }
                                 }
                             }
                         }
                     }
-                }
-                Rectangle {
-                    height: 30px;
-                    HorizontalLayout {
-                        spacing: 6px;
-                        add-all-btn := Rectangle {
-                            width: 110px; border-radius: 6px;
-                            background: add-all-ta.has-hover ? Theme.bg-active : Theme.field;
-                            border-width: 1px; border-color: Theme.border-control;
-                            Text {
-                                text: SyncInputState.lang-en ? "Add all" : "添加全部";
-                                color: Theme.text-primary; font-size: 12px;
-                                horizontal-alignment: center; vertical-alignment: center;
-                            }
-                            add-all-ta := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { SyncInputState.add-all(); }
-                            }
-                        }
-                        Rectangle { horizontal-stretch: 1; }
+                    // 空态
+                    if left-count == 0 : Text {
+                        width: parent.width;
+                        y: (parent.height - self.height) / 2;
+                        text: SyncInputState.lang-en
+                            ? "All sessions are already in this channel"
+                            : "所有会话均已加入当前频道";
+                        color: Theme.text-muted; font-size: 11px;
+                        horizontal-alignment: center;
                     }
                 }
             }
-            // 右：当前频道的成员（点行 = 移出）
+            // 右：当前频道的成员（点行移出）
             VerticalLayout {
-                width: parent.width / 2 - 5px;
-                spacing: 6px;
-                Text {
-                    text: SyncInputState.lang-en ? "Members" : "加入：";
-                    color: Theme.text-secondary; font-size: 11px;
+                horizontal-stretch: 1;
+                spacing: 8px;
+                // 栏头
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: SyncInputState.lang-en
+                            ? "Channel " + active-letter + " members"
+                            : "频道 " + active-letter + " 成员";
+                        color: Theme.text-secondary; font-size: 11px; font-weight: 600;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    right-count-chip := Rectangle {
+                        height: 16px;
+                        width: max(16px, right-count-txt.preferred-width + 10px);
+                        border-radius: 8px;
+                        background: active-color.with-alpha(Theme.dark ? 0.24 : 0.18);
+                        y: (parent.height - self.height) / 2;
+                        right-count-txt := Text {
+                            width: 100%; height: 100%;
+                            text: active-count;
+                            color: active-color; font-size: 10px; font-weight: 600;
+                            horizontal-alignment: center; vertical-alignment: center;
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    // 全部移出
+                    remove-all-btn := Rectangle {
+                        height: 22px;
+                        border-radius: 5px;
+                        background: remove-all-ta.has-hover ? Theme.danger.with-alpha(0.16) : transparent;
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 3px;
+                            padding-left: 6px;
+                            padding-right: 8px;
+                            Icon { glyph: "remove"; tint: Theme.danger; size: 12px; }
+                            Text {
+                                text: SyncInputState.lang-en ? "Remove all" : "全部移出";
+                                color: Theme.danger; font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                        }
+                        remove-all-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { SyncInputState.remove-all(); }
+                        }
+                    }
                 }
+                // 列表
                 Rectangle {
                     clip: true;
-                    border-radius: 6px;
+                    border-radius: 8px;
                     border-width: 1px; border-color: Theme.border-control;
                     background: Theme.field;
                     vertical-stretch: 1;
                     Flickable {
                         VerticalLayout {
                             spacing: 0px;
+                            padding: 2px;
                             // 右栏 = 当前频道的成员（点行移出），同左栏折叠法。
                             for r in SyncInputState.sessions: Rectangle {
-                                height: r.slot == SyncInputState.slot ? 27px : 0px;
+                                height: r.slot == SyncInputState.slot ? 29px : 0px;
                                 clip: true;
                                 SyncRow {
                                     width: 100%;
-                                    height: 26px;
+                                    height: 28px;
                                     entry: r;
                                     member: true;
-                                    row-remove(tid) => { SyncInputState.remove-row(tid); }
                                 }
                             }
                         }
                     }
-                }
-                Rectangle {
-                    height: 30px;
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Rectangle { horizontal-stretch: 1; }
-                        remove-all-btn := Rectangle {
-                            width: 110px; border-radius: 6px;
-                            background: remove-all-ta.has-hover ? Theme.bg-active : Theme.field;
-                            border-width: 1px; border-color: Theme.border-control;
-                            Text {
-                                text: SyncInputState.lang-en ? "Remove all" : "全部删除";
-                                color: Theme.text-primary; font-size: 12px;
-                                horizontal-alignment: center; vertical-alignment: center;
-                            }
-                            remove-all-ta := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { SyncInputState.remove-all(); }
-                            }
-                        }
+                    // 空态
+                    if active-count == 0 : Text {
+                        width: parent.width;
+                        y: (parent.height - self.height) / 2;
+                        text: SyncInputState.lang-en
+                            ? "No members — add sessions from the left"
+                            : "暂无成员，点击左侧会话加入";
+                        color: Theme.text-muted; font-size: 11px;
+                        horizontal-alignment: center;
                     }
                 }
             }
         }
+
+        // 分隔线
+        Rectangle {
+            height: 1px;
+            background: Theme.border-subtle;
+        }
+
         // ── 底部 确定/取消 ──
         Rectangle {
-            height: 52px;
+            height: 56px;
             HorizontalLayout {
+                padding-right: 16px;
                 spacing: 10px;
                 Rectangle { horizontal-stretch: 1; }
-                apply-btn := Rectangle {
-                    width: 88px; height: 30px;
-                    y: (parent.height - self.height) / 2;
-                    border-radius: 6px;
-                    background: Theme.accent-solid;
-                    Text {
-                        text: SyncInputState.lang-en ? "OK" : "确定";
-                        color: white; font-size: 12px;
-                        horizontal-alignment: center; vertical-alignment: center;
-                    }
-                    apply-ta := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { SyncInputState.apply(); }
-                    }
-                }
                 cancel-btn := Rectangle {
                     width: 88px; height: 30px;
                     y: (parent.height - self.height) / 2;
-                    border-radius: 6px;
+                    border-radius: 7px;
                     background: cancel-ta.has-hover ? Theme.bg-active : Theme.field;
                     border-width: 1px; border-color: Theme.border-control;
                     Text {
+                        width: 100%; height: 100%;
                         text: SyncInputState.lang-en ? "Cancel" : "取消";
                         color: Theme.text-primary; font-size: 12px;
                         horizontal-alignment: center; vertical-alignment: center;
@@ -314,7 +458,22 @@ export component SyncInputDialog inherits Rectangle {
                         clicked => { SyncInputState.dialog-open = false; }
                     }
                 }
-                Rectangle { width: 14px; }
+                apply-btn := Rectangle {
+                    width: 88px; height: 30px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 7px;
+                    background: apply-ta.has-hover ? Theme.accent-hover : Theme.accent-solid;
+                    Text {
+                        width: 100%; height: 100%;
+                        text: SyncInputState.lang-en ? "OK" : "确定";
+                        color: white; font-size: 12px; font-weight: 600;
+                        horizontal-alignment: center; vertical-alignment: center;
+                    }
+                    apply-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { SyncInputState.apply(); }
+                    }
+                }
             }
         }
     }
@@ -323,10 +482,13 @@ export component SyncInputDialog inherits Rectangle {
 // (#sync-dialog-r2 2026-10-08) 同步输入的全局状态 + 宿主。拆出 app.slint：
 // 顶栏按钮、对话框、Rust 三方都走这个 global（app.rs/app.slint 只剩一行
 // 接线），app.slint 不再持有同步输入的任何属性与回调。
+// (#sync-dialog-hifi 2026-10-11) 新增 slot-counts：每频道成员数，Rust 在每次
+// 增删后重算写入，供页签成员数徽标 / 双栏计数 / 空态使用。
 export global SyncInputState {
     in-out property <bool> dialog-open: false;
     in-out property <int> slot: 0;               // 当前操作的频道槽 0..3
     in-out property <[SyncSessionInfo]> sessions;
+    in-out property <[int]> slot-counts: [0, 0, 0, 0];   // 每频道成员数（Rust 维护）
     in-out property <bool> lang-en: false;
     callback open-dialog();                      // Rust：填充模型并打开
     callback add-row(string /* tab-id */);       // Rust：改内存模型槽位

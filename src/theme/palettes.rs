@@ -1,5 +1,5 @@
 // ═════════════════════════════════════════════════════════════════════
-// 37 套主题色表（★生成文件，勿手改★）——scripts/gen_theme_rust.js 产出
+// 38 套主题色表（★生成文件，勿手改★）——scripts/gen_theme_rust.js 产出
 // 真源：scripts/theme-tokens.json + _radix-themes.json + _extra-themes.json
 //       + _islands-dark.json（MTerm 套的上游原样副本，仅取证）+ _ansi-group.json
 //       （ANSI16 / 分组色24 / 频道色4，含来源与校验）
@@ -25,7 +25,7 @@ pub struct Palette {
     pub group24: [u32; 24],
     /// 终端 ANSI 16 色（前景用）
     pub ansi16: [u32; 16],
-    /// 亮色 TUI 背景填充表（官方发布即有；当前 37 套均为 None）
+    /// 亮色 TUI 背景填充表（官方发布即有；当前 38 套均为 None）
     pub ansi16bg: Option<[u32; 16]>,
 }
 
@@ -48,8 +48,8 @@ pub const DANGER_STRONG: u32 = 0xDC4B44;
 /// 频道暂停态的暖色竖条（状态条左缘；不用暖底色——一转暖就成「另一个面板」）
 pub const CHANNEL_PAUSE_BAR: u32 = 0xE2A84A;
 
-/// 全部 37 套（选择器实际只按明暗分两组，组内即本表顺序）；kind 即族：
-/// radix 10 / brand 2（GitHub）/ idea 2 / mterm 1 / community 22
+/// 全部 38 套（选择器实际只按明暗分两组，组内即本表顺序）；kind 即族：
+/// radix 10 / brand 2（GitHub）/ idea 2 / mterm 2（MTerm · 暗 / 亮）/ community 22
 pub static PALETTES: &[Palette] = &[
     // 石墨·暗 —— 派生：Radix 色阶确定性映射（normal=idx10/bright=idx11）
     Palette {
@@ -244,6 +244,19 @@ pub static PALETTES: &[Palette] = &[
         channel: [0x548AF7, 0x2AACB8, 0xE8A33E, 0xC77DBB],
         group24: [0xF87171, 0xFB923C, 0xFBBF24, 0xFACC15, 0xA3E635, 0x4ADE80, 0x34D399, 0x2DD4BF, 0x22D3EE, 0x38BDF8, 0x60A5FA, 0x818CF8, 0xA78BFA, 0xC084FC, 0xE879F9, 0xF472B6, 0xFB7185, 0xFDA4AF, 0xF1F5F9, 0xE2E8F0, 0xCBD5E1, 0xA8A29E, 0x94A3B8, 0x64748B],
         ansi16: [0x181A1D, 0xF75464, 0x73B00A, 0xE8A33E, 0x548AF7, 0xC77DBB, 0x2AACB8, 0xBCBEC4, 0x6F737A, 0xF9667A, 0x8CCF15, 0xF0B95E, 0x7CACF8, 0xD79FD2, 0x42C6D2, 0xD4D5D9],
+        ansi16bg: None,
+    },
+    // MTerm·亮 —— MTerm 自有设计（MTerm · 亮 / paper-neutral-2026-10-11 稿；id 与 islands-dark 配对，非上游移植）：饱和收一档、灰族与界面同源、cyan↔强调色 #1f766b 同族；亮底 bright 档为更深同色相
+    Palette {
+        id: "islands-light", zh: "MTerm", dark: false, kind: "mterm",
+        root: 0xF2F0EC, panel: 0xFAF8F4, palt: 0xE9E6DF, elev: 0xFFFEFA,
+        hov: 0xE8E5E1, act: 0xDFDDD9, tab: 0xFAF8F4, line: 0xE0DEDA, lstr: 0xD0CECB,
+        t1: 0x33302C, t2: 0x7B766F, t3: 0xA49E95,
+        tbg: 0xFAF8F4, tfg: 0x33302C,
+        ac: 0x1F766B, ac2: 0x4A9D91, ok: 0x2F7D45, wr: 0x8F631C, dg: 0xB0463F, dg_s: 0x96332D,
+        channel: [0xC2185B, 0x1565C0, 0xBF360C, 0x2E7D32],
+        group24: [0xDC2626, 0xEA580C, 0xD97706, 0xC08304, 0x629E0D, 0x16A34A, 0x059669, 0x0D9488, 0x0891B2, 0x0284C7, 0x2563EB, 0x4F46E5, 0x7C3AED, 0x9333EA, 0xC026D3, 0xDB2777, 0xE11D48, 0xF43F5E, 0x475569, 0x334155, 0x1E293B, 0x57534E, 0x78716C, 0x958D88],
+        ansi16: [0x45423D, 0xB4483F, 0x4F7D4A, 0x8A6218, 0x4A6F96, 0x83558A, 0x1C7A72, 0x33302C, 0xA49E95, 0xA33F36, 0x3D6B36, 0x7A5311, 0x2F5580, 0x7A4A80, 0x17706A, 0x1F1C19],
         ansi16bg: None,
     },
     // 德古拉·暗 —— 官方 spec（draculatheme.com/spec）Dracula 档
@@ -534,7 +547,7 @@ pub static PALETTES: &[Palette] = &[
     },
 ];
 
-/// 按 id 查表（线性 37 项，调用点均为低频切主题路径）
+/// 按 id 查表（线性 38 项，调用点均为低频切主题路径）
 pub fn find(id: &str) -> Option<&'static Palette> {
     PALETTES.iter().find(|p| p.id == id)
 }

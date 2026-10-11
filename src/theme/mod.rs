@@ -149,6 +149,30 @@ impl_theme_apply!(apply_editor, crate::ui::EditorWindow);
 impl_theme_apply!(apply_system_info, crate::ui::SystemInfoWindow);
 impl_theme_apply!(apply_about, crate::ui::AboutWindow);
 
+/// (#dpr-hairline 2026-10-11) 把窗口真实缩放(OS 显示缩放)写进 Theme global。
+///
+/// `theme.slint` 里的 `device-pixel-ratio` 是 Theme **自己声明**的属性,用来遮蔽
+/// Slint 内建的窗口属性(Theme 是 global,拿不到窗口上下文)。因此 Rust 侧写
+/// `slint::Window::set_device_pixel_ratio()` 对它无效 —— 它的默认值 1.0 会一直
+/// 留着,hairline() = 1px/1.0 = 1 **逻辑**px,在 200% 屏上就是 2 个物理像素:
+/// 窗口四边框、面板外框、splitter 全比设计值粗一倍,radius-win 也从 8 物理
+/// 像素变成 16。必须显式写这个槽位。
+macro_rules! impl_theme_dpr {
+    ($fn_name:ident, $win_ty:ty) => {
+        pub fn $fn_name(win: &$win_ty, scale: f32) {
+            if scale.is_finite() && scale > 0.0 {
+                win.global::<Theme<'_>>().set_device_pixel_ratio(scale);
+            }
+        }
+    };
+}
+
+impl_theme_dpr!(set_dpr, crate::ui::AppWindow);
+impl_theme_dpr!(set_dpr_proc, crate::ui::ProcWindow);
+impl_theme_dpr!(set_dpr_editor, crate::ui::EditorWindow);
+impl_theme_dpr!(set_dpr_system_info, crate::ui::SystemInfoWindow);
+impl_theme_dpr!(set_dpr_about, crate::ui::AboutWindow);
+
 /// WCAG 2.1 相对亮度（0.0–1.0）。
 pub fn luminance(hex: u32) -> f64 {
     let lin = |v: u32| {
@@ -263,19 +287,28 @@ mod tests {
 
     #[test]
     fn table_shape() {
-        assert_eq!(PALETTES.len(), 37);
+        assert_eq!(PALETTES.len(), 38);
         assert!(find("graphite-dark").is_some());
         assert!(find("meat-light").is_none(), "迁移保留档不进选择器（用户决策）");
         assert!(find("dracula-light").is_none(), "已删套不得回潮");
         assert!(find("islands-dark").is_some(), "MTerm 套（Islands Dark 移植）");
-        assert!(find("islands-light").is_none(), "上游只有暗色档（用户决策）");
-        // 显示名不带明暗后缀：后缀由 theme_name/选择器统一拼（界面显示「MTerm · 暗」）。
+        // ⚠️ 2026-10-11 用户决策改：原断言是 `islands-light` 不存在（"上游只有暗
+        // 色档，不硬凑档位"）。现在 islands-light = MTerm 自有亮色档「素纸」，
+        // id 取名与暗档配对。**它不是上游 Islands 的亮档** —— 色值是自主设计，
+        // 原决策的意图（禁"把暗档亮化拷贝充数"）由 islands_light_is_own_design
+        // 守卫继续兜住。
+        assert!(find("islands-light").is_some(), "MTerm · 亮（自有设计「素纸」，与 islands-dark 配对）");
+        // 显示名不带明暗后缀：后缀由 theme_name/选择器统一拼（界面显示「MTerm · 暗」
+        // 与配对的「MTerm · 亮」——两档 zh 同为 "MTerm"，靠 dark 列分族）。
         assert_eq!(find("islands-dark").unwrap().zh, "MTerm");
+        assert_eq!(find("islands-light").unwrap().zh, "MTerm");
+        assert!(!find("islands-light").unwrap().dark, "islands-light 是亮档");
+        assert!(find("islands-dark").unwrap().dark, "islands-dark 是暗档");
         // id 唯一
         let mut ids: Vec<_> = PALETTES.iter().map(|p| p.id).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 37);
+        assert_eq!(ids.len(), 38);
     }
 
     #[test]
@@ -318,6 +351,42 @@ mod tests {
         assert_eq!(p.ac, 0x2AACB8);
         assert_eq!(fit_contrast(p.ac, p.panel, 3.0), p.ac);
         assert!(contrast(p.ac, p.panel) >= 3.0);
+    }
+
+    /// 「MTerm · 亮」（islands-light，自有设计「素纸」）的三条配色纪律钉死，防止日后
+/// 单点改色把协调性改回去：① 强调色过 3:1 守卫（不产生色相漂移）；② 灰族唯一
+///（tfg=t1、ANSI white=t1、brightBlack=t3）；③ 12 个彩色槽全部 ≥4.5:1。
+///
+/// 另带一条**溯源守卫**：id 里的 islands 只是配对命名，这套色值是自主设计，
+/// 不能悄悄变成 islands-dark 的亮化拷贝（那正是 2026-10-07 删 onedark-light
+/// 等「硬凑档位」时要防的事）。
+#[test]
+    fn islands_light_paper_rules_hold() {
+        let p = find("islands-light").expect("MTerm · 亮必须在色表里");
+        assert_eq!(p.kind, "mterm");
+        // 溯源：与暗档不是同一套色换个明暗
+        let d = find("islands-dark").unwrap();
+        assert_ne!(p.root, d.root, "不能是 islands-dark 的底色换个明暗");
+        assert_ne!(p.ac, d.ac, "不能沿用暗档强调色");
+        assert_ne!(p.ansi16, d.ansi16, "不能沿用暗档 ANSI（亮底 bright 档方向相反）");
+        // ① 强调色守卫
+        assert_eq!(p.ac, 0x1F766B);
+        assert_eq!(fit_contrast(p.ac, p.panel, 3.0), p.ac, "强调色过守卫时不应被改色");
+        assert!(contrast(p.ac, p.panel) >= 3.0);
+        // ② 灰族唯一：终端前景 = 正文一级灰；ANSI 白/亮黑并入同一灰族
+        assert_eq!(p.tfg, p.t1, "term-fg 必须等于 t1（禁双灰）");
+        assert_eq!(p.ansi16[7], p.t1, "ANSI 7 white = t1");
+        assert_eq!(p.ansi16[8], p.t3, "ANSI 8 brightBlack = t3（注释色）");
+        // ③ 12 彩色槽 ≥ 4.5:1（槽 1-6 / 9-14；0/7/8/15 按终端惯例不判）
+        for i in [1usize, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14] {
+            let c = contrast(p.ansi16[i], p.tbg);
+            assert!(c >= 4.5, "ANSI{i}={:06X} on tbg 只有 {c:.2}", p.ansi16[i]);
+        }
+        // 频道 4 槽在两个 tab 底（非选中 tab / 选中=term-bg）上均 ≥3.0
+        for c in p.channel {
+            assert!(contrast(c, p.tab) >= 3.0, "频道色 {c:06X} on tab 不足 3.0");
+            assert!(contrast(c, p.tbg) >= 3.0, "频道色 {c:06X} on tbg 不足 3.0");
+        }
     }
 
     #[test]
