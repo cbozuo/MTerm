@@ -4064,6 +4064,44 @@ fn set_picker_pos(w: &crate::ui::AppWindow, h: f32, s: f32, v: f32) {
     w.set_accent_wheel_mx(mx.clamp(0.0, 1.0));
     w.set_accent_wheel_my(my.clamp(0.0, 1.0));
     w.set_accent_val_my(v.clamp(0.0, 1.0));
+    // 明度条的**值**也要回落：色轮拖动/蒙罩都读 accent-pick-v，只置滑快
+    // 位置的话开盘后第一次拖动会把明度弹回旧值（旧实现的坑）。
+    w.set_accent_pick_v(v.clamp(0.0, 1.0));
+}
+
+/// 明度条渐变位图（§3.8 `.acd-slider`：顶=当前色相满饱和、底=黑）。
+/// 显示 20×186，按 2× 烘成 40×372；色相随色轮拖动换，故每次改色重烘。
+fn bake_slider_image(hue: f32) -> slint::Image {
+    const W: u32 = 40;
+    const H: u32 = 372;
+    let top = crate::theme::hsv_to_hex(hue, 1.0, 1.0);
+    let mut buf = Vec::with_capacity((W * H * 4) as usize);
+    for y in 0..H {
+        // 顶→底：满饱和色相线性掺黑（hfi 的 linear-gradient(to top,#000,hue)）
+        let t = 1.0 - (y as f32 + 0.5) / H as f32;
+        let mix = |a: u32, b: u32| ((a as f32 * t + b as f32 * (1.0 - t)).round()) as u8;
+        let (r, g, b) = (
+            mix((top >> 16) & 0xFF, 0),
+            mix((top >> 8) & 0xFF, 0),
+            mix(top & 0xFF, 0),
+        );
+        for _ in 0..W {
+            buf.push(r);
+            buf.push(g);
+            buf.push(b);
+            buf.push(255);
+        }
+    }
+    let mut px = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(W, H);
+    px.make_mut_bytes().copy_from_slice(&buf);
+    slint::Image::from_rgba8(px)
+}
+
+/// 取色盘改色后刷新明度条渐变（色相来自传入的 hex）。三个改色入口
+/// （色轮拖动 / 数值输入 / 开盘）都以此收尾，保证条与轮同色相。
+fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
+    let (h, _, _) = crate::theme::hex_to_hsv(hex);
+    w.set_accent_slider_image(bake_slider_image(h));
 }
 
     fn reapply_theme(
@@ -4100,53 +4138,44 @@ fn set_picker_pos(w: &crate::ui::AppWindow, h: f32, s: f32, v: f32) {
                 reapply_theme(&weak, &bufs, &store.borrow(), &registry);
             }
         });
-        window.on_accent_hsv_hex({
-            move |h: f32, s: f32, v: f32| {
-                format!("#{:06X}", crate::theme::hsv_to_hex(h, s, v)).into()
-            }
-        });
         window.on_accent_wheel_pick({
+            let w = window.as_weak();
             move |dx: f32, dy: f32, v: f32| {
-                format!("#{:06X}", crate::theme::wheel_pick(dx, dy, v)).into()
-            }
-        });
-        window.on_accent_hex_hsv_h({
-            move |hex: SharedString| {
-                crate::theme::hex_to_hsv(crate::theme::parse_hex(&hex).unwrap_or(0)).0
-            }
-        });
-        window.on_accent_hex_hsv_s({
-            move |hex: SharedString| {
-                crate::theme::hex_to_hsv(crate::theme::parse_hex(&hex).unwrap_or(0)).1
-            }
-        });
-        window.on_accent_hex_hsv_v({
-            move |hex: SharedString| {
-                crate::theme::hex_to_hsv(crate::theme::parse_hex(&hex).unwrap_or(0)).2
+                let c = crate::theme::wheel_pick(dx, dy, v);
+                // 明度条渐变跟着色相走（顶=当前色相满饱和）
+                if let Some(w) = w.upgrade() {
+                    refresh_slider_image(&w, c);
+                }
+                format!("#{:06X}", c).into()
             }
         });
         // 取色盘色轮：Rust 侧一次性烘成位图（Slint 无法程序化画渐变）。
         // 圆心=圆心色相、r=饱和度、明度固定 1；明度由旁边的竖条另调。
+        // (#accent-picker-hifi 2026-10-13) §3.8 色轮放大到 186px：位图按
+        // 2× 烘（372）保证 200% 屏不糊；圆外像素 alpha=0 —— 旧版整幅不透明，
+        // 配合 border-radius 不裁剪子元素，色轮实际是个**方块**（用户截图）。
         window.set_accent_wheel_image({
-            const N: u32 = 148;
+            const N: u32 = 372;
             let mut buf = Vec::with_capacity((N * N * 4) as usize);
             for y in 0..N {
                 for x in 0..N {
                     let dx = (x as f32 + 0.5) / N as f32 * 2.0 - 1.0;
                     let dy = 1.0 - (y as f32 + 0.5) / N as f32 * 2.0;
-                    let r = (dx * dx + dy * dy).sqrt().min(1.0);
+                    let rr = (dx * dx + dy * dy).sqrt();
                     let h = dy.atan2(dx).to_degrees().rem_euclid(360.0);
-                    let c = crate::theme::hsv_to_hex(h, r, 1.0);
+                    let c = crate::theme::hsv_to_hex(h, rr.min(1.0), 1.0);
                     buf.push(((c >> 16) & 0xFF) as u8);
                     buf.push(((c >> 8) & 0xFF) as u8);
                     buf.push((c & 0xFF) as u8);
-                    buf.push(255);
+                    buf.push(if rr <= 1.0 { 255 } else { 0 });
                 }
             }
             let mut px = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(N, N);
             px.make_mut_bytes().copy_from_slice(&buf);
             slint::Image::from_rgba8(px)
         });
+        // 明度条渐变初值（红色相）；每次开盘/改色都由 refresh_slider_image 重烘
+        window.set_accent_slider_image(bake_slider_image(0.0));
         // Slint 不能把 hex 字符串在运行期解析成 color，取色盘的色块统一走这个回调
         window.on_accent_hex_color({
             move |hex: SharedString| match crate::theme::parse_hex(&hex) {
@@ -4170,6 +4199,23 @@ fn set_picker_pos(w: &crate::ui::AppWindow, h: f32, s: f32, v: f32) {
                 } else {
                     slint::Color::from_rgb_u8(255, 255, 255)
                 }
+            }
+        });
+        // 色块上的 hex 副标：主墨色向底色掺淡（§3.8 .acd-sw b —— 名字浓、
+        // hex 淡一档，形成块内层级）。亮块黑字 45% / 暗块白字 40%。
+        window.on_accent_ink_dim({
+            move |hex: SharedString| {
+                let c = crate::theme::parse_hex(&hex).unwrap_or(0);
+                let l = ((c >> 16 & 0xFF) as f32) * 0.299
+                    + ((c >> 8 & 0xFF) as f32) * 0.587
+                    + ((c & 0xFF) as f32) * 0.114;
+                let (ink, t) = if l > 140.0 { (0u32, 0.45) } else { (255, 0.40) };
+                let mix = |a: u32, b: u32| (a as f32 * (1.0 - t) + b as f32 * t).round() as u8;
+                slint::Color::from_rgb_u8(
+                    mix(ink, (c >> 16) & 0xFF),
+                    mix(ink, (c >> 8) & 0xFF),
+                    mix(ink, c & 0xFF),
+                )
             }
         });
         // 随机强调色：xorshift32（无需额外依赖）。守卫在 resolve_accent 里统一做，
@@ -4220,18 +4266,22 @@ fn set_picker_pos(w: &crate::ui::AppWindow, h: f32, s: f32, v: f32) {
                 let (h, s, v) = crate::theme::hex_to_hsv(c);
                 if let Some(w) = w.upgrade() {
                     w.set_accent_pick_hex(SharedString::from(format!("#{:06X}", c)));
-                    w.set_accent_pick_h(h);
-                    w.set_accent_pick_s(s);
-                    w.set_accent_pick_v(v);
                     set_picker_pos(&w, h, s, v);
+                    refresh_slider_image(&w, c);
                 }
             }
         });
+        // 数值/最近色改动后回填取样点位置。旧实现读 pick-h/s/v（只有开盘
+        // 路径写过），最近色直改 pick-hex 不走 Rust → 色轮圆点停在旧位置。
+        // 现统一从 pick-hex 现算（hex 是唯一事实源），顺带刷新明度条渐变。
         window.on_sync_picker_pos({
             let w = window.as_weak();
             move || {
                 if let Some(w) = w.upgrade() {
-                    set_picker_pos(&w, w.get_accent_pick_h(), w.get_accent_pick_s(), w.get_accent_pick_v());
+                    let c = crate::theme::parse_hex(&w.get_accent_pick_hex()).unwrap_or(0);
+                    let (h, s, v) = crate::theme::hex_to_hsv(c);
+                    set_picker_pos(&w, h, s, v);
+                    refresh_slider_image(&w, c);
                 }
             }
         });

@@ -259,6 +259,17 @@ pub(super) fn theme_state_of(window: &AppWindow, store: &ConfigStore) -> crate::
 pub(super) fn apply_theme(window: &AppWindow, bufs: &TermBuffers, store: &ConfigStore) -> String {
     let st = theme_state_of(window, store);
     let p = crate::theme::apply(window, &st);
+    // (#accent-guard 2026-10-13) 设置页 §3.8 的强调色守卫提示行：每次重算
+    // （切主题/改强调色/悬停预览/图片取色）都回写原色与生效色，面板上的
+    // chip 与「对比度守卫」文案据此显示真实数值，不再是一句静态说明。
+    let g = crate::theme::accent_guard(p, st.accent_mode);
+    window.set_accent_guard(crate::ui::AccentGuard {
+        eff: format!("#{:06X}", g.eff).into(),
+        panel: format!("#{:06X}", g.panel).into(),
+        raw: format!("#{:06X}", g.raw).into(),
+        ratio: format!("{:.2}", g.ratio).into(),
+        adjusted: g.adjusted,
+    });
     {
         let handles: Vec<_> = bufs.lock().unwrap().values().cloned().collect();
         for h in handles {

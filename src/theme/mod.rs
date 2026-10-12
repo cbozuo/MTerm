@@ -299,6 +299,36 @@ pub fn resolve_accent(p: &Palette, mode: AccentCfg) -> (u32, u32) {
     }
 }
 
+/// 强调色守卫信息（设置页 §3.8 的提示行用）：原色 / 生效色 / 面板色 /
+/// 对比度 / 是否被 3:1 守卫自动调过。跟随态原色=生效色=主题自带 ac。
+pub struct AccentGuard {
+    pub raw: u32,
+    pub eff: u32,
+    pub panel: u32,
+    pub ratio: f64,
+    pub adjusted: bool,
+}
+
+pub fn accent_guard(p: &Palette, mode: AccentCfg) -> AccentGuard {
+    let raw = match mode {
+        AccentCfg::Follow => p.ac,
+        AccentCfg::Preset(key) => palettes::ACCENT_PRESETS
+            .iter()
+            .find(|(k, _, _)| *k == key)
+            .map(|(_, _, v)| *v)
+            .unwrap_or(p.ac),
+        AccentCfg::Custom(hex) => hex,
+    };
+    let (eff, _) = resolve_accent(p, mode);
+    AccentGuard {
+        raw,
+        eff,
+        panel: p.panel,
+        ratio: contrast(eff, p.panel),
+        adjusted: eff != raw,
+    }
+}
+
 /// 全部预设 id（选择器分组用）：radix → brand → terminal → meat
 pub fn ordered_ids() -> Vec<&'static str> {
     palettes::PALETTES.iter().map(|p| p.id).collect()

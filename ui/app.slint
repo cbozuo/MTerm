@@ -39,7 +39,7 @@ import { SystemInfoWindow, SysInfoRow, SysMetricRow, SysNetRow } from "system_in
 import { EditorWindow, EditorFindResult } from "editor_window.slint";
 import { TrayMenuWindow } from "tray_menu.slint";
 import { AboutWindow } from "about_window.slint";
-import { InterfacePanel, OutputRuleItem, WslProfileInfo } from "interface_panel.slint";
+import { InterfacePanel, OutputRuleItem, WslProfileInfo, AccentGuard } from "interface_panel.slint";
 // Re-export so `slint::include_modules!` generates the detached Rust window types.
 export { ProcWindow, SystemInfoWindow, EditorWindow, TrayMenuWindow, AboutWindow }
 import { LineEdit, Button, ScrollView, CheckBox, Palette } from "std-widgets.slint";
@@ -1180,6 +1180,7 @@ export component AppWindow inherits Window {
     in-out property <bool> theme-has-match: true;
     // (#sync-dialog-r2 2026-10-08) 同步输入的状态/回调已拆到
     // ui/sync_input_dialog.slint 的 **SyncInputState** 全局 + SyncDialogHost
+
     // 宿主（本文件只保留根层一行实例化与顶栏按钮接线）。
     // 当前主题 id / 跟随系统 / 强调色三态的快照（设置页与速选面板显示）。
     // 当前主题 id——**只认确认动作**（set_theme/启动读 config）。不能绑到
@@ -1190,19 +1191,29 @@ export component AppWindow inherits Window {
     in-out property <string> accent-mode: "follow";
     in-out property <string> accent-preset: "";
     in-out property <string> accent-custom: "";
-    // ── 取色盘状态（高保真稿 §3.8）────────────────────────────────────
-    // accent-stage 是暂存色：随机/调色盘只改它，点空白关闭弹框才确认。
+    // ── 强调色：预设弹框 / 取色盘 / 守卫提示（高保真稿 §3.8）──────────
+    // accent-stage 是暂存色：随机/取色盘只改它，点弹框外空白处才确认。
     in-out property <string> accent-stage: "";
     in-out property <bool> accent-stage-dirty: false;
-    in property <[string]> accent-recent: [];
+    in property <[string]> accent-recent: [];       // 最近使用（Rust 侧持有，最多 20）
+    // 取色盘当前色：色轮/明度条/数值/hex/最近色共用这一个事实源
     in-out property <string> accent-pick-hex: "";
-    in-out property <float> accent-pick-h: 0;
-    in-out property <float> accent-pick-s: 0;
-    in-out property <float> accent-pick-v: 1;
     in-out property <string> accent-pick-fmt: "rgb";
-    in-out property <string> accent-pick-r: "0";
-    in-out property <string> accent-pick-g: "0";
-    in-out property <string> accent-pick-b: "0";
+    // 色轮/明度条的取样点位置（0..1）。不用 Slint 算三角函数：开盘由 Rust 算，
+    // 拖动时直接取指针坐标 —— 项目内也没在别处用过 Math.sin/cos。
+    in-out property <float> accent-wheel-mx: 0.5;
+    in-out property <float> accent-wheel-my: 0.5;
+    in-out property <float> accent-val-my: 1.0;
+    in-out property <float> accent-pick-v: 1.0;     // 明度条当前值（色轮蒙罩同源）
+    // 对比度守卫信息（Rust apply_theme 每次重算回写：生效色/面板/原色/比率）
+    in-out property <AccentGuard> accent-guard;
+    // 浮层开关（本体在根层，theme-pick 同款桥）。accent-pop-y = chip 下缘
+    // +4px（absolute-position 布局期恒 0，必须在事件期取）。
+    in-out property <bool> accent-pop-open: false;
+    in-out property <length> accent-pop-y: 0px;
+    in-out property <bool> accent-pick-open: false;
+    // 明度条渐变位图（Rust 按当前色相烘：顶=满饱和色相、底=黑）
+    in-out property <image> accent-slider-image;
     in-out property <float> term-alpha <=> Theme.term-alpha;
     in-out property <float> wallpaper-visible <=> Theme.wallpaper-visible;
     in-out property <int> popup-transparency <=> Theme.popup-transparency;
@@ -1446,24 +1457,18 @@ export component AppWindow inherits Window {
     // 强调色三态与三滑杆/通透度的设置入口（设置「主题」页 + 速选面板用）。
     callback set-accent-mode(string /* follow|preset|custom */, string /* preset key or #hex */);
     // ── 取色盘（高保真稿 §3.8）：换算与色轮位图由 Rust 提供 ──────────────
-    pure callback accent-hsv-hex(float /* h 0..360 */, float /* s 0..1 */, float /* v 0..1 */) -> string;
     pure callback accent-wheel-pick(float /* dx -1..1 */, float /* dy -1..1 */, float /* v 0..1 */) -> string;
-    pure callback accent-hex-hsv-h(string) -> float;
-    pure callback accent-hex-hsv-s(string) -> float;
-    pure callback accent-hex-hsv-v(string) -> float;
     pure callback accent-hex-color(string) -> color;
     pure callback accent-ch(string /*hex*/, int /*0..2*/, string /*rgb|hsb*/) -> string;
     pure callback accent-pick-apply(string /*base hex*/, int /*0..2*/, string /*val*/, string /*rgb|hsb*/) -> string;
     pure callback accent-ink-on(string) -> color;          // 色块上的字色：深块白字/浅块黑字
+    pure callback accent-ink-dim(string) -> color;         // 色块上的 hex 副标：主墨色掺淡一档
     callback accent-random-hex() -> string;           // 守卫后的随机强调色
     callback accent-recent-push(string);              // 最近使用去重入列（≤20）
     callback accent-picker-open(string);              // 带 hex 打开调色盘（回填 h/s/v）
     pure callback accent-hex-valid(string) -> string;          // hex 直输校验/规范化
     callback sync-picker-pos();                           // 数值改动后回填取样点位置
-    in-out property <float> accent-wheel-mx: 0.5;
-    in-out property <float> accent-wheel-my: 0.5;
-    in-out property <float> accent-val-my: 1.0;
-    in property <image> accent-wheel-image;
+    in property <image> accent-wheel-image;               // 色轮位图（Rust 烘：圆心=色相、r=饱和）
     callback set-panel-alpha(float);
     callback set-term-alpha(float);
     callback set-wallpaper-visible(float);
@@ -1676,7 +1681,9 @@ export component AppWindow inherits Window {
     in-out property <string> paste-confirm-text;
     in-out property <string> paste-confirm-preview;
     in-out property <bool> paste-confirm-large: false;
-    property <int> terminal-focus-sequence;
+    // (#sync-dialog-esc) in-out：同步输入弹框确定（Rust apply 路径）后由
+    // Rust 递增，把键盘焦点还给活动终端（与下方粘贴确认卡的 += 1 同机制）。
+    in-out property <int> terminal-focus-sequence;
     callback paste-confirmed(string /* tab-id */);
     callback paste-confirm-cancelled();
     callback connect-session(string /* session-id */);
@@ -7601,7 +7608,21 @@ export component AppWindow inherits Window {
         esc-scope := FocusScope {
             init => { self.focus(); }
             key-pressed(e) => {
-                if (e.text == Key.Escape) { root.interface-open = false; }
+                if (e.text == Key.Escape) {
+                    // 浮层开着先关浮层（强调色预设弹框/取色盘/主题下拉），再按
+                    // 一次才关设置卡。否则 Esc 直接关卡会把根层浮层遗留在屏上
+                    // （浮层在 overlay 之外，不随 interface-open 隐藏）。
+                    if (root.accent-pop-open || root.accent-pick-open || root.theme-pick-open) {
+                        root.accent-pop-open = false;
+                        root.accent-pick-open = false;
+                        root.theme-pick-open = false;
+                        root.theme-pick-search = "";
+                        root.theme-search-filter("");
+                        root.preview-theme(root.theme-chosen);
+                    } else {
+                        root.interface-open = false;
+                    }
+                }
                 accept
             }
             key-released(e) => { accept }
@@ -7706,7 +7727,13 @@ export component AppWindow inherits Window {
                                 animate background { duration: 90ms; }
                                 if-close-ta := TouchArea {
                                     mouse-cursor: pointer;
-                                    clicked => { root.interface-open = false; }
+                                    clicked => {
+                                        root.interface-open = false;
+                                        // 同时收掉根层浮层开关（Esc 同款处理）
+                                        root.accent-pop-open = false;
+                                        root.accent-pick-open = false;
+                                        root.theme-pick-open = false;
+                                    }
                                 }
                                 Icon {
     glyph: "close";
@@ -7730,15 +7757,9 @@ export component AppWindow inherits Window {
                     accent-custom <=> root.accent-custom;
                     accent-stage <=> root.accent-stage;
                     accent-stage-dirty <=> root.accent-stage-dirty;
-                    accent-recent <=> root.accent-recent;
-                    accent-pick-hex <=> root.accent-pick-hex;
-                    accent-pick-h <=> root.accent-pick-h;
-                    accent-pick-s <=> root.accent-pick-s;
-                    accent-pick-v <=> root.accent-pick-v;
-                    accent-pick-fmt <=> root.accent-pick-fmt;
-                    accent-pick-r <=> root.accent-pick-r;
-                    accent-pick-g <=> root.accent-pick-g;
-                    accent-pick-b <=> root.accent-pick-b;
+                    accent-guard <=> root.accent-guard;
+                    accent-pop-open <=> root.accent-pop-open;
+                    accent-pop-y <=> root.accent-pop-y;
                     wallpaper-active <=> root.wallpaper-active;
                     term-alpha <=> root.term-alpha;
                     wallpaper-visible <=> root.wallpaper-visible;
@@ -7755,24 +7776,8 @@ export component AppWindow inherits Window {
                     set-theme(id) => { root.set-theme(id); }
                     set-follow-system(v) => { root.set-follow-system(v); }
                     set-accent-mode(m, v) => { root.set-accent-mode(m, v); }
-                    accent-hsv-hex(h, s, v) => { root.accent-hsv-hex(h, s, v); }
-                    accent-wheel-pick(dx, dy, v) => { root.accent-wheel-pick(dx, dy, v); }
-                    accent-hex-hsv-h(h) => { root.accent-hex-hsv-h(h); }
-                    accent-hex-hsv-s(h) => { root.accent-hex-hsv-s(h); }
-                    accent-hex-hsv-v(h) => { root.accent-hex-hsv-v(h); }
                     accent-hex-color(h) => { root.accent-hex-color(h); }
-                    accent-ch(h, i, f) => { root.accent-ch(h, i, f); }
-                    accent-pick-apply(b, i, v, f) => { root.accent-pick-apply(b, i, v, f); }
                     accent-ink-on(h) => { root.accent-ink-on(h); }
-                    accent-random-hex() => { root.accent-random-hex(); }
-                    accent-recent-push(h) => { root.accent-recent-push(h); }
-                    accent-picker-open(h) => { root.accent-picker-open(h); }
-                    accent-hex-valid(h) => { root.accent-hex-valid(h); }
-                    sync-picker-pos() => { root.sync-picker-pos(); }
-                    accent-wheel-image: root.accent-wheel-image;
-                    accent-wheel-mx <=> root.accent-wheel-mx;
-                    accent-wheel-my <=> root.accent-wheel-my;
-                    accent-val-my <=> root.accent-val-my;
                     set-panel-alpha(v) => { root.set-panel-alpha(v); }
                     set-term-alpha(v) => { root.set-term-alpha(v); }
                     set-wallpaper-visible(v) => { root.set-wallpaper-visible(v); }
@@ -8130,10 +8135,483 @@ export component AppWindow inherits Window {
 
     }
 
+    // ── (#accent-pop 2026-10-13) 强调色预设弹框 + 取色盘（高保真 §3.8）──
+    // 浮层本体在 AppWindow 根层，与 theme-pick 同款模式（面板内 PopupWindow
+    // 的定位/滚动裁剪都不可靠，实测过）。横向居中于设置卡、纵向锚在强调色行
+    // chip 下缘（accent-pop-y 在事件期取）。scrim 是整窗透明吞层：点弹框外
+    // 空白 = 确认暂存色（§3.8 两种确认方式之一；弹框自身留白不吞不确认）。
+    // 只在设置卡开着且停在主题页时渲染，切页/关卡自动收起。
+    if root.interface-open && root.ifd-page == "theme" && root.accent-pop-open : Rectangle {
+        property <length> pop-h: min(root.height - 16px, accent-pop-lay.preferred-height);
+        width: parent.width;
+        height: parent.height;
+        TouchArea {
+            clicked => {
+                // 暂存色脏了才写回（没动过 = 不把跟随态切成自定义）
+                if (root.accent-stage-dirty) {
+                    root.accent-custom = root.accent-stage;
+                    root.set-accent-mode("custom", root.accent-stage);
+                    root.accent-stage-dirty = false;
+                }
+                root.accent-pop-open = false;
+            }
+        }
+        accent-pop := Rectangle {
+            // 弹框自身留白吞点击（否则点 padding会穿透到 scrim 变成确认）
+            TouchArea { clicked => {} }
+            x: clamp(root.ifd-x + (root.ifd-w - self.width) / 2, 8px, max(8px, root.width - self.width - 12px));
+            y: clamp(root.accent-pop-y, 8px, max(8px, root.height - parent.pop-h - 12px));
+            width: 700px;
+            height: parent.pop-h;
+            background: Theme.popup-bg;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 20px;
+            drop-shadow-color: #0000009e;
+            accent-pop-lay := VerticalLayout {
+                padding-top: 13px;
+                padding-bottom: 12px;
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 8px;
+                Text {
+                    text: root.lang-en
+                        ? "Pick a color below; click outside to confirm the staged one."
+                        : "从下方网格中选择一种强调色；点空白处确认当前色。";
+                    color: Theme.text-muted;
+                    font-size: 11px * Theme.panel-font;
+                }
+                // 46 色预设网格（§3.8：9 列；点一下直接生效并关闭）
+                GridLayout {
+                    spacing: 6px;
+                    for p[i] in [{ n: "深渊色", h: "#0B0D12" }, { n: "青柠", h: "#C8FF00" }, { n: "茶色", h: "#FFC100" }, { n: "紫水晶色", h: "#AB47BC" }, { n: "水蓝色", h: "#5CCFE6" }, { n: "海蓝宝石色", h: "#64FFDD" }, { n: "仿紫色", h: "#651FFF" }, { n: "绝命毒药色", h: "#368A3F" }, { n: "洋红", h: "#E1306C" }, { n: "碳素色", h: "#424242" }, { n: "咖啡色", h: "#795548" }, { n: "珊瑚色", h: "#FF7F6B" }, { n: "橙色", h: "#F0862C" }, { n: "蟹青色", h: "#FFE831" }, { n: "宝蓝色", h: "#2979F5" }, { n: "鲜蓝色", h: "#73D8FF" }, { n: "深红色", h: "#E916B5" }, { n: "金色", h: "#FFC069" }, { n: "铅黑色", h: "#616161" }, { n: "靛蓝色", h: "#2F51B5" }, { n: "薰衣草色", h: "#7E57C2" }, { n: "白光色", h: "#FAFAFA" }, { n: "鲜绿色", h: "#7CB342" }, { n: "橘黄色", h: "#FFA565" }, { n: "淡紫色", h: "#DFBFFF" }, { n: "薄荷色", h: "#95E0C1" }, { n: "霓虹色", h: "#1D49B1" }, { n: "海星色", h: "#546E7A" }, { n: "琥珀橙", h: "#FF9B0B" }, { n: "夜色", h: "#676E9A" }, { n: "苔藓色", h: "#B1C784" }, { n: "植物红", h: "#B71C1C" }, { n: "玫瑰色", h: "#F279B9" }, { n: "鲑鱼色", h: "#F29E7B" }, { n: "沙色", h: "#D9AE91" }, { n: "灰色", h: "#9E9E9E" }, { n: "天空色", h: "#64FFFF" }, { n: "石板色", h: "#607D8B" }, { n: "钢色", h: "#B9B119" }, { n: "草绿粉", h: "#FF40CC" }, { n: "青绿色", h: "#089B8B" }, { n: "番茄色", h: "#F44333" }, { n: "绿松石色", h: "#88CBBC" }, { n: "水色", h: "#42A5F5" }, { n: "黄绿色", h: "#A5FF80" }, { n: "品牌蓝", h: "#0969DA" }, { n: "翡翠绿", h: "#29A383" }] : Rectangle {
+                        row: i / 9;
+                        col: Math.mod(i, 9);
+                        width: 68px;
+                        height: 42px;
+                        border-radius: 6px;
+                        background: root.accent-hex-color(p.h);
+                        // 悬停 = 强调色 2px 外环（§3.8 .acd-sw:hover）
+                        border-width: sw-ta.has-hover ? 2px : 1px;
+                        border-color: sw-ta.has-hover ? Theme.accent : Theme.border-subtle;
+                        VerticalLayout {
+                            padding-top: 5px;
+                            padding-bottom: 5px;
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            spacing: 0px;
+                            Text {
+                                text: p.n;
+                                color: root.accent-ink-on(p.h);
+                                font-size: 10px * Theme.panel-font;
+                                font-weight: 600;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: p.h;
+                                color: root.accent-ink-dim(p.h);
+                                font-size: 8.5px * Theme.panel-font;
+                                font-family: Theme.term-font-family;
+                            }
+                        }
+                        sw-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            // 点预设 = 直接生效并关闭（无需再点空白确认）
+                            clicked => {
+                                root.accent-custom = p.h;
+                                root.accent-stage = p.h;
+                                root.set-accent-mode("custom", p.h);
+                                root.accent-recent-push(p.h);
+                                root.accent-stage-dirty = false;
+                                root.accent-pop-open = false;
+                            }
+                        }
+                    }
+                }
+                // 底部：暂存位色卡（点它开调色盘）+ 随机颜色
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: start;
+                    Rectangle {
+                        width: 100px;
+                        height: 42px;
+                        border-radius: 6px;
+                        background: root.accent-hex-color(root.accent-stage);
+                        border-width: 1px;
+                        border-color: Theme.border-strong;
+                        VerticalLayout {
+                            padding-top: 5px;
+                            padding-bottom: 5px;
+                            padding-left: 7px;
+                            padding-right: 6px;
+                            spacing: 0px;
+                            Text {
+                                text: root.lang-en ? "Current" : "当前强调色";
+                                color: root.accent-ink-on(root.accent-stage);
+                                font-size: 10px * Theme.panel-font;
+                                font-weight: 600;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: root.accent-stage;
+                                color: root.accent-ink-dim(root.accent-stage);
+                                font-size: 8.5px * Theme.panel-font;
+                                font-family: Theme.term-font-family;
+                            }
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.accent-picker-open(root.accent-stage);
+                                root.accent-pick-open = true;
+                            }
+                        }
+                    }
+                    Rectangle {
+                        width: 108px;
+                        height: 42px;
+                        border-radius: 6px;
+                        background: transparent;
+                        border-width: 1px;
+                        border-color: rnd-ta.has-hover ? Theme.accent : Theme.border-strong;
+                        Text {
+                            text: root.lang-en ? "⟳ Random" : "⟳ 随机颜色";
+                            color: rnd-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                            font-size: 11.5px * Theme.panel-font;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        rnd-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            // 随机只换暂存色（可连点试），不确认就不会误改
+                            clicked => {
+                                root.accent-stage = root.accent-random-hex();
+                                root.accent-stage-dirty = true;
+                                root.accent-recent-push(root.accent-stage);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 取色盘（§3.8「自定义强调色」）：模态遮罩 + 居中对话框。遮罩/✕/取消都
+    // 不采用（只暂存）；「复制(C)」写回暂存位，回到预设弹框点空白确认 ——
+    // 与 §3.8 的两种确认方式衔接。色轮位图/明度条渐变都由 Rust 烘。
+    if root.interface-open && root.ifd-page == "theme" && root.accent-pick-open : Rectangle {
+        property <length> dlg-h: min(root.height - 24px, picker-lay.preferred-height);
+        width: parent.width;
+        height: parent.height;
+        background: #050609bd;
+        TouchArea { clicked => { root.accent-pick-open = false; } }
+        picker-dlg := Rectangle {
+            // 对话框留白吞点击（否则点 padding 穿透到遮罩 = 关闭）
+            TouchArea { clicked => {} }
+            width: 392px;
+            height: parent.dlg-h;
+            x: clamp(root.ifd-x + (root.ifd-w - self.width) / 2, 8px, max(8px, root.width - self.width - 12px));
+            y: clamp(root.ifd-y + (root.ifd-h - parent.dlg-h) / 2, 8px, max(8px, root.height - parent.dlg-h - 12px));
+            background: Theme.popup-bg;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 26px;
+            drop-shadow-color: #000000b8;
+            picker-lay := VerticalLayout {
+                padding-top: 15px;
+                padding-bottom: 14px;
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 10px;
+                // 标题行 + ✕
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: root.lang-en ? "Custom accent" : "自定义强调色";
+                        color: Theme.text-primary;
+                        font-size: 13.5px * Theme.panel-font;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Rectangle {
+                        width: 22px;
+                        height: 22px;
+                        border-radius: Theme.radius-sm;
+                        background: dlg-x-ta.has-hover ? Theme.bg-hover : transparent;
+                        Text {
+                            text: "✕";
+                            color: dlg-x-ta.has-hover ? Theme.text-primary : Theme.text-muted;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        dlg-x-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.accent-pick-open = false; }
+                        }
+                    }
+                }
+                // 预览条（纯预览；采用走「复制(C)」）
+                Rectangle {
+                    height: 30px;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    background: root.accent-hex-color(root.accent-pick-hex);
+                }
+                // R/G/B（或 H/S/B）+ 格式切换 + HEX 直输
+                HorizontalLayout {
+                    spacing: 6px;
+                    for i in [0, 1, 2] : Rectangle {
+                        width: 62px;
+                        height: 28px;
+                        border-radius: 6px;
+                        background: Theme.field;
+                        border-width: 1px;
+                        border-color: Theme.border-control;
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 4px;
+                            spacing: 4px;
+                            Text {
+                                text: root.accent-pick-fmt == "hsb"
+                                    ? (i == 0 ? "H" : (i == 1 ? "S" : "B"))
+                                    : (i == 0 ? "R" : (i == 1 ? "G" : "B"));
+                                color: Theme.text-muted;
+                                font-size: 10px * Theme.panel-font;
+                                vertical-alignment: center;
+                            }
+                            TextInput {
+                                width: 34px;
+                                height: 24px;
+                                text: root.accent-ch(root.accent-pick-hex, i, root.accent-pick-fmt);
+                                color: Theme.text-primary;
+                                font-size: 11px * Theme.panel-font;
+                                font-family: Theme.term-font-family;
+                                vertical-alignment: center;
+                                single-line: true;
+                                accepted => {
+                                    root.accent-pick-hex = root.accent-pick-apply(
+                                        root.accent-pick-hex, i, self.text, root.accent-pick-fmt);
+                                    root.sync-picker-pos();
+                                }
+                            }
+                        }
+                    }
+                    // RGB/HSB 切换（§3.8 的下拉；两项切换用点按）
+                    Rectangle {
+                        width: 56px;
+                        height: 28px;
+                        border-radius: 6px;
+                        background: Theme.field;
+                        border-width: 1px;
+                        border-color: fmt-ta.has-hover ? Theme.accent : Theme.border-control;
+                        Text {
+                            text: root.accent-pick-fmt == "hsb" ? "HSB" : "RGB";
+                            color: Theme.text-secondary;
+                            font-size: 11px * Theme.panel-font;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        fmt-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.accent-pick-fmt = root.accent-pick-fmt == "hsb" ? "rgb" : "hsb";
+                            }
+                        }
+                    }
+                    Rectangle {
+                        width: 88px;
+                        height: 28px;
+                        border-radius: 6px;
+                        background: Theme.field;
+                        border-width: 1px;
+                        border-color: Theme.border-control;
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 6px;
+                            TextInput {
+                                width: 72px;
+                                height: 24px;
+                                text: root.accent-pick-hex;
+                                color: Theme.text-primary;
+                                font-size: 11px * Theme.panel-font;
+                                font-family: Theme.term-font-family;
+                                vertical-alignment: center;
+                                single-line: true;
+                                accepted => {
+                                    root.accent-pick-hex = root.accent-hex-valid(self.text);
+                                    root.sync-picker-pos();
+                                }
+                            }
+                        }
+                    }
+                }
+                // 色轮 + 明度条
+                HorizontalLayout {
+                    spacing: 14px;
+                    alignment: start;
+                    wheel-box := Rectangle {
+                        width: 186px;
+                        height: 186px;
+                        border-radius: 93px;
+                        clip: true;
+                        Image {
+                            source: root.accent-wheel-image;
+                            width: 186px;
+                            height: 186px;
+                        }
+                        // 明度蒙罩（§3.8：色轮随明度条压暗）
+                        Rectangle {
+                            width: 186px;
+                            height: 186px;
+                            border-radius: 93px;
+                            background: #000000;
+                            opacity: 1 - root.accent-pick-v;
+                        }
+                        Rectangle {
+                            x: root.accent-wheel-mx * 186px - 5.5px;
+                            y: root.accent-wheel-my * 186px - 5.5px;
+                            width: 11px;
+                            height: 11px;
+                            border-radius: 5.5px;
+                            border-width: 2px;
+                            border-color: #ffffffff;
+                        }
+                        TouchArea {
+                            mouse-cursor: crosshair;
+                            moved => {
+                                root.accent-wheel-mx = Math.max(0, Math.min(1, self.mouse-x / wheel-box.width));
+                                root.accent-wheel-my = Math.max(0, Math.min(1, self.mouse-y / wheel-box.height));
+                                root.accent-pick-hex = root.accent-wheel-pick(
+                                    root.accent-wheel-mx * 2 - 1,
+                                    1 - root.accent-wheel-my * 2,
+                                    root.accent-pick-v);
+                            }
+                            clicked => {
+                                root.accent-wheel-mx = Math.max(0, Math.min(1, self.mouse-x / wheel-box.width));
+                                root.accent-wheel-my = Math.max(0, Math.min(1, self.mouse-y / wheel-box.height));
+                                root.accent-pick-hex = root.accent-wheel-pick(
+                                    root.accent-wheel-mx * 2 - 1,
+                                    1 - root.accent-wheel-my * 2,
+                                    root.accent-pick-v);
+                            }
+                        }
+                    }
+                    val-track := Rectangle {
+                        width: 20px;
+                        height: 186px;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: Theme.border-control;
+                        Image {
+                            source: root.accent-slider-image;
+                            x: 1px;
+                            y: 1px;
+                            width: 18px;
+                            height: 184px;
+                        }
+                        Rectangle {
+                            y: (1 - root.accent-val-my) * (val-track.height - 6px);
+                            x: 2.5px;
+                            width: 15px;
+                            height: 6px;
+                            border-radius: 3px;
+                            background: #ffffffff;
+                        }
+                        TouchArea {
+                            mouse-cursor: ns-resize;
+                            moved => {
+                                root.accent-val-my = 1 - Math.max(0, Math.min(1, self.mouse-y / val-track.height));
+                                root.accent-pick-hex = root.accent-wheel-pick(
+                                    root.accent-wheel-mx * 2 - 1,
+                                    1 - root.accent-wheel-my * 2,
+                                    root.accent-val-my);
+                            }
+                            clicked => {
+                                root.accent-val-my = 1 - Math.max(0, Math.min(1, self.mouse-y / val-track.height));
+                                root.accent-pick-hex = root.accent-wheel-pick(
+                                    root.accent-wheel-mx * 2 - 1,
+                                    1 - root.accent-wheel-my * 2,
+                                    root.accent-val-my);
+                            }
+                        }
+                    }
+                }
+                // 最近使用（§3.8：10 列；当前色描边）
+                GridLayout {
+                    spacing: 3px;
+                    for r[i] in root.accent-recent : Rectangle {
+                        row: i / 10;
+                        col: Math.mod(i, 10);
+                        width: 33px;
+                        height: 33px;
+                        border-radius: 3px;
+                        background: root.accent-hex-color(r);
+                        border-width: 1px;
+                        border-color: r == root.accent-pick-hex ? Theme.accent : Theme.border-subtle;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.accent-pick-hex = r;
+                                root.sync-picker-pos();
+                            }
+                        }
+                    }
+                }
+                // 底部：取消 / 复制(C)
+                HorizontalLayout {
+                    spacing: 10px;
+                    alignment: end;
+                    Rectangle {
+                        width: 84px;
+                        height: 30px;
+                        border-radius: 6px;
+                        background: transparent;
+                        border-width: 1px;
+                        border-color: Theme.border-strong;
+                        Text {
+                            text: root.lang-en ? "Cancel" : "取消";
+                            color: Theme.text-secondary;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea { mouse-cursor: pointer; clicked => { root.accent-pick-open = false; } }
+                    }
+                    PrimaryButton {
+                        text: root.lang-en ? "Copy (C)" : "复制(C)";
+                        btn-height: 30px;
+                        clicked => {
+                            root.accent-stage = root.accent-pick-hex;
+                            root.accent-stage-dirty = true;
+                            root.accent-recent-push(root.accent-pick-hex);
+                            root.accent-pick-open = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // (#sync-dialog-r2 2026-10-08) 同步输入对话框宿主：**根层末尾**（z 序最上）。
     // ⚠️ 不能放进主题选择浮层内部 —— 那样只有主题选择器开着时才渲染，
     // 单独点「同步输入」永远不弹（上一版实测的 bug）。
-    SyncDialogHost { }
+    // (#sync-dialog-esc) 关框（Esc/✕/取消）后焦点归还活动终端，与粘贴确认卡
+    // 同一机制；确定走 Rust apply，由 Rust 侧递增 terminal-focus-sequence。
+    // 欢迎页无终端时 sequence 无人接手（终端侧 changed focus-sequence 只对
+    // active 终端生效），把焦点还给窗口快捷键 Scope —— 与 changed
+    // active-tab-id 的欢迎页兜底同一手法。
+    SyncDialogHost {
+        request-terminal-focus => {
+            root.terminal-focus-sequence += 1;
+            if (root.active-tab-id == "welcome" && root.terminals.length == 0) {
+                shortcut-scope.focus();
+            }
+        }
+    }
 
     // (#win-edge-frame 2026-10-10) 主窗口四边 1px 描边 + 圆角,与弹框卡片
     // (border-strong + 圆角)同一套边线语言。窗口本体是无边框不透明窗口
