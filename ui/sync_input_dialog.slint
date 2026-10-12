@@ -20,7 +20,10 @@ import { ScrollView } from "std-widgets.slint";
 
 // 一行 = 一个打开的终端 tab（或离线的持久频道成员）。slot -1 = 未加入，
 // 0..3 = 频道 A..D。离线成员 online=false（标题由 Rust 追加「（离线）」）。
-// win-id = 该行所属窗口的 registry id（1 起；离线行 = 打开弹框的窗口）。
+// win-id = 该行所属窗口的**显示位次**（1 起；与窗口标题「MTerm · 窗口 N」
+// 同源，存活窗口按 registry id 升序的序号；离线行 = 打开弹框的窗口）。
+// (#sync-dialog-v2-fix8) 以前存原始 registry id：关掉靠前窗口后标题顺延、
+// 徽标/悬浮卡却停在旧号（用户实测）。
 // host/user/auth/group 供行主文本与悬浮卡；auth 为代码（password 等），
 // 显示名走 auth-label（跟随界面语言）。
 export struct SyncSessionInfo {
@@ -280,6 +283,9 @@ export component SyncInputDialog inherits Rectangle {
     drop-shadow-blur: 24px;
     drop-shadow-color: #00000066;
     clip: true;
+    // (#sync-dialog-esc) 关闭请求（✕/取消按钮用）：交宿主收口——关 global
+    // 的同时把键盘焦点还给活动终端（见 SyncDialogHost 的接线）。
+    callback request-close();
 
     // 当前频道字母 / 成员数 / 色（供栏头标题、徽标、空态用）
     property <string> active-letter:
@@ -366,7 +372,7 @@ export component SyncInputDialog inherits Rectangle {
                 }
                 close-ta := TouchArea {
                     mouse-cursor: pointer;
-                    clicked => { SyncInputState.dialog-open = false; }
+                    clicked => { root.request-close(); }
                 }
             }
         }
@@ -631,7 +637,7 @@ export component SyncInputDialog inherits Rectangle {
                     }
                     cancel-ta := TouchArea {
                         mouse-cursor: pointer;
-                        clicked => { SyncInputState.dialog-open = false; }
+                        clicked => { root.request-close(); }
                     }
                 }
                 apply-btn := Rectangle {
@@ -775,8 +781,8 @@ export component SyncInputDialog inherits Rectangle {
 // (#sync-dialog-hifi 2026-10-11) slot-counts：每频道成员数，Rust 在每次增删
 // 后重算写入。
 // (#sync-dialog-v2 2026-10-12) 新增 scope（0=当前窗口 1=全部窗口，纯 UI 过滤，
-// 模型打开时已装全所有窗口的行，切换不重灌）、win-id（打开弹框的窗口 id）、
-// left-count（左栏候选数，Rust 在重算时按作用域+排除当前频道一并算）。
+// 模型打开时已装全所有窗口的行，切换不重灌）、win-id（打开弹框的窗口**位次**，
+// 与标题同源）、left-count（左栏候选数，Rust 在重算时按作用域+排除当前频道一并算）。
 export global SyncInputState {
     in-out property <bool> dialog-open: false;
     in-out property <int> slot: 0;               // 当前操作的频道槽 0..3
@@ -790,7 +796,7 @@ export global SyncInputState {
     in-out property <[SyncSessionInfo]> right-rows;
     in-out property <[int]> slot-counts: [0, 0, 0, 0];   // 每频道成员数（Rust 维护）
     in-out property <int> left-count: 0;         // 左栏候选数（Rust 维护）
-    in-out property <int> win-id: 1;             // 打开弹框的窗口 id（1 起）
+    in-out property <int> win-id: 1;             // 打开弹框的窗口位次（1 起，与标题同源）
     in-out property <int> scope: 0;              // 0=当前窗口 1=全部窗口
     in-out property <bool> lang-en: false;
     callback open-dialog();                      // Rust：填充模型并打开
@@ -804,15 +810,49 @@ export global SyncInputState {
 }
 
 // 宿主：AppWindow 根层只放这一个元素（模态吞层 + 居中）。app.slint 里一行：
-//   SyncDialogHost { }
+//   SyncDialogHost { request-terminal-focus => { root.terminal-focus-sequence += 1; } }
 export component SyncDialogHost inherits Rectangle {
     width: 100%;
     height: 100%;
+    // (#sync-dialog-esc 2026-10-13) 关框后把键盘焦点还给活动终端 —— 与粘贴
+    // 确认卡同一机制（AppWindow.terminal-focus-sequence）。Esc / ✕ / 取消
+    // 三条 UI 关闭路径都经它；确定（Rust apply）由 Rust 侧递增。
+    callback request-terminal-focus();
     if SyncInputState.dialog-open : Rectangle {
         TouchArea { }   // 模态吞层：点外部不关（走 取消/✕/确定）
+        // (#sync-dialog-esc) Esc 取消当前窗口的同步输入弹框。开框即抓键盘：
+        // 模态期间终端不再收键，Esc 也不会被终端透传进 PTY（终端 key-pressed
+        // 对其余按键一律 accept 并转发）。落焦延到下一 tick —— init 内同步
+        // focus 会重入 IME/AccessKit（#323 同款坑，terminal_view 的
+        // focus-defer-timer 同一模式）。与确认卡 / 接口面板 esc-scope 同模式。
+        esc-scope := FocusScope {
+            focus-on-click: false;
+            focus-on-tab-navigation: false;
+            property <bool> focus-pending: true;
+            Timer {
+                interval: 0ms;
+                running: parent.focus-pending;
+                triggered => {
+                    parent.focus();
+                    parent.focus-pending = false;
+                }
+            }
+            key-pressed(e) => {
+                if (e.text == Key.Escape) {
+                    SyncInputState.dialog-open = false;
+                    root.request-terminal-focus();
+                }
+                accept   // 模态：其余键一并吞掉，不漏进终端
+            }
+            key-released(e) => { accept }
+        }
         SyncInputDialog {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2 - 20px;
+            request-close => {
+                SyncInputState.dialog-open = false;
+                root.request-terminal-focus();
+            }
         }
     }
 }

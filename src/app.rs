@@ -451,6 +451,10 @@ impl WindowCloser {
             request_quit();
         } else {
             refresh_window_titles(&self.registry);
+            // (#sync-dialog-v2-fix8) 其余窗口打开中的同步输入弹框：摘掉已关
+            // 窗口的行，徽标/悬浮卡的「窗口 N」按新位次重刷（用户实测：关 1 号
+            // 窗后弹框仍显示旧 3 号窗口，标题其实已顺延成 2）。
+            sync_input::refresh_open_sync_dialogs(&self.registry, &self.store.borrow());
         }
         forget_window_state(&self.core, self.window_id);
     }
@@ -1772,6 +1776,9 @@ fn open_window(
     // 自绘标题栏不受影响（标题只出现在 shell 层）。关闭任意窗口即退出整个
     // 应用（#close-exit-fix），故无需做关闭后的编号回退。
     refresh_window_titles(&registry);
+    // (#sync-dialog-v2-fix8) 新窗口可能带出恢复的 tab；已打开同步输入弹框的
+    // 窗口要能立刻在候选列里看到它们（位次不变，只补行）。
+    sync_input::refresh_open_sync_dialogs(&registry, &store.borrow());
     // (#sync-dialog-v2-fix2) 窗口 id 落到属性:托盘/弹框按 id 各管各的。
     window.set_win_id(window_id as i32);
     sys_win.set_custom_titlebar(cfg!(not(target_os = "macos")));
@@ -3811,10 +3818,13 @@ fn open_window(
         let store = store.clone();
         let panes_model_c = panes_model.clone();
         let tabs_model_c = tabs_model.clone();
+        // (#sync-dialog-v2-fix8) 频道归属变化要广播到所有窗口打开中的弹框。
+        let registry_c = registry.clone();
         window.on_tab_join_channel({
             let (weak, store, tabs_model_c, panes_model_c) = (
                 weak.clone(), store.clone(), tabs_model_c.clone(), panes_model_c.clone(),
             );
+            let registry_c = registry_c.clone();
             move |tab_id: SharedString, slot: i32| {
             let Some(w) = weak.upgrade() else { return };
             let sid = tab_session_id(&w, &tab_id);
@@ -3828,6 +3838,7 @@ fn open_window(
             }
             refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &panes_model_c, &tab_id);
             refresh_channel_bars(&w, &store.borrow(), &panes_model_c, &tabs_model_c);
+                sync_input::refresh_open_sync_dialogs(&registry_c, &store.borrow());
                 w.set_menu_channel_letter(["A", "B", "C", "D"][slot].into());
                 // 频道成员 = 同步激活（三态按钮的数据源；阶段-5 对话框接管后语义不变）。
                 w.set_sync_input(true);
@@ -3837,6 +3848,7 @@ fn open_window(
             let (weak, store, tabs_model_c, panes_model_c) = (
                 weak.clone(), store.clone(), tabs_model_c.clone(), panes_model_c.clone(),
             );
+            let registry_c = registry_c.clone();
             move |tab_id: SharedString| {
             let Some(w) = weak.upgrade() else { return };
             let sid = tab_session_id(&w, &tab_id);
@@ -3846,6 +3858,7 @@ fn open_window(
             let _ = store.borrow().save();
             refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &panes_model_c, &tab_id);
             refresh_channel_bars(&w, &store.borrow(), &panes_model_c, &tabs_model_c);
+                sync_input::refresh_open_sync_dialogs(&registry_c, &store.borrow());
                 w.set_menu_channel_paused(now_paused);
             }
         });
@@ -3853,6 +3866,7 @@ fn open_window(
             let (weak, store, tabs_model_c, panes_model_c) = (
                 weak.clone(), store.clone(), tabs_model_c.clone(), panes_model_c.clone(),
             );
+            let registry_c = registry_c.clone();
             move |tab_id: SharedString| {
             let Some(w) = weak.upgrade() else { return };
             let sid = tab_session_id(&w, &tab_id);
@@ -3865,6 +3879,7 @@ fn open_window(
             }
             refresh_tab_channel_row(&w, &store.borrow(), &tabs_model_c, &panes_model_c, &tab_id);
             refresh_channel_bars(&w, &store.borrow(), &panes_model_c, &tabs_model_c);
+                sync_input::refresh_open_sync_dialogs(&registry_c, &store.borrow());
                 w.set_menu_channel_letter("".into());
                 w.set_menu_channel_paused(false);
             }
@@ -3873,6 +3888,7 @@ fn open_window(
             let (weak_cc, store_c, panes_model_c, tabs_model_c) = (
                 weak.clone(), store.clone(), panes_model_c.clone(), tabs_model_c.clone(),
             );
+            let registry_c = registry_c.clone();
             move |slot: i32| {
             let slot = slot.clamp(0, 3) as usize;
             let letter = ["A", "B", "C", "D"][slot];
@@ -3909,6 +3925,9 @@ fn open_window(
                     w.set_menu_channel_paused(false);
                 }
                 refresh_channel_bars(&w, &store_c.borrow(), &panes_model_c, &tabs_model_c);
+                // (#sync-dialog-v2-fix8) 整频道被清：他窗打开中的弹框（若正停在
+                // 这个槽）要立刻看到成员清空。
+                sync_input::refresh_open_sync_dialogs(&registry_c, &store_c.borrow());
             }
             }
         });
@@ -5165,6 +5184,12 @@ fn set_picker_pos(w: &crate::ui::AppWindow, h: f32, s: f32, v: f32) {
                             request_quit();
                         } else {
                             refresh_window_titles(&ev_registry);
+                            // (#sync-dialog-v2-fix8) 同 WindowCloser::confirm：
+                            // 其余窗口打开中的弹框摘行 + 位次重刷。
+                            sync_input::refresh_open_sync_dialogs(
+                                &ev_registry,
+                                &ev_store.borrow(),
+                            );
                         }
                         forget_window_state(&ev_core, window_id);
                     }

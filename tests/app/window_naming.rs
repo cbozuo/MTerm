@@ -88,3 +88,17 @@ fn tray_tip_and_window_title_agree_for_every_window() {
         }
     }
 }
+
+#[test]
+fn sync_dialog_badge_reads_the_same_rank_as_the_title() {
+    // (#sync-dialog-v2-fix8) 同步输入弹框的「窗口 N」徽标/悬浮卡与标题**同源**
+    // （都读 ranks_of）：关掉 1 号窗口后，原 2/3 号窗口的行必须显示 窗口 1 /
+    // 窗口 2，而不是停留在原始 registry id（用户实测：标题顺延了，弹框还挂
+    // 旧号「窗口 3」）。
+    let ranks = ranks_of([2u64, 3]);
+    assert_eq!(ranks[&2], 1, "原 2 号窗口顺延成 窗口 1");
+    assert_eq!(ranks[&3], 2, "原 3 号窗口顺延成 窗口 2");
+    // 徽标与标题读同一个位次表 → 串尾数字必须一致。
+    assert!(window_title_for(ranks[&3], 2).ends_with("窗口 2"));
+    assert!(window_title_for(ranks[&2], 2).ends_with("窗口 1"));
+}

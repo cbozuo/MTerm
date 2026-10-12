@@ -143,6 +143,13 @@ fn session_extras(
 }
 
 /// (#sync-dialog-v2) 填充模型：全部窗口的打开 tab + 离线持久成员。
+///
+/// (#sync-dialog-v2-fix8 2026-10-12) 行的 `win_id` 存**显示位次**（存活窗口按
+/// registry id 升序的序号，与窗口标题「MTerm · 窗口 N」同源，见
+/// [`super::window_ranks`]）——用户实测：关掉 1 号窗口后标题顺延成「窗口
+/// 1/2」，弹框的「窗口 N」徽标与悬浮卡却还挂原始 registry id（旧 3 号窗口
+/// 仍显示「窗口 3」）。`tab_id` 仍用 registry id（稳定身份：增删行回调按
+/// 它匹配，位次会随开关窗漂移）。
 fn fill_sync_rows(
     w: &AppWindow,
     store: &ConfigStore,
@@ -153,9 +160,12 @@ fn fill_sync_rows(
     let colors = theme.get_channel_colors();
     let slot_color = |slot: usize| colors.row_data(slot).unwrap_or_default();
     let members = store.channel_members();
+    let ranks = super::window_ranks(registry);
     let mut rows: Vec<crate::ui::SyncSessionInfo> = Vec::new();
     // 打开的 tab：每个窗口各遍历一遍；welcome tab（空 session_id）跳过。
     registry.for_each_id(|win_id, win| {
+        // 位次缺失（理论上不会——rank 表覆盖全部存活窗口）时退回原 id。
+        let rank = ranks.get(&win_id).copied().unwrap_or(win_id) as i32;
         for t in win.get_tabs().iter() {
             let sid = t.session_id.to_string();
             if sid.is_empty() {
@@ -182,12 +192,14 @@ fn fill_sync_rows(
                 color: slot.map(slot_color).unwrap_or_default(),
                 online: true,
                 paused,
-                win_id: win_id as i32,
+                win_id: rank,
             });
         }
     });
     // 离线的持久成员：不出现在任何 tab 里，补行（置灰、标题带标注）。
     // 归属记到打开弹框的窗口（持久成员是配置级的，没有窗口归属）。
+    // (#sync-dialog-v2-fix8) 同样记**位次**：与打开 tab 的行同一套编号。
+    let self_rank = ranks.get(&self_win_id).copied().unwrap_or(self_win_id) as i32;
     for (slot, members) in members.iter().enumerate() {
         for m in members.iter().filter(|m| !m.is_empty()) {
             if rows.iter().any(|r| r.session_id.as_str() == m.as_str()) {
@@ -216,13 +228,68 @@ fn fill_sync_rows(
                 color: slot_color(slot),
                 online: false,
                 paused: store.channel_is_paused(m),
-                win_id: self_win_id as i32,
+                win_id: self_rank,
             });
         }
     }
     let g = w.global::<crate::ui::SyncInputState>();
     g.set_sessions(ModelRc::from(Rc::new(VecModel::from(rows))));
-    g.set_win_id(self_win_id as i32);
+    g.set_win_id(self_rank);
+}
+
+/// (#sync-dialog-v2-fix8 2026-10-12) 结构变化后刷新**所有打开中**的同步输入
+/// 弹框（逐窗判断 `dialog-open`，只刷真开着的）。
+///
+/// 触发点：开/关窗口（窗口集合与位次变化）、任何窗口改频道归属（右键加入/
+/// 离开/暂停、关频道、他窗 apply）。用户实测两类滞后：
+///   ① 关掉 1 号窗口后，弹框仍列着已关窗口的行，且「窗口 N」徽标/悬浮卡
+///      还是旧编号（标题已顺延）；
+///   ② 在 2 号窗口右键把 tab 加入频道 A，1 号窗口已打开的弹框里频道状态
+///      不变，要关开弹框才刷新。
+///
+/// 重灌时按 session_id **保留未确定的编辑**（`slot != committed-slot` 的行，
+/// 含"待确认移出"的 -1）：刷新不该丢用户手里的编排。
+pub(super) fn refresh_open_sync_dialogs(
+    registry: &WindowRegistry<AppWindow>,
+    store: &ConfigStore,
+) {
+    registry.for_each_id(|win_id, win| {
+        let g = win.global::<crate::ui::SyncInputState>();
+        if !g.get_dialog_open() {
+            return;
+        }
+        // 未确定的编辑快照（session_id -> 编排态 slot；-1 = 待确认移出）。
+        let pending: Vec<(String, i32)> = g
+            .get_sessions()
+            .iter()
+            .filter(|r| r.slot != r.committed_slot)
+            .map(|r| (r.session_id.to_string(), r.slot))
+            .collect();
+        fill_sync_rows(win, store, registry, win_id);
+        if !pending.is_empty() {
+            let model = g.get_sessions();
+            if let Some(vec_model) = model
+                .as_any()
+                .downcast_ref::<slint::VecModel<crate::ui::SyncSessionInfo>>()
+            {
+                for i in 0..vec_model.row_count() {
+                    if let Some(mut r) = vec_model.row_data(i) {
+                        if let Some((_, slot)) =
+                            pending.iter().find(|(sid, _)| sid == r.session_id.as_str())
+                        {
+                            r.slot = *slot;
+                            vec_model.set_row_data(i, r);
+                        }
+                    }
+                }
+            }
+        }
+        sync_list_models(win);
+        tracing::info!(
+            "[SYNC_DIAG] refreshed open dialog of window {win_id} ({} pending edits kept)",
+            pending.len()
+        );
+    });
 }
 
 pub(super) fn wire_sync_input(
@@ -493,6 +560,15 @@ pub(super) fn wire_sync_input(
                 super::refresh_channel_bars_for_win(win, &store.borrow());
             });
             w.global::<crate::ui::SyncInputState>().set_dialog_open(false);
+            // (#sync-dialog-v2-fix8) 他窗打开中的弹框也要刷新：本窗刚改掉了
+            // 频道归属（用户实测：2 号窗加入频道 A，1 号窗已开弹框的频道状态
+            // 不动，要关开才变）。本窗弹框上面已关，for_each 里自然跳过。
+            refresh_open_sync_dialogs(&registry, &store.borrow());
+            // (#sync-dialog-esc) 关框后把键盘焦点还给活动终端 —— 与 UI 侧
+            // Esc/取消同一机制（terminal-focus-sequence +1，终端侧 changed
+            // focus-sequence 只对 active 的终端生效）。
+            let focus_seq = w.get_terminal_focus_sequence();
+            w.set_terminal_focus_sequence(focus_seq + 1);
         });
     }
 }
