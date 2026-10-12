@@ -147,6 +147,20 @@ pub(crate) fn refresh_channel_bars(
     }
     window.set_pane_channel_bars(ModelRc::from(Rc::new(VecModel::from(bars))));
 }
+
+/// (#sync-dialog-v2) 逐窗口刷新频道状态条（跨窗口成员变更后，每个窗口的
+/// 状态条都要跟随；模型从各窗口自身取，避免只刷发起弹框的那个窗口）。
+pub(crate) fn refresh_channel_bars_for_win(win: &AppWindow, store: &ConfigStore) {
+    let panes = win.get_panes();
+    let tabs = win.get_tabs();
+    let (Some(panes), Some(tabs)) = (
+        panes.as_any().downcast_ref::<slint::VecModel<crate::ui::PaneInfo>>(),
+        tabs.as_any().downcast_ref::<slint::VecModel<crate::ui::TabInfo>>(),
+    ) else {
+        return;
+    };
+    refresh_channel_bars(win, store, panes, tabs);
+}
 fn term_buf(bufs: &TermBuffers, tab_id: &str) -> Option<TermBufferHandle> {
     bufs.lock().unwrap().get(tab_id).cloned()
 }
@@ -432,6 +446,7 @@ impl WindowCloser {
         // (#sync-dialog-v2-fix2) 摘掉本窗口的托盘图标与登记。
         TRAY_HANDLES.with(|h| h.borrow_mut().remove(&self.window_id));
         TRAY_CLOSERS.with(|c| c.borrow_mut().remove(&self.window_id));
+        WIN_IO.with(|m| m.borrow_mut().remove(&self.window_id));
         if was_last {
             request_quit();
         } else {
@@ -504,6 +519,19 @@ fn close_session_rows(
         });
     }
     rows
+}
+
+/// (#sync-dialog-v2) 每窗口的 IO 运行时:跨窗口同步投递用 —— 成员会话的
+/// tab 与 SSH 句柄可能属于任意窗口,投递时按窗口各自的表反查与发送。
+struct WinIoEntry {
+    handles: Rc<RefCell<HashMap<String, SessionHandle>>>,
+    bufs: TermBuffers,
+    /// 该窗口 tabs 模型的只读引用(成员 tab 反查;模型实例与窗口一致,活更新)。
+    tabs: slint::ModelRc<crate::ui::TabInfo>,
+}
+
+thread_local! {
+    static WIN_IO: RefCell<HashMap<u64, WinIoEntry>> = RefCell::new(HashMap::new());
 }
 
 // (#close-behavior) 托盘:登记每窗口的 closer + 持有每窗口的句柄。
@@ -1603,6 +1631,7 @@ pub fn run(intent: crate::app::launch::LaunchIntent) -> Result<()> {
     // 显式丢弃托盘句柄让 Drop 执行(NIM_DELETE + DestroyWindow)——否则
     // 「完全退出」后托盘里残留一个悬停才消失的死图标,像进程还活着。
     TRAY_HANDLES.with(|h| h.borrow_mut().clear());
+    WIN_IO.with(|m| m.borrow_mut().clear());
     if let Ok(core_owned) = Rc::try_unwrap(core) {
         if let Ok(runtime) = Arc::try_unwrap(core_owned.runtime) {
             runtime.shutdown_timeout(std::time::Duration::from_secs(2));
@@ -3193,6 +3222,17 @@ fn open_window(
         group_color: slint::Color::default(),
     });
     window.set_tabs(ModelRc::from(tabs_model.clone()));
+    // (#sync-dialog-v2) 登记本窗口的 IO 运行时:同步输入跨窗口投递按窗口反查。
+    WIN_IO.with(|m| {
+        m.borrow_mut().insert(
+            window_id,
+            WinIoEntry {
+                handles: handles.clone(),
+                bufs: bufs.clone(),
+                tabs: ModelRc::from(tabs_model.clone()),
+            },
+        )
+    });
     window.set_active_tab_id("welcome".into());
 
     let terminals_model: Rc<VecModel<TerminalState>> = Rc::new(VecModel::default());
@@ -3923,14 +3963,7 @@ fn open_window(
     // sync_input.rs，app.rs 只保留一行注册）。
     // (#sync-dialog-v2 2026-10-12) 传入 registry 与本窗口 id：「全部窗口」
     // 作用域需要进程内遍历所有窗口的 tab；win-id 供行过滤与卡片「窗口」行。
-    sync_input::wire_sync_input(
-        &window,
-        store.clone(),
-        tabs_model.clone(),
-        panes_model.clone(),
-        registry.clone(),
-        window_id,
-    );
+    sync_input::wire_sync_input(&window, store.clone(), registry.clone(), window_id);
     // (#theme-split) set_theme / cycle_theme：顶栏速选面板与 Ctrl+Alt+T 的
     // 入口。切主题 = 持久化 id + 整套槽位重写 + 每个终端 buffer 换 ANSI 色
     // 表并重渲染（历史输出也跟着换装）+ 独立窗口镜像 + 跨窗口广播。
@@ -4091,7 +4124,9 @@ fn set_picker_pos(w: &crate::ui::AppWindow, h: f32, s: f32, v: f32) {
                     buf.push(255);
                 }
             }
-            slint::Image::from_rgba8(buf, N, N)
+            let mut px = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(N, N);
+            px.make_mut_bytes().copy_from_slice(&buf);
+            slint::Image::from_rgba8(px)
         });
         // Slint 不能把 hex 字符串在运行期解析成 color，取色盘的色块统一走这个回调
         window.on_accent_hex_color({
@@ -4145,13 +4180,13 @@ fn set_picker_pos(w: &crate::ui::AppWindow, h: f32, s: f32, v: f32) {
         window.on_accent_recent_push({
             let (w, recent) = (window.as_weak(), recent.clone());
             move |hex: SharedString| {
-                let hex = hex.to_uppercase();
-                let items: ModelRc<String> = {
+                let hex = SharedString::from(hex.to_uppercase());
+                let items: ModelRc<SharedString> = {
                     let mut r = recent.borrow_mut();
                     r.retain(|h| *h != hex);
                     r.insert(0, hex);
                     r.truncate(20);
-                    ModelRc::from(Rc::new(VecModel::from(r.clone().into_boxed_slice())))
+                    ModelRc::from(Rc::new(VecModel::from(r.clone())))
                 };
                 if let Some(w) = w.upgrade() {
                     w.set_accent_recent(items);
@@ -5125,6 +5160,7 @@ fn set_picker_pos(w: &crate::ui::AppWindow, h: f32, s: f32, v: f32) {
                         // (#sync-dialog-v2-fix2) 摘掉本窗口的托盘图标与登记。
                         TRAY_HANDLES.with(|h| h.borrow_mut().remove(&window_id));
                         TRAY_CLOSERS.with(|c| c.borrow_mut().remove(&window_id));
+                        WIN_IO.with(|m| m.borrow_mut().remove(&window_id));
                         if was_last {
                             request_quit();
                         } else {
@@ -9127,8 +9163,9 @@ fn wire_key_input(
                 handles.borrow().contains_key(tab_id.as_str()),
             );
             if !bytes.is_empty() {
-                let h = handles.borrow();
                 // (#tab-32) 频道定向投递（tab-row-idia §五-send_key 五步）：
+                // (#sync-dialog-v2) 本窗口句柄的借用收敛到各使用点（长借用会
+                // 挡住跨窗口投递对同一 RefCell 的再借用）。
                 // ① 由本 tab 的**会话稳定 id** 查其所在频道（无 → 单发，等同旧「关」）；
                 // ② 遍历该频道成员表；③ 跳过发送方自己（旧全量广播连自己都发，
                 // 靠 interactive_echo_until 压回显——现显式排除，否则双份输入）；
@@ -9167,23 +9204,33 @@ fn wire_key_input(
                             if store.borrow().channel_is_paused(member) {
                                 continue;
                             }
-                            // ⚠️ handles 的 key 是 **tab_id**（session_runtime.rs
-                            // insert(tab_id, handle)），成员表存的是**会话稳定 id**
-                            // ——必须经 tabs 反查该会话打开的 tab（可能多开，全投）。
-                            // 之前直接 h.get(member) 恒 miss，频道投递静默失效。
-                            for t in w_sk.get_tabs().iter() {
-                                if t.session_id.as_str() != member.as_str() {
-                                    continue;
-                                }
-                                if let Some(handle) = h.get(t.id.as_str()) {
-                                    if let Some(buffer) = term_buf(&bufs, t.id.as_str()) {
-                                        buffer.lock().unwrap().interactive_echo_until =
-                                            std::time::Instant::now()
-                                                + INTERACTIVE_ECHO_WINDOW;
+                            // ⚠️ 成员的 tab 与 SSH 句柄可能属于**任意窗口**（每
+                            // 窗口各有自己的 handles/缓冲表）——遍历每窗口运行时
+                            // 投递,同一会话多开全投。此前只查本窗口的表,跨窗口
+                            // 成员静默失效（用户实测：弹框加入另一窗口的会话后
+                            // 同步输入收不到）。
+                            WIN_IO.with(|map| {
+                                for io in map.borrow().values() {
+                                    for t in io.tabs.iter() {
+                                        if t.session_id.as_str() != member.as_str() {
+                                            continue;
+                                        }
+                                        let Ok(h) = io.handles.try_borrow() else {
+                                            continue;
+                                        };
+                                        if let Some(handle) = h.get(t.id.as_str()) {
+                                            if let Some(buffer) =
+                                                term_buf(&io.bufs, t.id.as_str())
+                                            {
+                                                buffer.lock().unwrap().interactive_echo_until =
+                                                    std::time::Instant::now()
+                                                        + INTERACTIVE_ECHO_WINDOW;
+                                            }
+                                            handle.send_raw(bytes.clone());
+                                        }
                                     }
-                                    handle.send_raw(bytes.clone());
                                 }
-                            }
+                            });
                         }
                         // 自己的缓冲也要提帧（本 tab 回显即时）。
                         if let Some(buffer) = term_buf(&bufs, tab_id.as_str()) {
@@ -9196,14 +9243,14 @@ fn wire_key_input(
                         // 输入（重开持久化的频道成员会话必现 —— 用户反馈"打开
                         // 一个连接无法输入命令"）。给自己补一次单发（仅一次，
                         // 与 ③ 的"跳过自己"不冲突——那是指别把它再投递一遍）。
-                        if let Some(handle) = h.get(tab_id.as_str()) {
+                        if let Some(handle) = handles.borrow().get(tab_id.as_str()) {
                             handle.send_raw(bytes.clone());
                         }
                     }
                     _ => {
                         // 不在任何频道 / 本会话已暂停（④遍历前返回——只让本会话
                         // 停摆，同频道其它会话之间照常互通）→ 单发给自己。
-                        if let Some(handle) = h.get(tab_id.as_str()) {
+                        if let Some(handle) = handles.borrow().get(tab_id.as_str()) {
                             if let Some(buffer) = term_buf(&bufs, tab_id.as_str()) {
                                 buffer.lock().unwrap().interactive_echo_until =
                                     std::time::Instant::now() + INTERACTIVE_ECHO_WINDOW;

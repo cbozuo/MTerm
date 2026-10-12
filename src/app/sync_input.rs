@@ -228,8 +228,6 @@ fn fill_sync_rows(
 pub(super) fn wire_sync_input(
     window: &AppWindow,
     store: Rc<RefCell<ConfigStore>>,
-    tabs_model: Rc<slint::VecModel<crate::ui::TabInfo>>,
-    panes_model: Rc<slint::VecModel<crate::ui::PaneInfo>>,
     registry: Rc<WindowRegistry<AppWindow>>,
     window_id: u64,
 ) {
@@ -453,8 +451,9 @@ pub(super) fn wire_sync_input(
                 let _ = s.save();
             }
             // 全量刷新 tab 行（根 + 每窗格嵌套模型都要写，见 #tab-32-fix2）。
-            // (#sync-dialog-v2) 跨窗口行加入后，其他窗口的 tab 行也要刷新：
-            // 遍历 registry 逐窗写根模型；窗格嵌套模型从各窗口的 get_panes 取。
+            // (#sync-dialog-v2) 跨窗口行加入后，**每个窗口**的 tab 行与频道状态
+            // 条都要刷新：遍历 registry 逐窗处理（此前只刷发起弹框的窗口，其它
+            // 窗口的状态条缺失、（用户实测）。状态条模型从各窗口自身取。
             let theme = w.global::<crate::ui::Theme<'_>>();
             let colors = theme.get_channel_colors();
             let letters = ["A", "B", "C", "D"];
@@ -491,8 +490,8 @@ pub(super) fn wire_sync_input(
                         apply_rows(&pane.tabs);
                     }
                 }
+                super::refresh_channel_bars_for_win(win, &store.borrow());
             });
-            refresh_channel_bars(&w, &store.borrow(), &panes_model, &tabs_model);
             w.global::<crate::ui::SyncInputState>().set_dialog_open(false);
         });
     }

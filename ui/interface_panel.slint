@@ -760,20 +760,20 @@ export component InterfacePanel inherits Rectangle {
     callback set-follow-system(bool);
     callback set-accent-mode(string, string);   // mode, preset-key/hex
     // 取色盘换算与色轮位图（Rust：src/theme/mod.rs 的 hsv_to_hex / wheel_pick）
-    callback accent-hsv-hex(float, float, float) -> string;
-    callback accent-wheel-pick(float, float, float) -> string;
-    callback accent-hex-hsv-h(string) -> float;
-    callback accent-hex-hsv-s(string) -> float;
-    callback accent-hex-hsv-v(string) -> float;
-    callback accent-hex-color(string) -> color;
-    callback accent-ch(string, int, string) -> string;
-    callback accent-pick-apply(string, int, string, string) -> string;
-    callback accent-ink-on(string) -> color;
+    pure callback accent-hsv-hex(float, float, float) -> string;
+    pure callback accent-wheel-pick(float, float, float) -> string;
+    pure callback accent-hex-hsv-h(string) -> float;
+    pure callback accent-hex-hsv-s(string) -> float;
+    pure callback accent-hex-hsv-v(string) -> float;
+    pure callback accent-hex-color(string) -> color;
+    pure callback accent-ch(string, int, string) -> string;
+    pure callback accent-pick-apply(string, int, string, string) -> string;
+    pure callback accent-ink-on(string) -> color;
     callback accent-random-hex() -> string;
     callback accent-recent-push(string);          // 最近使用去重入列（最多 20）
     in property <image> accent-wheel-image;
     callback accent-picker-open(string);          // 带 hex 打开调色盘
-    callback accent-hex-valid(string) -> string;   // hex 直输校验/规范化
+    pure callback accent-hex-valid(string) -> string;   // hex 直输校验/规范化
     callback sync-picker-pos();                    // 数值改动后回填取样点位置
     callback set-panel-alpha(float);
     callback set-term-alpha(float);
@@ -1421,7 +1421,21 @@ export component InterfacePanel inherits Rectangle {
                     y: 46px;
                     width: 486px;
                     height: 330px;
-                    close-policy: no-auto-close;
+                    close-policy: close-on-click-outside;
+                    // 点弹框留白处 = 确认暂存色。PopupWindow 没有「关闭」回调；
+                    // 点弹框外走 close-on-click-outside —— 那条路径是「放弃暂存」。
+                    bd-tap := TouchArea {
+                        mouse-cursor: default;
+                        clicked => {
+                            if (root.accent-stage-dirty) {
+                                root.accent-custom = root.accent-stage;
+                                root.set-accent-mode("custom", root.accent-stage);
+                                root.accent-stage-dirty = false;
+                            }
+                            root.accent-pop-open = false;
+                            accent-pop.close();
+                        }
+                    }
                     Rectangle {
                         background: Theme.popup-bg;
                         border-radius: 8px;
@@ -1543,7 +1557,7 @@ export component InterfacePanel inherits Rectangle {
                     y: 46px;
                     width: 392px;
                     height: 372px;
-                    close-policy: no-auto-close;
+                    close-policy: close-on-click-outside;
                     Rectangle {
                         background: Theme.popup-bg;
                         border-radius: 8px;
@@ -1602,7 +1616,8 @@ export component InterfacePanel inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                         ch-in := TextInput {
-                                            width: parent.width - 30px;
+                                            // 固定宽：HL 内用 parent.width 反推会成布局绑环
+                                            width: 36px;
                                             height: 26px;
                                             text: root.accent-ch(root.accent-pick-hex, i, root.accent-pick-fmt);
                                             color: Theme.text-primary;
@@ -1737,7 +1752,7 @@ export component InterfacePanel inherits Rectangle {
                                         vertical-alignment: center;
                                     }
                                     hex-in := TextInput {
-                                        width: parent.width - 60px;
+                                        width: 132px;
                                         height: 26px;
                                         text: root.accent-pick-hex;
                                         color: Theme.text-primary;
@@ -2678,30 +2693,6 @@ export component InterfacePanel inherits Rectangle {
             }
 
                 }
-            }
-        }
-    }
-
-    // (#accent-scrim 2026-10-12) 点空白 = 确认暂存色。Slint 1.18 的 PopupWindow 没有
-    // 「关闭」回调，且 close-on-click-outside 会吞掉那次点击，所以这里自铺一层透明
-    // scrim 接管：命中即「提交暂存色 + 收起两层弹框」。
-    accent-scrim := Rectangle {
-        visible: root.accent-pop-open;
-        x: 0;
-        y: 0;
-        width: parent.width;
-        height: parent.height;
-        TouchArea {
-            mouse-cursor: default;
-            clicked => {
-                if (root.accent-stage-dirty) {
-                    root.accent-custom = root.accent-stage;
-                    root.set-accent-mode("custom", root.accent-stage);
-                    root.accent-stage-dirty = false;
-                }
-                root.accent-pop-open = false;
-                picker-pop.close();
-                accent-pop.close();
             }
         }
     }
