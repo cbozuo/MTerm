@@ -787,7 +787,14 @@ component ShortcutRow inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
-    title: "MTerm";
+    // (#sync-dialog-v2 2026-10-12) 窗口标题带编号：Rust 在注册窗口后写
+    // win-title（「MTerm · 窗口 N」），任务栏/Alt-Tab 与同步输入弹框的
+    // 「窗口 N」徽标互相对应。默认值保持原静态标题。
+    in-out property <string> win-title: "MTerm";
+    title: root.win-title;
+    // (#sync-dialog-v2-fix2) 本窗口的 registry id(1 起):托盘图标/菜单各管
+    // 各的窗口时按它路由。
+    in-out property <int> win-id: 1;
     // Frameless when we draw our own title bar (#119); Rust sets custom-titlebar
     // true on Windows/Linux. Slint maps no-frame → winit set_decorations(false).
     no-frame: root.custom-titlebar;
@@ -868,14 +875,18 @@ export component AppWindow inherits Window {
     in-out property <string> session-card-user;
     in-out property <string> session-card-auth;
     // (#conn-path) 认证方式显示名(原始值 → 与对话框认证分段一致的文案)。
-    function session-card-auth-display() -> string {
-        if (session-card-auth == "keyboard-interactive") {
+    // (#sync-dialog-v2) 抽成带参函数：tab 卡/同步输入卡的认证行复用同一张映射。
+    function auth-display-name(a: string) -> string {
+        if (a == "keyboard-interactive") {
             return root.lang-en ? "Keyboard-interactive" : "键盘交互";
         }
-        if (session-card-auth == "key") {
+        if (a == "key") {
             return root.lang-en ? "Private key" : "私钥";
         }
         return root.lang-en ? "Password" : "密码";
+    }
+    function session-card-auth-display() -> string {
+        return root.auth-display-name(session-card-auth);
     }
     in-out property <string> session-card-note;
     in-out property <length> session-card-x;
@@ -1179,6 +1190,19 @@ export component AppWindow inherits Window {
     in-out property <string> accent-mode: "follow";
     in-out property <string> accent-preset: "";
     in-out property <string> accent-custom: "";
+    // ── 取色盘状态（高保真稿 §3.8）────────────────────────────────────
+    // accent-stage 是暂存色：随机/调色盘只改它，点空白关闭弹框才确认。
+    in-out property <string> accent-stage: "";
+    in-out property <bool> accent-stage-dirty: false;
+    in property <[string]> accent-recent: [];
+    in-out property <string> accent-pick-hex: "";
+    in-out property <float> accent-pick-h: 0;
+    in-out property <float> accent-pick-s: 0;
+    in-out property <float> accent-pick-v: 1;
+    in-out property <string> accent-pick-fmt: "rgb";
+    in-out property <string> accent-pick-r: "0";
+    in-out property <string> accent-pick-g: "0";
+    in-out property <string> accent-pick-b: "0";
     in-out property <float> term-alpha <=> Theme.term-alpha;
     in-out property <float> wallpaper-visible <=> Theme.wallpaper-visible;
     in-out property <int> popup-transparency <=> Theme.popup-transparency;
@@ -1421,6 +1445,25 @@ export component AppWindow inherits Window {
     callback cycle-theme();
     // 强调色三态与三滑杆/通透度的设置入口（设置「主题」页 + 速选面板用）。
     callback set-accent-mode(string /* follow|preset|custom */, string /* preset key or #hex */);
+    // ── 取色盘（高保真稿 §3.8）：换算与色轮位图由 Rust 提供 ──────────────
+    callback accent-hsv-hex(float /* h 0..360 */, float /* s 0..1 */, float /* v 0..1 */) -> string;
+    callback accent-wheel-pick(float /* dx -1..1 */, float /* dy -1..1 */, float /* v 0..1 */) -> string;
+    callback accent-hex-hsv-h(string) -> float;
+    callback accent-hex-hsv-s(string) -> float;
+    callback accent-hex-hsv-v(string) -> float;
+    callback accent-hex-color(string) -> color;
+    callback accent-ch(string /*hex*/, int /*0..2*/, string /*rgb|hsb*/) -> string;
+    callback accent-pick-apply(string /*base hex*/, int /*0..2*/, string /*val*/, string /*rgb|hsb*/) -> string;
+    callback accent-ink-on(string) -> color;          // 色块上的字色：深块白字/浅块黑字
+    callback accent-random-hex() -> string;           // 守卫后的随机强调色
+    callback accent-recent-push(string);              // 最近使用去重入列（≤20）
+    callback accent-picker-open(string);              // 带 hex 打开调色盘（回填 h/s/v）
+    callback accent-hex-valid(string) -> string;          // hex 直输校验/规范化
+    callback sync-picker-pos();                           // 数值改动后回填取样点位置
+    in-out property <float> accent-wheel-mx: 0.5;
+    in-out property <float> accent-wheel-my: 0.5;
+    in-out property <float> accent-val-my: 1.0;
+    in property <image> accent-wheel-image;
     callback set-panel-alpha(float);
     callback set-term-alpha(float);
     callback set-wallpaper-visible(float);
@@ -1452,8 +1495,12 @@ export component AppWindow inherits Window {
     };
     // (#tab-card 2026-10-11) tab 悬浮信息卡（左侧组内成员同款）的集中渲染槽：
     // SingleTab 经 TabBar 中转写入，窗口根尾部渲染。
+    // (#sync-dialog-v2 2026-10-12) 补 用户/认证/组别 三行（三卡信息量对齐）。
     in-out property <string> tab-card-title;
     in-out property <string> tab-card-host;
+    in-out property <string> tab-card-user;
+    in-out property <string> tab-card-auth;
+    in-out property <string> tab-card-group;
     in-out property <string> tab-card-note;
     in-out property <string> tab-card-channel;
     in-out property <bool> tab-card-channel-paused;
@@ -2708,9 +2755,13 @@ export component AppWindow inherits Window {
                     tab-leave-channel(t) => { root.tab-leave-channel(t); }
                     show-channel-bar(t) => { root.show-channel-bar(t); }
                     // (#tab-card) tab 悬浮信息卡中转到根层集中浮层
-                    tab-card-out(t, h, n, c, p, ax, ay) => {
+                    // (#sync-dialog-v2) +user/auth/group 三参
+                    tab-card-out(t, h, u, a, g, n, c, p, ax, ay) => {
                         root.tab-card-title = t;
                         root.tab-card-host = h;
+                        root.tab-card-user = u;
+                        root.tab-card-auth = a;
+                        root.tab-card-group = g;
                         root.tab-card-note = n;
                         root.tab-card-channel = c;
                         root.tab-card-channel-paused = p;
@@ -2720,6 +2771,9 @@ export component AppWindow inherits Window {
                     tab-card-clear() => {
                         root.tab-card-title = "";
                         root.tab-card-host = "";
+                        root.tab-card-user = "";
+                        root.tab-card-auth = "";
+                        root.tab-card-group = "";
                         root.tab-card-note = "";
                         root.tab-card-channel = "";
                         root.tab-card-channel-paused = false;
@@ -4195,18 +4249,25 @@ export component AppWindow inherits Window {
     // (#tab-card 2026-10-11) tab 悬浮信息卡：与左侧组内成员信息卡同款视觉
     // （elevated 底 / 9px 圆角 / subtle 边框 / 24px 投影 / 键值单行连排），
     // 新增「频道」行（已加入频道才有；暂停态附注）。跟手/翻转公式同上卡。
-    // ⚠️ 行显隐用 `if`（visible:false 在 Slint 布局里仍占位会留空行）；卡宽
-    // 测量用**隐藏测量元素**（卡片层直挂、不在 VerticalLayout 内，不占布局，
-    // 读 preferred-width 即可——if 行的 id 在外层不可见，所以走这路）。
+    // (#sync-dialog-v2 2026-10-12) 补 用户/认证/组别 三行（行序与同步输入卡
+    // 一致：名称/主机/用户/认证/组别/备注/频道）。认证显示名复用
+    // session-card-auth-display（同一张映射）。⚠️ 行显隐用 `if`（visible:false
+    // 在 Slint 布局里仍占位会留空行）；卡宽测量用**隐藏测量元素**（卡片层
+    // 直挂、不在 VerticalLayout 内，不占布局，读 preferred-width 即可——if 行
+    // 的 id 在外层不可见，所以走这路）。
     if tab-card-title != "" && !root.dialog-open : Rectangle {
         property <int> row-n: 1 + (tab-card-host != "" ? 1 : 0)
-            + (tab-card-note != "" ? 1 : 0) + (tab-card-channel != "" ? 1 : 0);
+            + (tab-card-user != "" ? 1 : 0) + (tab-card-auth != "" ? 1 : 0)
+            + (tab-card-group != "" ? 1 : 0) + (tab-card-note != "" ? 1 : 0)
+            + (tab-card-channel != "" ? 1 : 0);
         x: tab-card-x + 10px + self.width > parent.width - 8px
             ? max(8px, tab-card-x - self.width - 10px) : tab-card-x + 10px;
         y: tab-card-y - self.height - 8px < 8px
             ? tab-card-y + 20px : tab-card-y - self.height - 8px;
         width: min(parent.width - 60px,
             Math.max(tc-m-title.preferred-width, tc-m-host.preferred-width,
+                     tc-m-user.preferred-width, tc-m-auth.preferred-width,
+                     tc-m-group.preferred-width,
                      tc-m-channel.preferred-width) + 76px);
         height: 18px + self.row-n * 22px;
         background: Theme.bg-elevated;
@@ -4224,6 +4285,21 @@ export component AppWindow inherits Window {
         tc-m-host := Text {
             visible: false;
             text: (root.lang-en ? "Host:" : "主机：") + root.tab-card-host;
+            font-size: Theme.fs-xs;
+        }
+        tc-m-user := Text {
+            visible: false;
+            text: (root.lang-en ? "User:" : "用户：") + root.tab-card-user;
+            font-size: Theme.fs-xs;
+        }
+        tc-m-auth := Text {
+            visible: false;
+            text: (root.lang-en ? "Auth:" : "认证：") + root.auth-display-name(root.tab-card-auth);
+            font-size: Theme.fs-xs;
+        }
+        tc-m-group := Text {
+            visible: false;
+            text: (root.lang-en ? "Group:" : "组别：") + root.tab-card-group;
             font-size: Theme.fs-xs;
         }
         tc-m-channel := Text {
@@ -4248,6 +4324,24 @@ export component AppWindow inherits Window {
             if tab-card-host != "" : Text {
                 text: (root.lang-en ? "Host:" : "主机：") + root.tab-card-host;
                 // (#hover-card-uniform) 亮度与名称行统一（主文本色）
+                color: Theme.text-primary;
+                font-size: Theme.fs-xs;
+                overflow: elide;
+            }
+            if tab-card-user != "" : Text {
+                text: (root.lang-en ? "User:" : "用户：") + root.tab-card-user;
+                color: Theme.text-primary;
+                font-size: Theme.fs-xs;
+                overflow: elide;
+            }
+            if tab-card-auth != "" : Text {
+                text: (root.lang-en ? "Auth:" : "认证：") + root.auth-display-name(root.tab-card-auth);
+                color: Theme.text-primary;
+                font-size: Theme.fs-xs;
+                overflow: elide;
+            }
+            if tab-card-group != "" : Text {
+                text: (root.lang-en ? "Group:" : "组别：") + root.tab-card-group;
                 color: Theme.text-primary;
                 font-size: Theme.fs-xs;
                 overflow: elide;
@@ -7634,6 +7728,17 @@ export component AppWindow inherits Window {
                     accent-mode <=> root.accent-mode;
                     accent-preset <=> root.accent-preset;
                     accent-custom <=> root.accent-custom;
+                    accent-stage <=> root.accent-stage;
+                    accent-stage-dirty <=> root.accent-stage-dirty;
+                    accent-recent <=> root.accent-recent;
+                    accent-pick-hex <=> root.accent-pick-hex;
+                    accent-pick-h <=> root.accent-pick-h;
+                    accent-pick-s <=> root.accent-pick-s;
+                    accent-pick-v <=> root.accent-pick-v;
+                    accent-pick-fmt <=> root.accent-pick-fmt;
+                    accent-pick-r <=> root.accent-pick-r;
+                    accent-pick-g <=> root.accent-pick-g;
+                    accent-pick-b <=> root.accent-pick-b;
                     wallpaper-active <=> root.wallpaper-active;
                     term-alpha <=> root.term-alpha;
                     wallpaper-visible <=> root.wallpaper-visible;
@@ -7650,6 +7755,24 @@ export component AppWindow inherits Window {
                     set-theme(id) => { root.set-theme(id); }
                     set-follow-system(v) => { root.set-follow-system(v); }
                     set-accent-mode(m, v) => { root.set-accent-mode(m, v); }
+                    accent-hsv-hex(h, s, v) => { root.accent-hsv-hex(h, s, v); }
+                    accent-wheel-pick(dx, dy, v) => { root.accent-wheel-pick(dx, dy, v); }
+                    accent-hex-hsv-h(h) => { root.accent-hex-hsv-h(h); }
+                    accent-hex-hsv-s(h) => { root.accent-hex-hsv-s(h); }
+                    accent-hex-hsv-v(h) => { root.accent-hex-hsv-v(h); }
+                    accent-hex-color(h) => { root.accent-hex-color(h); }
+                    accent-ch(h, i, f) => { root.accent-ch(h, i, f); }
+                    accent-pick-apply(b, i, v, f) => { root.accent-pick-apply(b, i, v, f); }
+                    accent-ink-on(h) => { root.accent-ink-on(h); }
+                    accent-random-hex() => { root.accent-random-hex(); }
+                    accent-recent-push(h) => { root.accent-recent-push(h); }
+                    accent-picker-open(h) => { root.accent-picker-open(h); }
+                    accent-hex-valid(h) => { root.accent-hex-valid(h); }
+                    sync-picker-pos() => { root.sync-picker-pos(); }
+                    accent-wheel-image: root.accent-wheel-image;
+                    accent-wheel-mx <=> root.accent-wheel-mx;
+                    accent-wheel-my <=> root.accent-wheel-my;
+                    accent-val-my <=> root.accent-val-my;
                     set-panel-alpha(v) => { root.set-panel-alpha(v); }
                     set-term-alpha(v) => { root.set-term-alpha(v); }
                     set-wallpaper-visible(v) => { root.set-wallpaper-visible(v); }
@@ -8057,37 +8180,96 @@ export component AppWindow inherits Window {
         // 线为中心向两侧各铺半条，贴 0 会让外侧半条被窗口边界裁掉，剩下的
         // 半条落在设备像素中间 → 反锯齿糊成 2 个物理像素。内移整 1 个设备
         // 像素后，0.8 逻辑px 的线完整落在窗口内、边界对齐设备网格。
-        // 上边
-        Rectangle {
-            x: 0; y: Theme.hairline();
-            width: parent.width;
-            height: Theme.hairline();
-            background: Theme.border-strong;
-        }
-        // 下边
         // (#win-edge-frame-r5 2026-10-11) 右/下两条的位置改走 snap-to-device:
         // parent.width/height 是逻辑像素,在 125%/150% 这类分数缩放下换算回
         // 物理像素会落在栅格中间,描边被摊到两个物理行(看着发粗)。对齐后
         // hairline() 的 1 个设备像素才是完整的一行。
+        // (#win-edge-frame-r6 2026-10-12) 四角改**自绘弧**,不再靠 DWM 裁剪弧
+        // 切直边端点。r4/r5 只画四条直边、圆角外包给 DWMWCP_ROUND 裁剪,实测
+        // 四角弧段亮度只有直边的 37~75%(裁剪斜切 + AA 渐隐),且四角形态不一
+        // (左下角竖线在第 6~8 行先断、弧线隔 1px 才爬起,形成肉眼可见的凹口)。
+        // 现在:直边缩短到角弧切点、四角各画一段 1 设备像素宽的 90° 弧,与直边
+        // 同色同宽、无缝衔接,四角形态统一、弧段连续。
+        // 几何(逻辑像素):DWM 裁剪弧半径 8 物理、圆心在窗角内侧 8 物理处;主线
+        // 外缘内缩 1 物理(hairline)、线宽 hairline,故弧中心线半径 = 8 - 1.5 =
+        // 6.5 物理。角弧 Path 用 viewbox 8×8 表达固定坐标(1 单位 = 1 物理像素),
+        // stroke-width 独立于 viewbox、取 hairline = 1 设备像素。角弧与右/下边
+        // 共用 snap 后的 win-w/win-h,保证弧与直边端点精确重合。
+        property <length> win-w: Theme.snap-to-device(parent.width);
+        property <length> win-h: Theme.snap-to-device(parent.height);
+        property <length> cr: Theme.radius-win;
+
+        // 上边（止于角弧切点）
         Rectangle {
-            x: 0; y: Theme.snap-to-device(parent.height) - 2 * Theme.hairline();
-            width: parent.width;
+            x: parent.cr; y: Theme.hairline();
+            width: parent.win-w - 2 * parent.cr;
+            height: Theme.hairline();
+            background: Theme.border-strong;
+        }
+        // 下边
+        Rectangle {
+            x: parent.cr; y: parent.win-h - 2 * Theme.hairline();
+            width: parent.win-w - 2 * parent.cr;
             height: Theme.hairline();
             background: Theme.border-strong;
         }
         // 左边
         Rectangle {
-            x: Theme.hairline(); y: 0;
+            x: Theme.hairline(); y: parent.cr;
             width: Theme.hairline();
-            height: parent.height;
+            height: parent.win-h - 2 * parent.cr;
             background: Theme.border-strong;
         }
         // 右边
         Rectangle {
-            x: Theme.snap-to-device(parent.width) - 2 * Theme.hairline(); y: 0;
+            x: parent.win-w - 2 * Theme.hairline(); y: parent.cr;
             width: Theme.hairline();
-            height: parent.height;
+            height: parent.win-h - 2 * parent.cr;
             background: Theme.border-strong;
+        }
+        // 左上角弧
+        Path {
+            x: 0; y: 0;
+            width: parent.cr; height: parent.cr;
+            viewbox-width: 8; viewbox-height: 8;
+            stroke: Theme.border-strong;
+            stroke-width: Theme.hairline();
+            fill: transparent;
+            clip: false;
+            commands: "M 1.5 8 A 6.5 6.5 0 0 1 8 1.5";
+        }
+        // 右上角弧
+        Path {
+            x: parent.win-w - parent.cr; y: 0;
+            width: parent.cr; height: parent.cr;
+            viewbox-width: 8; viewbox-height: 8;
+            stroke: Theme.border-strong;
+            stroke-width: Theme.hairline();
+            fill: transparent;
+            clip: false;
+            commands: "M 0 1.5 A 6.5 6.5 0 0 1 6.5 8";
+        }
+        // 右下角弧
+        Path {
+            x: parent.win-w - parent.cr; y: parent.win-h - parent.cr;
+            width: parent.cr; height: parent.cr;
+            viewbox-width: 8; viewbox-height: 8;
+            stroke: Theme.border-strong;
+            stroke-width: Theme.hairline();
+            fill: transparent;
+            clip: false;
+            commands: "M 6.5 0 A 6.5 6.5 0 0 1 0 6.5";
+        }
+        // 左下角弧
+        Path {
+            x: 0; y: parent.win-h - parent.cr;
+            width: parent.cr; height: parent.cr;
+            viewbox-width: 8; viewbox-height: 8;
+            stroke: Theme.border-strong;
+            stroke-width: Theme.hairline();
+            fill: transparent;
+            clip: false;
+            commands: "M 8 6.5 A 6.5 6.5 0 0 1 1.5 0";
         }
     }
 

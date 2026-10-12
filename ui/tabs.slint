@@ -31,7 +31,12 @@ export struct TabInfo {
     channel_bar_hidden: bool,
     // (#tab-card 2026-10-11) 悬浮信息卡数据（左侧组内成员同款）：主机行与
     // 备注行。welcome tab 为空串（不显示对应行）。
+    // (#sync-dialog-v2 2026-10-12) 补 用户/认证/组别：与左侧成员卡、跳板机卡、
+    // 同步输入卡信息量对齐（三卡同源，见 sync-dialog-hifi §3 卡片行序）。
     host: string,
+    user: string,
+    auth: string,
+    group_name: string,
     note: string,
 }
 
@@ -51,7 +56,9 @@ component SingleTab inherits Rectangle {
     // (#tab-card 2026-10-11) 悬停信息卡上报（左侧组内成员同款）：Timer 150ms
     // 首锚 + pointer-event move 跟手，移开即清。经 TabBar 中转到 AppWindow
     // 根层集中浮层渲染。
-    callback card-out(string /* title */, string /* host */, string /* note */,
+    // (#sync-dialog-v2) 补 user/auth/group 三参（三卡信息量对齐）。
+    callback card-out(string /* title */, string /* host */, string /* user */,
+                      string /* auth */, string /* group */, string /* note */,
                       string /* channel */, bool /* paused */,
                       length /* abs-x */, length /* abs-y */);
     callback card-clear();
@@ -121,8 +128,9 @@ component SingleTab inherits Rectangle {
             } else if (e.kind == PointerEventKind.move && !self.pressed && !root.dragging) {
                 // (#tab-card) 纯悬停移动跟手（welcome 同款；moved 只在按住时
                 // 触发，悬停跟随只能挂 pointer-event move）。
-                root.card-out(root.info.title, root.info.host, root.info.note,
-                              root.info.channel-letter, root.info.channel-paused,
+                root.card-out(root.info.title, root.info.host, root.info.user,
+                              root.info.auth, root.info.group_name, root.info.note,
+                              root.info.channel_letter, root.info.channel_paused,
                               self.absolute-position.x + self.mouse-x,
                               self.absolute-position.y + self.mouse-y);
             } else if (e.kind == PointerEventKind.up) {
@@ -182,9 +190,12 @@ component SingleTab inherits Rectangle {
             root.card-out(
                 root.info.title,
                 root.info.host,
+                root.info.user,
+                root.info.auth,
+                root.info.group_name,
                 root.info.note,
-                root.info.channel-letter,
-                root.info.channel-paused,
+                root.info.channel_letter,
+                root.info.channel_paused,
                 touch.absolute-position.x + touch.mouse-x,
                 touch.absolute-position.y + touch.mouse-y);
         }
@@ -372,7 +383,8 @@ export component TabBar inherits Rectangle {
     in-out property <bool> menu-channel-bar-hidden: false;
     // (#tab-card) 悬浮信息卡中转槽：SingleTab 写入，实例侧绑到 AppWindow 根
     // 集中浮层（SessionRow→Welcome→根 同一链路模式）。
-    callback tab-card-out(string, string, string, string, bool, length, length);
+    // (#sync-dialog-v2) +user/auth/group 三参。
+    callback tab-card-out(string, string, string, string, string, string, string, bool, length, length);
     callback tab-card-clear();
     in property <bool> lang-en: false;   // 频道菜单双语（app.slint 转发）
     in-out property <string> menu-channel-letter: "";
@@ -634,8 +646,9 @@ export component TabBar inherits Rectangle {
                         closed => { root.tab-closed(tab.id); }
                         duplicated => { root.tab-duplicate(tab.id); }
                         // (#tab-card) 信息卡上报中转到 TabBar 级（实例侧再绑根浮层）
-                        card-out(t, h, n, c, p, ax, ay) => {
-                            root.tab-card-out(t, h, n, c, p, ax, ay);
+                        // (#sync-dialog-v2) +user/auth/group 三参
+                        card-out(t, h, u, a, g, n, c, p, ax, ay) => {
+                            root.tab-card-out(t, h, u, a, g, n, c, p, ax, ay);
                         }
                         card-clear() => { root.tab-card-clear(); }
                         context-requested(ax, ay) => {

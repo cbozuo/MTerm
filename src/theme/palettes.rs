@@ -29,17 +29,58 @@ pub struct Palette {
     pub ansi16bg: Option<[u32; 16]>,
 }
 
-/// 9 个强调色预设（§4-L2/§6 已定：全部出自某套主题自己的 accent）
+/// 强调色预设网格（46 色）。高保真稿 §3.8「点缀色」弹框的取值表：
+/// 点预设即写入 custom hex（预设不再是独立一档，与「自定义」合并为两态），
+/// 故本表只作**色值/名称的单一出处**，实际生效走 `AccentCfg::Custom` + 3:1 守卫。
+/// ui/interface_panel.slint 的网格字面量需与本表同源，改动请同步两处。
 pub static ACCENT_PRESETS: &[(&str, &str, u32)] = &[
-    ("classic-blue", "经典蓝", 0x0090FF), // Radix 石墨
-    ("cyan", "青", 0x00A2C7),           // Radix 石板
-    ("iris", "靛紫", 0x5B5BD6),         // Radix 藕荷
-    ("jade", "翡翠", 0x29A383),         // Radix 青苔
-    ("amber", "琥珀", 0xFFC53D),        // Radix 暖砂
-    ("tomato", "番茄", 0xE54D2E),       // Radix 橄榄（已删族，色值仍为其 accent）
-    ("neon-blue", "霓蓝", 0x7AA2F7),    // Tokyo Night
-    ("frost-cyan", "霜青", 0x88C0D0),   // Nord
-    ("dusk-purple", "暮紫", 0xBD93F9),  // Dracula
+    ("abyss", "深渊色", 0x0B0D12),
+    ("lime", "青柠", 0xC8FF00),
+    ("tea", "茶色", 0xFFC100),
+    ("amethyst", "紫水晶色", 0xAB47BC),
+    ("aqua", "水蓝色", 0x5CCFE6),
+    ("aquamarine", "海蓝宝石色", 0x64FFDD),
+    ("ultraviolet", "仿紫色", 0x651FFF),
+    ("toxic", "绝命毒药色", 0x368A3F),
+    ("magenta", "洋红", 0xE1306C),
+    ("carbon", "碳素色", 0x424242),
+    ("coffee", "咖啡色", 0x795548),
+    ("coral", "珊瑚色", 0xFF7F6B),
+    ("orange", "橙色", 0xF0862C),
+    ("chartreuse", "蟹青色", 0xFFE831),
+    ("royal", "宝蓝色", 0x2979F5),
+    ("azure", "鲜蓝色", 0x73D8FF),
+    ("deep-rose", "深红色", 0xE916B5),
+    ("gold", "金色", 0xFFC069),
+    ("lead", "铅黑色", 0x616161),
+    ("indigo", "靛蓝色", 0x2F51B5),
+    ("lavender", "薰衣草色", 0x7E57C2),
+    ("white-glow", "白光色", 0xFAFAFA),
+    ("fresh-green", "鲜绿色", 0x7CB342),
+    ("tangerine", "橘黄色", 0xFFA565),
+    ("pale-purple", "淡紫色", 0xDFBFFF),
+    ("mint", "薄荷色", 0x95E0C1),
+    ("neon", "霓虹色", 0x1D49B1),
+    ("seastar", "海星色", 0x546E7A),
+    ("amber", "琥珀橙", 0xFF9B0B),
+    ("night", "夜色", 0x676E9A),
+    ("moss", "苔藓色", 0xB1C784),
+    ("plant-red", "植物红", 0xB71C1C),
+    ("rose", "玫瑰色", 0xF279B9),
+    ("salmon", "鲑鱼色", 0xF29E7B),
+    ("sand", "沙色", 0xD9AE91),
+    ("gray", "灰色", 0x9E9E9E),
+    ("sky", "天空色", 0x64FFFF),
+    ("slate", "石板色", 0x607D8B),
+    ("steel", "钢色", 0xB9B119),
+    ("grass-pink", "草绿粉", 0xFF40CC),
+    ("teal", "青绿色", 0x089B8B),
+    ("tomato", "番茄色", 0xF44333),
+    ("turquoise", "绿松石色", 0x88CBBC),
+    ("water", "水色", 0x42A5F5),
+    ("yellow-green", "黄绿色", 0xA5FF80),
+    ("brand-blue", "品牌蓝", 0x0969DA),
+    ("jade", "翡翠绿", 0x29A383),
 ];
 
 /// tab 关闭键 hover 色（tab-row-idia 稿：全局常量，非按主题；

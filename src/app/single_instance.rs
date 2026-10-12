@@ -2,9 +2,11 @@
 // macOS dock menu, Linux desktop action) launch `MTerm --new-window`.
 // The first running instance owns a local endpoint under the data dir; later
 // `--new-window` launches connect, send "new-window\n" and exit, and the
-// primary opens the new window in-process (Chrome-style). Plain relaunches
-// never forward: if the endpoint is taken they run as an independent second
-// instance.
+// primary opens the new window in-process (Chrome-style).
+// (#sync-dialog-v2-fix 2026-10-12) Plain relaunches also forward now:
+// 二次双击 exe 原先会跑成独立第二进程 —— 那个窗口任务栏没有编号（各进程
+// registry 独立从 1 数）、同步输入弹框「全部窗口」也枚举不到它（用户实测）。
+// 统一转发后不再有独立 GUI 实例；仅 IPC 失败时回退为正常启动。
 //
 // Transport split: unix uses a unix-domain socket (`ipc.sock`); Windows uses
 // a TCP loopback listener on 127.0.0.1 whose port is published in a port
@@ -35,9 +37,10 @@ pub enum Instance {
 
 /// Try to become the primary instance. With `forward`, a live primary
 /// receives a new-window request and `Forwarded` is returned; without it a
-/// live primary is reported as an error so a plain relaunch runs as its own
-/// instance instead of opening a bonus window in the first one. Never
-/// panics on IO trouble — callers treat errors as "just run normally".
+/// live primary is reported as an error so the caller falls back to a normal
+/// (independent) launch. Never panics on IO trouble — callers treat errors
+/// as "just run normally". (#sync-dialog-v2-fix) 当前唯一调用方恒传
+/// `forward = true`：二次启动统一转发，不再产生独立 GUI 实例。
 #[cfg(unix)]
 pub fn acquire(socket_path: &Path, forward: bool) -> std::io::Result<Instance> {
     if let Ok(listener) = UnixListener::bind(socket_path) {

@@ -313,6 +313,73 @@ pub(crate) fn decide_close(mode: &str) -> CloseDecision {
     }
 }
 
+/// (#sync-dialog-v2-fix 2026-10-12) 窗口显示名。
+///
+/// (#window-title-fix2 2026-10-12) 用户定稿（修订）：**多开时全部窗口按位次
+/// 编号**（含最早打开的 → 「MTerm · 窗口 1」）；只剩一个窗口时退回素
+/// 「MTerm」。（旧规则"主窗口素名、其余编号"与用户预期不符——首窗在多开时
+/// 也应有编号，用户实测反馈。）
+///
+/// 编号取「存活窗口中按 registry id 升序的位次」（id 单调递增、不回收，位次
+/// 顺序 = 打开顺序）。参数 `rank` 是位次（1 起），`total` 是存活窗口总数。
+fn window_title_for(rank: u64, total: usize) -> String {
+    if total <= 1 {
+        "MTerm".to_string()
+    } else {
+        format!("MTerm · {} {}", t("窗口", "Window"), rank)
+    }
+}
+
+/// 存活窗口的位次表：registry id → 位次（1 起，按 id 升序）。
+///
+/// 纯函数只吃 id 列表（不依赖 registry/组件），便于单测直接覆盖。
+fn ranks_of(ids: impl IntoIterator<Item = u64>) -> std::collections::HashMap<u64, u64> {
+    let mut ids: Vec<u64> = ids.into_iter().collect();
+    ids.sort_unstable();
+    ids.into_iter()
+        .enumerate()
+        .map(|(i, id)| (id, i as u64 + 1))
+        .collect()
+}
+
+fn window_ranks(registry: &WindowRegistry<AppWindow>) -> std::collections::HashMap<u64, u64> {
+    let mut ids: Vec<u64> = Vec::new();
+    registry.for_each_id(|id, _| ids.push(id));
+    ranks_of(ids)
+}
+
+// (#window-title-sync 2026-10-12) 编号规则的回归测试：主窗口素名、其余按位次、
+// 主窗口关闭后接管者顺延为素名（而不是跳成「窗口 2」）。
+#[cfg(test)]
+#[path = "../tests/app/window_naming.rs"]
+mod window_naming_tests;
+
+/// (#sync-dialog-v2-fix 2026-10-12) 窗口标题统一刷新：主窗口 = 素 "MTerm"；
+/// 其余按打开顺序带编号（见 [`window_title_for`]）。开窗与关窗（其余窗口仍
+/// 存活）后都要调 —— 位次跟"当前存活窗口的顺序"走。
+///
+/// (#window-title-sync 2026-10-12) 同时把 tooltip 推给托盘：标题与托盘悬浮
+/// 提示此前各算各的（标题在开/关窗刷新，tooltip 只在图标首次建立时算一次），
+/// 于是窗口 2 打开后窗口 1 的托盘还停在旧名（用户截图：任务栏「窗口 2」而
+/// 托盘 tooltip 还是「MTerm」）。现在两者共用 [`window_title_for`]，且托盘
+/// 侧走 [`Tray::update_tip`]（只改 NIF_TIP，不重建图标）。
+fn refresh_window_titles(registry: &WindowRegistry<AppWindow>) {
+    let ranks = window_ranks(registry);
+    let total = ranks.len();
+    registry.for_each_id(|id, win| {
+        let Some(rank) = ranks.get(&id).copied() else {
+            return;
+        };
+        let title = window_title_for(rank, total);
+        win.set_win_title(title.clone().into());
+        win.window().with_winit_window(|ww| {
+            ww.set_title(&title);
+        });
+        // 托盘 tooltip 与标题同源（未建图标时 update_tip 返回 false，跳过）。
+        Tray::update_tip(id as u32, &title);
+    });
+}
+
 /// (#close-behavior) 「真的关掉这个窗口」所需的全部上下文。
 ///
 /// 关闭键(直退档)、确认卡两张卡片、托盘菜单「退出」三条路径都调
@@ -356,14 +423,33 @@ impl WindowCloser {
             &self.sys_weak,
             &self.editor_weak,
         );
-        self.registry.unregister(self.window_id);
-        // (#close-exit-fix 2026-09-19) 「完全退出」= 退出**整个应用**。旧逻辑
-        // 只在本窗口是注册表里最后一个时才 quit —— 多窗口(新建窗口/单实例
-        // new-window)场景下注册表永远非空,选「完全退出」只 hide 本窗,
-        // 进程残留成无窗僵尸(用户实测)。改为无条件退出;其它窗口的收尾由
-        // 进程退出兜底(OS 回收 socket/句柄)。
-        request_quit();
+        // (#window-isolation 2026-10-12) 关闭隔离：关一个窗口只收尾该窗口，
+        // 其余窗口继续存活（用户反馈：关一个不该把整个应用带走）。仅当最后
+        // 一个窗口关闭（注册表清空）时才退出事件循环 —— #close-exit-fix 的
+        // 「无窗僵尸」场景由这条空表必 quit 兜底。其余窗口按单/多开规则刷新
+        // 标题（多开全关到只剩一个时，退回素 "MTerm"）。
+        let was_last = self.registry.unregister(self.window_id);
+        // (#sync-dialog-v2-fix2) 摘掉本窗口的托盘图标与登记。
+        TRAY_HANDLES.with(|h| h.borrow_mut().remove(&self.window_id));
+        TRAY_CLOSERS.with(|c| c.borrow_mut().remove(&self.window_id));
+        if was_last {
+            request_quit();
+        } else {
+            refresh_window_titles(&self.registry);
+        }
         forget_window_state(&self.core, self.window_id);
+    }
+
+    /// (#tray-exit-scope 2026-10-12) 托盘菜单的「退出」= **关闭这个窗口**，不再
+    /// 无条件退整个应用。
+    ///
+    /// 用户定稿：「一个窗口对应一个托盘图标，不应该是全局控制」—— 图标是按窗口
+    /// id 建的（见 `Tray::ensure(uID = 窗口id)`），右键它就该只作用于它自己。
+    /// 语义直接复用 [`WindowCloser::confirm`]：拆本窗口的 worker → 存布局 →
+    /// 摘本窗口托盘图标 → 仅当它是**最后一个**窗口时才退出事件循环
+    /// （`#window-isolation` 既有语义，也是「无窗僵尸」的兜底）。
+    fn exit_all(&self) {
+        self.confirm();
     }
 }
 
@@ -420,12 +506,15 @@ fn close_session_rows(
     rows
 }
 
-// (#close-behavior) 托盘延迟创建:登记闭包 + 持有句柄。
+// (#close-behavior) 托盘:登记每窗口的 closer + 持有每窗口的句柄。
 // 放模块级是因为 `minimize_to_tray` 是不带状态的自由函数(与
 // `raise_to_front` 同类),拿不到 `open_window` 的局部变量。
+// (#sync-dialog-v2-fix2 2026-10-12) **每窗口一个托盘图标**(id = 窗口
+// registry id):各管各的显示/退出,互不干扰;关闭窗口时摘掉自己的图标。
 thread_local! {
-    static TRAY_ENSURE: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
-    static TRAY_HANDLE: RefCell<Option<Tray>> = const { RefCell::new(None) };
+    static TRAY_CLOSERS: RefCell<HashMap<u64, WindowCloser>> =
+        RefCell::new(HashMap::new());
+    static TRAY_HANDLES: RefCell<HashMap<u64, Tray>> = RefCell::new(HashMap::new());
     // Current tray flyout only。hide 走 take+0ms-drop **现建现毁**(每次打开
     // 新 HWND),不是旧注释说的"只创建一次并复用";配套机制见 arm_tray_flyout_chrome。
     static TRAY_MENU: RefCell<Option<Rc<TrayMenuWindow>>> = const { RefCell::new(None) };
@@ -498,14 +587,115 @@ fn request_quit() {
 /// **不**隐藏窗口 —— 否则窗口消失、进程还在、托盘又没有,用户既唤不回也
 /// 退不出(实测的"僵尸进程"路径之一)。改为回落弹关闭确认卡,用户仍可选
 /// 「完全退出」。
+/// (#sync-dialog-v2-fix2) 确保指定窗口的托盘图标存在(每窗口一个,各管各的)。
+///
+/// (#tray-double-ensure 2026-10-12) **已存在时只热更 tooltip，绝不重建句柄**。
+/// 此前无论是否已存在都 `TRAY_HANDLES.insert()` —— HashMap::insert 会 drop 掉
+/// 旧句柄，旧 `Tray` 的 `Drop` 立刻 `NIM_DELETE` 摘掉图标，紧接着
+/// `minimize_to_tray` 的 `icon_ok()` 读到 false，于是**单窗口场景**"最小化到
+/// 托盘"永远回落成确认卡（用户实测：窗口一多反而正常，因为多开时托盘重建
+/// 与最小化不同步、不易撞上这个窗口）。改为：登记在册 → `Tray::update_tip`
+/// 返回 true 就直接返回。
+fn ensure_tray_for(win_id: u64) {
+    let Some(closer) = TRAY_CLOSERS.with(|c| c.borrow().get(&win_id).cloned()) else {
+        tracing::warn!("tray: no closer registered for window {win_id}");
+        return;
+    };
+    // tooltip 跟窗口标题同一套编号规则（主窗口素名，其余带编号）。
+    let tip = tray_tip_for(&closer.core.registry, win_id);
+    // 已有图标：只推 tooltip 就地更新，绝不碰句柄（见上方注释）。
+    if Tray::update_tip(win_id as u32, &tip) {
+        return;
+    }
+    let handle = Tray::ensure(
+        win_id as u32,
+        Box::new(move |action| handle_tray_action(win_id, action)),
+        &tip,
+    );
+    TRAY_HANDLES.with(|h| h.borrow_mut().insert(win_id, handle));
+}
+
+/// (#window-title-sync 2026-10-12) 托盘 tooltip 文案 = 该窗口标题文案，
+/// 与 [`window_title_for`] 同一套规则（主窗口素名，其余按位次编号）。
+fn tray_tip_for(registry: &WindowRegistry<AppWindow>, id: u64) -> String {
+    let ranks = window_ranks(registry);
+    window_title_for(ranks.get(&id).copied().unwrap_or(1), ranks.len())
+}
+
+/// (#sync-dialog-v2-fix2) 托盘动作派发:每个图标只管自己的窗口 ——
+/// 显示 = 唤回该窗口;菜单 = 打开绑定该窗口的自绘菜单(退出 = 关该窗口,
+/// 走该窗口自己的 closer,互不干扰)。
+fn handle_tray_action(win_id: u64, action: TrayAction) {
+    let Some(closer) = TRAY_CLOSERS.with(|c| c.borrow().get(&win_id).cloned()) else {
+        return;
+    };
+    match action {
+        TrayAction::Show => {
+            hide_tray_flyout();
+            if let Some(w) = closer.window.upgrade() {
+                tracing::info!(win_id, "tray: show window");
+                let _ = w.show();
+                raise_to_front(&w);
+                refresh_revealed_main_window(w.as_weak());
+            } else {
+                tracing::warn!("tray: window component gone — cannot show");
+            }
+        }
+        TrayAction::OpenMenu { x, y } => {
+            let existing = TRAY_MENU.with(|m| m.borrow().as_ref().cloned());
+            if TRAY_MENU_OPENING.with(|opening| opening.get()) {
+                tracing::info!("tray: right-click toggled opening menu closed");
+                hide_tray_flyout();
+                return;
+            }
+            if existing.as_ref().is_some_and(|w| w.window().is_visible()) {
+                tracing::info!("tray: right-click toggled menu closed");
+                hide_tray_flyout();
+                return;
+            }
+            TRAY_MENU_OPENING.with(|opening| opening.set(true));
+            TRAY_DISMISS_ARMED.with(|a| a.set(false));
+            TRAY_ESC_TIMER.with(|t| t.borrow().stop());
+            Tray::remove_menu_hook();
+            TRAY_CHROME_DONE.with(|c| c.set(false));
+            let fly = if let Some(fly) = existing {
+                fly
+            } else {
+                window::TRAY_WINDOW_NEXT.store(true, std::sync::atomic::Ordering::Relaxed);
+                window::TRAY_TRANSPARENT_NEXT
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                match TrayMenuWindow::new() {
+                    Ok(w) => {
+                        window::TRAY_WINDOW_NEXT
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                        window::TRAY_TRANSPARENT_NEXT
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                        let fly = Rc::new(w);
+                        TRAY_MENU.with(|m| *m.borrow_mut() = Some(fly.clone()));
+                        fly
+                    }
+                    Err(e) => {
+                        window::TRAY_WINDOW_NEXT
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                        TRAY_MENU_OPENING.with(|opening| opening.set(false));
+                        tracing::error!("tray: flyout window failed: {e}");
+                        return;
+                    }
+                }
+            };
+            // 每次打开都重绑到**该托盘对应的窗口**:同一个浮层,动作各管各的。
+            bind_tray_flyout(&fly, closer.clone(), closer.window.clone());
+            TRAY_MENU_EPOCH.with(|e| e.set(e.get().wrapping_add(1)));
+            show_tray_flyout(&fly, &closer.window, &closer.core, x, y);
+        }
+    }
+}
+
 fn minimize_to_tray(win: &AppWindow) {
     tracing::info!("close: minimize_to_tray called");
-    TRAY_ENSURE.with(|slot| {
-        if let Some(ensure) = slot.borrow().as_ref() {
-            ensure();
-        }
-    });
-    if !Tray::icon_ok() {
+    // (#sync-dialog-v2-fix2) 确保的是**本窗口自己的**托盘图标。
+    ensure_tray_for(win.get_win_id() as u64);
+    if !Tray::icon_ok(win.get_win_id() as u32) {
         tracing::error!(
             "tray: Shell_NotifyIconW failed — refusing to hide the window, \
              falling back to the close-confirm card"
@@ -805,6 +995,12 @@ fn show_tray_flyout(
         sync_tray_theme(&w, fly);
     }
     fly.set_session_count(active_session_count(core));
+    // (#tray-exit-scope 2026-10-12) 菜单「退出」改为只关本窗口后，把该窗口的
+    // 标题喂给菜单做标签（多窗口时用户据此分辨关的是哪一个）。标题与状态栏、
+    // 托盘 tooltip 同源（`window_title_for`），三者天然一致。
+    if let Some(w) = main.upgrade() {
+        fly.set_window_label(w.get_win_title());
+    }
     // (#tray-flyout-blank 2026-09-21) 几何必须在 show() 前一次性完成:Slint
     // 属性即时求值,set_session_count 后 preferred 尺寸立刻正确(0 会话塌掉
     // 状态头也一样)。show 后只 request_redraw,不再改几何。
@@ -992,7 +1188,8 @@ fn bind_tray_flyout(
     {
         fly.on_exit_clicked(move || {
             hide_tray_flyout();
-            closer.confirm();
+            // (#window-isolation) 托盘「退出」= 退出整个应用，不是关单窗。
+            closer.exit_all();
         });
     }
     {
@@ -1245,6 +1442,9 @@ thread_local! {
 /// Windows gets its icon from the `.ico` embedded by winresource at link
 /// time; macOS from the app bundle — neither path needs runtime decoding.
 pub fn run(intent: crate::app::launch::LaunchIntent) -> Result<()> {
+    // (#sync-dialog-v2-fix) `--new-window` 旗标已不再改变行为（二次启动一律
+    // 转发，见下方 single-instance 一段）；参数仍解析以保持入口兼容。
+    let _ = &intent;
     // Load the renderer preference before creating any Slint window. Reuse the
     // same store for the rest of the app so startup does not read the config
     // twice merely to select a backend (#280).
@@ -1270,19 +1470,21 @@ pub fn run(intent: crate::app::launch::LaunchIntent) -> Result<()> {
     // taken they run as an independent second instance. IPC failures fall
     // through to a normal launch rather than blocking the app.
     let si_path = crate::app::single_instance::socket_path();
-    let instance = match crate::app::single_instance::acquire(&si_path, intent.new_window) {
+    // (#sync-dialog-v2-fix 2026-10-12) 二次启动**一律转发**（Chrome 式）：
+    // 原先 plain relaunch 不转发、会跑成独立第二进程 —— 那个窗口任务栏没有
+    // 编号（各进程 registry 独立从 1 数）、同步输入弹框「全部窗口」也枚举
+    // 不到它（用户实测）。统一转发到主实例开新窗；IPC 失败仍回退正常启动。
+    let instance = match crate::app::single_instance::acquire(&si_path, true) {
         Ok(i) => Some(i),
         Err(e) => {
             tracing::warn!("single-instance acquire failed: {e}");
             None
         }
     };
-    if intent.new_window {
-        if let Some(crate::app::single_instance::Instance::Forwarded) = instance {
-            return Ok(());
-        }
-        // We are the primary (or IPC failed): fall through and open a window.
+    if let Some(crate::app::single_instance::Instance::Forwarded) = instance {
+        return Ok(());
     }
+    // We are the primary (or IPC failed): fall through and open a window.
 
     // --- Runtime + store -------------------------------------------------
     let runtime = Arc::new(Runtime::new().context("failed to start tokio runtime")?);
@@ -1400,7 +1602,7 @@ pub fn run(intent: crate::app::launch::LaunchIntent) -> Result<()> {
     // (#close-exit-fix 2026-09-19) process::exit 不跑 thread_local 析构,
     // 显式丢弃托盘句柄让 Drop 执行(NIM_DELETE + DestroyWindow)——否则
     // 「完全退出」后托盘里残留一个悬停才消失的死图标,像进程还活着。
-    drop(TRAY_HANDLE.with(|t| t.borrow_mut().take()));
+    TRAY_HANDLES.with(|h| h.borrow_mut().clear());
     if let Ok(core_owned) = Rc::try_unwrap(core) {
         if let Ok(runtime) = Arc::try_unwrap(core_owned.runtime) {
             runtime.shutdown_timeout(std::time::Duration::from_secs(2));
@@ -1535,6 +1737,14 @@ fn open_window(
     // (#tray-show-fix 2026-09-19) Strong 持有：hide 不得销毁组件，否则托盘
     // 「显示主窗口」的 weak.upgrade() 为 None、唤回静默失效（实测）。
     let window_id = registry.register(window.clone_strong());
+    // (#sync-dialog-v2 2026-10-12) 窗口标题：单窗口 = 素 "MTerm"；多开时全部
+    // 窗口统一带编号「MTerm · 窗口 N」，任务栏/Alt-Tab 与同步输入弹框的
+    // 「窗口 N」徽标互相对应（用户反馈：单窗口不需要「窗口 1」）。无边框
+    // 自绘标题栏不受影响（标题只出现在 shell 层）。关闭任意窗口即退出整个
+    // 应用（#close-exit-fix），故无需做关闭后的编号回退。
+    refresh_window_titles(&registry);
+    // (#sync-dialog-v2-fix2) 窗口 id 落到属性:托盘/弹框按 id 各管各的。
+    window.set_win_id(window_id as i32);
     sys_win.set_custom_titlebar(cfg!(not(target_os = "macos")));
     sys_win.set_metrics(ModelRc::from(sys_metrics_model.clone()));
     sys_win.set_nets(ModelRc::from(sys_net_rows_model.clone()));
@@ -2097,10 +2307,16 @@ fn open_window(
     window.set_close_behavior(store.borrow().close_behavior().into());
     {
         let store = store.clone();
+        let registry = registry.clone();
         window.on_set_close_behavior(move |value: SharedString| {
-            let mut s = store.borrow_mut();
-            s.set_close_behavior(value.as_str());
-            let _ = s.save();
+            {
+                let mut s = store.borrow_mut();
+                s.set_close_behavior(value.as_str());
+                let _ = s.save();
+            }
+            // (#close-behavior-sync 2026-10-12) 全局偏好：广播让其它窗口的
+            // 关闭行为立即跟上（此前只写 store，各窗口属性停在旧值）。
+            registry.broadcast_config_changed();
         });
     }
     {
@@ -2835,6 +3051,12 @@ fn open_window(
                 }
                 // Persisted terminal font size (settings stepper) is global too.
                 w.set_term_font_size(store.borrow().font_size() as f32);
+                // (#close-behavior-sync 2026-10-12) 关闭窗口的行为是**全局**偏好：
+                // 设置页「界面 › 窗口」与关闭确认卡的「记住我的选择」写的是同一
+                // 份配置，此前两处只写 store 不广播 → 其它窗口的
+                // `close-behavior` 属性停在旧值，表现为「在窗口 A 改了设置，
+                // 窗口 B 点关闭仍按旧行为走」。此处从 store 现读回填。
+                w.set_close_behavior(store.borrow().close_behavior().into());
                 if let Some(editor) = editor_weak.upgrade() {
                     sync_editor_theme(&w, &editor);
                 }
@@ -2954,6 +3176,9 @@ fn open_window(
                     channel_bar_hidden: false,
                     // (#tab-card) welcome tab 无会话信息，卡片只显示名称
                     host: "".into(),
+                    user: "".into(),
+                    auth: "".into(),
+                    group_name: "".into(),
                     note: "".into(),
         id: "welcome".into(),
         title_len: tab_title_len(&t("新标签页", "New tab")),
@@ -3696,7 +3921,16 @@ fn open_window(
     }
     // ── (#sync-dialog 2026-10-08) 同步输入对话框回调：装配入口（实现见
     // sync_input.rs，app.rs 只保留一行注册）。
-    sync_input::wire_sync_input(&window, store.clone(), tabs_model.clone(), panes_model.clone());
+    // (#sync-dialog-v2 2026-10-12) 传入 registry 与本窗口 id：「全部窗口」
+    // 作用域需要进程内遍历所有窗口的 tab；win-id 供行过滤与卡片「窗口」行。
+    sync_input::wire_sync_input(
+        &window,
+        store.clone(),
+        tabs_model.clone(),
+        panes_model.clone(),
+        registry.clone(),
+        window_id,
+    );
     // (#theme-split) set_theme / cycle_theme：顶栏速选面板与 Ctrl+Alt+T 的
     // 入口。切主题 = 持久化 id + 整套槽位重写 + 每个终端 buffer 换 ANSI 色
     // 表并重渲染（历史输出也跟着换装）+ 独立窗口镜像 + 跨窗口广播。
@@ -3768,6 +4002,18 @@ fn open_window(
     // ⚠️ 每个回调前都在**子作用域**里从外层源 clone 捕获。不要用 macro_rules
     // 合并这些——宏体内的局部变量是定义点上下文，解析不到调用点的 clone
     // 绑定（实测 E0425）。
+
+/// hsv → 色轮圆点位置（mx/my，0..1，my 向下为 +y）与明度条位置（val-my）。
+/// Slint 侧不算三角函数（项目内也没在别处用过 Math.sin/cos），统一由这里算。
+fn set_picker_pos(w: &crate::ui::AppWindow, h: f32, s: f32, v: f32) {
+    let rad = h.to_radians();
+    let mx = 0.5 + rad.cos() * s * 0.5;
+    let my = 0.5 - rad.sin() * s * 0.5;
+    w.set_accent_wheel_mx(mx.clamp(0.0, 1.0));
+    w.set_accent_wheel_my(my.clamp(0.0, 1.0));
+    w.set_accent_val_my(v.clamp(0.0, 1.0));
+}
+
     fn reapply_theme(
         weak: &slint::Weak<crate::ui::AppWindow>,
         bufs: &TermBuffers,
@@ -3800,6 +4046,187 @@ fn open_window(
                     let _ = s.save();
                 }
                 reapply_theme(&weak, &bufs, &store.borrow(), &registry);
+            }
+        });
+        window.on_accent_hsv_hex({
+            move |h: f32, s: f32, v: f32| {
+                format!("#{:06X}", crate::theme::hsv_to_hex(h, s, v)).into()
+            }
+        });
+        window.on_accent_wheel_pick({
+            move |dx: f32, dy: f32, v: f32| {
+                format!("#{:06X}", crate::theme::wheel_pick(dx, dy, v)).into()
+            }
+        });
+        window.on_accent_hex_hsv_h({
+            move |hex: SharedString| {
+                crate::theme::hex_to_hsv(crate::theme::parse_hex(&hex).unwrap_or(0)).0
+            }
+        });
+        window.on_accent_hex_hsv_s({
+            move |hex: SharedString| {
+                crate::theme::hex_to_hsv(crate::theme::parse_hex(&hex).unwrap_or(0)).1
+            }
+        });
+        window.on_accent_hex_hsv_v({
+            move |hex: SharedString| {
+                crate::theme::hex_to_hsv(crate::theme::parse_hex(&hex).unwrap_or(0)).2
+            }
+        });
+        // 取色盘色轮：Rust 侧一次性烘成位图（Slint 无法程序化画渐变）。
+        // 圆心=圆心色相、r=饱和度、明度固定 1；明度由旁边的竖条另调。
+        window.set_accent_wheel_image({
+            const N: u32 = 148;
+            let mut buf = Vec::with_capacity((N * N * 4) as usize);
+            for y in 0..N {
+                for x in 0..N {
+                    let dx = (x as f32 + 0.5) / N as f32 * 2.0 - 1.0;
+                    let dy = 1.0 - (y as f32 + 0.5) / N as f32 * 2.0;
+                    let r = (dx * dx + dy * dy).sqrt().min(1.0);
+                    let h = dy.atan2(dx).to_degrees().rem_euclid(360.0);
+                    let c = crate::theme::hsv_to_hex(h, r, 1.0);
+                    buf.push(((c >> 16) & 0xFF) as u8);
+                    buf.push(((c >> 8) & 0xFF) as u8);
+                    buf.push((c & 0xFF) as u8);
+                    buf.push(255);
+                }
+            }
+            slint::Image::from_rgba8(buf, N, N)
+        });
+        // Slint 不能把 hex 字符串在运行期解析成 color，取色盘的色块统一走这个回调
+        window.on_accent_hex_color({
+            move |hex: SharedString| match crate::theme::parse_hex(&hex) {
+                Some(v) => slint::Color::from_rgb_u8(
+                    ((v >> 16) & 0xFF) as u8,
+                    ((v >> 8) & 0xFF) as u8,
+                    (v & 0xFF) as u8,
+                ),
+                None => slint::Color::from_rgb_u8(0, 0, 0),
+            }
+        });
+        // 色块上的字色：亮度 >140 用深字，否则白字（与高保真稿 txtCls 同阈值）
+        window.on_accent_ink_on({
+            move |hex: SharedString| {
+                let c = crate::theme::parse_hex(&hex).unwrap_or(0);
+                let l = ((c >> 16 & 0xFF) as f32) * 0.299
+                    + ((c >> 8 & 0xFF) as f32) * 0.587
+                    + ((c & 0xFF) as f32) * 0.114;
+                if l > 140.0 {
+                    slint::Color::from_rgb_u8(0, 0, 0)
+                } else {
+                    slint::Color::from_rgb_u8(255, 255, 255)
+                }
+            }
+        });
+        // 随机强调色：xorshift32（无需额外依赖）。守卫在 resolve_accent 里统一做，
+        // 这里只管产出随机色相/饱和/明度。
+        window.on_accent_random_hex({
+            let seed = std::cell::Cell::new(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.subsec_nanos() | 1)
+                    .unwrap_or(0x2545_F491),
+            );
+            move || {
+                let mut x = seed.get();
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                seed.set(x);
+                let h = (x % 360) as f32;
+                let s = 0.35 + ((x >> 9) % 51) as f32 / 100.0;
+                let v = 0.55 + ((x >> 17) % 36) as f32 / 100.0;
+                format!("#{:06X}", crate::theme::hsv_to_hex(h, s, v)).into()
+            }
+        });
+        // 最近使用：去重后插到最前，最多 20
+        let recent: Rc<std::cell::RefCell<Vec<SharedString>>> =
+            Rc::new(std::cell::RefCell::new(Vec::new()));
+        window.on_accent_recent_push({
+            let (w, recent) = (window.as_weak(), recent.clone());
+            move |hex: SharedString| {
+                let hex = hex.to_uppercase();
+                let items: ModelRc<String> = {
+                    let mut r = recent.borrow_mut();
+                    r.retain(|h| *h != hex);
+                    r.insert(0, hex);
+                    r.truncate(20);
+                    ModelRc::from(Rc::new(VecModel::from(r.clone().into_boxed_slice())))
+                };
+                if let Some(w) = w.upgrade() {
+                    w.set_accent_recent(items);
+                }
+            }
+        });
+        // 打开调色盘：把 hex 拆成 h/s/v 回填，供色轮/滑杆定位
+        window.on_accent_picker_open({
+            let w = window.as_weak();
+            move |hex: SharedString| {
+                let c = crate::theme::parse_hex(&hex).unwrap_or(0);
+                let (h, s, v) = crate::theme::hex_to_hsv(c);
+                if let Some(w) = w.upgrade() {
+                    w.set_accent_pick_hex(SharedString::from(format!("#{:06X}", c)));
+                    w.set_accent_pick_h(h);
+                    w.set_accent_pick_s(s);
+                    w.set_accent_pick_v(v);
+                    set_picker_pos(&w, h, s, v);
+                }
+            }
+        });
+        window.on_sync_picker_pos({
+            let w = window.as_weak();
+            move || {
+                if let Some(w) = w.upgrade() {
+                    set_picker_pos(&w, w.get_accent_pick_h(), w.get_accent_pick_s(), w.get_accent_pick_v());
+                }
+            }
+        });
+        window.on_accent_hex_valid({
+            move |hex: SharedString| match crate::theme::parse_hex(&hex) {
+                Some(v) => format!("#{:06X}", v).into(),
+                None => hex,
+            }
+        });
+        // 取色盘数值输入：ch 0/1/2；fmt=rgb 时为 R/G/B(0-255)，hsb 时为 H(0-360)/S/B(0-100)
+        window.on_accent_ch({
+            move |hex: SharedString, ch: i32, fmt: SharedString| {
+                let c = crate::theme::parse_hex(&hex).unwrap_or(0);
+                let i = ch.clamp(0, 2) as usize;
+                let out = if fmt.as_str() == "hsb" {
+                    let (h, s, v) = crate::theme::hex_to_hsv(c);
+                    match i {
+                        0 => format!("{:.0}", h.round()),
+                        1 => format!("{:.0}", (s * 100.0).round()),
+                        _ => format!("{:.0}", (v * 100.0).round()),
+                    }
+                } else {
+                    let rgb = [(c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF];
+                    format!("{}", rgb[i])
+                };
+                out.into()
+            }
+        });
+        // 单通道写回：返回规范化后的新 hex（值非法时原样返回）
+        window.on_accent_pick_apply({
+            move |base: SharedString, ch: i32, val: SharedString, fmt: SharedString| {
+                let c = crate::theme::parse_hex(&base).unwrap_or(0);
+                let Ok(n) = val.trim().parse::<f32>() else {
+                    return base;
+                };
+                let i = ch.clamp(0, 2) as usize;
+                let out = if fmt.as_str() == "hsb" {
+                    let (h, s, v) = crate::theme::hex_to_hsv(c);
+                    match i {
+                        0 => crate::theme::hsv_to_hex(n.rem_euclid(360.0), s, v),
+                        1 => crate::theme::hsv_to_hex(h, (n / 100.0).clamp(0.0, 1.0), v),
+                        _ => crate::theme::hsv_to_hex(h, s, (n / 100.0).clamp(0.0, 1.0)),
+                    }
+                } else {
+                    let mut rgb = [(c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF];
+                    rgb[i] = n.clamp(0.0, 255.0) as u32;
+                    (rgb[0] << 16) | (rgb[1] << 8) | rgb[2]
+                };
+                format!("#{:06X}", out).into()
             }
         });
         window.on_set_panel_alpha({
@@ -4692,10 +5119,17 @@ fn open_window(
                             &ev_sys_weak,
                             &ev_editor_weak,
                         );
-                        ev_registry.unregister(window_id);
-                        // (#close-exit-fix 2026-09-19) 同 confirm():Exit 档 =
-                        // 退出整个应用,不再以"注册表是否清空"为前置条件。
-                        request_quit();
+                        // (#window-isolation 2026-10-12) 关闭隔离：仅最后一个
+                        // 窗口关闭才退出整个应用；其余窗口刷新标题。
+                        let was_last = ev_registry.unregister(window_id);
+                        // (#sync-dialog-v2-fix2) 摘掉本窗口的托盘图标与登记。
+                        TRAY_HANDLES.with(|h| h.borrow_mut().remove(&window_id));
+                        TRAY_CLOSERS.with(|c| c.borrow_mut().remove(&window_id));
+                        if was_last {
+                            request_quit();
+                        } else {
+                            refresh_window_titles(&ev_registry);
+                        }
                         forget_window_state(&ev_core, window_id);
                     }
                     _ => {}
@@ -4728,6 +5162,7 @@ fn open_window(
     {
         let closer = closer.clone();
         let cc_store = store.clone();
+        let cc_registry = registry.clone();
         window.on_close_confirmed(move |raw: SharedString| {
             let mode = parse_close_mode(&raw);
             if close_mode_remembers(&raw) {
@@ -4739,6 +5174,11 @@ fn open_window(
                 if let Some(w) = closer.window.upgrade() {
                     w.set_close_behavior(mode.into());
                 }
+                // (#close-behavior-sync 2026-10-12) 勾了「记住我的选择」就是
+                // 全局偏好，必须广播 —— 否则只有本窗口改了行为，其它窗口下次点
+                // 关闭仍按旧档走（用户反馈）。广播监听器会回填各窗口属性，
+                // 上面那行 set 是给本窗口的即时反馈，广播覆盖其余窗口。
+                cc_registry.broadcast_config_changed();
             }
             match mode {
                 "tray" => {
@@ -4804,93 +5244,10 @@ fn open_window(
             }
         });
     }
-    // 把惰性托盘创建闭包登记到模块级槽位,供 minimize_to_tray 触发。
-    TRAY_ENSURE.with(|slot| {
-        let closer = closer.clone();
-        let tray_weak = window.as_weak();
-        let core = core.clone();
-        *slot.borrow_mut() = Some(Rc::new(move || {
-            if TRAY_HANDLE.with(|h| h.borrow().is_some()) {
-                return;
-            }
-            let closer = closer.clone();
-            let tray_weak = tray_weak.clone();
-            let core = core.clone();
-            // 托盘菜单延迟创建并常驻复用,避免快速右击时透明 HWND 销毁/重建闪烁。
-            // 关于窗仍独立创建并在关闭时销毁。
-            let handle = Tray::ensure(Box::new(move |action| match action {
-                TrayAction::Show => {
-                    hide_tray_flyout();
-                    // (#tray-persist 2026-09-21) 托盘图标**全程常驻**:左键唤回主
-                    // 窗口时不再移除图标(用户定稿:启动随主窗口同步出现、退出同步
-                    // 消失,最小化到托盘期间图标保留用于唤回)。撤掉了 r4 的延迟
-                    // take+drop——那段本是为"重显即移除"服务的,现语义取消。
-                    // (#tray-show-fix 2026-09-19) upgrade 失败 = 组件已被销毁；
-                    // registry 改持 Strong 后不应再发生，留 warn 便于回归。
-                    if let Some(w) = tray_weak.upgrade() {
-                        tracing::info!("tray: show main window");
-                        let _ = w.show();
-                        // (#tray-restore-blank 2026-09-28) 先恢复(脱最小化+激活)
-                        // 再补绘:重绘落在窗口状态落定之后,避免恢复途中发的
-                        // request_redraw 被吞。
-                        raise_to_front(&w);
-                        refresh_revealed_main_window(w.as_weak());
-                    } else {
-                        tracing::warn!("tray: main window component gone — cannot show");
-                    }
-                }
-                TrayAction::OpenMenu { x, y } => {
-                    let existing = TRAY_MENU.with(|m| m.borrow().as_ref().cloned());
-                    if TRAY_MENU_OPENING.with(|opening| opening.get()) {
-                        tracing::info!("tray: right-click toggled opening menu closed");
-                        hide_tray_flyout();
-                        return;
-                    }
-                    if existing.as_ref().is_some_and(|w| w.window().is_visible()) {
-                        tracing::info!("tray: right-click toggled menu closed");
-                        hide_tray_flyout();
-                        return;
-                    }
-                    TRAY_MENU_OPENING.with(|opening| opening.set(true));
-                    TRAY_DISMISS_ARMED.with(|a| a.set(false));
-                    TRAY_ESC_TIMER.with(|t| t.borrow().stop());
-                    Tray::remove_menu_hook();
-                    TRAY_CHROME_DONE.with(|c| c.set(false));
-                    let fly = if let Some(fly) = existing {
-                        fly
-                    } else {
-                        window::TRAY_WINDOW_NEXT.store(true, std::sync::atomic::Ordering::Relaxed);
-                        window::TRAY_TRANSPARENT_NEXT
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
-                        match TrayMenuWindow::new() {
-                            Ok(w) => {
-                                window::TRAY_WINDOW_NEXT
-                                    .store(false, std::sync::atomic::Ordering::Relaxed);
-                                window::TRAY_TRANSPARENT_NEXT
-                                    .store(false, std::sync::atomic::Ordering::Relaxed);
-                                let fly = Rc::new(w);
-                                bind_tray_flyout(&fly, closer.clone(), tray_weak.clone());
-                                TRAY_MENU.with(|m| *m.borrow_mut() = Some(fly.clone()));
-                                fly
-                            }
-                            Err(e) => {
-                                window::TRAY_WINDOW_NEXT
-                                    .store(false, std::sync::atomic::Ordering::Relaxed);
-                                window::TRAY_TRANSPARENT_NEXT
-                                    .store(false, std::sync::atomic::Ordering::Relaxed);
-                                TRAY_MENU_OPENING.with(|opening| opening.set(false));
-                                tracing::error!("tray: flyout window failed: {e}");
-                                return;
-                            }
-                        }
-                    };
-                    TRAY_MENU_EPOCH.with(|e| e.set(e.get().wrapping_add(1)));
-                    show_tray_flyout(&fly, &tray_weak, &core, x, y);
-                }
-            }));
-            TRAY_HANDLE.with(|h| *h.borrow_mut() = Some(handle));
-        }));
-    });
+    // (#sync-dialog-v2-fix2) 每窗口托盘：登记 closer,最小化到托盘时按窗口
+    // id 建各自的图标(动作各管各的窗口,见 ensure_tray_for/handle_tray_action)。
+    TRAY_CLOSERS.with(|c| c.borrow_mut().insert(window_id, closer.clone()));
+    // (托盘句柄在 minimize_to_tray 触发 ensure_tray_for 时按窗口创建登记。)
     {
         let weak = window.as_weak();
         window.on_win_drag(move || {
@@ -5070,14 +5427,10 @@ fn open_window(
     // 图标改由主钩子首事件分支设置(见 #win-icon-hook-merge)。其余无钩子的
     // 窗口(关于/进程/系统信息/编辑器)仍走 arm_window_icon。
 
-    // (#tray-persist 2026-09-21) 托盘图标**全程常驻**:启动即随主窗口创建
-    // (TRAY_ENSURE 闭包内建 is_some 去重,多窗口只建一次)。之前是"最小化到
-    // 托盘才按需创建",现改为启动同步出现、退出(TrayWin::drop)同步消失。
-    TRAY_ENSURE.with(|slot| {
-        if let Some(ensure) = slot.borrow().as_ref() {
-            ensure();
-        }
-    });
+    // (#tray-persist 2026-09-21) 托盘图标**全程常驻**:随窗口创建/退出同步
+    // 出现/消失。(#sync-dialog-v2-fix2) 每窗口一个图标:开窗即建本窗口的
+    // 托盘(ensure 幂等,窗口关闭时随句柄摘除)。
+    ensure_tray_for(window_id);
 
     Ok(window_id)
 }
@@ -7466,12 +7819,23 @@ fn wire_session_callbacks(
             // (#tab-group-bar 2026-09-14) 标签底部色条取该会话的所属分组色，
             // 与左侧会话行同源（同走 display_group_of + group_colors）。
             let (tab_gc, tab_gc_hex) = tab_group_color(&store.borrow(), &session);
+            // (#sync-dialog-v2 2026-10-12) tab 悬浮卡补 用户/认证/组别 行。
+            // 组名与色条同源；内建本地终端（system:*）不给组名（色条保留 ——
+            // 色是身份，名给不出就不硬造）。
+            let tab_group_name = if id.starts_with("system:") {
+                String::new()
+            } else {
+                crate::config::display_group_of(&session)
+            };
             tabs_model.push(TabInfo {
                     channel_letter: "".into(),
                     channel_color: slint::Color::default(),
                     channel_paused: false,
                     channel_bar_hidden: false,
                     host: tab_host.into(),
+                    user: session.user.clone().into(),
+                    auth: session.auth.as_str().into(),
+                    group_name: tab_group_name.into(),
                     note: session.note.clone().into(),
                 id: tab_id.clone().into(),
                 title_len: tab_title_len(&tab_title),

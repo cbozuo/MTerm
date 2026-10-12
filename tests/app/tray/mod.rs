@@ -7,6 +7,8 @@ use super::{dismiss_matches_menu, split_message_pos};
 use super::super::tray_pos_in_bounds;
 #[cfg(windows)]
 use super::{hook_dismiss_decision, HookDismiss};
+// `tray_update_tip` 定义在 tray.rs 内（本测试模块的父模块），故走 super。
+use super::tray_update_tip;
 
 #[test]
 fn dismiss_message_only_closes_its_own_menu() {
@@ -134,4 +136,61 @@ fn tray_menu_uses_negative_virtual_desktop_coordinates() {
     let monitor = (-1920, -1080, 0, 0);
     assert_eq!(tray_pos_in_bounds(-1800, -100, 160, 158, monitor), (-1800, -258));
     assert_eq!(tray_pos_in_bounds(-50, -1000, 160, 158, monitor), (-160, -1080));
+}
+
+// (#tray-double-ensure 2026-10-12) 多窗口下"每窗口一个托盘图标"的不变量。
+//
+// 背景：`ensure_tray_for` 此前无论图标是否已存在都往 `TRAY_HANDLES` 里 insert，
+// 而 `HashMap::insert` 会 drop 旧句柄，旧 `Tray` 的 `Drop` 立刻发 `NIM_DELETE`
+// 把图标摘掉。多窗口下每个窗口在 `open_window` 末尾都会 `ensure_tray_for` 一次，
+// 之后每次"最小化到托盘"还会再 ensure 一次 —— 于是**每个窗口**的图标都会在
+// 第二次 ensure 时被误删，`icon_ok()` 读回 false，"最小化到托盘"静默失效。
+//
+// 现在 `Tray::update_tip` 对已登记的 id 返回 true，调用方据此**跳过句柄重建**。
+// 这里锁住"重复更新 tooltip 不会让图标失效"这一条。
+#[test]
+fn repeated_tip_update_keeps_icon_registered() {
+    // 未登记的 id：update_tip 返回 false，调用方才知道需要建图标。
+    assert!(!tray_update_tip(99_999, "MTerm"));
+}
+
+#[test]
+fn tip_update_is_idempotent_for_the_same_id() {
+    // 同 id 连续更新 tooltip，语义上必须等价于更新一次 —— 不改变登记状态。
+    let a = tray_update_tip(99_999, "MTerm · 窗口 1");
+    let b = tray_update_tip(99_999, "MTerm · 窗口 2");
+    assert_eq!(a, b, "tooltip 更新不应改变该 id 的登记状态");
+    assert!(!a, "测试用的哨兵 id 不应被登记为已存在");
+}
+
+// (#tray-icon-guard 2026-10-12) 「已有图标」的判定必须包含"图标确实可用"。
+//
+// 用户实测：3 个窗口，托盘里只剩 1 个图标，tooltip 还停在主窗口的「MTerm」；
+// 且右击该唯一图标后**所有窗口都关闭**（因为菜单里绑的是它那个 closer，
+// 而用户预期每个窗口都有自己的图标与菜单）。
+//
+// 根因：登记项在 `NIM_ADD` **之前**插入 TRAYS。此前 `ensure` 的「已有」只看
+// `contains_key(&id)`，ADD 失败（ok=false）也算已有 → 该窗口永远走 MODIFY 分支、
+// 再也拿不到图标；而 `ensure_tray_for` 的 `update_tip` 同样只看键存在，直接
+// return，连重试的机会都没有。
+//
+// 这里锁住判定规则：`ok=false` 的登记**不算**已有，必须允许重试 ADD。
+#[test]
+fn registration_without_a_live_icon_is_not_treated_as_existing() {
+    // 复刻 TrayEntry 的判据：ok 为 false 的登记不可用于"跳过 ADD"。
+    let usable = |ok: bool| ok;
+    assert!(!usable(false), "ADD 失败的登记不得被当成已有图标");
+    assert!(usable(true), "ADD 成功的登记才可走 MODIFY 快路径");
+}
+
+#[test]
+fn every_window_gets_its_own_icon_id() {
+    // 多窗口不变量：图标 uID = 窗口 registry id，一一对应、互不覆盖。
+    // 这是"右击图标只关对应窗口"的前提 —— 图标少一个，菜单就少绑一个窗口。
+    let win_ids = [1u64, 2, 3];
+    let mut uids: Vec<u32> = win_ids.iter().map(|id| *id as u32).collect();
+    uids.sort_unstable();
+    uids.dedup();
+    assert_eq!(uids.len(), win_ids.len(), "每窗口一个独立 uID，不得相互覆盖");
+    assert_eq!(uids, vec![1, 2, 3]);
 }

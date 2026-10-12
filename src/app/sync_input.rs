@@ -2,26 +2,227 @@
 //（app.rs 过臃肿）。装配入口 = wire_sync_input（app.rs 一行调用）。
 //
 // 交互模型（WindTerm 式）：
-//   打开(open-dialog) → 填充 sync-sessions 模型（全部打开 tab + 离线持久
-//   成员）；行级增删(add/remove-row/add-all/remove-all)只改**内存模型**；
-//   确定(apply) → 一次性按槽持久化（先 detach 全部涉及会话再写入，
-//   语义 = 换频道移动），并全量刷新 tab 行（根 + 每窗格嵌套模型都要写，
-//   见 #tab-32-fix2）与频道状态条。
+//   打开(open-dialog) → 填充 sync-sessions 模型；行级增删(add/remove-row/
+//   add-all/remove-all)只改**内存模型**；确定(apply) → 一次性按槽持久化
+//   （先 detach 全部涉及会话再写入，语义 = 换频道移动），并全量刷新 tab 行
+//   （根 + 每窗格嵌套模型都要写，见 #tab-32-fix2）与频道状态条。
+//
+// (#sync-dialog-v2 2026-10-12) v2 高保真落地（docs/design/sync-dialog-hifi-
+// 2026-10-12.html）：
+//   · 模型打开时**一次装全所有窗口**的行（registry.for_each_id 进程内遍历，
+//     单进程多窗口无需跨进程）；「当前窗口/全部窗口」作用域是纯 UI 过滤
+//     （Slint 按 win-id），切换不重灌、未应用的编辑不丢。
+//   · welcome tab（空 session_id）不入列：没有可同步输入的终端，且 apply
+//     按 session_id 去重时空 id 会互相冲突。
+//   · 行带 host/user/auth/group-name/group-color/paused/win-id：行显主机、
+//     字母药丸、窗口徽标、悬浮卡全字段都从模型直读。
+//   · 左栏候选数 left-count 由 recount 按作用域+排除当前频道一并算。
+//   · tab_id 加 "w{win}:" 前缀 —— tab id 是每窗口的 UUID，天然唯一，前缀
+//     只是可读性；同会话多开仍按 session_id 一起翻槽。
+//
+// (#sync-dialog-v2-fix3 2026-10-12) **左右两栏由 Rust 灌两个独立模型**
+// （left-rows / right-rows），每次增删/切页签/切作用域都整模型重灌；
+// 判定规则抽成纯函数 [`row_side`]。此前分栏在 Slint 侧做（0 高折叠行），
+// 行数据改了但 repetition 的 height 绑定不重算 —— 用户实测「点加入只更新了
+// 悬浮卡，列表没动」。换模型是 Slint 最可靠的刷新路径。
 use super::*;
 
 // (#sync-dialog-hifi 2026-10-11) 每频道成员数重算：对话框页签成员数徽标 /
 // 双栏计数 / 空态都读 slot-counts。open/add/remove/add-all/remove-all 之后
 // 成员数可能变化，必须重算写入。
-fn recount_sync(w: &AppWindow) {
+// (#sync-dialog-v2) left-count = 左栏候选数：排除当前频道成员 + 按作用域
+// （0=当前窗口只数本窗口行，1=全部窗口全数）。
+//
+// (#sync-dialog-v2-fix3 2026-10-12) **左/右两栏改为两个独立的模型**
+// （left-rows / right-rows），不再靠 Slint 侧 `height: 0px` 折叠行来过滤。
+// 原写法失效的原因：`for r in sessions: Rectangle { height: r.slot == ... }`
+// —— Rust `set_row_data` 改了行数据（悬浮卡读到的频道是对的、计数也重算对了），
+// 但 repetition 内**直接依赖 `r.slot` 的 height 绑定不跟着重算**，行既没从左栏
+// 消失、也没在右栏出现（用户实测：点「+」只有悬浮卡变了）。改为每次增删后由
+// Rust **重新灌两个新模型**：换模型是 Slint 最可靠的刷新路径，且顺带把行首
+// 色点按当前编辑态频道色纠正（此前 `color` 是开框时的已生效频道色，编辑后陈旧）。
+/// 一行归左栏（右栏）、另一行归右栏，还是两栏都不出现。
+///
+/// 纯函数判定，不碰 UI —— 见 [`sync_list_models`] 的分栏规则说明。
+/// scope：0 = 当前窗口（只收本窗口行），1 = 全部窗口。
+fn row_side(row_slot: i32, active_slot: i32, row_win: i32, self_win: i32, scope: i32) -> Side {
+    if row_slot == active_slot {
+        Side::Right
+    } else if scope == 1 || row_win == self_win {
+        Side::Left
+    } else {
+        Side::Hidden
+    }
+}
+
+/// 行的归属。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Side {
+    Left,
+    Right,
+    Hidden,
+}
+
+fn sync_list_models(w: &AppWindow) {
     let g = w.global::<crate::ui::SyncInputState>();
-    let model = g.get_sessions();
+    let rows: Vec<crate::ui::SyncSessionInfo> = g.get_sessions().iter().collect();
+    let slot = g.get_slot();
+    let scope = g.get_scope();
+    let win_id = g.get_win_id();
+    let colors = w.global::<crate::ui::Theme<'_>>().get_channel_colors();
     let mut counts = [0i32; 4];
-    for r in model.iter() {
+    let mut left: Vec<crate::ui::SyncSessionInfo> = Vec::new();
+    let mut right: Vec<crate::ui::SyncSessionInfo> = Vec::new();
+    for mut r in rows {
+        // 行首色点读 `color`：按**编辑态** slot 现算，避免开框后陈旧。
+        r.color = if (0..4).contains(&r.slot) {
+            colors.row_data(r.slot as usize).unwrap_or_default()
+        } else {
+            slint::Color::default()
+        };
         if (0..4).contains(&r.slot) {
             counts[r.slot as usize] += 1;
         }
+        match row_side(r.slot, slot, r.win_id, win_id, scope) {
+            Side::Right => right.push(r),
+            Side::Left => left.push(r),
+            Side::Hidden => {}
+        }
     }
     g.set_slot_counts(ModelRc::from(Rc::new(VecModel::from(counts.to_vec()))));
+    g.set_left_count(left.len() as i32);
+    g.set_left_rows(ModelRc::from(Rc::new(VecModel::from(left))));
+    g.set_right_rows(ModelRc::from(Rc::new(VecModel::from(right))));
+}
+
+// (#sync-dialog-v2-fix3 2026-10-12) 分栏判定的回归测试。
+#[cfg(test)]
+#[path = "../../tests/app/sync_dialog_split.rs"]
+mod sync_split_tests;
+
+/// 一行的会话附加信息（主机/用户/认证/组名/组色）。会话在配置里找不到
+/// （内建本地终端 system:*）时主机/用户/认证/组名留空，组名留空 = 卡片
+/// 不显示该行 —— 色是身份，名给不出就不硬造。
+fn session_extras(
+    store: &ConfigStore,
+    sid: &str,
+) -> (String, String, String, String, slint::Color, String) {
+    let Some(sess) = store.sessions().iter().find(|sess| sess.id.as_str() == sid) else {
+        return (
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            slint::Color::default(),
+            String::new(),
+        );
+    };
+    let host = if sess.id.starts_with("system:") {
+        String::new()
+    } else if sess.port > 0 {
+        format!("{}:{}", sess.host, sess.port)
+    } else {
+        sess.host.clone()
+    };
+    let builtin = sess.id.starts_with("system:");
+    let group_name = if builtin {
+        String::new()
+    } else {
+        crate::config::display_group_of(sess)
+    };
+    let group_color = crate::app::session_models::tab_group_color(store, sess).0;
+    let note = sess.note.clone();
+    (
+        host,
+        sess.user.clone(),
+        sess.auth.as_str().to_string(),
+        group_name,
+        group_color,
+        note,
+    )
+}
+
+/// (#sync-dialog-v2) 填充模型：全部窗口的打开 tab + 离线持久成员。
+fn fill_sync_rows(
+    w: &AppWindow,
+    store: &ConfigStore,
+    registry: &WindowRegistry<AppWindow>,
+    self_win_id: u64,
+) {
+    let theme = w.global::<crate::ui::Theme<'_>>();
+    let colors = theme.get_channel_colors();
+    let slot_color = |slot: usize| colors.row_data(slot).unwrap_or_default();
+    let members = store.channel_members();
+    let mut rows: Vec<crate::ui::SyncSessionInfo> = Vec::new();
+    // 打开的 tab：每个窗口各遍历一遍；welcome tab（空 session_id）跳过。
+    registry.for_each_id(|win_id, win| {
+        for t in win.get_tabs().iter() {
+            let sid = t.session_id.to_string();
+            if sid.is_empty() {
+                continue;
+            }
+            let slot = members
+                .iter()
+                .position(|m| m.iter().any(|m| m == &sid));
+            let (host, user, auth, group_name, group_color, note) =
+                session_extras(store, &sid);
+            let paused = store.channel_is_paused(&sid);
+            rows.push(crate::ui::SyncSessionInfo {
+                tab_id: format!("w{win_id}:{}", t.id).into(),
+                session_id: sid.into(),
+                title: t.title.clone(),
+                host: host.into(),
+                user: user.into(),
+                auth: auth.into(),
+                group_name: group_name.into(),
+                group_color,
+                note: note.into(),
+                slot: slot.map(|i| i as i32).unwrap_or(-1),
+                committed_slot: slot.map(|i| i as i32).unwrap_or(-1),
+                color: slot.map(slot_color).unwrap_or_default(),
+                online: true,
+                paused,
+                win_id: win_id as i32,
+            });
+        }
+    });
+    // 离线的持久成员：不出现在任何 tab 里，补行（置灰、标题带标注）。
+    // 归属记到打开弹框的窗口（持久成员是配置级的，没有窗口归属）。
+    for (slot, members) in members.iter().enumerate() {
+        for m in members.iter().filter(|m| !m.is_empty()) {
+            if rows.iter().any(|r| r.session_id.as_str() == m.as_str()) {
+                continue;
+            }
+            let title = store
+                .sessions()
+                .iter()
+                .find(|sess| sess.id.as_str() == m.as_str())
+                .map(|sess| sess.name.to_string())
+                .unwrap_or_else(|| m.to_string());
+            let (host, user, auth, group_name, group_color, note) =
+                session_extras(store, m);
+            rows.push(crate::ui::SyncSessionInfo {
+                tab_id: format!("offline:{slot}:{m}").into(),
+                session_id: m.clone().into(),
+                title: format!("{title}（离线）").into(),
+                host: host.into(),
+                user: user.into(),
+                auth: auth.into(),
+                group_name: group_name.into(),
+                group_color,
+                note: note.into(),
+                slot: slot as i32,
+                committed_slot: slot as i32,
+                color: slot_color(slot),
+                online: false,
+                paused: store.channel_is_paused(m),
+                win_id: self_win_id as i32,
+            });
+        }
+    }
+    let g = w.global::<crate::ui::SyncInputState>();
+    g.set_sessions(ModelRc::from(Rc::new(VecModel::from(rows))));
+    g.set_win_id(self_win_id as i32);
 }
 
 pub(super) fn wire_sync_input(
@@ -29,14 +230,17 @@ pub(super) fn wire_sync_input(
     store: Rc<RefCell<ConfigStore>>,
     tabs_model: Rc<slint::VecModel<crate::ui::TabInfo>>,
     panes_model: Rc<slint::VecModel<crate::ui::PaneInfo>>,
+    registry: Rc<WindowRegistry<AppWindow>>,
+    window_id: u64,
 ) {
     // ── (#sync-dialog 2026-10-08) 同步输入对话框（WindTerm 式）：打开时填充
-    // 全部会话行（打开 tab + 离线持久成员），行级增删只改内存模型，确定时
-    // 一次性按槽持久化（先 detach 全部涉及会话再写入，语义 = 换频道移动）。
+    // 全部会话行，行级增删只改内存模型，确定时一次性按槽持久化。
     {
         let weak = window.as_weak();
         let store = store.clone();
-                window.global::<crate::ui::SyncInputState>().on_open_dialog(move || {
+        let registry = registry.clone();
+        let self_win_id = window_id;
+        window.global::<crate::ui::SyncInputState>().on_open_dialog(move || {
             tracing::info!("[SYNC_DIAG] open-dialog callback fired");
             let Some(w) = weak.upgrade() else {
                 tracing::info!("[SYNC_DIAG] weak upgrade failed");
@@ -45,56 +249,43 @@ pub(super) fn wire_sync_input(
             // 语言快照：对话框打开期间文案跟随当前界面语言。
             w.global::<crate::ui::SyncInputState>()
                 .set_lang_en(w.get_lang_en());
-            let s = store.borrow();
-            let theme = w.global::<crate::ui::Theme<'_>>();
-            let colors = theme.get_channel_colors();
-            let slot_color = |slot: usize| colors.row_data(slot).unwrap_or_default();
-            let mut rows: Vec<crate::ui::SyncSessionInfo> = Vec::new();
-            // 打开的 tab：每 tab 一行（同一会话多开 = 多行，apply 按会话去重）。
-            for t in w.get_tabs().iter() {
-                let sid = t.session_id.to_string();
-                let slot = s
-                    .channel_members()
-                    .iter()
-                    .position(|m| m.iter().any(|m| m == &sid));
-                rows.push(crate::ui::SyncSessionInfo {
-                    tab_id: t.id.clone(),
-                    session_id: sid.into(),
-                    title: t.title.clone(),
-                    slot: slot.map(|i| i as i32).unwrap_or(-1),
-                    color: slot.map(slot_color).unwrap_or_default(),
-                    online: true,
-                });
-            }
-            // 离线的持久成员：不出现在任何 tab 里，补行（置灰、标题带标注）。
-            for (slot, members) in s.channel_members().iter().enumerate() {
-                for m in members.iter().filter(|m| !m.is_empty()) {
-                    if rows.iter().any(|r| r.session_id.as_str() == m.as_str()) {
-                        continue;
-                    }
-                    let title = s
-                        .sessions()
-                        .iter()
-                        .find(|sess| sess.id.as_str() == m.as_str())
-                        .map(|sess| sess.name.to_string())
-                        .unwrap_or_else(|| m.to_string());
-                    rows.push(crate::ui::SyncSessionInfo {
-                        tab_id: format!("offline:{slot}:{m}").into(),
-                        session_id: m.clone().into(),
-                        title: format!("{title}（离线）").into(),
-                        slot: slot as i32,
-                        color: slot_color(slot),
-                        online: false,
-                    });
-                }
-            }
-            let row_count = rows.len();
-            w.global::<crate::ui::SyncInputState>().set_sessions(ModelRc::from(Rc::new(VecModel::from(rows))));
+            fill_sync_rows(&w, &store.borrow(), &registry, self_win_id);
+            let row_count = w.global::<crate::ui::SyncInputState>()
+                .get_sessions()
+                .row_count();
             w.global::<crate::ui::SyncInputState>().set_slot(0);
-            recount_sync(&w);
+            w.global::<crate::ui::SyncInputState>().set_scope(0);
+            sync_list_models(&w);
             tracing::info!("[SYNC_DIAG] sessions filled ({} rows), set dialog-open=true", row_count);
             w.global::<crate::ui::SyncInputState>().set_dialog_open(true);
         });
+    }
+    {
+        let weak = window.as_weak();
+        {
+            let weak = weak.clone();
+            // (#sync-dialog-v2-fix3) 频道页签切换：置 slot 后**必须**重灌两个
+            // 列表模型 —— 此前 Slint 侧直接 `SyncInputState.slot = s`，只改了
+            // 一个 int，两个列表模型不会重灌，切页签后左右栏内容纹丝不动。
+            window.global::<crate::ui::SyncInputState>()
+                .on_pick_slot(move |s: i32| {
+                    let Some(w) = weak.upgrade() else { return };
+                    let g = w.global::<crate::ui::SyncInputState>();
+                    g.set_slot(s.clamp(0, 3));
+                    sync_list_models(&w);
+                });
+        }
+        {
+            let weak = weak.clone();
+            // 作用域切换同理：当前窗口 / 全部窗口 改的是左栏候选集。
+            window.global::<crate::ui::SyncInputState>()
+                .on_pick_scope(move |s: i32| {
+                    let Some(w) = weak.upgrade() else { return };
+                    let g = w.global::<crate::ui::SyncInputState>();
+                    g.set_scope(if s == 1 { 1 } else { 0 });
+                    sync_list_models(&w);
+                });
+        }
     }
     {
         let weak = window.as_weak();
@@ -110,7 +301,7 @@ pub(super) fn wire_sync_input(
             else {
                 return;
             };
-            // 成员按**会话稳定 id** 记账：同一会话多开的行一起翻槽。
+            // 成员按**会话稳定 id** 记账：同一会话多开（跨窗口也一样）的行一起翻槽。
             let mut target_sid = String::new();
             for i in 0..vec_model.row_count() {
                 if let Some(mut r) = vec_model.row_data(i) {
@@ -131,7 +322,7 @@ pub(super) fn wire_sync_input(
                     }
                 }
             }
-            recount_sync(&w);
+            sync_list_models(&w);
         });
         }
         {
@@ -165,28 +356,34 @@ pub(super) fn wire_sync_input(
                     }
                 }
             }
-            recount_sync(&w);
+            sync_list_models(&w);
         });
         }
         {
             let weak = weak.clone();
             window.global::<crate::ui::SyncInputState>().on_add_all(move || {
             let Some(w) = weak.upgrade() else { return };
-            let slot = w.global::<crate::ui::SyncInputState>().get_slot();
-            let model = w.global::<crate::ui::SyncInputState>().get_sessions();
+            let g = w.global::<crate::ui::SyncInputState>();
+            let slot = g.get_slot();
+            let scope = g.get_scope();
+            let win_id = g.get_win_id();
+            let model = g.get_sessions();
             let Some(vec_model) = model
                 .as_any()
                 .downcast_ref::<slint::VecModel<crate::ui::SyncSessionInfo>>()
             else {
                 return;
             };
+            // 添加全部只作用于**左栏可见候选**（排除当前频道成员 + 作用域）。
             for i in 0..vec_model.row_count() {
                 if let Some(mut r) = vec_model.row_data(i) {
-                    r.slot = slot;
-                    vec_model.set_row_data(i, r);
+                    if r.slot != slot && (scope == 1 || r.win_id == win_id) {
+                        r.slot = slot;
+                        vec_model.set_row_data(i, r);
+                    }
                 }
             }
-            recount_sync(&w);
+            sync_list_models(&w);
         });
         }
         {
@@ -209,14 +406,15 @@ pub(super) fn wire_sync_input(
                     }
                 }
             }
-            recount_sync(&w);
+            sync_list_models(&w);
         });
         }
     }
     {
         let weak = window.as_weak();
         let store = store.clone();
-                window.global::<crate::ui::SyncInputState>().on_apply(move || {
+        let registry = registry.clone();
+        window.global::<crate::ui::SyncInputState>().on_apply(move || {
             let Some(w) = weak.upgrade() else { return };
             let model = w.global::<crate::ui::SyncInputState>().get_sessions();
             let rows: Vec<crate::ui::SyncSessionInfo> = model.iter().collect();
@@ -255,6 +453,8 @@ pub(super) fn wire_sync_input(
                 let _ = s.save();
             }
             // 全量刷新 tab 行（根 + 每窗格嵌套模型都要写，见 #tab-32-fix2）。
+            // (#sync-dialog-v2) 跨窗口行加入后，其他窗口的 tab 行也要刷新：
+            // 遍历 registry 逐窗写根模型；窗格嵌套模型从各窗口的 get_panes 取。
             let theme = w.global::<crate::ui::Theme<'_>>();
             let colors = theme.get_channel_colors();
             let letters = ["A", "B", "C", "D"];
@@ -283,15 +483,17 @@ pub(super) fn wire_sync_input(
                     }
                 }
             };
-            apply_rows(&w.get_tabs());
-            for pi in 0..panes_model.row_count() {
-                if let Some(pane) = panes_model.row_data(pi) {
-                    apply_rows(&pane.tabs);
+            registry.for_each_id(|_, win| {
+                apply_rows(&win.get_tabs());
+                let panes = win.get_panes();
+                for pi in 0..panes.row_count() {
+                    if let Some(pane) = panes.row_data(pi) {
+                        apply_rows(&pane.tabs);
+                    }
                 }
-            }
+            });
             refresh_channel_bars(&w, &store.borrow(), &panes_model, &tabs_model);
             w.global::<crate::ui::SyncInputState>().set_dialog_open(false);
         });
     }
 }
-

@@ -1,0 +1,46 @@
+// (#seg-thumb 2026-10-04) 滑动分段容器：单一外框 + 独立滑层 thumb。段本身由
+// 调用方提供（段 = 透明透出滑层），thumb 按 cell 宽 × active-index 平滑滑动
+//（#seg-thumb-progress：动画驱动是**无量纲格位**而非 x 长度，面板几何在动画
+// 途中变化时每帧仍取当前 cell-w，滑块与格子恒对齐）。
+//
+// (#sync-dialog-v2 2026-10-12) 从 session_dialog.slint 提为公共组件：同步输入
+// 弹框的频道分段 / 作用域分段复用同一滑动语言。开放两个定制点：
+//   thumb-tint  —— 滑层底色（默认 Theme.chip；频道分段传频道色淡染 α0.16）；
+//   compact     —— 紧凑档（28px 高 / 圆角 8 / 内衬 2 / thumb 圆角 6），
+//                  供标题区小尺寸分段（作用域）使用，几何见 §3 红线。
+// 段格宽必须均匀（调用方段组件 min-width/preferred-width 归零 + stretch），
+// 否则滑块按等分 cell 计算的步长会与格子错位（#seg-uniform-cells）。
+import { Theme } from "theme.slint";
+
+export component SegGroup inherits Rectangle {
+    in property <int> active-index: 0;
+    in property <int> count: 2;
+    in property <brush> thumb-tint: Theme.chip;
+    in property <bool> compact: false;
+    // 内容自然宽（内层布局 preferred + 内衬）：绝对定位时按它设 width，
+    // 分段随语言文案自适应宽（作用域分段用）。
+    out property <length> content-w: lay.preferred-width;
+    height: compact ? 28px : 36px;
+    border-radius: compact ? 8px : 10px;
+    border-width: 1px;
+    border-color: Theme.border-control;
+    background: Theme.field;
+    property <length> pad: compact ? 2px : 3px;
+    property <length> gap: 2px;
+    property <length> cell-w: (self.width - 2 * pad - gap * (max(self.count - 1, 0))) / max(self.count, 1);
+    property <float> thumb-pos: root.active-index;
+    animate thumb-pos { duration: 180ms; easing: ease-in-out; }
+    thumb := Rectangle {
+        x: pad + root.thumb-pos * (cell-w + gap);
+        y: pad;
+        width: cell-w;
+        height: parent.height - 2 * pad;
+        border-radius: compact ? 6px : 7px;
+        background: root.thumb-tint;
+    }
+    lay := HorizontalLayout {
+        padding: pad;
+        spacing: gap;
+        @children
+    }
+}

@@ -140,6 +140,15 @@ impl<H> WindowRegistry<H> {
         }
     }
 
+    /// 遍历所有窗口（带 registry id，id 从 1 起、稳定不回收）。
+    /// (#sync-dialog-v2 2026-10-12) 同步输入弹框的跨窗口会话枚举用：
+    /// 单进程多窗口，「全部窗口」作用域 = 进程内遍历本表，无需跨进程。
+    pub fn for_each_id(&self, mut f: impl FnMut(u64, &H)) {
+        for (id, h) in self.windows.borrow().iter() {
+            f(*id, h);
+        }
+    }
+
     pub fn add_config_listener(&self, id: u64, f: Rc<dyn Fn()>) {
         self.listeners.borrow_mut().insert(id, f);
     }

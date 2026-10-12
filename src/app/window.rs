@@ -116,6 +116,14 @@ pub(super) fn apply_window_chrome(window: &slint::Window) {
         // DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2 (Windows 11+).
         const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
         const DWMWCP_ROUND: u32 = 2;
+        // (#win-edge-frame-r6 2026-10-12) DWMWA_BORDER_COLOR = 34. Win11 给
+        // 圆角窗口默认画一条 1px 系统边框(深灰),与自绘的 border-strong 主线
+        // 紧贴成"双线",总墨量≈1.7px(像素实测:外缘 59~61 + 主线 82)。把系统
+        // 边框关掉(DWMWA_COLOR_NONE),只留自绘的 1 设备像素主线,观感回到
+        // 干净的单线。仅 Win11 22000+ 生效,旧系统返回 E_INVALIDARG 被忽略;
+        // 不影响 DWMWCP_ROUND 圆角裁剪与阴影。
+        const DWMWA_BORDER_COLOR: u32 = 34;
+        const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
         unsafe {
             let pref: u32 = DWMWCP_ROUND;
             let corner_hr = DwmSetWindowAttribute(
@@ -124,7 +132,16 @@ pub(super) fn apply_window_chrome(window: &slint::Window) {
                 &pref as *const u32 as isize,
                 4,
             );
-            tracing::debug!("window chrome applied: hwnd={hwnd:#x} corner_hr={corner_hr:#x}");
+            let none: u32 = DWMWA_COLOR_NONE;
+            let border_hr = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_BORDER_COLOR,
+                &none as *const u32 as isize,
+                4,
+            );
+            tracing::debug!(
+                "window chrome applied: hwnd={hwnd:#x} corner_hr={corner_hr:#x} border_hr={border_hr:#x}"
+            );
         }
     });
 }

@@ -170,15 +170,20 @@ pub(super) fn wire_tab_callbacks(
             }
 
             // Remove from tabs + terminals models.
+            // (#sync-dialog-v2-fix 2026-10-12) 频道成员跟随**活 tab**：tab 关闭
+            // 即自动退出所在频道（用户定稿语义）。成员表已改为内存态（配置恒
+            // 空表，见 config load/save），退出软件自然清空，崩溃/强杀也不留
+            // 幽灵成员。同一会话多开（本窗口其他 tab / 其他窗口）时只要还有
+            // 活 tab 就保留成员关系。
             let mut idx = None;
+            let mut closed_session_id = String::new();
             for i in 0..tabs_model.row_count() {
-                if tabs_model
-                    .row_data(i)
-                    .map(|r| r.id.as_str() == id)
-                    .unwrap_or(false)
-                {
-                    idx = Some(i);
-                    break;
+                if let Some(r) = tabs_model.row_data(i) {
+                    if r.id.as_str() == id {
+                        closed_session_id = r.session_id.to_string();
+                        idx = Some(i);
+                        break;
+                    }
                 }
             }
             if let Some(i) = idx {
@@ -213,6 +218,25 @@ pub(super) fn wire_tab_callbacks(
                     &panes_model,
                     &splitters_model,
                 );
+            }
+            // 全应用（所有窗口）都没有该会话的活 tab 了 → 自动退出频道。
+            // 成员表是内存态，无需 save；该会话的 tab 行已随关闭移除，唯一
+            // 展示其频道状态的地方没了，也不用刷 UI。
+            if !closed_session_id.is_empty() {
+                let mut still_open = false;
+                core_cx.registry.for_each_id(|_, win| {
+                    for t in win.get_tabs().iter() {
+                        if t.session_id.as_str() == closed_session_id {
+                            still_open = true;
+                        }
+                    }
+                });
+                if !still_open {
+                    core_cx.store.borrow_mut().detach_all_channels(&closed_session_id);
+                    tracing::info!(
+                        "[SYNC] session {closed_session_id} auto-left channel (tab closed)"
+                    );
+                }
             }
         });
     }

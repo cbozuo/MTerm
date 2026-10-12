@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>MTerm 同步输入弹框 · 滑动分段 + 作用域 + 悬浮信息卡（高保真评审稿）</title>
+<style>
+:root{
+  --bg:#0b0c10; --bg2:#111319; --bg3:#171a22; --line:#242833; --line2:#2f3542;
+  --fg:#e6e8ee; --fg2:#9aa1b1; --fg3:#6b7280;
+  --ac:#5aa2ff; --ok:#3fb950; --wr:#d29922; --dg:#f85149;
+  --mono:"JetBrains Mono","Cascadia Code",Consolas,"Sarasa Mono SC",monospace;
+  --sans:"Inter","Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto;padding:0 32px 120px}
+
+/* ── 顶栏 ── */
+header{position:sticky;top:0;z-index:50;background:rgba(11,12,16,.82);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
+.hd{max-width:1180px;margin:0 auto;padding:14px 32px;display:flex;align-items:center;gap:20px}
+.hd h1{font-size:15px;margin:0;font-weight:650;letter-spacing:.2px}
+.hd .tag{font:600 10px/1 var(--mono);color:#0b0c10;background:var(--ac);padding:4px 7px;border-radius:4px}
+nav{margin-left:auto;display:flex;gap:2px}
+nav a{color:var(--fg2);text-decoration:none;font-size:12.5px;padding:6px 11px;border-radius:6px;transition:.15s}
+nav a:hover{background:var(--bg3);color:var(--fg)}
+
+/* ── 通用 ── */
+h2{font-size:24px;margin:64px 0 6px;font-weight:680;letter-spacing:-.3px;display:flex;align-items:baseline;gap:12px}
+h2 .no{font:700 12px/1 var(--mono);color:var(--ac);background:rgba(90,162,255,.1);padding:5px 8px;border-radius:6px}
+h3{font-size:15px;margin:30px 0 10px;font-weight:640}
+p.sub{color:var(--fg2);margin:0 0 24px;max-width:96ch;font-size:13.5px;line-height:1.95}
+code{font-family:var(--mono);font-size:11.5px;background:var(--bg3);padding:2px 5px;border-radius:4px;color:#c3ccdb;border:1px solid rgba(255,255,255,.045)}
+.hero{padding:52px 0 6px}
+.hero h2{font-size:34px;margin:0 0 10px;letter-spacing:-.8px;line-height:1.2;display:block}
+.hero .lead{font-size:14.5px;line-height:1.95;color:var(--fg2);max-width:84ch;margin:0 0 24px}
+.reqs{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0 0 8px}
+.req{background:var(--bg2);border:1px solid var(--line);border-radius:11px;padding:13px 16px;display:flex;gap:12px;align-items:flex-start}
+.req i{flex:0 0 auto;width:22px;height:22px;border-radius:7px;background:rgba(90,162,255,.12);color:var(--ac);font:700 11px/22px var(--mono);text-align:center;font-style:normal}
+.req b{font-size:13px;display:block;margin-bottom:2px}
+.req span{font-size:12px;color:var(--fg2);line-height:1.75}
+
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;font-weight:600;color:var(--fg3);font-size:11px;letter-spacing:.6px;padding:9px 12px;border-bottom:1px solid var(--line);text-transform:uppercase}
+td{padding:10px 12px;border-bottom:1px solid rgba(36,40,51,.6);vertical-align:top;color:var(--fg2);line-height:1.8}
+tr:last-child td{border-bottom:0}
+td b{color:var(--fg);font-weight:600}
+.tbl{background:var(--bg2);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.redlines{margin:0;padding:0;list-style:none;display:grid;gap:9px}
+.redlines li{position:relative;padding-left:16px;font-size:12.5px;line-height:1.85;color:var(--fg2)}
+.redlines li::before{content:"";position:absolute;left:3px;top:9px;width:5px;height:5px;border-radius:50%;background:var(--wr);box-shadow:0 0 0 3px rgba(210,153,34,.14)}
+.redlines b{color:var(--fg);font-weight:600}
+.redlines code{font-size:11px}
+.plan{display:grid;grid-template-columns:150px 1fr;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--bg2);margin-bottom:10px}
+.plan .lbl{padding:15px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:7px;justify-content:center}
+.plan .lbl b{font:700 12.5px/1 var(--mono)}
+.plan .lbl i{font-style:normal;color:var(--fg3);font-size:10.5px}
+.plan .body{padding:13px 18px;font-size:12.5px;color:var(--fg2);line-height:1.9}
+.plan .body b{color:var(--fg)}
+.plan .body code{font-size:11px}
+
+/* ── 评审工具条 ── */
+.toolbar{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin:0 0 18px;padding:12px 14px;background:var(--bg2);border:1px solid var(--line);border-radius:12px}
+.toolbar .grp{display:flex;gap:4px;background:var(--bg);padding:3px;border-radius:8px;border:1px solid var(--line)}
+.toolbar button{background:none;border:0;color:var(--fg2);font-size:12px;padding:6px 11px;border-radius:6px;cursor:pointer;font-family:inherit;transition:.15s}
+.toolbar button:hover{color:var(--fg);background:var(--bg3)}
+.toolbar button.on{background:var(--bg3);color:var(--fg);box-shadow:inset 0 0 0 1px var(--line2)}
+.toolbar .sep{width:1px;height:20px;background:var(--line)}
+.toolbar .lbl{font-size:10.5px;color:var(--fg3);letter-spacing:.5px;text-transform:uppercase;font-weight:600}
+#pin-toggle{appearance:none;-webkit-appearance:none;width:14px;height:14px;border-radius:4px;border:1px solid var(--line2);background:var(--bg);position:relative;cursor:pointer;transition:.14s;flex:0 0 auto;vertical-align:-2px}
+#pin-toggle:checked{background:var(--wr);border-color:var(--wr)}
+#pin-toggle:checked::after{content:"";position:absolute;left:4px;top:1px;width:4px;height:8px;border:solid #0b0c10;border-width:0 2px 2px 0;transform:rotate(45deg)}
+.toolbar label{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--fg2);cursor:pointer;user-select:none}
+
+/* ── 舞台（弹框悬浮在暗色幕布上） ── */
+.stage{position:relative;border:1px solid var(--line);border-radius:16px;overflow:hidden;
+  background:radial-gradient(1200px 500px at 30% 0%,#141824 0%,#0d0f15 55%,#0a0b0f 100%);
+  padding:56px 0;display:flex;justify-content:center}
+.hint{display:flex;justify-content:center;margin:-8px 0 18px;color:var(--fg3);font-size:12px}
+.hint svg{vertical-align:-3px;margin-right:6px}
+
+/* ═══ 弹框复刻（变量随 data-theme 切换） ═══ */
+.dialog{--dlg:#171A22; --field:#191B21; --bc:#31353E; --bs:#282C35; --elev:#272A2D;
+  --t1:#EDEEF0; --t2:#9BA1AC; --t3:#6E7480;
+  --ac:#00A2C7; --onac:#ffffff; --dg:#E93D82;
+  --hov:rgba(0,146,179,.08); --chip:rgba(0,162,199,.22); --asoft:rgba(0,162,199,.16); --palt:#22252c;
+  --cA:#82aaff; --cB:#5dd0bb; --cC:#d9a55e; --cD:#b98df2;
+  width:680px;flex:0 0 auto;height:480px;border-radius:12px;background:var(--dlg);
+  border:1px solid var(--bc);box-shadow:0 30px 80px rgba(0,0,0,.55),0 4px 18px rgba(0,0,0,.4);
+  position:relative;display:flex;flex-direction:column;font-family:var(--sans);overflow:hidden}
+.stage[data-theme="light"] .dialog{
+  --dlg:#fdfdfe; --field:#f4f5f8; --bc:#dcdce3; --bs:#e4e5ea; --elev:#ffffff;
+  --t1:#1C2024; --t2:#5f646d; --t3:#9a9ea8;
+  --hov:rgba(0,120,160,.06); --chip:rgba(0,162,199,.14); --asoft:rgba(0,162,199,.12); --palt:#eceef2;
+  --cA:#3568c0; --cB:#177f5b; --cC:#a86f14; --cD:#8248bd;
+  box-shadow:0 30px 80px rgba(10,14,24,.35),0 4px 18px rgba(10,14,24,.18)}
+.dialog button{font-family:inherit}
+
+/* 标题区 */
+.dhead{height:60px;flex:0 0 auto;display:flex;align-items:center;padding:0 12px 0 16px;gap:0}
+.badge{width:34px;height:34px;border-radius:9px;background:var(--asoft);display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+.badge svg{width:18px;height:18px;color:var(--ac)}
+.titles{margin-left:10px;min-width:0}
+.titles b{display:block;font-size:13px;font-weight:700;color:var(--t1);line-height:1.35}
+.titles span{display:block;font-size:11px;color:var(--t3);line-height:1.4;white-space:nowrap}
+.dhead .sp{flex:1}
+/* 作用域分段（紧凑档） */
+.seg{position:relative;background:var(--field);border:1px solid var(--bc);border-radius:10px;display:flex;padding:3px;gap:2px}
+.seg .thumb{position:absolute;top:3px;height:calc(100% - 6px);border-radius:7px;background:var(--chip);
+  transition:left .18s ease-in-out,width .18s ease-in-out;pointer-events:none}
+.scope{height:28px;border-radius:8px;padding:2px;margin-right:8px;flex:0 0 auto}
+.scope .thumb{border-radius:6px}
+.scope .cell{height:22px;font-size:11px;padding:0 10px;border-radius:6px;color:var(--t2);display:flex;align-items:center;gap:5px;cursor:pointer;background:none;border:0;white-space:nowrap}
+.scope .cell:hover{color:var(--t1)}
+.scope .cell.on{color:var(--ac);font-weight:600}
+.scope .cell svg{width:13px;height:13px;flex:0 0 auto}
+.close{width:28px;height:28px;border-radius:6px;background:none;border:0;color:var(--t2);cursor:pointer;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+.close:hover{background:var(--hov);color:var(--t1)}
+.close svg{width:14px;height:14px}
+
+.divider{height:1px;background:var(--bs);flex:0 0 auto}
+
+/* 频道分段行 */
+.chrow{flex:0 0 auto;padding:8px 16px}
+.chseg{height:36px}
+.chseg .cell{flex:1 1 0;min-width:0;height:100%;border:0;background:none;cursor:pointer;border-radius:7px;
+  display:flex;align-items:center;justify-content:center;gap:7px;position:relative;z-index:1;padding:0 4px}
+.chseg .dot{width:10px;height:10px;border-radius:3px;flex:0 0 auto}
+.chseg .nm{font-size:12px;color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chseg .cell:hover .nm{color:var(--t1)}
+.chseg .cnt{height:17px;min-width:17px;padding:0 5px;border-radius:9px;background:var(--palt);
+  font:600 10px/17px var(--mono);color:var(--t3);text-align:center;flex:0 0 auto}
+.chseg .cell.on .nm{font-weight:600}
+
+/* 双栏 */
+.cols{flex:1;display:flex;gap:12px;padding:10px 16px;min-height:0}
+.col{flex:1;display:flex;flex-direction:column;gap:8px;min-width:0}
+.colhead{display:flex;align-items:center;gap:6px;height:22px;flex:0 0 auto}
+.colhead .ct{font-size:11px;font-weight:600;color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cchip{height:16px;min-width:16px;padding:0 5px;border-radius:8px;background:var(--palt);font:600 10px/16px var(--mono);color:var(--t2);text-align:center;flex:0 0 auto}
+.cchip.chan{background:color-mix(in srgb,var(--cc) 24%,transparent);color:var(--cc)}
+.colhead .sp{flex:1}
+.mini{height:22px;border-radius:5px;border:0;background:none;cursor:pointer;display:flex;align-items:center;gap:3px;padding:0 8px 0 6px;font-size:11px;flex:0 0 auto}
+.mini svg{width:12px;height:12px}
+.mini.add{color:var(--ac)} .mini.add:hover{background:var(--asoft)}
+.mini.rem{color:var(--dg)} .mini.rem:hover{background:color-mix(in srgb,var(--dg) 16%,transparent)}
+.list{flex:1;min-height:0;border:1px solid var(--bc);border-radius:8px;background:var(--field);overflow-y:auto;padding:2px;position:relative}
+.list::-webkit-scrollbar{width:8px}
+.list::-webkit-scrollbar-thumb{background:var(--bc);border-radius:4px;border:2px solid var(--field)}
+.row{height:28px;border-radius:6px;display:flex;align-items:center;gap:8px;padding:0 6px 0 8px;cursor:pointer;position:relative}
+.row:hover{background:var(--hov)}
+.row .rdot{width:9px;height:9px;border-radius:3px;background:var(--bs);flex:0 0 auto}
+.row .rt{flex:1;min-width:0;font-size:12px;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row.offline .rt{color:var(--t3)}
+.row .cpill{width:14px;height:14px;border-radius:4px;box-sizing:border-box;
+  font:800 9px/14px var(--sans);color:#fff;text-align:center;flex:0 0 auto}
+.row .rt .off{color:var(--t3)}
+.row .wtag{height:16px;padding:0 6px;border-radius:4px;border:1px solid var(--bc);background:var(--palt);
+  font:500 10px/14px var(--sans);color:var(--t2);flex:0 0 auto;display:flex;align-items:center;gap:3px}
+.row .wtag svg{width:10px;height:10px}
+.row .act{width:20px;height:20px;border-radius:5px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;color:var(--t3)}
+.row:hover .act{background:var(--asoft);color:var(--ac)}
+.row.member:hover .act{background:color-mix(in srgb,var(--dg) 16%,transparent);color:var(--dg)}
+.row .act svg{width:14px;height:14px}
+.empty{position:absolute;inset:2px;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--t3);pointer-events:none;text-align:center;padding:0 16px}
+
+/* 底部 */
+.dfoot{height:56px;flex:0 0 auto;display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:0 16px}
+.btn{height:30px;border-radius:7px;font-size:12px;cursor:pointer;padding:0 20px;border:1px solid var(--bc);background:var(--field);color:var(--t1)}
+.btn:hover{background:var(--hov)}
+.btn.pri{background:var(--ac);border-color:var(--ac);color:var(--onac);font-weight:600}
+.btn.pri:hover{filter:brightness(1.12)}
+
+/* 悬浮信息卡（tab 同款） */
+.hcard{position:absolute;z-index:30;pointer-events:none;opacity:0;transition:opacity .1s;
+  background:var(--elev);border:1px solid var(--bs);border-radius:9px;
+  box-shadow:0 10px 24px rgba(0,0,0,.28),0 2px 8px rgba(0,0,0,.18);
+  padding:9px 12px;display:flex;flex-direction:column;gap:2px;max-width:320px}
+.hcard.show{opacity:1}
+.hcard .r{font-size:11px;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.9}
+.hcard .gdot{display:inline-block;width:8px;height:8px;border-radius:2.5px;margin:0 4px 0 1px;vertical-align:.5px}
+.stage[data-theme="light"] .hcard{box-shadow:0 10px 24px rgba(15,20,30,.16),0 2px 8px rgba(15,20,30,.10)}
+
+/* 红线标注 */
+.pin{position:absolute;z-index:40;width:17px;height:17px;border-radius:50%;background:var(--wr);color:#0b0c10;
+  font:700 10px/17px var(--mono);text-align:center;box-shadow:0 0 0 3px rgba(226,168,74,.25);display:none;cursor:default}
+.stage.show-pins .pin{display:block}
+.legend{display:grid;grid-template-columns:1fr 1fr;gap:8px 22px;margin-top:16px}
+.legend div{font-size:12.5px;color:var(--fg2);line-height:1.8;display:flex;gap:9px}
+.legend i{flex:0 0 auto;width:17px;height:17px;border-radius:50%;background:var(--wr);color:#0b0c10;font:700 10px/17px var(--mono);text-align:center;font-style:normal;margin-top:3px}
+.legend b{color:var(--fg)}
+@media (max-width:860px){.reqs,.legend{grid-template-columns:1fr}.stage{padding:36px 12px}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hd">
+    <span class="tag">评审稿</span>
+    <h1>同步输入弹框 · 滑动分段 + 作用域 + 悬浮信息卡</h1>
+    <nav><a href="#s1">改动总览</a><a href="#s2">高保真</a><a href="#s3">交互规格</a><a href="#s4">落地要点</a></nav>
+  </div>
+</header>
+
+<div class="wrap">
+
+<section class="hero">
+  <h2>同步输入弹框 v2</h2>
+  <p class="lead">在 <code>#sync-dialog-hifi</code>（2026-10-11）骨架上的第二轮迭代：频道切换改用<b style="color:var(--fg)">新建会话同款的滑动分段</b>（<code>SegGroup</code>）并<b style="color:var(--fg)">去掉下划线指示条</b>；面向多开补充<b style="color:var(--fg)">「当前窗口 / 全部窗口」作用域</b>；会话行补 <b style="color:var(--fg)">tab 同款悬浮信息卡</b>（未加入与已加入两侧都有）。同步输入本体先不动代码；评审中定稿的一项独立小修（跳板机 tip 卡颜色统一，见 §3）已随手落地。</p>
+  <div class="reqs">
+    <div class="req"><i>1</i><div><b>频道滑动分段</b><span>四频道页签改成与「认证方式」一致的滑层分段交互：单一外框 + chip 滑块 180ms 平滑滑动；胶囊底色 + 底部 2px 色条（下划线）一并取消，不再冗余。</span></div></div>
+    <div class="req"><i>2</i><div><b>作用域：当前窗口 / 全部窗口</b><span>软件支持多开，同步输入的目标会话集需要显式选作用域。放标题区右侧，切换只影响左栏候选列表；跨窗口会话行带「窗口 N」徽标。</span></div></div>
+    <div class="req"><i>3</i><div><b>行悬浮信息卡（tab 同款）</b><span>两栏会话行悬停出键值信息卡（名称/主机/用户/认证/组别/备注/频道/窗口），参数与 tab 悬浮卡一致：150ms 首锚、跟手、边缘翻转。左（未加入）右（已加入）都有。行上只显示主机（左对齐），名称等完整信息收进卡里。</span></div></div>
+    <div class="req"><i>4</i><div><b>其余保持</b><span>行尾 +/− 图标、添加全部 / 全部移出、空态文案、双栏结构与底部确定/取消全部沿用上一稿，本稿不再重复评审。</span></div></div>
+  </div>
+</section>
+
+<h2 id="s1"><span class="no">§1</span>改动总览</h2>
+<p class="sub">对照当前实机（<code>ui/sync_input_dialog.slint</code>，<code>#sync-dialog-hifi</code> 稿落地版）逐项说明改了什么、为什么。</p>
+<div class="tbl"><table>
+<tr><th style="width:110px">改动</th><th>现状（v1）</th><th>本稿（v2）</th><th style="width:34%">理由</th></tr>
+<tr><td><b>频道切换</b></td><td>四枚胶囊页签各自瞬切；选中 = 频道色淡染胶囊 <b>＋</b> 底部 2px 频道色条（下划线）。</td><td><code>SegGroup</code> 滑动分段（同新建会话「认证方式」）：单一外框 + 独立滑层，thumb 按 180ms ease-in-out 平滑滑动；<b>下划线删除</b>，选中身份全由滑块承担。</td><td>与全应用分段语言统一；滑动给出"成员集在四个频道之间连续迁移"的空间感。胶囊 + 色条是两重选中标识，冗余——正是要删的。</td></tr>
+<tr><td><b>作用域</b></td><td>无。左栏固定为当前窗口的会话，多开时其余窗口够不着。</td><td>标题区右侧「<b>当前窗口 / 全部窗口</b>」紧凑分段（display / copy 图标）；左栏候选集随作用域切换；跨窗口行附「窗口 N」徽标，悬浮卡同步多一行。配套：<b>窗口 OS 标题带同一编号</b>（<code>MTerm · 窗口 N</code>），任务栏/Alt-Tab 与徽标可互相对应。</td><td>多开是常态使用方式；作用域必须显式可见、可预期。放标题区不占内容高度，双栏尺寸不变。编号徽标只有能被用户对应到桌面窗口才有意义——见 §3 窗口编号红线。</td></tr>
+<tr><td><b>行悬浮信息卡</b></td><td>行只有色点 + 标题；"202 / 202-1 / 202-2"这类简称无法辨别目标主机；tab 卡与同步卡没有用户/认证行。</td><td>tab 同款键值信息卡：名称 / 主机 / <b>用户</b> / <b>认证</b> / 组别（色点，未分组不显）/ 备注 / 频道（含「已暂停同步」附注）/ 窗口（跨窗口行）。<b>未加入与已加入两栏都有</b>。</td><td>与左侧成员卡、新建会话跳板机卡的信息量对齐（那两处已有用户/认证）；悬停即可确认目标，不必"先加入再试错"。同名会话（202-1）靠 主机+用户 辨别。</td></tr>
+<tr><td><b>行内容与左栏构成</b></td><td>行显示会话名称；左栏 = 非当前频道成员（其他频道成员只有一颗同款色点，身份不明显）。</td><td>行主文本改<b>主机</b>（左对齐；名称不占行，悬浮卡里有）；左栏仍排除<b>当前频道</b>成员（右栏就是，不重复）；其他频道的成员行标 <b>tab 同款字母药丸</b>（频道色底 + 白字字母，无文字描述）。</td><td>会话常以简称命名，主机才是辨别关键；当前频道成员左栏再列一遍与右栏重复；字母药丸与 tab 页签同一语言，一眼认出"这个会话已在频道 C"。</td></tr>
+<tr><td><b>滑块配色</b></td><td>选中胶囊 = 频道色 α0.15。</td><td>thumb 染<b>频道色</b>（α0.16，亮色 0.13），选中文字与成员数徽标同染频道色。</td><td>频道色承载"这是频道 A/B/C/D"的身份语义，一眼可辨当前在配哪个频道；作用域分段保持标准 chip/accent，两段各管一件事不互抢。</td></tr>
+<tr><td><b>列表滚动</b></td><td>两栏是裸 <code>Flickable</code>：滚轮/拖拽能滚，但<b>没有滚动条指示</b>，会话多时没有"下面还有"的暗示。</td><td>两栏换 <code>ScrollView</code>（app 既有惯例：确认弹框 / 编辑器 / SFTP / 设置面板都是）：滚动条<b>自适应</b>——内容不溢出不出现，溢出才出现。</td><td>与全应用滚动语言一致；活动会话多时位置感明确，滚到头即"没有更多"。</td></tr>
+</table></div>
+
+<h2 id="s2"><span class="no">§2</span>高保真（可交互）</h2>
+<p class="sub">下面的弹框是<b style="color:var(--fg)">活的</b>：点频道段看滑块滑动；切「全部窗口」看左栏候选集变化与「窗口 N」徽标；把鼠标悬停在任一会话行上（左右栏都试试）看信息卡跟手与翻转；行可点击完成加入/移出，计数与空态联动。工具条可切语言 / 明暗，并可叠加红线标注。</p>
+
+<div class="toolbar">
+  <span class="lbl">语言</span>
+  <div class="grp" id="tb-lang"><button class="on" data-v="zh">中文</button><button data-v="en">EN</button></div>
+  <span class="sep"></span>
+  <span class="lbl">明暗</span>
+  <div class="grp" id="tb-theme"><button class="on" data-v="dark">暗色</button><button data-v="light">亮色</button></div>
+  <span class="sep"></span>
+  <label><input type="checkbox" id="pin-toggle">红线标注</label>
+</div>
+
+<div class="hint">
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+  可交互：点分段 / 悬停行 / 点行增删 —— 悬停 150ms 后信息卡出现并跟手
+</div>
+
+<div class="stage" id="stage" data-theme="dark">
+  <div class="dialog" id="dlg">
+
+    <!-- 标题区 -->
+    <div class="dhead">
+      <div class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></div>
+      <div class="titles"><b id="t-title">同步输入</b><span id="t-sub">配置各频道会话成员，实现跨会话同步输入</span></div>
+      <div class="sp"></div>
+      <div class="seg scope" id="scopeSeg">
+        <div class="thumb" id="scopeThumb"></div>
+        <button class="cell on" data-scope="current" id="sc-cur"></button>
+        <button class="cell" data-scope="all" id="sc-all"></button>
+      </div>
+      <button class="close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </div>
+    <div class="divider"></div>
+
+    <!-- 频道滑动分段（SegGroup 同构：36px / r10 / 内衬3 / 段间2 / 无下划线） -->
+    <div class="chrow">
+      <div class="seg chseg" id="chSeg"><div class="thumb" id="chThumb"></div></div>
+    </div>
+
+    <!-- 双栏 -->
+    <div class="cols">
+      <div class="col">
+        <div class="colhead">
+          <span class="ct" id="leftTitle">当前窗口中的会话</span>
+          <span class="cchip" id="leftCount">3</span>
+          <span class="sp"></span>
+          <button class="mini add" id="addAll"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>添加全部</span></button>
+        </div>
+        <div class="list" id="leftList"><div class="empty" id="leftEmpty"></div></div>
+      </div>
+      <div class="col">
+        <div class="colhead">
+          <span class="ct" id="rightTitle">频道 C 成员</span>
+          <span class="cchip chan" id="rightCount">3</span>
+          <span class="sp"></span>
+          <button class="mini rem" id="removeAll"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></svg><span>全部移出</span></button>
+        </div>
+        <div class="list" id="rightList"><div class="empty" id="rightEmpty"></div></div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+    <div class="dfoot">
+      <button class="btn" id="btnCancel">取消</button>
+      <button class="btn pri" id="btnOk">确定</button>
+    </div>
+
+    <!-- 悬浮信息卡（tab 同款，150ms 首锚 / 跟手 / 翻转） -->
+    <div class="hcard" id="hcard"></div>
+
+    <!-- 红线标注 -->
+    <div class="pin" style="left:132px;top:88px"  title="1">1</div>
+    <div class="pin" style="left:36px;top:121px"  title="2">2</div>
+    <div class="pin" style="left:436px;top:21px"  title="3">3</div>
+    <div class="pin" style="left:248px;top:230px" title="4">4</div>
+    <div class="pin" style="left:560px;top:196px" title="5">5</div>
+    <div class="pin" style="left:252px;top:344px" title="6">6</div>
+  </div>
+</div>
+
+<div class="legend">
+  <div><i>1</i><div><b>频道滑动分段</b> —— <code>SegGroup</code> 同构：36px 高 / 圆角 10 / 1px 边框 / field 底 / 内衬 3px / 段间 2px；thumb 180ms ease-in-out 滑动，选中染频道色。</div></div>
+  <div><i>2</i><div><b>下划线已删</b> —— v1 选中页签底部的 2px 频道色条整段移除，选中态只保留滑块一层，不再冗余。</div></div>
+  <div><i>3</i><div><b>作用域分段</b> —— 标题区右侧紧凑档（28px），「当前窗口 / 全部窗口」；只影响左栏候选集，右栏成员跨窗口常显。</div></div>
+  <div><i>4</i><div><b>跨窗口徽标</b> —— 作用域 = 全部窗口时，来自其他窗口的候选行附「窗口 N」小徽标；悬浮卡同步多一行「窗口」。</div></div>
+  <div><i>5</i><div><b>悬浮信息卡</b> —— tab 同款键值卡（名称/主机/用户/认证/组别/备注/频道/窗口），150ms 首锚、跟手、右/上缘翻转；左右两栏都有。</div></div>
+  <div><i>6</i><div><b>字母药丸</b> —— 左栏中其他频道的成员行带 tab 同款字母药丸（频道色底白字，同 tab 页签），不与当前频道成员（只在右栏）混淆。</div></div>
+</div>
+
+<h2 id="s3"><span class="no">§3</span>交互规格红线</h2>
+<p class="sub">几何与动效参数全部对齐现有实现，落地时不引入新语言。</p>
+<ul class="redlines">
+  <li><b>频道分段（SegGroup 同构）</b>：容器高 <code>36px</code> / 圆角 <code>10</code> / <code>1px border-control</code> / <code>field</code> 底 / 内衬 <code>3px</code> / 段间 <code>2px</code>；thumb 圆角 <code>7</code>，按<b>无量纲格位</b>插值（<code>#seg-thumb-progress</code> 同款），<code>180ms ease-in-out</code>。段 = 色点 10×10 + 频道名 12px + 成员数徽标 17px。</li>
+  <li><b>选中染色（已定稿：频道色）</b>：thumb = 频道色 <code>α0.16</code>（亮色 0.13）；频道名 600 字重染频道色；徽标底 <code>α0.24</code>（亮 0.18）字染频道色。未选中段悬停 = <code>bg-hover</code>，文字提升一档。<b>下划线指示条删除</b>（<code>sync_input_dialog.slint:80-89</code> 整段）。</li>
+  <li><b>作用域分段</b>：标题区右侧紧凑档，高 <code>28px</code> / 圆角 <code>8</code> / 内衬 <code>2px</code> / thumb 圆角 <code>6</code>；<code>display</code> / <code>copy</code> 13px 图标 + 文案；标准 chip + accent 语义（与频道段区分：作用域没有频道身份）。默认「当前窗口」。</li>
+  <li><b>作用域语义</b>：只过滤<b>左栏候选集</b>；右栏成员跨窗口<b>常显</b>（成员已在频道里，滤掉会造成"在频道里却看不见"的困惑），非本窗口成员带窗标。「全部窗口」下左栏头文案切换为「全部窗口中的会话」，跨窗口行附「窗口 N」徽标；添加全部只作用于可见候选。</li>
+  <li><b>窗口编号与可辨识性</b>：编号 = <code>WindowRegistry</code> 的 window_id（1 起、<b>稳定不回收</b>——关掉中间窗口后新窗口编号继续涨，数字跳跃本身即"更早打开的窗口"的线索）。徽标数字必须与 OS 层可对应：<b>窗口标题同步带同一编号</b>（<code>MTerm · 窗口 N</code>，当前所有窗口都是静态 <code>"MTerm"</code>，<code>app.slint:790</code>，任务栏/Alt-Tab 无法区分——这是徽标有意义的前提，属本次配套改动）。无边框自绘标题栏不受影响：标题只出现在任务栏悬停 / Alt-Tab / shell 层。任务栏表现：单进程多窗口默认合并为一个按钮，按钮标签跟随<b>活动窗口</b>标题，悬停缩略图与 Alt-Tab 每扇窗口各显自己的「MTerm · 窗口 N」——都能对上号。<b>边界</b>：直接双击 exe 再启动会跑成<b>独立第二进程</b>（plain relaunch 不转发，<code>single_instance.rs</code>），两个进程的 registry 各自从 1 编号、互相不可见——此场景下「全部窗口」实际为<b>本进程内全部窗口</b>，跨实例编号可能重号（罕见路径，v1 接受并如实降级；后续可扩展 IPC 互相发现）。后续可选：允许用户给窗口命名（如「生产」「测试」），徽标与悬浮卡优先显示名字、回退编号。</li>
+  <li><b>悬浮信息卡（tab 同款）</b>：<code>150ms</code> 首锚 + 悬停移动跟手（<code>pointer-event move</code>），移开即清；定位 = 光标 <code>+10px</code> 右、上距 <code>8px</code>，右缘越界（<code>x+10+w &gt; 宽-8</code>）左翻，上缘越界（<code>y-h-8 &lt; 8</code>）下移 <code>+20px</code>。视觉 = <code>bg-elevated</code> 底 / <code>9px</code> 圆角 / <code>1px border-subtle</code> / <code>24px</code> 投影 / 键值单行连排 <code>fs-xs</code> / 行距 <code>2px</code>（<code>#session-card-twin</code> 参数）。</li>
+  <li><b>卡片行序</b>：名称 → 主机（空不显）→ 用户（空不显）→ 认证（空不显，显示名同新建会话分段：密码/键盘交互/私钥）→ 组别（未分组不显；组色点 + 组名，色点与左侧组头/标签底条同源）→ 备注（空不显）→ 频道（<code>slot≥0</code> 才显，「已暂停同步」附注）→ 窗口（仅跨窗口行）。离线成员标题尾缀「（离线）」并整行置灰，与现行为一致。<b>未加入（左）与已加入（右）两栏都有卡</b>；左栏中已属其他频道的会话，卡里如实显示其所属频道（色点/药丸已如此暗示）。<b>配套</b>：用户/认证行同步补到 tab 悬浮卡（左侧成员卡与跳板机卡已有）；<code>TabInfo</code>/<code>SyncSessionInfo</code> 需补 <code>user</code>/<code>auth</code>（组名补 <code>group_name</code>——Rust 侧 <code>display_group_of</code> 等数据现成）。</li>
+  <li><b>跳板机 tip 卡颜色（已随评审落地）</b>：新建会话跳转链路的悬停卡，Host/User/Auth/Group/Note 五行 <code>text-secondary</code> → <code>text-primary</code>，与名称行同亮度（<code>#hover-card-uniform</code> 同款收敛）；「链路中第 N 跳」行（accent 小字）保持不动。</li>
+  <li><b>候选集构成</b>：只列<b>真会话</b>——welcome tab（新标签页）不入列。实机现状是 <code>open-dialog</code> 把<b>全部打开 tab</b> 塞进模型（<code>sync_input.rs:54</code>），welcome tab 的 <code>session_id</code> 为空，既没有可同步输入的终端，加频道后 <code>apply</code> 按 session_id 去重还会互相冲突；<b>落地时 Rust 侧按 <code>kind == "welcome" / 空 session_id</code> 过滤</b>（离线持久成员的补行逻辑不受影响）。</li>
+  <li><b>行内容</b>：行主文本 = <b>主机</b>，左对齐（<code>host</code> 为空回退标题，离线成员整行置灰）；<b>名称不占行</b>——悬浮卡里有完整身份。行尾动作不变：左 + / 右 −。</li>
+  <li><b>左栏构成与字母药丸</b>：左栏 = 作用域内<b>排除当前频道成员</b>的候选（当前频道成员只在右栏，不重复渲染；加入/移出时行在两栏间迁移）。左栏中<b>其他频道</b>的成员行带 <b>tab 同款字母药丸</b>（<code>tabs.slint channel-letter</code> 逐像素一致：<b>14×14px / 圆角 4px / 频道色实底 / 白字 9px 字重 800</b>，无「频道 X」文字描述），色点照旧。</li>
+  <li><b>列表滚动（自适应滚动条）</b>：两栏列表纵向滚动，滚动条<b>按需出现</b>——内容不溢出完全不占位，溢出才出现（mock 为 <code>overflow-y:auto</code>，8px 圆角 thumb、与 field 底融合）。落地 = 裸 <code>Flickable</code> 换 std <code>ScrollView</code>（<code>sync_input_dialog.slint:311/400</code> 两处），与确认弹框 / SFTP / 设置面板同款；折叠行（0px clip）方案与 ScrollView 兼容，不需改。</li>
+  <li><b>弹框内翻转</b>：卡渲染在 <code>SyncInputDialog</code> 内部顶层（弹框 <code>clip:true</code>，翻转公式天然保证不越界），不与 tab 卡共用根层槽，避免模态期间串层。</li>
+</ul>
+
+<h2 id="s4"><span class="no">§4</span>落地要点（Slint / Rust 映射）</h2>
+<div class="plan"><div class="lbl"><b>SEG-REUSE</b><i>组件复用</i></div><div class="body"><code>SegGroup</code>/<code>SegOption</code> 目前是 <code>session_dialog.slint</code> 文件私有 → 提升到公共文件（<code>widgets.slint</code> 或独立 <code>seg.slint</code>）供 <code>sync_input_dialog</code> import。<code>SegOption</code> 增加可选 <code>active-tint</code>/<code>active-fg</code> 属性：频道段传频道色，作用域段不传走默认 chip/accent。<b>频道的 chip 底改由滑层绘制，<code>SyncSlotTab</code> 自绘背景与下划线整段删除。</b></div></div>
+<div class="plan"><div class="lbl"><b>STATE-SCOPE</b><i>状态扩展</i></div><div class="body"><code>SyncInputState</code> 增加 <code>scope: int</code>（0=当前窗口，1=全部窗口）；<code>SyncSessionInfo</code> 增加 <code>win-id</code>/<code>win-label</code>、<code>group-name</code>/<code>group-color-hex</code>、<code>user</code>/<code>auth</code> 字段（空 = 当前窗口 / 未分组 / 不显行）。多开为<b>单进程多窗口</b>（<code>--new-window</code> 经 single-instance IPC 转发到主实例后仍进程内 <code>open_window</code>），跨窗口枚举 = <b>进程内遍历 <code>WindowRegistry</code></b>（<code>core.rs:90</code>，自增稳定 id），无需跨进程查询。<b>同时修候选集</b>：<code>open-dialog</code> 过滤 welcome tab（空 session_id）。<code>slot-counts</code> 语义不变（仍为每频道成员总数，Rust 重算）；scope 切换时 Rust 重填 <code>sessions</code> 模型。</div></div>
+<div class="plan"><div class="lbl"><b>WIN-TITLE</b><i>配套改动</i></div><div class="body">窗口标题从静态 <code>"MTerm"</code>（<code>app.slint:790</code>）改为 <code>MTerm · 窗口 N</code>（N = window_id + 1，各窗口在注册时写入一次即可，标题不变无需跟踪）。任务栏合并按钮标签跟随活动窗口、悬停缩略图/Alt-Tab 各显各的编号——「窗口 N」徽标由此获得锚点。无边框自绘标题栏不受影响。<b>边界</b>：plain relaunch 的独立第二进程与主进程互不可见（无发现机制），「全部窗口」降级为本进程窗口、编号可能跨进程重号，v1 接受；窗口命名（用户自定义名）为后续可选项：命名后徽标/悬浮卡/标题都优先显示名字。</div></div>
+<div class="plan"><div class="lbl"><b>APPLY</b><i>确定语义</i></div><div class="body">确定时按槽位持久化不变；跨窗口成员的写回由 Rust 按各窗口广播（新窗口打开时也按持久化结果恢复成员关系）。若评审认为需要，可后续在底部加一行作用域提示文案，本稿暂不加，保持底部干净。</div></div>
+<div class="plan"><div class="lbl"><b>CARD</b><i>悬浮卡</i></div><div class="body"><code>SyncRow</code> 增加 <code>card-out</code>/<code>card-clear</code> 回调（<code>SingleTab</code> 同款：150ms <code>Timer</code> 首锚 + <code>pointer-event move</code> 跟手 + <code>changed has-hover</code> 清除）；卡在 <code>SyncInputDialog</code> 内部顶层渲染，行序 = 名称/主机/用户/认证/组别/备注/频道（暂停附注）/窗口，数据直接读行内 <code>SyncSessionInfo</code>（认证显示名与新建会话分段同一张表），无需新模型。tab 悬浮卡同步补 用户/认证/组别 三行（<code>TabInfo</code> 补 <code>user</code>/<code>auth</code>/<code>group-name</code>）。</div></div>
+<div class="plan"><div class="lbl"><b>JUMPTIP</b><i>已落地</i></div><div class="body">跳板机 tip 卡（<code>session_dialog.slint</code>）Host/User/Auth/Group/Note 五行 <code>text-secondary</code> → <code>text-primary</code>，与名称行同亮；「链路中第 N 跳」accent 小字不动。<code>cargo check</code> 已通过，随下次构建生效。</div></div>
+<div class="plan"><div class="lbl"><b>SCROLL</b><i>列表滚动</i></div><div class="body"><code>sync_input_dialog.slint:311/400</code> 两处裸 <code>Flickable</code> → std <code>ScrollView</code>，滚动条按需出现；折叠行（0px clip）方案兼容，不需改。</div></div>
+
+<h3>落地清单（评审定稿汇总 · 2026-10-12 全部完成）</h3>
+<div class="tbl"><table>
+<tr><th style="width:40px">#</th><th>项</th><th style="width:64px">状态</th></tr>
+<tr><td>1</td><td>频道切换换 <code>SegGroup</code> 滑动分段（频道色 thumb，无下划线）；<code>SegGroup</code> 提为公共组件（<code>ui/seg.slint</code>，thumb-tint + compact 档）</td><td><b>已落地</b></td></tr>
+<tr><td>2</td><td>作用域分段（当前窗口/全部窗口）+ <code>SyncInputState.scope</code> + 跨窗口枚举（<code>WindowRegistry::for_each_id</code> 遍历；模型打开一次装全，作用域纯 UI 过滤）</td><td><b>已落地</b></td></tr>
+<tr><td>3</td><td>行显主机（左对齐，名称进卡）+ 左栏排除当前频道成员 + 字母药丸（tab 同款 14×14/4px）</td><td><b>已落地</b></td></tr>
+<tr><td>4</td><td>行悬浮信息卡（150ms 首锚/跟手/翻转；名称/主机/用户/认证/组别/备注/频道/窗口）</td><td><b>已落地</b></td></tr>
+<tr><td>5</td><td><code>SyncSessionInfo</code>/<code>TabInfo</code> 字段扩展（win-id、group-name/group-color、user、auth、note、paused）</td><td><b>已落地</b></td></tr>
+<tr><td>6</td><td>welcome tab 过滤（<code>open-dialog</code> 按空 session_id 剔除）</td><td><b>已落地</b></td></tr>
+<tr><td>7</td><td>两栏 <code>Flickable</code> → <code>ScrollView</code>（自适应滚动条）</td><td><b>已落地</b></td></tr>
+<tr><td>8</td><td>窗口标题带编号「MTerm · 窗口 N」（<code>win-title</code> 属性，注册后写入）</td><td><b>已落地</b></td></tr>
+<tr><td>9</td><td>跳板机 tip 卡颜色统一（text-primary，链路行不动）</td><td><b>已落地</b></td></tr>
+</table></div>
+
+</div>
+
+<script>
+/* ── 图标（与 assets/icons 同源） ── */
+const SVG = {
+  display:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M12 17v4M8 21h8"/></svg>',
+  copy:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+  add:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>',
+  remove:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></svg>'
+};
+const L = {
+  zh:{title:'同步输入',sub:'配置各频道会话成员，实现跨会话同步输入',ch:'频道',cur:'当前窗口',all:'全部窗口',
+      leftCur:'当前窗口中的会话',leftAll:'全部窗口中的会话',addAll:'添加全部',removeAll:'全部移出',members:l=>`频道 ${l} 成员`,
+      cancel:'取消',ok:'确定',kName:'名称：',kHost:'主机：',kUser:'用户：',kAuth:'认证：',kGroup:'组别：',kNote:'备注：',kChan:'频道：',kWin:'窗口：',
+      auth:{password:'密码',keyboard:'键盘交互',key:'私钥'},
+      paused:'（已暂停同步）',offline:'（离线）',winN:n=>`窗口 ${n}`,winTag:n=>`窗口 ${n}`,
+      leftEmpty:'所有会话均已加入当前频道',rightEmpty:'暂无成员，点击左侧会话加入'},
+  en:{title:'Sync input',sub:'Configure channel membership for synced input',ch:'Channel ',cur:'Current window',all:'All windows',
+      leftCur:'Sessions in this window',leftAll:'Sessions in all windows',addAll:'Add all',removeAll:'Remove all',members:l=>`Channel ${l} members`,
+      cancel:'Cancel',ok:'OK',kName:'Name:',kHost:'Host:',kUser:'User:',kAuth:'Auth:',kGroup:'Group:',kNote:'Note:',kChan:'Channel:',kWin:'Window:',
+      auth:{password:'Password',keyboard:'Keyboard-interactive',key:'Private key'},
+      paused:' (paused)',offline:' (offline)',winN:n=>`Window ${n}`,winTag:n=>`W${n}`,
+      leftEmpty:'All sessions are already in this channel',rightEmpty:'No members — add sessions from the left'}
+};
+const LETTERS = ['A','B','C','D'];
+
+/* 演示数据：win=1 为当前窗口；slot -1=未加入 0..3=频道 A..D；group=null=未分组。
+   welcome tab（新标签页）不是会话 → 不入列（见 §3 候选集构成红线）。
+   会话量给足，让两栏真实溢出以演示自适应滚动条（§3 列表滚动红线）。 */
+let sessions = [
+  {id:'202',   title:'202',        host:'192.168.1.202:22', user:'root',   auth:'password', note:'',     slot:-1, win:1, online:true, group:'生产环境', gcolor:'#34d399'},
+  {id:'2022',  title:'202-2',      host:'192.168.1.202:22', user:'root',   auth:'password', note:'测试备用线路', slot:-1, win:1, online:true, group:'生产环境', gcolor:'#34d399'},
+  {id:'web1',  title:'web-01',     host:'192.168.1.41:22',  user:'deploy', auth:'key',      note:'',     slot:-1, win:1, online:true, group:'生产环境', gcolor:'#34d399'},
+  {id:'web2',  title:'web-02',     host:'192.168.1.42:22',  user:'deploy', auth:'key',      note:'',     slot:-1, win:1, online:true, group:'生产环境', gcolor:'#34d399'},
+  {id:'cache1',title:'cache-01',   host:'192.168.1.51:22',  user:'cacheop',auth:'password', note:'Redis 主', slot:-1, win:1, online:true, group:'生产环境', gcolor:'#34d399'},
+  {id:'queue1',title:'queue-01',   host:'192.168.1.52:22',  user:'root',   auth:'password', note:'',     slot:-1, win:1, online:true, group:'生产环境', gcolor:'#34d399'},
+  {id:'met1',  title:'metrics',    host:'192.168.1.61:22',  user:'ops',    auth:'key',      note:'Prometheus', slot:-1, win:1, online:true, group:'运维', gcolor:'#38bdf8'},
+  {id:'opsb',  title:'ops-bastion',host:'192.168.1.9:2222', user:'ops',    auth:'keyboard', note:'运维入口', slot:-1, win:1, online:true, group:'运维', gcolor:'#38bdf8'},
+  {id:'logs1', title:'logs-archive',host:'192.168.50.9:22', user:'ops',    auth:'key',      note:'',     slot:-1, win:1, online:true, group:'运维', gcolor:'#38bdf8'},
+  {id:'dep1',  title:'deploy',     host:'192.168.1.70:22',  user:'ops',    auth:'key',      note:'发布机', slot:-1, win:1, online:true, group:'运维', gcolor:'#38bdf8'},
+  {id:'bkdb',  title:'backup-db',  host:'192.168.1.71:22',  user:'backup', auth:'key',      note:'',     slot:-1, win:1, online:true, group:'生产环境', gcolor:'#34d399'},
+  {id:'2021',  title:'202-1',      host:'192.168.1.202:22', user:'root',   auth:'password', note:'',     slot:2,  win:1, online:true, group:'生产环境', gcolor:'#34d399'},
+  {id:'run',   title:'build-runner',host:'10.8.0.31:22',   user:'ubuntu', auth:'keyboard', note:'CI 编译跳板', slot:2,  win:1, online:true, paused:true},
+  {id:'apigw', title:'api-gw',     host:'192.168.1.43:22',  user:'deploy', auth:'key',      note:'',     slot:2,  win:1, online:true, group:'生产环境', gcolor:'#34d399'},
+  {id:'cache2',title:'cache-02',   host:'192.168.1.53:22',  user:'cacheop',auth:'password', note:'Redis 从', slot:2, win:1, online:true, group:'生产环境', gcolor:'#34d399'},
+  {id:'ci2',   title:'ci-runner-2',host:'10.8.0.32:22',    user:'ubuntu', auth:'keyboard', note:'',     slot:2,  win:1, online:true, group:'测试环境', gcolor:'#fb7185'},
+  {id:'mon1',  title:'mon-01',     host:'192.168.1.62:22',  user:'ops',    auth:'key',      note:'',     slot:2,  win:1, online:true, group:'运维', gcolor:'#38bdf8'},
+  {id:'qu2',   title:'queue-02',   host:'192.168.1.54:22',  user:'root',   auth:'password', note:'',     slot:2,  win:1, online:true, group:'生产环境', gcolor:'#34d399'},
+  {id:'edge1', title:'edge-01',    host:'192.168.1.44:22',  user:'deploy', auth:'key',      note:'边缘节点', slot:2, win:1, online:true, group:'生产环境', gcolor:'#34d399'},
+  {id:'k8s3',  title:'k8s-node-3', host:'10.8.0.33:22',    user:'ubuntu', auth:'keyboard', note:'',     slot:2,  win:2, online:true, group:'测试环境', gcolor:'#fb7185'},
+  {id:'bj',    title:'backup-jump', host:'172.16.4.9:22', user:'ubuntu', auth:'keyboard', note:'二级跳板',   slot:-1, win:2, online:true, group:'测试环境', gcolor:'#fb7185'},
+  {id:'old',   title:'legacy-ssh',  host:'192.168.1.9:22', user:'admin',  auth:'password', note:'已停用',   slot:-1, win:2, online:false},
+  {id:'stg1',  title:'staging-db',  host:'172.16.4.20:22', user:'ubuntu', auth:'keyboard', note:'',      slot:-1, win:2, online:true, group:'测试环境', gcolor:'#fb7185'},
+  {id:'lg',    title:'logs-tail',   host:'192.168.50.7:22', user:'ubuntu', auth:'keyboard', note:'',       slot:0,  win:3, online:true, group:'测试环境', gcolor:'#fb7185'},
+  {id:'dbw',   title:'db-sync',     host:'10.0.0.44:22',  user:'dba',    auth:'key',      note:'',        slot:2,  win:3, online:true}
+];
+const state = { slot:2, scope:'current', lang:'zh' };
+const $ = id => document.getElementById(id);
+const dlg = $('dlg'), hcard = $('hcard');
+
+function cssVar(n){ return getComputedStyle(dlg).getPropertyValue(n).trim(); }
+function chanColor(i){ return cssVar(['--cA','--cB','--cC','--cD'][i]); }
+
+/* ── 频道分段 ── */
+function renderChSeg(){
+  const seg = $('chSeg');
+  seg.querySelectorAll('.cell').forEach(e=>e.remove());
+  LETTERS.forEach((lt,i)=>{
+    const n = sessions.filter(s=>s.slot===i).length;
+    const b = document.createElement('button');
+    b.className = 'cell' + (i===state.slot?' on':'');
+    b.innerHTML = `<span class="dot" style="background:${chanColor(i)}"></span>` +
+      `<span class="nm">${L[state.lang].ch}${lt}</span><span class="cnt">${n}</span>`;
+    if(i===state.slot){
+      const c = chanColor(i);
+      b.querySelector('.nm').style.color = c;
+      const cnt = b.querySelector('.cnt');
+      cnt.style.background = hexA(c, themeDark()? .24 : .18);
+      cnt.style.color = c;
+    }
+    b.onclick = ()=>{ state.slot=i; render(); };
+    seg.appendChild(b);
+  });
+  layoutThumb($('chSeg'), $('chThumb'), state.slot);
+  const c = chanColor(state.slot);
+  $('chThumb').style.background = hexA(c, themeDark()? .16 : .13);
+}
+function layoutThumb(seg, thumb, idx){
+  const cell = seg.querySelector('.cell'); if(!cell) return;
+  const gap = parseFloat(getComputedStyle(seg).gap)||2;
+  const w = cell.getBoundingClientRect().width;
+  thumb.style.width = w+'px';
+  thumb.style.left = (3 + idx*(w+gap))+'px';
+}
+function hexA(hex,a){
+  const m = hex.replace('#','');
+  const v = m.length===3 ? m.split('').map(x=>x+x).join('') : m;
+  const n = parseInt(v,16);
+  return `rgba(${n>>16&255},${n>>8&255},${n&255},${a})`;
+}
+function themeDark(){ return stage.dataset.theme==='dark'; }
+
+/* ── 作用域分段 ── */
+function renderScope(){
+  const t = L[state.lang];
+  $('sc-cur').innerHTML = SVG.display + `<span>${t.cur}</span>`;
+  $('sc-all').innerHTML = SVG.copy + `<span>${t.all}</span>`;
+  $('sc-cur').classList.toggle('on', state.scope==='current');
+  $('sc-all').classList.toggle('on', state.scope==='all');
+  $('sc-cur').onclick = ()=>{ if(state.scope!=='current'){ state.scope='current'; render(); } };
+  $('sc-all').onclick  = ()=>{ if(state.scope!=='all'){ state.scope='all'; render(); } };
+  layoutThumb($('scopeSeg'), $('scopeThumb'), state.scope==='current'?0:1);
+}
+
+/* ── 双栏：左栏 = 候选（排除当前频道成员）；行主文本 = 主机（名称只在悬浮卡）── */
+function visibleLeft(s){
+  return s.slot!==state.slot && (state.scope==='all' || s.win===1);
+}
+function rowEl(s, member){
+  const t = L[state.lang];
+  const r = document.createElement('div');
+  r.className = 'row' + (member?' member':'') + (s.online?'':' offline');
+  r.dataset.id = s.id;
+  const dotC = s.slot>=0 ? chanColor(s.slot) : '';
+  const main = s.host || (s.online ? s.title : `${s.title}<span class="off">${t.offline}</span>`);
+  // 左栏中其他频道的成员：tab 同款字母药丸（频道色底 + 白字），不带文字描述
+  let pill = '';
+  if(!member && s.slot>=0){
+    pill = `<span class="cpill" style="background:${chanColor(s.slot)}">${LETTERS[s.slot]}</span>`;
+  }
+  r.innerHTML =
+    `<span class="rdot" ${dotC?`style="background:${dotC}"`:''}></span>` +
+    `<span class="rt">${main}</span>` +
+    pill +
+    (s.win!==1 ? `<span class="wtag">${SVG.display}${t.winTag(s.win)}</span>` : '') +
+    `<span class="act">${member?SVG.remove:SVG.add}</span>`;
+  r.onclick = ()=>{
+    const s2 = sessions.find(x=>x.id===s.id);
+    s2.slot = member ? -1 : state.slot;
+    render();
+  };
+  bindCard(r, s);
+  return r;
+}
+function renderCols(){
+  const t = L[state.lang];
+  $('leftTitle').textContent = state.scope==='current' ? t.leftCur : t.leftAll;
+  $('rightTitle').textContent = t.members(LETTERS[state.slot]);
+  const lv = sessions.filter(visibleLeft);
+  const rv = sessions.filter(s=>s.slot===state.slot);
+  const lc = $('leftList'), rc = $('rightList');
+  lc.querySelectorAll('.row').forEach(e=>e.remove());
+  rc.querySelectorAll('.row').forEach(e=>e.remove());
+  lv.forEach(s=>lc.appendChild(rowEl(s,false)));
+  rv.forEach(s=>rc.appendChild(rowEl(s,true)));
+  $('leftCount').textContent = lv.length;
+  $('rightCount').textContent = rv.length;
+  const cc = chanColor(state.slot);
+  $('rightCount').style.background = hexA(cc, themeDark()? .24 : .18);
+  $('rightCount').style.color = cc;
+  $('leftEmpty').textContent = t.leftEmpty;
+  $('rightEmpty').textContent = t.rightEmpty;
+  $('leftEmpty').style.display = lv.length? 'none':'flex';
+  $('rightEmpty').style.display = rv.length? 'none':'flex';
+  $('addAll').querySelector('span').textContent = t.addAll;
+  $('removeAll').querySelector('span').textContent = t.removeAll;
+}
+
+/* ── 悬浮信息卡（tab 同款：150ms 首锚 / 跟手 / 翻转） ── */
+let cardTimer = null;
+function cardRows(s){
+  const t = L[state.lang], rows = [];
+  const title = s.online ? s.title : s.title + t.offline;
+  rows.push(t.kName + title);
+  if(s.host) rows.push(t.kHost + s.host);
+  if(s.user) rows.push(t.kUser + s.user);
+  if(s.auth) rows.push(t.kAuth + (t.auth[s.auth]||s.auth));
+  if(s.group) rows.push(t.kGroup + `<span class="gdot" style="background:${s.gcolor||'var(--bs)'}"></span>${s.group}`);
+  if(s.note) rows.push(t.kNote + s.note);
+  if(s.slot>=0) rows.push(t.kChan + t.ch + LETTERS[s.slot] + (s.paused? t.paused : ''));
+  if(s.win!==1) rows.push(t.kWin + t.winN(s.win));
+  return rows;
+}
+function bindCard(el, s){
+  el.addEventListener('mouseenter', e=>{
+    clearTimeout(cardTimer);
+    cardTimer = setTimeout(()=>showCard(e.clientX, e.clientY, s), 150);
+  });
+  el.addEventListener('mousemove', e=>{
+    if(hcard.classList.contains('show')) moveCard(e.clientX, e.clientY);
+  });
+  el.addEventListener('mouseleave', ()=>{
+    clearTimeout(cardTimer);
+    hcard.classList.remove('show');
+  });
+}
+function showCard(cx, cy, s){
+  hcard.innerHTML = cardRows(s).map(r=>`<div class="r">${r}</div>`).join('');
+  hcard.classList.add('show');
+  moveCard(cx, cy);
+}
+function moveCard(cx, cy){
+  const db = dlg.getBoundingClientRect();
+  const mx = cx-db.left, my = cy-db.top;
+  const w = hcard.offsetWidth, h = hcard.offsetHeight;
+  let x = mx+10, y = my-h-8;
+  if(x+10+w > db.width-8) x = Math.max(8, mx-10-w);
+  if(y < 8) y = my+20;
+  hcard.style.left = x+'px'; hcard.style.top = y+'px';
+}
+
+/* ── 全局渲染 / 文案 ── */
+function renderText(){
+  const t = L[state.lang];
+  $('t-title').textContent = t.title;
+  $('t-sub').textContent = t.sub;
+  $('btnCancel').textContent = t.cancel;
+  $('btnOk').textContent = t.ok;
+}
+function render(){
+  renderText(); renderScope(); renderChSeg(); renderCols();
+}
+function renderAll(){
+  render();
+}
+
+/* ── 工具条 ── */
+const stage = $('stage');
+function bindGrp(id, fn){
+  const g = $(id);
+  g.querySelectorAll('button').forEach(b=>b.onclick = ()=>{
+    g.querySelectorAll('button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); fn(b.dataset.v);
+  });
+}
+bindGrp('tb-lang', v=>{ state.lang=v; render(); });
+bindGrp('tb-theme', v=>{ stage.dataset.theme=v; render(); });
+$('pin-toggle').onchange = e=> stage.classList.toggle('show-pins', e.target.checked);
+
+/* ── 栏头动作 / 底部 ── */
+$('addAll').onclick = ()=>{ sessions.forEach(s=>{ if(visibleLeft(s)) s.slot=state.slot; }); render(); };
+$('removeAll').onclick = ()=>{ sessions.forEach(s=>{ if(s.slot===state.slot) s.slot=-1; }); render(); };
+$('btnCancel').onclick = ()=>{};
+$('btnOk').onclick = ()=>{};
+
+window.addEventListener('resize', renderAll);
+render();
+/* 首帧布局后校准一次 thumb（字体加载会改变格子宽度） */
+requestAnimationFrame(()=>render());
+document.fonts && document.fonts.ready.then(()=>render());
+</script>
+</body>
+</html>

@@ -362,6 +362,10 @@ impl ConfigStore {
                 .with_context(|| format!("failed to read {}", path.display()))?;
             match serde_json::from_str::<ConfigFile>(&raw) {
                 Ok(mut cfg) => {
+                    // (#sync-dialog-v2-fix 2026-10-12) 频道成员改为**内存态**
+                    //（跟随活 tab，tab 关闭即退频道；退出软件自然清空）——
+                    // 配置文件里历史遗留的成员表一律忽略。
+                    cfg.channel_members = default_channel_members();
                     // Decrypt any encrypted passwords; leave legacy plaintext
                     // values untouched (they will be encrypted on next save).
                     for session in &mut cfg.sessions {
@@ -1758,6 +1762,8 @@ impl ConfigStore {
     pub fn save(&self) -> Result<()> {
         // Build a disk copy where every non-empty password is encrypted.
         let mut disk = self.cache.clone();
+        // (#sync-dialog-v2-fix 2026-10-12) 频道成员不入盘（内存态，见 load）。
+        disk.channel_members = default_channel_members();
         for session in &mut disk.sessions {
             if !session.password.is_empty()
                 && !session.password.as_str().starts_with(Self::ENC_PREFIX)
