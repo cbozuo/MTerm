@@ -59,7 +59,7 @@ impl AccentCfg {
                     None => AccentCfg::Follow,
                 }
             }
-            "custom" => parse_hex(custom).map(AccentCfg::Custom).unwrap_or(AccentCfg::Follow),
+            "custom" => crate::picker::parse_hex(custom).map(AccentCfg::Custom).unwrap_or(AccentCfg::Follow),
             _ => AccentCfg::Follow,
         }
     }
@@ -210,71 +210,6 @@ pub fn fit_contrast(fg: u32, bg: u32, target: f64) -> u32 {
         }
     }
     if darken { 0x100000 } else { 0xFFFFF0 }
-}
-
-/// 解析 `#RRGGBB`（自定义强调色输入）；非法返回 None。
-pub fn parse_hex(s: &str) -> Option<u32> {
-    let s = s.trim().trim_start_matches('#');
-    if s.len() != 7 || !s.starts_with('#') {
-        let s2 = s.trim_start_matches('#');
-        if s2.len() != 6 || !s2.chars().all(|c| c.is_ascii_hexdigit()) {
-            return None;
-        }
-        return u32::from_str_radix(s2, 16).ok();
-    }
-    u32::from_str_radix(&s[1..], 16).ok()
-}
-
-/// HSV（h:0..360、s:0..1、v:0..1）→ `0xRRGGBB`。取色盘用；与色轮命中共用，
-/// 所以 hsv_to_hex(hex_to_hsv(c)) 必须能精确回到 c（避免往返偏色）。
-pub fn hsv_to_hex(h: f32, s: f32, v: f32) -> u32 {
-    let h = h.rem_euclid(360.0);
-    let s = s.clamp(0.0, 1.0);
-    let v = v.clamp(0.0, 1.0);
-    let c = v * s;
-    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
-    let m = v - c;
-    let (r, g, b) = match (h / 60.0) as u32 % 6 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    let q = |f: f32| (((f + m) * 255.0).round().clamp(0.0, 255.0)) as u32;
-    (q(r) << 16) | (q(g) << 8) | q(b)
-}
-
-/// `0xRRGGBB` → (h, s, v)。饱和度按 HSV 定义 s=(max-min)/max —— 不能用 HSL 的
-/// d/(1-|2L-1|)，否则与 hsv_to_hex 往返会偏色（这正是高保真稿调试时踩过的坑）。
-pub fn hex_to_hsv(c: u32) -> (f32, f32, f32) {
-    let r = ((c >> 16) & 0xFF) as f32 / 255.0;
-    let g = ((c >> 8) & 0xFF) as f32 / 255.0;
-    let b = (c & 0xFF) as f32 / 255.0;
-    let mx = r.max(g).max(b);
-    let mn = r.min(g).min(b);
-    let d = mx - mn;
-    if d <= f32::EPSILON {
-        return (0.0, 0.0, mx);
-    }
-    let h = if mx == r {
-        ((g - b) / d) % 6.0
-    } else if mx == g {
-        (b - r) / d + 2.0
-    } else {
-        (r - g) / d + 4.0
-    };
-    (h * 60.0, d / mx, mx)
-}
-
-/// 色轮命中：dx/dy 是相对圆心的归一化坐标（-1..1，超出按半径 1 截断），
-/// 返回「该点色相 + 该半径饱和度 + 给定明度」合成��色值。
-pub fn wheel_pick(dx: f32, dy: f32, v: f32) -> u32 {
-    let (dx, dy) = (dx.clamp(-1.0, 1.0), dy.clamp(-1.0, 1.0));
-    let r = (dx * dx + dy * dy).sqrt().min(1.0);
-    let h = dy.atan2(dx).to_degrees().rem_euclid(360.0);
-    hsv_to_hex(h, r, v.clamp(0.0, 1.0))
 }
 
 /// 计算最终生效的强调色：跟随 → 主题自带；覆盖 → 先做 3:1 守卫
@@ -469,14 +404,6 @@ mod tests {
             assert!(contrast(c, p.tab) >= 3.0, "频道色 {c:06X} on tab 不足 3.0");
             assert!(contrast(c, p.tbg) >= 3.0, "频道色 {c:06X} on tbg 不足 3.0");
         }
-    }
-
-    #[test]
-    fn parse_hex_ok() {
-        assert_eq!(parse_hex("#7C5CFF"), Some(0x7C5CFF));
-        assert_eq!(parse_hex("7C5CFF"), Some(0x7C5CFF));
-        assert_eq!(parse_hex("#zzzzzz"), None);
-        assert_eq!(parse_hex("#12345"), None);
     }
 
     #[test]

@@ -659,17 +659,14 @@ export component InterfacePanel inherits Rectangle {
     in-out property <string> accent-mode: "follow";
     in-out property <string> accent-preset: "";
     in-out property <string> accent-custom: "";
-    // ── 强调色预设弹框 / 取色盘（高保真稿 §3.8）──────────────────────
-    // 浮层本体在 AppWindow 根层（theme-pick 同款桥）：面板内只发开关与锚点。
-    // accent-stage 是暂存色：随机/取色盘只改它，点弹框外空白处才确认生效。
+    // ── 强调色预设弹框 / 取色盘（定稿高保真 #accent-pop-v2）────────────
+    // 浮层本体在 AppWindow 根层（theme-pick 同款桥）：面板内只发开关。
+    // accent-stage = 弹框「选定色」（用户点的原色，原样保留，应用才调亮生效）。
     in-out property <string> accent-stage: "";
-    in-out property <bool> accent-stage-dirty: false;
     // 对比度守卫提示（Rust apply_theme 每次重算回写）：chip 底色与守卫
     // 文案都读它 —— 跟随态=主题 ac，自定义态=3:1 守卫后的生效色。
     in-out property <AccentGuard> accent-guard;
     in-out property <bool> accent-pop-open: false;
-    // 预设弹框锚点：chip 下缘 +4px（absolute-position 布局期恒 0，事件期取）
-    in-out property <length> accent-pop-y: 0px;
     in-out property <bool> wallpaper-active;
     in-out property <bool> wallpaper-color-pickup;
     in-out property <float> term-alpha: 1.0;
@@ -1404,12 +1401,11 @@ export component InterfacePanel inherits Rectangle {
                 }
                 Rectangle { height: 6px; }
 
-                // ── 强调色两态（高保真稿 §3.8）────────────────────────────
-                //    只有两个态：跟随主题 / 自定义。预设不是独立一档 —— 点「自定义」
-                //    （或右侧当前色 chip）打开预设弹框：46 色网格点一下直接生效并
-                //    关闭；左下暂存位色卡可随机 / 开调色盘，点弹框外空白处确认暂
-                //    存色。弹框本体在 AppWindow 根层（accent-pop-open 桥，
-                //    theme-pick 同款 —— 面板内 PopupWindow 定位/滚动裁剪不可靠）。
+                // ── 强调色两态（定稿高保真 #accent-pop-v2）──────────────────
+                //    只有两个态：跟随主题 / 自定义。滑块是唯一切换入口 —— 点
+                //    「自定义」打开预设弹框（居中、可拖动）；右侧色块仅展示当前
+                //    生效色（跟随态=主题 ac，自定义态=守卫后的生效色），不可点。
+                //    弹框本体在 AppWindow 根层（accent-pop-open 桥）。
                 SettingRow {
                     show-divider: false;
                     label: root.lang-en ? "Accent" : "强调色";
@@ -1437,36 +1433,25 @@ export component InterfacePanel inherits Rectangle {
                                 clicked => {
                                     root.accent-mode = "custom";
                                     root.accent-stage = root.accent-guard.eff;
-                                    root.accent-stage-dirty = false;
-                                    root.accent-pop-y = chip.absolute-position.y + chip.height + 4px;
                                     root.accent-pop-open = true;
                                 }
                             }
                         }
-                        // 当前生效色 chip（§3.8 .acd-chip）：跟随态=主题 ac，
-                        // 自定义态=守卫后的生效色；点它同样打开预设弹框。
+                        // 当前生效色 chip：仅展示、不可点（切换只走左侧滑块）
                         chip := Rectangle {
-                            width: 34px;
-                            height: 26px;
-                            border-radius: 6px;
+                            width: 46px;
+                            height: 32px;
+                            border-radius: 8px;
                             border-width: 1px;
                             border-color: Theme.border-strong;
-                            background: root.accent-hex-color(root.accent-guard.eff);
-                            Text {
-                                text: "▾";
-                                x: parent.width - self.width - 3px;
-                                y: parent.height - self.height - 1px;
-                                font-size: 8px;
-                                color: root.accent-ink-on(root.accent-guard.eff);
-                            }
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => {
-                                    root.accent-stage = root.accent-guard.eff;
-                                    root.accent-stage-dirty = false;
-                                    root.accent-pop-y = self.absolute-position.y + self.height + 4px;
-                                    root.accent-pop-open = true;
-                                }
+                            background: Theme.field;
+                            Rectangle {
+                                x: 3px;
+                                y: 3px;
+                                width: parent.width - 6px;
+                                height: parent.height - 6px;
+                                border-radius: 5px;
+                                background: root.accent-hex-color(root.accent-guard.eff);
                             }
                         }
                     }
@@ -1492,22 +1477,114 @@ export component InterfacePanel inherits Rectangle {
                 Rectangle { height: 1px; background: Theme.border-subtle; }
                 Rectangle { height: 6px; }
 
-                // ── 界面通透度三档（§3-调整④）────────────────────────────
+                // ── 界面通透度三档（#popup-transparency-hifi）：滑动分段 +
+                // 实时预览（壁纸彩块上的迷你弹窗，bg alpha 与全部弹窗同源）──
                 SettingRow {
                     label: root.lang-en ? "Translucency" : "界面通透度";
-                    desc: root.lang-en ? "Dialogs: solid (default) / follow panel / 88% glass" : "弹窗：标准（实心）/ 通透（跟随面板）/ 全透（88% + 强遮罩）";
+                    desc: root.lang-en ? "Glass level of popups / floating layers — applies immediately" : "弹窗 / 浮层（下拉、弹框、调色盘）的玻璃程度，改动立即生效";
+                    SegGroup {
+                        active-index: root.popup-transparency;
+                        count: 3;
+                        AccentSeg {
+                            label: root.lang-en ? "Solid" : "标准";
+                            active: root.popup-transparency == 0;
+                            clicked => {
+                                root.popup-transparency = 0;
+                                root.set-popup-transparency(0);
+                            }
+                        }
+                        AccentSeg {
+                            label: root.lang-en ? "Translucent" : "通透";
+                            active: root.popup-transparency == 1;
+                            clicked => {
+                                root.popup-transparency = 1;
+                                root.set-popup-transparency(1);
+                            }
+                        }
+                        AccentSeg {
+                            label: root.lang-en ? "Glass" : "全透";
+                            active: root.popup-transparency == 2;
+                            clicked => {
+                                root.popup-transparency = 2;
+                                root.set-popup-transparency(2);
+                            }
+                        }
+                    }
+                }
+                // 实时预览：迷你弹窗 bg = 面板色 × popup-alpha（与真实弹窗同源）
+                Rectangle {
+                    height: 118px;
+                    border-radius: 10px;
+                    background: Theme.bg-active;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    clip: true;
                     HorizontalLayout {
-                        spacing: 6px; alignment: start;
-                        for t in [
-                            { v: 0, name: "标准" }, { v: 1, name: "通透" }, { v: 2, name: "全透" },
-                        ] : Rectangle {
-                            property <int> seg-v: t.v;
-                            width: 64px; height: 26px; border-radius: 6px;
-                            background: root.popup-transparency == seg-v ? Theme.chip : Theme.bg-active;
-                            border-width: 1px;
-                            border-color: root.popup-transparency == seg-v ? Theme.accent-solid : Theme.border-subtle;
-                            Text { text: t.name; color: Theme.text-primary; font-size: 11px * Theme.panel-font; horizontal-alignment: center; vertical-alignment: center; }
-                            TouchArea { mouse-cursor: pointer; clicked => { root.popup-transparency = seg-v; root.set-popup-transparency(seg-v); } }
+                        padding: 12px;
+                        spacing: 16px;
+                        Rectangle {
+                            width: 224px;
+                            border-radius: 8px;
+                            clip: true;
+                            background: #1f2433;
+                            // 壁纸彩块（体现「玻璃」透出的内容）
+                            Rectangle { x: 20px; y: 10px; width: 96px; height: 96px; border-radius: 48px; background: #7a5ce0; opacity: 0.9; }
+                            Rectangle { x: 152px; y: 54px; width: 56px; height: 56px; border-radius: 28px; background: #26b89a; opacity: 0.85; }
+                            Rectangle { x: 130px; y: 8px; width: 44px; height: 44px; border-radius: 22px; background: #ffb648; opacity: 0.9; }
+                            // 迷你弹窗：bg = 面板色 × popup-alpha
+                            Rectangle {
+                                x: 36px;
+                                y: 17px;
+                                width: 128px;
+                                height: 84px;
+                                border-radius: 9px;
+                                border-width: 1px;
+                                border-color: #ffffff38;
+                                background: Theme.panel-solid.with-alpha(Theme.popup-alpha);
+                                drop-shadow-blur: 12px;
+                                drop-shadow-color: #00000066;
+                                VerticalLayout {
+                                    padding-top: 10px;
+                                    padding-bottom: 10px;
+                                    padding-left: 11px;
+                                    padding-right: 11px;
+                                    spacing: 6px;
+                                    Rectangle { width: 40px; height: 7px; border-radius: 3.5px; background: Theme.text-primary; opacity: 0.88; }
+                                    Rectangle { width: 96px; height: 5px; border-radius: 2.5px; background: Theme.text-primary; opacity: 0.45; }
+                                    Rectangle { width: 68px; height: 5px; border-radius: 2.5px; background: Theme.text-primary; opacity: 0.45; }
+                                    Rectangle { width: 48px; height: 13px; border-radius: 6px; background: Theme.accent-solid; }
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 4px;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: root.lang-en
+                                    ? (root.popup-transparency == 2
+                                        ? "Full (88% glass + stronger scrim): lightest — wallpaper shows through; scrim keeps text readable."
+                                        : root.popup-transparency == 1
+                                        ? "Translucent: dialogs follow the panel opacity — the lightest everyday level."
+                                        : "Solid (default): dialogs are opaque — best readability, like native dialogs.")
+                                    : (root.popup-transparency == 2
+                                        ? "全透（88% 玻璃 + 强遮罩）：最轻盈的一档，壁纸清晰透出；打开弹窗时配合更重的遮罩保住可读性。"
+                                        : root.popup-transparency == 1
+                                        ? "通透（跟随界面）：弹窗跟随主面板透明度，壁纸隐约透出，界面更轻盈。"
+                                        : "标准（实心）：弹窗不透明 —— 可读性最好，和系统原生对话框一致。");
+                                color: Theme.text-muted;
+                                font-size: 11px * Theme.panel-font;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: root.lang-en
+                                    ? "Applies to all floating layers (menus, dialogs, pickers) immediately."
+                                    : "对全部浮层（下拉 / 弹框 / 调色盘）立即生效，重启后保持。";
+                                color: Theme.text-muted;
+                                font-size: 10.5px * Theme.panel-font;
+                                opacity: 0.8;
+                                wrap: word-wrap;
+                            }
                         }
                     }
                 }

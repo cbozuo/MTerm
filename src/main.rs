@@ -16,6 +16,7 @@ mod i18n;
 mod layout;
 mod logging;
 mod mcp;
+mod picker;
 mod rdp;
 mod remote;
 mod resource;

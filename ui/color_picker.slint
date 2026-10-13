@@ -1,0 +1,472 @@
+// 通用取色盘（ui/color_picker.slint）：强调色 / 组别 / 终端光标共用的
+// ColorPickerDialog 组件 + PickerMath 全局。业务拆分见 src/picker/mod.rs ——
+// 颜色数学与位图烘焙在 Rust picker 模块，这里只经 PickerMath 回调调用。
+//
+// 调用方约定：
+//   * 全窗遮罩 + 居中定位 + Esc 链由调用方负责（根层浮层模式，同 theme-pick）；
+//   * `hex` 双向绑定调用方的「选定色」，`confirmed` 里自行写回/落库 —— 组件
+//     只改自己的 hex，永不直接生效；
+//   * `@children` 传示例条（如强调色的 选中态/主按钮/链接 三件套），颜色跟
+//     `hex` 实时联动；
+//   * `bounds-w/h` 传全窗尺寸，供头部拖动的边界钳制。
+import { Theme } from "theme.slint";
+
+// 纯取色数学：Rust 一次性接线（src/app.rs「PickerMath 接线」块）。
+// hex-ch / hex-apply 的 fmt：rgb(R/G/B 0-255) | hsv(H 0-360, S/V 0-100) |
+// hsl(H 0-360, S/L 0-100)。
+export global PickerMath {
+    pure callback hex-color(string) -> color;              // hex 串 → color（非法回黑）
+    pure callback ink-on(string) -> color;                 // 色块字色：深块白字/浅块黑字
+    pure callback hex-valid(string) -> string;             // hex 规范化；非法原样返回
+    pure callback hex-ch(string, int, string) -> string;   // 读单分量
+    callback hex-apply(string, int, string, string) -> string; // 写单分量 → 规范化 hex
+    callback wheel-pick(float, float, float) -> string;    // 色轮命中（顺带重烘明度条）
+    pure callback fit-hex(string) -> string;               // 守卫调亮预览（fit_contrast）
+    pure callback bright-label(v: float) -> string;        // 明度气泡数值（v*255 取整）
+    in-out property <image> wheel-image;                   // 色轮位图（一次性烘焙）
+    in-out property <image> slider-image;                  // 明度条渐变（随色相重烘）
+}
+
+// 取色盘卡片。显示宽 462；高度由内容撑（~440）。
+export component ColorPickerDialog inherits Rectangle {
+    in property <string> title: "调色盘";
+    in property <bool> en: false;                  // i18n（调用方绑 root.lang-en）
+    in property <length> bounds-w;                 // 拖动边界 = 全窗宽
+    in property <length> bounds-h;
+    in-out property <string> hex;                  // 唯一事实源（调用方绑定）
+    in-out property <string> fmt: "rgb";           // rgb | hsv | hsl
+    in-out property <float> wheel-mx: 0.5;         // 色轮取样点（0..1，my 向下 +）
+    in-out property <float> wheel-my: 0.5;
+    in-out property <float> val-my: 1.0;           // 明度条位置（1=最亮）
+    in-out property <float> pick-v: 1.0;           // 明度值（色盘蒙罩同源）
+    callback confirmed();                          // 「确认」：写回调用方选定色
+    callback cancelled();                          // 「取消」/ ✕：放弃修改
+    callback sync-pos();                           // hex 变动后回填取样点（Rust 算三角函数）
+
+    width: 462px;
+    height: dlg-lay.preferred-height;
+    background: Theme.popup-bg;
+    border-radius: 14px;
+    border-width: 1px;
+    border-color: Theme.border-strong;
+    drop-shadow-blur: 26px;
+    drop-shadow-color: #000000b8;
+
+    property <length> drag-ox;                     // 按下时的卡片原点/指针位置
+    property <length> drag-oy;
+    property <length> drag-mx;
+    property <length> drag-my;
+    property <bool> head-dragging: false;
+    property <string> guarded: PickerMath.fit-hex(root.hex);
+
+    // 卡片留白吞点击（否则点 padding 穿透到遮罩被当成取消）。
+    // 放在最底层，不影响其上控件的事件。
+    TouchArea { clicked => {} }
+
+    dlg-lay := VerticalLayout {
+        padding-top: 14px;
+        padding-bottom: 14px;
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 12px;
+
+        // ── 头部：把手 + 标题（整行可拖动，✕ 独立在拖动层之上）──────────
+        head := Rectangle {
+            height: 26px;
+            // 拖动层最先声明（垫底），✕ 最后声明（置顶可点）
+            head-drag := TouchArea {
+                mouse-cursor: root.head-dragging ? move : default;
+                pointer-event(ev) => {
+                    if (ev.kind == PointerEventKind.down) {
+                        root.head-dragging = true;
+                        root.drag-ox = root.x;
+                        root.drag-oy = root.y;
+                        root.drag-mx = self.mouse-x;
+                        root.drag-my = self.mouse-y;
+                    } else if (ev.kind == PointerEventKind.up) {
+                        root.head-dragging = false;
+                    }
+                }
+                moved => {
+                    // moved 只在按住时触发；clamp 在全窗边界内（留 8px）
+                    root.x = Math.max(8px, Math.min(root.drag-ox + (self.mouse-x - root.drag-mx),
+                                                    Math.max(8px, root.bounds-w - root.width - 8px)));
+                    root.y = Math.max(8px, Math.min(root.drag-oy + (self.mouse-y - root.drag-my),
+                                                    Math.max(8px, root.bounds-h - root.height - 8px)));
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                // 把手（6 点）
+                Rectangle {
+                    width: 14px;
+                    GridLayout {
+                        spacing: 3px;
+                        padding-top: 8px;
+                        Rectangle { col: 0; row: 0; width: 2.5px; height: 2.5px; border-radius: 1.25px; background: Theme.text-muted; }
+                        Rectangle { col: 1; row: 0; width: 2.5px; height: 2.5px; border-radius: 1.25px; background: Theme.text-muted; }
+                        Rectangle { col: 0; row: 1; width: 2.5px; height: 2.5px; border-radius: 1.25px; background: Theme.text-muted; }
+                        Rectangle { col: 1; row: 1; width: 2.5px; height: 2.5px; border-radius: 1.25px; background: Theme.text-muted; }
+                        Rectangle { col: 0; row: 2; width: 2.5px; height: 2.5px; border-radius: 1.25px; background: Theme.text-muted; }
+                        Rectangle { col: 1; row: 2; width: 2.5px; height: 2.5px; border-radius: 1.25px; background: Theme.text-muted; }
+                    }
+                }
+                Text {
+                    text: root.title;
+                    color: Theme.text-primary;
+                    font-size: 13.5px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+            }
+            Rectangle {  // ✕（置顶于拖动层之上）
+                x: parent.width - self.width - 2px;
+                y: (parent.height - self.height) / 2;
+                width: 22px;
+                height: 22px;
+                border-radius: Theme.radius-sm;
+                background: head-x.has-hover ? Theme.bg-hover : transparent;
+                Text {
+                    text: "✕";
+                    color: head-x.has-hover ? Theme.text-primary : Theme.text-muted;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                head-x := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.cancelled(); }
+                }
+            }
+        }
+
+        // ── 示例条：@children 由调用方传（强调色=选中态/主按钮/链接）────
+        Rectangle {
+            height: pv-lay.preferred-height;
+            border-radius: 9px;
+            background: Theme.bg-root;
+            border-width: 1px;
+            border-color: Theme.border-control;
+            pv-lay := HorizontalLayout {
+                padding-top: 10px;
+                padding-bottom: 10px;
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 10px;
+                @children
+            }
+        }
+
+        // ── 色轮 + 明度条 + 数值列 ─────────────────────────────────────
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
+            wheel-box := Rectangle {
+                width: 216px;
+                height: 216px;
+                border-radius: 108px;
+                clip: true;
+                Image {
+                    source: PickerMath.wheel-image;
+                    width: 216px;
+                    height: 216px;
+                }
+                // 明度蒙罩：整盘随明度条压暗（与逐像素缩放 V 等价）
+                Rectangle {
+                    width: 216px;
+                    height: 216px;
+                    background: #000000;
+                    opacity: 1 - root.pick-v;
+                }
+                // 取样点：白环 + 当前色填充
+                Rectangle {
+                    x: root.wheel-mx * 216px - 7px;
+                    y: root.wheel-my * 216px - 7px;
+                    width: 14px;
+                    height: 14px;
+                    border-radius: 7px;
+                    border-width: 2px;
+                    border-color: #ffffffff;
+                    background: PickerMath.hex-color(root.hex);
+                }
+                wheel-ta := TouchArea {
+                    mouse-cursor: crosshair;
+                    moved => {
+                        root.wheel-mx = Math.max(0, Math.min(1, self.mouse-x / wheel-box.width));
+                        root.wheel-my = Math.max(0, Math.min(1, self.mouse-y / wheel-box.height));
+                        root.hex = PickerMath.wheel-pick(
+                            root.wheel-mx * 2 - 1, 1 - root.wheel-my * 2, root.pick-v);
+                    }
+                    clicked => {
+                        root.wheel-mx = Math.max(0, Math.min(1, self.mouse-x / wheel-box.width));
+                        root.wheel-my = Math.max(0, Math.min(1, self.mouse-y / wheel-box.height));
+                        root.hex = PickerMath.wheel-pick(
+                            root.wheel-mx * 2 - 1, 1 - root.wheel-my * 2, root.pick-v);
+                    }
+                }
+            }
+            // 明度条：拖动 + 滚轮（按住时浮出「亮度 N」气泡，0-255 与 HSB 的 B 同标尺）
+            bright := Rectangle {
+                width: 22px;
+                height: 216px;
+                border-radius: 11px;
+                border-width: 1px;
+                border-color: Theme.border-control;
+                clip: true;
+                Image {
+                    source: PickerMath.slider-image;
+                    x: 1px;
+                    y: 1px;
+                    width: 20px;
+                    height: 214px;
+                }
+                Rectangle {
+                    y: 2px + (1 - root.val-my) * (bright.height - 14px);
+                    x: 2px;
+                    width: 18px;
+                    height: 10px;
+                    border-radius: 5px;
+                    background: #ffffffff;
+                    border-width: 1px;
+                    border-color: #0000004d;
+                }
+                bright-tip := Rectangle {
+                    x: -(self.width + 9px);
+                    y: 2px + (1 - root.val-my) * (bright.height - 22px);
+                    width: 58px;
+                    height: 22px;
+                    border-radius: 6px;
+                    background: #111318;
+                    border-width: 1px;
+                    border-color: Theme.border-strong;
+                    opacity: bright-ta.pressed ? 1 : 0;
+                    Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: (root.en ? "Bright " : "亮度 ") + PickerMath.bright-label(root.pick-v);
+                        color: Theme.text-primary;
+                        font-size: 10.5px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                bright-ta := TouchArea {
+                    mouse-cursor: ns-resize;
+                    moved => {
+                        root.val-my = 1 - Math.max(0, Math.min(1, self.mouse-y / bright.height));
+                        root.hex = PickerMath.wheel-pick(
+                            root.wheel-mx * 2 - 1, 1 - root.wheel-my * 2, root.val-my);
+                    }
+                    clicked => {
+                        root.val-my = 1 - Math.max(0, Math.min(1, self.mouse-y / bright.height));
+                        root.hex = PickerMath.wheel-pick(
+                            root.wheel-mx * 2 - 1, 1 - root.wheel-my * 2, root.val-my);
+                    }
+                    // 滚轮微调明度（±3%/格）
+                    scroll-event(ev) => {
+                        root.val-my = Math.max(0, Math.min(1,
+                            root.val-my + (ev.delta-y > 0px ? -0.03 : 0.03)));
+                        root.hex = PickerMath.wheel-pick(
+                            root.wheel-mx * 2 - 1, 1 - root.wheel-my * 2, root.val-my);
+                        accept
+                    }
+                }
+            }
+            // 右列：HEX 常驻 + RGB|HSV|HSL 滑块 + 三分量（任一输入实时联动）
+            VerticalLayout {
+                spacing: 8px;
+                horizontal-stretch: 1;
+                // HEX：编辑实时联动色轮/明度条/三分量
+                hex-box := Rectangle {
+                    height: 34px;
+                    border-radius: 8px;
+                    background: Theme.field;
+                    border-width: 1px;
+                    border-color: hex-input.has-focus ? PickerMath.hex-color(root.hex) : Theme.border-control;
+                    hex-input := TextInput {
+                        x: 11px;
+                        width: parent.width - 22px;
+                        height: parent.height;
+                        text: root.hex;
+                        color: Theme.text-primary;
+                        font-size: 13px;
+                        font-family: Theme.term-font-family;
+                        vertical-alignment: center;
+                        single-line: true;
+                        edited => {
+                            root.hex = PickerMath.hex-valid(self.text);
+                            root.sync-pos();
+                        }
+                    }
+                }
+                // RGB|HSV|HSL 滑块：thumb 颜色 = 当前色（与「确认」按钮一致）
+                fmt := Rectangle {
+                    height: 32px;
+                    border-radius: 8px;
+                    background: Theme.field;
+                    border-width: 1px;
+                    border-color: Theme.border-control;
+                    property <length> cell: (self.width - 10px) / 3;
+                    Rectangle {
+                        x: 2px + (root.fmt == "rgb" ? 0 : root.fmt == "hsv" ? 1 : 2) * (fmt.cell + 2px);
+                        y: 2px;
+                        width: fmt.cell;
+                        height: fmt.height - 4px;
+                        border-radius: 6px;
+                        background: PickerMath.hex-color(root.hex);
+                        animate background { duration: 120ms; }
+                    }
+                    HorizontalLayout {
+                        padding: 2px;
+                        spacing: 2px;
+                        Rectangle {
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.fmt = "rgb"; }
+                            }
+                            Text {
+                                width: 100%;
+                                height: 100%;
+                                text: "RGB";
+                                color: root.fmt == "rgb" ? PickerMath.ink-on(root.hex) : Theme.text-muted;
+                                font-size: 11px;
+                                font-weight: root.fmt == "rgb" ? 700 : 400;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Rectangle {
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.fmt = "hsv"; }
+                            }
+                            Text {
+                                width: 100%;
+                                height: 100%;
+                                text: "HSV";
+                                color: root.fmt == "hsv" ? PickerMath.ink-on(root.hex) : Theme.text-muted;
+                                font-size: 11px;
+                                font-weight: root.fmt == "hsv" ? 700 : 400;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Rectangle {
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.fmt = "hsl"; }
+                            }
+                            Text {
+                                width: 100%;
+                                height: 100%;
+                                text: "HSL";
+                                color: root.fmt == "hsl" ? PickerMath.ink-on(root.hex) : Theme.text-muted;
+                                font-size: 11px;
+                                font-weight: root.fmt == "hsl" ? 700 : 400;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+                // 三分量：编辑任一，其余（含 HEX/色轮/明度条）实时跟随
+                for i in [0, 1, 2] : Rectangle {
+                    height: 32px;
+                    border-radius: 8px;
+                    background: Theme.field;
+                    border-width: 1px;
+                    border-color: Theme.border-control;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 6px;
+                        Text {
+                            width: 12px;
+                            text: i == 0 ? (root.fmt == "rgb" ? "R" : "H")
+                                : i == 1 ? "S"
+                                : (root.fmt == "rgb" ? "B" : (root.fmt == "hsl" ? "L" : "V"));
+                            color: Theme.text-muted;
+                            font-size: 10px;
+                            vertical-alignment: center;
+                        }
+                        TextInput {
+                            horizontal-stretch: 1;
+                            height: parent.height;
+                            text: PickerMath.hex-ch(root.hex, i, root.fmt);
+                            color: Theme.text-primary;
+                            font-size: 12.5px;
+                            font-family: Theme.term-font-family;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                            single-line: true;
+                            edited => {
+                                root.hex = PickerMath.hex-apply(root.hex, i, self.text, root.fmt);
+                                root.sync-pos();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 守卫提示：低对比度预告调亮结果 + 写回说明 ────────────────────
+        Text {
+            text: root.guarded != root.hex
+                ? (root.en
+                    ? "⚠ Below 3:1 on the theme panel — applying lightens it to " + root.guarded
+                      + ". Confirm writes back; Apply takes effect."
+                    : "⚠ 对面板对比度不足 3:1 —— 应用时将自动调亮为 " + root.guarded
+                      + "。「确认」写回弹框，点「应用」后生效。")
+                : (root.en
+                    ? "✓ Contrast OK on the theme panel. Confirm writes back; Apply takes effect."
+                    : "✓ 对面板对比度达标。「确认」写回弹框，点「应用」后生效。");
+            color: root.guarded != root.hex ? Theme.warning : Theme.text-muted;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+
+        // ── 底部：取消 / 确认（写回，不直接生效）────────────────────────
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: end;
+            Rectangle {
+                width: 84px;
+                height: 30px;
+                border-radius: 8px;
+                background: transparent;
+                border-width: 1px;
+                border-color: Theme.border-strong;
+                Text {
+                    text: root.en ? "Cancel" : "取消";
+                    color: Theme.text-secondary;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.cancelled(); }
+                }
+            }
+            Rectangle {
+                width: 84px;
+                height: 30px;
+                border-radius: 8px;
+                background: PickerMath.hex-color(root.hex);
+                Text {
+                    text: root.en ? "Confirm" : "确认";
+                    color: PickerMath.ink-on(root.hex);
+                    font-size: 12px;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.confirmed(); }
+                }
+            }
+        }
+    }
+}

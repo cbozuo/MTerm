@@ -2329,7 +2329,7 @@ fn open_window(
             // accent_mode=custom+空 hex——实际强调色一直在跟随主题，显示却停在
             // 「自定义」。这里清回 follow（一次性的脏数据修复）。
             if s.accent_mode() == "custom"
-                && crate::theme::parse_hex(s.accent_custom()).is_none()
+                && crate::picker::parse_hex(s.accent_custom()).is_none()
             {
                 drop(s);
                 let mut s2 = store.borrow_mut();
@@ -4319,39 +4319,11 @@ fn set_picker_pos(w: &crate::ui::AppWindow, h: f32, s: f32, v: f32) {
     w.set_accent_pick_v(v.clamp(0.0, 1.0));
 }
 
-/// 明度条渐变位图（§3.8 `.acd-slider`：顶=当前色相满饱和、底=黑）。
-/// 显示 20×186，按 2× 烘成 40×372；色相随色轮拖动换，故每次改色重烘。
-fn bake_slider_image(hue: f32) -> slint::Image {
-    const W: u32 = 40;
-    const H: u32 = 372;
-    let top = crate::theme::hsv_to_hex(hue, 1.0, 1.0);
-    let mut buf = Vec::with_capacity((W * H * 4) as usize);
-    for y in 0..H {
-        // 顶→底：满饱和色相线性掺黑（hfi 的 linear-gradient(to top,#000,hue)）
-        let t = 1.0 - (y as f32 + 0.5) / H as f32;
-        let mix = |a: u32, b: u32| ((a as f32 * t + b as f32 * (1.0 - t)).round()) as u8;
-        let (r, g, b) = (
-            mix((top >> 16) & 0xFF, 0),
-            mix((top >> 8) & 0xFF, 0),
-            mix(top & 0xFF, 0),
-        );
-        for _ in 0..W {
-            buf.push(r);
-            buf.push(g);
-            buf.push(b);
-            buf.push(255);
-        }
-    }
-    let mut px = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(W, H);
-    px.make_mut_bytes().copy_from_slice(&buf);
-    slint::Image::from_rgba8(px)
-}
-
-/// 取色盘改色后刷新明度条渐变（色相来自传入的 hex）。三个改色入口
-/// （色轮拖动 / 数值输入 / 开盘）都以此收尾，保证条与轮同色相。
+/// 取色盘开盘后刷新明度条渐变（色相来自传入的 hex），保证条与轮同色相。
 fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
-    let (h, _, _) = crate::theme::hex_to_hsv(hex);
-    w.set_accent_slider_image(bake_slider_image(h));
+    let (h, _, _) = crate::picker::hex_to_hsv(hex);
+    w.global::<crate::ui::PickerMath>()
+        .set_slider_image(crate::picker::bake_slider_image(h));
 }
 
     fn reapply_theme(
@@ -4388,47 +4360,144 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
                 reapply_theme(&weak, &bufs, &store.borrow(), &registry);
             }
         });
-        window.on_accent_wheel_pick({
-            let w = window.as_weak();
-            move |dx: f32, dy: f32, v: f32| {
-                let c = crate::theme::wheel_pick(dx, dy, v);
-                // 明度条渐变跟着色相走（顶=当前色相满饱和）
-                if let Some(w) = w.upgrade() {
-                    refresh_slider_image(&w, c);
+        // ── PickerMath 接线（#picker-component 2026-10-13）────────────────
+        // 通用取色盘全局（ui/color_picker.slint）：一次性接线，强调色/组别/
+        // 终端光标三个入口共用；颜色数学在 crate::picker（取色盘业务模块）。
+        {
+            let pm = window.global::<crate::ui::PickerMath>();
+            pm.set_wheel_image(crate::picker::bake_wheel_image(432));
+            pm.set_slider_image(crate::picker::bake_slider_image(0.0));
+            pm.on_wheel_pick({
+                let w = window.as_weak();
+                move |dx: f32, dy: f32, v: f32| {
+                    let c = crate::picker::wheel_pick(dx, dy, v);
+                    // 明度条渐变跟着色相走（顶=当前色相满饱和）
+                    if let Some(w) = w.upgrade() {
+                        w.global::<crate::ui::PickerMath>().set_slider_image(
+                            crate::picker::bake_slider_image(
+                                crate::picker::hex_to_hsv(c).0,
+                            ),
+                        );
+                    }
+                    format!("#{:06X}", c).into()
                 }
-                format!("#{:06X}", c).into()
-            }
-        });
-        // 取色盘色轮：Rust 侧一次性烘成位图（Slint 无法程序化画渐变）。
-        // 圆心=圆心色相、r=饱和度、明度固定 1；明度由旁边的竖条另调。
-        // (#accent-picker-hifi 2026-10-13) §3.8 色轮放大到 186px：位图按
-        // 2× 烘（372）保证 200% 屏不糊；圆外像素 alpha=0 —— 旧版整幅不透明，
-        // 配合 border-radius 不裁剪子元素，色轮实际是个**方块**（用户截图）。
-        window.set_accent_wheel_image({
-            const N: u32 = 372;
-            let mut buf = Vec::with_capacity((N * N * 4) as usize);
-            for y in 0..N {
-                for x in 0..N {
-                    let dx = (x as f32 + 0.5) / N as f32 * 2.0 - 1.0;
-                    let dy = 1.0 - (y as f32 + 0.5) / N as f32 * 2.0;
-                    let rr = (dx * dx + dy * dy).sqrt();
-                    let h = dy.atan2(dx).to_degrees().rem_euclid(360.0);
-                    let c = crate::theme::hsv_to_hex(h, rr.min(1.0), 1.0);
-                    buf.push(((c >> 16) & 0xFF) as u8);
-                    buf.push(((c >> 8) & 0xFF) as u8);
-                    buf.push((c & 0xFF) as u8);
-                    buf.push(if rr <= 1.0 { 255 } else { 0 });
+            });
+            pm.on_hex_color({
+                move |hex: SharedString| match crate::picker::parse_hex(&hex) {
+                    Some(v) => slint::Color::from_rgb_u8(
+                        ((v >> 16) & 0xFF) as u8,
+                        ((v >> 8) & 0xFF) as u8,
+                        (v & 0xFF) as u8,
+                    ),
+                    None => slint::Color::from_rgb_u8(0, 0, 0),
                 }
-            }
-            let mut px = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(N, N);
-            px.make_mut_bytes().copy_from_slice(&buf);
-            slint::Image::from_rgba8(px)
-        });
-        // 明度条渐变初值（红色相）；每次开盘/改色都由 refresh_slider_image 重烘
-        window.set_accent_slider_image(bake_slider_image(0.0));
+            });
+            pm.on_ink_on({
+                move |hex: SharedString| {
+                    let ink = crate::picker::ink_on(crate::picker::parse_hex(&hex).unwrap_or(0));
+                    slint::Color::from_rgb_u8(
+                        ((ink >> 16) & 0xFF) as u8,
+                        ((ink >> 8) & 0xFF) as u8,
+                        (ink & 0xFF) as u8,
+                    )
+                }
+            });
+            pm.on_hex_valid({
+                move |hex: SharedString| match crate::picker::parse_hex(&hex) {
+                    Some(v) => format!("#{:06X}", v).into(),
+                    None => hex,
+                }
+            });
+            // 读单分量：rgb(R/G/B 0-255) | hsv|hsb(H 0-360, S/V 0-100) | hsl(H, S/L 0-100)
+            pm.on_hex_ch({
+                move |hex: SharedString, ch: i32, fmt: SharedString| {
+                    let c = crate::picker::parse_hex(&hex).unwrap_or(0);
+                    let i = ch.clamp(0, 2) as usize;
+                    match fmt.as_str() {
+                        "hsv" | "hsb" => {
+                            let (h, s, v) = crate::picker::hex_to_hsv(c);
+                            match i {
+                                0 => format!("{:.0}", h.round()),
+                                1 => format!("{:.0}", (s * 100.0).round()),
+                                _ => format!("{:.0}", (v * 100.0).round()),
+                            }
+                        }
+                        "hsl" => {
+                            let (h, s, v) = crate::picker::hex_to_hsv(c);
+                            let (h, s, l) = crate::picker::hsv_to_hsl(h, s, v);
+                            match i {
+                                0 => format!("{:.0}", h.round()),
+                                1 => format!("{:.0}", (s * 100.0).round()),
+                                _ => format!("{:.0}", (l * 100.0).round()),
+                            }
+                        }
+                        _ => format!("{}", [(c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF][i]),
+                    }
+                    .into()
+                }
+            });
+            // 写单分量：返回规范化后的新 hex（值非法时原样返回）
+            pm.on_hex_apply({
+                move |base: SharedString, ch: i32, val: SharedString, fmt: SharedString| {
+                    let c = crate::picker::parse_hex(&base).unwrap_or(0);
+                    let Ok(n) = val.trim().parse::<f32>() else {
+                        return base;
+                    };
+                    let i = ch.clamp(0, 2) as usize;
+                    let out = match fmt.as_str() {
+                        "hsv" | "hsb" => {
+                            let (h, s, v) = crate::picker::hex_to_hsv(c);
+                            match i {
+                                0 => crate::picker::hsv_to_hex(n.rem_euclid(360.0), s, v),
+                                1 => crate::picker::hsv_to_hex(h, (n / 100.0).clamp(0.0, 1.0), v),
+                                _ => crate::picker::hsv_to_hex(h, s, (n / 100.0).clamp(0.0, 1.0)),
+                            }
+                        }
+                        "hsl" => {
+                            let (h, s, v) = crate::picker::hex_to_hsv(c);
+                            let (_, s, l) = crate::picker::hsv_to_hsl(h, s, v);
+                            let (h, s, l) = match i {
+                                0 => (n.rem_euclid(360.0), s, l),
+                                1 => (h, (n / 100.0).clamp(0.0, 1.0), l),
+                                _ => (h, s, (n / 100.0).clamp(0.0, 1.0)),
+                            };
+                            let (h2, s2, v2) = crate::picker::hsl_to_hsv(h, s, l);
+                            crate::picker::hsv_to_hex(h2, s2, v2)
+                        }
+                        _ => {
+                            let mut rgb = [(c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF];
+                            rgb[i] = n.clamp(0.0, 255.0) as u32;
+                            (rgb[0] << 16) | (rgb[1] << 8) | rgb[2]
+                        }
+                    };
+                    format!("#{:06X}", out).into()
+                }
+            });
+            // 守卫调亮预览：fit_contrast(选定色, 当前面板, 3.0)。面板色直接读
+            // Theme 槽（apply_theme 每次重算回写），无需重建调色板。
+            pm.on_fit_hex({
+                let w = window.as_weak();
+                move |hex: SharedString| {
+                    let Some(c) = crate::picker::parse_hex(&hex) else {
+                        return hex;
+                    };
+                    let Some(w) = w.upgrade() else {
+                        return hex;
+                    };
+                    let panel = w.global::<crate::ui::Theme>().get_slot_panel();
+                    let pc = ((panel.red() as u32) << 16)
+                        | ((panel.green() as u32) << 8)
+                        | panel.blue() as u32;
+                    format!("#{:06X}", crate::theme::fit_contrast(c, pc, 3.0)).into()
+                }
+            });
+            pm.on_bright_label({
+                move |v: f32| format!("{:.0}", v.clamp(0.0, 1.0) * 255.0).into()
+            });
+        }
         // Slint 不能把 hex 字符串在运行期解析成 color，取色盘的色块统一走这个回调
         window.on_accent_hex_color({
-            move |hex: SharedString| match crate::theme::parse_hex(&hex) {
+            move |hex: SharedString| match crate::picker::parse_hex(&hex) {
                 Some(v) => slint::Color::from_rgb_u8(
                     ((v >> 16) & 0xFF) as u8,
                     ((v >> 8) & 0xFF) as u8,
@@ -4440,31 +4509,12 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
         // 色块上的字色：亮度 >140 用深字，否则白字（与高保真稿 txtCls 同阈值）
         window.on_accent_ink_on({
             move |hex: SharedString| {
-                let c = crate::theme::parse_hex(&hex).unwrap_or(0);
-                let l = ((c >> 16 & 0xFF) as f32) * 0.299
-                    + ((c >> 8 & 0xFF) as f32) * 0.587
-                    + ((c & 0xFF) as f32) * 0.114;
-                if l > 140.0 {
-                    slint::Color::from_rgb_u8(0, 0, 0)
-                } else {
-                    slint::Color::from_rgb_u8(255, 255, 255)
-                }
-            }
-        });
-        // 色块上的 hex 副标：主墨色向底色掺淡（§3.8 .acd-sw b —— 名字浓、
-        // hex 淡一档，形成块内层级）。亮块黑字 45% / 暗块白字 40%。
-        window.on_accent_ink_dim({
-            move |hex: SharedString| {
-                let c = crate::theme::parse_hex(&hex).unwrap_or(0);
-                let l = ((c >> 16 & 0xFF) as f32) * 0.299
-                    + ((c >> 8 & 0xFF) as f32) * 0.587
-                    + ((c & 0xFF) as f32) * 0.114;
-                let (ink, t) = if l > 140.0 { (0u32, 0.45) } else { (255, 0.40) };
-                let mix = |a: u32, b: u32| (a as f32 * (1.0 - t) + b as f32 * t).round() as u8;
+                let c = crate::picker::parse_hex(&hex).unwrap_or(0);
+                let ink = crate::picker::ink_on(c);
                 slint::Color::from_rgb_u8(
-                    mix(ink, (c >> 16) & 0xFF),
-                    mix(ink, (c >> 8) & 0xFF),
-                    mix(ink, c & 0xFF),
+                    ((ink >> 16) & 0xFF) as u8,
+                    ((ink >> 8) & 0xFF) as u8,
+                    (ink & 0xFF) as u8,
                 )
             }
         });
@@ -4486,7 +4536,7 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
                 let h = (x % 360) as f32;
                 let s = 0.35 + ((x >> 9) % 51) as f32 / 100.0;
                 let v = 0.55 + ((x >> 17) % 36) as f32 / 100.0;
-                format!("#{:06X}", crate::theme::hsv_to_hex(h, s, v)).into()
+                format!("#{:06X}", crate::picker::hsv_to_hex(h, s, v)).into()
             }
         });
         // 最近使用：去重后插到最前，最多 20
@@ -4512,8 +4562,8 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
         window.on_accent_picker_open({
             let w = window.as_weak();
             move |hex: SharedString| {
-                let c = crate::theme::parse_hex(&hex).unwrap_or(0);
-                let (h, s, v) = crate::theme::hex_to_hsv(c);
+                let c = crate::picker::parse_hex(&hex).unwrap_or(0);
+                let (h, s, v) = crate::picker::hex_to_hsv(c);
                 if let Some(w) = w.upgrade() {
                     w.set_accent_pick_hex(SharedString::from(format!("#{:06X}", c)));
                     set_picker_pos(&w, h, s, v);
@@ -4528,59 +4578,11 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
             let w = window.as_weak();
             move || {
                 if let Some(w) = w.upgrade() {
-                    let c = crate::theme::parse_hex(&w.get_accent_pick_hex()).unwrap_or(0);
-                    let (h, s, v) = crate::theme::hex_to_hsv(c);
+                    let c = crate::picker::parse_hex(&w.get_accent_pick_hex()).unwrap_or(0);
+                    let (h, s, v) = crate::picker::hex_to_hsv(c);
                     set_picker_pos(&w, h, s, v);
                     refresh_slider_image(&w, c);
                 }
-            }
-        });
-        window.on_accent_hex_valid({
-            move |hex: SharedString| match crate::theme::parse_hex(&hex) {
-                Some(v) => format!("#{:06X}", v).into(),
-                None => hex,
-            }
-        });
-        // 取色盘数值输入：ch 0/1/2；fmt=rgb 时为 R/G/B(0-255)，hsb 时为 H(0-360)/S/B(0-100)
-        window.on_accent_ch({
-            move |hex: SharedString, ch: i32, fmt: SharedString| {
-                let c = crate::theme::parse_hex(&hex).unwrap_or(0);
-                let i = ch.clamp(0, 2) as usize;
-                let out = if fmt.as_str() == "hsb" {
-                    let (h, s, v) = crate::theme::hex_to_hsv(c);
-                    match i {
-                        0 => format!("{:.0}", h.round()),
-                        1 => format!("{:.0}", (s * 100.0).round()),
-                        _ => format!("{:.0}", (v * 100.0).round()),
-                    }
-                } else {
-                    let rgb = [(c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF];
-                    format!("{}", rgb[i])
-                };
-                out.into()
-            }
-        });
-        // 单通道写回：返回规范化后的新 hex（值非法时原样返回）
-        window.on_accent_pick_apply({
-            move |base: SharedString, ch: i32, val: SharedString, fmt: SharedString| {
-                let c = crate::theme::parse_hex(&base).unwrap_or(0);
-                let Ok(n) = val.trim().parse::<f32>() else {
-                    return base;
-                };
-                let i = ch.clamp(0, 2) as usize;
-                let out = if fmt.as_str() == "hsb" {
-                    let (h, s, v) = crate::theme::hex_to_hsv(c);
-                    match i {
-                        0 => crate::theme::hsv_to_hex(n.rem_euclid(360.0), s, v),
-                        1 => crate::theme::hsv_to_hex(h, (n / 100.0).clamp(0.0, 1.0), v),
-                        _ => crate::theme::hsv_to_hex(h, s, (n / 100.0).clamp(0.0, 1.0)),
-                    }
-                } else {
-                    let mut rgb = [(c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF];
-                    rgb[i] = n.clamp(0.0, 255.0) as u32;
-                    (rgb[0] << 16) | (rgb[1] << 8) | rgb[2]
-                };
-                format!("#{:06X}", out).into()
             }
         });
         window.on_set_panel_alpha({
