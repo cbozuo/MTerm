@@ -43,7 +43,7 @@ fn early_exit(child: &mut std::process::Child) -> Option<String> {
 }
 
 /// Linux / macOS / BSD: drive FreeRDP's `xfreerdp3` / `xfreerdp`.
-pub(super) fn start_client(account: &Account<'_>, _session_id: &str) -> Result<String, String> {
+pub(crate) fn start_client(account: &Account<'_>, _session_id: &str) -> Result<String, String> {
     if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
         return Err(t(
             "当前环境没有图形显示（DISPLAY / WAYLAND_DISPLAY），无法打开远程桌面窗口",

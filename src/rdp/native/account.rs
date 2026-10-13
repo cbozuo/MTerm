@@ -1,11 +1,9 @@
-/// The port RDP is assigned by IANA/MS-RDPBCGR.
-pub(crate) const RDP_DEFAULT_PORT: u16 = 3389;
-
-/// Smallest desktop side written into a connection file. Servers reject (or
-/// clamp in surprising ways) tiny desktops, and the dialog can hand us anything.
-pub(crate) const MIN_DESKTOP_SIDE: u16 = 200;
-
 /// The account details passed to the system client.
+///
+/// Built by [`crate::rdp::launch`] from a [`crate::config::Session`] and
+/// consumed by the `mstsc` / FreeRDP launchers in this package. The embedded
+/// client shares the *fields* verbatim (see `EmbeddedRdpConfig`) but not this
+/// struct — it has its own connect parameters.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Account<'a> {
     pub(crate) host: &'a str,

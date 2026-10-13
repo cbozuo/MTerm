@@ -31,35 +31,27 @@
 //! session file written before the built-in client existed still resolves to
 //! `SystemClient` and behaves exactly as it did.
 //!
-//! 模块组织（对齐 ssh/terminal 的 impls + struct 惯例）：
-//!   struct/account.rs —— 凭据/显示参数结构 + 端口常量
-//!   impls/mstsc.rs —— Windows：mstsc 启动、.rdp 文件、DPAPI 密码加密
-//!   impls/freerdp.rs —— FreeRDP 2/3 方言与命令行（跨平台编译）
-//!   impls/freerdp_start.rs —— 非 Windows 启动、stdin 凭据、早退检测
+//! 模块组织（两种客户端平级，`launch` 是唯一交汇点）：
+//!   native/ —— 系统客户端：mstsc / FreeRDP 启动、.rdp 文件、DPAPI 密码加密、
+//!     stdin 凭据、早退检测
 //!   embedded/ —— 内置客户端（ironrdp）：配置、状态机、按键映射、证书信任
+//! 两个协议常量（端口、最小桌面边长）定义在本文件：内置客户端经顶层再导出
+//! 共用，不归属任何一侧。
 use crate::config::{RdpClientMode, Session};
 use crate::i18n::t;
 
-#[path = "struct/account.rs"]
-mod account;
-#[cfg(windows)]
-#[path = "impls/mstsc.rs"]
-mod mstsc;
-#[cfg_attr(windows, allow(dead_code))]
-#[path = "impls/freerdp.rs"]
-mod freerdp;
-#[cfg(not(windows))]
-#[path = "impls/freerdp_start.rs"]
-mod freerdp_start;
-
 pub(crate) mod embedded;
+pub(crate) mod native;
 
-#[cfg(windows)]
-use mstsc::start_client;
-#[cfg(not(windows))]
-use freerdp_start::start_client;
-pub(crate) use account::{Account, MIN_DESKTOP_SIDE, RDP_DEFAULT_PORT};
 pub(crate) use embedded::split_user_domain;
+pub(crate) use native::Account;
+
+/// The port RDP is assigned by IANA/MS-RDPBCGR.
+pub(crate) const RDP_DEFAULT_PORT: u16 = 3389;
+
+/// Smallest desktop side written into a connection file. Servers reject (or
+/// clamp in surprising ways) tiny desktops, and the dialog can hand us anything.
+pub(crate) const MIN_DESKTOP_SIDE: u16 = 200;
 
 /// True when this RDP session is opened by MTerm's own client in a tab, rather
 /// than by `mstsc` / `xfreerdp` in a separate window.
@@ -119,7 +111,7 @@ pub(crate) fn launch(session: &Session) -> Result<String, String> {
         width: session.rdp_width.max(MIN_DESKTOP_SIDE),
         height: session.rdp_height.max(MIN_DESKTOP_SIDE),
     };
-    start_client(&account, &session.id)
+    native::start_client(&account, &session.id)
 }
 
 #[cfg(test)]

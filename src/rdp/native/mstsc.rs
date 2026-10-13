@@ -136,7 +136,7 @@ fn mstsc_args_without_password(account: &Account<'_>) -> Vec<String> {
     args
 }
 
-pub(super) fn start_client(account: &Account<'_>, session_id: &str) -> Result<String, String> {
+pub(crate) fn start_client(account: &Account<'_>, session_id: &str) -> Result<String, String> {
     let mut command = Command::new("mstsc");
     if account.password.is_empty() {
         // Like `mstsc /v:host`: do not force a credential prompt or override
