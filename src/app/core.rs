@@ -60,6 +60,11 @@ pub struct WindowState {
     pub net_hist: NetHist,
     pub follow_cd: Arc<std::sync::atomic::AtomicBool>,
     pub layout: Rc<RefCell<crate::layout::Layout>>,
+    /// (#rdp-vnc-embedded) Live remote-desktop sessions in this window. The pane
+    /// rows themselves live in the window's own `remote-panes` model (a Slint
+    /// model cannot be held by another window's state), so only the handles and
+    /// the routes are here — enough for a tab close or a transfer to find them.
+    pub remote_handles: Rc<RefCell<HashMap<String, crate::remote::RemoteHandle>>>,
     pub tabs_model: Rc<slint::VecModel<TabInfo>>,
     pub terminals_model: Rc<slint::VecModel<TerminalState>>,
     pub panes_model: Rc<slint::VecModel<PaneInfo>>,
@@ -191,6 +196,10 @@ pub struct AppCore {
     /// Tab id → delivery route, shared with the session pump threads so a
     /// tab can be retargeted at another window while its pumps keep running.
     pub tab_routes: TabRoutes,
+    /// (#rdp-vnc-embedded) Same idea for remote-desktop tabs: a frame pump
+    /// re-reads this per event, so dragging a desktop to another window keeps it
+    /// connected (US-K2) without the session noticing.
+    pub remote_routes: crate::remote::pump::RemoteRoutes,
 }
 
 #[cfg(test)]

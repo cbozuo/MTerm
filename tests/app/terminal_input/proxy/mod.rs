@@ -111,6 +111,14 @@ fn draft_with_proxy(
         rdp_resolution: "1280x720".into(),
         rdp_width: 1280,
         rdp_height: 720,
+        // (#rdp-vnc-embedded) The draft carries the built-in client's own
+        // choices too; the proxy tests below ignore them, so they keep the
+        // `Session::new_empty` defaults.
+        rdp_mode: "".into(),
+        rdp_follow_tab_size: false,
+        vnc_view_only: false,
+        vnc_security: "".into(),
+        vnc_clipboard: true,
         encoding: "UTF-8".into(),
         vt100_drawing: true,
         disable_shell_integration: false,

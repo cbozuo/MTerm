@@ -87,10 +87,18 @@ pub(super) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &Connect
             initial_rows,
         ),
         SessionKind::Rdp => {
-            // RDP sessions are handed to the system remote desktop client and
-            // never get a tab (see `on_connect_session`), so this arm is only a
-            // safety net for a saved session edited into another kind.
-            tracing::warn!("RDP session cannot be hosted in a tab; not starting");
+            // A system-client RDP session is handed to `mstsc` / `xfreerdp` and
+            // never gets a tab (see `on_connect_session`), so this arm is only a
+            // safety net for a saved session edited into another kind. The
+            // built-in client reaches a tab by a different route entirely (it
+            // is not a terminal session and has no term buffer).
+            tracing::warn!("RDP system-client session cannot be hosted in a tab; not starting");
+            return;
+        }
+        SessionKind::Vnc => {
+            // Same as the RDP arm above: VNC is hosted by the embedded client,
+            // which never goes through the terminal spawn path.
+            tracing::warn!("VNC session is hosted by the embedded client, not a terminal; not starting");
             return;
         }
     };

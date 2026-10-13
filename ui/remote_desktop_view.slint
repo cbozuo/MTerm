@@ -1,0 +1,597 @@
+// A remote desktop (RDP via MTerm's built-in client, or VNC) rendered inside a
+// tab. One instance per open remote-desktop tab; app.slint mounts them the same
+// way it mounts TerminalView — by toggling `visible`, because Slint forbids
+// nesting `if` inside a `for`.
+//
+// Four things make this more than an <Image>:
+//
+//   1. **Focus arbitration (P0-7).** A remote desktop and a terminal both want
+//      every keystroke. Only the *active* pane's view holds keyboard focus (the
+//      instance checks `active` before grabbing it), so a keystroke can never be
+//      delivered to both. The key anchor is a 1x1 transparent TextInput for the
+//      same reason TerminalView uses one: it is the only Slint element that
+//      receives IME composition, which a bare FocusScope does not.
+//
+//   2. **Coordinate mapping (P0-8).** The frame is letterboxed (never
+//      stretched), so a pointer position in tab coordinates has to go through the
+//      same fit before it becomes a remote pixel. `to-remote()` here mirrors
+//      `render::Viewport` in Rust; events landing in a letterbox bar are dropped
+//      instead of being clamped to the edge.
+//
+//   3. **Button state in Rust (P0-8).** Slint has no bitwise operators, and both
+//      protocols describe the *current* button mask rather than a delta, so the
+//      mask cannot be maintained here. The view reports press/release/move plus a
+//      button id and the driver reconstructs the mask from its own state.
+//
+//   4. **State legibility (P0-10).** Connecting / reconnecting / disconnected /
+//      failed are all visible on the tab itself, with the reason on failure —
+//      the user is never left staring at a black rectangle wondering. A failure
+//      states itself in one classified line and keeps the driver's raw text
+//      behind a details toggle rather than in the headline (#failure-wrap
+//      2026-10-13; see `remote::failure`).
+
+import { Theme } from "theme.slint";
+
+export component RemoteDesktopView inherits Rectangle {
+    in property <string> tab-id;
+    in property <bool> active;
+    // 0 connecting / 1 authenticating / 2 connected / 3 reconnecting /
+    // 4 disconnected / 5 failed.
+    in property <int> state: 0;
+    in property <string> status: "";
+    // The driver's own failure text, verbatim. Shown only when asked for —
+    // see the status overlay below.
+    in property <string> error: "";
+    // Whether that raw text is expanded right now. UI-local on purpose: it is
+    // a reading preference of this pane, not something the registry or the
+    // driver needs to hear about (#failure-wrap 2026-10-13).
+    in-out property <bool> details-open: false;
+    in property <image> frame;
+    in property <int> frame-w: 0;
+    in property <int> frame-h: 0;
+    in property <bool> view-only: false;
+    // Certificate / server-key trust overlay (P0-12).
+    in property <bool> trust-open: false;
+    in property <string> trust-title: "";
+    in property <string> trust-host: "";
+    in property <string> trust-fingerprint: "";
+    in property <string> trust-subject: "";
+    in property <string> trust-issuer: "";
+    in property <string> trust-validity: "";
+    in property <bool> trust-changed: false;
+
+    // --- Rust callbacks ----------------------------------------------------
+    // Coordinates are already remote-frame pixels; Rust never sees tab pixels.
+    callback key-event(string /* text */, bool /* down */,
+                       bool /* ctrl */, bool /* shift */, bool /* alt */, bool /* meta */);
+    // `action`: 0 = move, 1 = press, 2 = release.
+    callback pointer-event(int /* x */, int /* y */, int /* button */, int /* action */);
+    callback wheel-event(int /* x */, int /* y */, float /* dx */, float /* dy */);
+    callback release-all-keys();
+    callback resized(int /* width */, int /* height */);
+    callback reconnect();
+    callback trust-decide(bool /* accept */, bool /* remember */);
+
+    background: Theme.term-bg;
+
+    // --- Letterbox geometry -------------------------------------------------
+    // `/ 1px` turns a Slint length into a plain number and `* 1px` back again;
+    // Slint never converts between the two implicitly.
+    property <float> view-w: self.width / 1px;
+    property <float> view-h: self.height / 1px;
+    property <float> frame-w-f: root.frame-w;
+    property <float> frame-h-f: root.frame-h;
+    // Uniform scale of the `contain` fit; 0 when there is nothing to draw.
+    property <float> fit-scale: frame-w-f > 0 && frame-h-f > 0
+        && view-w > 0 && view-h > 0
+        ? min(view-w / frame-w-f, view-h / frame-h-f)
+        : 0;
+    // Size and offset of the drawn image inside the tab (the letterbox bars).
+    property <length> drawn-w: frame-w-f * fit-scale * 1px;
+    property <length> drawn-h: frame-h-f * fit-scale * 1px;
+    property <length> origin-x: (self.width - drawn-w) / 2;
+    property <length> origin-y: (self.height - drawn-h) / 2;
+
+    // Scratch slots for `to-remote`'s out-parameters (Slint has no tuples out).
+    property <int> pending-x;
+    property <int> pending-y;
+
+    // Tab-local pointer position -> remote frame pixel. False when the pointer
+    // is in a letterbox bar or no frame has arrived: there is no remote pixel
+    // under the cursor, and a clamped coordinate would make the remote cursor
+    // jump to the edge.
+    function to-remote(mx: length, my: length) -> bool {
+        if (fit-scale <= 0) { return false; }
+        let rx = floor((mx - origin-x) / (fit-scale * 1px));
+        let ry = floor((my - origin-y) / (fit-scale * 1px));
+        if (rx < 0 || ry < 0 || rx >= root.frame-w || ry >= root.frame-h) {
+            return false;
+        }
+        root.pending-x = rx;
+        root.pending-y = ry;
+        return true;
+    }
+
+    // Numeric button id: 0 left, 1 middle, 2 right. Slint exposes no numeric
+    // pointer-button value, so each case is written out.
+    function button-id(button: PointerEventButton) -> int {
+        if (button == PointerEventButton.left) { return 0; }
+        if (button == PointerEventButton.middle) { return 1; }
+        if (button == PointerEventButton.right) { return 2; }
+        return 0;
+    }
+
+    // --- Connecting spinner -------------------------------------------------
+    // Slint 1.18 has no element rotation, so the spinner is four dots on a
+    // circle whose opacity is phase-shifted by a timer. The state lives at root
+    // scope: the dots are `for` children two levels down, where a `parent.` read
+    // would be ambiguous with the layout parent.
+    property <int> spin-phase: 0;
+    property <length> dot-size: 6px;
+    property <length> dot-radius: 3px;
+    property <length> orbit: 12px;
+    // Only runs while the spinner is on screen; a hidden tab has no reason to
+    // keep a timer firing.
+    spin-timer := Timer {
+        interval: 140ms;
+        running: root.state <= 1 && root.visible;
+        triggered => { root.spin-phase = Math.mod(root.spin-phase + 1, 4); }
+    }
+    // cos/sin of a quarter turn each. The orbit has exactly four stops, so a
+    // table is both exact and cheaper than a function.
+    pure function orbit-x(i: int) -> float {
+        if (i == 1) { return 1; }
+        if (i == 3) { return -1; }
+        return 0;
+    }
+    pure function orbit-y(i: int) -> float {
+        if (i == 0) { return -1; }
+        if (i == 2) { return 1; }
+        return 0;
+    }
+
+    // --- The picture --------------------------------------------------------
+    // Explicit x/y/width/height rather than `image-fit`, so the drawn rect and
+    // the pointer mapping are literally the same numbers.
+    if root.frame-w > 0 && root.frame-h > 0 : Image {
+        x: root.origin-x;
+        y: root.origin-y;
+        width: root.drawn-w;
+        height: root.drawn-h;
+        source: root.frame;
+        // Already scaled to the exact fit, so `fill` cannot distort anything.
+        image-fit: fill;
+    }
+
+    // --- Pointer ------------------------------------------------------------
+    // One TouchArea for the whole view, so a drag that wanders outside the drawn
+    // image but stays in the tab keeps tracking and the release lands correctly.
+    ta := TouchArea {
+        // The trust overlay is a separate element declared later, so it is on
+        // top and swallows the input; disabling this area stops a click that
+        // slips past it from also reaching the remote desktop.
+        enabled: !root.trust-open;
+        mouse-cursor: pointer;
+        changed has-hover => { if (self.has-hover) { root.grab-focus(); } }
+        pointer-event(ev) => {
+            if (ev.kind == PointerEventKind.down) {
+                root.grab-focus();
+            }
+            if (root.view-only) {
+                return;
+            }
+            if (ev.kind == PointerEventKind.move) {
+                if (!root.to-remote(self.mouse-x, self.mouse-y)) { return; }
+                root.pointer-event(root.pending-x, root.pending-y, 0, 0);
+            } else if (ev.kind == PointerEventKind.down) {
+                if (!root.to-remote(self.mouse-x, self.mouse-y)) { return; }
+                root.pointer-event(root.pending-x, root.pending-y, root.button-id(ev.button), 1);
+            } else if (ev.kind == PointerEventKind.up) {
+                if (!root.to-remote(self.mouse-x, self.mouse-y)) { return; }
+                root.pointer-event(root.pending-x, root.pending-y, root.button-id(ev.button), 2);
+            }
+        }
+        // The wheel arrives as `scroll-event`, not as a pointer event.
+        scroll-event(ev) => {
+            // A view-only session, or a cursor parked in a letterbox bar, has no
+            // remote pixel to scroll; the event is rejected so it does not also
+            // reach the window-level scroll handler.
+            if (root.view-only) { reject }
+            if (!root.to-remote(self.mouse-x, self.mouse-y)) { reject }
+            // Slint reports the wheel delta as a length; `/ 1px` makes it the
+            // plain number the drivers want (a notches-style delta).
+            root.wheel-event(root.pending-x, root.pending-y,
+                             ev.delta-x / 1px, ev.delta-y / 1px);
+            accept
+        }
+    }
+
+    // --- Keyboard -----------------------------------------------------------
+    // Take focus when this view becomes the active tab; drop it when it stops
+    // being active, so a hidden remote tab can never receive a keystroke (the
+    // mutual-exclusion requirement of P0-7).
+    changed active => {
+        if (self.active) { root.grab-focus(); } else { root.drop-focus(); }
+    }
+    function grab-focus() {
+        if (root.active && !root.trust-open) {
+            key-capture.focus();
+        }
+    }
+    function drop-focus() {
+        if (key-capture.has-focus) {
+            // A key held while the user left the tab must not stay down on the
+            // server, so releasing is not optional on focus loss.
+            root.release-all-keys();
+        }
+    }
+
+    key-capture := FocusScope {
+        width: 0px;
+        height: 0px;
+        // 1x1 transparent TextInput: the only element that receives IME
+        // composition. Same trick, and same reason, as TerminalView.
+        ime-input := TextInput {
+            x: -1000px; y: -1000px;
+            width: 1px; height: 1px; opacity: 0;
+            text-cursor-width: 0px;
+            single-line: true;
+            key-pressed(event) => {
+                root.forward-key(event, true);
+                // Accepting every key is what makes non-ASCII input reach the
+                // server: returning reject would let Slint insert the character
+                // into `text` instead.
+                accept
+            }
+            key-released(event) => {
+                root.forward-key(event, false);
+                accept
+            }
+            // IME commits and pasted text arrive here rather than as key events,
+            // which is the only way non-Latin input reaches the server.
+            edited => {
+                if (self.text != "") {
+                    root.key-event(self.text, true, false, false, false, false);
+                    root.key-event(self.text, false, false, false, false, false);
+                    self.text = "";
+                }
+            }
+        }
+    }
+
+    function forward-key(event: KeyEvent, down: bool) {
+        // Slint swaps ctrl/meta on macOS (`control` is Cmd there), so the
+        // physical Ctrl is `meta` on that platform and `control` elsewhere.
+        root.key-event(event.text, down,
+            Theme.is-mac ? event.modifiers.meta : event.modifiers.control,
+            event.modifiers.shift,
+            event.modifiers.alt,
+            Theme.is-mac ? event.modifiers.control : event.modifiers.meta);
+    }
+
+    // --- Tab-size change (P0-9) ---------------------------------------------
+    // Fires on split, window resize and moving the tab to another window. Rust
+    // de-duplicates and clamps, so an unchanged or degenerate size costs nothing.
+    changed width => { root.report-size(); }
+    changed height => { root.report-size(); }
+    // The tab is measured on its *first* layout, which happens while the session
+    // is still connecting — and `report-size` deliberately drops those. Without
+    // this trigger the initial size would never be sent at all (nothing changes
+    // size afterwards), so the desktop would stay at the configured guess until
+    // the user happened to resize the window.
+    changed state => {
+        root.report-size();
+        // Fold the raw failure text again whenever the state moves: the toggle
+        // belongs to the failure on screen now, not to the previous one
+        // (#failure-wrap 2026-10-13).
+        root.details-open = false;
+    }
+    // Mirrored rather than read inline so the view can react to it: dragging the
+    // window to a monitor with a different scale factor changes the tab's
+    // *device* pixel count without changing its logical size. A `changed` handler
+    // cannot name a global's property directly.
+    property <float> dpr: Theme.device-pixel-ratio;
+    changed dpr => { root.report-size(); }
+    function report-size() {
+        if (root.state != 2) { return; }
+        // The tab's own content box, in **device** pixels: that is the size the
+        // server has to render at. The frame is drawn at a logical size that the
+        // compositor scales back up by the DPR, so a tab 960 logical px wide on a
+        // 200% screen wants a 1920 px desktop drawn 1:1 — requesting 960 would
+        // stretch a 960 px desktop over 1920 device px and look soft.
+        // Rust clamps and four-pixel-aligns whatever it is handed.
+        //
+        // Reporting the *frame* size would ask the server for the size it is
+        // already running at, which the driver drops as a no-op — the mode would
+        // be silently inert.
+        root.resized(round(root.view-w * root.dpr), round(root.view-h * root.dpr));
+    }
+
+    // --- Status overlay -----------------------------------------------------
+    // Visible whenever the session is not Connected, so a failed or dropped
+    // session is never a silent black rectangle. A Connected tab shows nothing:
+    // the desktop is the content.
+    //
+    // (#failure-wrap 2026-10-13) A failure shows in two layers. `status` is one
+    // classified line ("用户名或密码不正确" — see `remote::failure`); the
+    // driver's own text stays in `error`, kept in full but folded away, because
+    // a wall of `CredSSP: InvalidToken: ... [0xc000006d]` was what a failed
+    // connection used to lead with.
+    if root.state != 2 : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.term-bg;
+        VerticalLayout {
+            padding: 24px;
+            spacing: 12px;
+            alignment: center;
+            // The spinner leads the words: while a wait has nothing to say yet
+            // it is the only thing on screen, and a wait reads top-down —
+            // motion first, then the sentence. It needs the wrapper because a
+            // fixed-size child of `VerticalLayout { alignment: center }` is
+            // only centred *vertically*; the dots used to hang off the left
+            // edge of the tab (#status-center 2026-10-13).
+            if root.state <= 1 : HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 40px; height: 40px;
+                    for d in [0, 1, 2, 3] : Rectangle {
+                        // Centre plus a per-dot offset on the circle. The orbit term
+                        // is `orbit-x(d) * 1px` so both halves of the sum are lengths.
+                        x: (parent.width - root.dot-size) / 2 + root.orbit-x(d) * root.orbit;
+                        y: (parent.height - root.dot-size) / 2 + root.orbit-y(d) * root.orbit;
+                        width: root.dot-size; height: root.dot-size;
+                        border-radius: root.dot-radius;
+                        background: Theme.accent;
+                        opacity: root.spin-phase == d ? 1.0 : 0.25;
+                        animate opacity { duration: 140ms; }
+                    }
+                }
+            }
+            Text {
+                text: root.status;
+                // A failure is the one status worth colouring: every other
+                // state here is a wait, and a wait must not look like an alarm.
+                color: root.state == 5 ? Theme.danger-strong : Theme.text-primary;
+                font-size: Theme.fs-lg;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+            // The driver's text, verbatim, behind a toggle. Kept rather than
+            // trimmed: it is the only statement of what actually went wrong,
+            // and the thing a bug report needs.
+            if root.error != "" : VerticalLayout {
+                spacing: 10px;
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: details-label.preferred-width + 24px;
+                        height: 26px;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: details-ta.has-hover ? Theme.accent : Theme.border-control;
+                        background: details-ta.has-hover ? Theme.field : transparent;
+                        details-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.details-open = !root.details-open; }
+                        }
+                        details-label := Text {
+                            width: parent.width;
+                            text: root.details-open
+                                ? @tr("Hide error details")
+                                : @tr("Show error details");
+                            color: details-ta.has-hover ? Theme.accent : Theme.text-secondary;
+                            font-size: Theme.fs-sm;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                if root.details-open : Text {
+                    text: root.error;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-sm;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                }
+            }
+            // Offered for every ending, so the same wrapper rule applies — a
+            // button pinned to the left edge reads as a stray control rather
+            // than as the one action this screen has (#status-center
+            // 2026-10-13).
+            if root.state >= 3 : HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    // Reconnect (US-C2): a dropped session recovers without deleting
+                    // and recreating the session.
+                    width: reconnect-label.preferred-width + 28px;
+                    height: 32px;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: reconnect-ta.has-hover ? Theme.accent : Theme.border-control;
+                    background: reconnect-ta.has-hover ? Theme.accent-soft : Theme.field;
+                    reconnect-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.reconnect(); }
+                    }
+                    reconnect-label := Text {
+                        x: 14px;
+                        text: @tr("Reconnect");
+                        color: reconnect-ta.has-hover ? Theme.accent : Theme.text-primary;
+                        font-size: Theme.fs-sm;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+
+    // --- View-only badge ----------------------------------------------------
+    // Shown only while connected: in every other state the status overlay
+    // already occupies the middle of the view.
+    if root.view-only && root.state == 2 : Rectangle {
+        x: 10px; y: 10px;
+        width: readonly-label.preferred-width + 20px;
+        height: 26px;
+        border-radius: Theme.radius-sm;
+        // A translucent plate rather than an opaque one, so the desktop stays
+        // readable behind the badge.
+        background: #00000060;
+        readonly-label := Text {
+            x: 10px;
+            text: @tr("View only");
+            color: Theme.text-primary;
+            font-size: Theme.fs-xs;
+            vertical-alignment: center;
+        }
+    }
+
+    // --- Certificate / server-key trust overlay (P0-12) ----------------------
+    // Deliberately a blocking overlay rather than a toast: an unverified server
+    // is a decision the user has to make consciously, and a toast that can be
+    // missed is how people end up clicking through a warning they never read.
+    if root.trust-open : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.modal-scrim;
+        VerticalLayout {
+            padding: 20px;
+            spacing: 10px;
+            alignment: center;
+            Rectangle {
+                width: 460px;
+                height: tr-card.min-height;
+                border-radius: Theme.radius-md;
+                background: Theme.popup-bg;
+                border-width: 1px;
+                // A changed fingerprint is styled as a warning, not an
+                // informational note: it is the one case that may be an
+                // impersonation.
+                border-color: root.trust-changed ? Theme.danger-strong : Theme.border-strong;
+                drop-shadow-blur: 18px;
+                drop-shadow-color: #00000070;
+                tr-card := VerticalLayout {
+                    padding: 18px;
+                    spacing: 10px;
+                    Text {
+                        text: root.trust-title;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-md;
+                        font-weight: 700;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                    if root.trust-changed : Text {
+                        text: @tr("This server's certificate has changed since you last connected. It may have been reinstalled — or someone may be intercepting the connection.");
+                        color: Theme.danger-strong;
+                        font-size: Theme.fs-sm;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: @tr("Server");
+                        color: Theme.text-muted; font-size: Theme.fs-xs;
+                    }
+                    Text {
+                        text: root.trust-host;
+                        color: Theme.text-primary; font-size: Theme.fs-sm;
+                        horizontal-stretch: 1; overflow: elide;
+                    }
+                    if root.trust-subject != "" : Text {
+                        text: @tr("Subject: {0}", root.trust-subject);
+                        color: Theme.text-secondary; font-size: Theme.fs-xs;
+                        wrap: word-wrap; horizontal-stretch: 1;
+                    }
+                    if root.trust-issuer != "" : Text {
+                        text: @tr("Issuer: {0}", root.trust-issuer);
+                        color: Theme.text-secondary; font-size: Theme.fs-xs;
+                        wrap: word-wrap; horizontal-stretch: 1;
+                    }
+                    if root.trust-validity != "" && root.trust-validity != " — " : Text {
+                        text: @tr("Valid: {0}", root.trust-validity);
+                        color: Theme.text-secondary; font-size: Theme.fs-xs;
+                        wrap: word-wrap; horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: @tr("SHA-256 fingerprint");
+                        color: Theme.text-muted; font-size: Theme.fs-xs;
+                    }
+                    Text {
+                        text: root.trust-fingerprint;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-xs;
+                        // A fingerprint must be readable in full and selectable
+                        // for comparison — truncating it defeats its only purpose.
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: end;
+                        Rectangle {
+                            width: reject-label.preferred-width + 24px;
+                            height: 32px;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: reject-ta.has-hover ? Theme.danger-strong : Theme.border-control;
+                            background: reject-ta.has-hover
+                                ? Theme.danger-strong.with-alpha(0.12) : Theme.field;
+                            reject-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.trust-decide(false, false); }
+                            }
+                            reject-label := Text {
+                                x: 12px;
+                                text: @tr("Reject");
+                                color: reject-ta.has-hover ? Theme.danger-strong : Theme.text-primary;
+                                font-size: Theme.fs-sm;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Rectangle {
+                            width: once-label.preferred-width + 24px;
+                            height: 32px;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: once-ta.has-hover ? Theme.accent : Theme.border-control;
+                            background: once-ta.has-hover ? Theme.accent-soft : Theme.field;
+                            once-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.trust-decide(true, false); }
+                            }
+                            once-label := Text {
+                                x: 12px;
+                                text: @tr("Trust this time");
+                                color: once-ta.has-hover ? Theme.accent : Theme.text-primary;
+                                font-size: Theme.fs-sm;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Rectangle {
+                            width: save-label.preferred-width + 24px;
+                            height: 32px;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: save-ta.has-hover ? Theme.accent : Theme.border-control;
+                            background: Theme.accent;
+                            save-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.trust-decide(true, true); }
+                            }
+                            save-label := Text {
+                                x: 12px;
+                                text: @tr("Trust and remember");
+                                color: white;
+                                font-size: Theme.fs-sm;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

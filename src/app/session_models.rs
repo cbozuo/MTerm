@@ -770,6 +770,13 @@ pub(super) fn wsl_available() -> bool {
 /// Resolution dropdown values shared by the dialog and the stored session.
 /// `fullscreen` and `custom` are the two non-preset entries; presets are the
 /// `"WxH"` strings below.
+///
+/// (#rdp-vnc-embedded) `follow` is a third non-preset entry, offered **only** in
+/// the built-in client's resolution list: it means "resize the remote desktop
+/// to the tab". It is stored as the separate `Session::rdp_follow_tab_size`
+/// boolean rather than as a width/height pair, because the size is then decided
+/// at runtime and no pair of numbers describes it.
+pub(super) const RDP_RESOLUTION_FOLLOW: &str = "follow";
 pub(super) const RDP_RESOLUTION_FULLSCREEN: &str = "fullscreen";
 pub(super) const RDP_RESOLUTION_CUSTOM: &str = "custom";
 pub(super) const RDP_RESOLUTION_DEFAULT: &str = "1280x720";
@@ -788,6 +795,20 @@ pub(super) const RDP_RESOLUTION_PRESETS: [&str; 7] = [
 pub(super) const RDP_MIN_SIDE: i32 = 200;
 pub(super) const RDP_MAX_SIDE: i32 = 8192;
 
+/// Whether the draft asks the built-in client to track the tab size.
+///
+/// (#rdp-follow-lost 2026-10-13) The dialog has exactly one control for this —
+/// the resolution dropdown — and it writes only `draft.rdp_resolution`;
+/// `draft.rdp_follow_tab_size` is a carry-over the dialog never touches (it
+/// exists so a stored config keeps its meaning). **Every** save path must
+/// therefore OR the two, or choosing "Follow tab" in the dialog gets silently
+/// dropped. Both callers share this function so the rule cannot drift again —
+/// that drift is exactly how the feature broke: `app.rs`'s hand-rolled
+/// constructor wrote the raw bool and ignored the dropdown.
+pub(super) fn follows_tab_size(draft: &SessionDraft) -> bool {
+    draft.rdp_follow_tab_size || draft.rdp_resolution.to_string() == RDP_RESOLUTION_FOLLOW
+}
+
 /// Turn the dialog's resolution choice into the stored display settings
 /// `(fullscreen, width, height)`. A `"WxH"` preset carries its own size;
 /// the two free inputs are only trusted for `custom` (non-positive values
@@ -800,6 +821,15 @@ pub(super) fn rdp_display_settings(
 ) -> (bool, u16, u16) {
     if resolution == RDP_RESOLUTION_FULLSCREEN {
         return (true, 1280, 720);
+    }
+    // (#rdp-follow-default 2026-10-13) "Follow tab" has no size of its own —
+    // the view decides the size at runtime — so it must not fall through to
+    // the full-screen fallback below. That fallback would leak "full screen"
+    // into a session later switched to the system client, and would make the
+    // built-in client open at a wrong guess. A plain window at the default
+    // size is the honest placeholder; `follow_tab_size` carries the intent.
+    if resolution == RDP_RESOLUTION_FOLLOW {
+        return (false, 1280, 720);
     }
     if resolution == RDP_RESOLUTION_CUSTOM {
         let clamp_side = |value: i32, default: u16| -> u16 {
@@ -846,20 +876,34 @@ pub(super) fn rdp_resolution_choice(fullscreen: bool, width: u16, height: u16) -
 // Session callbacks (welcome page + dialog)
 // ---------------------------------------------------------------------------
 
-/// Build the effective session represented by the dialog. When editing, blank
-/// secret fields retain their saved values because real passwords and pasted
-/// private keys are deliberately never echoed back into the UI (#10, #276).
+/// Build the effective session represented by the dialog.
+///
+/// (#blank-password-overwrites 2026-10-13) The password box is authoritative:
+/// whatever it holds is what gets saved, **including nothing**. A blank field
+/// therefore means "no password", not "keep the saved one" — that is the only
+/// way to bring a saved session back to an empty password (the remote host in
+/// this project genuinely has none) without adding a "clear password" control,
+/// which the user explicitly declined. One box covers every credential the
+/// dialog has: SSH password, SSH key passphrase, RDP and VNC all share
+/// `SessionDraft::password`, so they all follow this rule.
+///
+/// This knowingly drops the "a blank field keeps the saved password" half of
+/// the #10 convention. #10's other half still stands — the stored password is
+/// never echoed back into the dialog — so the box opens empty on every edit and
+/// saving an untouched dialog writes an empty password. The user accepted that
+/// trade; do **not** "fix" it by pre-filling the field with the secret.
+///
+/// The pasted private key keeps the old blank-keeps behaviour (#276): it is key
+/// material with no "empty" meaning of its own, so blanking it could only ever
+/// destroy a key by accident.
 pub(super) fn session_from_draft(
     draft: &SessionDraft,
     existing: Option<&Session>,
     forwards: Vec<crate::config::PortForward>,
     triggers: Vec<crate::config::SessionTrigger>,
 ) -> Session {
-    let password = if draft.password.is_empty() {
-        existing.map(|s| s.password.clone()).unwrap_or_default()
-    } else {
-        Secret::new(draft.password.to_string())
-    };
+    // Blank overwrites: deliberately no `existing` fallback for this field.
+    let password = Secret::new(draft.password.to_string());
     let private_key_inline = if draft.private_key_inline_mode {
         if draft.private_key_inline.is_empty() {
             existing
@@ -885,10 +929,15 @@ pub(super) fn session_from_draft(
     let default_port = match kind {
         SessionKind::Telnet => 23,
         SessionKind::Rdp => 3389,
+        SessionKind::Vnc => 5900,
         _ => 22,
     };
     let (rdp_fullscreen, rdp_width, rdp_height) =
         rdp_display_settings(&draft.rdp_resolution.to_string(), draft.rdp_width, draft.rdp_height);
+    // (#rdp-vnc-embedded) 「跟随标签页」是内置客户端独有的选项，它不是一个宽高
+    // 对（尺寸在运行时才由标签页决定），所以单独落成一个 bool。判据见
+    // `follows_tab_size` —— 保存路径必须共用它，否则分辨率下拉里的选择会丢。
+    let rdp_follow_tab_size = follows_tab_size(draft);
 
     Session {
         id: draft.id.to_string(),
@@ -932,6 +981,16 @@ pub(super) fn session_from_draft(
         rdp_fullscreen,
         rdp_width,
         rdp_height,
+        // (#rdp-vnc-embedded) The segmented control the dialog shows for RDP.
+        // Anything the draft does not carry keeps the pre-existing default, so
+        // a system-client session saved before this feature existed round-trips
+        // byte-identically through save and reload.
+        rdp_mode: crate::config::RdpClientMode::from_str(&draft.rdp_mode.to_string()),
+        rdp_follow_tab_size,
+        rdp_embedded_fullscreen: false,
+        vnc_view_only: draft.vnc_view_only,
+        vnc_security: draft.vnc_security.to_string(),
+        vnc_clipboard: draft.vnc_clipboard,
         encoding: draft.encoding.to_string(),
         vt100_drawing: draft.vt100_drawing,
         forwards,
@@ -1160,5 +1219,155 @@ mod rdp_display_tests {
     fn unrecognised_resolution_falls_back_to_fullscreen() {
         assert_eq!(rdp_display_settings("garbage", 1920, 1080), (true, 1280, 720));
         assert_eq!(rdp_display_settings("", 1920, 1080), (true, 1280, 720));
+    }
+}
+
+#[cfg(test)]
+mod blank_password_tests {
+    use super::*;
+
+    /// (#blank-password-overwrites 2026-10-13) A whole draft with only the
+    /// fields under test differing from the dialog's own defaults.
+    fn draft() -> SessionDraft {
+        SessionDraft {
+            id: "s1".into(),
+            name: "".into(),
+            kind: "rdp".into(),
+            host: "192.168.0.69".into(),
+            port: 3389,
+            user: "Administrator".into(),
+            auth: "password".into(),
+            password: "".into(),
+            private_key_path: "".into(),
+            private_key_inline: "".into(),
+            private_key_inline_mode: false,
+            proxy: "".into(),
+            path_type: "direct".into(),
+            proxy_type: "socks5".into(),
+            proxy_host: "".into(),
+            proxy_port: "".into(),
+            proxy_user: "".into(),
+            proxy_pass: "".into(),
+            group: "".into(),
+            serial_port: "".into(),
+            baud_rate: 115200,
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "none".into(),
+            flow_control: "none".into(),
+            rdp_domain: "".into(),
+            rdp_resolution: "1280x720".into(),
+            rdp_width: 1280,
+            rdp_height: 720,
+            rdp_mode: "embedded".into(),
+            rdp_follow_tab_size: false,
+            vnc_view_only: false,
+            vnc_security: "".into(),
+            vnc_clipboard: true,
+            encoding: "UTF-8".into(),
+            vt100_drawing: true,
+            disable_shell_integration: false,
+            note: "".into(),
+            jump_session_id: "".into(),
+        }
+    }
+
+    fn saved_with_password(password: &str) -> Session {
+        let mut session = Session::new_empty();
+        session.id = "s1".into();
+        session.password = Secret::new(password.to_string());
+        session
+    }
+
+    /// The whole point of the change: a blank box means "no password", so
+    /// clearing it is how a saved password gets taken off a session.
+    #[test]
+    fn a_blank_box_overwrites_the_saved_password() {
+        let existing = saved_with_password("hunter2");
+        let session = session_from_draft(&draft(), Some(&existing), Vec::new(), Vec::new());
+        assert!(session.password.is_empty());
+    }
+
+    /// ...and typing one still replaces it.
+    #[test]
+    fn a_typed_password_replaces_the_saved_one() {
+        let existing = saved_with_password("old");
+        let mut draft = draft();
+        draft.password = "new".into();
+        let session = session_from_draft(&draft, Some(&existing), Vec::new(), Vec::new());
+        assert_eq!(session.password.as_str(), "new");
+    }
+
+    /// The rule does not depend on edit state: a new session with a blank box
+    /// has no password either.
+    #[test]
+    fn a_new_session_with_a_blank_box_has_no_password() {
+        let session = session_from_draft(&draft(), None, Vec::new(), Vec::new());
+        assert!(session.password.is_empty());
+    }
+
+    /// A single space is a password a user may legitimately have, so nothing
+    /// here may grow a `trim()`.
+    #[test]
+    fn a_single_space_is_still_a_password() {
+        let mut draft = draft();
+        draft.password = " ".into();
+        let session = session_from_draft(&draft, Some(&saved_with_password("x")), Vec::new(), Vec::new());
+        assert_eq!(session.password.as_str(), " ");
+    }
+
+    /// #276 still holds for the pasted private key: it is key material with no
+    /// "empty" meaning of its own, so a blank field must not wipe it.
+    #[test]
+    fn a_blank_pasted_private_key_still_keeps_the_saved_one() {
+        let mut existing = Session::new_empty();
+        existing.private_key_inline =
+            Secret::new("-----BEGIN OPENSSH PRIVATE KEY-----".to_string());
+        let mut draft = draft();
+        draft.private_key_inline_mode = true;
+        let session = session_from_draft(&draft, Some(&existing), Vec::new(), Vec::new());
+        assert!(!session.private_key_inline.is_empty());
+    }
+
+    /// (#rdp-follow-lost 2026-10-13) The regression this guards: the dialog
+    /// writes only `rdp_resolution`, so any save path that reads the raw
+    /// `rdp_follow_tab_size` bool silently drops the dropdown choice.
+    #[test]
+    fn choosing_follow_in_the_dropdown_survives_the_save() {
+        let mut draft = draft();
+        draft.rdp_resolution = "follow".into();
+        assert!(follows_tab_size(&draft));
+        let session = session_from_draft(&draft, None, Vec::new(), Vec::new());
+        assert!(session.rdp_follow_tab_size);
+    }
+
+    /// The carry-over bool still works for configs that predate the dropdown:
+    /// the judgement is an OR, not a replacement.
+    #[test]
+    fn a_stored_follow_flag_still_counts_with_another_resolution() {
+        let mut draft = draft();
+        draft.rdp_follow_tab_size = true;
+        draft.rdp_resolution = "1920x1080".into();
+        assert!(follows_tab_size(&draft));
+        let session = session_from_draft(&draft, None, Vec::new(), Vec::new());
+        assert!(session.rdp_follow_tab_size);
+    }
+
+    /// ...and neither source claiming "follow" means no follow.
+    #[test]
+    fn neither_source_means_no_follow() {
+        let mut draft = draft();
+        draft.rdp_resolution = "1920x1080".into();
+        assert!(!follows_tab_size(&draft));
+        let session = session_from_draft(&draft, None, Vec::new(), Vec::new());
+        assert!(!session.rdp_follow_tab_size);
+    }
+
+    /// (#rdp-follow-default 2026-10-13) "Follow tab" has no size of its own,
+    /// but it must **not** become full screen: a session saved as follow and
+    /// later switched to the system client would otherwise launch full screen.
+    #[test]
+    fn follow_tab_is_a_window_not_full_screen() {
+        assert_eq!(rdp_display_settings("follow", 0, 0), (false, 1280, 720));
     }
 }

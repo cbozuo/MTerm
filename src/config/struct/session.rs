@@ -16,10 +16,15 @@ pub enum SessionKind {
     Telnet,
     /// Local shell process on this machine (PowerShell/CMD/WSL/$SHELL).
     Local,
-    /// Remote Desktop session: MTerm only stores the account details and
-    /// hands them to the system RDP client (`mstsc` / `xfreerdp`), which opens
-    /// the desktop in its own native window — no tab is created.
+    /// Remote Desktop session. Two ways to open it (see `RdpClientMode`): the
+    /// system client (`mstsc` / `xfreerdp`) opens the desktop in its own native
+    /// window, or MTerm's built-in client speaks RDP itself inside a tab.
     Rdp,
+    /// VNC/RFB remote desktop, always handled by MTerm's built-in client
+    /// inside a tab. A separate variant rather than an RDP mode because the
+    /// protocol differs outright: there is no Windows logon domain, and the
+    /// challenge/response authentication and account fields are their own.
+    Vnc,
 }
 
 impl SessionKind {
@@ -30,6 +35,7 @@ impl SessionKind {
             SessionKind::Telnet => "telnet",
             SessionKind::Local => "local",
             SessionKind::Rdp => "rdp",
+            SessionKind::Vnc => "vnc",
         }
     }
 
@@ -39,8 +45,68 @@ impl SessionKind {
             "telnet" => SessionKind::Telnet,
             "local" => SessionKind::Local,
             "rdp" => SessionKind::Rdp,
+            "vnc" => SessionKind::Vnc,
             _ => SessionKind::Ssh,
         }
+    }
+}
+
+/// Which client opens an RDP session.
+///
+/// Both variants describe the *same* connection (one host, one account, one
+/// desktop) and differ only in who speaks the protocol, so this is a field on
+/// `Session` instead of a second `SessionKind`: switching it must not split one
+/// connection into two entries, and every existing `match session.kind` stays
+/// untouched.
+///
+/// `#[serde(default)]` on the field makes every session file written before
+/// this existed deserialize to `SystemClient` — today's mstsc behaviour —
+/// with no migration step.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RdpClientMode {
+    /// Hand the account to the system client (`mstsc` / `xfreerdp`), which
+    /// owns its own window. The behaviour MTerm shipped before the built-in
+    /// client, and still the default.
+    #[default]
+    SystemClient,
+    /// MTerm's own RDP client: a tab holds the desktop, frames are rendered by
+    /// Slint and input is forwarded to the session.
+    Embedded,
+}
+
+impl RdpClientMode {
+    /// Stable identifier used by the session dialog's segmented control.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RdpClientMode::SystemClient => "system",
+            RdpClientMode::Embedded => "embedded",
+        }
+    }
+
+    /// Anything unrecognised (including an empty string) means the system
+    /// client, so a hand-edited config can never silently switch a session
+    /// into the embedded client.
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "embedded" => RdpClientMode::Embedded,
+            _ => RdpClientMode::SystemClient,
+        }
+    }
+}
+
+impl SessionKind {
+    /// True for the transports that are *always* rendered inside a tab by MTerm
+    /// itself, whatever `rdp_mode` says.
+    ///
+    /// This deliberately answers only half the question. An RDP session in
+    /// `RdpClientMode::Embedded` is also a tab, and that cannot be decided from
+    /// `SessionKind` alone. Callers that need the real answer — anything that
+    /// creates a tab, or picks a renderer — must use `Session::uses_tab`, which
+    /// can see both fields. Use this one only for genuinely kind-level
+    /// questions (e.g. "does this protocol have a tab-hosted flavour at all?").
+    pub fn is_tab_transport(&self) -> bool {
+        matches!(self, SessionKind::Vnc)
     }
 }
 
@@ -186,6 +252,33 @@ pub struct Session {
     pub rdp_width: u16,
     #[serde(default = "default_rdp_height")]
     pub rdp_height: u16,
+    /// Which client opens an RDP session. Absent in old config files, where it
+    /// means `SystemClient` — the mstsc behaviour that shipped first.
+    #[serde(default)]
+    pub rdp_mode: RdpClientMode,
+    /// Built-in client only: resize the remote desktop to follow the tab
+    /// instead of using the fixed `rdp_width` x `rdp_height` above. Servers that
+    /// refuse a mid-session resize fall back to scaling the fixed size to fit.
+    #[serde(default)]
+    pub rdp_follow_tab_size: bool,
+    /// Hide MTerm's own chrome and give the tab the whole monitor. Only
+    /// meaningful for the built-in client; the system client has its own
+    /// full-screen handling driven by `rdp_fullscreen`.
+    #[serde(default)]
+    pub rdp_embedded_fullscreen: bool,
+
+    // --- VNC-only fields (ignored unless kind == Vnc) -----------------------
+    /// Reject mouse and keyboard input at the server (view-only session).
+    #[serde(default)]
+    pub vnc_view_only: bool,
+    /// Preferred VNC security type; empty = let the client pick. VNC Auth
+    /// (DES challenge/response) is the common one; VeNCrypt/TLS need the
+    /// session to offer it.
+    #[serde(default)]
+    pub vnc_security: String,
+    /// Mirror the local clipboard into the remote session and back.
+    #[serde(default = "default_true")]
+    pub vnc_clipboard: bool,
 
     /// Character encoding used by the interactive terminal stream (#338).
     /// UTF-8 remains the default for existing and newly created sessions.
@@ -258,6 +351,29 @@ fn default_true() -> bool {
 }
 
 impl Session {
+    /// True when this session's desktop is drawn by MTerm inside one of its
+    /// own tabs, i.e. when connecting it must create a tab rather than hand the
+    /// account to an external client.
+    ///
+    /// This is the single predicate every caller should use — it is the only
+    /// place that can read both the transport and `rdp_mode`, so no call site
+    /// can silently forget the mode and mis-classify `Rdp + Embedded` as an
+    /// external-client session (which would connect fine and show no tab).
+    ///
+    /// Both `RdpClientMode` arms are spelled out rather than using
+    /// `!= SystemClient`, so a future third mode has to be classified here
+    /// instead of defaulting into the tab path.
+    pub fn uses_tab(&self) -> bool {
+        match self.kind {
+            SessionKind::Vnc => true,
+            SessionKind::Rdp => match self.rdp_mode {
+                RdpClientMode::Embedded => true,
+                RdpClientMode::SystemClient => false,
+            },
+            _ => false,
+        }
+    }
+
     pub fn new_empty() -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -287,6 +403,12 @@ impl Session {
             rdp_fullscreen: false,
             rdp_width: default_rdp_width(),
             rdp_height: default_rdp_height(),
+            rdp_mode: RdpClientMode::default(),
+            rdp_follow_tab_size: false,
+            rdp_embedded_fullscreen: false,
+            vnc_view_only: false,
+            vnc_security: String::new(),
+            vnc_clipboard: true,
             encoding: default_encoding(),
             vt100_drawing: default_vt100_drawing(),
             forwards: Vec::new(),
@@ -294,5 +416,73 @@ impl Session {
             disable_shell_integration: false,
             note: String::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The zero-regression proof for the built-in RDP client (P0-4): a session
+    /// file written before the feature existed has none of the new fields, and
+    /// must load as a system-client session — the `mstsc` behaviour that shipped
+    /// first — with no migration step.
+    ///
+    /// Going through `Session::new_empty` would not show this: that is the
+    /// constructor, not serde. The new keys are stripped from a serialized
+    /// session instead, so what is parsed is exactly the JSON an older MTerm
+    /// wrote.
+    #[test]
+    fn a_session_file_from_before_the_built_in_client_loads_as_a_system_client() {
+        let mut value = serde_json::to_value(Session::new_empty()).expect("serializable");
+        let object = value.as_object_mut().expect("a session is a JSON object");
+        for field in [
+            "rdp_mode",
+            "rdp_follow_tab_size",
+            "rdp_embedded_fullscreen",
+            "vnc_view_only",
+            "vnc_security",
+            "vnc_clipboard",
+        ] {
+            assert!(
+                object.remove(field).is_some(),
+                "{field} should be present in a freshly serialized session"
+            );
+        }
+
+        let session: Session = serde_json::from_value(value).expect("an old entry must still load");
+
+        assert_eq!(session.rdp_mode, RdpClientMode::SystemClient);
+        assert!(!session.rdp_follow_tab_size);
+        assert!(!session.rdp_embedded_fullscreen);
+        assert!(!session.uses_tab(), "an old entry must not be given a tab");
+        assert!(session.vnc_clipboard, "the documented default is on");
+    }
+
+    #[test]
+    fn only_vnc_and_embedded_rdp_are_tab_hosted() {
+        // The rest of the app asks this one predicate, so it is tested directly
+        // rather than incidentally through a caller.
+        let mut session = Session::new_empty();
+        assert!(!session.uses_tab(), "SSH has no tab-hosted desktop");
+
+        session.kind = SessionKind::Rdp;
+        assert!(!session.uses_tab(), "the system client owns its own window");
+        session.rdp_mode = RdpClientMode::Embedded;
+        assert!(session.uses_tab());
+
+        session.kind = SessionKind::Vnc;
+        session.rdp_mode = RdpClientMode::SystemClient;
+        assert!(session.uses_tab(), "VNC has no system client to fall back to");
+    }
+
+    /// A hand-edited config must never switch a session into the built-in client
+    /// by accident, so anything unrecognised means the system client.
+    #[test]
+    fn an_unrecognised_mode_falls_back_to_the_system_client() {
+        assert_eq!(RdpClientMode::from_str("embedded"), RdpClientMode::Embedded);
+        assert_eq!(RdpClientMode::from_str("system"), RdpClientMode::SystemClient);
+        assert_eq!(RdpClientMode::from_str(""), RdpClientMode::SystemClient);
+        assert_eq!(RdpClientMode::from_str("nonsense"), RdpClientMode::SystemClient);
     }
 }

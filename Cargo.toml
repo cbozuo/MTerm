@@ -122,6 +122,52 @@ ureq = { version = "2", features = ["tls"] }
 # .ico embedded by winresource at link time; on macOS from the app bundle.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp"] }
 
+# 内置远程桌面客户端协议栈（#rdp-vnc-embedded）。同一协议有两种「打开方式」：
+# 系统客户端（mstsc / xfreerdp，行为不变）与内置客户端（Tab 内，由 MTerm 自己
+# 说协议）。ironrdp 负责内置 RDP 客户端；vnc-rs 负责内置 VNC 客户端。
+# 版本与参考实现对齐；**但调用方式不能照搬** —— ironrdp 0.17 删了
+# `RdpOutputEvent::DesktopUpdate`、无 `ServerCertificateVerifier` trait；
+# vnc-rs 侧 rustterm 用的是 fork 版，其 `VncLimits` / `VncSecurityPolicy` /
+# `VncServerKey` 三个私有类型在上游两版都不存在。可移植的是协议状态机与输入
+# 编解码；帧输出消费、证书信任、认证方式选择需按当前 API 重写。详见
+# docs/rdp-vnc-port-prd.md §7.1.1。
+#
+# vnc-rs 选 0.6 而非 0.5.3：实测 0.6 是 0.5.3 的**严格超集**（公开类型 15→20），
+# `ClientKeyEvent`/`ClientMouseEvent` 逐字段相同、`VncConnector` 7 个 builder 签名
+# 全一致 → 升级零适配成本，且白拿 `DesktopLayout`/`DesktopUpdate`/`ResizeError`
+# （动态分辨率）。0.5.3 不提供 0.6 做不到的任何能力。
+#
+# `rustls` 是必需而非可选：ironrdp-tls 没有默认后端，不选一个会在依赖图里触发
+# compile_error。
+#
+# ⚠️ 注意：**ironrdp 这条链引入的是 `aws-lc-rs`，不是 ring** —— 链路为
+# `ironrdp/rustls → ironrdp-client/rustls → ironrdp-tls/rustls`，而
+# `ironrdp-tls` 的 rustls = ["rustls-aws-lc-rs"]。因此 `Cargo.lock` 里
+# `aws-lc-rs` 与 `ring` **两者都在**：ring 是 MTerm 原有依赖（russh/sha1），
+# aws-lc-rs 是本次新增。**不要再写"不引入第二套 TLS 栈"** —— 事实上引入了，
+# 体积上多一个 aws-lc-rs 静态库。功能无影响（已实测可编译）。
+#
+# 下面 `tokio-rustls` / `rustls` 这两个**直接依赖**确实与已有 `ureq` 共享同一
+# 份 crate（同为 ring provider），这部分没有重复编译。
+#
+# 没开 `cliprdr`/`client-clipboard`：P0 不做剪贴板重定向，而它会拖入各平台
+# 剪贴板后端。
+# `session` 只是为了拿到 `ironrdp::session::{GracefulDisconnectReason, …}`
+# 的再导出（RDP 会话结束时用它把「服务端断开 / 远端用户断开」翻成人话，
+# #remote-reconnect 2026-10-13）。该 crate 本就是 `client` 的依赖，feature
+# 只开再导出，不会多编一份。
+ironrdp = { version = "0.17.0", default-features = false, features = ["client", "connector", "core", "input", "pdu", "rustls", "session"] }
+vnc-rs = "0.6"
+# 内置 RDP 的证书信任（P0-12）。ironrdp 0.17 **没有**暴露证书校验器钩子
+# （ironrdp-tls 的 upgrade() 内部硬编码 NoCertificateVerification），所以信任
+# 决策只能自己做：正式连接前先用 tokio-rustls 握手一次取到服务器证书，走完信任
+# 流程，通过了才让 ironrdp 建正式连接。这几个 crate 已在依赖树里（ureq →
+# rustls，同为 ring provider），加直接依赖不会多编一份。
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pki-types = "1"
+x509-cert = { version = "0.2", features = ["pem"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # Native Wayland clipboard (wlr-data-control protocol) so copy/paste works on
 # Wayland sessions (KDE/wlroots) without relying on XWayland (issue #47).
@@ -173,6 +219,10 @@ windows = { version = "0.58", features = [
     # (#close-exit-fix 2026-09-19) 退出看门狗:ExitProcess 绕过可能挂死的
     # process::exit 清理路径(实测 1 线程僵尸进程)。
     "Win32_System_Threading",
+    # (#credential-store 2026-10-13) CredReadW: the built-in RDP client reads
+    # `TERMSRV/<host>` out of the Credential Manager when the password field is
+    # blank -- the same entry `mstsc` uses. Feature only, no new crate.
+    "Win32_Security_Credentials",
 ] }
 
 [profile.release]

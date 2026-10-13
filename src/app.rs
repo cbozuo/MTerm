@@ -273,6 +273,230 @@ use crate::terminal::{windows_process_ctrl_release, CtrlKeySide};
 use crate::ui::*;
 use crate::webdav::WebDavAcceptAnyCertVerifier;
 
+/// Open a tab for a built-in RDP or VNC session and start its client.
+///
+/// Deliberately a separate function from `on_connect_session`'s terminal path
+/// rather than a branch inside it: a remote tab has no term buffer, no cursor
+/// grid, no SFTP side-channel and no `SessionHandle`, so sharing that path would
+/// mean a long `if is_remote` interleaved with two hundred lines of terminal
+/// setup. The two share the *tab* lifecycle instead — `layout`, `tabs_model` and
+/// the pane flattening — which is what makes a remote tab drag, split, merge and
+/// close like any other.
+///
+/// `Err` means the tab was not created: a session that cannot start (blank host,
+/// a config the protocol rejects) should say so rather than leave a dead tab
+/// behind, since a tab the user cannot get rid of is worse than an error.
+#[allow(clippy::too_many_arguments)]
+fn connect_remote_tab(
+    session: &crate::config::Session,
+    session_id: &str,
+    weak: &slint::Weak<crate::ui::AppWindow>,
+    layout: &Rc<RefCell<crate::layout::Layout>>,
+    content_size: &Rc<Cell<(f32, f32)>>,
+    store: &Rc<RefCell<ConfigStore>>,
+    tabs_model: &Rc<slint::VecModel<TabInfo>>,
+    panes_model: &Rc<slint::VecModel<PaneInfo>>,
+    splitters_model: &Rc<slint::VecModel<SplitterInfo>>,
+    remote_handles: &Rc<RefCell<HashMap<String, crate::remote::RemoteHandle>>>,
+    remote_routes: &crate::remote::pump::RemoteRoutes,
+    remote_panes: &Rc<crate::remote::RemotePanes>,
+    window_id: u64,
+) {
+    // A tab id that cannot collide with a terminal's: the two models are keyed
+    // by it, and a collision would make one shadow the other.
+    let tab_id = format!("remote-{}", uuid::Uuid::new_v4());
+    let tab_title = session.name.clone();
+    let kind = crate::remote::tab_kind(session);
+
+    let ctx = crate::remote::session::StartCtx {
+        routes: remote_routes.clone(),
+    };
+    let handle = match crate::remote::start(session, &tab_id, &ctx) {
+        Ok(handle) => handle,
+        Err(reason) => {
+            // Already on the UI thread (the connect callback runs there), so the
+            // status is set directly. Handing the window to
+            // `invoke_from_event_loop` instead would need `Send`, which a Slint
+            // component is not — and the hop would buy nothing here anyway.
+            tracing::warn!("could not start the remote desktop for {tab_title}: {reason}");
+            if let Some(window) = weak.upgrade() {
+                window.set_dialog_test_status(reason.into());
+            }
+            return;
+        }
+    };
+
+    // The route has to exist before the pump's first event, which is why it is
+    // registered here rather than by the session starter.
+    if let Ok(mut routes) = remote_routes.lock() {
+        routes.insert(
+            tab_id.clone(),
+            Arc::new(Mutex::new(crate::remote::pump::RemoteRoute { window_id })),
+        );
+    }
+    remote_panes.open(&tab_id, &tab_title, kind, session.vnc_view_only);
+    remote_handles
+        .borrow_mut()
+        .insert(tab_id.clone(), handle);
+
+    let (tab_gc, tab_gc_hex) = tab_group_color(&store.borrow(), session);
+    tabs_model.push(TabInfo {
+        channel_letter: "".into(),
+        channel_color: slint::Color::default(),
+        channel_paused: false,
+        channel_bar_hidden: false,
+        host: if session.port > 0 {
+            format!("{}:{}", session.host, session.port).into()
+        } else {
+            session.host.clone().into()
+        },
+        user: session.user.clone().into(),
+        // A remote tab has no terminal stream, so "auth" would be a lie; the
+        // card shows the protocol instead, which is what distinguishes an RDP
+        // session from a VNC one with the same name.
+        auth: kind.into(),
+        group_name: crate::config::display_group_of(session).into(),
+        note: session.note.clone().into(),
+        id: tab_id.clone().into(),
+        title_len: tab_title_len(&tab_title),
+        title: tab_title.into(),
+        kind: kind.into(),
+        // Remote panes carry their own picture; the tab-level `connected` flag
+        // tracks the session state and drives the title dot.
+        connected: false,
+        session_id: session_id.into(),
+        state: 0,
+        group_color_hex: tab_gc_hex.into(),
+        group_color: tab_gc,
+    });
+
+    layout.borrow_mut().add_tab(tab_id.clone());
+    if let Some(window) = weak.upgrade() {
+        refresh_panes(
+            &window,
+            &layout.borrow(),
+            content_size.get(),
+            &store.borrow(),
+            tabs_model,
+            panes_model,
+            splitters_model,
+        );
+    }
+}
+
+/// Look up a live remote session's handle and its protocol in one step.
+///
+/// The input callbacks receive only a tab id, so this is the single place that
+/// resolves one into the other; keeping it here means no callback can pick the
+/// wrong protocol for a tab.
+fn remote_protocol(
+    handles: &Rc<RefCell<HashMap<String, crate::remote::RemoteHandle>>>,
+    tab_id: &str,
+) -> Option<(crate::remote::RemoteHandle, crate::remote::RemoteProtocol)> {
+    let handle = handles.borrow().get(tab_id).cloned()?;
+    let protocol = handle.protocol();
+    Some((handle, protocol))
+}
+
+/// Reconnect a hosted remote-desktop session **in the tab it already owns**
+/// (US-C2 / P0-10).
+///
+/// The button that leads here is only ever shown once the session is over
+/// (`state >= 3`), and by then there is nothing left to send it to: the driver
+/// has dropped its client future, closed its sockets and set `closed`, so every
+/// send on its handle is a silent no-op. A reconnect is therefore not a message
+/// — it is a *new session* built from the same `Session` definition and put
+/// into the tab that is already open. (What this replaced was a sender into a
+/// channel whose receiver was dropped where it was created, which made the
+/// button look wired while doing nothing at all.)
+///
+/// Reusing the tab id is what keeps everything the user arranged: the tab's
+/// place in the layout, its group, its title, and the pane row the view is
+/// already bound to. The row is *reset* rather than re-created, so the dead
+/// session's failure text and last picture are gone before the new session says
+/// anything — the view is not left showing an old desktop behind a new status.
+fn respawn_remote_tab(
+    session: &crate::config::Session,
+    tab_id: &str,
+    remote_handles: &Rc<RefCell<HashMap<String, crate::remote::RemoteHandle>>>,
+    remote_routes: &crate::remote::pump::RemoteRoutes,
+    remote_panes: &Rc<crate::remote::RemotePanes>,
+    window_id: u64,
+) {
+    // Stop the old session first, so its driver stops reading input and its
+    // pump stops delivering. `close()` is idempotent, so a session that ended
+    // on its own — the usual case here — is not disturbed by it.
+    if let Some(previous) = remote_handles.borrow_mut().remove(tab_id) {
+        previous.close();
+    }
+    // Re-inserted rather than assumed: a tab dragged to another window since it
+    // connected has had this entry rewritten, and the new pump has to deliver
+    // where the tab lives *now*.
+    if let Ok(mut routes) = remote_routes.lock() {
+        routes.insert(
+            tab_id.to_string(),
+            Arc::new(Mutex::new(crate::remote::pump::RemoteRoute { window_id })),
+        );
+    }
+    remote_panes.restart(tab_id);
+
+    let ctx = crate::remote::session::StartCtx {
+        routes: remote_routes.clone(),
+    };
+    match crate::remote::start(session, tab_id, &ctx) {
+        Ok(handle) => {
+            remote_handles.borrow_mut().insert(tab_id.to_string(), handle);
+        }
+        Err(reason) => {
+            // Same contract as the first connect: a session that cannot start
+            // has to say why, rather than leaving the tab on "连接中..." with
+            // nothing behind it.
+            tracing::warn!("could not restart the remote desktop for {tab_id}: {reason}");
+            remote_panes.fail(tab_id, &reason);
+        }
+    }
+}
+
+/// The pointer button mask each remote tab currently holds.
+///
+/// Both protocols describe the *current* set of pressed buttons rather than a
+/// delta, so a press/release pair has to be turned back into a mask before it
+/// goes on the wire. The view cannot hold this: Slint has no bitwise operators.
+#[derive(Default)]
+struct PointerButtons {
+    held: std::collections::HashMap<String, u8>,
+}
+
+impl PointerButtons {
+    /// Button id → mask bit. 0 left, 1 middle, 2 right.
+    fn bit(button: i32) -> u8 {
+        1u8 << button.clamp(0, 2)
+    }
+
+    /// Record a press and return the new mask.
+    fn press(&mut self, tab_id: &str, button: i32) -> u8 {
+        let mask = self.mask(tab_id) | Self::bit(button);
+        self.held.insert(tab_id.to_string(), mask);
+        mask
+    }
+
+    /// Clear a release and return the new mask.
+    fn release(&mut self, tab_id: &str, button: i32) -> u8 {
+        let mask = self.mask(tab_id) & !Self::bit(button);
+        if mask == 0 {
+            self.held.remove(tab_id);
+        } else {
+            self.held.insert(tab_id.to_string(), mask);
+        }
+        mask
+    }
+
+    /// The mask as it stands, 0 when nothing is held.
+    fn mask(&self, tab_id: &str) -> u8 {
+        self.held.get(tab_id).copied().unwrap_or(0)
+    }
+}
+
 fn tab_title_len(title: &str) -> i32 {
     title
         .chars()
@@ -1525,12 +1749,18 @@ pub fn run(intent: crate::app::launch::LaunchIntent) -> Result<()> {
     // commands into history (#113).
     HISTORY_STORE.with(|s| *s.borrow_mut() = Some(store.clone()));
 
+    // (#rdp-vnc-embedded) The remote route table lives on AppCore rather than on
+    // a window: a frame pump may outlive the window it started in, so its
+    // delivery target has to be reachable from anywhere in the process.
+    let remote_routes: crate::remote::pump::RemoteRoutes =
+        Arc::new(Mutex::new(HashMap::new()));
     let core = Rc::new(AppCore {
         runtime,
         store,
         registry: Rc::new(WindowRegistry::default()),
         window_states: Rc::new(RefCell::new(HashMap::new())),
         tab_routes: Arc::new(Mutex::new(HashMap::new())),
+        remote_routes: remote_routes.clone(),
     });
 
     // IPC listener: forwarded "new-window" requests arrive on the listener
@@ -3245,6 +3475,22 @@ fn open_window(
     let terminals_model: Rc<VecModel<TerminalState>> = Rc::new(VecModel::default());
     window.set_terminals(ModelRc::from(terminals_model.clone()));
 
+    // (#rdp-vnc-embedded) Remote-desktop panes: a model parallel to
+    // `terminals_model`. The handle and route tables are process-global rather
+    // than per window, so a tab dragged to another window is retargeted by
+    // rewriting one route entry instead of restarting its session.
+    let remote_rows_model: Rc<VecModel<RemotePaneState>> = Rc::new(VecModel::default());
+    // Registered in the UI-thread table so a frame pump — which may hold nothing
+    // but the window id — can find these rows after it hops onto the event loop.
+    let remote_panes = Rc::new(crate::remote::RemotePanes::new(remote_rows_model));
+    crate::remote::registry::register(window_id, remote_panes.clone());
+    window.set_remote_panes(remote_panes.model());
+    let remote_handles: Rc<RefCell<HashMap<String, crate::remote::RemoteHandle>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    // Which pointer buttons each remote tab currently holds; see `PointerButtons`.
+    let pointer_buttons = Rc::new(RefCell::new(PointerButtons::default()));
+
+
     // Split-pane layout tree (v0.5). Starts as a single pane owning the welcome
     // tab; tab opens/closes/moves mutate it and re-flatten into the `panes`
     // model. `content_size` is the pane-area px size reported from Slint.
@@ -3485,6 +3731,7 @@ fn open_window(
             layout: layout.clone(),
             tabs_model: tabs_model.clone(),
             terminals_model: terminals_model.clone(),
+            remote_handles: remote_handles.clone(),
             panes_model: panes_model.clone(),
             splitters_model: splitters_model.clone(),
             timers: window_timers.clone(),
@@ -3639,6 +3886,9 @@ fn open_window(
         core.tab_routes.clone(),
         tab_titles.clone(),
         editor_win.clone(),
+        remote_handles.clone(),
+        core.remote_routes.clone(),
+        remote_panes.clone(),
     );
 
     // Recompute the sidebar whenever the active tab changes (fired from Slint's
@@ -4680,6 +4930,12 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
             store: store.clone(),
             tab_routes: core.tab_routes.clone(),
         },
+        remote_handles.clone(),
+        // The frame-route table, so "重新连接" can start a replacement session
+        // for a tab this window owns (US-C2). Process-global, hence `core`
+        // rather than a window field.
+        core.remote_routes.clone(),
+        pointer_buttons.clone(),
     );
 
     // --- Window activity, for idle-CPU throttling (#127) ----------------
@@ -6073,6 +6329,13 @@ fn wire_session_callbacks(
     tab_routes: TabRoutes,
     tab_titles: Rc<RefCell<HashMap<String, String>>>,
     editor_win: Rc<EditorWindow>,
+    // (#rdp-vnc-embedded) Remote-desktop state for this window. `remote_routes`
+    // is process-global (a frame pump may outlive its window) and is threaded in
+    // from `core` by `open_window`, because the local `core` binding inside this
+    // function is the prompts module rather than `AppCore`.
+    remote_handles: Rc<RefCell<HashMap<String, crate::remote::RemoteHandle>>>,
+    remote_routes: crate::remote::pump::RemoteRoutes,
+    remote_panes: Rc<crate::remote::RemotePanes>,
 ) {
     // Working set of port forwards (#56) for the session being created/edited.
     // The forward add/delete callbacks mutate it; saving reads it into
@@ -6345,6 +6608,13 @@ fn wire_session_callbacks(
             w.set_dialog_rdp_resolution(RDP_RESOLUTION_DEFAULT.into());
             w.set_dialog_rdp_width("1280".into());
             w.set_dialog_rdp_height("720".into());
+            // (#rdp-vnc-embedded) 新建会话一律从「系统客户端」起步 —— 零回归的
+            // 锚点：默认路径与本次改动前完全相同。
+            w.set_dialog_rdp_mode("system".into());
+            w.set_dialog_rdp_follow_tab_size(false);
+            w.set_dialog_vnc_view_only(false);
+            w.set_dialog_vnc_security("".into());
+            w.set_dialog_vnc_clipboard(true);
             w.set_dialog_editing(false);
             w.set_dialog_open(true);
         }
@@ -6569,7 +6839,10 @@ fn wire_session_callbacks(
                 w.set_dialog_user(session.user.clone().into());
                 w.set_dialog_auth(session.auth.as_str().into());
                 // Never echo the stored password back into the UI (issue #10) —
-                // leave it blank; a blank field on save keeps the existing one.
+                // leave it blank. (#blank-password-overwrites 2026-10-13) A blank
+                // field now *overwrites* the saved password with none, so an edit
+                // whose password box was not retyped clears it. That is the
+                // requested rule, not an oversight.
                 w.set_dialog_password("".into());
                 w.set_dialog_key_path(session.private_key_path.clone().into());
                 w.set_dialog_key_inline("".into());
@@ -6607,12 +6880,28 @@ fn wire_session_callbacks(
                 w.set_dialog_disable_shell_integration(session.disable_shell_integration);
                 w.set_dialog_note(session.note.clone().into());
                 w.set_dialog_rdp_domain(session.rdp_domain.clone().into());
+                // (#rdp-vnc-embedded) 「跟随标签页」优先于宽高：它是内置客户端
+                // 的一个独立语义(尺寸运行时才定)，复现时必须先于宽高回填，
+                // 否则 1280x720 会把它盖成一个预设值。
+                w.set_dialog_rdp_follow_tab_size(session.rdp_follow_tab_size);
                 w.set_dialog_rdp_resolution(
-                    rdp_resolution_choice(session.rdp_fullscreen, session.rdp_width, session.rdp_height)
-                        .into(),
+                    if session.rdp_follow_tab_size {
+                        RDP_RESOLUTION_FOLLOW.into()
+                    } else {
+                        rdp_resolution_choice(
+                            session.rdp_fullscreen,
+                            session.rdp_width,
+                            session.rdp_height,
+                        )
+                        .into()
+                    },
                 );
                 w.set_dialog_rdp_width(session.rdp_width.to_string().into());
                 w.set_dialog_rdp_height(session.rdp_height.to_string().into());
+                w.set_dialog_rdp_mode(session.rdp_mode.as_str().into());
+                w.set_dialog_vnc_view_only(session.vnc_view_only);
+                w.set_dialog_vnc_security(session.vnc_security.clone().into());
+                w.set_dialog_vnc_clipboard(session.vnc_clipboard);
                 w.set_dialog_editing(true);
                 w.set_dialog_open(true);
             }
@@ -7331,18 +7620,13 @@ fn wire_session_callbacks(
                         return;
                     }
                 };
-            // The edit dialog never echoes the real password (issue #10): a blank
-            // field while editing means "keep the existing password" rather than
-            // "clear it".  Only overwrite when the user actually typed something.
-            let password = if draft.password.is_empty() {
-                store
-                    .borrow()
-                    .get(&id)
-                    .map(|s| s.password.clone())
-                    .unwrap_or_default()
-            } else {
-                Secret::new(draft.password.to_string())
-            };
+            // (#blank-password-overwrites 2026-10-13) The password box wins,
+            // blank included: an empty field now means "no password" instead of
+            // "keep the saved one", so clearing the box is how a saved password
+            // gets removed. The dialog still never echoes the secret (#10), so
+            // the box opens empty on every edit — see
+            // `session_models::session_from_draft` for the full trade-off.
+            let password = Secret::new(draft.password.to_string());
             let private_key_inline = if draft.private_key_inline_mode {
                 if draft.private_key_inline.is_empty() {
                     store
@@ -7374,6 +7658,7 @@ fn wire_session_callbacks(
             let default_port = match kind {
                 crate::config::SessionKind::Telnet => 23,
                 crate::config::SessionKind::Rdp => 3389,
+                crate::config::SessionKind::Vnc => 5900,
                 _ => 22,
             };
             let (rdp_fullscreen, rdp_width, rdp_height) = rdp_display_settings(
@@ -7428,6 +7713,19 @@ fn wire_session_callbacks(
                 rdp_fullscreen,
                 rdp_width,
                 rdp_height,
+                // (#rdp-vnc-embedded) Same defaults as the other constructor in
+                // session_models.rs; see the comment there.
+                rdp_mode: crate::config::RdpClientMode::from_str(&draft.rdp_mode.to_string()),
+                // (#rdp-follow-lost 2026-10-13) Must go through the shared
+                // judgement, not the raw bool: the dialog only ever writes
+                // `rdp_resolution`, so reading `draft.rdp_follow_tab_size`
+                // here silently dropped "Follow tab" on every save. See
+                // `session_models::follows_tab_size` for the full story.
+                rdp_follow_tab_size: follows_tab_size(&draft),
+                rdp_embedded_fullscreen: false,
+                vnc_view_only: draft.vnc_view_only,
+                vnc_security: draft.vnc_security.to_string(),
+                vnc_clipboard: draft.vnc_clipboard,
                 encoding: draft.encoding.to_string(),
                 vt100_drawing: draft.vt100_drawing,
                 forwards,
@@ -7858,6 +8156,11 @@ fn wire_session_callbacks(
         let local_net_hist = local_net_hist.clone();
         let sftp_follow_cd = sftp_follow_cd.clone();
         let tab_routes = tab_routes.clone();
+        // (#rdp-vnc-embedded) The remote session tables the connect path needs to
+        // open a desktop tab. The route table comes from the caller (it is
+        // process-global, so open_window passes `core.remote_routes` down); the
+        // handle table and the pane rows are this window's.
+        let remote_panes = remote_panes.clone();
         window.on_connect_session(move |id: SharedString| {
             let id = id.to_string();
             let session = if id.starts_with("system:") {
@@ -7874,13 +8177,40 @@ fn wire_session_callbacks(
                     None => return,
                 }
             };
-            // RDP is handled by the system client in its own window. Do not
-            // surface its launch result as a persistent SSH-import hint.
-            if session.kind == SessionKind::Rdp {
+            // A system-client RDP session is handed to `mstsc` / `xfreerdp`,
+            // which owns its own window, and gets no tab. Do not surface its
+            // launch result as a persistent SSH-import hint.
+            //
+            // ⚠️ Zero regression: this is the pre-existing behaviour, unchanged.
+            // A session file written before the built-in client existed has no
+            // `rdp_mode` and therefore arrives here, exactly as before.
+            if session.kind == SessionKind::Rdp && !crate::rdp::is_embedded(&session) {
                 match crate::rdp::launch(&session) {
                     Ok(what) => tracing::info!("RDP client started: {what}"),
                     Err(err) => tracing::warn!("RDP client failed to start: {err}"),
                 }
+                return;
+            }
+            // Built-in RDP and VNC are hosted in a tab by MTerm itself. They
+            // share one path because everything after this point — the tab, the
+            // pane row, the frame pump — is protocol independent; only the
+            // session starter differs.
+            if crate::remote::is_tab_hosted(&session) {
+                connect_remote_tab(
+                    &session,
+                    &id,
+                    &weak,
+                    &layout,
+                    &content_size,
+                    &store,
+                    &tabs_model,
+                    &panes_model,
+                    &splitters_model,
+                    &remote_handles,
+                    &remote_routes,
+                    &remote_panes,
+                    window_id,
+                );
                 return;
             }
             let tab_id = format!("term-{}", uuid::Uuid::new_v4());
@@ -7894,9 +8224,11 @@ fn wire_session_callbacks(
                 }
                 SessionKind::Telnet => format!("telnet {}:{}", session.host, session.port),
                 SessionKind::Local => format!("local {}", session.name),
-                // Unreachable today: RDP returns above before any tab is made.
-                // Kept so the match stays exhaustive.
-                SessionKind::Rdp => format!("rdp {}:{}", session.host, session.port),
+                // Unreachable today: both RDP variants and VNC return above
+                // before any tab is made. Kept so the match stays exhaustive.
+                SessionKind::Rdp | SessionKind::Vnc => {
+                    format!("{} {}:{}", session.kind.as_str(), session.host, session.port)
+                }
             };
             // Compatibility mode also suppresses the SFTP side-channel so
             // bastions that only permit one proxied PTY connection stay alive.
@@ -8495,6 +8827,7 @@ fn drag_target(
 // Tab callbacks
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn wire_key_input(
     window: &AppWindow,
     handles: Rc<RefCell<HashMap<String, SessionHandle>>>,
@@ -8502,7 +8835,23 @@ fn wire_key_input(
     last_term_size: Arc<Mutex<(u32, u32)>>,
     store: Rc<RefCell<ConfigStore>>,
     ctx: ConnectCtx,
+    // (#rdp-vnc-embedded) The remote-desktop input handlers live here because
+    // this is where the pointer and key plumbing already is; both tables are
+    // UI-thread state owned by the window.
+    remote_handles: Rc<RefCell<HashMap<String, crate::remote::RemoteHandle>>>,
+    // Frame delivery routes, needed by the reconnect handler to hand a
+    // replacement session the same table its predecessor used (US-C2).
+    remote_routes: crate::remote::pump::RemoteRoutes,
+    pointer_buttons: Rc<RefCell<PointerButtons>>,
 ) {
+    // The remote handlers belong to this window, and the pane table is only
+    // reachable from the UI thread, so the id travels with the handlers.
+    let window_id = ctx.window_id;
+    // Spare handle for the remote-desktop reconnect at the bottom of this
+    // function: the terminal's Enter-to-reconnect path below moves `store`
+    // into its own closure, and a session definition is what a reconnect
+    // needs (US-C2).
+    let store_for_remote = store.clone();
     // Runtime SSH tunnel panel (#206). These tunnels live only for the active
     // connection; saved session configuration remains unchanged.
     {
@@ -9878,6 +10227,207 @@ fn wire_key_input(
     {
         let bufs_mouse = bufs.clone();
         let handles_mouse = handles.clone();
+        // --- Built-in remote desktop (#rdp-vnc-embedded) ------------------------
+        // Every handler here is a thin translation: the view already resolved
+        // coordinates into remote pixels, so Rust only forwards. Keeping the
+        // handlers free of protocol logic is what lets the RDP and VNC drivers
+        // stay independent of Slint.
+        {
+            let remote_handles = remote_handles.clone();
+            window.on_remote_key(
+                move |tab_id: SharedString, key: SharedString, down: bool, ctrl: bool,
+                      shift: bool, alt: bool, meta: bool| {
+                    let id = tab_id.to_string();
+                    let Some((handle, protocol)) = remote_protocol(&remote_handles, &id) else {
+                        return;
+                    };
+                    let ui = crate::remote::keyinput::UiKey {
+                        text: key.to_string(),
+                        ctrl,
+                        shift,
+                        alt,
+                        meta,
+                        down,
+                    };
+                    use crate::remote::keyinput::KeyAction;
+                    use crate::remote::RemoteProtocol;
+                    let event = match protocol {
+                        RemoteProtocol::Vnc => match crate::remote::keyinput::for_vnc(&ui) {
+                            KeyAction::Physical { code, down, .. } => {
+                                crate::rdp::embedded::RemoteInput::Key { code, down }
+                            }
+                            KeyAction::Text { ch } => {
+                                crate::rdp::embedded::RemoteInput::Text { ch }
+                            }
+                            KeyAction::Ignore => return,
+                        },
+                        RemoteProtocol::Rdp => match crate::remote::keyinput::for_rdp(&ui) {
+                            // Bit 8 of the code is the extended (E0) flag, which
+                            // ironrdp's `Scancode::from_u8` wants as a separate
+                            // bool; the two are reunited in the driver.
+                            KeyAction::Physical { code, down, shift } => {
+                                if shift {
+                                    // Shift is a separate scancode on the wire: a
+                                    // fast-path keyboard event carries both the
+                                    // key and the shift flag.
+                                    handle.send_input(crate::rdp::embedded::RemoteInput::Key {
+                                        code: 0x2a,
+                                        down: true,
+                                    });
+                                }
+                                crate::rdp::embedded::RemoteInput::Key {
+                                    code,
+                                    down,
+                                }
+                            }
+                            KeyAction::Text { ch } => {
+                                crate::rdp::embedded::RemoteInput::Text { ch }
+                            }
+                            KeyAction::Ignore => return,
+                        },
+                    };
+                    handle.send_input(event);
+                },
+            );
+        }
+        {
+            let remote_handles = remote_handles.clone();
+            let pointer_buttons = pointer_buttons.clone();
+            window.on_remote_pointer(
+                move |tab_id: SharedString, x: i32, y: i32, button: i32, action: i32| {
+                    let id = tab_id.to_string();
+                    let Some((handle, _)) = remote_protocol(&remote_handles, &id) else {
+                        return;
+                    };
+                    // The view reports a delta; both protocols want the current
+                    // mask, so it is rebuilt here from the per-tab state.
+                    let mask = match action {
+                        1 => pointer_buttons.borrow_mut().press(&id, button),
+                        2 => pointer_buttons.borrow_mut().release(&id, button),
+                        _ => pointer_buttons.borrow().mask(&id),
+                    };
+                    let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+                        return;
+                    };
+                    handle.send_input(crate::rdp::embedded::RemoteInput::Pointer { x, y, mask });
+                },
+            );
+        }
+        {
+            let remote_handles = remote_handles.clone();
+            window.on_remote_wheel(
+                move |tab_id: SharedString, x: i32, y: i32, dx: f32, dy: f32| {
+                    let id = tab_id.to_string();
+                    let Some((handle, _)) = remote_protocol(&remote_handles, &id) else {
+                        return;
+                    };
+                    let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+                        return;
+                    };
+                    handle.send_input(crate::rdp::embedded::RemoteInput::Wheel {
+                        x,
+                        y,
+                        dx: f64::from(dx),
+                        dy: f64::from(dy),
+                    });
+                },
+            );
+        }
+        {
+            // Focus loss must release every held key, or a key pressed while
+            // alt-tabbing away stays down on the remote desktop.
+            let remote_handles = remote_handles.clone();
+            window.on_remote_release_keys(move |tab_id: SharedString| {
+                let id = tab_id.to_string();
+                if let Some((handle, _)) = remote_protocol(&remote_handles, &id) {
+                    handle.send_input(crate::rdp::embedded::RemoteInput::ReleaseAll);
+                }
+            });
+        }
+        {
+            let remote_handles = remote_handles.clone();
+            window.on_remote_resized(move |tab_id: SharedString, width: i32, height: i32| {
+                let id = tab_id.to_string();
+                let Some((handle, _)) = remote_protocol(&remote_handles, &id) else {
+                    return;
+                };
+                let (Ok(width), Ok(height)) = (u16::try_from(width), u16::try_from(height)) else {
+                    return;
+                };
+                handle.resize(width, height);
+            });
+        }
+        {
+            // (#remote-reconnect 2026-10-13) US-C2. A handle cannot be
+            // restarted, only replaced, and the definition to restart it from
+            // is not on the handle — so the tab row (which remembers the
+            // session it was opened from) is the lookup. The pane row comes
+            // from the window's own table, which only the UI thread can read:
+            // this handler runs there.
+            let weak = window.as_weak();
+            let store = store_for_remote.clone();
+            let remote_handles = remote_handles.clone();
+            let remote_routes = remote_routes.clone();
+            window.on_remote_reconnect(move |tab_id: SharedString| {
+                let id = tab_id.to_string();
+                let Some(window) = weak.upgrade() else { return };
+                let session_id = window
+                    .get_tabs()
+                    .iter()
+                    .find(|t| t.id == id)
+                    .map(|t| t.session_id.to_string())
+                    .unwrap_or_default();
+                let Some(session) = store.borrow().get(&session_id).cloned() else {
+                    return;
+                };
+                let Some(panes) = crate::remote::registry::panes_of(window_id) else {
+                    return;
+                };
+                // A tab only ever hosts what its mode says it hosts; a session
+                // edited into system mode since it connected keeps the
+                // behaviour that mode implies rather than losing its tab.
+                if !crate::remote::is_tab_hosted(&session) {
+                    return;
+                }
+                respawn_remote_tab(
+                    &session,
+                    &id,
+                    &remote_handles,
+                    &remote_routes,
+                    &panes,
+                    window_id,
+                );
+            });
+        }
+        {
+            // The decision has to reach the row that is showing the prompt, and
+            // that row lives in the window's pane table — reachable only on the
+            // UI thread, which is exactly where this handler runs.
+            window.on_remote_trust_decide(
+                move |tab_id: SharedString, accept: bool, remember: bool| {
+                    let id = tab_id.to_string();
+                    let Some((handle, _)) = remote_protocol(&remote_handles, &id) else {
+                        return;
+                    };
+                    // The answer must echo the id the prompt was raised with.
+                    // The driver re-checks it before letting the connection
+                    // through, and the trust store is keyed by it — so a
+                    // placeholder id here would both refuse the connection and
+                    // silently fail to remember the certificate. The id is read
+                    // from the pane table rather than carried through the view,
+                    // which has no use for it.
+                    let Some(panes) = crate::remote::registry::panes_of(window_id) else {
+                        return;
+                    };
+                    let Some(request_id) = panes.trust_request_id(&id) else {
+                        tracing::debug!("trust decision for {id} with no prompt outstanding");
+                        return;
+                    };
+                    crate::remote::remote_resolve_trust(&handle, request_id, accept, remember);
+                    panes.dismiss_trust(&id);
+                },
+            );
+        }
         window.on_terminal_mouse(
             move |tab_id: SharedString, kind: i32, button: i32, row: i32, col: i32| -> bool {
                 let tid = tab_id.to_string();

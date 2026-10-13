@@ -87,6 +87,18 @@ export struct SessionDraft {
     rdp-resolution: string,  // "fullscreen" | "custom" | "WxH"
     rdp-width: int,          // desktop size used by the "custom" choice
     rdp-height: int,
+    // (#rdp-vnc-embedded) "system" | "embedded". Empty is read as "system" so a
+    // draft built before this field existed keeps the mstsc behaviour.
+    rdp-mode: string,
+    // Built-in client only: remote desktop follows the tab size.
+    rdp-follow-tab-size: bool,
+    // VNC-only (ignored unless kind == "vnc")
+    vnc-view-only: bool,
+    // "" (auto) | "none" | "vnc-auth". Carried through unchanged for config
+    // compatibility, but no longer user-editable: vnc-rs 0.6 has no security
+    // policy API, so the value never reaches the handshake (#vnc-security-drop).
+    vnc-security: string,
+    vnc-clipboard: bool,
     encoding: string,
     // Honor VT100 line drawing (DEC Special Graphics) even in UTF-8 mode (#376),
     // like PuTTY's Window → Translation option. On by default.
@@ -251,13 +263,16 @@ component PillToggle inherits Rectangle {
 // 同一套控件与手感。它本身就是「连接到哪」那一行的第一个字段,不再独占一行。
 //
 // 列表形态对齐高保真 .pop:按分类分组、当前项打勾;勾位**常驻且定宽**,
-// 未选中留空占位 —— 否则选中行多出的勾会把「即将 / 预览」徽标列挤歪。
+// 未选中留空占位 —— 否则选中行多出的勾会把勾位列挤歪。
+//
+// (#vnc-soon-drop 2026-10-13) 这里原本还有一个「即将 / 预览」徽标(soon/prev),
+// 只有 VNC 会命中。VNC 实装后(`is-real` 白名单已含 "vnc")五个协议全是实装项,
+// 没有任何「即将」可言,徽标连同 ProtoSelect 的 previewing 输入一并删除。
 
 component ProtoItem inherits Rectangle {
     in property <string> proto-id;      // "ssh" | "serial" | "telnet" | "rdp" | "vnc"
     in property <string> label;
     in property <bool> selected: false;
-    in property <string> badge;         // "" | "soon" | "prev"
     callback picked();
 
     // (#hifi-v17) 原型 .pop .item:padding 8px 9px + gap 9px ≈ 32px 行高;
@@ -293,28 +308,7 @@ component ProtoItem inherits Rectangle {
             overflow: elide;
         }
 
-        if root.badge != "" : Rectangle {
-            min-width: 34px;
-            height: 16px;
-            y: (parent.height - self.height) / 2;
-            border-radius: 8px;
-            border-width: 1px;
-            border-color: root.badge == "prev"
-                ? Theme.accent.with-alpha(0.45) : Theme.warning.with-alpha(0.45);
-            background: transparent;
-            HorizontalLayout {
-                padding-left: 6px;
-                padding-right: 6px;
-                Text {
-                    text: root.badge == "prev" ? @tr("Preview") : @tr("Soon");
-                    color: root.badge == "prev" ? Theme.accent : Theme.warning;
-                    font-size: 9.5px;
-                    vertical-alignment: center;
-                }
-            }
-        }
-
-        // 勾位常驻:未选中也占 14px,保证徽标列右缘纵向对齐(#badge-col)。
+        // 勾位常驻:未选中也占 14px,保证勾位列右缘纵向对齐(#badge-col)。
         Rectangle {
             width: 14px;
             height: 14px;
@@ -333,13 +327,12 @@ component ProtoItem inherits Rectangle {
     }
 }
 
-// 字段级「连接协议」选择器:按钮(图标 + 名称 + 徽标 + ▾)+ 分类列表弹层。
-// 选完即收起;未实装协议原走「预览」态(RDP 已实装,VNC 已从下拉移除
-// 见 #vnc-hidden),机制保留由调用方决定语义。
+// 字段级「连接协议」选择器:按钮(图标 + 名称 + ▾)+ 分类列表弹层。
+// 选完即收起。五个协议(ssh/telnet/serial/rdp/vnc)全部实装,不存在「未实装」
+// 或「即将」态 —— 原有的预览徽标机制已删(见 ProtoItem 处的说明)。
 component ProtoSelect inherits VerticalLayout {
     in property <string> label;
     in property <string> value;         // 当前协议 id
-    in property <bool> previewing: false;
     callback picked(string);
     // (#dialog-focus-reset) 打开弹层前由实例化处把焦点交回容器(防弹层
     // 关闭时把焦点恢复给旧输入框,蓝框复现)。
@@ -364,14 +357,6 @@ component ProtoSelect inherits VerticalLayout {
         if (id == "vnc") { return "VNC"; }
         return "SSH";
     }
-    pure function is-soon(id: string) -> bool {
-        return id == "vnc";
-    }
-    function badge-of(id: string) -> string {
-        if (!root.is-soon(id)) { return ""; }
-        return root.previewing ? "prev" : "soon";
-    }
-
     Text {
         text: root.label;
         color: Theme.text-secondary;
@@ -434,27 +419,6 @@ component ProtoSelect inherits VerticalLayout {
                 overflow: elide;
             }
 
-            if root.badge-of(root.value) != "" : Rectangle {
-                min-width: 34px;
-                height: 16px;
-                y: (parent.height - self.height) / 2;
-                border-radius: 8px;
-                border-width: 1px;
-                border-color: root.badge-of(root.value) == "prev"
-                    ? Theme.accent.with-alpha(0.45) : Theme.warning.with-alpha(0.45);
-                background: transparent;
-                HorizontalLayout {
-                    padding-left: 6px;
-                    padding-right: 6px;
-                    Text {
-                        text: root.badge-of(root.value) == "prev" ? @tr("Preview") : @tr("Soon");
-                        color: root.badge-of(root.value) == "prev" ? Theme.accent : Theme.warning;
-                        font-size: 9.5px;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-
             Rectangle {
                 width: 14px;
                 height: 14px;
@@ -501,7 +465,7 @@ component ProtoSelect inherits VerticalLayout {
                 // 已按用户要求移除,协议项平铺;三个 @tr 标签无其它消费者。
                 ProtoItem {
                     proto-id: "ssh"; label: "SSH";
-                    selected: root.value == "ssh"; badge: root.badge-of("ssh");
+                    selected: root.value == "ssh";
                     picked => {
                         root.pick-clock = root.drop-clock + 1;
                         root.picked("ssh"); proto-pop.close();
@@ -509,7 +473,7 @@ component ProtoSelect inherits VerticalLayout {
                 }
                 ProtoItem {
                     proto-id: "telnet"; label: "Telnet";
-                    selected: root.value == "telnet"; badge: root.badge-of("telnet");
+                    selected: root.value == "telnet";
                     picked => {
                         root.pick-clock = root.drop-clock + 1;
                         root.picked("telnet"); proto-pop.close();
@@ -517,7 +481,7 @@ component ProtoSelect inherits VerticalLayout {
                 }
                 ProtoItem {
                     proto-id: "serial"; label: @tr("Serial");
-                    selected: root.value == "serial"; badge: root.badge-of("serial");
+                    selected: root.value == "serial";
                     picked => {
                         root.pick-clock = root.drop-clock + 1;
                         root.picked("serial"); proto-pop.close();
@@ -525,16 +489,24 @@ component ProtoSelect inherits VerticalLayout {
                 }
                 ProtoItem {
                     proto-id: "rdp"; label: "RDP";
-                    selected: root.value == "rdp"; badge: root.badge-of("rdp");
+                    selected: root.value == "rdp";
                     picked => {
                         root.pick-clock = root.drop-clock + 1;
                         root.picked("rdp"); proto-pop.close();
                     }
                 }
-                // (#vnc-hidden 2026-10-05) VNC 未实装(SessionKind 无变体,选了
-                // 只能进「预览」态),按用户要求从协议下拉移除;预览态机制
-                // (preview-kind/start-preview/badge-of)整体保留,VNC 实装时
-                // 把 ProtoItem 加回来即恢复。
+                // (#rdp-vnc-embedded 2026-10-13) VNC 已实装：内置 vnc-rs 客户端
+                // 在标签页里承载桌面，is-real 白名单已含 "vnc"。theme.slint 早已
+                // 把 "vnc" 映射到 remote-desktop 图标，无需新增字形。
+                // (#vnc-soon-drop 2026-10-13) 这一项原先挂着「即将」徽标，已删。
+                ProtoItem {
+                    proto-id: "vnc"; label: "VNC";
+                    selected: root.value == "vnc";
+                    picked => {
+                        root.pick-clock = root.drop-clock + 1;
+                        root.picked("vnc"); proto-pop.close();
+                    }
+                }
             }
         }
     }
@@ -1673,6 +1645,10 @@ component ChainPicker inherits Rectangle {
 export component SessionDialog inherits Rectangle {
     in-out property <bool> is-open: false;
     in-out property <bool> is-editing: false;
+    // Windows 上内置 RDP 在密码框为空时会去凭据管理器取 `TERMSRV/<主机>`
+    // （#credential-store 2026-10-13），占位符必须说出这一半；其他平台没有这个
+    // 存储，文案维持「认证时提示」。
+    in property <bool> is-windows: false;
     in-out property <string> draft-id;
     in-out property <string> draft-name;
     in-out property <string> draft-kind: "ssh";
@@ -1777,6 +1753,19 @@ export component SessionDialog inherits Rectangle {
     in-out property <string> draft-rdp-resolution: "1280x720";
     in-out property <string> draft-rdp-width: "1280";
     in-out property <string> draft-rdp-height: "720";
+    // (#rdp-vnc-embedded 2026-10-13) RDP「连接方式」。默认 "system"（系统客户端
+    // / mstsc）——**零回归的锚点**：任何没带这个字段的存量草稿都落到 system，
+    // 与本次改动前的行为逐字一致。切成 "embedded" 只改这一个枚举，主机/端口/
+    // 用户名/密码/域/分辨率一律不动（R2），也不弹任何确认（R3）。
+    in-out property <string> draft-rdp-mode: "system";
+    // 内置客户端专用：远端分辨率跟随标签页尺寸（替代固定宽×高）。
+    in-out property <bool> draft-rdp-follow-tab-size: false;
+    // VNC 专属字段。
+    in-out property <bool> draft-vnc-view-only: false;
+    // Kept in the draft round-trip (Rust 侧 set_dialog_vnc_security 回填、保存时
+    // 写回 Session),但表单里已无对应控件 —— 后端不支持,见 #vnc-security-drop。
+    in-out property <string> draft-vnc-security: "";
+    in-out property <bool> draft-vnc-clipboard: true;
     in-out property <string> test-status;
     in-out property <bool> serial-missing: false;
 
@@ -1785,9 +1774,6 @@ export component SessionDialog inherits Rectangle {
     in property <[TriggerDraft]> triggers;
     property <bool> show-advanced: false;   // collapse proxy + forwarding (#56)
 
-    // 未实装协议的「预览」态:选中它只预览布局,不可创建。
-    // (#vnc-hidden 2026-10-05) VNC 已从下拉移除,当前无入口;机制保留备用。
-    in-out property <string> preview-kind: "";
     property <int> host-focus-seq: 0;
     property <int> serial-focus-seq: 0;
     // (#conn-path) 代理端口校验失败时点击页脚错误 → 定位端口框。
@@ -1809,14 +1795,10 @@ export component SessionDialog inherits Rectangle {
     visible: is-open;
     background: Theme.modal-scrim;
 
-    property <bool> is-preview: root.preview-kind != "" && root.draft-kind == root.preview-kind;
-    property <bool> is-real: root.draft-kind == "ssh" || root.draft-kind == "serial" || root.draft-kind == "telnet" || root.draft-kind == "rdp";
+    property <bool> is-real: root.draft-kind == "ssh" || root.draft-kind == "serial" || root.draft-kind == "telnet" || root.draft-kind == "rdp" || root.draft-kind == "vnc";
     function header-sub() -> string {
         if (root.is-editing) {
             return @tr("Edit the {0} connection", root.proto-label(root.draft-kind));
-        }
-        if (root.is-preview) {
-            return @tr("Configure a {0} connection (preview · not implemented yet)", root.proto-label(root.draft-kind));
         }
         return root.proto-sub(root.draft-kind);
     }
@@ -1844,33 +1826,38 @@ export component SessionDialog inherits Rectangle {
         return p == "22" || p == "23" || p == "3389" || p == "5900" || p == "";
     }
     // 分辨率下拉的存储值 ↔ 本地化显示文本互转(同串口 Parity 的做法):
-    // "fullscreen"/"custom" 之外的值即预设 "WxH" 本身,显示原样。
+    // "follow"/"fullscreen"/"custom" 之外的值即预设 "WxH" 本身,显示原样。
     pure function resolution-text(id: string) -> string {
+        if (id == "follow") { return @tr("Follow tab"); }
         if (id == "fullscreen") { return @tr("Full screen"); }
         if (id == "custom") { return @tr("Custom"); }
         return id;
     }
     pure function resolution-from-text(text: string) -> string {
+        if (text == @tr("Follow tab")) { return "follow"; }
         if (text == @tr("Full screen")) { return "fullscreen"; }
         if (text == @tr("Custom")) { return "custom"; }
         return text;
     }
+    // (#rdp-follow-sync 2026-10-13) 分辨率下拉是「跟随标签页」的唯一权威输入，
+    // 但存下来的是两个字段（resolution 字符串 + carry-over 的 follow-tab-size
+    // bool，见 Rust 的 session_models::follows_tab_size）。**每次改动都要把两者
+    // 一起写**，否则「之前选了跟随标签页、现在想改成 1920x1080」会被 OR 判据
+    // 永远判成 follow —— 开关单向卡死。选 follow 时 bool 同步为 true，选任何
+    // 固定值/全屏/自定义时同步为 false。
+    function set-resolution(id: string) {
+        root.draft-rdp-resolution = id;
+        root.draft-rdp-follow-tab-size = (id == "follow");
+    }
     function set-kind(id: string) {
         if (root.is-default-port(root.draft-port) && id != "serial") {
             root.draft-port = root.default-port-of(id);
-        }
-        if (id != root.preview-kind) {
-            root.preview-kind = "";
         }
         root.draft-kind = id;
         root.host-missing = false;
         root.serial-missing = false;
         root.test-status = "";
         root.show-advanced = false;
-    }
-    function start-preview(id: string) {
-        root.preview-kind = id;
-        root.set-kind(id);
     }
     function group-hint() -> string {
         if (root.draft-group == "") {
@@ -1997,6 +1984,11 @@ export component SessionDialog inherits Rectangle {
             rdp-resolution: root.draft-rdp-resolution,
             rdp-width: root.draft-rdp-width.to-float(),
             rdp-height: root.draft-rdp-height.to-float(),
+            rdp-mode: root.draft-rdp-mode,
+            rdp-follow-tab-size: root.draft-rdp-follow-tab-size,
+            vnc-view-only: root.draft-vnc-view-only,
+            vnc-security: root.draft-vnc-security,
+            vnc-clipboard: root.draft-vnc-clipboard,
             encoding: root.draft-encoding,
             vt100-drawing: root.draft-vt100-drawing,
             disable-shell-integration: root.draft-disable-shell-integration,
@@ -2007,7 +1999,6 @@ export component SessionDialog inherits Rectangle {
         };
     }
     function try-submit() {
-        if (root.is-preview) { return; }
         if (root.draft-kind != "serial" && root.draft-host == "") {
             root.host-missing = true;
             root.host-focus-seq += 1;
@@ -2059,7 +2050,6 @@ export component SessionDialog inherits Rectangle {
             self.host-focus-seq = 0;
             self.serial-focus-seq = 0;
             self.proxy-port-focus-seq = 0;
-            self.preview-kind = "";
             self.show-advanced = false;
             self.test-status = "";
             // (#conn-path) 路径类型与端口错误态复位(代理四字段由 Rust 侧
@@ -2424,12 +2414,9 @@ HorizontalLayout {
         drop-clock <=> root.drop-clock;
         label: @tr("Connection protocol");
         value: root.draft-kind;
-        previewing: root.is-preview;
         horizontal-stretch: 1.25;
         min-width: 0;
-        picked(id) => {
-            if (id == "vnc") { root.start-preview(id); } else { root.set-kind(id); }
-        }
+        picked(id) => { root.set-kind(id); }
     }
     if root.draft-kind != "serial" : sf2 := LabeledInput {
         focus-changed(f) => { if (f) { root.drop-clock += 1; } }
@@ -2488,6 +2475,88 @@ HorizontalLayout {
         accepted => { root.try-submit(); }
     }
 }
+                    // (#rdp-vnc-embedded 2026-10-13) RDP「连接方式」—— 紧跟协议
+                    // 下拉之后、账户/分辨率之前。位置理由(§5.1):「协议 → 方式」
+                    // 是同层级的两级选择器,相邻符合阅读顺序;而且它决定了下方表单
+                    // 的语义(系统模式密码可留空交 mstsc,内置模式需要更明确),
+                    // 因此必须让用户**在填地址与凭据之前**先定下来。
+                    //
+                    // ⚠️ 零回归(§5.1 字段显隐矩阵「系统客户端」列必须与现状逐字
+                    // 一致):选中「系统客户端」时本控件下方渲染的仍是**原来那
+                    // 几段、原文案**的账户区与域/分辨率区(见下方 #rdp-seg /
+                    // #rdp-no-adv),一行字都没改;新增的提示行也只在「内置客户
+                    // 端」时出现。因此这一分支在视觉上"看不出被改过"。
+                    // (#rdp-seg-parity 2026-10-13) 版式与「③ 身份认证(仅 SSH)」的
+                    // 认证方式分段**逐项对齐**:外 10px / 内 5px 两层 VerticalLayout
+                    // 包住「标签 + SegGroup」,提示行与下方字段同处外层。此前这里是
+                    // 单层 spacing:5px —— 标签、分段、提示三者等距挤在一起,与 SSH
+                    // 那段的两级节奏对不上,紧接其后的账户区也被压得没有分组感。
+                    if root.draft-kind == "rdp" : VerticalLayout {
+                        spacing: 10px;
+                        VerticalLayout {
+                            spacing: 5px;
+                            Text {
+                                text: @tr("Connection mode");
+                                color: Theme.text-secondary; font-size: Theme.fs-sm;
+                            }
+                            SegGroup {
+                                // (#rdp-mode-index 2026-10-13) 段序按 §5.1 的
+                                // 「选项 1 = 内置客户端(标签页) / 选项 2 = 系统客户端
+                                // (外部窗口)」,即内置是**第 0 段**。
+                                // `active-index` 必须与下面 SegOption 的书写顺序一致
+                                // —— SegGroup 的滑层直接按它算 x(= 3px + index × 格宽)。
+                                // 原先写的是 `== "embedded" ? 1 : 0`,于是选中「内置
+                                // 客户端」时滑层停在「系统客户端」格下、而加亮文字仍在
+                                // 「内置客户端」格:滑块与文字指向两个不同选项。
+                                active-index: root.draft-rdp-mode == "embedded" ? 0 : 1;
+                                count: 2;
+                                SegOption {
+                                    label: @tr("Built-in client (in tab)");
+                                    active: root.draft-rdp-mode == "embedded";
+                                    clicked => {
+                                        root.draft-rdp-mode = "embedded";
+                                        // (#rdp-follow-default 2026-10-13) 新建的
+                                        // 内置 RDP 会话默认就是「跟随标签页」
+                                        // (P0-9)：只有它让远端桌面直接铺满标签
+                                        // 页，用户不必手算像素。只在**新建**且分辨率
+                                        // 还是出厂值 1280x720 时预置 —— 编辑存量
+                                        // 会话时绝不偷偷改用户存下来的选择。
+                                        if (!root.is-editing
+                                                && root.draft-rdp-resolution == "1280x720") {
+                                            root.set-resolution("follow");
+                                        }
+                                    }
+                                }
+                                SegOption {
+                                    // 判据是 `!= "embedded"` 而不是 `== "system"`:
+                                    // 存量会话里该字段可能是空串,有空串按「系统客户端」
+                                    // 读的约定(见字段声明与 Session 的 serde 默认),
+                                    // 用 `==` 会让这类配置两个段都不亮。
+                                    label: @tr("System client (external window)");
+                                    active: root.draft-rdp-mode != "embedded";
+                                    clicked => {
+                                        root.draft-rdp-mode = "system";
+                                        // 系统客户端不认识「跟随标签页」(它只有
+                                        // 全屏/预设/自定义)：新建时从内置切回来，
+                                        // 把上面自动预置的值还原成出厂窗口尺寸，
+                                        // 免得下拉里留一个这个模式用不了的选项。
+                                        if (!root.is-editing
+                                                && root.draft-rdp-resolution == "follow") {
+                                            root.set-resolution("1280x720");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Text {
+                            text: root.draft-rdp-mode == "embedded"
+                                ? @tr("The remote desktop opens directly in this tab.")
+                                : @tr("Handed to the system remote desktop client, opened in its own window (mstsc / FreeRDP).");
+                            color: Theme.text-muted;
+                            font-size: Theme.fs-xs;
+                            wrap: word-wrap;
+                        }
+                    }
 if root.draft-kind == "serial" : HorizontalLayout {
     spacing: 12px;
     SelectField {
@@ -2567,9 +2636,7 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                         spacing: 3px;
                                         horizontal-stretch: 1;
                                         Text {
-                                            text: root.is-preview
-                                                ? @tr("{0} connection · layout preview", root.proto-label(root.draft-kind))
-                                                : @tr("{0} connection · layout reserved", root.proto-label(root.draft-kind));
+                                            text: @tr("{0} connection · layout reserved", root.proto-label(root.draft-kind));
                                             color: Theme.text-primary;
                                             font-size: Theme.fs-sm;
                                             font-weight: Theme.fw-regular;
@@ -2595,12 +2662,9 @@ if root.draft-kind == "serial" : HorizontalLayout {
         drop-clock <=> root.drop-clock;
         label: @tr("Connection protocol");
         value: root.draft-kind;
-        previewing: root.is-preview;
         horizontal-stretch: 1.25;
         min-width: 0;
-        picked(id) => {
-            if (id == "vnc") { root.start-preview(id); } else { root.set-kind(id); }
-        }
+        picked(id) => { root.set-kind(id); }
     }
     sf6 := LabeledInput {
         focus-changed(f) => { if (f) { root.drop-clock += 1; } }
@@ -2709,7 +2773,9 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                 dialog-field: true;
                                 input-height: 38px;
                                 label: root.draft-auth == "keyboard-interactive" ? @tr("Password / first prompt") : @tr("Password");
-                                placeholder: root.is-editing ? @tr("Leave blank to keep the current password") : "••••••••";
+                                // (#blank-password-overwrites 2026-10-13) 编辑态不再分叉:
+                                // 留空写入空密码(不是保留原密码),与新建态提示一致。
+                                placeholder: "••••••••";
                                 password: true;
                                 value <=> root.draft-password;
                                 horizontal-stretch: 1;
@@ -2861,9 +2927,9 @@ if root.draft-kind == "serial" : HorizontalLayout {
                             dialog-field: true;
                             input-height: 38px;
                             label: @tr("Key passphrase");
-                            placeholder: root.is-editing
-                                ? @tr("Leave blank to keep the current passphrase")
-                                : @tr("Leave blank if the key isn't encrypted");
+                            // (#blank-password-overwrites 2026-10-13) 与密码框同规则:
+                            // 留空 = 写入空口令,不再有「保留原口令」分支。
+                            placeholder: @tr("Leave blank if the key isn't encrypted");
                             password: true;
                             value <=> root.draft-password;
                             canceled => { root.cancel(); }
@@ -2899,9 +2965,19 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                 input-height: 38px;
                                 // (#rdp-password-optional 2026-10-05) RDP 密码可留空:
                                 // 不填则交给系统 mstsc 按其凭据策略处理(弹窗/空密码)。
+                                // (#rdp-vnc-embedded) 内置模式下占位符改为「认证时提示」——
+                                // 留空的语义不同(由远端登录界面处理),必须说清楚。
+                                // (#blank-password-overwrites 2026-10-13) 留空 = 写入**空密码**,
+                                // 不是「保留原密码」;编辑态与新建态提示因此完全一致。
                                 label: @tr("Password (leave blank ok)");
-                                placeholder: root.is-editing
-                                    ? @tr("Leave blank to keep the current password")
+                                // (#credential-store 2026-10-13) 内置模式在建会话前会去
+                                // Windows 凭据管理器取 `TERMSRV/<主机>`（与 mstsc 用的是同一条
+                                // 凭据），取到就直接走 NLA、不再出现登录界面；取不到才是「认证
+                                // 时提示」。Windows 上两半都要说，其他平台维持原样。
+                                placeholder: root.draft-rdp-mode == "embedded"
+                                    ? (root.is-windows
+                                        ? @tr("Leave blank — saved Windows credential, else prompt")
+                                        : @tr("Leave blank — prompt on connect"))
                                     : @tr("Leave blank — mstsc prompts if needed");
                                 password: true;
                                 value <=> root.draft-password;
@@ -2909,6 +2985,110 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                 canceled => { root.cancel(); }
                                 accepted => { root.try-submit(); }
                             }
+                        }
+                    }
+
+                    // VNC 专属段 —— VNC 无登录域概念(RFC 6143),所以**不渲染**
+                    // 域字段;暴露它只会误导。密码可留空(无密码 VNC 很常见)。
+                    // (#blank-password-overwrites 2026-10-13) 编辑时留空 = 写入空密码;
+                    // 原「留空 = 保留原密码」已按用户要求废止,全文提示随之统一。
+                    if root.draft-kind == "vnc" : Rectangle { height: 1phx; background: Theme.dark ? Theme.line-2 : #b9b9c2; }
+                    if root.draft-kind == "vnc" : VerticalLayout {
+                        spacing: 10px;
+                        HorizontalLayout {
+                            spacing: 10px;
+                            LabeledInput {
+                                focus-changed(f) => { if (f) { root.drop-clock += 1; } }
+                                dialog-field: true;
+                                input-height: 38px;
+                                label: @tr("Password (leave blank ok)");
+                                placeholder: @tr("Leave blank — no password");
+                                password: true;
+                                value <=> root.draft-password;
+                                horizontal-stretch: 1;
+                                canceled => { root.cancel(); }
+                                accepted => { root.try-submit(); }
+                            }
+                            // (#vnc-security-drop 2026-10-13) 这里原本有一个「Security」
+                            // 下拉(Auto / None / VNC Auth)。已移除 —— 后端不支持它:
+                            // vnc-rs 0.6 没有 `set_security_policy`,安全类型完全由库
+                            // 按服务端的 offer 自己挑(见 src/vnc/impls/client.rs 的模块
+                            // 头),所选值只是被记下来、对握手毫无影响。一个点了不改变
+                            // 任何行为的控件比没有更糟,所以按「没有的功能不放进来」撤掉。
+                            // `Session.vnc_security` 与 `VncConnectConfig::security`
+                            // 两个字段**保留**:旧配置照常反序列化,将来库支持时把控件
+                            // 加回来也不用迁移配置。
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                height: 38px;
+                                border-radius: 9px;
+                                border-width: 1px;
+                                border-color: vnc-ro-ta.has-hover ? Theme.line-2 : Theme.border-control;
+                                background: Theme.field;
+                                vnc-ro-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.draft-vnc-view-only = !root.draft-vnc-view-only; }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 12px; padding-right: 12px; spacing: 8px;
+                                    Rectangle {
+                                        width: 16px; height: 16px; y: (parent.height - self.height) / 2;
+                                        border-radius: 4px;
+                                        border-width: 1px;
+                                        border-color: Theme.border-strong;
+                                        background: root.draft-vnc-view-only ? Theme.accent : transparent;
+                                        Text {
+                                            text: "✓"; color: white; font-size: 11px; font-weight: 800;
+                                            horizontal-alignment: center; vertical-alignment: center;
+                                            visible: root.draft-vnc-view-only;
+                                        }
+                                    }
+                                    Text {
+                                        text: @tr("View only (do not send keyboard or mouse input)");
+                                        color: Theme.text-primary; font-size: Theme.fs-sm;
+                                        vertical-alignment: center; horizontal-stretch: 1;
+                                    }
+                                }
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                height: 38px;
+                                border-radius: 9px;
+                                border-width: 1px;
+                                border-color: vnc-cb-ta.has-hover ? Theme.line-2 : Theme.border-control;
+                                background: Theme.field;
+                                vnc-cb-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.draft-vnc-clipboard = !root.draft-vnc-clipboard; }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 12px; padding-right: 12px; spacing: 8px;
+                                    Rectangle {
+                                        width: 16px; height: 16px; y: (parent.height - self.height) / 2;
+                                        border-radius: 4px;
+                                        border-width: 1px;
+                                        border-color: Theme.border-strong;
+                                        background: root.draft-vnc-clipboard ? Theme.accent : transparent;
+                                        Text {
+                                            text: "✓"; color: white; font-size: 11px; font-weight: 800;
+                                            horizontal-alignment: center; vertical-alignment: center;
+                                            visible: root.draft-vnc-clipboard;
+                                        }
+                                    }
+                                    Text {
+                                        text: @tr("Sync clipboard");
+                                        color: Theme.text-primary; font-size: Theme.fs-sm;
+                                        vertical-alignment: center; horizontal-stretch: 1;
+                                    }
+                                }
+                            }
+                        }
+                        Text {
+                            text: @tr("View only is handy when you are reading logs on someone else's machine and must not touch it.");
+                            color: Theme.text-muted; font-size: Theme.fs-xs; wrap: word-wrap;
                         }
                     }
 
@@ -2988,9 +3168,16 @@ if root.draft-kind == "serial" : HorizontalLayout {
                                     min-width: 0;
                                     open-up: true;
                                     label: @tr("Resolution");
-                                    choices: [@tr("Full screen"), "1280x720", "1366x768", "1440x900", "1600x900", "1920x1080", "2560x1440", "3840x2160", @tr("Custom")];
+                                    // (#rdp-vnc-embedded) 内置客户端多一个
+                                    // 「跟随标签页」首选项 —— 它是唯一能让远端
+                                    // 分辨率跟着本地布局走的选项(P0-9)。
+                                    // ⚠️ 系统客户端那一支的列表**逐项未变**(仍是
+                                    // 全屏打头),零回归:那一列看不出被改过。
+                                    choices: root.draft-rdp-mode == "embedded"
+                                        ? [@tr("Follow tab"), @tr("Full screen"), "1280x720", "1366x768", "1440x900", "1600x900", "1920x1080", "2560x1440", "3840x2160", @tr("Custom")]
+                                        : [@tr("Full screen"), "1280x720", "1366x768", "1440x900", "1600x900", "1920x1080", "2560x1440", "3840x2160", @tr("Custom")];
                                     value: root.resolution-text(root.draft-rdp-resolution);
-                                    picked(value) => { root.draft-rdp-resolution = root.resolution-from-text(value); }
+                                    picked(value) => { root.set-resolution(root.resolution-from-text(value)); }
                                 }
                             }
                             if root.draft-rdp-resolution == "custom" : HorizontalLayout {
@@ -3808,7 +3995,6 @@ if root.draft-kind == "serial" : HorizontalLayout {
                     btn-min-width: 0px;
                     hug-width: true;
                     text: is-editing ? @tr("Save") : @tr("Create");
-                    disabled: root.is-preview;
                     clicked => { root.try-submit(); }
                 }
                 }

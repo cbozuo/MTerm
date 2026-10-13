@@ -148,6 +148,10 @@ pub(super) fn wire_tab_callbacks(
         let tab_titles = tab_titles.clone();
         let tab_routes = core.tab_routes.clone();
         let core_cx = core.clone();
+        // This handler takes ownership of the `core` handle it needs; the
+        // handlers wired further down still want `core` itself, so they must not
+        // lose it to this move.
+        let core_close = core.clone();
         window.on_pane_tab_closed(move |_pane_id: i32, id: SharedString| {
             let id = id.to_string();
             if id == "welcome" {
@@ -166,6 +170,25 @@ pub(super) fn wire_tab_callbacks(
             }
             bufs.lock().unwrap().remove(&id);
             if let Ok(mut routes) = tab_routes.lock() {
+                routes.remove(&id);
+            }
+            // (#rdp-vnc-embedded) A remote-desktop tab keeps its session in its
+            // own handle table and its own route table; both must go when the
+            // tab closes, or the protocol task keeps rendering frames into a
+            // pane row nobody is drawing.
+            let remote_handles = core_close
+                .window_states
+                .borrow()
+                .get(&window_id)
+                .map(|state| state.remote_handles.clone());
+            if let Some(remote) = remote_handles.and_then(|handles| handles.borrow_mut().remove(&id)) {
+                if let Some(panes) = crate::remote::registry::panes_of(window_id) {
+                    crate::remote::close_session(&remote, &panes);
+                } else {
+                    remote.close();
+                }
+            }
+            if let Ok(mut routes) = core_close.remote_routes.lock() {
                 routes.remove(&id);
             }
 

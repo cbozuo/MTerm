@@ -33,6 +33,7 @@ import { SessionDialog, SessionDraft, PortFwd, TriggerDraft, GroupEntry, JumpEnt
 import { ConfirmDialog } from "confirm_dialog.slint";
 import { LabeledInput, PrimaryButton, GhostButton, DockExpandButton, IconButton, ToolStrip } from "widgets.slint";
 import { TerminalView, TermSpan, TermMatch, QuickCmd, QuickDockPanel } from "terminal_view.slint";
+import { RemoteDesktopView } from "remote_desktop_view.slint";
 import { SftpEntry, SftpTreeNode, TunnelInfo } from "sftp_panel.slint";
 import { ProcWindow, ProcRow } from "proc_window.slint";
 import { SystemInfoWindow, SysInfoRow, SysMetricRow, SysNetRow } from "system_info_window.slint";
@@ -96,6 +97,38 @@ export struct TerminalState {
     // (#polish-topbar-r4 2026-09-05) 命令栏显隐改为每会话独立(原为全局总开
     // 关):顶栏"命令栏"按钮只切换当前活动终端,切标签时各自记忆。
     cmd-bar-hidden: bool,
+}
+
+// (#rdp-vnc-embedded) One built-in remote desktop (RDP via MTerm's own client, or
+// VNC) hosted in a tab. Deliberately a *separate* model from TerminalState: a
+// remote tab has no term buffer, no cursor grid and no scrollback, and forcing
+// those onto it would mean a row full of sentinels. The Rust side keeps the two
+// in sync where it matters (tab lifecycle) and nothing else.
+export struct RemotePaneState {
+    id: string,          // tab id
+    title: string,
+    kind: string,        // "rdp" | "vnc"
+    // 0 connecting / 1 authenticating / 2 connected / 3 reconnecting /
+    // 4 disconnected / 5 failed — mirrors RemoteState in Rust.
+    state: int,
+    status: string,      // localised status line
+    error: string,       // the driver's raw failure text ("" unless failed);
+                         // shown behind the view's details toggle, never as
+                         // the headline — see #failure-wrap
+    image: image,        // the latest decoded frame
+    frame-w: int,        // frame size in pixels; 0 until the first frame
+    frame-h: int,
+    view-only: bool,     // VNC view-only: input is suppressed
+    // --- certificate / server-key trust overlay (P0-12) ---
+    trust-open: bool,
+    trust-protocol: string,   // "rdp" | "vnc"
+    trust-host: string,
+    trust-fingerprint: string,
+    trust-subject: string,
+    trust-issuer: string,
+    trust-validity: string,   // "notBefore — notAfter"
+    trust-changed: bool,      // true when the fingerprint differs from the
+                              // remembered one (a re-imaged host, or worse)
 }
 
 // One leaf pane of the split layout (v0.5). Geometry (x/y/w/h) is computed in Rust
@@ -1601,6 +1634,9 @@ export component AppWindow inherits Window {
     // (#polish-topbar-r4) 切换标签后,把新活动终端的命令栏状态刷进全局镜像
     // (顶栏按钮的激活态随之联动)。
     in property <[TerminalState]> terminals;
+    // (#rdp-vnc-embedded) Built-in remote-desktop tabs. Parallel to `terminals`:
+    // a pane shows whichever of the two models its active tab belongs to.
+    in property <[RemotePaneState]> remote-panes;
 
     // --- Dialog state ------------------------------------------------------
     in-out property <bool> dialog-open: false;
@@ -1658,6 +1694,16 @@ export component AppWindow inherits Window {
     in-out property <string> dialog-rdp-resolution: "1280x720";
     in-out property <string> dialog-rdp-width: "1280";
     in-out property <string> dialog-rdp-height: "720";
+    // (#rdp-vnc-embedded) RDP「连接方式」: "system" (mstsc / FreeRDP, the
+    // pre-existing behaviour and the default) or "embedded" (MTerm's own client
+    // in a tab). Kept as a mirrored AppWindow property because Rust fills the
+    // draft when editing an existing session; "system" is the value a draft
+    // without this field deserializes to, so old sessions never change mode.
+    in-out property <string> dialog-rdp-mode: "system";
+    in-out property <bool> dialog-rdp-follow-tab-size: false;
+    in-out property <bool> dialog-vnc-view-only: false;
+    in-out property <string> dialog-vnc-security: "";
+    in-out property <bool> dialog-vnc-clipboard: true;
     in-out property <string> dialog-test-status;
 
     // Delete-confirmation modal state (#28).
@@ -1863,6 +1909,19 @@ export component AppWindow inherits Window {
     callback terminal-scroll-to(string /* tab-id */, int /* offset */); // scrollbar drag (#103)
     // Mouse event forwarded to a mouse-tracking TUI app (#terminal-mouse).
     callback terminal-mouse(string /* tab-id */, int /* kind */, int /* button */, int /* row */, int /* col */) -> bool;
+    // --- Built-in remote desktop (#rdp-vnc-embedded) -------------------------
+    // Coordinates arriving here are already remote-frame pixels: the view does
+    // the letterbox mapping, so Rust never sees tab-local pixels (P0-8).
+    callback remote-key(string /* tab-id */, string /* key */, bool /* down */,
+                        bool /* ctrl */, bool /* shift */, bool /* alt */, bool /* meta */);
+    // `action`: 0 = move, 1 = press, 2 = release. The button *mask* is rebuilt
+    // in Rust, where the protocols actually need it.
+    callback remote-pointer(string /* tab-id */, int /* x */, int /* y */, int /* button */, int /* action */);
+    callback remote-wheel(string /* tab-id */, int /* x */, int /* y */, float /* dx */, float /* dy */);
+    callback remote-release-keys(string /* tab-id */);
+    callback remote-resized(string /* tab-id */, int /* width */, int /* height */);
+    callback remote-reconnect(string /* tab-id */);
+    callback remote-trust-decide(string /* tab-id */, bool /* accept */, bool /* remember */);
     // Drag-selection lifecycle (grid row/col coordinates).
     callback term-select-start(string /* tab-id */, int /* row */, int /* col */, bool /* ctrl */, bool /* shift */);
     callback term-select-update(string /* tab-id */, int /* row */, int /* col */);
@@ -3159,6 +3218,49 @@ export component AppWindow inherits Window {
                         select-end() => { root.term-select-end(term.id); }
                         select-word(r, c) => { root.term-select-word(term.id, r, c); }
                         select-autoscroll(dir) => { root.term-select-autoscroll(term.id, dir); }
+                    }
+
+                    // (#rdp-vnc-embedded) Built-in remote-desktop tabs — one view per
+                    // remote pane, same visibility-toggling dispatch as the terminal
+                    // loop above. A pane's active tab belongs to exactly one of the
+                    // two models, so at most one of the two loops is ever visible:
+                    // that is what keeps a keystroke from reaching both (P0-7).
+                    for rem[i] in root.remote-panes : RemoteDesktopView {
+                        visible: rem.id == pane.active-id;
+                        active: rem.id == root.active-tab-id;
+                        width: rem.id == pane.active-id ? parent.width : 0px;
+                        height: rem.id == pane.active-id ? parent.height : 0px;
+                        tab-id: rem.id;
+                        state: rem.state;
+                        status: rem.status;
+                        error: rem.error;
+                        frame: rem.image;
+                        frame-w: rem.frame-w;
+                        frame-h: rem.frame-h;
+                        view-only: rem.view-only;
+                        trust-open: rem.trust-open;
+                        trust-title: rem.trust-changed
+                            ? @tr("The {0} certificate has changed", rem.trust-protocol == "vnc" ? "VNC" : "RDP")
+                            : @tr("Trust this {0} server?", rem.trust-protocol == "vnc" ? "VNC" : "RDP");
+                        trust-host: rem.trust-host;
+                        trust-fingerprint: rem.trust-fingerprint;
+                        trust-subject: rem.trust-subject;
+                        trust-issuer: rem.trust-issuer;
+                        trust-validity: rem.trust-validity;
+                        trust-changed: rem.trust-changed;
+                        key-event(text, down, ctrl, shift, alt, meta) => {
+                            root.remote-key(rem.id, text, down, ctrl, shift, alt, meta);
+                        }
+                        pointer-event(x, y, btn, action) => {
+                            root.remote-pointer(rem.id, x, y, btn, action);
+                        }
+                        wheel-event(x, y, dx, dy) => { root.remote-wheel(rem.id, x, y, dx, dy); }
+                        release-all-keys() => { root.remote-release-keys(rem.id); }
+                        resized(w, h) => { root.remote-resized(rem.id, w, h); }
+                        reconnect() => { root.remote-reconnect(rem.id); }
+                        trust-decide(accept, remember) => {
+                            root.remote-trust-decide(rem.id, accept, remember);
+                        }
                     }
 
                     // Windows may show the terminal model being reconstructed when
@@ -7227,6 +7329,10 @@ export component AppWindow inherits Window {
     SessionDialog {
         width: parent.width;
         height: parent.height;
+        // Only the placeholder text depends on it (#credential-store): on
+        // Windows a blank password field may be filled from the Credential
+        // Manager, so "prompt on connect" is not the whole truth there.
+        is-windows: root.is-windows;
         is-open <=> root.dialog-open;
         is-editing <=> root.dialog-editing;
         draft-id <=> root.dialog-id;
@@ -7271,6 +7377,11 @@ export component AppWindow inherits Window {
         draft-rdp-resolution <=> root.dialog-rdp-resolution;
         draft-rdp-width <=> root.dialog-rdp-width;
         draft-rdp-height <=> root.dialog-rdp-height;
+        draft-rdp-mode <=> root.dialog-rdp-mode;
+        draft-rdp-follow-tab-size <=> root.dialog-rdp-follow-tab-size;
+        draft-vnc-view-only <=> root.dialog-vnc-view-only;
+        draft-vnc-security <=> root.dialog-vnc-security;
+        draft-vnc-clipboard <=> root.dialog-vnc-clipboard;
         test-status <=> root.dialog-test-status;
         forwards: root.dialog-forwards;
         triggers: root.dialog-triggers;

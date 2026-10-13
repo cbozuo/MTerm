@@ -378,7 +378,17 @@ pub(super) fn move_tab_between_windows(
         let Some(row) = find_tab_row(&src, tab_id) else {
             return false;
         };
-        if row.kind.to_string() != "terminal" || !src.handles.borrow().contains_key(tab_id) {
+        // A tab moves when it has a live session of either kind. Terminals are
+        // recognised by their `SessionHandle`; a remote-desktop tab by its
+        // `RemoteHandle`. Refusing anything else keeps a half-initialised tab
+        // from being moved and leaving both windows inconsistent.
+        let kind = row.kind.to_string();
+        let has_session = match kind.as_str() {
+            "terminal" => src.handles.borrow().contains_key(tab_id),
+            "rdp" | "vnc" => src.remote_handles.borrow().contains_key(tab_id),
+            _ => false,
+        };
+        if !has_session {
             return false;
         }
         (src, dst)
@@ -414,6 +424,28 @@ pub(super) fn move_tab_between_windows(
         }
         row
     };
+
+    // (#rdp-vnc-embedded) A remote-desktop tab's own state moves here too: its
+    // pane row (so the picture survives), its session handle (so the connection
+    // is not restarted), and its route (so the pump's next frame lands in the
+    // destination window). This is what makes dragging a desktop to another
+    // window keep it connected (US-K2).
+    let remote_row = crate::remote::registry::panes_of(src_id)
+        .and_then(|panes| panes.take_row(tab_id));
+    if let Some(h) = src.remote_handles.borrow_mut().remove(tab_id) {
+        dst.remote_handles
+            .borrow_mut()
+            .insert(tab_id.to_string(), h);
+    }
+    let dst_window_id = dst_id;
+    if let Ok(mut routes) = core.remote_routes.lock() {
+        routes.insert(
+            tab_id.to_string(),
+            Arc::new(Mutex::new(crate::remote::pump::RemoteRoute {
+                window_id: dst_window_id,
+            })),
+        );
+    }
 
     // Layout membership.
     src.layout.borrow_mut().remove_tab(tab_id);
@@ -455,6 +487,11 @@ pub(super) fn move_tab_between_windows(
     dst.tabs_model.push(tab_row);
     if let Some(row) = term_row {
         dst.terminals_model.push(row);
+    }
+    if let Some(row) = remote_row {
+        if let Some(panes) = crate::remote::registry::panes_of(dst_id) {
+            panes.put_row(row);
+        }
     }
     // (#session-status-dot) 目标窗口的会话列表现在也要点亮该会话。
     if let Some(w) = dst.weak.upgrade() {
