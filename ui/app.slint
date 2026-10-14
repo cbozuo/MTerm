@@ -23,7 +23,7 @@ export { Theme }
 // (#picker-component 2026-10-13) 通用取色盘：ColorPickerDialog（强调色/组别/
 // 终端光标共用，@children 传示例条）+ PickerMath 全局（Rust 一次性接线，
 // 见 src/app.rs「PickerMath 接线」块；src/picker/mod.rs 为取色业务模块）。
-import { ColorPickerDialog, PickerMath, InfoSwatch } from "color_picker.slint";
+import { ColorPickerDialog, PickerMath, InfoSwatch, ColorInfoCard } from "color_picker.slint";
 export { PickerMath }
 import { Sidebar, DiskInfo } from "sidebar.slint";
 import { TabBar, TabInfo } from "tabs.slint";
@@ -8171,6 +8171,10 @@ export component AppWindow inherits Window {
                 // 三态各一行（互斥）：警示 / 已选未生效 / 中性提示。
                 if pop.warn : HorizontalLayout {
                     spacing: 4px;
+                    // (#swatch-parity 2026-10-14) 交叉轴居中：默认的
+                    // cross-axis-alignment:stretch 下，设了固定高的色块无法撑满
+                    // 行高，退化成顶部对齐（比同行的 11px 文字中心偏上 3px）。
+                    cross-axis-alignment: center;
                     Text {
                         height: 20px;
                         horizontal-stretch: 0;
@@ -8200,9 +8204,17 @@ export component AppWindow inherits Window {
                         color: Theme.warning;
                         font-size: 11px;
                     }
+                    // (#accent-pop-flow 2026-10-14) 尾部吸空块。无 stretch 子项时
+                    // Slint 把多余宽**均摊给"可生长"的子项**(Text 的 max=∞ 可生长,
+                    // 定宽色块 max=宽 不可生长)——于是每段文字框各被撑宽一段,色块
+                    // 被推离文字(用户截图①:色块孤零零悬在行中偏右)。补一块
+                    // stretch=1 的吸空块后,余量只归它,整行从左侧自然排下来,
+                    // 色块紧贴前一段文字的末尾。
+                    Rectangle { horizontal-stretch: 1; }
                 }
                 if !pop.warn && pop.dirty : HorizontalLayout {
                     spacing: 4px;
+                    cross-axis-alignment: center;   // (#swatch-parity) 同「警示」行：色块/文字垂直居中
                     Text {
                         height: 20px;
                         horizontal-stretch: 0;
@@ -8222,9 +8234,12 @@ export component AppWindow inherits Window {
                         color: Theme.text-muted;
                         font-size: 11px;
                     }
+                    // (#accent-pop-flow) 同「警示」行:尾部吸空,整行左贴、色块贴文字。
+                    Rectangle { horizontal-stretch: 1; }
                 }
                 if !pop.warn && !pop.dirty : HorizontalLayout {
                     spacing: 4px;
+                    cross-axis-alignment: center;   // (#swatch-parity) 同「警示」行：色块/文字垂直居中
                     Text {
                         height: 20px;
                         horizontal-stretch: 0;
@@ -8244,10 +8259,14 @@ export component AppWindow inherits Window {
                         color: Theme.text-muted;
                         font-size: 11px;
                     }
+                    // (#accent-pop-flow) 尾部吸空:本行是「…还原当前色【色块】。」
+                    // 的句子,色块必须紧贴"当前色"三个字,不能被均摊的余量推开。
+                    Rectangle { horizontal-stretch: 1; }
                 }
                 // ── 最近使用（点选 = 仅选中；空时回落显示当前生效色）────────
                 HorizontalLayout {
                     spacing: 6px;
+                    cross-axis-alignment: center;   // (#swatch-parity) 与副标题行同款：色块与 11px 文字垂直居中
                     Text {
                         text: root.lang-en ? "Recent" : "最近";
                         color: Theme.text-muted;
@@ -8256,9 +8275,13 @@ export component AppWindow inherits Window {
                         horizontal-stretch: 0;
                     }
                     for r in (root.accent-recent.length > 0 ? root.accent-recent : [root.accent-guard.eff]) : Rectangle {
-                        width: 20px;
-                        height: 20px;
-                        border-radius: 6px;
+                        // (#swatch-size-match 2026-10-15) 20px → 14px、圆角 6→4：
+                        // 与「主题」下拉选择框里的色块同规格（14×14 / 圆角 4，截图
+                        // 实测），也与副标题行的 InfoSwatch 同批改——两处必须一致，
+                        // 否则又回到「第一行/第二行色块不等大」（用户第三轮反馈）。
+                        width: 14px;
+                        height: 14px;
+                        border-radius: 4px;
                         background: root.accent-hex-color(r);
                         border-width: r-ta.has-hover ? 2px : 1px;
                         border-color: r-ta.has-hover ? root.accent-ink-on(r).with-alpha(0.72) : #ffffff26;
@@ -8266,68 +8289,31 @@ export component AppWindow inherits Window {
                         drop-shadow-color: #00000066;
                         animate drop-shadow-blur { duration: 100ms; }
                         Rectangle {
-                            border-radius: 6px;
+                            border-radius: 4px;
                             background: #ffffff;
                             opacity: r-ta.has-hover ? 0.10 : 0;
                         }
-                        // 悬浮信息卡：hex + RGB / HSV / HSL（hover 展示，移出消失；
-                        // 色卡未 clip，允许卡片向上越界浮出）
-                        Rectangle {
+                        // 悬浮信息卡：与副标题行色块的卡**同一组件**
+                        // （#color-info-card 2026-10-14 用户要求「用上面的同款」：
+                        // 同尺寸、同字号、同字色 —— 此前本处另抄了一份、首行放大到
+                        // 12px 且 RGB/HSV/HSL 用 text-secondary，两处灰白不一）。
+                        // 色卡未 clip，允许卡片向上越界浮出。
+                        ColorInfoCard {
+                            hex: r;
                             x: (parent.width - self.width) / 2 - 8px;
                             y: -(self.height + 7px);
-                            width: 168px;
-                            height: 100px;
-                            border-radius: 8px;
-                            background: #111318;
-                            border-width: 1px;
-                            border-color: Theme.border-strong;
-                            drop-shadow-blur: 14px;
-                            drop-shadow-color: #000000a0;
                             visible: r-ta.has-hover;
-                            VerticalLayout {
-                                padding-top: 10px;
-                                padding-bottom: 10px;
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                spacing: 5px;
-                                alignment: center;
-                                Text {
-                                    text: r;
-                                    color: Theme.text-primary;
-                                    font-size: 12px;
-                                    font-family: Theme.term-font-family;
-                                }
-                                Text {
-                                    text: "RGB  " + PickerMath.hex-ch(r, 0, "rgb") + ", "
-                                        + PickerMath.hex-ch(r, 1, "rgb") + ", "
-                                        + PickerMath.hex-ch(r, 2, "rgb");
-                                    color: Theme.text-secondary;
-                                    font-size: 10.5px;
-                                    font-family: Theme.term-font-family;
-                                }
-                                Text {
-                                    text: "HSV  " + PickerMath.hex-ch(r, 0, "hsv") + "°  "
-                                        + PickerMath.hex-ch(r, 1, "hsv") + "%  "
-                                        + PickerMath.hex-ch(r, 2, "hsv") + "%";
-                                    color: Theme.text-secondary;
-                                    font-size: 10.5px;
-                                    font-family: Theme.term-font-family;
-                                }
-                                Text {
-                                    text: "HSL  " + PickerMath.hex-ch(r, 0, "hsl") + "°  "
-                                        + PickerMath.hex-ch(r, 1, "hsl") + "%  "
-                                        + PickerMath.hex-ch(r, 2, "hsl") + "%";
-                                    color: Theme.text-secondary;
-                                    font-size: 10.5px;
-                                    font-family: Theme.term-font-family;
-                                }
-                            }
                         }
                         r-ta := TouchArea {
                             mouse-cursor: pointer;
                             clicked => { root.accent-stage = r; }
                         }
                     }
+                    // (#accent-pop-flow 2026-10-14) 尾部吸空:不加这块时,本行唯一
+                    // "可生长"的子项是「最近」文字框,余量全灌给它 → 色块被顶到行尾
+                    // (用户截图②:最近行色块贴在弹框最右侧)。加块后余量归它,
+                    // 「最近」之后紧接着就是最近使用色块,与网格左缘同一列起排。
+                    Rectangle { horizontal-stretch: 1; }
                 }
                 // ── 47 预设网格：按色相重排，8 列，名称 + 色号（点选仅选中）──
                 GridLayout {
@@ -8394,69 +8380,89 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                // ── 页脚：顶部横线；左下「选定色票 + 调色盘」；右下 随机/取消/应用
-                //    控件统一 36px 高；调色盘入口为 ghost 按钮（无底色）。────
+                // ── 页脚：顶部横线；左下「选定 | 调色盘」合并按钮；右下 随机/取消/应用
+                //    控件统一 36px 高。────────────────────────────────────────
                 Rectangle { height: 1px; background: #3a3d46; }
                 Rectangle {
                     height: 36px;
-                    // 选定色票（底 = 选定原色；点它进调色盘）
+                    // (#cur-merged 2026-10-15) 「选定色票」+「调色盘」由两个独立按钮
+                    // 合成**一个**按钮，中间一条 1px 分割线（用户第 4 轮反馈）。
+                    // 规格 = 定稿高保真 .mt-cur / .mt-curwell / .mt-curhint：
+                    //   * 卡片：1px 边框 + 圆角 10 + overflow:hidden（此处 clip）；
+                    //   * 左段 well：填**选定原色**，深色(ink-on)双行「选定 / #hex」左贴；
+                    //   * 右段 hint：「调色盘 ›」12px，**不设内衬底色**——弹框通透档
+                    //     alpha<1 时叠同色会二次混色反而显形（#popup-inner-fill 结论）；
+                    //   * 悬停 = 整卡统一反馈：边框转选定色 + 3px 柔光外环（.mt-cur:hover）。
+                    // 两段点击动作本就完全相同（都开调色盘），故整卡一个 TouchArea。
+                    // 宽度：1px 边框 + well 104 + 分割线 1 + hint 88 = 194px。
+                    // 柔光环先声明 = 垫在卡片下（后声明者在上）。
                     Rectangle {
-                        x: 0;
-                        width: 104px;
-                        height: parent.height;
-                        border-radius: 10px;
-                        background: root.accent-hex-color(root.accent-stage);
-                        border-width: 1px;
-                        border-color: sel-ta.has-hover ? #ffffff52 : #ffffff2e;
-                        clip: true;
-                        Rectangle {
-                            border-radius: 10px;
-                            background: #ffffff;
-                            opacity: sel-ta.has-hover ? 0.06 : 0;
-                        }
-                        sel-lay := VerticalLayout {
-                            x: 10px;
-                            alignment: center;
-                            Text {
-                                text: root.lang-en ? "Selected" : "选定";
-                                color: root.accent-ink-on(root.accent-stage);
-                                font-size: 9px;
-                                font-weight: 600;
-                                opacity: 0.85;
-                            }
-                            Text {
-                                text: root.accent-stage;
-                                color: root.accent-ink-on(root.accent-stage);
-                                font-size: 10px;
-                                font-family: Theme.term-font-family;
-                            }
-                        }
-                        sel-ta := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => {
-                                root.accent-pick-fmt = "rgb";
-                                root.accent-picker-open(root.accent-stage);
-                                root.accent-pick-open = true;
-                            }
-                        }
+                        x: -3px;
+                        y: -3px;
+                        width: 194px + 6px;
+                        height: parent.height + 6px;
+                        border-radius: 13px;
+                        border-width: 3px;
+                        border-color: root.accent-hex-color(root.accent-stage).with-alpha(0.14);
+                        visible: cur-ta.has-hover;
                     }
-                    // 调色盘 ghost 按钮（透明底，点击进调色盘）
-                    Rectangle {
-                        x: 110px;
-                        width: 88px;
+                    cur-card := Rectangle {
+                        x: 0;
+                        width: 194px;
                         height: parent.height;
                         border-radius: 10px;
-                        background: pal-ta.has-hover ? Theme.bg-hover : transparent;
                         border-width: 1px;
-                        border-color: pal-ta.has-hover ? Theme.text-muted : Theme.border-strong;
+                        // 悬停转「选定色」= 即将应用的色，顺带把卡片和 well 缝成一色
+                        border-color: cur-ta.has-hover
+                            ? root.accent-hex-color(root.accent-stage) : Theme.border-strong;
+                        clip: true;
+                        animate border-color { duration: 120ms; }
+                        // 左段 well：内缩 1px 让出卡片边框（CSS 里 border 不被子元素盖住）
+                        Rectangle {
+                            x: 1px;
+                            y: 1px;
+                            width: 103px;
+                            height: parent.height - 2px;
+                            background: root.accent-hex-color(root.accent-stage);
+                            sel-lay := VerticalLayout {
+                                x: 10px;
+                                alignment: center;
+                                Text {
+                                    text: root.lang-en ? "Selected" : "选定";
+                                    color: root.accent-ink-on(root.accent-stage);
+                                    font-size: 9px;
+                                    font-weight: 600;
+                                    opacity: 0.85;
+                                }
+                                Text {
+                                    text: root.accent-stage;
+                                    color: root.accent-ink-on(root.accent-stage);
+                                    font-size: 10px;
+                                    font-family: Theme.term-font-family;
+                                }
+                            }
+                        }
+                        // 分割线（well / hint 之间，上下同样内缩 1px）
+                        Rectangle {
+                            x: 104px;
+                            y: 1px;
+                            width: 1px;
+                            height: parent.height - 2px;
+                            background: Theme.border-strong;
+                        }
+                        // 右段 hint：透明底 + 居中
                         Text {
+                            x: 105px;
+                            y: 1px;
+                            width: parent.width - 105px - 1px;
+                            height: parent.height - 2px;
                             text: root.lang-en ? "Palette ›" : "调色盘 ›";
-                            color: pal-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                            color: cur-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
                             font-size: 12px;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
-                        pal-ta := TouchArea {
+                        cur-ta := TouchArea {
                             mouse-cursor: pointer;
                             clicked => {
                                 root.accent-pick-fmt = "rgb";

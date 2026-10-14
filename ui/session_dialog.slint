@@ -2199,18 +2199,25 @@ export component SessionDialog inherits Rectangle {
 
         TouchArea {
             width: 100%; height: 100%;
+            // (#dialog-drag-click 2026-10-14) 拖动/点击判别:按下后指针位移超过
+            // 3px 即记为"真拖动",松开时不再触发 clicked —— 原先拖动松手会顺带
+            // 点一下(焦点复位 + drop-clock 推进,把残留蓝框/下拉一起收掉),
+            // 现在"拖是拖、点是点"。3px 是容差:手抖点击不该被吞。
+            property <bool> drag-moved: false;
             // (#dialog-focus-reset) 点卡片内空白(字段间空隙):焦点回容器,
             // 蓝色焦点边框消失;时钟推进让残留的下拉蓝框一起恢复普通。
             clicked => {
-                root.scope-focus-pending = true;
-                root.drop-clock += 1;
+                if (!self.drag-moved) {
+                    root.scope-focus-pending = true;
+                    root.drop-clock += 1;
+                }
             }
             // (#dialog-drag 2026-10-14) 空白区拖动弹窗（绝对坐标差值，与
-            // 调色盘一致）；字段/按钮在上层不受影响。拖动松开仍会触发
-            // clicked（焦点复位），无副作用。
+            // 调色盘一致）；字段/按钮在上层不受影响。
             pointer-event(ev) => {
                 if (ev.kind == PointerEventKind.down) {
                     root.card-dragging = true;
+                    self.drag-moved = false;
                     root.card-ox = dlg-card.x;
                     root.card-oy = dlg-card.y;
                     root.card-cx = self.absolute-position.x + self.mouse-x;
@@ -2221,6 +2228,10 @@ export component SessionDialog inherits Rectangle {
             }
             moved => {
                 if (root.card-dragging) {
+                    if (Math.abs(self.absolute-position.x + self.mouse-x - root.card-cx) > 3px
+                        || Math.abs(self.absolute-position.y + self.mouse-y - root.card-cy) > 3px) {
+                        self.drag-moved = true;
+                    }
                     dlg-card.x = Math.max(8px, Math.min(
                         root.card-ox + (self.absolute-position.x + self.mouse-x - root.card-cx),
                         Math.max(8px, root.bounds-w - dlg-card.width - 8px)));
@@ -2367,7 +2378,15 @@ export component SessionDialog inherits Rectangle {
                     height: body.preferred-height;
                     blank-ta := TouchArea {
                         width: 100%; height: 100%;
+                        // (#dialog-blank-drag 2026-10-14) 空白处拖动弹窗:本层是
+                        // **字段间隙的最顶触点**(卡片层的吞层被它挡住),不接管拖动
+                        // 的话正文空白区一律拖不动。与卡片层同款:窗口绝对坐标差值
+                        // + 窗口内钳制;Flickable 的滚轮不受影响(只吞按下与移动)。
+                        // 与卡片层一致的拖动/点击判别:真拖动(>3px)松手不再触发
+                        // 下面的焦点复位。
+                        property <bool> drag-moved: false;
                         clicked => {
+                            if (self.drag-moved) { return; }
                             // (#dialog-focus-reset) slint 关弹层时会**自动把焦点
                             // 恢复给之前的输入框**(实测:下拉→空白的顺序里,旧
                             // 输入框的蓝框会复现)——这里同步把焦点拽回容器,
@@ -2375,6 +2394,32 @@ export component SessionDialog inherits Rectangle {
                             root.drop-clock += 1;
                             dialog-focus.focus();
                             root.scope-focus-pending = true;
+                        }
+                        pointer-event(ev) => {
+                            if (ev.kind == PointerEventKind.down) {
+                                root.card-dragging = true;
+                                self.drag-moved = false;
+                                root.card-ox = dlg-card.x;
+                                root.card-oy = dlg-card.y;
+                                root.card-cx = self.absolute-position.x + self.mouse-x;
+                                root.card-cy = self.absolute-position.y + self.mouse-y;
+                            } else if (ev.kind == PointerEventKind.up) {
+                                root.card-dragging = false;
+                            }
+                        }
+                        moved => {
+                            if (root.card-dragging) {
+                                if (Math.abs(self.absolute-position.x + self.mouse-x - root.card-cx) > 3px
+                                    || Math.abs(self.absolute-position.y + self.mouse-y - root.card-cy) > 3px) {
+                                    self.drag-moved = true;
+                                }
+                                dlg-card.x = Math.max(8px, Math.min(
+                                    root.card-ox + (self.absolute-position.x + self.mouse-x - root.card-cx),
+                                    Math.max(8px, root.bounds-w - dlg-card.width - 8px)));
+                                dlg-card.y = Math.max(8px, Math.min(
+                                    root.card-oy + (self.absolute-position.y + self.mouse-y - root.card-cy),
+                                    Math.max(8px, root.bounds-h - dlg-card.height - 8px)));
+                            }
                         }
                     }
                     body := VerticalLayout {
@@ -3886,35 +3931,29 @@ if root.draft-kind == "serial" : HorizontalLayout {
             // padding 与按钮高)。必须写死:dlg-card 的高度要用 foot.height 推算,
             // 若由布局算出来会构成 dlg-card.height -> layout-cache -> foot.height 的循环。
             height: 62px;
-            // (#foot-inset 2026-09-21) foot 本体透明化,背景/边框职责移入内衬。
-            // 旧方案(#foot-border3):foot 自带四边 1phx 边框与卡片边框同几何
-            // **叠画**——边线落在非整数物理相位时抗锯齿墨摊到相邻两行,同色
-            // 两遍二次叠加(a + a(1-a)),视觉粗一倍:右下角竖线、整条下边框、
-            // 左下角、右缘 foot 段(用户标注①②③④四处)。当年选叠画是因为
-            // foot 背景会盖住卡片先画的边框、且"内缩 1px 露缝"(逻辑 1px 在
-            // 125% 下=1.25 物理比 1phx 宽 0.25)。现在:foot 本体透明,内衬背景
-            // **内缩 1phx** 恰好被卡片边框环占住不露缝,底圆角取
-            // radius-xl - 1phx(内圆角 = 外圆角 - 边框宽,与卡片弧线处处同心);
-            // 卡片边框从此全程只画一遍,①②③④一并归位。
+            // (#foot-inset 2026-09-21) foot 本体透明化,边框职责先交给内衬、再
+            // 整体删除(#foot-flat)。旧方案(#foot-border3):foot 自带四边 1phx
+            // 边框与卡片边框同几何**叠画**——边线落在非整数物理相位时抗锯齿墨
+            // 摊到相邻两行,同色两遍二次叠加(a + a(1-a)),视觉粗一倍:右下角
+            // 竖线、整条下边框、左下角、右缘 foot 段(用户标注①②③④四处)。
+            // 当年选叠画是因为 foot 背景会盖住卡片先画的边框、且"内缩 1px 露缝"
+            // (逻辑 1px 在 125% 下=1.25 物理比 1phx 宽 0.25)。foot 透明后卡片
+            // 边框全程只画一遍,①②③④一并归位。
             background: transparent;
-            // 内衬背景:panel-hi 只铺到卡片边框内沿(左右各让 1phx、底部让 1phx)。
-            // (#foot-inset-r2) x/y 必须显式写 0 基准:Slint 对未指定位置的元素
-            // 默认**在父级居中**——顶线曾因此被居中到页脚垂直中部(用户截图),
-            // 内衬也曾因此整体下坠半像素。
-            // (#foot-line-card 2026-09-21) 页脚顶分隔线已从此处移除、升到卡片层
-            // (与头部线同款,见卡片层 #foot-line-card):opacity 化后头部线已愈,
-            // 唯独本线仍缺失(缺失段恒=底部渐隐条 20px 内缩区)——foot 内的位置
-            // 紧贴滚动容器底缘,仍被 1.18 容器边界合成伪影波及;卡片层被真机
-            // 证明免疫,照抄同款。
-            Rectangle {
-                x: 1phx;
-                y: 0px;
-                width: parent.width - 2phx;
-                height: parent.height - 1phx;
-                background: Theme.panel-hi;
-                border-bottom-left-radius: Theme.radius-xl - 1phx;
-                border-bottom-right-radius: Theme.radius-xl - 1phx;
-            }
+            // (#foot-flat 2026-10-14) 页脚内衬(panel-hi 色带)已**整块删除**:
+            // 用户要求页脚背景色与标题行对齐(高保真里头部/正文/页脚本就同一底色,
+            // 分区只靠 1phx 分隔线)。留着内衬只有两种写法,两种都错——
+            //   ① background: Theme.panel-hi = 仍是一条更浅的带,诉求没实现;
+            //   ② background: Theme.popup-bg = 二次混色:弹窗通透档(82%/55%)下
+            //      popup-bg 带 alpha,叠在同色的卡片底上会比卡片更实,页脚反而
+            //      又"显形"(标准档 alpha=1.0 时看不出,只会在通透档复现,隐蔽)。
+            // 删掉内衬后页脚区直接露出卡片底色,与头部(hdr 也是 transparent)同款,
+            // 两种错法一并消掉;代价仅是 #foot-inset 的"内缩 1phx 避边框"
+            // 几何论证作废(它只对"有内衬"成立),卡片边框一遍绘制仍由 foot 透明保证。
+            // (#foot-line-card 2026-09-21) 页脚顶分隔线早先也已从此处移走、升到
+            // 卡片层(与头部线同款,见卡片层 #foot-line-card)——此处不再有内衬,
+            // 线是页脚与正文之间唯一的墨。
+
             // (#hairline-phx 2026-09-20) 线宽沿用 1phx 物理像素(顶线与全弹框
             // 区块线一致)。
             HorizontalLayout {
@@ -3955,8 +3994,43 @@ if root.draft-kind == "serial" : HorizontalLayout {
                             // 光标与点击聚焦仍只在校验错误时生效。
                             enabled: true;
                             mouse-cursor: (root.host-missing || root.serial-missing) ? pointer : default;
+                            // (#foot-blank-drag 2026-10-14) 页脚空白带(测试连接 ↔ 取消
+                            // 之间)也支持拖动:本 TouchArea 随 status-box 横向吸满整段
+                            // 空白,是页脚中段唯一的触点,不接管拖动就"整条页脚拖不动"
+                            // (用户反馈)。与卡片层同款:窗口绝对坐标差值 + 窗口内钳制。
+                            property <bool> drag-moved: false;
                             clicked => {
+                                // (#dialog-drag-click) 真拖动(>3px)松手不再当作点击
+                                // ——本层的点击是"跳到报错字段",拖完弹窗还顺带跳焦点
+                                // 会明显违和,必须屏蔽。
+                                if (self.drag-moved) { return; }
                                 if (root.host-missing || root.serial-missing) { root.focus-error-field(); }
+                            }
+                            pointer-event(ev) => {
+                                if (ev.kind == PointerEventKind.down) {
+                                    root.card-dragging = true;
+                                    self.drag-moved = false;
+                                    root.card-ox = dlg-card.x;
+                                    root.card-oy = dlg-card.y;
+                                    root.card-cx = self.absolute-position.x + self.mouse-x;
+                                    root.card-cy = self.absolute-position.y + self.mouse-y;
+                                } else if (ev.kind == PointerEventKind.up) {
+                                    root.card-dragging = false;
+                                }
+                            }
+                            moved => {
+                                if (root.card-dragging) {
+                                    if (Math.abs(self.absolute-position.x + self.mouse-x - root.card-cx) > 3px
+                                        || Math.abs(self.absolute-position.y + self.mouse-y - root.card-cy) > 3px) {
+                                        self.drag-moved = true;
+                                    }
+                                    dlg-card.x = Math.max(8px, Math.min(
+                                        root.card-ox + (self.absolute-position.x + self.mouse-x - root.card-cx),
+                                        Math.max(8px, root.bounds-w - dlg-card.width - 8px)));
+                                    dlg-card.y = Math.max(8px, Math.min(
+                                        root.card-oy + (self.absolute-position.y + self.mouse-y - root.card-cy),
+                                        Math.max(8px, root.bounds-h - dlg-card.height - 8px)));
+                                }
                             }
                         }
                         VerticalLayout {

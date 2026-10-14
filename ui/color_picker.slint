@@ -11,9 +11,77 @@
 //   * `bounds-w/h` 传全窗尺寸，供头部拖动的边界钳制。
 import { Theme } from "theme.slint";
 
-// (#accent-pop-v3) 取色信息小色块：色块本体 + 悬浮信息卡（HEX / RGB / HSV /
-// HSL 四行等宽对齐，悬停浮出、移出消失）。卡片默认向上浮出；card-below =
-// true 时向下（用于靠近弹框顶部的行，避免越出弹框被裁剪）。
+// (#color-info-card 2026-10-14) 取色信息卡：HEX / RGB / HSV / HSL 四行等宽
+// 对齐，悬停浮出、移出消失。**唯一实现** —— 强调色弹框副标题行里的色块
+// （InfoSwatch）与「最近」行的色块共用这一张卡（用户要求两处提示框同款：
+// 同尺寸、同字号、同字色。此前「最近」行另抄了一份 168×100 的卡，首行放大到
+// 12px、RGB/HSV/HSL 三行用 text-secondary，两处观感对不上）。
+// 四行标签同为 3 个拉丁字符 + 全角「：」，定宽字体下严格同宽 → 值列对齐。
+// (#info-swatch-colon 2026-10-14) 全角冒号分隔(用户要求):原先靠两个空格凑出
+// 的分隔没有"标签/值"的语义边界，值列对齐反而要看空格个数。
+export component ColorInfoCard inherits Rectangle {
+    in property <string> hex;
+    width: 168px;
+    height: 100px;
+    border-radius: 8px;
+    background: #111318;
+    border-width: 1px;
+    border-color: Theme.border-strong;
+    drop-shadow-blur: 14px;
+    drop-shadow-color: #000000a0;
+    VerticalLayout {
+        padding-top: 10px;
+        padding-bottom: 10px;
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 4px;
+        alignment: center;
+        Text {
+            text: "HEX：" + root.hex;
+            color: Theme.text-primary;
+            font-size: 10.5px;
+            font-family: Theme.term-font-family;
+        }
+        Text {
+            text: "RGB：" + PickerMath.hex-ch(root.hex, 0, "rgb") + ", "
+                + PickerMath.hex-ch(root.hex, 1, "rgb") + ", "
+                + PickerMath.hex-ch(root.hex, 2, "rgb");
+            color: Theme.text-primary;
+            font-size: 10.5px;
+            font-family: Theme.term-font-family;
+        }
+        Text {
+            text: "HSV：" + PickerMath.hex-ch(root.hex, 0, "hsv") + "°  "
+                + PickerMath.hex-ch(root.hex, 1, "hsv") + "%  "
+                + PickerMath.hex-ch(root.hex, 2, "hsv") + "%";
+            color: Theme.text-primary;
+            font-size: 10.5px;
+            font-family: Theme.term-font-family;
+        }
+        Text {
+            text: "HSL：" + PickerMath.hex-ch(root.hex, 0, "hsl") + "°  "
+                + PickerMath.hex-ch(root.hex, 1, "hsl") + "%  "
+                + PickerMath.hex-ch(root.hex, 2, "hsl") + "%";
+            color: Theme.text-primary;
+            font-size: 10.5px;
+            font-family: Theme.term-font-family;
+        }
+    }
+}
+
+// (#accent-pop-v3) 取色信息小色块：色块本体 + 悬浮信息卡（ColorInfoCard，
+// 悬停浮出、移出消失）。卡片默认向上浮出；card-below = true 时向下（用于
+// 靠近弹框顶部的行，避免越出弹框被裁剪）。
+// (#swatch-parity 2026-10-14) 与强调色弹框「最近」行色块取齐，两处 11px 文字
+// 旁的色块必须同规格（用户要求）：
+//   * 边框 0/1px → 常态 1px、悬停 2px（同为最近行规格）。若一边有 1px 描边、
+//     另一边没有，纯色区就差 2px，并排仍不齐。悬停色用对比色描边（深色块→白、
+//     浅色块→黑），浅色块上细白边会看不见。
+// (#swatch-size-match 2026-10-15) 尺寸 20px → 14px、圆角 6px → 4px：与设置页
+// 「主题」下拉选择框里的色块**逐像素同规格**（截图实测该色块 14×14 / 圆角 4，
+// 参照物 = 主题行右侧「GitHub · 暗」框内那个色块）。20px 比同行 11px 文字大近
+// 一倍，色块与文字「整体大小」不一致（用户截图③）。
+// ⚠ 本组件与「最近」行（app.slint）是同一事实的两份副本，必须同批改。
 export component InfoSwatch inherits Rectangle {
     in property <string> hex;
     in property <bool> card-below: false;
@@ -21,61 +89,16 @@ export component InfoSwatch inherits Rectangle {
     height: 14px;
     border-radius: 4px;
     background: PickerMath.hex-color(root.hex);
-    border-width: sw-ta.has-hover ? 1px : 0px;
-    border-color: #ffffff66;
+    border-width: sw-ta.has-hover ? 2px : 1px;
+    border-color: sw-ta.has-hover ? PickerMath.ink-on(root.hex).with-alpha(0.72) : #ffffff26;
     sw-ta := TouchArea {
         mouse-cursor: pointer;
     }
-    Rectangle {
+    ColorInfoCard {
+        hex: root.hex;
         x: (parent.width - self.width) / 2;
         y: root.card-below ? parent.height + 8px : -(self.height + 8px);
-        width: 168px;
-        height: 100px;
-        border-radius: 8px;
-        background: #111318;
-        border-width: 1px;
-        border-color: Theme.border-strong;
-        drop-shadow-blur: 14px;
-        drop-shadow-color: #000000a0;
         visible: sw-ta.has-hover;
-        VerticalLayout {
-            padding-top: 10px;
-            padding-bottom: 10px;
-            padding-left: 12px;
-            padding-right: 12px;
-            spacing: 4px;
-            alignment: center;
-            Text {
-                text: "HEX  " + root.hex;
-                color: Theme.text-primary;
-                font-size: 10.5px;
-                font-family: Theme.term-font-family;
-            }
-            Text {
-                text: "RGB  " + PickerMath.hex-ch(root.hex, 0, "rgb") + ", "
-                    + PickerMath.hex-ch(root.hex, 1, "rgb") + ", "
-                    + PickerMath.hex-ch(root.hex, 2, "rgb");
-                color: Theme.text-primary;
-                font-size: 10.5px;
-                font-family: Theme.term-font-family;
-            }
-            Text {
-                text: "HSV  " + PickerMath.hex-ch(root.hex, 0, "hsv") + "°  "
-                    + PickerMath.hex-ch(root.hex, 1, "hsv") + "%  "
-                    + PickerMath.hex-ch(root.hex, 2, "hsv") + "%";
-                color: Theme.text-primary;
-                font-size: 10.5px;
-                font-family: Theme.term-font-family;
-            }
-            Text {
-                text: "HSL  " + PickerMath.hex-ch(root.hex, 0, "hsl") + "°  "
-                    + PickerMath.hex-ch(root.hex, 1, "hsl") + "%  "
-                    + PickerMath.hex-ch(root.hex, 2, "hsl") + "%";
-                color: Theme.text-primary;
-                font-size: 10.5px;
-                font-family: Theme.term-font-family;
-            }
-        }
     }
 }
 
@@ -215,9 +238,17 @@ export component ColorPickerDialog inherits Rectangle {
         }
 
         // ── 色轮 + 明度条 + 数值列 ─────────────────────────────────────
+        // (#picker-fill-width 2026-10-15) 此处**不能**写 alignment。
+        // Slint 布局求解里主轴生长只在 alignment == stretch 时开启
+        // （i-slint-core/layout.rs：`flex_grow = if params.alignment ==
+        // LayoutAlignment::Stretch {...} else {0.}`），而 HorizontalLayout 的
+        // 默认值就是 stretch。原先写死 `alignment: start` 把 flex_grow 全部
+        // 归零 → 右列虽写了 horizontal-stretch:1 也长不动，被卡在 preferred
+        // 宽（实测 ~258px，而可用 314px），弹框右侧留一大片空白、HEX/分量
+        // 输入框全都偏短（用户截图④红框 A「上面几个方框的长度需要加长些」）。
+        // 删掉 alignment 后走默认 stretch，右列铺满剩余宽度。
         HorizontalLayout {
             spacing: 14px;
-            alignment: start;
             wheel-box := Rectangle {
                 width: 240px;
                 height: 240px;
@@ -490,15 +521,23 @@ export component ColorPickerDialog inherits Rectangle {
         }
 
         // ── 守卫提示：低对比度预告调亮结果（色块显示）+ 写回说明 ──────────
+        // (#warn-row-gap 2026-10-15) 三段是**一句话**：文字 + 行内色块 + 文字。
+        // 原先左侧 Text 也写 horizontal-stretch:1，与右侧 Text 的 2 按 1:2
+        // 分余量；滑出的余量留在本段文字框的**尾部**，把色块推离文字（实测左
+        // 间隙 24.5px、右间隙 5.7px，用户截图④红框 B）。改成左段 stretch:0
+        // （框宽 = 单行 preferred 宽，字贴着框边）、右段 stretch:1 吃全部余量，
+        // 色块两侧间隙都等于 spacing。
+        // cross-axis 居中：同副标题行，防换行时 16px 固定高色块退化成顶部对齐。
         if root.guarded != root.hex : HorizontalLayout {
             spacing: 6px;
+            cross-axis-alignment: center;
             Text {
                 text: root.en ? "⚠ Below 3:1 on the theme panel — applying lightens it to"
                     : "⚠ 对面板对比度不足 3:1 —— 应用时将自动调亮为";
                 color: Theme.warning;
                 font-size: 11px;
                 wrap: word-wrap;
-                horizontal-stretch: 1;
+                horizontal-stretch: 0;
             }
             InfoSwatch {
                 hex: root.guarded;
@@ -510,7 +549,7 @@ export component ColorPickerDialog inherits Rectangle {
                 color: Theme.warning;
                 font-size: 11px;
                 wrap: word-wrap;
-                horizontal-stretch: 2;
+                horizontal-stretch: 1;
             }
         }
         if root.guarded == root.hex : Text {
