@@ -4365,7 +4365,7 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
         // 终端光标三个入口共用；颜色数学在 crate::picker（取色盘业务模块）。
         {
             let pm = window.global::<crate::ui::PickerMath>();
-            pm.set_wheel_image(crate::picker::bake_wheel_image(432));
+            pm.set_wheel_image(crate::picker::bake_wheel_image(480));
             pm.set_slider_image(crate::picker::bake_slider_image(0.0));
             pm.on_wheel_pick({
                 let w = window.as_weak();

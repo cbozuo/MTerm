@@ -85,6 +85,20 @@ export component ConfirmDialog inherits Rectangle {
         clicked => { if (root.dismiss-on-backdrop) { root.cancel(); } }
     }
 
+    // (#dialog-drag 2026-10-14) 空白区拖动卡片：按下记录卡片原点与指针窗口
+    // 绝对坐标（拖动期间稳定），moved 以绝对坐标差值移动；每次打开回中。
+    property <bool> card-dragging: false;
+    property <length> drag-ox;
+    property <length> drag-oy;
+    property <length> drag-cx;
+    property <length> drag-cy;
+    changed is-open => {
+        if (self.is-open) {
+            card.x = (root.width - card.width) / 2;
+            card.y = (root.height - card.height) / 2;
+        }
+    }
+
     Rectangle {
         width: root.large-detail ? min(parent.width - 40px, 1160px) : 380px;
         height: root.large-detail ? min(parent.height - 40px, 760px) : card.preferred-height;
@@ -97,8 +111,32 @@ export component ConfirmDialog inherits Rectangle {
         drop-shadow-blur: 24px;
         drop-shadow-color: #00000080;
 
-        // Swallow clicks inside the card so they don't hit the backdrop.
-        TouchArea { width: 100%; height: 100%; }
+        // Swallow clicks inside the card so they don't hit the backdrop;
+        // 空白区按住可拖动卡片（绝对坐标差值，与其它弹框一致）。
+        TouchArea {
+            width: 100%; height: 100%;
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.down) {
+                    root.card-dragging = true;
+                    root.drag-ox = card.x;
+                    root.drag-oy = card.y;
+                    root.drag-cx = self.absolute-position.x + self.mouse-x;
+                    root.drag-cy = self.absolute-position.y + self.mouse-y;
+                } else if (ev.kind == PointerEventKind.up) {
+                    root.card-dragging = false;
+                }
+            }
+            moved => {
+                if (root.card-dragging) {
+                    card.x = Math.max(8px, Math.min(
+                        root.drag-ox + (self.absolute-position.x + self.mouse-x - root.drag-cx),
+                        Math.max(8px, root.width - card.width - 8px)));
+                    card.y = Math.max(8px, Math.min(
+                        root.drag-oy + (self.absolute-position.y + self.mouse-y - root.drag-cy),
+                        Math.max(8px, root.height - card.height - 8px)));
+                }
+            }
+        }
 
         card := VerticalLayout {
             padding: 20px;

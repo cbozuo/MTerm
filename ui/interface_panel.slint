@@ -227,8 +227,9 @@ component FontCombo inherits Rectangle {
     // (#combo-focus-decoupled 2026-10-02) 聚焦态 = 「我是最近一次被操作的下拉」
     // （代际时钟，与 session_dialog 同一套），**与弹层开闭无关**。
     // 曾用 `drop-open || has-hover` 作判据，而 drop-open 只在选中项时才清 ——
-    // 点弹层外部关闭后它仍是 true，边框会**永久**保持高亮。面板级 blank-ta 推进
-    // combo-clock 即失焦（与弹框三路清时钟等价）；弹层开合已改读 `font-pop.is-open`。
+    // 点弹层外部关闭后它仍是 true，边框会**永久**保持高亮。卡片吞层的空白
+    // 点击经 blank-clicked 推进 combo-clock 即失焦（与弹框三路清时钟等价）；
+    // 弹层开合已改读 `font-pop.is-open`。
     in-out property <int> focus-clock: 0;
     property <int> focus-stamp: -1;
     property <bool> focused: root.focus-stamp == root.focus-clock;
@@ -277,7 +278,7 @@ component FontCombo inherits Rectangle {
             if (root.enabled) {
                 root.tip-text = "";
                 // (#combo-focus-decoupled) 打上聚焦戳：弹层被 close-on-click-outside
-                // 收起后高亮仍在，只有面板级 blank-ta 推进 focus-clock 才清。
+                // 收起后高亮仍在，只有空白点击经 blank-clicked 推进 combo-clock 才清。
                 root.focus-clock += 1;
                 root.focus-stamp = root.focus-clock;
                 font-pop.show();
@@ -691,9 +692,10 @@ export component InterfacePanel inherits Rectangle {
     in-out property <string> wsl-new-directory: "~";
 
     in-out property <string> ifd-page: "font";   // 桥到 app（速选面板「更多主题」直达）
-    // (#combo-focus-decoupled 2026-10-02) 面板级下拉代际时钟：blank-ta（点面板
-    // 空白）推进它，各 FontCombo 的 focus-stamp 随之失效 → 高亮清除。
-    // 与 session_dialog 的 drop-clock 同构，避免设置侧栏自造一套失焦机制。
+    // (#combo-focus-decoupled 2026-10-02) 面板级下拉代际时钟：点面板空白
+    // （卡片吞层 → blank-clicked）推进它，各 FontCombo 的 focus-stamp 随之
+    // 失效 → 高亮清除。与 session_dialog 的 drop-clock 同构，避免设置侧栏
+    // 自造一套失焦机制。
     in-out property <int> combo-clock: 0;
     // (#settings-divider-line) A page switch destroys/rebuilds the right pane's
     // whole subtree through the incremental renderer; one full frame per switch
@@ -774,15 +776,13 @@ export component InterfacePanel inherits Rectangle {
     callback add-wsl-profile(string, string, string);
     callback remove-wsl-profile(string);
     callback pick-wsl-directory();
-
-    // (#combo-focus-decoupled 2026-10-02) 面板级"点空白"吞点击层：推进 combo-clock，
-    // 清掉 FontCombo 的聚焦高亮。声明在 HorizontalLayout **之前** = 最底层，
-    // 后面的控件照常收点击（与 session_dialog 的 blank-ta 同款做法）。
-    blank-ta := TouchArea {
-        width: 100%;
-        height: 100%;
-        clicked => { root.combo-clock += 1; }
-    }
+    // (#settings-drag 2026-10-14) 「点面板空白清 FontCombo 聚焦高亮」原由本面板
+    // 的全尺寸 blank-ta 完成，已删除：它位于设置卡拖动吞层之上，按下即 GrabMouse
+    // 并中断 Slint 事件派发，卡片空白区拖动收不到 pointer-event（实测拖动全失效）。
+    // 现在空白点击由卡片吞层（settings_dialog.slint）经本回调推进 combo-clock；
+    // 面板里的滚动区都是 ScrollView（Flickable mouse-drag-pan-enabled=false，
+    // 鼠标按下直接下穿），空白按下本来就能落到卡片层。
+    callback blank-clicked();
 
     HorizontalLayout {
         // --- Left nav ------------------------------------------------------
@@ -1455,24 +1455,6 @@ export component InterfacePanel inherits Rectangle {
                             }
                         }
                     }
-                }
-                // 对比度守卫提示（§3.8 .acd-guard）：真实数值由 Rust apply_theme
-                // 每次重算回写（accent-guard），含守卫前后的原色/生效色。
-                Text {
-                    text: root.lang-en
-                        ? "Guard: accent " + root.accent-guard.eff + " on theme panel "
-                            + root.accent-guard.panel + " = " + root.accent-guard.ratio + ":1 "
-                            + (root.accent-guard.adjusted
-                                ? "✓ pass (raw " + root.accent-guard.raw + " was below 3:1 — lightness auto-adjusted)"
-                                : "✓ pass")
-                        : "对比度守卫：强调色 " + root.accent-guard.eff + " 对主题面板 "
-                            + root.accent-guard.panel + " = " + root.accent-guard.ratio + ":1 "
-                            + (root.accent-guard.adjusted
-                                ? "✓ 达标（原色 " + root.accent-guard.raw + " 低于 3:1，已自动调整明度后应用）"
-                                : "✓ 达标");
-                    color: Theme.text-muted;
-                    font-size: 11px * Theme.panel-font;
-                    wrap: word-wrap;
                 }
                 Rectangle { height: 1px; background: Theme.border-subtle; }
                 Rectangle { height: 6px; }

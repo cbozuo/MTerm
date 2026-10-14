@@ -23,7 +23,7 @@ export { Theme }
 // (#picker-component 2026-10-13) 通用取色盘：ColorPickerDialog（强调色/组别/
 // 终端光标共用，@children 传示例条）+ PickerMath 全局（Rust 一次性接线，
 // 见 src/app.rs「PickerMath 接线」块；src/picker/mod.rs 为取色业务模块）。
-import { ColorPickerDialog, PickerMath } from "color_picker.slint";
+import { ColorPickerDialog, PickerMath, InfoSwatch } from "color_picker.slint";
 export { PickerMath }
 import { Sidebar, DiskInfo } from "sidebar.slint";
 import { TabBar, TabInfo } from "tabs.slint";
@@ -46,11 +46,10 @@ import { EditorWindow, EditorFindResult } from "editor_window.slint";
 import { TrayMenuWindow } from "tray_menu.slint";
 import { AboutWindow } from "about_window.slint";
 import { InterfacePanel, OutputRuleItem, WslProfileInfo, AccentGuard } from "interface_panel.slint";
+import { SettingsDialog } from "settings_dialog.slint";
 // Re-export so `slint::include_modules!` generates the detached Rust window types.
 export { ProcWindow, SystemInfoWindow, EditorWindow, TrayMenuWindow, AboutWindow }
 import { LineEdit, Button, ScrollView, CheckBox, Palette } from "std-widgets.slint";
-
-export { SessionInfo, SessionDraft, TabInfo, SftpEntry, SftpTreeNode, TunnelInfo, QuickCmd, PortFwd, WslProfileInfo, CtxRowHit }
 
 // --- TerminalState ---------------------------------------------------------
 // Per-terminal view-model exposed to Rust. A TabInfo has the metadata; the
@@ -7325,6 +7324,8 @@ export component AppWindow inherits Window {
     SessionDialog {
         width: parent.width;
         height: parent.height;
+        bounds-w: root.width;
+        bounds-h: root.height;
         // Only the placeholder text depends on it (#credential-store): on
         // Windows a blank password field may be filled from the Credential
         // Manager, so "prompt on connect" is not the whole truth there.
@@ -7698,364 +7699,220 @@ export component AppWindow inherits Window {
     }
 
     // --- Interface settings (modal overlay) -------------------------------
-    // Embedded in the main window (not a detached window), so it can't be
-    // dragged outside the parent. The dim backdrop + a focus-grabbing scope make
-    // it modal: no mouse or keyboard input reaches the app while it's open. The
-    // card itself is draggable by its title bar but clamped inside the window.
-    if root.interface-open : Rectangle {
-        width: 100%;
-        height: 100%;
-        background: #00000080;            // dim backdrop
-        // Grab focus and swallow keys so nothing leaks to the terminal beneath;
-        // Esc closes the panel (#140-3).
-        // (#ifd-input-blur 2026-10-01) Named so the card's click-swallower can
-        // hand focus here: clicking any blank part of the card blurs a focused
-        // input field (standard modal behaviour — a field used to keep focus
-        // until another focusable element was clicked).
-        esc-scope := FocusScope {
-            init => { self.focus(); }
-            key-pressed(e) => {
-                if (e.text == Key.Escape) {
-                    // 浮层开着先关浮层（强调色预设弹框/取色盘/主题下拉），再按
-                    // 一次才关设置卡。否则 Esc 直接关卡会把根层浮层遗留在屏上
-                    // （浮层在 overlay 之外，不随 interface-open 隐藏）。
-                    // 定稿语义：调色盘 Esc = 放弃修改；预设弹框 Esc = 还原选定色。
-                    if (root.accent-pick-open) {
-                        root.accent-pick-open = false;
-                    } else if (root.accent-pop-open) {
-                        root.accent-stage = root.accent-guard.eff;
-                        root.accent-pop-open = false;
-                    } else if (root.theme-pick-open) {
-                        root.theme-pick-open = false;
-                        root.theme-pick-search = "";
-                        root.theme-search-filter("");
-                        root.preview-theme(root.theme-chosen);
-                    } else {
-                        root.interface-open = false;
-                    }
-                }
-                accept
-            }
-            key-released(e) => { accept }
+    // (#settings-extract 2026-10-14) 弹框 chrome（遮罩/模态焦点域/标题栏/✕/
+    // 空白区拖动/缩放手柄）提取到 settings_dialog.slint（同 session_dialog.slint
+    // 模式）。内容 InterfacePanel 实例与全部状态绑定作为 @children 槽位传进去：
+    // 这些状态都在 AppWindow 根上，root.xxx 原样不动，免去一层透传。
+    // 空白区拖动：#settings-drag —— 卡片吞层收全部空白按下（面板内不再铺
+    // blank-ta，那会把按下吞在拖动层之上；ScrollView 的 Flickable
+    // mouse-drag-pan-enabled=false，鼠标按下直接下穿），字段/按钮不受影响。
+    if root.interface-open : SettingsDialog {
+        lang-en: root.lang-en;
+        is-windows: root.is-windows;
+        bounds-w: root.width;
+        bounds-h: root.height;
+        ifd-x <=> root.ifd-x;
+        ifd-y <=> root.ifd-y;
+        ifd-w <=> root.ifd-w;
+        ifd-h <=> root.ifd-h;
+        ifd-dragging <=> root.ifd-dragging;
+        ifd-resizing <=> root.ifd-resizing;
+        ifd-base-x <=> root.ifd-base-x;
+        ifd-base-y <=> root.ifd-base-y;
+        ifd-base-w <=> root.ifd-base-w;
+        ifd-base-h <=> root.ifd-base-h;
+        ifd-grab-x <=> root.ifd-grab-x;
+        ifd-grab-y <=> root.ifd-grab-y;
+        close-requested => {
+            root.interface-open = false;
+            // 同时收掉根层浮层开关（Esc 同款处理）
+            root.accent-pop-open = false;
+            root.accent-pick-open = false;
+            root.theme-pick-open = false;
         }
-        // Modal: clicking the backdrop does nothing (only the ✕ closes it).
-        TouchArea { scroll-event(e) => { accept } }
-
-        Rectangle {
-            x: root.ifd-x;
-            y: root.ifd-y;
-            // Bigger base, and scales with the settings font size (#v0.5).
-            width: root.ifd-w;
-            height: root.ifd-h;
-            // 20% less transparent than the welcome/resource panels so the dense
-            // grey settings labels stay readable at a low overlay (user request).
-            background: Theme.bg-panel-strong;
-            border-radius: Theme.radius-md;
-            // (#settings-divider-line) hairline: one device pixel instead of a
-            // logical 1px, which at 125% spans two device rows and reads soft.
-            border-width: Theme.hairline();
-            border-color: Theme.border-strong;
-            drop-shadow-blur: 24px;
-            drop-shadow-color: #000000a0;
-            clip: true;
-            // Swallow inside clicks so they don't hit the backdrop, and blur a
-            // focused input field: clicks on blank card areas (labels, dividers,
-            // dead space) aren't consumed by any control, so they land here and
-            // hand focus to the Esc scope (#ifd-input-blur).
-            TouchArea {
-                clicked => { esc-scope.focus(); }
+        esc-requested => {
+            // 浮层开着先关浮层（强调色预设弹框/取色盘/主题下拉），再按一次才
+            // 关设置卡。否则 Esc 直接关卡会把根层浮层遗留在屏上（浮层在
+            // overlay 之外，不随 interface-open 隐藏）。定稿语义：调色盘 Esc =
+            // 放弃修改；预设弹框 Esc = 还原选定色。
+            if (root.accent-pick-open) {
+                root.accent-pick-open = false;
+            } else if (root.accent-pop-open) {
+                root.accent-stage = root.accent-guard.eff;
+                root.accent-pop-open = false;
+            } else if (root.theme-pick-open) {
+                root.theme-pick-open = false;
+                root.theme-pick-search = "";
+                root.theme-search-filter("");
+                root.preview-theme(root.theme-chosen);
+            } else {
+                root.interface-open = false;
             }
-
-            VerticalLayout {
-                // Title bar — drag to move (clamped inside the window).
-                Rectangle {
-                    height: 44px;
-                    // Transparent so the card's single frosted layer shows through
-                    // — no extra stacked opacity, matching the welcome/resource
-                    // panels and following the wallpaper slider (#new-user-defaults
-                    // items 6/7). The 1px divider below still separates it.
-                    background: transparent;
-                    // (#settings-divider-line) The bottom divider lives *inside*
-                    // the title bar so its y can be snapped onto the device grid;
-                    // as a layout-stacked sibling it inherited whatever fractional
-                    // offset the bar's height decodes to at the current DPI, and
-                    // the line rasterized onto two device rows — the "thick/thin,
-                    // broken" divider. One device pixel tall + snapped top edge:
-                    // the same crisp row at every drag position and every scale.
-                    Rectangle {
-                        y: Theme.snap-to-device(parent.height) - Theme.hairline();
-                        height: Theme.hairline();
-                        background: Theme.border-subtle;
-                    }
-                    title-drag := TouchArea {
-                        mouse-cursor: move;
-                        pointer-event(e) => {
-                            if (e.kind == PointerEventKind.down) {
-                                root.ifd-dragging = true;
-                                root.ifd-base-x = root.ifd-x;
-                                root.ifd-base-y = root.ifd-y;
-                                root.ifd-grab-x = self.absolute-position.x + self.mouse-x;
-                                root.ifd-grab-y = self.absolute-position.y + self.mouse-y;
-                            } else if (e.kind == PointerEventKind.up) {
-                                root.ifd-dragging = false;
-                                // (#settings-drag-ghost) buffer age can lie
-                                // while the card moves under the cursor; one
-                                // clean frame on release erases any stale strip
-                                // the drag left behind.
-                                root.request-full-redraw();
-                            }
-                        }
-                        moved => {
-                            if (root.ifd-dragging) {
-                                root.ifd-x = clamp(
-                                    Theme.snap-to-device(root.ifd-base-x + (self.absolute-position.x + self.mouse-x - root.ifd-grab-x)),
-                                    0px, max(0px, root.width - root.ifd-w));
-                                root.ifd-y = clamp(
-                                    Theme.snap-to-device(root.ifd-base-y + (self.absolute-position.y + self.mouse-y - root.ifd-grab-y)),
-                                    0px, max(0px, root.height - root.ifd-h));
-                            }
-                        }
-                    }
-                    HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 10px;
-                        Text {
-                            text: root.lang-en ? "Settings" : "设置";
-                            color: Theme.text-primary;
-                            font-size: 14px;
-                            font-weight: Theme.fw-strong;
-                            horizontal-stretch: 1;
-                            vertical-alignment: center;
-                        }
-                        VerticalLayout {
-                            alignment: center;
-                            Rectangle {
-                                width: 24px; height: 24px;
-                                border-radius: Theme.radius-sm;
-                                // Match ProcWindow's close button: red (#e81123) on hover,
-                                // white glyph, smooth 90ms transition (#close-hover-red).
-                                background: if-close-ta.has-hover ? #e81123 : transparent;
-                                animate background { duration: 90ms; }
-                                if-close-ta := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => {
-                                        root.interface-open = false;
-                                        // 同时收掉根层浮层开关（Esc 同款处理）
-                                        root.accent-pop-open = false;
-                                        root.accent-pick-open = false;
-                                        root.theme-pick-open = false;
-                                    }
-                                }
-                                Icon {
-    glyph: "close";
-    tint: Theme.text-secondary;
-    size: Theme.fs-md;
-}
-                            }
-                        }
-                    }
-                }
-                InterfacePanel {
-                    vertical-stretch: 1;
-                    lang-en: root.lang-en;
-                    is-windows: root.is-windows;
-                    // (#theme-split) 主题/强调色/三滑杆/通透度
-                    theme-entries: root.theme-entries;
-                    theme-chosen <=> root.theme-chosen;
-                    follow-system <=> root.follow-system;
-                    accent-mode <=> root.accent-mode;
-                    accent-preset <=> root.accent-preset;
-                    accent-custom <=> root.accent-custom;
-                    accent-stage <=> root.accent-stage;
-                    accent-guard <=> root.accent-guard;
-                    accent-pop-open <=> root.accent-pop-open;
-                    wallpaper-active <=> root.wallpaper-active;
-                    term-alpha <=> root.term-alpha;
-                    wallpaper-visible <=> root.wallpaper-visible;
-                    popup-transparency <=> root.popup-transparency;
-                    wallpaper-color-pickup <=> root.wallpaper-color-pickup;
-                    ifd-page <=> root.ifd-page;
-                    theme-pick-open <=> root.theme-pick-open;
-                    theme-pick-x <=> root.theme-pick-x;
-                    theme-pick-y <=> root.theme-pick-y;
-                    theme-pick-search <=> root.theme-pick-search;
-                    theme-search-filter(q) => { root.theme-search-filter(q); }
-                    theme-name <=> root.theme-name;
-                    preview-theme(id) => { root.preview-theme(id); }
-                    set-theme(id) => { root.set-theme(id); }
-                    set-follow-system(v) => { root.set-follow-system(v); }
-                    set-accent-mode(m, v) => { root.set-accent-mode(m, v); }
-                    accent-hex-color(h) => { root.accent-hex-color(h); }
-                    accent-ink-on(h) => { root.accent-ink-on(h); }
-                    set-panel-alpha(v) => { root.set-panel-alpha(v); }
-                    set-term-alpha(v) => { root.set-term-alpha(v); }
-                    set-wallpaper-visible(v) => { root.set-wallpaper-visible(v); }
-                    set-popup-transparency(v) => { root.set-popup-transparency(v); }
-                    set-wallpaper-color-pickup(v) => { root.set-wallpaper-color-pickup(v); }
-                    // (#settings-divider-line) Nav switching rebuilds the right
-                    // pane's whole subtree; one clean full frame per page change
-                    // keeps the title divider from being composited out of
-                    // stale buffer strips by the incremental path.
-                    request-full-redraw => root.request-full-redraw();
-                    renderer-mode <=> root.renderer-mode;
-                    term-fonts: root.term-fonts;
-                    term-font-chosen: root.term-font-chosen;
-                    term-font-default-name: root.term-font-default-name;
-                    // Interface › Font › Interface font. One-way on the value
-                    // (Rust owns the resolution) and one-way out through the
-                    // callback, mirroring term-font-family so the two pickers
-                    // read the same way.
-                    ui-fonts: root.ui-fonts;
-                    ui-font-chosen: root.ui-font-chosen;
-                    ui-font-default-name: root.ui-font-default-name;
-                    set-ui-font(v) => { root.set-ui-font(v); }
-                    term-font-size: root.term-font-size;
-                    terminal-line-spacing <=> root.terminal-line-spacing;
-                    // (#close-behavior) 设置 › 窗口 的「关闭按钮行为」双向绑定。
-                    close-behavior <=> root.close-behavior;
-                    set-close-behavior(v) => { root.set-close-behavior(v); }
-                    // (#storage-location) 存储位置卡转发。
-                    storage-current: root.storage-current;
-                    storage-default: root.storage-default;
-                    storage-target <=> root.storage-target;
-                    storage-status <=> root.storage-status;
-                    storage-status-error <=> root.storage-status-error;
-                    storage-host-count: root.storage-host-count;
-                    storage-quick-count: root.storage-quick-count;
-                    open-storage-dir() => { root.open-storage-dir(); }
-                    copy-storage-path() => { root.copy-storage-path(); }
-                    pick-storage-dir() => { root.pick-storage-dir(); }
-                    reset-storage-dir() => { root.reset-storage-dir(); }
-                    switch-storage(m) => { return root.switch-storage(m); }
-                    term-font-bold: root.term-font-bold;
-                    term-cursor-style <=> root.term-cursor-style;
-                    term-cursor-color-hex <=> root.term-cursor-color-hex;
-                    term-cursor-color: root.term-cursor-color;
-                    output-highlight-enabled <=> root.output-highlight-enabled;
-                    json-format-output <=> root.json-format-output;
-                    output-highlight-preset <=> root.output-highlight-preset;
-                    output-highlight-rules: root.output-highlight-rules;
-                    output-highlight-rule-status <=> root.output-highlight-rule-status;
-                    ui-scale: root.ui-scale;
-                    sftp-follow-cd <=> root.sftp-follow-cd;
-                    collapse-sidebar-default <=> root.collapse-sidebar-default;
-                    collapse-sftp-default <=> root.collapse-sftp-default;
-                    sync-upload-enabled <=> root.sync-upload-enabled;
-                    webdav-enabled <=> root.webdav-enabled;
-                    webdav-url <=> root.webdav-url;
-                    webdav-username <=> root.webdav-username;
-                    webdav-password <=> root.webdav-password;
-                    webdav-remote-path <=> root.webdav-remote-path;
-                    webdav-accept-invalid-certs <=> root.webdav-accept-invalid-certs;
-                    webdav-status <=> root.webdav-status;
-                    download-always-ask <=> root.download-always-ask;
-                    paste-confirm-enabled <=> root.paste-confirm-enabled;
-                    extra-paste-shortcuts-enabled <=> root.extra-paste-shortcuts-enabled;
-                    zen-mode <=> root.zen-mode;
-                    welcome-as-sidebar <=> root.welcome-as-sidebar;
-                    quick-commands-as-sidebar <=> root.quick-commands-as-sidebar;
-                    mcp-enabled <=> root.mcp-enabled;
-                    mcp-use-saved-credentials <=> root.mcp-use-saved-credentials;
-                    mcp-allow-commands <=> root.mcp-allow-commands;
-                    mcp-allow-file-transfers <=> root.mcp-allow-file-transfers;
-                    wallpaper-overlay <=> root.wallpaper-overlay;
-                    current-wallpaper: root.current-wallpaper;
-                    custom-wallpaper-name: root.custom-wallpaper-name;
-                    wsl-profiles: root.wsl-profiles;
-                    wsl-new-directory <=> root.wsl-new-directory;
-                    set-wallpaper(v) => { root.set-wallpaper(v); }
-                    pick-wallpaper-file() => { root.pick-wallpaper-file(); }
-                    set-term-font(v) => { root.set-term-font(v); }
-                    set-term-font-size(v) => { root.set-term-font-size(v); }
-                    set-terminal-line-spacing(v) => { root.set-terminal-line-spacing(v); }
-                    set-term-font-bold(v) => { root.set-term-font-bold(v); }
-                    set-term-cursor-style(v) => { root.set-term-cursor-style(v); }
-                    set-term-cursor-color(v) => { root.set-term-cursor-color(v) }
-                    set-output-highlight(enabled, preset) => {
-                        root.set-output-highlight(enabled, preset);
-                    }
-                    set-json-format-output(enabled) => { root.set-json-format-output(enabled); }
-                    add-output-highlight-rule(pattern, regex, case-sensitive, whole-line, color) => {
-                        root.add-output-highlight-rule(
-                            pattern, regex, case-sensitive, whole-line, color)
-                    }
-                    remove-output-highlight-rule(index) => {
-                        root.remove-output-highlight-rule(index);
-                    }
-                    set-output-highlight-rule-enabled(index, enabled) => {
-                        root.set-output-highlight-rule-enabled(index, enabled);
-                    }
-                    set-ui-scale(v) => { root.set-ui-scale(v); }
-                    set-panel-font(v) => { root.set-panel-font(v); }
-                    set-renderer-mode(v) => { root.set-renderer-mode(v); }
-                    set-sftp-follow-cd(v) => { root.set-sftp-follow-cd(v); }
-                    set-collapse-sidebar-default(v) => { root.set-collapse-sidebar-default(v); }
-                    set-collapse-sftp-default(v) => { root.set-collapse-sftp-default(v); }
-                    set-sync-upload-enabled(v) => { root.set-sync-upload-enabled(v); }
-                    save-webdav-settings(enabled, url, username, password, remote-path, accept-invalid-certs) => {
-                        root.save-webdav-settings(enabled, url, username, password, remote-path, accept-invalid-certs);
-                    }
-                    webdav-upload => { root.webdav-upload(); }
-                    webdav-download => { root.webdav-download(); }
-                    set-download-always-ask(v) => { root.set-download-always-ask(v); }
-                    set-paste-confirm-enabled(v) => { root.set-paste-confirm-enabled(v); }
-                    set-extra-paste-shortcuts-enabled(v) => { root.set-extra-paste-shortcuts-enabled(v); }
-                    set-zen-mode(v) => { root.set-zen-mode(v); }
-                    set-welcome-as-sidebar(v) => { root.set-welcome-as-sidebar(v); }
-                    set-quick-commands-as-sidebar(v) => {
-                        root.quick-commands-as-sidebar = v;
-                        if (!v) {
-                            root.quick-panel-open = false;
-                            root.quick-panel-collapsed = false;
-                        }
-                        root.set-quick-commands-as-sidebar(v);
-                    }
-                    set-mcp-permissions(enabled, credentials, commands, files) => {
-                        root.set-mcp-permissions(enabled, credentials, commands, files);
-                    }
-                    add-wsl-profile(name, distribution, directory) => { root.add-wsl-profile(name, distribution, directory); }
-                    remove-wsl-profile(id) => { root.remove-wsl-profile(id); }
-                    pick-wsl-directory => { root.pick-wsl-directory(); }
-                    persist-wallpaper-overlay(v) => { root.persist-wallpaper-overlay(v); }
-                }
+        }
+        request-full-redraw => { root.request-full-redraw(); }
+        blank-clicked => { iface-panel.blank-clicked(); }
+        iface-panel := InterfacePanel {
+            vertical-stretch: 1;
+            lang-en: root.lang-en;
+            is-windows: root.is-windows;
+            // (#theme-split) 主题/强调色/三滑杆/通透度
+            theme-entries: root.theme-entries;
+            theme-chosen <=> root.theme-chosen;
+            follow-system <=> root.follow-system;
+            accent-mode <=> root.accent-mode;
+            accent-preset <=> root.accent-preset;
+            accent-custom <=> root.accent-custom;
+            accent-stage <=> root.accent-stage;
+            accent-guard <=> root.accent-guard;
+            accent-pop-open <=> root.accent-pop-open;
+            wallpaper-active <=> root.wallpaper-active;
+            term-alpha <=> root.term-alpha;
+            wallpaper-visible <=> root.wallpaper-visible;
+            popup-transparency <=> root.popup-transparency;
+            wallpaper-color-pickup <=> root.wallpaper-color-pickup;
+            ifd-page <=> root.ifd-page;
+            theme-pick-open <=> root.theme-pick-open;
+            theme-pick-x <=> root.theme-pick-x;
+            theme-pick-y <=> root.theme-pick-y;
+            theme-pick-search <=> root.theme-pick-search;
+            theme-search-filter(q) => { root.theme-search-filter(q); }
+            theme-name <=> root.theme-name;
+            preview-theme(id) => { root.preview-theme(id); }
+            set-theme(id) => { root.set-theme(id); }
+            set-follow-system(v) => { root.set-follow-system(v); }
+            set-accent-mode(m, v) => { root.set-accent-mode(m, v); }
+            accent-hex-color(h) => { root.accent-hex-color(h); }
+            accent-ink-on(h) => { root.accent-ink-on(h); }
+            set-panel-alpha(v) => { root.set-panel-alpha(v); }
+            set-term-alpha(v) => { root.set-term-alpha(v); }
+            set-wallpaper-visible(v) => { root.set-wallpaper-visible(v); }
+            set-popup-transparency(v) => { root.set-popup-transparency(v); }
+            set-wallpaper-color-pickup(v) => { root.set-wallpaper-color-pickup(v); }
+            // (#settings-divider-line) Nav switching rebuilds the right
+            // pane's whole subtree; one clean full frame per page change
+            // keeps the title divider from being composited out of
+            // stale buffer strips by the incremental path.
+            request-full-redraw => root.request-full-redraw();
+            renderer-mode <=> root.renderer-mode;
+            term-fonts: root.term-fonts;
+            term-font-chosen: root.term-font-chosen;
+            term-font-default-name: root.term-font-default-name;
+            // Interface › Font › Interface font. One-way on the value
+            // (Rust owns the resolution) and one-way out through the
+            // callback, mirroring term-font-family so the two pickers
+            // read the same way.
+            ui-fonts: root.ui-fonts;
+            ui-font-chosen: root.ui-font-chosen;
+            ui-font-default-name: root.ui-font-default-name;
+            set-ui-font(v) => { root.set-ui-font(v); }
+            term-font-size: root.term-font-size;
+            terminal-line-spacing <=> root.terminal-line-spacing;
+            // (#close-behavior) 设置 › 窗口 的「关闭按钮行为」双向绑定。
+            close-behavior <=> root.close-behavior;
+            set-close-behavior(v) => { root.set-close-behavior(v); }
+            // (#storage-location) 存储位置卡转发。
+            storage-current: root.storage-current;
+            storage-default: root.storage-default;
+            storage-target <=> root.storage-target;
+            storage-status <=> root.storage-status;
+            storage-status-error <=> root.storage-status-error;
+            storage-host-count: root.storage-host-count;
+            storage-quick-count: root.storage-quick-count;
+            open-storage-dir() => { root.open-storage-dir(); }
+            copy-storage-path() => { root.copy-storage-path(); }
+            pick-storage-dir() => { root.pick-storage-dir(); }
+            reset-storage-dir() => { root.reset-storage-dir(); }
+            switch-storage(m) => { return root.switch-storage(m); }
+            term-font-bold: root.term-font-bold;
+            term-cursor-style <=> root.term-cursor-style;
+            term-cursor-color-hex <=> root.term-cursor-color-hex;
+            term-cursor-color: root.term-cursor-color;
+            output-highlight-enabled <=> root.output-highlight-enabled;
+            json-format-output <=> root.json-format-output;
+            output-highlight-preset <=> root.output-highlight-preset;
+            output-highlight-rules: root.output-highlight-rules;
+            output-highlight-rule-status <=> root.output-highlight-rule-status;
+            ui-scale: root.ui-scale;
+            sftp-follow-cd <=> root.sftp-follow-cd;
+            collapse-sidebar-default <=> root.collapse-sidebar-default;
+            collapse-sftp-default <=> root.collapse-sftp-default;
+            sync-upload-enabled <=> root.sync-upload-enabled;
+            webdav-enabled <=> root.webdav-enabled;
+            webdav-url <=> root.webdav-url;
+            webdav-username <=> root.webdav-username;
+            webdav-password <=> root.webdav-password;
+            webdav-remote-path <=> root.webdav-remote-path;
+            webdav-accept-invalid-certs <=> root.webdav-accept-invalid-certs;
+            webdav-status <=> root.webdav-status;
+            download-always-ask <=> root.download-always-ask;
+            paste-confirm-enabled <=> root.paste-confirm-enabled;
+            extra-paste-shortcuts-enabled <=> root.extra-paste-shortcuts-enabled;
+            zen-mode <=> root.zen-mode;
+            welcome-as-sidebar <=> root.welcome-as-sidebar;
+            quick-commands-as-sidebar <=> root.quick-commands-as-sidebar;
+            mcp-enabled <=> root.mcp-enabled;
+            mcp-use-saved-credentials <=> root.mcp-use-saved-credentials;
+            mcp-allow-commands <=> root.mcp-allow-commands;
+            mcp-allow-file-transfers <=> root.mcp-allow-file-transfers;
+            wallpaper-overlay <=> root.wallpaper-overlay;
+            current-wallpaper: root.current-wallpaper;
+            custom-wallpaper-name: root.custom-wallpaper-name;
+            wsl-profiles: root.wsl-profiles;
+            wsl-new-directory <=> root.wsl-new-directory;
+            set-wallpaper(v) => { root.set-wallpaper(v); }
+            pick-wallpaper-file() => { root.pick-wallpaper-file(); }
+            set-term-font(v) => { root.set-term-font(v); }
+            set-term-font-size(v) => { root.set-term-font-size(v); }
+            set-terminal-line-spacing(v) => { root.set-terminal-line-spacing(v); }
+            set-term-font-bold(v) => { root.set-term-font-bold(v); }
+            set-term-cursor-style(v) => { root.set-term-cursor-style(v); }
+            set-term-cursor-color(v) => { root.set-term-cursor-color(v) }
+            set-output-highlight(enabled, preset) => {
+                root.set-output-highlight(enabled, preset);
             }
-            Rectangle {
-                // #ifd-resize: bottom-right resize grip — switched from
-                // "open_in_full" glyph to the 3-dot diagonal pattern used by
-                // ProcWindow (#grip-icon-3dots) so all three affordances share
-                // one visual.
-                x: parent.width - 16px;
-                y: parent.height - 16px;
-                width: 16px;
-                height: 16px;
-                background: transparent;
-                Icon { glyph: "resize-se"; tint: Theme.text-muted; size: 16px; }   // (#icon-svg-migration) 单一事实源 = assets/icons/resize-se.svg
-                resize-ta := TouchArea {
-                    mouse-cursor: nwse-resize;
-                    pointer-event(e) => {
-                        if (e.kind == PointerEventKind.down) {
-                            root.ifd-resizing = true;
-                            root.ifd-base-w = root.ifd-w;
-                            root.ifd-base-h = root.ifd-h;
-                            root.ifd-grab-x = self.absolute-position.x + self.mouse-x;
-                            root.ifd-grab-y = self.absolute-position.y + self.mouse-y;
-                        } else if (e.kind == PointerEventKind.up) {
-                            root.ifd-resizing = false;
-                            root.request-full-redraw();   // (#settings-drag-ghost)
-                        }
-                    }
-                    moved => {
-                        if (root.ifd-resizing) {
-                            root.ifd-w = clamp(
-                                Theme.snap-to-device(root.ifd-base-w + (self.absolute-position.x + self.mouse-x - root.ifd-grab-x)),
-                                640px, max(640px, root.width - root.ifd-x));
-                            root.ifd-h = clamp(
-                                Theme.snap-to-device(root.ifd-base-h + (self.absolute-position.y + self.mouse-y - root.ifd-grab-y)),
-                                420px, max(420px, root.height - root.ifd-y));
-                        }
-                    }
-                }
+            set-json-format-output(enabled) => { root.set-json-format-output(enabled); }
+            add-output-highlight-rule(pattern, regex, case-sensitive, whole-line, color) => {
+                root.add-output-highlight-rule(
+                    pattern, regex, case-sensitive, whole-line, color)
             }
+            remove-output-highlight-rule(index) => {
+                root.remove-output-highlight-rule(index);
+            }
+            set-output-highlight-rule-enabled(index, enabled) => {
+                root.set-output-highlight-rule-enabled(index, enabled);
+            }
+            set-ui-scale(v) => { root.set-ui-scale(v); }
+            set-panel-font(v) => { root.set-panel-font(v); }
+            set-renderer-mode(v) => { root.set-renderer-mode(v); }
+            set-sftp-follow-cd(v) => { root.set-sftp-follow-cd(v); }
+            set-collapse-sidebar-default(v) => { root.set-collapse-sidebar-default(v); }
+            set-collapse-sftp-default(v) => { root.set-collapse-sftp-default(v); }
+            set-sync-upload-enabled(v) => { root.set-sync-upload-enabled(v); }
+            save-webdav-settings(enabled, url, username, password, remote-path, accept-invalid-certs) => {
+                root.save-webdav-settings(enabled, url, username, password, remote-path, accept-invalid-certs);
+            }
+            webdav-upload => { root.webdav-upload(); }
+            webdav-download => { root.webdav-download(); }
+            set-download-always-ask(v) => { root.set-download-always-ask(v); }
+            set-paste-confirm-enabled(v) => { root.set-paste-confirm-enabled(v); }
+            set-extra-paste-shortcuts-enabled(v) => { root.set-extra-paste-shortcuts-enabled(v); }
+            set-zen-mode(v) => { root.set-zen-mode(v); }
+            set-welcome-as-sidebar(v) => { root.set-welcome-as-sidebar(v); }
+            set-quick-commands-as-sidebar(v) => {
+                root.quick-commands-as-sidebar = v;
+                if (!v) {
+                    root.quick-panel-open = false;
+                    root.quick-panel-collapsed = false;
+                }
+                root.set-quick-commands-as-sidebar(v);
+            }
+            set-mcp-permissions(enabled, credentials, commands, files) => {
+                root.set-mcp-permissions(enabled, credentials, commands, files);
+            }
+            add-wsl-profile(name, distribution, directory) => { root.add-wsl-profile(name, distribution, directory); }
+            remove-wsl-profile(id) => { root.remove-wsl-profile(id); }
+            pick-wsl-directory => { root.pick-wsl-directory(); }
+            persist-wallpaper-overlay(v) => { root.persist-wallpaper-overlay(v); }
         }
     }
 
@@ -8273,8 +8130,29 @@ export component AppWindow inherits Window {
             border-color: Theme.border-strong;
             drop-shadow-blur: 24px;
             drop-shadow-color: #000000a0;
-            // 卡片留白吞层（点 padding 不落到遮罩）
-            TouchArea { clicked => {} }
+            // 卡片留白吞层（点 padding 不落到遮罩）；空白区也可拖动卡片
+            card-ta := TouchArea {
+                clicked => {}
+                pointer-event(ev) => {
+                    if (ev.kind == PointerEventKind.down) {
+                        pop.dragging = true;
+                        pop.drag-ox = pop.x;
+                        pop.drag-oy = pop.y;
+                        pop.drag-cx = card-ta.absolute-position.x + card-ta.mouse-x;
+                        pop.drag-cy = card-ta.absolute-position.y + card-ta.mouse-y;
+                    } else if (ev.kind == PointerEventKind.up) {
+                        pop.dragging = false;
+                    }
+                }
+                moved => {
+                    pop.x = Math.max(8px, Math.min(
+                        pop.drag-ox + (card-ta.absolute-position.x + card-ta.mouse-x - pop.drag-cx),
+                        Math.max(8px, root.width - pop.width - 8px)));
+                    pop.y = Math.max(8px, Math.min(
+                        pop.drag-oy + (card-ta.absolute-position.y + card-ta.mouse-y - pop.drag-cy),
+                        Math.max(8px, root.height - pop.height - 8px)));
+                }
+            }
             property <string> fitted: PickerMath.fit-hex(root.accent-stage);
             property <bool> warn: self.fitted != root.accent-stage;
             property <bool> dirty: root.accent-stage != root.accent-guard.eff;
@@ -8289,114 +8167,83 @@ export component AppWindow inherits Window {
                 padding-left: 16px;
                 padding-right: 16px;
                 spacing: 10px;
-                // ── 头部：标题 + 药丸 + ✕（整行拖动，✕ 置顶）────────────────
-                // 拖动用「指针窗口绝对坐标」差值：TouchArea 的 mouse-x 是相对
-                // 自身的，卡片一动它就跟着缩，相对差值会自馈（一拖跳角）。
-                // absolute-position 在事件期是真实窗口坐标（ChainPicker 结论）。
-                Rectangle {
-                    height: 26px;
-                    head-ta := TouchArea {
-                        mouse-cursor: pop.dragging ? move : default;
-                        pointer-event(ev) => {
-                            if (ev.kind == PointerEventKind.down) {
-                                pop.dragging = true;
-                                pop.drag-ox = pop.x;
-                                pop.drag-oy = pop.y;
-                                pop.drag-cx = head-ta.absolute-position.x + head-ta.mouse-x;
-                                pop.drag-cy = head-ta.absolute-position.y + head-ta.mouse-y;
-                            } else if (ev.kind == PointerEventKind.up) {
-                                pop.dragging = false;
-                            }
-                        }
-                        moved => {
-                            pop.x = Math.max(8px, Math.min(
-                                pop.drag-ox + (head-ta.absolute-position.x + head-ta.mouse-x - pop.drag-cx),
-                                Math.max(8px, root.width - pop.width - 8px)));
-                            pop.y = Math.max(8px, Math.min(
-                                pop.drag-oy + (head-ta.absolute-position.y + head-ta.mouse-y - pop.drag-cy),
-                                Math.max(8px, root.height - pop.height - 8px)));
-                        }
-                    }
+                // ── 副标题行：说明文字 + 色号色块（悬停显示信息卡）────────────
+                // 三态各一行（互斥）：警示 / 已选未生效 / 中性提示。
+                if pop.warn : HorizontalLayout {
+                    spacing: 4px;
                     Text {
-                        x: 2px;
-                        text: root.lang-en ? "Accent" : "强调色";
-                        color: Theme.text-primary;
-                        font-size: 13.5px;
-                        font-weight: 600;
+                        height: 20px;
+                        horizontal-stretch: 0;
                         vertical-alignment: center;
+                        text: root.lang-en ? "Selected" : "已选择";
+                        color: Theme.warning;
+                        font-size: 11px;
                     }
-                    // 药丸 = 守卫调亮后的真实生效色（与「应用」按钮同色）
-                    Rectangle {
-                        x: parent.width - head-x.width - self.width - 24px;
-                        y: (parent.height - self.height) / 2;
-                        width: pill-lay.preferred-width + 22px;
-                        height: 24px;
-                        border-radius: 12px;
-                        background: Theme.field;
-                        border-width: 1px;
-                        border-color: (pop.warn || pop.dirty) ? #e2a84aff : Theme.border-strong;
-                        pill-lay := HorizontalLayout {
-                            padding-left: 10px;
-                            padding-right: 10px;
-                            spacing: 6px;
-                            alignment: center;
-                            Rectangle {
-                                y: (parent.height - self.height) / 2;
-                                width: 12px;
-                                height: 12px;
-                                border-radius: 4px;
-                                background: root.accent-hex-color(pop.fitted);
-                            }
-                            Text {
-                                text: pop.fitted;
-                                color: pop.warn ? #e2a84aff : Theme.text-secondary;
-                                font-size: 10.5px;
-                                font-family: Theme.term-font-family;
-                                vertical-alignment: center;
-                            }
-                        }
+                    InfoSwatch { hex: root.accent-stage; card-below: false; }
+                    Text {
+                        height: 20px;
+                        horizontal-stretch: 0;
+                        vertical-alignment: center;
+                        text: root.lang-en
+                            ? "not applied — below 3:1 on the panel; applying lightens to"
+                            : "（未生效）—— 对面板对比度不足 3:1，应用时将自动调亮为";
+                        color: Theme.warning;
+                        font-size: 11px;
                     }
-                    head-x := Rectangle {
-                        x: parent.width - self.width - 2px;
-                        y: (parent.height - self.height) / 2;
-                        width: 22px;
-                        height: 22px;
-                        border-radius: Theme.radius-sm;
-                        background: head-x-ta.has-hover ? Theme.bg-hover : transparent;
-                        Text {
-                            text: "✕";
-                            color: head-x-ta.has-hover ? Theme.text-primary : Theme.text-muted;
-                            font-size: 12px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                        head-x-ta := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => {
-                                root.accent-stage = root.accent-guard.eff;
-                                root.accent-pop-open = false;
-                            }
-                        }
+                    InfoSwatch { hex: pop.fitted; card-below: false; }
+                    Text {
+                        height: 20px;
+                        horizontal-stretch: 0;
+                        vertical-alignment: center;
+                        text: root.lang-en ? ". Apply takes effect; Cancel / ✕ / blank reverts."
+                            : "；点「应用」生效，取消 / 关闭还原。";
+                        color: Theme.warning;
+                        font-size: 11px;
                     }
                 }
-                // ── 副标题：选中/调亮/还原 三态说明 ─────────────────────────
-                Text {
-                    text: pop.warn
-                        ? (root.lang-en
-                            ? "Selected " + root.accent-stage + " — below 3:1 on the panel; applying lightens it to "
-                              + pop.fitted + ". Apply takes effect; Cancel / ✕ / blank reverts."
-                            : "已选择 " + root.accent-stage + "（未生效）—— 对面板对比度不足 3:1，应用时将自动调亮为 "
-                              + pop.fitted + "；点「应用」生效，取消 / 关闭还原。")
-                        : (pop.dirty
-                            ? (root.lang-en
-                                ? "Selected " + root.accent-stage + " (not applied). Apply takes effect; Cancel / ✕ / blank reverts."
-                                : "已选择 " + root.accent-stage + "（未生效）；点「应用」生效，取消 / 关闭还原。")
-                            : (root.lang-en
-                                ? "Pick a swatch to select; Apply takes effect. Cancel / ✕ / blank reverts to " + root.accent-guard.eff + "."
-                                : "点选色块仅选中；「应用」后生效，取消 / 关闭还原当前色 " + root.accent-guard.eff + "。"));
-                    color: Theme.text-muted;
-                    font-size: 11px;
-                    wrap: word-wrap;
+                if !pop.warn && pop.dirty : HorizontalLayout {
+                    spacing: 4px;
+                    Text {
+                        height: 20px;
+                        horizontal-stretch: 0;
+                        vertical-alignment: center;
+                        text: root.lang-en ? "Selected" : "已选择";
+                        color: Theme.text-muted;
+                        font-size: 11px;
+                    }
+                    InfoSwatch { hex: root.accent-stage; card-below: false; }
+                    Text {
+                        height: 20px;
+                        horizontal-stretch: 0;
+                        vertical-alignment: center;
+                        text: root.lang-en
+                            ? "(not applied). Apply takes effect; Cancel / ✕ / blank reverts."
+                            : "（未生效）；点「应用」生效，取消 / 关闭还原。";
+                        color: Theme.text-muted;
+                        font-size: 11px;
+                    }
+                }
+                if !pop.warn && !pop.dirty : HorizontalLayout {
+                    spacing: 4px;
+                    Text {
+                        height: 20px;
+                        horizontal-stretch: 0;
+                        vertical-alignment: center;
+                        text: root.lang-en
+                            ? "Pick a swatch to select; Apply takes effect. Cancel / ✕ / blank reverts to"
+                            : "点选色块仅选中；「应用」后生效，取消 / 关闭还原当前色";
+                        color: Theme.text-muted;
+                        font-size: 11px;
+                    }
+                    InfoSwatch { hex: root.accent-guard.eff; card-below: false; }
+                    Text {
+                        height: 20px;
+                        horizontal-stretch: 0;
+                        vertical-alignment: center;
+                        text: ".";
+                        color: Theme.text-muted;
+                        font-size: 11px;
+                    }
                 }
                 // ── 最近使用（点选 = 仅选中；空时回落显示当前生效色）────────
                 HorizontalLayout {
@@ -8406,15 +8253,77 @@ export component AppWindow inherits Window {
                         color: Theme.text-muted;
                         font-size: 11px;
                         vertical-alignment: center;
+                        horizontal-stretch: 0;
                     }
                     for r in (root.accent-recent.length > 0 ? root.accent-recent : [root.accent-guard.eff]) : Rectangle {
                         width: 20px;
                         height: 20px;
                         border-radius: 6px;
                         background: root.accent-hex-color(r);
-                        border-width: 1px;
-                        border-color: #ffffff26;
-                        TouchArea {
+                        border-width: r-ta.has-hover ? 2px : 1px;
+                        border-color: r-ta.has-hover ? root.accent-ink-on(r).with-alpha(0.72) : #ffffff26;
+                        drop-shadow-blur: r-ta.has-hover ? 10px : 0px;
+                        drop-shadow-color: #00000066;
+                        animate drop-shadow-blur { duration: 100ms; }
+                        Rectangle {
+                            border-radius: 6px;
+                            background: #ffffff;
+                            opacity: r-ta.has-hover ? 0.10 : 0;
+                        }
+                        // 悬浮信息卡：hex + RGB / HSV / HSL（hover 展示，移出消失；
+                        // 色卡未 clip，允许卡片向上越界浮出）
+                        Rectangle {
+                            x: (parent.width - self.width) / 2 - 8px;
+                            y: -(self.height + 7px);
+                            width: 168px;
+                            height: 100px;
+                            border-radius: 8px;
+                            background: #111318;
+                            border-width: 1px;
+                            border-color: Theme.border-strong;
+                            drop-shadow-blur: 14px;
+                            drop-shadow-color: #000000a0;
+                            visible: r-ta.has-hover;
+                            VerticalLayout {
+                                padding-top: 10px;
+                                padding-bottom: 10px;
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 5px;
+                                alignment: center;
+                                Text {
+                                    text: r;
+                                    color: Theme.text-primary;
+                                    font-size: 12px;
+                                    font-family: Theme.term-font-family;
+                                }
+                                Text {
+                                    text: "RGB  " + PickerMath.hex-ch(r, 0, "rgb") + ", "
+                                        + PickerMath.hex-ch(r, 1, "rgb") + ", "
+                                        + PickerMath.hex-ch(r, 2, "rgb");
+                                    color: Theme.text-secondary;
+                                    font-size: 10.5px;
+                                    font-family: Theme.term-font-family;
+                                }
+                                Text {
+                                    text: "HSV  " + PickerMath.hex-ch(r, 0, "hsv") + "°  "
+                                        + PickerMath.hex-ch(r, 1, "hsv") + "%  "
+                                        + PickerMath.hex-ch(r, 2, "hsv") + "%";
+                                    color: Theme.text-secondary;
+                                    font-size: 10.5px;
+                                    font-family: Theme.term-font-family;
+                                }
+                                Text {
+                                    text: "HSL  " + PickerMath.hex-ch(r, 0, "hsl") + "°  "
+                                        + PickerMath.hex-ch(r, 1, "hsl") + "%  "
+                                        + PickerMath.hex-ch(r, 2, "hsl") + "%";
+                                    color: Theme.text-secondary;
+                                    font-size: 10.5px;
+                                    font-family: Theme.term-font-family;
+                                }
+                            }
+                        }
+                        r-ta := TouchArea {
                             mouse-cursor: pointer;
                             clicked => { root.accent-stage = r; }
                         }
@@ -8427,7 +8336,7 @@ export component AppWindow inherits Window {
                         { n: "番茄色", h: "#F44333" }, { n: "植物红", h: "#B71C1C" }, { n: "珊瑚色", h: "#FF7F6B" }, { n: "鲑鱼色", h: "#F29E7B" },
                         { n: "橘黄色", h: "#FFA565" }, { n: "橙色", h: "#F0862C" }, { n: "琥珀橙", h: "#FF9B0B" }, { n: "金色", h: "#FFC069" },
                         { n: "茶色", h: "#FFC100" }, { n: "蟹青色", h: "#FFE831" }, { n: "青柠", h: "#C8FF00" }, { n: "钢色", h: "#B9B119" },
-                        { n: "苔藓色", h: "#B1C784" }, { n: "黄绿色", h: "#A5FF80" }, { n: "鲜绿色", h: "#7CB342" }, { n: "绝命毒药色", h: "#368A3F" },
+                        { n: "苔藓色", h: "#B1C784" }, { n: "黄绿色", h: "#A5FF80" }, { n: "鲜绿色", h: "#7CB342" }, { n: "绝命毒药色", h: "#368A3F" }, { n: "微信绿", h: "#07C160" },
                         { n: "翡翠绿", h: "#29A383" }, { n: "薄荷色", h: "#95E0C1" }, { n: "绿松石色", h: "#88CBBC" }, { n: "海蓝宝石色", h: "#64FFDD" },
                         { n: "青绿色", h: "#089B8B" }, { n: "天空色", h: "#64FFFF" }, { n: "水蓝色", h: "#5CCFE6" }, { n: "鲜蓝色", h: "#73D8FF" },
                         { n: "水色", h: "#42A5F5" }, { n: "品牌蓝", h: "#0969DA" }, { n: "宝蓝色", h: "#2979F5" }, { n: "霓虹色", h: "#1D49B1" },
@@ -8444,11 +8353,18 @@ export component AppWindow inherits Window {
                         border-radius: 8px;
                         background: root.accent-hex-color(p.h);
                         border-width: root.accent-stage == p.h ? 2px : p-ta.has-hover ? 2px : 1px;
-                        border-color: root.accent-stage == p.h ? #ffffffff
-                            : p-ta.has-hover ? #ffffff8c : #ffffff1a;
-                        clip: true;
-                        // 悬停提亮（高保真 hover 效果）
+                        // 悬停环 = 自适应字色 @72%：深色块白环、浅色块黑环，
+                        // 半透明更柔和；选中态保持全强度以区分层级
+                        border-color: root.accent-stage == p.h
+                            ? root.accent-ink-on(p.h)
+                            : p-ta.has-hover ? root.accent-ink-on(p.h).with-alpha(0.72) : #ffffff1a;
+                        // 悬浮突起：投影 + 提亮，移出还原（高保真 hover 效果）；
+                        // 不 clip —— 投影要落在色块边界外才有「浮起」感
+                        drop-shadow-blur: p-ta.has-hover ? 12px : 0px;
+                        drop-shadow-color: #00000066;
+                        animate drop-shadow-blur { duration: 100ms; }
                         Rectangle {
+                            border-radius: 8px;
                             background: #ffffff;
                             opacity: p-ta.has-hover ? 0.10 : 0;
                         }
@@ -8478,22 +8394,28 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                // ── 底部：左下「选定 + 调色盘」连体色票；右下 随机/取消/应用 ──
+                // ── 页脚：顶部横线；左下「选定色票 + 调色盘」；右下 随机/取消/应用
+                //    控件统一 36px 高；调色盘入口为 ghost 按钮（无底色）。────
+                Rectangle { height: 1px; background: #3a3d46; }
                 Rectangle {
-                    height: 44px;
-                    // 连体色票：底 = 选定原色；整卡可点，进调色盘（从选定色起调）
+                    height: 36px;
+                    // 选定色票（底 = 选定原色；点它进调色盘）
                     Rectangle {
                         x: 0;
-                        width: sel-lay.preferred-width + 118px;
+                        width: 104px;
                         height: parent.height;
                         border-radius: 10px;
                         background: root.accent-hex-color(root.accent-stage);
                         border-width: 1px;
-                        border-color: #ffffff2e;
+                        border-color: sel-ta.has-hover ? #ffffff52 : #ffffff2e;
                         clip: true;
+                        Rectangle {
+                            border-radius: 10px;
+                            background: #ffffff;
+                            opacity: sel-ta.has-hover ? 0.06 : 0;
+                        }
                         sel-lay := VerticalLayout {
-                            x: 12px;
-                            width: sel-lay.preferred-width;
+                            x: 10px;
                             alignment: center;
                             Text {
                                 text: root.lang-en ? "Selected" : "选定";
@@ -8509,25 +8431,35 @@ export component AppWindow inherits Window {
                                 font-family: Theme.term-font-family;
                             }
                         }
-                        Rectangle {
-                            x: sel-lay.x + sel-lay.width + 9px;
-                            y: 8px;
-                            width: 1px;
-                            height: 28px;
-                            background: #00000040;
-                        }
-                        Text {
-                            x: sel-lay.x + sel-lay.width + 21px;
-                            width: parent.width - self.x - 10px;
-                            height: parent.height;
-                            text: root.lang-en ? "Palette ›" : "调色盘 ›";
-                            color: root.accent-ink-on(root.accent-stage);
-                            font-size: 12px;
-                            vertical-alignment: center;
-                        }
-                        TouchArea {
+                        sel-ta := TouchArea {
                             mouse-cursor: pointer;
                             clicked => {
+                                root.accent-pick-fmt = "rgb";
+                                root.accent-picker-open(root.accent-stage);
+                                root.accent-pick-open = true;
+                            }
+                        }
+                    }
+                    // 调色盘 ghost 按钮（透明底，点击进调色盘）
+                    Rectangle {
+                        x: 110px;
+                        width: 88px;
+                        height: parent.height;
+                        border-radius: 10px;
+                        background: pal-ta.has-hover ? Theme.bg-hover : transparent;
+                        border-width: 1px;
+                        border-color: pal-ta.has-hover ? Theme.text-muted : Theme.border-strong;
+                        Text {
+                            text: root.lang-en ? "Palette ›" : "调色盘 ›";
+                            color: pal-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        pal-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.accent-pick-fmt = "rgb";
                                 root.accent-picker-open(root.accent-stage);
                                 root.accent-pick-open = true;
                             }
@@ -8535,16 +8467,17 @@ export component AppWindow inherits Window {
                     }
                     // 右下三键（绝对定位右对齐）
                     Rectangle {
-                        x: parent.width - 76px - 8px - 64px - 8px - 64px;
-                        width: 76px;
-                        height: 30px;
-                        y: (parent.height - self.height) / 2;
+                        x: parent.width - 64px - 8px - 64px - 8px - 64px;
+                        width: 64px;
+                        height: parent.height;
                         border-radius: 8px;
                         background: rnd-ta.has-hover ? Theme.bg-hover : transparent;
                         border-width: 1px;
                         border-color: rnd-ta.has-hover ? Theme.text-muted : Theme.border-strong;
                         Text {
-                            text: root.lang-en ? "⟳ Random" : "⟳ 随机";
+                            width: 100%;
+                            height: 100%;
+                            text: root.lang-en ? "Random" : "随机";
                             color: rnd-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
                             font-size: 12px;
                             horizontal-alignment: center;
@@ -8558,13 +8491,14 @@ export component AppWindow inherits Window {
                     Rectangle {
                         x: parent.width - 64px - 8px - 64px;
                         width: 64px;
-                        height: 30px;
-                        y: (parent.height - self.height) / 2;
+                        height: parent.height;
                         border-radius: 8px;
                         background: pop-cancel-ta.has-hover ? Theme.bg-hover : transparent;
                         border-width: 1px;
                         border-color: pop-cancel-ta.has-hover ? Theme.text-muted : Theme.border-strong;
                         Text {
+                            width: 100%;
+                            height: 100%;
                             text: root.lang-en ? "Cancel" : "取消";
                             color: pop-cancel-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
                             font-size: 12px;
@@ -8582,17 +8516,19 @@ export component AppWindow inherits Window {
                     Rectangle {
                         x: parent.width - 64px;
                         width: 64px;
-                        height: 30px;
-                        y: (parent.height - self.height) / 2;
+                        height: parent.height;
                         border-radius: 8px;
                         background: root.accent-hex-color(pop.fitted);
                         clip: true;
-                        // 悬停提亮 + 按下压暗
+                        // 悬停提亮 + 按下压暗（圆角同按钮，否则直角层会露出四个角）
                         Rectangle {
+                            border-radius: 8px;
                             background: #ffffff;
                             opacity: pop-ok-ta.has-hover ? 0.12 : pop-ok-ta.pressed ? 0.22 : 0;
                         }
                         Text {
+                            width: 100%;
+                            height: 100%;
                             text: root.lang-en ? "Apply" : "应用";
                             color: root.accent-ink-on(pop.fitted);
                             font-size: 12px;
@@ -8642,81 +8578,6 @@ export component AppWindow inherits Window {
                 root.accent-stage = root.accent-pick-hex;
                 root.accent-pick-open = false;
             }
-            // 示例三件套：强调色的三个消费位，颜色随调色盘 hex 实时联动
-            // （三列统一 26px 内容区垂直居中 + 标签，查看文档不再偏移）
-            VerticalLayout {
-                spacing: 5px;
-                horizontal-stretch: 1;
-                HorizontalLayout {
-                    height: 26px;
-                    alignment: center;
-                    spacing: 6px;
-                    Rectangle {
-                        y: (parent.height - self.height) / 2;
-                        width: 8px;
-                        height: 8px;
-                        border-radius: 3px;
-                        background: PickerMath.hex-color(root.accent-pick-hex);
-                    }
-                    Text {
-                        vertical-alignment: center;
-                        text: root.lang-en ? "Session" : "会话";
-                        color: PickerMath.hex-color(root.accent-pick-hex);
-                        font-size: 11.5px;
-                        font-weight: 500;
-                    }
-                }
-                Text {
-                    text: root.lang-en ? "Selection" : "选中态";
-                    color: Theme.text-muted;
-                    font-size: 10px;
-                    horizontal-alignment: center;
-                }
-            }
-            VerticalLayout {
-                spacing: 5px;
-                horizontal-stretch: 1;
-                Rectangle {
-                    height: 26px;
-                    border-radius: 6px;
-                    background: PickerMath.hex-color(root.accent-pick-hex);
-                    Text {
-                        width: 100%;
-                        height: 100%;
-                        text: root.lang-en ? "Connect" : "连接";
-                        color: PickerMath.ink-on(root.accent-pick-hex);
-                        font-size: 11.5px;
-                        font-weight: 600;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-                Text {
-                    text: root.lang-en ? "Primary" : "主按钮";
-                    color: Theme.text-muted;
-                    font-size: 10px;
-                    horizontal-alignment: center;
-                }
-            }
-            VerticalLayout {
-                spacing: 5px;
-                horizontal-stretch: 1;
-                HorizontalLayout {
-                    height: 26px;
-                    alignment: center;
-                    Text {
-                        text: root.lang-en ? "Docs" : "查看文档";
-                        color: PickerMath.hex-color(root.accent-pick-hex);
-                        font-size: 11.5px;
-                    }
-                }
-                Text {
-                    text: root.lang-en ? "Link" : "链接";
-                    color: Theme.text-muted;
-                    font-size: 10px;
-                    horizontal-alignment: center;
-                }
-            }
         }
     }
 
@@ -8729,6 +8590,8 @@ export component AppWindow inherits Window {
     // active 终端生效），把焦点还给窗口快捷键 Scope —— 与 changed
     // active-tab-id 的欢迎页兜底同一手法。
     SyncDialogHost {
+        bounds-w: root.width;
+        bounds-h: root.height;
         request-terminal-focus => {
             root.terminal-focus-sequence += 1;
             if (root.active-tab-id == "welcome" && root.terminals.length == 0) {

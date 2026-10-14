@@ -26,11 +26,11 @@ pub fn bake_wheel_image(size: u32) -> slint::Image {
     slint::Image::from_rgba8(px)
 }
 
-/// 明度条渐变位图（顶=当前色相满饱和、底=黑）。显示 22×216，按 2× 烘成
-/// 44×432；色相随色轮拖动换，故每次改色重烘。
+/// 明度条渐变位图（顶=当前色相满饱和、底=黑）。显示 22×240，按 2× 烘成
+/// 44×480；色相随色轮拖动换，故每次改色重烘。
 pub fn bake_slider_image(hue: f32) -> slint::Image {
     const W: u32 = 44;
-    const H: u32 = 432;
+    const H: u32 = 480;
     let top = hsv_to_hex(hue, 1.0, 1.0);
     let mut buf = Vec::with_capacity((W * H * 4) as usize);
     for y in 0..H {

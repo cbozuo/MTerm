@@ -1,0 +1,256 @@
+import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+
+// 设置卡（界面设置弹窗）。(#settings-extract 2026-10-14) 从 app.slint 提取为
+// 独立组件（与 session_dialog.slint 同模式）：遮罩 + 模态焦点域 + 卡片 chrome
+// （标题栏/✕/右下角缩放手柄/空白区拖动）。内容 InterfacePanel 由调用方以
+// @children 槽位传入——它的全部状态（主题/存储/字体/WebDAV…）属于 AppWindow，
+// 绑定块留在 app.slint，免去一层上百 property 的透传。
+//
+// 交互契约：
+// * 空白区拖动卡片：绝对坐标差值 + snap-to-device，钳制在窗口内。字段/按钮/
+//   滚动区在上层不受影响——面板里的滚动区都是 ScrollView（其 Flickable 的
+//   mouse-drag-pan-enabled=false，鼠标按下直接下穿），所以导航、内容间隙、
+//   卡片边距的按下都会落到卡片吞层；标题栏整行同样可拖（title-drag 垫底，
+//   ✕ 置顶）。
+// * 模态：遮罩点击/滚轮无效（只有 ✕ 关）；Esc 分层收尾（根层浮层优先）经
+//   esc-requested 交回调用方执行——那些浮层开关挂在 AppWindow 根层。
+// * 点卡片任意空白：焦点交回 esc-scope（#ifd-input-blur：输入框失焦），并经
+//   blank-clicked 通知调用方推进 InterfacePanel.combo-clock（清 FontCombo
+//   聚焦高亮）。二者合并在这一个吞层里——面板内**不再**自铺全尺寸 blank-ta：
+//   那会把按下全部 GrabMouse 吞在拖动层之上，空白区拖动彻底失效
+//   （#settings-drag 2026-10-14 实测；且它晚于 #ifd-input-blur 加入，
+//   顺带破坏了「点空白失焦」的原意）。
+export component SettingsDialog inherits Rectangle {
+    in property <bool> lang-en: false;
+    in property <bool> is-windows: false;
+    // 拖动/缩放钳制边界 = 全窗尺寸（与 SessionDialog 的 bounds-w/h 同款）
+    in property <length> bounds-w;
+    in property <length> bounds-h;
+    // ── 卡片几何与拖动/缩放中间量（AppWindow 持有，双向绑定）─────────────
+    // 重开重居中、字体缩放钳制都在根上做（changed interface-open），这里只读写。
+    in-out property <length> ifd-x;
+    in-out property <length> ifd-y;
+    in-out property <length> ifd-w;
+    in-out property <length> ifd-h;
+    in-out property <bool> ifd-dragging;
+    in-out property <bool> ifd-resizing;
+    in-out property <length> ifd-base-x;
+    in-out property <length> ifd-base-y;
+    in-out property <length> ifd-base-w;
+    in-out property <length> ifd-base-h;
+    in-out property <length> ifd-grab-x;
+    in-out property <length> ifd-grab-y;
+    // ── 卡片级回调 ─────────────────────────────────────────────────────
+    callback close-requested();     // ✕：关设置卡并收掉根层浮层开关
+    callback esc-requested();       // Esc：分层收尾（浮层优先，逻辑在调用方）
+    callback request-full-redraw(); // (#settings-drag-ghost) 拖动/缩放要一帧全刷
+    callback blank-clicked();       // 空白点击 → InterfacePanel.combo-clock += 1
+
+    width: 100%;
+    height: 100%;
+    background: #00000080;            // dim backdrop
+    // Grab focus and swallow keys so nothing leaks to the terminal beneath;
+    // Esc closes the panel (#140-3).
+    // (#ifd-input-blur 2026-10-01) Named so the card's click-swallower can
+    // hand focus here: clicking any blank part of the card blurs a focused
+    // input field (standard modal behaviour — a field used to keep focus
+    // until another focusable element was clicked).
+    esc-scope := FocusScope {
+        init => { self.focus(); }
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                // 浮层开着先关浮层（强调色预设弹框/取色盘/主题下拉），再按
+                // 一次才关设置卡。否则 Esc 直接关卡会把根层浮层遗留在屏上
+                // （浮层在 overlay 之外，不随 interface-open 隐藏）。
+                // 定稿语义：调色盘 Esc = 放弃修改；预设弹框 Esc = 还原选定色。
+                root.esc-requested();
+            }
+            accept
+        }
+        key-released(e) => { accept }
+    }
+    // Modal: clicking the backdrop does nothing (only the ✕ closes it).
+    TouchArea { scroll-event(e) => { accept } }
+
+    Rectangle {
+        x: root.ifd-x;
+        y: root.ifd-y;
+        // Bigger base, and scales with the settings font size (#v0.5).
+        width: root.ifd-w;
+        height: root.ifd-h;
+        // (#popup-transparency-hifi) 设置卡与弹窗同源走 popup-alpha：
+        // 标准=实心、通透=82%、全透=55%（深色遮罩/弹窗遮罩兜底可读性）。
+        background: Theme.panel-solid.with_alpha(Theme.popup-alpha);
+        border-radius: Theme.radius-md;
+        // (#settings-divider-line) hairline: one device pixel instead of a
+        // logical 1px, which at 125% spans two device rows and reads soft.
+        border-width: Theme.hairline();
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #000000a0;
+        clip: true;
+        // Swallow inside clicks so they don't hit the backdrop, and blur a
+        // focused input field: clicks on blank card areas (labels, dividers,
+        // dead space) aren't consumed by any control, so they land here and
+        // hand focus to the Esc scope (#ifd-input-blur).
+        // (#settings-drag) 空白区拖动设置卡（绝对坐标差值 + 设备像素对齐，
+        // 与标题拖动同款）；字段/按钮/滚动区在上层不受影响。拖动松开仍会
+        // 触发 clicked（焦点复位 + combo-clock），无副作用。
+        TouchArea {
+            clicked => {
+                esc-scope.focus();
+                root.blank-clicked();
+            }
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) {
+                    root.ifd-dragging = true;
+                    root.ifd-base-x = root.ifd-x;
+                    root.ifd-base-y = root.ifd-y;
+                    root.ifd-grab-x = self.absolute-position.x + self.mouse-x;
+                    root.ifd-grab-y = self.absolute-position.y + self.mouse-y;
+                } else if (e.kind == PointerEventKind.up) {
+                    root.ifd-dragging = false;
+                    // (#settings-drag-ghost) buffer age can lie while the card
+                    // moves under the cursor; one clean frame on release erases
+                    // any stale strip the drag left behind.
+                    root.request-full-redraw();
+                }
+            }
+            moved => {
+                if (root.ifd-dragging) {
+                    root.ifd-x = clamp(
+                        Theme.snap-to-device(root.ifd-base-x + (self.absolute-position.x + self.mouse-x - root.ifd-grab-x)),
+                        0px, max(0px, root.bounds-w - root.ifd-w));
+                    root.ifd-y = clamp(
+                        Theme.snap-to-device(root.ifd-base-y + (self.absolute-position.y + self.mouse-y - root.ifd-grab-y)),
+                        0px, max(0px, root.bounds-h - root.ifd-h));
+                }
+            }
+        }
+
+        VerticalLayout {
+            // Title bar — drag to move (clamped inside the window).
+            Rectangle {
+                height: 44px;
+                // Transparent so the card's single frosted layer shows through
+                // — no extra stacked opacity, matching the welcome/resource
+                // panels and following the wallpaper slider (#new-user-defaults
+                // items 6/7). The 1px divider below still separates it.
+                background: transparent;
+                // (#settings-divider-line) The bottom divider lives *inside*
+                // the title bar so its y can be snapped onto the device grid;
+                // as a layout-stacked sibling it inherited whatever fractional
+                // offset the bar's height decodes to at the current DPI, and
+                // the line rasterized onto two device rows — the "thick/thin,
+                // broken" divider. One device pixel tall + snapped top edge:
+                // the same crisp row at every drag position and every scale.
+                Rectangle {
+                    y: Theme.snap-to-device(parent.height) - Theme.hairline();
+                    height: Theme.hairline();
+                    background: Theme.border-subtle;
+                }
+                title-drag := TouchArea {
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.down) {
+                            root.ifd-dragging = true;
+                            root.ifd-base-x = root.ifd-x;
+                            root.ifd-base-y = root.ifd-y;
+                            root.ifd-grab-x = self.absolute-position.x + self.mouse-x;
+                            root.ifd-grab-y = self.absolute-position.y + self.mouse-y;
+                        } else if (e.kind == PointerEventKind.up) {
+                            root.ifd-dragging = false;
+                            // (#settings-drag-ghost) buffer age can lie
+                            // while the card moves under the cursor; one
+                            // clean frame on release erases any stale strip
+                            // the drag left behind.
+                            root.request-full-redraw();
+                        }
+                    }
+                    moved => {
+                        if (root.ifd-dragging) {
+                            root.ifd-x = clamp(
+                                Theme.snap-to-device(root.ifd-base-x + (self.absolute-position.x + self.mouse-x - root.ifd-grab-x)),
+                                0px, max(0px, root.bounds-w - root.ifd-w));
+                            root.ifd-y = clamp(
+                                Theme.snap-to-device(root.ifd-base-y + (self.absolute-position.y + self.mouse-y - root.ifd-grab-y)),
+                                0px, max(0px, root.bounds-h - root.ifd-h));
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 10px;
+                    Text {
+                        text: root.lang-en ? "Settings" : "设置";
+                        color: Theme.text-primary;
+                        font-size: 14px;
+                        font-weight: Theme.fw-strong;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 24px; height: 24px;
+                            border-radius: Theme.radius-sm;
+                            // Match ProcWindow's close button: red (#e81123) on hover,
+                            // white glyph, smooth 90ms transition (#close-hover-red).
+                            background: if-close-ta.has-hover ? #e81123 : transparent;
+                            animate background { duration: 90ms; }
+                            if-close-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.close-requested(); }
+                            }
+                            Icon {
+                                glyph: "close";
+                                tint: Theme.text-secondary;
+                                size: Theme.fs-md;
+                            }
+                        }
+                    }
+                }
+            }
+            // (#settings-extract) 内容面板由调用方槽位传入（实例化见 app.slint），
+            // vertical-stretch: 1 在实例化处声明，吃掉标题栏之外的全部高度。
+            @children
+        }
+        Rectangle {
+            // #ifd-resize: bottom-right resize grip — switched from
+            // "open_in_full" glyph to the 3-dot diagonal pattern used by
+            // ProcWindow (#grip-icon-3dots) so all three affordances share
+            // one visual.
+            x: parent.width - 16px;
+            y: parent.height - 16px;
+            width: 16px;
+            height: 16px;
+            background: transparent;
+            Icon { glyph: "resize-se"; tint: Theme.text-muted; size: 16px; }   // (#icon-svg-migration) 单一事实源 = assets/icons/resize-se.svg
+            resize-ta := TouchArea {
+                mouse-cursor: nwse-resize;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        root.ifd-resizing = true;
+                        root.ifd-base-w = root.ifd-w;
+                        root.ifd-base-h = root.ifd-h;
+                        root.ifd-grab-x = self.absolute-position.x + self.mouse-x;
+                        root.ifd-grab-y = self.absolute-position.y + self.mouse-y;
+                    } else if (e.kind == PointerEventKind.up) {
+                        root.ifd-resizing = false;
+                        root.request-full-redraw();   // (#settings-drag-ghost)
+                    }
+                }
+                moved => {
+                    if (root.ifd-resizing) {
+                        root.ifd-w = clamp(
+                            Theme.snap-to-device(root.ifd-base-w + (self.absolute-position.x + self.mouse-x - root.ifd-grab-x)),
+                            640px, max(640px, root.bounds-w - root.ifd-x));
+                        root.ifd-h = clamp(
+                            Theme.snap-to-device(root.ifd-base-h + (self.absolute-position.y + self.mouse-y - root.ifd-grab-y)),
+                            420px, max(420px, root.bounds-h - root.ifd-y));
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1645,6 +1645,14 @@ component ChainPicker inherits Rectangle {
 export component SessionDialog inherits Rectangle {
     in-out property <bool> is-open: false;
     in-out property <bool> is-editing: false;
+    // 空白区拖动卡片：按下时记录卡片原点与指针窗口绝对坐标（拖动期间稳定）
+    in property <length> bounds-w;
+    in property <length> bounds-h;
+    property <bool> card-dragging: false;
+    property <length> card-ox;
+    property <length> card-oy;
+    property <length> card-cx;
+    property <length> card-cy;
     // Windows 上内置 RDP 在密码框为空时会去凭据管理器取 `TERMSRV/<主机>`
     // （#credential-store 2026-10-13），占位符必须说出这一半；其他平台没有这个
     // 存储，文案维持「认证时提示」。
@@ -2197,6 +2205,30 @@ export component SessionDialog inherits Rectangle {
                 root.scope-focus-pending = true;
                 root.drop-clock += 1;
             }
+            // (#dialog-drag 2026-10-14) 空白区拖动弹窗（绝对坐标差值，与
+            // 调色盘一致）；字段/按钮在上层不受影响。拖动松开仍会触发
+            // clicked（焦点复位），无副作用。
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.down) {
+                    root.card-dragging = true;
+                    root.card-ox = dlg-card.x;
+                    root.card-oy = dlg-card.y;
+                    root.card-cx = self.absolute-position.x + self.mouse-x;
+                    root.card-cy = self.absolute-position.y + self.mouse-y;
+                } else if (ev.kind == PointerEventKind.up) {
+                    root.card-dragging = false;
+                }
+            }
+            moved => {
+                if (root.card-dragging) {
+                    dlg-card.x = Math.max(8px, Math.min(
+                        root.card-ox + (self.absolute-position.x + self.mouse-x - root.card-cx),
+                        Math.max(8px, root.bounds-w - dlg-card.width - 8px)));
+                    dlg-card.y = Math.max(8px, Math.min(
+                        root.card-oy + (self.absolute-position.y + self.mouse-y - root.card-cy),
+                        Math.max(8px, root.bounds-h - dlg-card.height - 8px)));
+                }
+            }
         }
 
         VerticalLayout {
@@ -2208,6 +2240,31 @@ export component SessionDialog inherits Rectangle {
             // (#hifi-v17) 头部与内容**同底色**(原型 .dlg-head 无独立底色),
             // 只靠 border-bottom 分界;旧 bg-panel-alt 色块把头部切成一条带。
             background: transparent;
+            // (#dialog-drag) 头部整行拖动（垫底；图标/标题/✕ 在上层不受影响），
+            // 绝对坐标差值 + 窗口内钳制，与调色盘/设置卡一致。
+            hdr-drag := TouchArea {
+                pointer-event(ev) => {
+                    if (ev.kind == PointerEventKind.down) {
+                        root.card-dragging = true;
+                        root.card-ox = dlg-card.x;
+                        root.card-oy = dlg-card.y;
+                        root.card-cx = self.absolute-position.x + self.mouse-x;
+                        root.card-cy = self.absolute-position.y + self.mouse-y;
+                    } else if (ev.kind == PointerEventKind.up) {
+                        root.card-dragging = false;
+                    }
+                }
+                moved => {
+                    if (root.card-dragging) {
+                        dlg-card.x = Math.max(8px, Math.min(
+                            root.card-ox + (self.absolute-position.x + self.mouse-x - root.card-cx),
+                            Math.max(8px, root.bounds-w - dlg-card.width - 8px)));
+                        dlg-card.y = Math.max(8px, Math.min(
+                            root.card-oy + (self.absolute-position.y + self.mouse-y - root.card-cy),
+                            Math.max(8px, root.bounds-h - dlg-card.height - 8px)));
+                    }
+                }
+            }
 
             HorizontalLayout {
                 padding-left: 20px;
