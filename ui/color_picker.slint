@@ -52,10 +52,10 @@ export component ColorPickerDialog inherits Rectangle {
     drop-shadow-blur: 26px;
     drop-shadow-color: #000000b8;
 
-    property <length> drag-ox;                     // 按下时的卡片原点/指针位置
+    property <length> drag-ox;                     // 按下时的卡片原点
     property <length> drag-oy;
-    property <length> drag-mx;
-    property <length> drag-my;
+    property <length> drag-cx;                     // 按下时指针的窗口绝对坐标（拖动期间稳定）
+    property <length> drag-cy;
     property <bool> head-dragging: false;
     property <string> guarded: PickerMath.fit-hex(root.hex);
 
@@ -81,44 +81,29 @@ export component ColorPickerDialog inherits Rectangle {
                         root.head-dragging = true;
                         root.drag-ox = root.x;
                         root.drag-oy = root.y;
-                        root.drag-mx = self.mouse-x;
-                        root.drag-my = self.mouse-y;
+                        root.drag-cx = head-drag.absolute-position.x + head-drag.mouse-x;
+                        root.drag-cy = head-drag.absolute-position.y + head-drag.mouse-y;
                     } else if (ev.kind == PointerEventKind.up) {
                         root.head-dragging = false;
                     }
                 }
                 moved => {
-                    // moved 只在按住时触发；clamp 在全窗边界内（留 8px）
-                    root.x = Math.max(8px, Math.min(root.drag-ox + (self.mouse-x - root.drag-mx),
-                                                    Math.max(8px, root.bounds-w - root.width - 8px)));
-                    root.y = Math.max(8px, Math.min(root.drag-oy + (self.mouse-y - root.drag-my),
-                                                    Math.max(8px, root.bounds-h - root.height - 8px)));
+                    // 用指针窗口绝对坐标差值：mouse-x 相对自身会随卡片移动自馈
+                    root.x = Math.max(8px, Math.min(
+                        root.drag-ox + (head-drag.absolute-position.x + head-drag.mouse-x - root.drag-cx),
+                        Math.max(8px, root.bounds-w - root.width - 8px)));
+                    root.y = Math.max(8px, Math.min(
+                        root.drag-oy + (head-drag.absolute-position.y + head-drag.mouse-y - root.drag-cy),
+                        Math.max(8px, root.bounds-h - root.height - 8px)));
                 }
             }
-            HorizontalLayout {
-                spacing: 8px;
-                // 把手（6 点）
-                Rectangle {
-                    width: 14px;
-                    GridLayout {
-                        spacing: 3px;
-                        padding-top: 8px;
-                        Rectangle { col: 0; row: 0; width: 2.5px; height: 2.5px; border-radius: 1.25px; background: Theme.text-muted; }
-                        Rectangle { col: 1; row: 0; width: 2.5px; height: 2.5px; border-radius: 1.25px; background: Theme.text-muted; }
-                        Rectangle { col: 0; row: 1; width: 2.5px; height: 2.5px; border-radius: 1.25px; background: Theme.text-muted; }
-                        Rectangle { col: 1; row: 1; width: 2.5px; height: 2.5px; border-radius: 1.25px; background: Theme.text-muted; }
-                        Rectangle { col: 0; row: 2; width: 2.5px; height: 2.5px; border-radius: 1.25px; background: Theme.text-muted; }
-                        Rectangle { col: 1; row: 2; width: 2.5px; height: 2.5px; border-radius: 1.25px; background: Theme.text-muted; }
-                    }
-                }
-                Text {
-                    text: root.title;
-                    color: Theme.text-primary;
-                    font-size: 13.5px;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                    overflow: elide;
-                }
+            Text {
+                x: 2px;
+                text: root.title;
+                color: Theme.text-primary;
+                font-size: 13.5px;
+                vertical-alignment: center;
+                overflow: elide;
             }
             Rectangle {  // ✕（置顶于拖动层之上）
                 x: parent.width - self.width - 2px;
