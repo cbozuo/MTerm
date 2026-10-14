@@ -1,7 +1,10 @@
-//! Platform-selected heap allocator type.
+//! 平台选定的堆分配器类型。
+//!
+//! `Allocator` 必须 `pub`：bin 目标（src/main.rs）的 `#[global_allocator]`
+//! 要跨 crate 路径引用它；其余成员保持 crate 内部可见。
 
 #[cfg(target_os = "windows")]
-pub(crate) use mimalloc::MiMalloc as Allocator;
+pub use mimalloc::MiMalloc as Allocator;
 
 #[cfg(any(
     target_os = "linux",
@@ -12,7 +15,7 @@ pub(crate) use mimalloc::MiMalloc as Allocator;
     target_os = "openbsd",
     target_os = "dragonfly"
 ))]
-pub(crate) use jemallocator::Jemalloc as Allocator;
+pub use jemallocator::Jemalloc as Allocator;
 
 #[cfg(not(any(
     target_os = "windows",
@@ -24,7 +27,7 @@ pub(crate) use jemallocator::Jemalloc as Allocator;
     target_os = "openbsd",
     target_os = "dragonfly"
 )))]
-pub(crate) use std::alloc::System as Allocator;
+pub use std::alloc::System as Allocator;
 
 #[allow(dead_code)]
 pub(crate) fn allocator_name() -> &'static str {

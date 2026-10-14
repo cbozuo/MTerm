@@ -45,12 +45,12 @@
 //! `ironrdp-tls`), so rustls cannot pick one by itself and panics instead.
 //! Installing the provider here would only fix this call site; `ironrdp-tls`
 //! builds its own config the same way, and that one is inside a dependency.
-//! `main::install_rustls_crypto_provider` therefore does it once for the whole
+//! `crate::rdp::install_rustls_crypto_provider` therefore does it once for the whole
 //! process, which covers both. A panic there is fatal rather than merely loud —
 //! the release profile is `panic = "abort"` — so the install has to happen
 //! before anything else, and it does.
 //!
-//! Note that tests do not go through `main` and so must install it themselves if
+//! Note that tests do not go through `run()` and so must install it themselves if
 //! they build a TLS config; the ignored probe test below does.
 //!
 //! # The probe is best-effort, and the caller must treat it that way
@@ -535,9 +535,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs a reachable RDP server"]
     async fn the_probe_reaches_tls_on_a_real_server() {
-        // `main` is not called when tests run, so nothing has installed the
-        // process-wide provider that `ClientConfig::builder()` needs.
-        crate::install_rustls_crypto_provider();
+        // 测试不经 `run()`，所以进程级 provider 没有被装过，而
+        // `ClientConfig::builder()` 需要它。
+        crate::rdp::install_rustls_crypto_provider();
 
         let target =
             std::env::var("MTERM_RDP_PROBE").unwrap_or_else(|_| "127.0.0.1:3389".to_owned());

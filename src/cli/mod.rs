@@ -8,3 +8,4 @@ mod cli;
 mod structs;
 
 pub(crate) use cli::run;
+pub(crate) use structs::StartMode;

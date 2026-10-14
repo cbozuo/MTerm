@@ -40,9 +40,11 @@
 use crate::config::{RdpClientMode, Session};
 use crate::i18n::t;
 
+pub(crate) mod bootstrap;
 pub(crate) mod embedded;
 pub(crate) mod native;
 
+pub(crate) use bootstrap::install_rustls_crypto_provider;
 pub(crate) use embedded::split_user_domain;
 pub(crate) use native::Account;
 
