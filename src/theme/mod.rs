@@ -269,7 +269,40 @@ pub fn ordered_ids() -> Vec<&'static str> {
     palettes::PALETTES.iter().map(|p| p.id).collect()
 }
 
-/// 按套的明暗取默认主题 id（已确认决策：新老用户一律用新底色 graphite 族）。
+/// 「常用主题」上限（#theme-dedupe §5：写满 8 套时新增提示「先移出一套」）。
+pub const FAVORITE_LIMIT: usize = 8;
+
+/// 强调色的色相名（#theme-dedupe §5 选择器搜索用）：八段中文标签
+/// 「红 / 橙 / 黄 / 绿 / 青 / 蓝 / 紫 / 粉」；无彩度返回「灰」。
+pub fn hue_label(c: u32) -> &'static str {
+    let r = ((c >> 16) & 0xFF) as f32 / 255.0;
+    let g = ((c >> 8) & 0xFF) as f32 / 255.0;
+    let b = (c & 0xFF) as f32 / 255.0;
+    let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
+    let d = mx - mn;
+    if d == 0.0 {
+        return "灰";
+    }
+    let h = if mx == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if mx == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+    match (h * 60.0).rem_euclid(360.0) {
+        x if x < 21.0 || x >= 340.0 => "红",
+        x if x < 51.0 => "橙",
+        x if x < 81.0 => "黄",
+        x if x < 141.0 => "绿",
+        x if x < 201.0 => "青",
+        x if x < 251.0 => "蓝",
+        x if x < 301.0 => "紫",
+        _ => "粉",
+    }
+}
+
+/// 按套的明暗取默认主题 id（#theme-dedupe 2026-10-15：门面 mterm 两套）。
 pub fn default_for(dark: bool) -> &'static str {
     if dark { palettes::DEFAULT_DARK } else { palettes::DEFAULT_LIGHT }
 }
@@ -302,30 +335,64 @@ mod tests {
     use super::*;
     use palettes::PALETTES;
 
+    /// 0xRRGGBB 的 HSL 色相（度，0..360）。灰族同源断言的公共工具。
+    fn hue_deg(c: u32) -> f32 {
+        let (r, g, b) = (
+            ((c >> 16) & 0xFF) as f32 / 255.0,
+            ((c >> 8) & 0xFF) as f32 / 255.0,
+            (c & 0xFF) as f32 / 255.0,
+        );
+        let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
+        let d = mx - mn;
+        if d == 0.0 {
+            return 0.0;
+        }
+        let h = if mx == r {
+            ((g - b) / d).rem_euclid(6.0)
+        } else if mx == g {
+            (b - r) / d + 2.0
+        } else {
+            (r - g) / d + 4.0
+        };
+        (h * 60.0).rem_euclid(360.0)
+    }
+
     #[test]
     fn table_shape() {
-        assert_eq!(PALETTES.len(), 38);
+        assert_eq!(PALETTES.len(), 28);
         assert!(find("graphite-dark").is_some());
-        assert!(find("meat-light").is_none(), "迁移保留档不进选择器（用户决策）");
-        assert!(find("dracula-light").is_none(), "已删套不得回潮");
-        assert!(find("islands-dark").is_some(), "MTerm 套（Islands Dark 移植）");
-        // ⚠️ 2026-10-11 用户决策改：原断言是 `islands-light` 不存在（"上游只有暗
-        // 色档，不硬凑档位"）。现在 islands-light = MTerm 自有亮色档「素纸」，
+        // （§6.3 删）meat 迁移档「不得进选择器」的旧断言已移除：它守的是一个从不
+        // 在表里的对象；意外回潮会被上面的 len == 28 间接炸出。
+        // 「已删套不得回潮」——黑名单汇总（高保真 §6.3：把散着的历史断言收成一条）。
+        // #theme-dedupe 下线的 12 套，任何一套回到表里都是回潮。
+        for gone in [
+            "slate-dark", "slate-light", "mauve-dark", "mauve-light",
+            "sage-dark", "sage-light", "sand-dark", "sand-light",
+            "tokyonight-dark", "tokyonight-light", "ayu-dark", "github-dark",
+        ] {
+            assert!(find(gone).is_none(), "已删套不得回潮：{gone}");
+        }
+        // 明暗配对补齐（#theme-dedupe 解封）：dracula-light 从「已删」转为正式成员。
+        assert!(find("dracula-light").is_some(), "德古拉 · 亮（明暗配对补齐）");
+        assert!(find("everforest-light").is_some(), "常青 · 亮（明暗配对补齐）");
+        assert!(find("mterm-dark").is_some(), "MTerm 套（Islands Dark 移植）");
+        // ⚠️ 2026-10-11 用户决策改：原断言是 `mterm-light` 不存在（"上游只有暗
+        // 色档，不硬凑档位"）。现在 mterm-light = MTerm 自有亮色档「素纸」，
         // id 取名与暗档配对。**它不是上游 Islands 的亮档** —— 色值是自主设计，
-        // 原决策的意图（禁"把暗档亮化拷贝充数"）由 islands_light_is_own_design
+        // 原决策的意图（禁"把暗档亮化拷贝充数"）由 mterm_light_paper_rules_hold
         // 守卫继续兜住。
-        assert!(find("islands-light").is_some(), "MTerm · 亮（自有设计「素纸」，与 islands-dark 配对）");
+        assert!(find("mterm-light").is_some(), "MTerm · 亮（自有设计「素纸」，与 mterm-dark 配对）");
         // 显示名不带明暗后缀：后缀由 theme_name/选择器统一拼（界面显示「MTerm · 暗」
         // 与配对的「MTerm · 亮」——两档 zh 同为 "MTerm"，靠 dark 列分族）。
-        assert_eq!(find("islands-dark").unwrap().zh, "MTerm");
-        assert_eq!(find("islands-light").unwrap().zh, "MTerm");
-        assert!(!find("islands-light").unwrap().dark, "islands-light 是亮档");
-        assert!(find("islands-dark").unwrap().dark, "islands-dark 是暗档");
+        assert_eq!(find("mterm-dark").unwrap().zh, "MTerm");
+        assert_eq!(find("mterm-light").unwrap().zh, "MTerm");
+        assert!(!find("mterm-light").unwrap().dark, "mterm-light 是亮档");
+        assert!(find("mterm-dark").unwrap().dark, "mterm-dark 是暗档");
         // id 唯一
         let mut ids: Vec<_> = PALETTES.iter().map(|p| p.id).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), 38);
+        assert_eq!(ids.len(), 28);
     }
 
     #[test]
@@ -335,6 +402,16 @@ mod tests {
             assert_eq!(p.ansi16.len(), 16, "{}", p.id);
             assert_eq!(p.channel.len(), 4, "{}", p.id);
         }
+    }
+
+    #[test]
+    fn hue_labels_cover_the_wheel() {
+        assert_eq!(hue_label(0x1FC8B4), "青", "MTerm 青");
+        assert_eq!(hue_label(0xFF0000), "红");
+        assert_eq!(hue_label(0x00FF00), "绿");
+        assert_eq!(hue_label(0x0000FF), "蓝");
+        assert_eq!(hue_label(0xF279B9), "粉");
+        assert_eq!(hue_label(0x818181), "灰");
     }
 
     #[test]
@@ -360,32 +437,34 @@ mod tests {
     }
 
     #[test]
-    fn islands_accent_survives_guard() {
-        // MTerm 套的强调色是**项目定档**的上游青 #2AACB8（terminal.ansiCyan）：
-        // 在 panel #181A1D 上对比 6.39 ≥ 3.0，故「跟随主题」时 fit_contrast
-        // 原样返回、不产生色相漂移。守卫若改色，说明该套的 panel/ac 被改坏了。
-        let p = find("islands-dark").unwrap();
-        assert_eq!(p.ac, 0x2AACB8);
+    fn mterm_accent_survives_guard() {
+        // MTerm 套的强调色是**门面定档**青 #1FC8B4（#theme-dedupe 2026-10-15 起，
+        // terminal.ansiCyan 同步；此前为上游青 #2AACB8）：在 panel #181A1D 上
+        // 对比约 8:1 ≥ 3.0，故「跟随主题」时 fit_contrast 原样返回、不产生色相
+        // 漂移。守卫若改色，说明该套的 panel/ac 被改坏了。
+        let p = find("mterm-dark").unwrap();
+        assert_eq!(p.ac, 0x1FC8B4);
         assert_eq!(fit_contrast(p.ac, p.panel, 3.0), p.ac);
         assert!(contrast(p.ac, p.panel) >= 3.0);
     }
 
-    /// 「MTerm · 亮」（islands-light，自有设计「素纸」）的三条配色纪律钉死，防止日后
-/// 单点改色把协调性改回去：① 强调色过 3:1 守卫（不产生色相漂移）；② 灰族唯一
-///（tfg=t1、ANSI white=t1、brightBlack=t3）；③ 12 个彩色槽全部 ≥4.5:1。
+    /// 「MTerm · 亮」（mterm-light，自有设计「素纸」）的三条配色纪律钉死，防止日后
+/// 单点改色把协调性改回去：① 强调色过 3:1 守卫（不产生色相漂移）；② 灰族同源
+///（tfg=t1、ANSI white=t1；brightBlack 与 t3 同色相 ≤10°，#theme-dedupe §6.4 放宽）；
+/// ③ 12 个彩色槽全部 ≥4.5:1。
 ///
-/// 另带一条**溯源守卫**：id 里的 islands 只是配对命名，这套色值是自主设计，
-/// 不能悄悄变成 islands-dark 的亮化拷贝（那正是 2026-10-07 删 onedark-light
-/// 等「硬凑档位」时要防的事）。
+    /// 另带一条**溯源守卫**：禁止把暗档亮化拷贝充当亮档。
 #[test]
-    fn islands_light_paper_rules_hold() {
-        let p = find("islands-light").expect("MTerm · 亮必须在色表里");
+    fn mterm_light_paper_rules_hold() {
+        let p = find("mterm-light").expect("MTerm · 亮必须在色表里");
         assert_eq!(p.kind, "mterm");
         // 溯源：与暗档不是同一套色换个明暗
-        let d = find("islands-dark").unwrap();
-        assert_ne!(p.root, d.root, "不能是 islands-dark 的底色换个明暗");
+        let d = find("mterm-dark").unwrap();
+        assert_ne!(p.root, d.root, "不能是 mterm-dark 的底色换个明暗");
         assert_ne!(p.ac, d.ac, "不能沿用暗档强调色");
         assert_ne!(p.ansi16, d.ansi16, "不能沿用暗档 ANSI（亮底 bright 档方向相反）");
+        // 门面共同红线（§6.4 五条：t3≥3.0 / t2≠t3 / panel==tbg / 语义同源 / g24 唯一）
+        assert_mterm_facade_rules(p);
         // ① 强调色守卫
         assert_eq!(p.ac, 0x1F766B);
         assert_eq!(fit_contrast(p.ac, p.panel, 3.0), p.ac, "强调色过守卫时不应被改色");
@@ -393,7 +472,12 @@ mod tests {
         // ② 灰族唯一：终端前景 = 正文一级灰；ANSI 白/亮黑并入同一灰族
         assert_eq!(p.tfg, p.t1, "term-fg 必须等于 t1（禁双灰）");
         assert_eq!(p.ansi16[7], p.t1, "ANSI 7 white = t1");
-        assert_eq!(p.ansi16[8], p.t3, "ANSI 8 brightBlack = t3（注释色）");
+        // #theme-dedupe §6.4：纪律从「a8 == t3」放宽为「同色相 ≤10°」——旧断言把
+        // 亮档一个 2.51:1 的 t3 固化成了标准色；放宽后意图（灰族同源）保留、
+        // 不合格值不再被保护。亮档 a8 保持上游 #A49E95、t3 另立 #968F85。
+        let dh = (hue_deg(p.ansi16[8]) - hue_deg(p.t3)).abs();
+        let dh = dh.min(360.0 - dh);
+        assert!(dh <= 10.0, "灰族同源：a8 与 t3 色相差 {dh:.1}° > 10°");
         // ③ 12 彩色槽 ≥ 4.5:1（槽 1-6 / 9-14；0/7/8/15 按终端惯例不判）
         for i in [1usize, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14] {
             let c = contrast(p.ansi16[i], p.tbg);
@@ -406,9 +490,57 @@ mod tests {
         }
     }
 
+    /// mterm 门面两套的**共同红线**（高保真 §6.4 定稿，2026-10-15）：
+    /// ① t3 对 panel ≥ 3.0 —— 辅助级文字的独立门槛，与正文级 4.5 分开计；
+    /// ② t2 与 t3 不得同值 —— 两级分工：t2 管未激活、t3 管占位符与注释；
+    /// ③ 面板底 == 终端底 —— 设计选择（终端与面板视觉连续），显式钉住防"顺手修正"；
+    /// ④ 语义色与同名 ANSI 槽 Δ色相 ≤30° —— 守住「界面 ↔ 终端同源」；
+    /// ⑤ group24 不与其余套逐位相同 —— 取色面板独此一家。
+    fn assert_mterm_facade_rules(p: &palettes::Palette) {
+        assert!(
+            contrast(p.t3, p.panel) >= 3.0,
+            "{}: t3 on panel 只有 {:.2}（< 3.0）",
+            p.id,
+            contrast(p.t3, p.panel)
+        );
+        assert_ne!(p.t2, p.t3, "{}: t2 与 t3 不得同值（分级分工）", p.id);
+        assert_eq!(p.panel, p.tbg, "{}: 面板底与终端底必须同色（设计选择）", p.id);
+        // ac↔ansi6（青）/ ok↔ansi2（绿）/ wr↔ansi3（黄）/ dg↔ansi1（红）
+        for (name, sem, idx) in [("ac", p.ac, 6usize), ("ok", p.ok, 2), ("wr", p.wr, 3), ("dg", p.dg, 1)] {
+            let dh = (hue_deg(sem) - hue_deg(p.ansi16[idx])).abs();
+            let dh = dh.min(360.0 - dh);
+            assert!(
+                dh <= 30.0,
+                "{}: {} 与 ansi{} 色相差 {dh:.0}° > 30°（界面↔终端同源被破坏）",
+                p.id,
+                name,
+                idx
+            );
+        }
+        for other in PALETTES.iter().filter(|o| o.id != p.id) {
+            assert_ne!(p.group24, other.group24, "{} 的取色面板与 {} 逐位相同", p.id, other.id);
+        }
+    }
+
     #[test]
-    fn defaults_are_graphite() {
-        assert_eq!(default_for(true), "graphite-dark");
-        assert_eq!(default_for(false), "graphite-light");
+    fn mterm_dark_facade_rules_hold() {
+        let p = find("mterm-dark").unwrap();
+        assert_mterm_facade_rules(p);
+        // §4.7 体检表：12 终端彩槽全部 ≥4.5:1（全表最严的一条）
+        for i in [1usize, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14] {
+            let c = contrast(p.ansi16[i], p.tbg);
+            assert!(c >= 4.5, "ANSI{i}={:06X} on tbg 只有 {c:.2}", p.ansi16[i]);
+        }
+        // 频道 4 槽在 tab 底与终端底双侧 ≥3.0（全表独有的设计资产）
+        for c in p.channel {
+            assert!(contrast(c, p.tab) >= 3.0, "频道色 {c:06X} on tab 不足 3.0");
+            assert!(contrast(c, p.tbg) >= 3.0, "频道色 {c:06X} on tbg 不足 3.0");
+        }
+    }
+
+    #[test]
+    fn defaults_are_mterm() {
+        assert_eq!(default_for(true), "mterm-dark");
+        assert_eq!(default_for(false), "mterm-light");
     }
 }

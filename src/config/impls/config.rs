@@ -50,7 +50,7 @@ fn normalize_hex_color(value: &str) -> Option<String> {
 /// a left sidebar, resource panel docked right, 15% wallpaper transparency, and
 /// marks the migration done so it isn't re-applied.
 /// (#theme-split rev4) 壁纸默认改为**无**（§0：新用户装完是"幻想3048+被反写的
-/// dark"的坑）+ 跟随系统 + graphite 族默认主题（已确认决策：新老用户一律新底色）。
+/// dark"的坑）+ 跟随系统 + mterm 门面默认主题（#theme-dedupe 2026-10-15：新老用户一律新底色）。
 fn fresh_config() -> ConfigFile {
     ConfigFile {
         wallpaper: String::new(),
@@ -110,17 +110,17 @@ fn migrate_defaults(cfg: &mut ConfigFile) -> bool {
     // rev 4 (#theme-split): 主题/强调色/壁纸三层解耦（§5）。只动「一直在默认
     // 值上」的项；用户显式选过的（含任意 builtin/自定义壁纸）原样保留。
     if cfg.defaults_rev < 4 {
-        // 深浅偏好 → 具体主题 id（graphite 族，已确认决策：一律新底色）。
+        // 深浅偏好 → 具体主题 id（mterm 门面，#theme-dedupe 2026-10-15：一律新底色）。
         // 空/"system" = 跟随系统（follow_system = true），theme 留空运行时解析。
         // （follow_system 的 serde 默认是 true——dark/light 分支必须显式关掉。）
         if cfg.theme.is_empty() {
             match cfg.theme_pref.as_str() {
                 "dark" => {
-                    cfg.theme = "graphite-dark".to_string();
+                    cfg.theme = "mterm-dark".to_string();
                     cfg.follow_system = false;
                 }
                 "light" => {
-                    cfg.theme = "graphite-light".to_string();
+                    cfg.theme = "mterm-light".to_string();
                     cfg.follow_system = false;
                 }
                 _ => cfg.follow_system = true,
@@ -656,6 +656,13 @@ impl ConfigStore {
     }
     pub fn set_follow_system(&mut self, on: bool) {
         self.cache.follow_system = on;
+    }
+    /// 「常用主题」id 列表（#theme-dedupe：速选面板常用区；上限 8 由回调侧校验）。
+    pub fn favorite_themes(&self) -> Vec<String> {
+        self.cache.favorite_themes.clone()
+    }
+    pub fn set_favorite_themes(&mut self, list: Vec<String>) {
+        self.cache.favorite_themes = list;
     }
     /// 强调色三态："follow" | "preset" | "custom"。
     pub fn accent_mode(&self) -> &str {
@@ -2418,7 +2425,7 @@ mod tests {
 
     #[test]
     fn wallpaper_defaults_follow_the_migration_chain() {
-        // (#theme-split rev4) Fresh install: 默认无壁纸 + 跟随系统 + graphite 族
+        // (#theme-split rev4) Fresh install: 默认无壁纸 + 跟随系统 + mterm 门面
         // + 三滑杆默认值（§0/§5：零操作即正确）。
         let fresh = fresh_config();
         assert_eq!(fresh.wallpaper, "");
@@ -2452,7 +2459,7 @@ mod tests {
     #[test]
     fn rev4_migrates_theme_pref_and_splits_overlay() {
         // (#theme-split rev4 §5) 一直在默认值上的老用户：
-        // theme_pref=dark → graphite-dark；overlay → panel(旧值)+term(1.0)；
+        // theme_pref=dark → mterm-dark；overlay → panel(旧值)+term(1.0)；
         // 默认壁纸 → 无。
         let mut cfg: ConfigFile = serde_json::from_str(
             r#"{"theme_pref":"dark","defaults_rev":3}"#,
@@ -2461,17 +2468,17 @@ mod tests {
         // serde 默认 wallpaper = builtin:tech（从未挑过）。
         assert_eq!(cfg.wallpaper, "builtin:tech");
         assert!(migrate_defaults(&mut cfg));
-        assert_eq!(cfg.theme, "graphite-dark");
+        assert_eq!(cfg.theme, "mterm-dark");
         assert!(!cfg.follow_system);
         assert!((cfg.panel_alpha - 0.85).abs() < f32::EPSILON);
         assert!((cfg.term_alpha - 1.0).abs() < f32::EPSILON);
         assert_eq!(cfg.wallpaper, "");
 
-        // 亮色偏好 → graphite-light。
+        // 亮色偏好 → mterm-light。
         let mut cfg: ConfigFile =
             serde_json::from_str(r#"{"theme_pref":"light","defaults_rev":3}"#).unwrap();
         assert!(migrate_defaults(&mut cfg));
-        assert_eq!(cfg.theme, "graphite-light");
+        assert_eq!(cfg.theme, "mterm-light");
 
         // 跟随系统 → theme 留空 + follow_system=true。
         let mut cfg: ConfigFile =

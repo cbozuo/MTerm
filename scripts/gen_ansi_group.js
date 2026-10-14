@@ -1,5 +1,5 @@
 // ═════════════════════════════════════════════════════════════════════
-// 补全设计稿缺口：38 套主题的「终端 ANSI 16 色」+「分组色 24 色」
+// 补全设计稿缺口：28 套主题的「终端 ANSI 16 色」+「分组色 24 色」
 //
 // 为什么要有这个文件：theme-wallpaper-split 设计稿 §3 调整⑤要求
 // "ANSI16_DARK/LIGHT 两套 → 按主题查表"，分组色要求 "每套主题的 24 色
@@ -213,17 +213,18 @@ const OFFICIAL_ANSI = {
            '#5c6370', '#e06c75', '#98c379', '#d19a66', '#61afef', '#c678dd', '#56b6c2', '#ffffff'],
     tbg: null, tfg: null,
   },
-  // JetBrains：IDEA 的终端 ANSI 不随 UI 明暗切换（IDEA 实际行为），
-  // idea-dark/idea-light 共用同一套彩色槽（iTerm2 官方收录 "JetBrains Darcula"），
-  // 仅背景/前景随各套 tokens。亮底上部分彩槽对比度低——IDEA 本身如此，
-  // 如实记录。darcula 已删（与 idea-dark 重叠，New UI 是现代默认）。
-  'idea-dark': {
-    src: 'JetBrains Darcula 终端色（iTerm2 官方收录版）；IDEA 行为：明暗共用 ANSI',
+  // JetBrains：Darcula 的终端 ANSI 不随 UI 明暗切换（JetBrains IDE 行为），
+  // darcula-dark/darcula-light 共用同一套彩色槽（iTerm2 官方收录 "JetBrains Darcula"），
+  // 仅背景/前景随各套 tokens。亮底上部分彩槽对比度低——IDE 本身如此，如实记录。
+  // （2026-10-15 #theme-dedupe：原 idea-* 物归原主改名为 darcula-*；单档 darcula
+  //   残留数据一并清理，「与 idea-dark 重叠」的旧排除理由随之消失。）
+  'darcula-dark': {
+    src: 'JetBrains Darcula 终端色（iTerm2 官方收录版）；明暗档共用 ANSI（JetBrains IDE 行为）',
     ansi: ['#000000', '#fa8355', '#186e00', '#c2c300', '#4581eb', '#fa54ff', '#33c2c1', '#adadad',
            '#555555', '#fb7172', '#67ff4f', '#ffff00', '#6d9df1', '#fb82ff', '#60d3d1', '#eeeeee'],
     tbg: null, tfg: null,              // 用 tokens 的
   },
-  'idea-light': { sameAs: 'idea-dark' },
+  'darcula-light': { sameAs: 'darcula-dark' },
 
   // ══════ 2026-10-07 主题重构新增 11 套（全部 MIT 实测确认） ══════
   // rebelot/kanagawa.nvim 官方 palette + alacritty-theme kanagawa_wave
@@ -254,7 +255,8 @@ const OFFICIAL_ANSI = {
     tbg: '#ffffff', tfg: '#1f2328',
   },
   // bwya77/vscode-dark-islands（MIT）官方 themes/islands-dark.json 的 terminal 色
-  'islands-dark': {
+  // （2026-10-15 #theme-dedupe：id 改名 mterm-dark —— id 对外是产品名；上游文件名保留）
+  'mterm-dark': {
     src: 'Islands Dark 官方主题（bwya77/vscode-dark-islands）terminal 色原样',
     ansi: ['#181a1d', '#f75464', '#73b00a', '#e8a33e', '#548af7', '#c77dbb', '#2aacb8', '#bcbec4',
            '#6f737a', '#f9667a', '#8ccf15', '#f0b95e', '#7cacf8', '#d79fd2', '#42c6d2', '#d4d5d9'],
@@ -312,6 +314,7 @@ const OFFICIAL_ANSI = {
   // dracula-light（Alucard）：官方明说不是亮色档，挂名困惑
   // onedark-light：纯自造（Atom 无 One Dark 亮档），违反"不硬凑档位"
   // darcula：与 idea-dark 重叠（ANSI 完全共用），New UI 是现代默认
+  //   （2026-10-15 #theme-dedupe：idea-* 物归原主改名 darcula-*，本单档残留已清；此条仅存史）
   // everforest-light：官方灰阶撑不起正文对比（待定②收口，只推暗档）
   // olive-dark/light：Radix 六中性系中独特性最弱（绿调有 sage、暖调有 sand）
 };
@@ -326,10 +329,11 @@ const OFFICIAL_ANSI = {
 //   ③ cyan 与强调色同族（整屏只有一种色相在说话）；
 //   ④ 亮底上 bright 档取**更深**同色相（明度与暗底相反，这是亮色终端的通例）。
 const OWN_ANSI = {
-  // MTerm · 亮「素纸」—— id 取 islands-light 与暗档配对（2026-10-11 用户决策）。
+  // MTerm · 亮「素纸」—— id 取 mterm-light 与暗档配对（2026-10-11 用户决策；
+  // 2026-10-15 #theme-dedupe 随门面改名 mterm-*）。
   // ⚠️ 上游 Islands Dark **没有亮档**：这个 id 只是配对命名，色值是 MTerm 自主设计。
-  'islands-light': {
-    src: 'MTerm 自有设计（MTerm · 亮 / paper-neutral-2026-10-11 稿；id 与 islands-dark 配对，非上游移植）：饱和收一档、灰族与界面同源、cyan↔强调色 #1f766b 同族；亮底 bright 档为更深同色相',
+  'mterm-light': {
+    src: 'MTerm 自有设计（MTerm · 亮 / paper-neutral-2026-10-11 稿；id 与 mterm-dark 配对，非上游移植）：饱和收一档、灰族与界面同源、cyan↔强调色 #1f766b 同族；亮底 bright 档为更深同色相',
     ansi: ['#45423d', '#b4483f', '#4f7d4a', '#8a6218', '#4a6f96', '#83558a', '#1c7a72', '#33302c',
            '#a49e95', '#a33f36', '#3d6b36', '#7a5311', '#2f5580', '#7a4a80', '#17706a', '#1f1c19'],
     tbg: '#faf8f4', tfg: '#33302c',
@@ -413,30 +417,259 @@ const GROUP_LIGHT = ['#dc2626','#ea580c','#d97706','#ca8a04','#65a30d','#16a34a'
                      '#7c3aed','#9333ea','#c026d3','#db2777','#e11d48','#f43f5e',
                      '#475569','#334155','#1e293b','#57534e','#78716c','#a8a29e'];
 
+// ── 定稿 ANSI：与「上游原值」解耦的 28 套（#theme-dedupe 2026-10-15 阶段一）──
+// 两类来源：① 现有套经 O3（bright 档位移）/ O5（亮档彩槽对比度）修正后的定稿；
+//           ② 新增亮档（dracula-light / everforest-light / onedark-light）的自有定稿。
+// src 即最终溯源（含修正记录）。未列于此的套走上游原值路径（OFFICIAL/OWN/RADIX 派生）。
+// ── 定稿 ANSI：与「上游原值」解耦的 28 套（#theme-dedupe 2026-10-15 阶段一）──
+// 两类来源：① 现有套经 O3（bright 档位移）/ O5（亮档彩槽对比度）修正后的定稿；
+//           ② 新增亮档（dracula-light / everforest-light / onedark-light）的自有定稿。
+// src 即最终溯源（含修正记录）。未列于此的套走上游原值路径（OFFICIAL/OWN/RADIX 派生）。
+// ── 定稿 ANSI：与「上游原值」解耦的 28 套（#theme-dedupe 2026-10-15 阶段一）──
+// 两类来源：① 现有套经 O3（bright 档位移）/ O5（亮档彩槽对比度）修正后的定稿；
+//           ② 新增亮档（dracula-light / everforest-light / onedark-light）的自有定稿。
+// src 即最终溯源（含修正记录）。未列于此的套走上游原值路径（OFFICIAL/OWN/RADIX 派生）。
+// ── 定稿 ANSI：与「上游原值」解耦的 28 套（#theme-dedupe 2026-10-15 阶段一）──
+// 两类来源：① 现有套经 O3（bright 档位移）/ O5（亮档彩槽对比度）修正后的定稿；
+//           ② 新增亮档（dracula-light / everforest-light / onedark-light）的自有定稿。
+// src 即最终溯源（含修正记录）。未列于此的套走上游原值路径（OFFICIAL/OWN/RADIX 派生）。
+const REVISED_ANSI = {
+  'mterm-dark': {
+    src: "Islands Dark 官方主题（bwya77/vscode-dark-islands）terminal 色原样；#theme-dedupe 定稿（修正 a6/a14）",
+    ansi: [
+    '#181A1D', '#F75464', '#73B00A', '#E8A33E',
+    '#548AF7', '#C77DBB', '#1FC8B4', '#BCBEC4',
+    '#6F737A', '#F9667A', '#8CCF15', '#F0B95E',
+    '#7CACF8', '#D79FD2', '#7CE0D4', '#D4D5D9',
+    ],
+  },
+  'catppuccin-light': {
+    src: "官方 catppuccin/kitty latte.conf；#theme-dedupe 定稿（修正 a2/a3/a5/a10/a11/a13）",
+    ansi: [
+    '#5C5F77', '#D20F39', '#429136', '#C5832B',
+    '#1E66F5', '#CE6FB9', '#179299', '#ACB0BE',
+    '#6C6F85', '#D20F39', '#429136', '#C5832B',
+    '#1E66F5', '#CE6FB9', '#179299', '#BCC0CC',
+    ],
+  },
+  'rosepine-light': {
+    src: "官方 rose-pine/alacritty dist（Dawn）；#theme-dedupe 定稿（修正 a3/a6/a11/a14）",
+    ansi: [
+    '#F2E9E1', '#B4637A', '#286983', '#CC8D3C',
+    '#56949F', '#907AA9', '#BD7679', '#575279',
+    '#9893A5', '#B4637A', '#286983', '#CC8D3C',
+    '#56949F', '#907AA9', '#BD7679', '#575279',
+    ],
+  },
+  'everforest-dark': {
+    src: "官方 palette.md medium + everforest_dark 终端移植核对；#theme-dedupe 定稿（修正 a8/a9/a10/a11/a12/a13/a14/a15）",
+    ansi: [
+    '#475258', '#E67E80', '#A7C080', '#DBBC7F',
+    '#7FBBB3', '#D699B6', '#83C092', '#D3C6AA',
+    '#646E73', '#EA9394', '#B5CA94', '#E1C793',
+    '#93C6BF', '#DDA9C2', '#97CAA3', '#DACFB8',
+    ],
+  },
+  'gruvbox-material-dark': {
+    src: "官方 medium palette + alacritty gruvbox_material_medium_dark；#theme-dedupe 定稿（修正 a8/a9/a10/a11/a12/a13/a14/a15）",
+    ansi: [
+    '#3C3836', '#EA6962', '#A9B665', '#D8A657',
+    '#7DAEA3', '#D3869B', '#89B482', '#D4BE98',
+    '#5B5856', '#ED817B', '#B7C27E', '#DEB472',
+    '#92BBB2', '#DA99AB', '#9CC096', '#DBC8A8',
+    ],
+  },
+  'gruvbox-material-light': {
+    src: "官方 medium light palette + alacritty gruvbox_material_medium_light；#theme-dedupe 定稿（修正 a8/a9/a10/a11/a12/a13/a14/a15）",
+    ansi: [
+    '#654735', '#C14A4A', '#6C782E', '#B47109',
+    '#45707A', '#945E80', '#4C7A5D', '#EEE0B7',
+    '#553C2D', '#A23E3E', '#5B6527', '#975F08',
+    '#3A5E66', '#7C4F6C', '#40664E', '#C8BC9A',
+    ],
+  },
+  'ayu-light': {
+    src: "官方收录移植（alacritty-theme ayu_light）；#theme-dedupe 定稿（修正 a2/a3/a6/a9/a10/a11/a12/a13/a14）",
+    ansi: [
+    '#010101', '#E7666A', '#7A9E30', '#D19952',
+    '#4196DF', '#9870C3', '#53A889', '#C1C1C1',
+    '#343434', '#D4898D', '#93BE39', '#D5AC77',
+    '#6AA0CF', '#A38BBF', '#71B59C', '#DBDBDB',
+    ],
+  },
+  'flexoki-dark': {
+    src: "官方 flexoki 终端移植（alacritty-theme flexoki，README 同源）；#theme-dedupe 定稿（修正 a1/a4/a5）",
+    ansi: [
+    '#100F0F', '#BD554D', '#66800B', '#AD8301',
+    '#487AB3', '#B15486', '#24837B', '#FFFCF0',
+    '#100F0F', '#D14D41', '#879A39', '#D0A215',
+    '#4385BE', '#CE5D97', '#3AA99F', '#FFFCF0',
+    ],
+  },
+  'flexoki-light': {
+    src: "官方 flexoki-light 终端移植（alacritty-theme，README 同源）；#theme-dedupe 定稿（修正 a3/a6/a8/a9/a10/a11/a12/a13/a14/a15）",
+    ansi: [
+    '#100F0F', '#D14D41', '#879A39', '#AD8814',
+    '#4385BE', '#CE5D97', '#328D85', '#FFFCF0',
+    '#0D0D0D', '#B04137', '#718130', '#AF8812',
+    '#3870A0', '#AD4E7F', '#318E86', '#D6D4CA',
+    ],
+  },
+  'solarized-dark': {
+    src: "官方 solarized spec 映射表（dark）；#theme-dedupe 定稿（修正 a10）",
+    ansi: [
+    '#073642', '#DC322F', '#859900', '#B58900',
+    '#268BD2', '#D33682', '#2AA198', '#EEE8D5',
+    '#002B36', '#CB4B16', '#738486', '#657B83',
+    '#839496', '#6C71C4', '#93A1A1', '#FDF6E3',
+    ],
+  },
+  'darcula-dark': {
+    src: "JetBrains Darcula 终端色（iTerm2 官方收录版）；IDEA 行为：明暗共用 ANSI；#theme-dedupe 定稿（修正 a2）",
+    ansi: [
+    '#000000', '#FA8355', '#3C8228', '#C2C300',
+    '#4581EB', '#FA54FF', '#33C2C1', '#ADADAD',
+    '#555555', '#FB7172', '#67FF4F', '#FFFF00',
+    '#6D9DF1', '#FB82FF', '#60D3D1', '#EEEEEE',
+    ],
+  },
+  'solarized-light': {
+    src: "官方 spec + iTerm2 Solarized Light 核对；#theme-dedupe 定稿（修正 a0/a2/a3/a6/a7/a8/a9/a10/a11/a12/a13/a14/a15）",
+    ansi: [
+    '#56696F', '#DC322F', '#82970A', '#AF880A',
+    '#268BD2', '#D33682', '#2F9E96', '#657B83',
+    '#93A1A1', '#C93E3C', '#7D931D', '#A3861D',
+    '#3088C5', '#C14182', '#389893', '#EEE8D5',
+    ],
+  },
+  'darcula-light': {
+    src: "JetBrains Darcula 终端色（iTerm2 官方收录版）；IDEA 行为：明暗共用 ANSI（idea-light 与 idea-dark 共用，IDEA 行为：ANSI 不随明暗切换）；#theme-dedupe 定稿（修正 a0/a1/a3/a5/a6/a7/a8/a9/a10/a11/a12/a13/a14/a15）",
+    ansi: [
+    '#1A1A1D', '#D8744D', '#186E00', '#949509',
+    '#4581EB', '#E850ED', '#2E9E9D', '#1E1F22',
+    '#8F8F91', '#BA6646', '#196105', '#81820D',
+    '#3F71CB', '#C848CD', '#2B8A89', '#4B4C4E',
+    ],
+  },
+  'dracula-light': {
+    src: "Dracula 官方 Alucard 色板重制（#theme-dedupe 定稿：明暗配对补齐，亮底对比度校正）",
+    ansi: [
+    '#1A1A1A', '#CF3F3F', '#14710A', '#846E15',
+    '#7057C7', '#B3445E', '#036A96', '#1F1F1F',
+    '#8F8D85', '#B33A3A', '#16640D', '#746117',
+    '#634EAC', '#9B3E54', '#075E83', '#CFCFDE',
+    ],
+  },
+  'everforest-light': {
+    src: "Everforest 官方亮档重制（#theme-dedupe 定稿：明暗配对补齐，亮底对比度校正）",
+    ansi: [
+    '#4E5A61', '#F85552', '#82951A', '#AB8B2D',
+    '#3A94C5', '#CB69AF', '#3B9E7A', '#5C6A72',
+    '#ADB0AB', '#DF5857', '#7C8E28', '#9E8638',
+    '#3F8DB8', '#B969A5', '#409679', '#A6B0A0',
+    ],
+  },
+  'onedark-light': {
+    src: "GitHub 官方 VS Code 主题 Light Default terminal 色（Primer 体系）；#theme-dedupe 定稿（修正 a0/a1/a2/a3/a4/a5/a6/a7/a8/a9/a10/a11/a12/a13/a14/a15）",
+    ansi: [
+    '#303138', '#E45649', '#50A14F', '#986801',
+    '#4078F2', '#A626A4', '#0184BC', '#383A42',
+    '#383A42', '#C85248', '#4C914D', '#89610B',
+    '#3F6ED6', '#942994', '#0A78A8', '#A0A1A7',
+    ],
+  },
+};
+
+// ── 门面/重制套的分组色 24（#theme-dedupe O4 定稿）──
+// mterm 两套 = 门面专属设计（以自身 ANSI 色相为锚点，24 色无重复、全部 ≥3.0:1 on panel）；
+// 其余三套 = 亮档重制同批设计。未列于此的套走 GROUP_DARK/LIGHT + fitL 原路径。
+// ── 门面/重制套的分组色 24（#theme-dedupe O4 定稿）──
+// mterm 两套 = 门面专属设计（以自身 ANSI 色相为锚点，24 色无重复、全部 ≥3.0:1 on panel）；
+// 其余三套 = 亮档重制同批设计。未列于此的套走 GROUP_DARK/LIGHT + fitL 原路径。
+// ── 门面/重制套的分组色 24（#theme-dedupe O4 定稿）──
+// mterm 两套 = 门面专属设计（以自身 ANSI 色相为锚点，24 色无重复、全部 ≥3.0:1 on panel）；
+// 其余三套 = 亮档重制同批设计。未列于此的套走 GROUP_DARK/LIGHT + fitL 原路径。
+const FINAL_GROUP24 = {
+  'mterm-dark': [
+    '#EABD7B', '#DAA558', '#C88F3C', '#C1EA7B',
+    '#AADA58', '#95C83C', '#7BE0EA', '#58CFDA',
+    '#3CBCC8', '#7BA0EA', '#5883DA', '#3C6AC8',
+    '#D47BEA', '#C058DA', '#AC3CC8', '#EA7BD8',
+    '#DA58C5', '#C83CB1', '#EA7BAD', '#DA5892',
+    '#C83C7B', '#EA7B86', '#DA5865', '#C83C4A',
+  ],
+  'mterm-light': [
+    '#C13E33', '#973830', '#73302B', '#B78831',
+    '#977330', '#735A2B', '#969428', '#96942F',
+    '#73732B', '#38A52C', '#3A9730', '#32732B',
+    '#2BA096', '#30978E', '#2B736D', '#3379C1',
+    '#306297', '#2B4E73', '#AF33C1', '#8A3097',
+    '#6A2B73', '#C13373', '#97305E', '#732B4B',
+  ],
+  'onedark-light': [
+    '#C82C1E', '#A92519', '#8A1E14', '#37A035',
+    '#329130', '#287728', '#B38014', '#AE7D13',
+    '#8E6610', '#1751CF', '#1344AE', '#10388E',
+    '#BB2BB9', '#9E249C', '#811D7F', '#1798CF',
+    '#1380AE', '#10688E', '#BA2C67', '#9D2557',
+    '#801E47', '#37A126', '#359D25', '#2B801E',
+  ],
+  'solarized-light': [
+    '#C42421', '#A61E1C', '#871917', '#7C8F11',
+    '#829711', '#7B8E10', '#A68313', '#AE8A13',
+    '#8E7010', '#2381C2', '#1E6DA4', '#185986',
+    '#BC2970', '#9F235F', '#821C4D', '#2E9991',
+    '#2C958E', '#247A74', '#BA2C9C', '#9D2584',
+    '#801E6B', '#5D9623', '#629D25', '#50801E',
+  ],
+  'darcula-light': [
+    '#BC5229', '#9F4623', '#82391C', '#33A613',
+    '#31A212', '#2B8E10', '#8F8F11', '#969711',
+    '#8D8E10', '#1759CF', '#134BAE', '#103E8E',
+    '#C917CF', '#A913AE', '#8A108E', '#2D9A99',
+    '#2C9695', '#247A7A', '#BA2C93', '#9D257C',
+    '#801E65', '#5DA126', '#5A9D25', '#49801E',
+  ],
+  'dracula-light': [
+    '#B82E2E', '#9B2727', '#7E2020', '#21A613',
+    '#20A212', '#1C8E10', '#AB8E1C', '#A78B1B',
+    '#887216', '#5339AC', '#463091', '#392877',
+    '#1798CF', '#1380AE', '#10688E', '#BA2C67',
+    '#9D2557', '#801E47', '#37A126', '#359D25',
+    '#2B801E', '#412CBA', '#37259D', '#2D1E80',
+  ],
+  'everforest-light': [
+    '#CF1A17', '#AE1613', '#8E1210', '#7F911A',
+    '#7D8E19', '#758717', '#9D802A', '#997D28',
+    '#7D6621', '#3485B1', '#2C7096', '#245C7A',
+    '#AC398B', '#913076', '#772860', '#319571',
+    '#30916E', '#28775A', '#AE2CBA', '#93259D',
+    '#781E80', '#758C21', '#7C9222', '#6C801E',
+  ],
+};
+
 // ── 组装（2026-10-11 38 预设 + 2 迁移档） ───────────────────
 const EXTRA = JSON.parse(fs.readFileSync(path.join(__dirname, '_extra-themes.json'), 'utf8'));
 const SKIP = new Set([
   'gruvbox-dark', 'gruvbox-light',      // 授权未声明（→ gruvbox-material 替代）
-  'dracula-light',                       // Alucard 非亮色档
-  'onedark-light',                       // 纯自造亮档
-  'darcula',                             // 与 idea-dark 重叠
-  'everforest-light',                    // 官方灰阶撑不起正文（只推暗档）
+  // （2026-10-15 #theme-dedupe：dracula-light / onedark-light / everforest-light
+  //   三套解封 —— 明暗配对补齐，定稿见下方 REVISED_ANSI。）
   'olive-dark', 'olive-light',           // 与 sage/sand 色温重叠
 ]);
 const GROUPS_DEF = [
-  ['radix', ['graphite', 'slate', 'mauve', 'sage', 'sand']],
-  ['brand', ['github-dark', 'github-light', 'idea-dark', 'idea-light', 'islands-dark', 'islands-light']],
+  ['radix', ['graphite']],
+  ['brand', ['darcula-dark', 'darcula-light', 'mterm-dark', 'mterm-light']],
   ['terminal', ['dracula', 'catppuccin', 'solarized', 'kanagawa', 'ayu', 'gruvbox-material',
-                'tokyonight', 'nord', 'everforest', 'rosepine', 'onedark', 'flexoki']],
+                'nord', 'everforest', 'rosepine', 'onedark', 'flexoki']],
 ];
 // 变体名不对称的套（默认对称 dark/light）：
 //   kanagawa → wave（暗）/ lotus（亮，官方命名）
 //   ayu → dark / mirage / light（官方三档，mirage 为中间档）
-const VARIANTS = { kanagawa: ['wave', 'lotus'], ayu: ['dark', 'mirage', 'light'] };
+const VARIANTS = { kanagawa: ['wave', 'lotus'], ayu: ['mirage', 'light'] };
 
 const out = { _meta: {
-  generated: '2026-10-11',
-  purpose: '主题重构后全量：38 预设（Radix 10 + 品牌官方 4 + MTerm 自有 2 + 经典终端 22）+ 2 迁移档的 ANSI 16 色 + 分组色 24 色 + 频道色',
+  generated: '2026-10-15',
+  purpose: '主题重构后全量：28 套（#theme-dedupe 定稿：MTerm 门面 + 上游明暗配对套）+ 2 迁移档的 ANSI 16 色 + 分组色 24 色 + 频道色',
   ansi_sources: {}, group_rule: '基准=theme.slint group-color-dark/light 24 色，保 H/S 二分 L 至 on(panel) ≥ 3.0:1',
   ansi_check: '12 彩色槽(1-6,9-14) ≥ 4.5:1 为达标线；0/7/8/15 槽按终端惯例只记录不判失败',
 } };
@@ -453,13 +686,17 @@ for (const [_grp, ids] of GROUPS_DEF) {
       if (!tokens) { console.error('缺 tokens:', id); continue; }
       const tbg = tokens.tbg, tfg = tokens.tfg;
       let ansi, src, notes = [];
+      // #theme-dedupe 定稿覆盖（优先于上游原值 / 自有设计 / Radix 派生三条路径）
+      const rev = REVISED_ANSI[id];
 
-      if (OFFICIAL_ANSI[id]) {
+      if (rev) {
+        ansi = rev.ansi; src = rev.src;
+      } else if (OFFICIAL_ANSI[id]) {
         const o = OFFICIAL_ANSI[id];
         if (o.sameAs) {
           const real = OFFICIAL_ANSI[o.sameAs];
-          ansi = real.ansi; src = real.src + '（' + id + ' 与 ' + o.sameAs + ' 共用，IDEA 行为：ANSI 不随明暗切换）';
-          notes.push('IDEA 亮/暗共用同一套终端 ANSI（IDEA 实际行为）；' + (lum(tbg) > 0.35 ? '亮底上部分彩槽对比度低于 4.5，是 IDEA 本身观感，见校验' : ''));
+          ansi = real.ansi; src = real.src + '（' + id + ' 与 ' + o.sameAs + ' 共用，明暗档 ANSI 不随明暗切换：JetBrains IDE 行为）';
+          notes.push('Darcula 明暗档共用同一套终端 ANSI（JetBrains IDE 行为）；' + (lum(tbg) > 0.35 ? '亮底上部分彩槽对比度低于 4.5，是 IDE 本身观感，见校验' : ''));
         } else {
           ansi = o.ansi; src = o.src;
           if (id === 'nord-light' || id === 'onedark-light' || id === 'kanagawa-lotus')
@@ -483,7 +720,8 @@ for (const [_grp, ids] of GROUPS_DEF) {
 
       // 分组色：基准按明暗方向取，保 H/S 调 L 至 on(panel) ≥ 3.0
       const gBase = tokens.m === '暗' ? GROUP_DARK : GROUP_LIGHT;
-      const group = gBase.map(c => fitL(c, tokens.panel, 3.0));
+      // #theme-dedupe：门面 / 重制套直接取定稿 24 色，其余走上游基准 + fitL 达标
+      const group = FINAL_GROUP24[id] ? [...FINAL_GROUP24[id]] : gBase.map(c => fitL(c, tokens.panel, 3.0));
 
       // 校验
       const fails = [], mins = [];
@@ -497,7 +735,7 @@ for (const [_grp, ids] of GROUPS_DEF) {
 
       out[id] = {
         f: tokens.f, m: tokens.m, ansi16: ansi, group24: group,
-        ch: tokens.ch, channel: makeChannel(tokens.ch, tokens.tab, tbg),
+        ch: tokens.ch, channel: [...tokens.ch],   // #theme-dedupe：频道色 = 定稿数据（不再走 makeChannel 二次修正）
         tab: tokens.tab, src, notes, fails,
       };
       out._meta.ansi_sources[id] = src;
@@ -543,7 +781,7 @@ for (const [id, mk] of Object.entries(MEAT)) {
 fs.writeFileSync(path.join(__dirname, '_ansi-group.json'), JSON.stringify(out, null, 1), 'utf8');
 
 // 控制台报告
-console.log('══ 38 套 ANSI / 分组色生成完毕 → scripts/_ansi-group.json ══\n');
+console.log('══ 28 套 ANSI / 分组色生成完毕 → scripts/_ansi-group.json ══\n');
 for (const r of report) {
   const flag = r.fails.length ? '✗' : '✓';
   console.log(`${flag} ${r.id.padEnd(18)} ${r.name.padEnd(10)} 彩槽最低对比 ${r.minC.toFixed(2)}  分组色未达标 ${r.gFails}`);

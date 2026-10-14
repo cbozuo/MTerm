@@ -294,7 +294,7 @@ component GroupColorField inherits VerticalLayout {
     // (#no-color-icon 2026-10-02) 原为 `cut`（剪刀）—— Material content_cut 的
     // 遗留，与"清除颜色"无关（用户截图）。现为「色样 + 出头斜线」，见 make-icons.sh 注释。
     glyph: "no-color";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                 Text {
@@ -629,14 +629,14 @@ component TopbarBtn inherits Rectangle {
         spacing: 6px;
         Icon {
     glyph: root.icon;
-    tint: root.active ? Theme.accent
-                 : ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+    // (#theme-dedupe §5 B 类) 常态 = 前景色（悬停由 bg-hover 底色表达，
+    // 文字提亮只是第二重信号 —— 去掉了 hover 提亮分支）
+    tint: root.active ? Theme.accent : Theme.text-primary;
     size: 16px;
 }
         Text {
             text: root.label;
-            color: root.active ? Theme.accent
-                : ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+            color: root.active ? Theme.accent : Theme.text-primary;   // (#theme-dedupe §5 B 类)
             font-size: Theme.fs-sm;
             vertical-alignment: center;
         }
@@ -1212,9 +1212,14 @@ export component AppWindow inherits Window {
     in-out property <length> theme-pick-y: 0px;
     in-out property <string> theme-name <=> Theme.theme-name;
     in-out property <string> theme-pick-search: "";
+    // (#theme-dedupe §5 键盘) 浮层内键盘选中的行索引（-1 = 未选；↑↓ 首次按下
+    // 从 -1 出发落到首个非组头行；打开浮层时重置）。
+    in-out property <int> theme-key-idx: -1;
     // (#theme-search-empty) 搜索过滤后是否有命中行（Rust 在 theme-search-filter
     // 里回写）——浮层据此显示「未找到匹配的主题」占位。
     in-out property <bool> theme-has-match: true;
+    // (#theme-dedupe §5) 搜索行右端的目录总数（Rust 启动时写入 = 色表套数）。
+    in property <int> theme-total: 0;
     // (#sync-dialog-r2 2026-10-08) 同步输入的状态/回调已拆到
     // ui/sync_input_dialog.slint 的 **SyncInputState** 全局 + SyncDialogHost
 
@@ -1482,11 +1487,18 @@ export component AppWindow inherits Window {
     callback resolve-color(string /* hex */) -> color;
     // (#theme-split) toggle-theme 退役：顶栏改主题速选面板（§3-调整③）。
     // set-theme = 速选面板/设置页的选主题入口；cycle-theme = Ctrl+Alt+T 在
-    // graphite 暗/亮间快速翻转。
+    // mterm 暗/亮间快速翻转。
     callback set-theme(string /* theme id */);
     callback preview-theme(string /* theme id — 悬停实时预览 */);
     callback theme-search-filter(string /* query */);   // Rust 重发过滤后的 theme-entries
     callback cycle-theme();
+    // (#theme-dedupe §5) 速选面板：反向（亮↔暗 = 切当前套的明暗配对档）/
+    // 「常用」增删 / 键盘 ↑↓ 行移动（返回新的行索引；Enter 落盘复用 set-theme）。
+    callback invert-theme();
+    callback toggle-favorite-theme(string /* theme id */);
+    callback theme-key-move(int /* 当前行索引 */, int /* ±1 */) -> int;
+    // 「常用」写满 8 套时的提示触发计数（UI 侧显示「先移出一套」并定时消失）
+    in-out property <int> fav-hint-tick: 0;
     // 强调色三态与三滑杆/通透度的设置入口（设置「主题」页 + 速选面板用）。
     callback set-accent-mode(string /* follow|preset|custom */, string /* preset key or #hex */);
     // ── 取色盘：色块渲染回调留在 AppWindow（设置行 chip/弹框网格共用）；
@@ -2106,9 +2118,10 @@ export component AppWindow inherits Window {
                             //（click-y 在按钮内部）——浮层从按钮中间盖上来，
                             // 把「主题」标题都挡住（用户截图）。改锚到**按钮
                             // 矩形下缘** +4px：浮层永远在按钮下方展开。
-                            // 打开时先清搜索恢复全量。
+                            // 打开时先清搜索恢复全量 + 重置键盘索引。
                             root.theme-pick-search = "";
                             root.theme-search-filter("");
+                            root.theme-key-idx = -1;
                             root.theme-pick-x = self.click-x - 120px;
                             root.theme-pick-y = self.btn-y + self.btn-h + 4px;
                             root.theme-pick-open = !root.theme-pick-open;
@@ -2917,7 +2930,7 @@ export component AppWindow inherits Window {
                     // TabBar 的条带底色恒为 term-bg(theme.slint #tab-flush:"三者
                     // 同色")。有会话时 TerminalView(term-bg)盖满这块,两者看着
                     // 一致;**无会话**时这里只剩容器底色,root≠tbg 的主题(自带
-                    // MTerm 套 root #161619 / tbg #181A1D、idea-dark、flexoki-dark,
+                    // MTerm 套 root #161619 / tbg #181A1D、darcula-dark、flexoki-dark,
                     // 以及任何开壁纸的场景)就会露出一条深浅相反的条带(用户截图)。
                     background: Theme.term-bg;
 
@@ -3717,7 +3730,7 @@ export component AppWindow inherits Window {
                     padding-left: 10px; spacing: 9px;
                     Icon {
     glyph: "edit";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                     Text { text: @tr("Edit"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
@@ -3736,7 +3749,7 @@ export component AppWindow inherits Window {
                     padding-left: 10px; spacing: 9px;
                     Icon {
     glyph: "copy";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                     Text { text: @tr("Duplicate"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
@@ -3825,7 +3838,7 @@ export component AppWindow inherits Window {
                     padding-left: 10px; spacing: 9px;
                     Icon {
     glyph: "folder";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                     Text {
@@ -3890,7 +3903,7 @@ export component AppWindow inherits Window {
                     padding-left: 10px; spacing: 9px;
                     Icon {
     glyph: "new-session";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                     Text { text: root.lang-en ? "New session" : "新建会话"; color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
@@ -3918,7 +3931,7 @@ export component AppWindow inherits Window {
                     padding-left: 10px; spacing: 9px;
                     Icon {
     glyph: "create-new-folder";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                     Text { text: @tr("New group"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
@@ -3941,7 +3954,7 @@ export component AppWindow inherits Window {
                     padding-left: 10px; spacing: 9px;
                     Icon {
     glyph: "unfold-more";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                     Text { text: @tr("Expand all"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
@@ -3960,7 +3973,7 @@ export component AppWindow inherits Window {
                     padding-left: 10px; spacing: 9px;
                     Icon {
     glyph: "unfold-less";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                     Text { text: @tr("Collapse all"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
@@ -3984,7 +3997,7 @@ export component AppWindow inherits Window {
                     padding-left: 10px; spacing: 9px;
                     Icon {
     glyph: root.system-hidden ? "visibility" : "visibility-off";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                     Text { text: root.system-hidden ? @tr("Show Local Terminals") : @tr("Hide Local Terminals"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
@@ -4054,7 +4067,7 @@ export component AppWindow inherits Window {
                     padding-left: 10px; spacing: 9px;
                     Icon {
     glyph: "edit";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                     Text { text: @tr("Edit group"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
@@ -4083,7 +4096,7 @@ export component AppWindow inherits Window {
                     padding-left: 10px; padding-right: 8px; spacing: 9px;
                     Icon {
     glyph: "palette";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                     Text { text: @tr("Group color"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; }
@@ -4157,7 +4170,7 @@ export component AppWindow inherits Window {
                     padding-left: 10px; spacing: 9px;
                     Icon {
     glyph: "create-new-folder";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                     Text { text: @tr("New group"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
@@ -4207,7 +4220,7 @@ export component AppWindow inherits Window {
                     padding-left: 10px; spacing: 9px;
                     Icon {
     glyph: root.system-hidden ? "visibility" : "visibility-off";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                     Text { text: root.system-hidden ? @tr("Show Local Terminals") : @tr("Hide Local Terminals"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
@@ -4863,7 +4876,7 @@ export component AppWindow inherits Window {
                                 }
                                 Icon {
     glyph: "close";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-md;
 }
                             }
@@ -5180,7 +5193,7 @@ export component AppWindow inherits Window {
                     }
                     Icon {
     glyph: "close";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-md;
 }
                 }
@@ -5318,7 +5331,7 @@ export component AppWindow inherits Window {
                                         }
                                         Icon {
     glyph: "close";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-md;
 } // close
                                     }
@@ -5469,7 +5482,7 @@ export component AppWindow inherits Window {
                     padding-left: 8px; spacing: 8px;
                     Icon {
     glyph: "settings";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-md;
 }
                     Text { text: root.lang-en ? "Settings" : "设置";
@@ -5493,7 +5506,7 @@ export component AppWindow inherits Window {
                     padding-left: 8px; spacing: 8px;
                     Icon {
     glyph: "arrow-up";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-md;
 } // ↑ export
                     Text { text: root.lang-en ? "Export connections" : "导出连接";
@@ -5517,7 +5530,7 @@ export component AppWindow inherits Window {
                     padding-left: 8px; spacing: 8px;
                     Icon {
     glyph: "arrow-down";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-md;
 } // ↓ import
                     Text { text: root.lang-en ? "Import connections" : "导入连接";
@@ -5542,7 +5555,7 @@ export component AppWindow inherits Window {
                     padding-left: 8px; spacing: 8px;
                     Icon {
     glyph: "table-rows";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-md;
 } // table/rows
                     Text { text: root.lang-en ? "Batch import (text)" : "批量导入(文本)";
@@ -5566,7 +5579,7 @@ export component AppWindow inherits Window {
                     padding-left: 8px; padding-right: 8px; spacing: 8px;
                     Icon {
     glyph: "input";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-md;
 } // input/import
                     VerticalLayout {
@@ -5598,7 +5611,7 @@ export component AppWindow inherits Window {
                     padding-left: 8px; spacing: 8px;
                     Icon {
     glyph: "language";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-md;
 } // language/translate
                     Text { text: root.lang-en ? "切换到中文" : "Switch to English";
@@ -5622,7 +5635,7 @@ export component AppWindow inherits Window {
                     padding-left: 8px; spacing: 8px;
                     Icon {
     glyph: "keyboard";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-md;
 } // keyboard
                     Text { text: root.lang-en ? "Shortcuts" : "快捷键";
@@ -5645,7 +5658,7 @@ export component AppWindow inherits Window {
                     padding-left: 8px; spacing: 8px;
                     Icon {
     glyph: "info";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-md;
 } // Info
                     Text { text: @tr("About"); color: Theme.text-primary; font-size: Theme.fs-md;
@@ -6246,7 +6259,7 @@ export component AppWindow inherits Window {
                                     padding-left: 4px; padding-top: 6px; spacing: 4px;
                                     Icon {
     glyph: "folder";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-md;
 }
                                     Text { text: q.group; color: Theme.text-muted; font-size: Theme.fs-xs;
@@ -6278,7 +6291,7 @@ export component AppWindow inherits Window {
                                                 HorizontalLayout { padding-left: 10px; spacing: 8px;
                                                     Icon {
     glyph: "edit";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                                                     Text { text: root.lang-en ? "Rename group" : "重命名分组"; color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; } }
@@ -6302,7 +6315,7 @@ export component AppWindow inherits Window {
                                                 HorizontalLayout { padding-left: 10px; spacing: 8px;
                                                     Icon {
     glyph: "create-new-folder";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                                                     Text { text: root.lang-en ? "New group" : "新建分组"; color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; } }
@@ -6347,7 +6360,7 @@ export component AppWindow inherits Window {
                                         }
                                         Icon {
     glyph: "arrow-up";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-md;
 }
                                     }
@@ -6361,7 +6374,7 @@ export component AppWindow inherits Window {
                                         }
                                         Icon {
     glyph: "arrow-down";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-md;
 }
                                     }
@@ -6377,7 +6390,7 @@ export component AppWindow inherits Window {
                                         }
                                         Icon {
     glyph: "delete";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-md;
 }
                                     }
@@ -6397,7 +6410,7 @@ export component AppWindow inherits Window {
                                                 HorizontalLayout { padding-left: 10px; spacing: 8px;
                                                     Icon {
     glyph: "edit";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                                                     Text { text: @tr("Edit"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; } } }
@@ -6407,7 +6420,7 @@ export component AppWindow inherits Window {
                                                 HorizontalLayout { padding-left: 10px; spacing: 8px;
                                                     Icon {
     glyph: "copy";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                                                     Text { text: @tr("Duplicate"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; } } }
@@ -6435,7 +6448,7 @@ export component AppWindow inherits Window {
                                                 HorizontalLayout { padding-left: 10px; spacing: 8px;
                                                     Icon {
     glyph: "folder";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                                                     Text { text: "default"; color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; } } }
@@ -6448,7 +6461,7 @@ export component AppWindow inherits Window {
                                                 HorizontalLayout { padding-left: 10px; spacing: 8px;
                                                     Icon {
     glyph: "folder";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-sm;
 }
                                                     Text { text: s.group; color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; } } }
@@ -7142,7 +7155,7 @@ export component AppWindow inherits Window {
                         }
                         Icon {
     glyph: "close";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-md;
 }
                     }
@@ -7236,7 +7249,7 @@ export component AppWindow inherits Window {
                 }
                 Icon {
     glyph: "close";
-    tint: Theme.text-secondary;
+    tint: Theme.text-primary;
     size: Theme.fs-md;
 }
             }
@@ -7954,62 +7967,192 @@ export component AppWindow inherits Window {
     if root.theme-pick-open : Rectangle {
         // (#theme-empty-h 2026-10-08) 无结果态下 preferred-height 只算到
         // 占位条的一小截，浮层被压得比占位文字还矮（用户截图：提示被底边
-        // 裁掉）——钳一个能完整放下「搜索框 + 占位提示」的最小高度。
-        property <length> list-h: max(min(430px, pick-lay.preferred-height + 10px), 110px);
+        // 裁掉）——钳一个能完整放下「搜索行 + 动作行 + 占位提示」的最小高度。
+        //（#theme-dedupe §5 修正：高度 = 列表内容 + 固定镶边。镶边 = 上内衬 6 +
+        // 搜索行 30 + 间距 4 + 动作行 24 + 间距 4 + 间距 4 + 底栏 29 + 下内衬 6
+        // = 107；另留 10 松弛。旧式「内容 + 10」漏掉顶部两行，离屏探针实测浮层
+        // 被压到只露出一行。上限 459 = 镶边 107 + mock 的 .lst max-height 342。）
+        property <length> list-h: max(min(459px, pick-lay.preferred-height + 117px), 180px);
         width: parent.width;
         height: parent.height;
         TouchArea { clicked => { root.theme-pick-open = false; root.theme-pick-search = ""; root.theme-search-filter(""); root.preview-theme(root.theme-chosen); } }
         Rectangle {
             x: min(max(8px, root.theme-pick-x), parent.width - self.width - 12px);
             y: min(root.theme-pick-y, parent.height - self.height - 12px);
-            width: 240px;
+            // (#theme-dedupe §5) 240 → 360px：行内新增 3 色阶条 + ANSI 八色带 +
+            // 星标区（预留 70px 文案位）；360 保证最长名（Solarized · 亮）与选中
+            // 行（多一个 ✓）都不截断。圆角 9 → 11（mock .pop）。
+            width: 360px;
             height: parent.list-h;
-            border-radius: 9px;
+            border-radius: 11px;
             background: Theme.popup-bg;
             border-width: 1px; border-color: Theme.border-strong;
             drop-shadow-blur: 16px; drop-shadow-color: #00000060;
             clip: true;
-            VerticalLayout {
-                padding: 6px;
-                spacing: 4px;
-                // 搜索框（稿内「搜索主题…」）：按中文名/id 过滤
-                Rectangle {
-                    height: 28px; border-radius: 6px;
-                    background: Theme.field; border-width: 1px; border-color: Theme.border-control;
-                    TextInput {
-                        x: 8px; width: parent.width - 16px;
-                        text <=> root.theme-pick-search;
-                        // 输入即过滤：Rust 重发过滤后的 entries（含组头处理）
-                        changed text => { root.theme-search-filter(self.text); }
-                        font-size: 12px;
-                        color: Theme.text-primary;
-                        vertical-alignment: center;
-                        single-line: true;
+            // (#theme-dedupe §5 键盘) ↑↓ 移动 / Enter 确认 / Esc 还原 / Tab 直达强调色。
+            // forward-focus 把焦点交给搜索框：开浮层即可直接输入；键事件在本域兜底。
+            FocusScope {
+                forward-focus: theme-input;
+                key-pressed(event) => {
+                    if (event.text == Key.UpArrow) {
+                        root.theme-key-idx = root.theme-key-move(root.theme-key-idx, -1);
+                        return accept;
                     }
-                    if root.theme-pick-search == "" : Text {
-                        x: 8px;
-                        text: root.lang-en ? "Search themes…" : "搜索主题…";
-                        color: Theme.text-muted; font-size: 12px;
-                        vertical-alignment: center;
-                        // 占位文字不挡输入
-                        TouchArea { enabled: false; }
+                    if (event.text == Key.DownArrow) {
+                        root.theme-key-idx = root.theme-key-move(root.theme-key-idx, 1);
+                        return accept;
                     }
+                    if (event.text == Key.Return) {
+                        if (root.theme-key-idx >= 0 && root.theme-key-idx < root.theme-entries.length) {
+                            root.set-theme(root.theme-entries[root.theme-key-idx].id);
+                            root.theme-pick-open = false;
+                            root.theme-pick-search = "";
+                            root.theme-search-filter("");
+                        }
+                        return accept;
+                    }
+                    if (event.text == Key.Escape) {
+                        root.theme-pick-open = false;
+                        root.theme-pick-search = "";
+                        root.theme-search-filter("");
+                        root.preview-theme(root.theme-chosen);
+                        return accept;
+                    }
+                    if (event.text == Key.Tab) {
+                        // Tab 直达强调色：关浮层 → 打开设置·主题页 + 强调色弹框
+                        root.theme-pick-open = false;
+                        root.theme-pick-search = "";
+                        root.theme-search-filter("");
+                        root.preview-theme(root.theme-chosen);
+                        root.interface-open = true;
+                        root.ifd-page = "theme";
+                        root.accent-stage = root.accent-guard.eff;
+                        root.accent-pop-open = true;
+                        return accept;
+                    }
+                    return reject;
                 }
-                Flickable {
-                    height: parent.height - 32px;
+                VerticalLayout {
+                    padding: 6px;
+                    spacing: 4px;
+                    // 搜索行（高保真 §5 定稿的 sear）：**扁平行**（无输入框底/边框）
+                    // + 底部细线 + 右端套数（accent）。匹配 中文名 / id / 色相名
+                    // （Rust 过滤）。占位文案同步改「搜索主题 / 色相 / 名称…」。
+                    Rectangle {
+                        height: 30px;
+                        background: transparent;
+                        theme-input := TextInput {
+                            x: 11px;
+                            // 右端计数（「28 套」）的固定让位：约 54px
+                            width: parent.width - 22px - 54px;
+                            text <=> root.theme-pick-search;
+                            // 输入即过滤：Rust 重发过滤后的 entries（含组头处理）
+                            changed text => { root.theme-search-filter(self.text); }
+                            font-size: 11.5px;
+                            color: Theme.text-primary;
+                            vertical-alignment: center;
+                            single-line: true;
+                        }
+                        if root.theme-pick-search == "" : Text {
+                            x: 11px;
+                            text: root.lang-en ? "Search theme / hue / name…" : "搜索主题 / 色相 / 名称…";
+                            color: Theme.text-muted; font-size: 11.5px;
+                            vertical-alignment: center;
+                            // 占位文字不挡输入
+                            TouchArea { enabled: false; }
+                        }
+                        // 右端目录总数（高保真 mock：accent 小字「28 套」）
+                        Text {
+                            x: parent.width - 11px - self.width;
+                            text: root.theme-total + (root.lang-en ? " themes" : " 套");
+                            color: Theme.accent-solid; font-size: 11.5px;
+                            vertical-alignment: center;
+                        }
+                        // 底部分隔线（mock .sear 的 border-bottom: 1px solid --line）
+                        Rectangle {
+                            y: parent.height - 1px;
+                            width: 100%; height: 1px;
+                            background: Theme.border-control;
+                        }
+                    }
+                    // (#theme-dedupe §5) 顶部常驻动作行：跟随系统 / 反向（亮↔暗）
+                    HorizontalLayout {
+                        spacing: 6px;
+                        // 跟随系统（当前跟随态高亮；点击 = 回到跟随）
+                        Rectangle {
+                            height: 24px;
+                            horizontal-stretch: 1;
+                            border-radius: 6px;
+                            background: root.follow-system ? Theme.accent.with-alpha(0.15) : Theme.bg-panel-alt;
+                            border-width: 1px;
+                            border-color: root.follow-system ? transparent : Theme.border-control;
+                            Text {
+                                text: root.lang-en ? "Follow system" : "跟随系统";
+                                color: root.follow-system ? Theme.accent-solid : Theme.text-primary;
+                                font-size: 11px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.set-follow-system(true);
+                                    root.theme-pick-open = false;
+                                    root.theme-pick-search = "";
+                                    root.theme-search-filter("");
+                                }
+                            }
+                        }
+                        // 反向（亮↔暗）：切到当前套的明暗配对档（落盘生效）
+                        Rectangle {
+                            height: 24px;
+                            horizontal-stretch: 1;
+                            border-radius: 6px;
+                            background: Theme.bg-panel-alt;
+                            border-width: 1px;
+                            border-color: Theme.border-control;
+                            Text {
+                                text: root.lang-en ? "Invert light/dark" : "反向（亮↔暗）";
+                                color: Theme.text-primary;
+                                font-size: 11px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.invert-theme();
+                                    root.theme-pick-open = false;
+                                    root.theme-pick-search = "";
+                                    root.theme-search-filter("");
+                                }
+                            }
+                        }
+                    }
+                    Flickable {
+                        // (#theme-dedupe §5 修正) 扣减 = 固定镶边 107（上内衬 6 +
+                        // 搜索行 30 + 间距 4 + 动作行 24 + 间距 4 + 间距 4 + 底栏 29
+                        // + 下内衬 6）。旧式「- 32 - 28」是搜索框还在 28px 时代的残留，
+                        // 动作行加入后少扣 14px，列表底部被裁。
+                        height: parent.height - 107px;
                     content-height: pick-lay.preferred-height;
                     pick-lay := VerticalLayout {
                         spacing: 1px; alignment: start;
-                        for e in root.theme-entries : row-rect := Rectangle {
-                            height: e.kind == "header" ? 22px : 28px;
+                        // 带索引的 for：索引供键盘游标高亮用
+                        for e[i] in root.theme-entries : row-rect := Rectangle {
+                            height: e.kind == "header" ? 21px : 28px;
                             // (#theme-hover-bg 2026-10-08) 滑动选中背景：鼠标
                             // 悬浮哪行哪行亮，高亮块随指针在行间"滑动"；选中
                             // 行的 ✓ 与强调色文字不变。高亮色用 (#menu-hover)
                             // —— bg-hover 底色是写死的深灰，浅色主题下几乎
                             // 看不见（用户反馈）。
+                            // （#theme-dedupe §5 键盘）↑↓ 游标行同用该高亮。
+                            // 组头行 = 高保真 mock 的 hd8：更深的色带（.darker）。
                             property <bool> row-hover: false;
-                            background: e.kind != "header" && row-rect.row-hover
-                                ? Theme.bg-hover : transparent;
+                            background: e.kind == "header"
+                                ? Theme.popup-bg.darker(0.15)
+                                : ((row-rect.row-hover || i == root.theme-key-idx)
+                                   ? Theme.bg-hover : transparent);
                             border-radius: 6px;
                             // 搜索过滤：组头仅在无搜索词时显示；行按 zh/id 匹配
                             visible: e.kind == "header"
@@ -8017,20 +8160,33 @@ export component AppWindow inherits Window {
                                 : (root.theme-pick-search == ""
                                    || e.matched);   // Rust 在过滤重发时写好的行级标记
                             HorizontalLayout {
-                                padding-left: e.kind == "header" ? 8px : 10px;
-                                padding-right: 8px;
-                                spacing: 8px; alignment: start;
+                                padding-left: 11px;
+                                padding-right: 11px;
+                                spacing: 9px; alignment: start;
+                                // 交叉轴居中（Slint 1.18）：默认 stretch 下固定尺寸
+                                // 子项（色点 11 / 色阶条 15 / 八色带 8）会退化贴顶
+                                // —— 必须显式 center，行内才与文字同一中线。
+                                cross-axis-alignment: center;
+                                // 组头左右结构（mock hd8）：左标签（mono 半粗 +
+                                // 字距）+ 弹性 + 右端计数。
                                 if e.kind == "header" : Text {
                                     text: e.zh;
-                                    color: Theme.text-muted; font-size: 10px;
+                                    color: Theme.text-muted;
+                                    font-size: 9.5px; font-weight: 600; letter-spacing: 0.8px;
                                     vertical-alignment: center;
                                 }
-                                // 行色块 = 该套**强调色**（面板底色白/黑不可辨；
-                                // 强调色一眼可辨：石墨蓝/青苔绿/琥珀橘/暮紫…）
+                                if e.kind == "header" : Rectangle { horizontal-stretch: 1; }
+                                if e.kind == "header" && e.mode != "" : Text {
+                                    text: e.mode;
+                                    color: Theme.text-muted;
+                                    font-size: 9.5px; font-weight: 500;
+                                    vertical-alignment: center;
+                                }
+                                // 行色点 = 该套**强调色**（#theme-dedupe §5：改圆形 11px，
+                                // 高保真 mock 同款 —— 强调色一眼可辨）
                                 if e.kind != "header" : Rectangle {
-                                    width: 12px; height: 12px; border-radius: 3px;
+                                    width: 11px; height: 11px; border-radius: 5.5px;
                                     background: e.ac;
-                                    y: (parent.height - self.height) / 2;
                                 }
                                 if e.kind != "header" : Text {
                                     text: e.zh + " · " + e.mode;
@@ -8039,29 +8195,132 @@ export component AppWindow inherits Window {
                                     vertical-alignment: center;
                                     overflow: elide;
                                 }
+                                // (#theme-dedupe §5) 3 色阶条 root→panel→tbg（mock 的 n3：
+                                // 7×13 ×3 + 1.5 间距 + 棋盘衬底 + 内描边）。棋盘衬底是
+                                // mock 的手法（repeating-conic-gradient）——让近黑/近白档
+                                // 的色块在任何主题下都可辨；这里以 4.8×4.34 小格近似。
+                                if e.kind != "header" : Rectangle {
+                                    width: 26px; height: 15px;
+                                    border-radius: 2.5px;
+                                    // 棋盘衬底（15 格 = 5×3，交错两色；Slint 无 % 运算符，
+                                    // 用 Math.mod）。三条循环对应棋盘的三行。
+                                    for k in [0, 1, 2, 3, 4] : Rectangle {
+                                        x: k * 4.8px; y: 0px;
+                                        width: 4.8px; height: 4.34px;
+                                        background: Math.mod(k, 2) == 0 ? #343841 : #1e2128;
+                                    }
+                                    for k in [0, 1, 2, 3, 4] : Rectangle {
+                                        x: k * 4.8px; y: 4.34px;
+                                        width: 4.8px; height: 4.34px;
+                                        background: Math.mod(k, 2) == 0 ? #1e2128 : #343841;
+                                    }
+                                    for k in [0, 1, 2, 3, 4] : Rectangle {
+                                        x: k * 4.8px; y: 8.68px;
+                                        width: 4.8px; height: 4.34px;
+                                        background: Math.mod(k, 2) == 0 ? #343841 : #1e2128;
+                                    }
+                                    Rectangle {
+                                        x: 1px; y: 1px;
+                                        HorizontalLayout {
+                                            spacing: 1.5px;
+                                            Rectangle { width: 7px; height: 13px; border-radius: 1.5px; background: e.root; }
+                                            Rectangle { width: 7px; height: 13px; border-radius: 1.5px; background: e.panel; }
+                                            Rectangle { width: 7px; height: 13px; border-radius: 1.5px; background: e.tbg; }
+                                        }
+                                    }
+                                    // 内描边（mock box-shadow: inset 0 0 0 1px rgba(255,255,255,.14)）
+                                    Rectangle {
+                                        width: 100%; height: 100%;
+                                        border-radius: 2.5px;
+                                        border-width: 1px; border-color: #ffffff24;
+                                    }
+                                }
                                 Rectangle { horizontal-stretch: 1; }
+                                // (#theme-dedupe §5) ANSI 八色带（槽 1/2/3/4/5/6/9/14）；
+                                // 悬停时淡出让位给「设为常用」（同一位置两个操作不打架）
+                                if e.kind != "header" : Rectangle {
+                                    width: 75px; height: 8px;
+                                    // 悬停淡出（mock .n8.hideOnFav → .15）；常态
+                                    // 满不透明（mock 的 .n8 无 opacity —— 0.9 是
+                                    // 旧值，离屏探针实测八色带整体被压暗一档）。
+                                    opacity: row-rect.row-hover ? 0.15 : 1;
+                                    animate opacity { duration: 120ms; }
+                                    HorizontalLayout {
+                                        spacing: 1.5px;
+                                        cross-axis-alignment: center;
+                                        for c in e.ansi-eight : Rectangle {
+                                            width: 8px; height: 6px; border-radius: 1px;
+                                            background: c;
+                                        }
+                                    }
+                                }
                                 if e.kind != "header" && e.id == root.theme-chosen : Text {
-                                    text: "✓"; color: Theme.accent-solid; font-size: 12px;
+                                    text: "✓"; color: Theme.accent-solid; font-size: 10px;
                                     vertical-alignment: center;
+                                }
+                                // (#theme-dedupe §5) 星标区（mock 的 fav）：11px 星形
+                                // + 5 间距 + 11px 文案位。星形用 mock 的同一段 SVG
+                                // 路径（Slint Path，16 视图盒缩到 11px）——实心 =
+                                // 已收藏（warning）、描边 = 未收藏（accent）。
+                                // 文案位常驻（opacity 切换而非元素增删），悬停时
+                                // 不产生位移；整区预留 70px = 10 左余 + 11 星 +
+                                // 5 间距 + 44 文案。
+                                if e.kind != "header" : Rectangle {
+                                    width: 70px; height: parent.height;
+                                    opacity: row-rect.row-hover ? 1 : (e.faved ? 0.5 : 0);
+                                    animate opacity { duration: 120ms; }
+                                    HorizontalLayout {
+                                        alignment: end; spacing: 5px;
+                                        cross-axis-alignment: center;
+                                        if e.faved : Path {
+                                            width: 11px; height: 11px;
+                                            viewbox-width: 16; viewbox-height: 16;
+                                            fill: Theme.warning;
+                                            commands: "M8 1.6l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.4l-3.8 2 .7-4.3-3.1-3 4.3-.6z";
+                                        }
+                                        if !e.faved : Path {
+                                            width: 11px; height: 11px;
+                                            viewbox-width: 16; viewbox-height: 16;
+                                            fill: transparent;
+                                            stroke: Theme.accent-solid;
+                                            stroke-width: 1px;
+                                            commands: "M8 1.6l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.4l-3.8 2 .7-4.3-3.1-3 4.3-.6z";
+                                        }
+                                        Text {
+                                            text: e.faved
+                                                ? (root.lang-en ? "Unpin" : "移出常用")
+                                                : (root.lang-en ? "Pin" : "设为常用");
+                                            color: e.faved ? Theme.warning : Theme.accent-solid;
+                                            font-size: 11px; font-weight: 600;
+                                            vertical-alignment: center;
+                                            opacity: row-rect.row-hover ? 1 : 0;
+                                            animate opacity { duration: 120ms; }
+                                        }
+                                    }
                                 }
                             }
                             if e.kind != "header" : row-hit := TouchArea {
                                 mouse-cursor: pointer;
                                 clicked => {
-                                    root.theme-chosen = e.id;
-                                    root.set-theme(e.id);
-                                    root.theme-pick-open = false;
-                                    root.theme-pick-search = "";
-                                    root.theme-search-filter("");
+                                    // (#theme-dedupe §5) 行右端星标区点击 = 收藏增删
+                                    //（判定宽 80px ≈ 星标区 70 + 行距 9 + 边距），
+                                    // 其余位置 = 选中主题（原行为）。
+                                    if (self.mouse-x > row-rect.width - 80px) {
+                                        root.toggle-favorite-theme(e.id);
+                                    } else {
+                                        root.theme-chosen = e.id;
+                                        root.set-theme(e.id);
+                                        root.theme-pick-open = false;
+                                        root.theme-pick-search = "";
+                                        root.theme-search-filter("");
+                                    }
                                 }
-                                // (#theme-hover-delay 2026-10-08) 悬停预览：
-                                // **延迟触发**，鼠标快速划过列表时不预览（避免
-                                // 主界面跟着闪），停留够久才预览。两个入口（顶栏
-                                // 下拉 / 设置页）行为统一。300ms 用户仍觉太快
-                                // → 1500ms。
+                                // (#theme-dedupe §5) 悬停预览：250ms 触发（1500ms →
+                                // 250ms，高保真 §5 定稿）。预览同步终端色表（Rust
+                                // 侧走完整应用路径），预览与落盘观感一致。
                                 // 移出行即取消定时器并恢复当前主题。
                                 row-delay := Timer {
-                                    interval: 1500ms;
+                                    interval: 250ms;
                                     triggered => {
                                         // 复查仍悬浮（changed 初始求值会误启一次）
                                         if (row-hit.has-hover) { root.preview-theme(e.id); }
@@ -8095,10 +8354,57 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    // ↑ pick-lay 结束；下一行收 Flickable —— 底栏是浮层 VerticalLayout
+                    // 的子项（固定在底部，不随列表滚动）。
+                    }
+                    // (#theme-dedupe §5) 底部说明栏（mock 的 .foot）：左「悬停即预览 ·
+                    // 点击即落盘」、右「常用写进 config」；11px muted + 顶部分隔线。
+                    // 2026-10-15 用户确认保留（mock 的 .foot 与「现状」mock 的注解栏
+                    // 成对出现，但作为常驻产品文案成立：行为提示 + 落盘位置说明）。
+                    Rectangle {
+                        height: 29px;
+                        background: transparent;
+                        Rectangle {   // 顶部分隔线（mock .foot 的 border-top）
+                            y: 0; width: 100%; height: 1px;
+                            background: Theme.border-control;
+                        }
+                        HorizontalLayout {
+                            padding-left: 11px; padding-right: 11px;
+                            cross-axis-alignment: center;
+                            Text {
+                                text: root.lang-en ? "Hover to preview · Click to apply" : "悬停即预览 · 点击即落盘";
+                                color: Theme.text-muted; font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            Text {
+                                text: root.lang-en ? "Favorites saved in config" : "常用写进 config";
+                                color: Theme.text-muted; font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
                 }
             }
+            // ↑ popup 卡片结束；fav 提示叠在主题下拉浮层根矩形上（不进卡片）
+            if root.fav-hint-tick > 0 : Rectangle {
+                x: 8px; width: parent.width - 16px;
+                y: parent.height - 26px; height: 20px;
+                border-radius: 5px;
+                background: Theme.popup-bg;
+                border-width: 1px; border-color: Theme.border-subtle;
+                Text {
+                    text: root.lang-en ? "Remove one first (max 8)" : "常用已满 8 套，先移出一套";
+                    color: Theme.warning; font-size: 10.5px;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+            }
+            Timer {
+                running: root.fav-hint-tick > 0;
+                interval: 2600ms;
+                triggered => { root.fav-hint-tick = 0; }
+            }
         }
-
     }
 
     // ── (#accent-pop-v2 2026-10-13) 强调色预设弹框（定稿高保真）──────────
@@ -8330,7 +8636,7 @@ export component AppWindow inherits Window {
                         { n: "海星色", h: "#546E7A" }, { n: "淡紫色", h: "#DFBFFF" }, { n: "薰衣草色", h: "#7E57C2" }, { n: "紫水晶色", h: "#AB47BC" },
                         { n: "深红色", h: "#E916B5" }, { n: "草绿粉", h: "#FF40CC" }, { n: "洋红", h: "#E1306C" }, { n: "玫瑰色", h: "#F279B9" },
                         { n: "沙色", h: "#D9AE91" }, { n: "咖啡色", h: "#795548" }, { n: "白光色", h: "#FAFAFA" }, { n: "灰色", h: "#9E9E9E" },
-                        { n: "铅黑色", h: "#616161" }, { n: "碳素色", h: "#424242" }, { n: "深渊色", h: "#0B0D12" },
+                        { n: "铅黑色", h: "#616161" }, { n: "碳素色", h: "#424242" }, { n: "MTerm 青", h: "#1FC8B4" },
                     ] : Rectangle {
                         row: i / 8;
                         col: Math.mod(i, 8);

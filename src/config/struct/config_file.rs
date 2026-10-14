@@ -47,8 +47,8 @@ pub(crate) const DEFAULT_WALLPAPER_OVERLAY: f32 = 1.0 - DEFAULT_WALLPAPER_TRANSP
 
 // (#theme-split 2026-10-07) 主题/强调色/壁纸解耦后的新字段默认值。
 // rev4 迁移（只对「一直在默认值上」的用户生效，§5）：
-//   theme_pref = dark  → theme = graphite-dark
-//   theme_pref = light → theme = graphite-light
+//   theme_pref = dark  → theme = mterm-dark
+//   theme_pref = light → theme = mterm-light
 //   theme_pref = system/"" → theme = ""（follow_system = true）
 //   wallpaper_overlay → panel_alpha(旧值) + term_alpha(1.0)
 //   wallpaper 仍在 serde 默认（builtin:tech，从未挑过）→ ""（默认无壁纸）
@@ -56,7 +56,7 @@ pub(crate) const DEFAULT_PANEL_ALPHA: f32 = 0.85;
 pub(crate) const DEFAULT_TERM_ALPHA: f32 = 1.0;
 
 pub(crate) fn default_theme() -> String {
-    // 空 = 跟随系统（follow_system = true 时按探测的深浅取 graphite 族）。
+    // 空 = 跟随系统（follow_system = true 时按探测的深浅取 mterm 门面）。
     // 设计稿 §5：默认壁纸改为无 + 跟随系统，「零操作即正确」。
     String::new()
 }
@@ -71,6 +71,10 @@ pub(crate) fn default_wallpaper_visible() -> f32 {
 }
 pub(crate) fn default_follow_system() -> bool {
     true
+}
+/// 常用主题出厂值：门面两套（#theme-dedupe 用户决策：默认只显示 MTerm 暗/亮）。
+pub(crate) fn default_favorite_themes() -> Vec<String> {
+    vec!["mterm-dark".to_string(), "mterm-light".to_string()]
 }
 pub(crate) fn default_channel_members() -> [Vec<String>; 4] {
     [Vec::new(), Vec::new(), Vec::new(), Vec::new()]
@@ -326,13 +330,18 @@ pub struct ConfigFile {
     #[serde(default)]
     pub wallpaper_overlay: f32,
     // ── (#theme-split 2026-10-07) 主题/强调色/壁纸三层解耦 ──────────────
-    /// 主题 id（src/theme/palettes.rs 的 38 套之一）。空 = 跟随系统
-    /// （follow_system = true 时按探测深浅取 graphite 族）。
+    /// 主题 id（src/theme/palettes.rs 的 28 套之一）。空 = 跟随系统
+    /// （follow_system = true 时按探测深浅取 mterm 门面）。
     #[serde(default = "default_theme")]
     pub theme: String,
     /// Follow the OS dark/light preference instead of a fixed theme id.
     #[serde(default = "default_follow_system")]
     pub follow_system: bool,
+    /// 「常用主题」列表（#theme-dedupe：速选面板常用区）。出厂 = 门面两套
+    /// ["mterm-dark", "mterm-light"]；用户可自选增删，上限 8 套（回调侧校验），
+    /// 只存主题 id，非法 id 在读取端过滤。
+    #[serde(default = "default_favorite_themes")]
+    pub favorite_themes: Vec<String>,
     /// 强调色三态："follow"（默认，主题自带）| "preset" | "custom"。
     #[serde(default)]
     pub accent_mode: String,

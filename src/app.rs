@@ -2269,58 +2269,22 @@ fn open_window(
     window.set_lang_en(crate::i18n::is_en());
 
     // Apply the saved (or system-detected) theme.
-    // (#theme-split) 唯一入口：整套槽位（38 套查表 + 强调色三态 + 三透明度）
+    // (#theme-split) 唯一入口：整套槽位（28 套查表 + 强调色三态 + 三透明度）
     // 写进 Theme，terminal buffer 同步换 ANSI 色表。"dark"/"light"/system 的
     // 解析在 rev4 迁移与 theme::apply 内完成。
     {
         apply_theme(&window, &bufs, &store.borrow());
     }
-    // (#theme-split) 主题选择器的数据源 + 设置快照桥初值。
+    // (#theme-split / #theme-dedupe §5) 主题选择器的数据源 + 设置快照桥初值。
+    // 行模型 = 常用区（出厂门面两套「MTerm 暗/亮」，用户可自增删、上限 8）→
+    // 全部主题区（其余套，保持 ORDER 顺序）。全量快照 Rc 提到块外：搜索过滤
+    // 与「改收藏重建」共用同一个引用（模型只是快照的投影）。
+    let theme_entries_full: Rc<RefCell<Vec<crate::ui::ThemeEntry>>> =
+        Rc::new(RefCell::new(Vec::new()));
     {
-        // 组头行（kind == "header"）：见下方 #theme-picker-groups —— 只分
-        // 深色/浅色两组。
-        let header = |name: &str| crate::ui::ThemeEntry {
-            id: "".into(),
-            zh: name.into(),
-            mode: "".into(),
-            kind: "header".into(),
-            root: Default::default(),
-            panel: Default::default(),
-            tbg: Default::default(),
-            tfg: Default::default(),
-            ac: Default::default(),
-            matched: true,
-        };
-        let mut entries: Vec<crate::ui::ThemeEntry> = Vec::new();
-        // (#theme-picker-groups 2026-10-08) 用户定稿：选择器只分**两组**——
-        // 「深色主题 / 浅色主题」。旧逻辑按族序遍历、遇明暗翻转就插组头，
-        // 而 palettes.rs 是族内 dark/light 交替排列，36 套会插出十几个组头。
-        // 现按明暗各扫一遍，组内保持 palettes.rs 的族顺序；暗组在前（默认
-        // 主题为暗族）。标签走 i18n（en: Dark/Light themes）。
-        for dark in [true, false] {
-            entries.push(header(crate::i18n::t(
-                if dark { "深色主题" } else { "浅色主题" },
-                if dark { "Dark themes" } else { "Light themes" },
-            )));
-            for p in crate::theme::palettes::PALETTES {
-                if p.dark != dark {
-                    continue;
-                }
-                entries.push(crate::ui::ThemeEntry {
-                    id: p.id.into(),
-                    zh: p.zh.into(),
-                    mode: if p.dark { "暗".into() } else { "亮".into() },
-                    kind: p.kind.into(),
-                    root: crate::theme::color(p.root),
-                    panel: crate::theme::color(p.panel),
-                    tbg: crate::theme::color(p.tbg),
-                    tfg: crate::theme::color(p.tfg),
-                    ac: crate::theme::color(p.ac),
-                    matched: true,
-                });
-            }
-        }
-        window.set_theme_entries(ModelRc::from(Rc::new(VecModel::from(entries))));
+        rebuild_theme_entries(&window, &store.borrow(), &theme_entries_full);
+        // 搜索行右端的目录总数（高保真 §5 mock：「28 套」accent 小字）
+        window.set_theme_total(crate::theme::palettes::PALETTES.len() as i32);
         {
         let s = store.borrow();
             window.set_follow_system(s.follow_system());
@@ -3938,68 +3902,32 @@ fn open_window(
         });
     }
 
-    // (#theme-split v2) 悬停实时预览：临时 apply（不落盘/不广播/不刷终端
-    // 色表——只动 UI 槽位，让用户在主界面上「看到」效果）。移出/关闭浮层时
-    // 传当前主题 id 恢复。
+    // (#theme-split v2 / #theme-dedupe) 悬停实时预览：临时 apply（不落盘/不广播），
+    // **但同步终端色表与重渲染** —— 高保真 §5：预览若只换 UI 槽位，终端区观感会
+    // 与点击落盘后的结果不一致。移出/关闭浮层时传当前主题 id 恢复。
+    // 250ms 延迟在 UI 侧（row-delay Timer）控制。
     {
         let weak = window.as_weak();
         let store = store.clone();
+        let bufs_preview = bufs.clone();
         window.on_preview_theme(move |id: SharedString| {
             let Some(w) = weak.upgrade() else { return };
             let mut st = crate::app::terminal_ui::theme_state_of(&w, &store.borrow());
             st.theme_id = id.to_string();
-            crate::theme::apply(&w, &st);
+            crate::app::terminal_ui::apply_theme_resolved(&w, &bufs_preview, &st);
         });
     }
-    // (#theme-split v3) 主题搜索过滤：Slint 字符串无 contains 且绑定里不能
-    // 调回调——输入词变化时由 Rust **重发过滤后的 theme-entries**（非空词不发
-    // 组头行；空词全量恢复）。matched 标记行级显隐（当前恒 true，行已在 Rust
-    // 侧过滤）。
-    // (#theme-search-mode 2026-10-08) 匹配范围：主题名（zh / id）+ **明暗**
-    // （暗/亮、深/浅、dark/light——用户要求）。明暗词按整词匹配 mode 字段，
-    // 避免「深」这种单字误伤含该字的主题名（如「深海」）。
+    // (#theme-split v3 / #theme-dedupe §5) 主题搜索过滤：输入词变化时由 Rust
+    // **重发过滤后的 theme-entries**（非空词不发组头行；空词从全量快照恢复）。
+    // 匹配维度 = 中文名 / id / 明暗词 / **色相名**（「tokyonight」「青」「dark」
+    // 都命中；高保真 §5：家族维度已下线）。过滤逻辑见 apply_theme_filter ——
+    // 与「改收藏重建」共用同一份全量快照（theme_entries_full）。
     {
         let weak = window.as_weak();
-        // (#theme-search-restore 2026-10-08) 旧实现搜索时 set_vec(过滤结果)
-        // **覆盖**模型，清词"恢复"却从当前（已过滤）模型收集 —— 被滤掉的行
-        // 已不在模型里，永远回不来；重开选择器只剩上次搜索命中的几行（实测）。
-        // 改为闭包持有全量快照：过滤与恢复都从快照出发，模型本身只是投影。
-        let full: Rc<RefCell<Vec<crate::ui::ThemeEntry>>> = Rc::new(RefCell::new(
-            window.get_theme_entries().iter().collect(),
-        ));
+        let full = theme_entries_full.clone();
         window.on_theme_search_filter(move |q: SharedString| {
             let Some(w) = weak.upgrade() else { return };
-            let q = q.trim().to_lowercase();
-            let model = w.get_theme_entries();
-            let Some(vec_model) = model.as_any().downcast_ref::<slint::VecModel<crate::ui::ThemeEntry>>() else { return };
-            let all: Vec<crate::ui::ThemeEntry> = full.borrow().clone();
-            if q.is_empty() {
-                // 恢复：全量快照（含组头）
-                vec_model.set_vec(all);
-                w.set_theme_has_match(true);
-                return;
-            }
-            // 明暗关键词 → 目标 mode 值（"暗"/"亮"）。命中即按 mode 过滤，
-            // 与主题名是「或」关系（输入「暗 石墨」任一命中即显示）。
-            let want_dark = ["暗", "深", "dark"].iter().any(|k| q.contains(k));
-            let want_light = ["亮", "浅", "light"].iter().any(|k| q.contains(k));
-            let filtered: Vec<crate::ui::ThemeEntry> = all
-                .into_iter()
-                .filter(|row| {
-                    if row.kind == "header" {
-                        return false;
-                    }
-                    let name_hit = row.zh.to_lowercase().contains(q.as_str())
-                        || row.id.to_lowercase().contains(q.as_str());
-                    let mode_hit = (want_dark && row.mode == "暗")
-                        || (want_light && row.mode == "亮");
-                    name_hit || mode_hit
-                })
-                .map(|mut r| { r.matched = true; r })
-                .collect();
-            // 无命中 → 浮层显示占位（#theme-search-empty）
-            w.set_theme_has_match(!filtered.is_empty());
-            vec_model.set_vec(filtered);
+            apply_theme_filter(&w, &full, q.as_str());
         });
     }
     // ── (#tab-32) 频道（tab-row-idia 稿）：加入/暂停/离开 + 状态条恢复 ──
@@ -4274,11 +4202,11 @@ fn open_window(
             }
             registry.broadcast_config_changed();
         });
-        // Ctrl+Alt+T（§3-调整③可选）：在 graphite 暗/亮间循环（默认族快速
+        // Ctrl+Alt+T（#theme-dedupe 2026-10-15）：在 mterm 暗/亮间循环（门面快速
         // 翻转；完整主题选择走速选面板/设置页）。
         window.on_cycle_theme(move || {
             let Some(w) = weak_c.upgrade() else { return };
-            let next = if w.get_dark_mode() { "graphite-light" } else { "graphite-dark" };
+            let next = if w.get_dark_mode() { "mterm-light" } else { "mterm-dark" };
             {
                 let mut s = store_c.borrow_mut();
                 s.set_theme(next.to_string());
@@ -4297,6 +4225,111 @@ fn open_window(
         });
     }
 
+    // (#theme-dedupe §5) 「反向（亮↔暗）」：切到当前生效主题的明暗配对档
+    // （28 套全部成对：同 zh、dark 相反）。找不到配对时兜底到默认档。
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let bufs_inv = bufs.clone();
+        let proc_inv = proc_win.as_weak();
+        let editor_inv = editor_win.as_weak();
+        let registry_inv = registry.clone();
+        window.on_invert_theme(move || {
+            let Some(w) = weak.upgrade() else { return };
+            let cur = crate::theme::palette_or_default(&store.borrow().theme(), w.get_dark_mode());
+            let next = crate::theme::palettes::PALETTES
+                .iter()
+                .find(|p| p.zh == cur.zh && p.dark != cur.dark)
+                .map(|p| p.id)
+                .unwrap_or_else(|| crate::theme::default_for(!cur.dark));
+            {
+                let mut s = store.borrow_mut();
+                s.set_theme(next.to_string());
+                s.set_follow_system(false);
+                let _ = s.save();
+            }
+            apply_theme(&w, &bufs_inv, &store.borrow());
+            w.set_theme_chosen(next.into());
+            w.set_follow_system(store.borrow().follow_system());
+            if let Some(p) = crate::theme::by_id(next) {
+                crate::theme::rebuild_group_palette(&w, p);
+            }
+            if let Some(p) = proc_inv.upgrade() {
+                sync_proc_theme(&w, &p);
+            }
+            if let Some(editor) = editor_inv.upgrade() {
+                sync_editor_theme(&w, &editor);
+            }
+            registry_inv.broadcast_config_changed();
+        });
+    }
+
+    // (#theme-dedupe §5) 「常用」增删：写进 config（上限 8，写满时前端提示
+    // 「先移出一套」）；重建行模型（常用区/全部区/星标随之刷新），并保持当前
+    // 搜索词的过滤视图。
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let full = theme_entries_full.clone();
+        window.on_toggle_favorite_theme(move |id: SharedString| {
+            let Some(w) = weak.upgrade() else { return };
+            let id = id.to_string();
+            if crate::theme::by_id(&id).is_none() {
+                return;
+            }
+            {
+                let mut s = store.borrow_mut();
+                let mut list = s.favorite_themes();
+                match list.iter().position(|x| x == &id) {
+                    Some(pos) => {
+                        list.remove(pos);
+                    }
+                    None => {
+                        if list.len() >= crate::theme::FAVORITE_LIMIT {
+                            drop(s);
+                            w.set_fav_hint_tick(w.get_fav_hint_tick().wrapping_add(1));
+                            return;
+                        }
+                        list.push(id.clone());
+                    }
+                }
+                s.set_favorite_themes(list);
+                let _ = s.save();
+            }
+            rebuild_theme_entries(&w, &store.borrow(), &full);
+            apply_theme_filter(&w, &full, w.get_theme_pick_search().as_str());
+        });
+    }
+
+    // (#theme-dedupe §5 键盘) ↑↓ 键：在当前模型（搜索过滤后的视图）的非组头行
+    // 间移动并**即时预览**（键盘导航是显式动作，不走 250ms 悬停延迟）。
+    // 返回新的行索引；Enter 的落盘复用 set-theme 路径（UI 侧取 id）。
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let bufs_k = bufs.clone();
+        window.on_theme_key_move(move |pos: i32, delta: i32| -> i32 {
+            let Some(w) = weak.upgrade() else { return pos };
+            let rows: Vec<crate::ui::ThemeEntry> = w.get_theme_entries().iter().collect();
+            if rows.is_empty() {
+                return -1;
+            }
+            let len = rows.len() as i32;
+            let mut i = pos;
+            for _ in 0..len {
+                i = (i + delta).rem_euclid(len);
+                if rows[i as usize].kind != "header" {
+                    let id = rows[i as usize].id.clone();
+                    let mut st = crate::app::terminal_ui::theme_state_of(&w, &store.borrow());
+                    st.theme_id = id.to_string();
+                    crate::app::terminal_ui::apply_theme_resolved(&w, &bufs_k, &st);
+                    return i;
+                }
+            }
+            pos
+        });
+    }
+
     // (#theme-split) 强调色三态 + 三滑杆 + 通透度 + 跟随系统 + 图片取色：
     // 设置「主题」页 / 壁纸页 / 速选面板的写入入口。全部走 apply_theme
     // 重算（强调色守卫、下限钳制都在 theme 模块），并广播到独立窗口。
@@ -4304,6 +4337,168 @@ fn open_window(
     // ⚠️ 每个回调前都在**子作用域**里从外层源 clone 捕获。不要用 macro_rules
     // 合并这些——宏体内的局部变量是定义点上下文，解析不到调用点的 clone
     // 绑定（实测 E0425）。
+
+/// (#theme-dedupe §5) 构建主题选择器的行模型：常用区 → 全部主题区。
+/// 常用 = store.favorite_themes()（出厂门面两套），过滤非法 id / 去重后按列表
+/// 顺序展开；全部主题区 = 其余套，保持 palettes.rs 的 ORDER 顺序（详情见
+/// gen_theme_rust.js 的 ORDER 注释）。组头行 kind == "header"（搜索时隐藏）。
+fn build_theme_entries(store: &ConfigStore) -> Vec<crate::ui::ThemeEntry> {
+    // 组头行：zh = 左标签，mode = 右端计数（高保真 §5 的 hd8 左右结构：
+    // 「常用 …… 2 / 最多 8 · 点星可整理」「全部主题 …… 28 套」）。
+    let header = |name: String, cnt: String| crate::ui::ThemeEntry {
+        id: "".into(),
+        zh: name.into(),
+        mode: cnt.into(),
+        kind: "header".into(),
+        root: Default::default(),
+        panel: Default::default(),
+        tbg: Default::default(),
+        tfg: Default::default(),
+        ac: Default::default(),
+        ansi_eight: Default::default(),
+        faved: false,
+        matched: true,
+    };
+    let make = |p: &'static crate::theme::palettes::Palette, faved: bool| crate::ui::ThemeEntry {
+        id: p.id.into(),
+        zh: p.zh.into(),
+        mode: if p.dark { "暗".into() } else { "亮".into() },
+        kind: p.kind.into(),
+        root: crate::theme::color(p.root),
+        panel: crate::theme::color(p.panel),
+        tbg: crate::theme::color(p.tbg),
+        tfg: crate::theme::color(p.tfg),
+        ac: crate::theme::color(p.ac),
+        // §5 行缩略的 ANSI 八色带：槽 1/2/3/4/5/6/9/14（高保真 mock 同款）
+        ansi_eight: ModelRc::from(Rc::new(VecModel::from(
+            [1usize, 2, 3, 4, 5, 6, 9, 14]
+                .iter()
+                .map(|&i| crate::theme::color(p.ansi16[i]))
+                .collect::<Vec<_>>(),
+        ))),
+        faved,
+        matched: true,
+    };
+    // 常用 id：过滤非法 id（老配置 / 手改）并去重（上限已在写入端兜住）。
+    let mut fav_ids: Vec<String> = Vec::new();
+    for id in store.favorite_themes() {
+        if crate::theme::find(&id).is_some() && !fav_ids.contains(&id) {
+            fav_ids.push(id);
+        }
+    }
+    let mut entries: Vec<crate::ui::ThemeEntry> = Vec::new();
+    let fav_hdr = if crate::i18n::is_en() {
+        (
+            "Favorites".to_string(),
+            format!(
+                "{} / max {}　·　star to organize",
+                fav_ids.len(),
+                crate::theme::FAVORITE_LIMIT
+            ),
+        )
+    } else {
+        (
+            "常用".to_string(),
+            format!(
+                "{} / 最多 {}　·　点星可整理",
+                fav_ids.len(),
+                crate::theme::FAVORITE_LIMIT
+            ),
+        )
+    };
+    entries.push(header(fav_hdr.0, fav_hdr.1));
+    for id in &fav_ids {
+        if let Some(p) = crate::theme::find(id) {
+            entries.push(make(p, true));
+        }
+    }
+    // 全部主题区（其余套，保持 palettes.rs 顺序）；右端计数 = 全套数
+    //（高保真 mock 的 cnt 取值即 D.keep.length，是「目录总数」而非本区行数）。
+    let others: Vec<_> = crate::theme::palettes::PALETTES
+        .iter()
+        .filter(|p| !fav_ids.iter().any(|id| id == p.id))
+        .collect();
+    let all_hdr = if crate::i18n::is_en() {
+        (
+            "All themes".to_string(),
+            format!("{} themes", crate::theme::palettes::PALETTES.len()),
+        )
+    } else {
+        (
+            "全部主题".to_string(),
+            format!("{} 套", crate::theme::palettes::PALETTES.len()),
+        )
+    };
+    entries.push(header(all_hdr.0, all_hdr.1));
+    for p in others {
+        entries.push(make(p, false));
+    }
+    entries
+}
+
+/// (#theme-dedupe §5) 重建行模型 + 同步搜索快照（同一 Rc：过滤永远从全量快照
+/// 出发 —— 改收藏 / 清词恢复都不会丢行）。
+fn rebuild_theme_entries(
+    window: &AppWindow,
+    store: &ConfigStore,
+    full: &Rc<RefCell<Vec<crate::ui::ThemeEntry>>>,
+) {
+    let entries = build_theme_entries(store);
+    *full.borrow_mut() = entries.clone();
+    window.set_theme_entries(ModelRc::from(Rc::new(VecModel::from(entries))));
+}
+
+/// (#theme-dedupe §5) 搜索过滤：匹配 中文名 / id / 明暗词 / 色相名
+/// （「tokyonight」「青」「dark」都命中）；从全量快照出发重发模型。
+fn apply_theme_filter(
+    window: &AppWindow,
+    full: &Rc<RefCell<Vec<crate::ui::ThemeEntry>>>,
+    q: &str,
+) {
+    let q = q.trim().to_lowercase();
+    let model = window.get_theme_entries();
+    let Some(vec_model) = model
+        .as_any()
+        .downcast_ref::<slint::VecModel<crate::ui::ThemeEntry>>()
+    else {
+        return;
+    };
+    let all: Vec<crate::ui::ThemeEntry> = full.borrow().clone();
+    if q.is_empty() {
+        // 恢复：全量快照（含组头）
+        vec_model.set_vec(all);
+        window.set_theme_has_match(true);
+        return;
+    }
+    // 明暗关键词 → 目标 mode 值（"暗"/"亮"）。命中即按 mode 过滤，
+    // 与主题名是「或」关系（输入「暗 石墨」任一命中即显示）。
+    let want_dark = ["暗", "深", "dark"].iter().any(|k| q.contains(k));
+    let want_light = ["亮", "浅", "light"].iter().any(|k| q.contains(k));
+    let filtered: Vec<crate::ui::ThemeEntry> = all
+        .into_iter()
+        .filter(|row| {
+            if row.kind == "header" {
+                return false;
+            }
+            let name_hit = row.zh.to_lowercase().contains(q.as_str())
+                || row.id.to_lowercase().contains(q.as_str());
+            let mode_hit = (want_dark && row.mode == "暗") || (want_light && row.mode == "亮");
+            // 色相名（#theme-dedupe §5）：强调色 → 红/橙/黄/绿/青/蓝/紫/粉
+            let ac = ((row.ac.red() as u32) << 16)
+                | ((row.ac.green() as u32) << 8)
+                | row.ac.blue() as u32;
+            let hue_hit = crate::theme::hue_label(ac).contains(q.as_str());
+            name_hit || mode_hit || hue_hit
+        })
+        .map(|mut r| {
+            r.matched = true;
+            r
+        })
+        .collect();
+    // 无命中 → 浮层显示占位（#theme-search-empty）
+    window.set_theme_has_match(!filtered.is_empty());
+    vec_model.set_vec(filtered);
+}
 
 /// hsv → 色轮圆点位置（mx/my，0..1，my 向下为 +y）与明度条位置（val-my）。
 /// Slint 侧不算三角函数（项目内也没在别处用过 Math.sin/cos），统一由这里算。
@@ -4639,7 +4834,7 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
                     let mut s = store.borrow_mut();
                     s.set_follow_system(on);
                     if on {
-                        // 回到跟随系统：theme 清空（运行时按系统探测取 graphite 族）。
+                        // 回到跟随系统：theme 清空（运行时按系统探测取 mterm 门面）。
                         s.set_theme(String::new());
                     } else if s.theme().is_empty() {
                         if let Some(w) = weak.upgrade() {
@@ -5060,7 +5255,7 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
         // 后果:hairline() = 1px/1.0 = 1 **逻辑**px,在 200% 屏上等于 2 个物理
         // 像素 —— 窗口四边框、面板外框、splitter/分隔线全比设计值粗一倍
         // (真机 2662x1316 截图实测:窗口描边 2px 满覆盖 #4E5157,面板外框
-        // 2px 满覆盖 #232428,均为 islands-dark 的 lstr/line 原色,非 AA 稀释)。
+        // 2px 满覆盖 #232428,均为 mterm-dark 的 lstr/line 原色,非 AA 稀释)。
         // snap-to-device() 同样按错误栅格取整,一起失效。
         // 这里在每个窗口事件上重问一次真实缩放(值相同时不写,避免每帧触发
         // 全 UI 重绘);首个事件到达时 HWND 已映射,拿到的一定是真值。

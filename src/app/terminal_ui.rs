@@ -213,7 +213,7 @@ pub(super) fn refresh_terminal_selection(win: &AppWindow, bufs: &TermBuffers, ta
 
 /// Resolve the user's saved theme preference to a dark/light bool (mirrors the
 /// startup logic): "light"/"dark" win; otherwise ask the OS, defaulting to dark.
-/// (#theme-split) 仅在 theme 为空（跟随系统）时作为 graphite 族的深浅依据。
+/// (#theme-split) 仅在 theme 为空（跟随系统）时作为 mterm 门面的深浅依据。
 pub(super) fn theme_pref_is_dark(store: &ConfigStore) -> bool {
     match store.theme_pref() {
         "light" => false,
@@ -258,7 +258,18 @@ pub(super) fn theme_state_of(window: &AppWindow, store: &ConfigStore) -> crate::
 /// 返回生效的主题 id。
 pub(super) fn apply_theme(window: &AppWindow, bufs: &TermBuffers, store: &ConfigStore) -> String {
     let st = theme_state_of(window, store);
-    let p = crate::theme::apply(window, &st);
+    apply_theme_resolved(window, bufs, &st).id.to_string()
+}
+
+/// (#theme-dedupe §5) 用「已解析的 ThemeState」完整应用：UI 槽 + 强调色守卫
+/// 回写 + 终端 buffer 色表 + 重渲染。**悬停预览与点击落盘共用这一条路径** ——
+/// 高保真 §5：预览必须同步终端色表，否则预览与落盘结果不一致。
+pub(super) fn apply_theme_resolved(
+    window: &AppWindow,
+    bufs: &TermBuffers,
+    st: &crate::theme::ThemeState,
+) -> &'static crate::theme::palettes::Palette {
+    let p = crate::theme::apply(window, st);
     // (#accent-guard 2026-10-13) 设置页 §3.8 的强调色守卫提示行：每次重算
     // （切主题/改强调色/悬停预览/图片取色）都回写原色与生效色，面板上的
     // chip 与「对比度守卫」文案据此显示真实数值，不再是一句静态说明。
@@ -281,7 +292,7 @@ pub(super) fn apply_theme(window: &AppWindow, bufs: &TermBuffers, store: &Config
     for tid in tab_ids {
         rebuild_tab_display(window, bufs, &tid);
     }
-    p.id.to_string()
+    p
 }
 
 pub(super) fn apply_output_highlight(

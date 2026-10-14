@@ -181,6 +181,6 @@ mod tests {
     #[test]
     fn ink_on_threshold() {
         assert_eq!(ink_on(0xFAFAFA), 0x000000); // 白光色 → 黑字
-        assert_eq!(ink_on(0x0B0D12), 0xFFFFFF); // 深渊色 → 白字
+        assert_eq!(ink_on(0x0B0D12), 0xFFFFFF); // 极深色 → 白字
     }
 }
