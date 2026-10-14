@@ -4405,7 +4405,9 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
             pm.on_hex_valid({
                 move |hex: SharedString| match crate::picker::parse_hex(&hex) {
                     Some(v) => format!("#{:06X}", v).into(),
-                    None => hex,
+                    // 非法 → 空串（不是原样返回）：调用方据此**拒绝写回** hex
+                    // 事实源，免得打字中间态把色轮/色块/确认键一起带黑。
+                    None => SharedString::default(),
                 }
             });
             // 读单分量：rgb(R/G/B 0-255) | hsv|hsb(H 0-360, S/V 0-100) | hsl(H, S/L 0-100)

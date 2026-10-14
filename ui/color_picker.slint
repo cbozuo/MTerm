@@ -10,6 +10,7 @@
 //     `hex` 实时联动；
 //   * `bounds-w/h` 传全窗尺寸，供头部拖动的边界钳制。
 import { Theme } from "theme.slint";
+import { SegGroup } from "seg.slint";
 
 // (#color-info-card 2026-10-14) 取色信息卡：HEX / RGB / HSV / HSL 四行等宽
 // 对齐，悬停浮出、移出消失。**唯一实现** —— 强调色弹框副标题行里的色块
@@ -102,6 +103,111 @@ export component InfoSwatch inherits Rectangle {
     }
 }
 
+// (#picker-input 2026-10-15) 取色盘输入行：标签 + 右对齐数值 + 统一聚焦样式。
+// HEX 行与 R/G/B 行**同一实现**（此前 HEX 是独立手写块、三分量是内联 for 循环，
+// 聚焦样式无处安放、两份代码迟早漂移）。要点：
+//   * 聚焦样式 = 全应用输入框同款（MiniInput）：边框转 Theme.accent + 外扩 3px
+//     的 accent-soft 柔光环；点输入框外由 blur-token 统一离焦（Slint 点空白
+//     **不会**自动清焦点，必须显式 clear-focus）；
+//   * 光标默认落右端：右对齐输入框点击后光标停在文本左端（用户第 5 轮截图④），
+//     聚焦时 set-selection-offsets(末, 末) 带过去（同 Slint 官方 SpinBox 做法，
+//     character-count 为字符数、与 UTF-8 偏移在本盘纯 ASCII 值下等价）；
+//   * 标签列定宽 26px（容得下 "HEX"），值列全部右对齐 → 四行标签、值各成一条竖线。
+component PickerInput inherits Rectangle {
+    in property <int> idx;
+    in property <string> label;
+    in-out property <string> value;
+    // 每次「点输入框外」自增 → 已聚焦的输入框自行离焦（无需互查焦点归属）
+    in property <int> blur-token: 0;
+    callback edited(string);
+    height: 36px;
+    horizontal-stretch: 1;
+    border-radius: 8px;
+    background: Theme.field;
+    border-width: 1px;
+    border-color: inp.has-focus ? Theme.accent : Theme.border-control;
+    animate border-color { duration: 120ms; }
+    // 聚焦柔光环（MiniInput 同款；圆角 8 + 3 = 11 与外框同心）
+    if inp.has-focus : Rectangle {
+        x: -3px;
+        y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        border-radius: 11px;
+        border-width: 3px;
+        border-color: Theme.accent-soft;
+    }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+        Text {
+            width: 26px;
+            text: root.label;
+            color: Theme.text-muted;
+            font-size: 10px;
+            vertical-alignment: center;
+        }
+        inp := TextInput {
+            horizontal-stretch: 1;
+            height: parent.height;
+            text: root.value;
+            color: Theme.text-primary;
+            font-size: 13px;
+            font-family: Theme.term-font-family;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            single-line: true;
+            edited => { root.edited(self.text); }
+            // 点击聚焦：光标直接到文本末尾（右对齐框的「右侧」）
+            changed has-focus => {
+                if (self.has-focus) {
+                    inp.set-selection-offsets(inp.text.character-count, inp.text.character-count);
+                }
+            }
+        }
+    }
+    // 用户在框内打字会**移除 text 上的绑定**（Slint 语义：内部 set 断开外部绑定），
+    // 此后色轮 / 明度条 / 其它分量驱动的外部变化必须手动回写，否则该行永远停在
+    // 手输值（官方 SpinBox 同款做法）。edited 走回调上报，单向流动不打架。
+    changed value => { inp.text = root.value; }
+    // (#picker-blur-sync 2026-10-15) 离焦即收敛：打字中间态（非法 HEX、"999"
+    // 这类被 hex-apply 钳过的数值）在离焦瞬间回写为事实源的值 —— 输入框永远与
+    // 盘上选色一致，不会停在用户敲了一半的串上。
+    changed blur-token => {
+        if (inp.has-focus) {
+            inp.clear-focus();
+            inp.text = root.value;
+        }
+    }
+}
+
+// (#picker-seg 2026-10-15) 格式分段段件：与设置页 AccentSeg 同语言（透出滑层、
+// 段内无边框、悬停浅染、13px 等宽段），差异只有色源 —— 设置页固定主题强调色，
+// 本盘跟随当前选色（滑层淡染同 Theme.chip 口径 22%/14% 由调用方给，文字用
+// 守卫后的亮色，保证任意选色下可读）。
+component PickerSeg inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    in property <brush> active-color: Theme.accent;
+    callback clicked();
+    height: 30px;
+    horizontal-stretch: 1;
+    min-width: 0px;
+    preferred-width: 0px;
+    border-radius: 7px;
+    background: active ? transparent : (ta.has-hover ? Theme.bg-hover : transparent);
+    Text {
+        text: root.label;
+        color: active ? root.active-color : (ta.has-hover ? Theme.text-primary : Theme.text-secondary);
+        font-size: Theme.fs-sm;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
 // 纯取色数学：Rust 一次性接线（src/app.rs「PickerMath 接线」块）。
 // hex-ch / hex-apply 的 fmt：rgb(R/G/B 0-255) | hsv(H 0-360, S/V 0-100) |
 // hsl(H 0-360, S/L 0-100)。
@@ -114,7 +220,7 @@ export struct WheelPos {
 export global PickerMath {
     pure callback hex-color(string) -> color;              // hex 串 → color（非法回黑）
     pure callback ink-on(string) -> color;                 // 色块字色：深块白字/浅块黑字
-    pure callback hex-valid(string) -> string;             // hex 规范化；非法原样返回
+    pure callback hex-valid(string) -> string;             // 合法→规范化 #RRGGBB；**非法→空串**
     pure callback hex-ch(string, int, string) -> string;   // 读单分量
     callback hex-apply(string, int, string, string) -> string; // 写单分量 → 规范化 hex
     callback wheel-pick(float, float, float) -> string;    // 色轮命中（顺带重烘明度条）
@@ -156,13 +262,19 @@ export component ColorPickerDialog inherits Rectangle {
     property <length> drag-cy;
     property <bool> head-dragging: false;
     property <string> guarded: PickerMath.fit-hex(root.hex);
+    // (#picker-blur 2026-10-15) 「点输入框外就是离焦」的统一触发槽：任何非输入
+    // 区的按下把本值自增，PickerInput 收到变更后对自身 clear-focus（Slint 不会
+    // 因点击空白自动清焦点）。用自增计数而非 bool，连续两次外部点击同样生效。
+    property <int> blur-token: 0;
 
     // 卡片留白吞点击（否则点 padding 穿透到遮罩被当成取消）；
     // 放在最底层不影响其上控件的事件。空白区也可拖动卡片。
+    // 点空白 = 输入框外 → 顺带清掉输入框焦点（#picker-blur）。
     card-ta := TouchArea {
-        clicked => {}
+        clicked => { root.blur-token += 1; }
         pointer-event(ev) => {
             if (ev.kind == PointerEventKind.down) {
+                root.blur-token += 1;
                 root.head-dragging = true;
                 root.drag-ox = root.x;
                 root.drag-oy = root.y;
@@ -196,6 +308,7 @@ export component ColorPickerDialog inherits Rectangle {
             head-drag := TouchArea {
                 pointer-event(ev) => {
                     if (ev.kind == PointerEventKind.down) {
+                        root.blur-token += 1;
                         root.head-dragging = true;
                         root.drag-ox = root.x;
                         root.drag-oy = root.y;
@@ -287,6 +400,7 @@ export component ColorPickerDialog inherits Rectangle {
                         + (self.mouse-y / wheel-box.height - 0.5) * (self.mouse-y / wheel-box.height - 0.5)
                     ) <= 0.5 ? crosshair : default;
                     moved => {
+                        root.blur-token += 1;
                         if (Math.sqrt(
                             (self.mouse-x / wheel-box.width - 0.5) * (self.mouse-x / wheel-box.width - 0.5)
                             + (self.mouse-y / wheel-box.height - 0.5) * (self.mouse-y / wheel-box.height - 0.5)
@@ -300,6 +414,7 @@ export component ColorPickerDialog inherits Rectangle {
                         }
                     }
                     clicked => {
+                        root.blur-token += 1;
                         if (Math.sqrt(
                             (self.mouse-x / wheel-box.width - 0.5) * (self.mouse-x / wheel-box.width - 0.5)
                             + (self.mouse-y / wheel-box.height - 0.5) * (self.mouse-y / wheel-box.height - 0.5)
@@ -362,11 +477,13 @@ export component ColorPickerDialog inherits Rectangle {
                 bright-ta := TouchArea {
                     mouse-cursor: ns-resize;
                     moved => {
+                        root.blur-token += 1;
                         root.val-my = 1 - Math.max(0, Math.min(1, self.mouse-y / bright.height));
                         root.hex = PickerMath.wheel-pick(
                             root.wheel-mx * 2 - 1, 1 - root.wheel-my * 2, root.val-my);
                     }
                     clicked => {
+                        root.blur-token += 1;
                         root.val-my = 1 - Math.max(0, Math.min(1, self.mouse-y / bright.height));
                         root.hex = PickerMath.wheel-pick(
                             root.wheel-mx * 2 - 1, 1 - root.wheel-my * 2, root.val-my);
@@ -381,140 +498,73 @@ export component ColorPickerDialog inherits Rectangle {
                     }
                 }
             }
-            // 右列：HEX 常驻 + RGB|HSV|HSL 滑块 + 三分量（任一输入实时联动）
+            // 右列：HEX 常驻 + RGB|HSV|HSL 分段 + 三分量（任一输入实时联动）
+            // (#picker-col 2026-10-15) 四行同构（用户第 5 轮：「第一行 加个 HEX
+            // 是不是好些？」「整体布局是不是可以优化下，使其更加协调」）：HEX 行
+            // 从「独行大字框」并入与三分量相同的 PickerInput —— 标签 26px + 值
+            // 右对齐，四行标签、值各成一条竖线；# 为默认输入输出符号，保留值内。
             VerticalLayout {
                 spacing: 15px;
                 horizontal-stretch: 1;
-                // HEX：编辑实时联动色轮/明度条/三分量
-                hex-box := Rectangle {
-                    height: 36px;
-                    border-radius: 8px;
-                    background: Theme.field;
-                    border-width: 1px;
-                    border-color: hex-input.has-focus ? PickerMath.hex-color(root.hex) : Theme.border-control;
-                    hex-input := TextInput {
-                        x: 11px;
-                        width: parent.width - 22px;
-                        height: parent.height;
-                        text: root.hex;
-                        color: Theme.text-primary;
-                        font-size: 13px;
-                        font-family: Theme.term-font-family;
-                        vertical-alignment: center;
-                        single-line: true;
-                        edited => {
-                            root.hex = PickerMath.hex-valid(self.text);
+                PickerInput {
+                    idx: 0;
+                    label: "HEX";
+                    value: root.hex;
+                    blur-token: root.blur-token;
+                    // (#picker-hex-guard 2026-10-15) 只有能规范化的输入才写回事实源。
+                    // hex 是全盘唯一事实源：把 "#F279B90" 这类打字中间态写进去，
+                    // hex-color 解析失败回黑 → 色轮圆点、色块、确认键当场全变黑
+                    // （探针实测 hex=#F279B90）。中间态只留在输入框里显示，离焦时
+                    // 由 PickerInput 的 blur 分支收敛回事实源。
+                    edited(v) => {
+                        if (PickerMath.hex-valid(v) != "") {
+                            root.hex = PickerMath.hex-valid(v);
                             root.sync-pos();
                         }
                     }
                 }
-                // RGB|HSV|HSL 滑块：thumb 颜色 = 当前色（与「确认」按钮一致）
-                fmt := Rectangle {
-                    height: 36px;
-                    border-radius: 8px;
-                    background: Theme.field;
-                    border-width: 1px;
-                    border-color: Theme.border-control;
-                    property <length> cell: (self.width - 10px) / 3;
-                    Rectangle {
-                        x: 2px + (root.fmt == "rgb" ? 0 : root.fmt == "hsv" ? 1 : 2) * (fmt.cell + 2px);
-                        y: 2px;
-                        width: fmt.cell;
-                        height: fmt.height - 4px;
-                        border-radius: 6px;
-                        background: PickerMath.hex-color(root.hex);
-                        animate background { duration: 120ms; }
-                        // 滑动动效与「跟随主题/自定义」分段一致
-                        animate x { duration: 180ms; easing: ease-in-out; }
+                // (#picker-seg 2026-10-15) 格式分段复用设置页同款 SegGroup（用户
+                // 第 5 轮：「这三个滑块的样式参照强调色里面的」）——容器 36px /
+                // 圆角 10 / 内衬 3px / 段间 2px / 滑层高 30 圆角 7 / 180ms 滑动
+                // 全部与主题设置页**同一实现**（ui/seg.slint，不再另抄一份）；
+                // 只有滑层色源是当前选色（盘内语义）：淡染 22%（暗）/14%（亮）
+                // = Theme.chip 同口径，激活文字用守卫后的亮色，任意选色可读。
+                fmt := SegGroup {
+                    count: 3;
+                    active-index: root.fmt == "rgb" ? 0 : root.fmt == "hsv" ? 1 : 2;
+                    thumb-tint: PickerMath.hex-color(root.hex).with-alpha(Theme.dark ? 0.22 : 0.14);
+                    PickerSeg {
+                        label: "RGB";
+                        active: root.fmt == "rgb";
+                        active-color: PickerMath.hex-color(root.guarded);
+                        clicked => { root.fmt = "rgb"; root.blur-token += 1; }
                     }
-                    HorizontalLayout {
-                        padding: 2px;
-                        spacing: 2px;
-                        Rectangle {
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { root.fmt = "rgb"; }
-                            }
-                            Text {
-                                width: 100%;
-                                height: 100%;
-                                text: "RGB";
-                                color: root.fmt == "rgb" ? PickerMath.ink-on(root.hex) : Theme.text-muted;
-                                font-size: 11px;
-                                font-weight: root.fmt == "rgb" ? 700 : 400;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                        Rectangle {
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { root.fmt = "hsv"; }
-                            }
-                            Text {
-                                width: 100%;
-                                height: 100%;
-                                text: "HSV";
-                                color: root.fmt == "hsv" ? PickerMath.ink-on(root.hex) : Theme.text-muted;
-                                font-size: 11px;
-                                font-weight: root.fmt == "hsv" ? 700 : 400;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                        Rectangle {
-                            TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { root.fmt = "hsl"; }
-                            }
-                            Text {
-                                width: 100%;
-                                height: 100%;
-                                text: "HSL";
-                                color: root.fmt == "hsl" ? PickerMath.ink-on(root.hex) : Theme.text-muted;
-                                font-size: 11px;
-                                font-weight: root.fmt == "hsl" ? 700 : 400;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
+                    PickerSeg {
+                        label: "HSV";
+                        active: root.fmt == "hsv";
+                        active-color: PickerMath.hex-color(root.guarded);
+                        clicked => { root.fmt = "hsv"; root.blur-token += 1; }
+                    }
+                    PickerSeg {
+                        label: "HSL";
+                        active: root.fmt == "hsl";
+                        active-color: PickerMath.hex-color(root.guarded);
+                        clicked => { root.fmt = "hsl"; root.blur-token += 1; }
                     }
                 }
                 // 三分量：编辑任一，其余（含 HEX/色轮/明度条）实时跟随
-                for i in [0, 1, 2] : Rectangle {
-                    height: 36px;
-                    border-radius: 8px;
-                    background: Theme.field;
-                    border-width: 1px;
-                    border-color: Theme.border-control;
-                    HorizontalLayout {
-                        padding-left: 10px;
-                        padding-right: 10px;
-                        spacing: 6px;
-                        Text {
-                            width: 12px;
-                            text: i == 0 ? (root.fmt == "rgb" ? "R" : "H")
-                                : i == 1 ? "S"
-                                : (root.fmt == "rgb" ? "B" : (root.fmt == "hsl" ? "L" : "V"));
-                            color: Theme.text-muted;
-                            font-size: 10px;
-                            vertical-alignment: center;
-                        }
-                        TextInput {
-                            horizontal-stretch: 1;
-                            height: parent.height;
-                            text: PickerMath.hex-ch(root.hex, i, root.fmt);
-                            color: Theme.text-primary;
-                            font-size: 12.5px;
-                            font-family: Theme.term-font-family;
-                            horizontal-alignment: right;
-                            vertical-alignment: center;
-                            single-line: true;
-                            edited => {
-                                root.hex = PickerMath.hex-apply(root.hex, i, self.text, root.fmt);
-                                root.sync-pos();
-                            }
-                        }
+                // (#picker-label-g 2026-10-15) 中列标签原写死 "S" —— RGB 模式下
+                // 应为 "G"（用户第 5 轮截图②红框：RGB 的 G）；HSB/HSL 才用 S。
+                for i in [0, 1, 2] : PickerInput {
+                    idx: i + 1;
+                    label: i == 0 ? (root.fmt == "rgb" ? "R" : "H")
+                        : i == 1 ? (root.fmt == "rgb" ? "G" : "S")
+                        : (root.fmt == "rgb" ? "B" : (root.fmt == "hsl" ? "L" : "V"));
+                    value: PickerMath.hex-ch(root.hex, i, root.fmt);
+                    blur-token: root.blur-token;
+                    edited(v) => {
+                        root.hex = PickerMath.hex-apply(root.hex, i, v, root.fmt);
+                        root.sync-pos();
                     }
                 }
             }

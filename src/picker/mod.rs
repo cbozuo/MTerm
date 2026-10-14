@@ -39,7 +39,8 @@ pub fn hsv_to_hex(h: f32, s: f32, v: f32) -> u32 {
     (q(r) << 16) | (q(g) << 8) | q(b)
 }
 
-/// `0xRRGGBB` → (h, s, v)。饱和度按 HSV 定义 s=(max-min)/max —— 不能用 HSL 的
+/// `0xRRGGBB` → (h, s, v)，色相归一到 **0..360**（见函数末尾的 rem_euclid）。
+/// 饱和度按 HSV 定义 s=(max-min)/max —— 不能用 HSL 的
 /// d/(1-|2L-1|)，否则与 hsv_to_hex 往返会偏色（这正是高保真稿调试时踩过的坑）。
 pub fn hex_to_hsv(c: u32) -> (f32, f32, f32) {
     let r = ((c >> 16) & 0xFF) as f32 / 255.0;
@@ -58,7 +59,10 @@ pub fn hex_to_hsv(c: u32) -> (f32, f32, f32) {
     } else {
         (r - g) / d + 4.0
     };
-    (h * 60.0, d / mx, mx)
+    // ⚠️ Rust 的 `%` 是「余数」不是「模」：红区（mx==r 且 g<b）时 (g-b)/d ∈ (-1,0)，
+    // h*60 落在 -60..0 —— H 输入框会显示 -32 而不是 328（#F279B9 实测）。
+    // 三个分支里只有 mx==r 可能为负，但统一归一最省心（其余分支 rem_euclid 无副作用）。
+    ((h * 60.0).rem_euclid(360.0), d / mx, mx)
 }
 
 /// HSV（h:0..360、s/v:0..1）→ HSL（h:0..360、s/l:0..1）。取色盘 HSL 档用；
@@ -129,6 +133,19 @@ mod tests {
             let (h, s, v) = hex_to_hsv(c);
             assert_eq!(hsv_to_hex(h, s, v), c, "{c:06X} 往返偏色");
         }
+    }
+
+    #[test]
+    fn hue_normalized_to_0_360() {
+        // 回归：红区（mx==r 且 g<b）曾因 `%` 是余数而非模而返回**负色相** ——
+        // HSV 档的 H 输入框会显示 -32 而不是 328。色相必须恒在 0..360。
+        for c in [0xF279B9u32, 0xFF00FF, 0xFF0080, 0xFF0000, 0xFE0001, 0x800000] {
+            let (h, s, v) = hex_to_hsv(c);
+            assert!((0.0..360.0).contains(&h), "{c:06X} 色相 {h} 越界");
+            assert_eq!(hsv_to_hex(h, s, v), c, "{c:06X} 往返偏色");
+        }
+        // #F279B9 的例：-(64/121)*60 = -31.7 → 328.3
+        assert!((hex_to_hsv(0xF279B9).0 - 328.3).abs() < 0.6);
     }
 
     #[test]
