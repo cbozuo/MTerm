@@ -14,6 +14,12 @@ import { Theme } from "theme.slint";
 // 纯取色数学：Rust 一次性接线（src/app.rs「PickerMath 接线」块）。
 // hex-ch / hex-apply 的 fmt：rgb(R/G/B 0-255) | hsv(H 0-360, S/V 0-100) |
 // hsl(H 0-360, S/L 0-100)。
+// 色轮取样点（0..1，已钳制在盘内缘）
+export struct WheelPos {
+    mx: float,
+    my: float,
+}
+
 export global PickerMath {
     pure callback hex-color(string) -> color;              // hex 串 → color（非法回黑）
     pure callback ink-on(string) -> color;                 // 色块字色：深块白字/浅块黑字
@@ -22,6 +28,7 @@ export global PickerMath {
     callback hex-apply(string, int, string, string) -> string; // 写单分量 → 规范化 hex
     callback wheel-pick(float, float, float) -> string;    // 色轮命中（顺带重烘明度条）
     pure callback fit-hex(string) -> string;               // 守卫调亮预览（fit_contrast）
+    pure callback clamp-wheel(float, float) -> WheelPos;   // 取样点钳制到盘内缘
     pure callback bright-label(v: float) -> string;        // 明度气泡数值（v*255 取整）
     in-out property <image> wheel-image;                   // 色轮位图（一次性烘焙）
     in-out property <image> slider-image;                  // 明度条渐变（随色相重烘）
@@ -43,7 +50,7 @@ export component ColorPickerDialog inherits Rectangle {
     callback cancelled();                          // 「取消」/ ✕：放弃修改
     callback sync-pos();                           // hex 变动后回填取样点（Rust 算三角函数）
 
-    width: 462px;
+    width: 474px;
     height: dlg-lay.preferred-height;
     background: Theme.popup-bg;
     border-radius: 14px;
@@ -157,10 +164,12 @@ export component ColorPickerDialog inherits Rectangle {
                     width: 216px;
                     height: 216px;
                 }
-                // 明度蒙罩：整盘随明度条压暗（与逐像素缩放 V 等价）
+                // 明度蒙罩：整盘随明度条压暗（与逐像素缩放 V 等价）；
+                // 圆形蒙罩 —— 方形会把圆外的透明角也压暗（背景色不协调的根因）
                 Rectangle {
                     width: 216px;
                     height: 216px;
+                    border-radius: 108px;
                     background: #000000;
                     opacity: 1 - root.pick-v;
                 }
@@ -178,14 +187,18 @@ export component ColorPickerDialog inherits Rectangle {
                 wheel-ta := TouchArea {
                     mouse-cursor: crosshair;
                     moved => {
-                        root.wheel-mx = Math.max(0, Math.min(1, self.mouse-x / wheel-box.width));
-                        root.wheel-my = Math.max(0, Math.min(1, self.mouse-y / wheel-box.height));
+                        root.wheel-mx = PickerMath.clamp-wheel(
+                            self.mouse-x / wheel-box.width, self.mouse-y / wheel-box.height).mx;
+                        root.wheel-my = PickerMath.clamp-wheel(
+                            self.mouse-x / wheel-box.width, self.mouse-y / wheel-box.height).my;
                         root.hex = PickerMath.wheel-pick(
                             root.wheel-mx * 2 - 1, 1 - root.wheel-my * 2, root.pick-v);
                     }
                     clicked => {
-                        root.wheel-mx = Math.max(0, Math.min(1, self.mouse-x / wheel-box.width));
-                        root.wheel-my = Math.max(0, Math.min(1, self.mouse-y / wheel-box.height));
+                        root.wheel-mx = PickerMath.clamp-wheel(
+                            self.mouse-x / wheel-box.width, self.mouse-y / wheel-box.height).mx;
+                        root.wheel-my = PickerMath.clamp-wheel(
+                            self.mouse-x / wheel-box.width, self.mouse-y / wheel-box.height).my;
                         root.hex = PickerMath.wheel-pick(
                             root.wheel-mx * 2 - 1, 1 - root.wheel-my * 2, root.pick-v);
                     }
@@ -264,7 +277,7 @@ export component ColorPickerDialog inherits Rectangle {
                 horizontal-stretch: 1;
                 // HEX：编辑实时联动色轮/明度条/三分量
                 hex-box := Rectangle {
-                    height: 34px;
+                    height: 32px;
                     border-radius: 8px;
                     background: Theme.field;
                     border-width: 1px;
@@ -301,6 +314,8 @@ export component ColorPickerDialog inherits Rectangle {
                         border-radius: 6px;
                         background: PickerMath.hex-color(root.hex);
                         animate background { duration: 120ms; }
+                        // 滑动动效与「跟随主题/自定义」分段一致
+                        animate x { duration: 180ms; easing: ease-in-out; }
                     }
                     HorizontalLayout {
                         padding: 2px;
@@ -419,17 +434,17 @@ export component ColorPickerDialog inherits Rectangle {
                 width: 84px;
                 height: 30px;
                 border-radius: 8px;
-                background: transparent;
+                background: cancel-ta.has-hover ? Theme.bg-hover : transparent;
                 border-width: 1px;
-                border-color: Theme.border-strong;
+                border-color: cancel-ta.has-hover ? Theme.text-muted : Theme.border-strong;
                 Text {
                     text: root.en ? "Cancel" : "取消";
-                    color: Theme.text-secondary;
+                    color: cancel-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
                     font-size: 12px;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
-                TouchArea {
+                cancel-ta := TouchArea {
                     mouse-cursor: pointer;
                     clicked => { root.cancelled(); }
                 }
@@ -439,6 +454,12 @@ export component ColorPickerDialog inherits Rectangle {
                 height: 30px;
                 border-radius: 8px;
                 background: PickerMath.hex-color(root.hex);
+                clip: true;
+                // 悬停提亮 + 按下压暗
+                Rectangle {
+                    background: #ffffff;
+                    opacity: ok-ta.has-hover ? 0.12 : ok-ta.pressed ? 0.22 : 0;
+                }
                 Text {
                     text: root.en ? "Confirm" : "确认";
                     color: PickerMath.ink-on(root.hex);
@@ -447,7 +468,7 @@ export component ColorPickerDialog inherits Rectangle {
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
-                TouchArea {
+                ok-ta := TouchArea {
                     mouse-cursor: pointer;
                     clicked => { root.confirmed(); }
                 }

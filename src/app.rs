@@ -4494,6 +4494,18 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
             pm.on_bright_label({
                 move |v: f32| format!("{:.0}", v.clamp(0.0, 1.0) * 255.0).into()
             });
+            // 取样点钳制到色轮内缘（0.465×直径 ≈ 半径-取样点半径），拖不出去
+            pm.on_clamp_wheel({
+                move |mx: f32, my: f32| {
+                    let (dx, dy) = (mx - 0.5, my - 0.5);
+                    let d = (dx * dx + dy * dy).sqrt();
+                    let k = if d > 0.465 { 0.465 / d } else { 1.0 };
+                    crate::ui::WheelPos {
+                        mx: (0.5 + dx * k).clamp(0.0, 1.0),
+                        my: (0.5 + dy * k).clamp(0.0, 1.0),
+                    }
+                }
+            });
         }
         // Slint 不能把 hex 字符串在运行期解析成 color，取色盘的色块统一走这个回调
         window.on_accent_hex_color({
