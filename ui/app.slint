@@ -5681,7 +5681,7 @@ export component AppWindow inherits Window {
         if root.group-dialog-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: #00000080;
+        background: Theme.modal-scrim;
         TouchArea { clicked => { root.group-dialog-open = false; } }
 
         Rectangle {
@@ -6037,7 +6037,7 @@ export component AppWindow inherits Window {
     if root.tab-rename-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: #00000080;
+        background: Theme.modal-scrim;
         TouchArea { clicked => { root.tab-rename-open = false; } }
 
         Rectangle {
@@ -6114,7 +6114,7 @@ export component AppWindow inherits Window {
         if root.quick-cmd-manage-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: #00000080;
+        background: Theme.modal-scrim;
         TouchArea { clicked => { root.quick-cmd-manage-open = false; } }
 
         qcm-card := Rectangle {
@@ -6536,7 +6536,7 @@ export component AppWindow inherits Window {
         if root.qcg-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: #00000080;
+        background: Theme.modal-scrim;
         TouchArea { clicked => { root.qcg-open = false; } }
 
         Rectangle {
@@ -6601,7 +6601,7 @@ export component AppWindow inherits Window {
         if root.sftp-prompt-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: #00000080;
+        background: Theme.modal-scrim;
         TouchArea { clicked => { root.sftp-prompt-open = false; } }
 
         Rectangle {
@@ -6683,12 +6683,20 @@ export component AppWindow inherits Window {
     // 破坏性预警改由「完全退出」卡片的 hover 变红承担。
     //
     // 注:设计稿的毛玻璃(Slint 无元素级 backdrop-filter,1.16 的
-    // i-slint-core/compiler/renderer 里均无该能力)这里用不透明的
-    // Theme.popup-bg 近似 —— 观感接近,但身后内容不会被真正模糊。
+    // i-slint-core/compiler/renderer 里均无该能力)这里用 Theme.popup-bg
+    // 近似 —— 它带 popup-alpha(标准=实心/通透=82%/全透=55%),与设置卡、
+    // 会话弹框同一来源;遮罩同理走 Theme.modal-scrim(跟随深浅色与通透档)。
     if root.confirm-close-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: #00000088;
+        // (#scrim-unify 2026-10-15) 遮罩统一到 Theme.modal-scrim:旧写死
+        // #00000088 不跟随深浅色/通透档,与其它弹框(会话/设置/同步输入)
+        // 的 modal-scrim 观感不一致(用户截图反馈"遮罩又不一样了")。
+        background: Theme.modal-scrim;
+        // (#close-dialog-drag 2026-10-15) 空白区拖动卡片:与 SessionDialog /
+        // ConfirmDialog 同款(绝对坐标差值 + 3px 阈值区分拖/点 + 窗口内钳制)。
+        // 拖动状态挂在 card 自身上(条件元素里 root 仍指 Window,拿不到);
+        // 卡片 TouchArea 垫在内容之下,字段/按钮/卡片在其上层不受影响。
         TouchArea { clicked => { root.confirm-close-open = false; } }
         // 抓键盘:让下面的终端停止收键位;Esc 取消(卡片改为点选式后,
         // 不再有 Enter/Space 直接确认的动作)。
@@ -6709,13 +6717,54 @@ export component AppWindow inherits Window {
             y: (parent.height - self.height) / 2;
             width: 440px;
             height: close-body.preferred-height;
+            // (#popup-transparency-hifi) 与其它弹框同源:卡片底走 popup-bg
+            // (标准=实心 / 通透=82% / 全透=55%),通透档下玻璃程度一致。
             background: Theme.popup-bg;
             border-radius: Theme.radius-lg;
             border-width: 1px;
             border-color: Theme.border-strong;
             drop-shadow-blur: 24px;
             drop-shadow-color: #000000a0;
-            TouchArea {}
+            // (#close-dialog-drag) 拖动中间量挂在卡片自身(root 在条件元素里
+            // 仍指 Window);重开重居中靠条件元素重建时绑定复位,无需手写。
+            property <bool> card-dragging: false;
+            property <bool> drag-moved: false;
+            property <length> drag-ox;
+            property <length> drag-oy;
+            property <length> drag-cx;
+            property <length> drag-cy;
+            // (#close-dialog-drag) 空白区(标题行留白/勾选行间隙/页脚空白)
+            // 按住可拖动整张卡片;✕/两张行为卡/复选框/取消按钮在其上层,
+            // 不受影响。按下即 GrabMouse,位移 >3px 才记为真拖动 —— 阈值
+            // 防止手抖点击被误判(与 SessionDialog 的 drag-moved 同款)。
+            TouchArea {
+                pointer-event(ev) => {
+                    if (ev.kind == PointerEventKind.down) {
+                        card.card-dragging = true;
+                        card.drag-moved = false;
+                        card.drag-ox = card.x;
+                        card.drag-oy = card.y;
+                        card.drag-cx = self.absolute-position.x + self.mouse-x;
+                        card.drag-cy = self.absolute-position.y + self.mouse-y;
+                    } else if (ev.kind == PointerEventKind.up) {
+                        card.card-dragging = false;
+                    }
+                }
+                moved => {
+                    if (card.card-dragging) {
+                        if (Math.abs(self.absolute-position.x + self.mouse-x - card.drag-cx) > 3px
+                            || Math.abs(self.absolute-position.y + self.mouse-y - card.drag-cy) > 3px) {
+                            card.drag-moved = true;
+                        }
+                        card.x = Math.max(8px, Math.min(
+                            card.drag-ox + (self.absolute-position.x + self.mouse-x - card.drag-cx),
+                            Math.max(8px, root.width - card.width - 8px)));
+                        card.y = Math.max(8px, Math.min(
+                            card.drag-oy + (self.absolute-position.y + self.mouse-y - card.drag-cy),
+                            Math.max(8px, root.height - card.height - 8px)));
+                    }
+                }
+            }
 
             close-body := VerticalLayout {
                 spacing: 0;
@@ -7041,7 +7090,7 @@ export component AppWindow inherits Window {
     if root.chmod-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: #00000080;
+        background: Theme.modal-scrim;
         TouchArea { clicked => { root.chmod-open = false; } }
 
         Rectangle {
@@ -7133,7 +7182,7 @@ export component AppWindow inherits Window {
         width: parent.width;
         height: parent.height;
         visible: root.shortcuts-open;
-        background: #00000080;
+        background: Theme.modal-scrim;
         TouchArea { clicked => { root.shortcuts-open = false; } }
 
         Rectangle {
@@ -7235,7 +7284,7 @@ export component AppWindow inherits Window {
         width: parent.width;
         height: parent.height;
         visible: root.about-open;
-        background: #00000080;            // dim backdrop
+        background: Theme.modal-scrim;            // dim backdrop
         TouchArea { clicked => { root.about-open = false; } }
 
         // Landscape card: logo on the left, a short intro + repo link on the right.
@@ -7501,7 +7550,7 @@ export component AppWindow inherits Window {
     if root.batch-import-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: #000000aa;
+        background: Theme.modal-scrim;
         TouchArea { clicked => { root.batch-import-open = false; } }   // backdrop closes
         Rectangle {
             width: 540px;
@@ -7597,7 +7646,7 @@ export component AppWindow inherits Window {
     if root.cred-prompt-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: #000000aa;
+        background: Theme.modal-scrim;
         TouchArea { clicked => { root.cred-reject(); } }
         Rectangle {
             width: 360px;
@@ -7667,7 +7716,7 @@ export component AppWindow inherits Window {
     if root.mfa-prompt-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: #000000aa;
+        background: Theme.modal-scrim;
         TouchArea { clicked => { root.mfa-cancel(); } }
         Rectangle {
             width: 360px;
