@@ -8415,7 +8415,17 @@ export component AppWindow inherits Window {
     //   * 「应用」= fit_contrast 后生效（唯一生效点）；空白/取消/✕/Esc = 还原。
     // 只在设置卡开着且停在主题页时渲染，切页/关卡自动收起。
     if root.interface-open && root.ifd-page == "theme" && root.accent-pop-open : Rectangle {
-        property <length> pop-h: min(root.height - 16px, accent-pop-lay.preferred-height);
+        // (#cur-seam 2026-10-15) 两道修一起上，缺一不可：
+        // ① 卡片高度/落位过 snap-to-device：preferred-height 是内容累加出的
+        //    小数逻辑高度，卡片框本身先要落在设备网格上（与设置卡 ifd-x/y、
+        //    主窗口 #win-edge-frame-r5 同范式）；
+        // ② cur-card 边框与 well/分割线/hint 的纵向内缩全改 hairline：1px 逻辑
+        //    在 125% 下是 1.25 物理，well 底边与边框顶边这个公共值永远带 .25
+        //    小数，填充与描边两条渲染路径取整不一致时中间空出一行卡片底色，
+        //    即「选定」按钮底边那道缝（用户截图实测 x=160 列：y59 色块末行 /
+        //    y60 卡片底色 / y61 卡片底边框）。改 1 物理像素后纵向边界全整数。
+        property <length> pop-h: Theme.snap-to-device(
+            min(root.height - 16px, accent-pop-lay.preferred-height));
         width: parent.width;
         height: parent.height;
         background: #080A0E3E;   // 轻遮罩：点空白 = 还原并关闭
@@ -8428,8 +8438,10 @@ export component AppWindow inherits Window {
         pop := Rectangle {
             width: 656px;
             height: parent.pop-h;
-            x: clamp(root.ifd-x + (root.ifd-w - self.width) / 2, 8px, max(8px, parent.width - self.width - 12px));
-            y: clamp((parent.height - self.height) / 2, 8px, max(8px, parent.height - self.height - 12px));
+            x: clamp(Theme.snap-to-device(root.ifd-x + (root.ifd-w - self.width) / 2),
+                8px, max(8px, parent.width - self.width - 12px));
+            y: clamp(Theme.snap-to-device((parent.height - self.height) / 2),
+                8px, max(8px, parent.height - self.height - 12px));
             background: Theme.popup-bg;
             border-radius: 12px;
             border-width: 1px;
@@ -8451,12 +8463,13 @@ export component AppWindow inherits Window {
                     }
                 }
                 moved => {
-                    pop.x = Math.max(8px, Math.min(
+                    // (#cur-seam) 拖动落点同样走设备网格，与设置卡拖动同款
+                    pop.x = Theme.snap-to-device(Math.max(8px, Math.min(
                         pop.drag-ox + (card-ta.absolute-position.x + card-ta.mouse-x - pop.drag-cx),
-                        Math.max(8px, root.width - pop.width - 8px)));
-                    pop.y = Math.max(8px, Math.min(
+                        Math.max(8px, root.width - pop.width - 8px))));
+                    pop.y = Theme.snap-to-device(Math.max(8px, Math.min(
                         pop.drag-oy + (card-ta.absolute-position.y + card-ta.mouse-y - pop.drag-cy),
-                        Math.max(8px, root.height - pop.height - 8px)));
+                        Math.max(8px, root.height - pop.height - 8px))));
                 }
             }
             property <string> fitted: PickerMath.fit-hex(root.accent-stage);
@@ -8717,23 +8730,35 @@ export component AppWindow inherits Window {
                         width: 194px;
                         height: parent.height;
                         border-radius: 10px;
-                        border-width: 1px;
+                        // (#cur-seam) 边框改 hairline（1 **设备**像素）：1px 逻辑在
+                        // 125% 下是 1.25 物理，与 well 的 1px 内缩（同为 1.25）相减后
+                        // 公共边界值落在物理网格外，填充与描边两条渲染路径取整不
+                        // 一致时中间空出一行卡片底色（用户截图「选定」按钮底边缝）。
+                        // 1 物理像素后所有纵向边界都是整数，恒相接。同范式：设置卡
+                        // hairline 边框、主窗口 #win-edge-frame-r3。
+                        border-width: Theme.hairline();
                         // 悬停转「选定色」= 即将应用的色，顺带把卡片和 well 缝成一色
                         border-color: cur-ta.has-hover
                             ? root.accent-hex-color(root.accent-stage) : Theme.border-strong;
                         clip: true;
                         animate border-color { duration: 120ms; }
-                        // 左段 well：内缩 1px 让出卡片边框（CSS 里 border 不被子元素盖住），
+                        // 左段 well：内缩 1 设备像素让出卡片边框（CSS 里 border 不被子元素盖住），
                         // (#cur-well-corner 2026-10-15) 左角必须跟着卡片圆角切：卡片
                         // 圆角 10px − 边框 1px = **9px 同心内圆角**。不写时粉块是直角，
                         // 与卡片圆弧之间露出一块卡片底色三角（用户第 5 轮截图①
                         // 「选定区域左侧，怎么有两个角」——直角色块 + 圆角边框弧）。
-                        // card 的 clip 是矩形裁剪（不裁圆角），只能靠自身圆角对齐。
+                        // (#cur-seam) 边框改 1 设备像素后同心理论值 = 10 − 0.8 = 9.2，
+                        // 保留 9px：0.25 物理像素的差肉眼不可辨，改 9.2 反而引入新的
+                        // 小数边界。card 的 clip 是矩形裁剪（不裁圆角），只能靠自身
+                        // 圆角对齐。
                         Rectangle {
+                            // (#cur-seam) 横向保持 1px 逻辑：x=1px + width=103px 在
+                            // 125% 下合计恰好 130 物理，与分割线 x=104px 精确重合，
+                            // 改成 hairline 反而错开 0.25。纵向单独走 hairline。
                             x: 1px;
-                            y: 1px;
+                            y: Theme.hairline();
                             width: 103px;
-                            height: parent.height - 2px;
+                            height: parent.height - 2 * Theme.hairline();
                             border-top-left-radius: 9px;
                             border-bottom-left-radius: 9px;
                             background: root.accent-hex-color(root.accent-stage);
@@ -8755,20 +8780,20 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
-                        // 分割线（well / hint 之间，上下同样内缩 1px）
+                        // 分割线（well / hint 之间，上下同样内缩 1 设备像素）
                         Rectangle {
                             x: 104px;
-                            y: 1px;
+                            y: Theme.hairline();
                             width: 1px;
-                            height: parent.height - 2px;
+                            height: parent.height - 2 * Theme.hairline();
                             background: Theme.border-strong;
                         }
                         // 右段 hint：透明底 + 居中
                         Text {
                             x: 105px;
-                            y: 1px;
+                            y: Theme.hairline();
                             width: parent.width - 105px - 1px;
-                            height: parent.height - 2px;
+                            height: parent.height - 2 * Theme.hairline();
                             text: root.lang-en ? "Palette ›" : "调色盘 ›";
                             color: cur-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
                             font-size: 12px;
