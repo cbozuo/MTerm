@@ -78,6 +78,17 @@ fn main() {
                 }
             }
         }
+        // winresource 的 windres（GNU）/rc.exe（MSVC）都要往 %TMP% 写预处理临时
+        // 文件。受控环境下（进程信任式写过滤：新编译的未签名构建子进程视为不可
+        // 信，用户 Temp 拒写、只放行工作区），windres 会以
+        //   Unable to create temp file: Permission denied
+        // 静默失败，这里只剩一条 warning，exe 的图标 + DPI manifest 就丢了
+        // （#icon-lost 2026-10-15，实测 Python/bash 启动同一 windres 可过、
+        // Rust Command 启动必挂，与 cwd/TMP 形态无关，只看临时目录落点）。
+        // 把 TMP/TEMP 指到 OUT_DIR —— cargo 管理的工作区内目录，必定可写。
+        let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR is set by cargo");
+        std::env::set_var("TMP", &out_dir);
+        std::env::set_var("TEMP", &out_dir);
         if let Err(e) = res.compile() {
             println!("cargo:warning=failed to embed Windows icon: {e}");
         }
