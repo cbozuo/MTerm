@@ -11,6 +11,7 @@
 //   * `bounds-w/h` 传全窗尺寸，供头部拖动的边界钳制。
 import { Theme } from "theme.slint";
 import { SegGroup } from "seg.slint";
+import { Icon } from "icons.slint";
 
 // (#color-info-card 2026-10-14) 取色信息卡：HEX / RGB / HSV / HSL 四行等宽
 // 对齐，悬停浮出、移出消失。**唯一实现** —— 强调色弹框副标题行里的色块
@@ -103,23 +104,52 @@ export component InfoSwatch inherits Rectangle {
     }
 }
 
-// (#picker-input 2026-10-15) 取色盘输入行：标签 + 右对齐数值 + 统一聚焦样式。
+// (#picker-input 2026-10-15) 取色盘输入行：标签 + 数值 + 统一聚焦样式。
 // HEX 行与 R/G/B 行**同一实现**（此前 HEX 是独立手写块、三分量是内联 for 循环，
 // 聚焦样式无处安放、两份代码迟早漂移）。要点：
 //   * 聚焦样式 = 全应用输入框同款（MiniInput）：边框转 Theme.accent + 外扩 3px
-//     的 accent-soft 柔光环；点输入框外由 blur-token 统一离焦（Slint 点空白
+//    的 accent-soft 柔光环；点输入框外由 blur-token 统一离焦（Slint 点空白
 //     **不会**自动清焦点，必须显式 clear-focus）；
-//   * 光标默认落右端：右对齐输入框点击后光标停在文本左端（用户第 5 轮截图④），
-//     聚焦时 set-selection-offsets(末, 末) 带过去（同 Slint 官方 SpinBox 做法，
-//     character-count 为字符数、与 UTF-8 偏移在本盘纯 ASCII 值下等价）；
 //   * 标签列定宽 26px（容得下 "HEX"），值列全部右对齐 → 四行标签、值各成一条竖线。
+//
+// (#picker-input-edit 2026-10-15) 用户反馈「第一次点只出聚焦边框、打不进字；
+// 能编辑后光标落在行首，且够不到行尾」。用 Slint 测试后端真派发鼠标/键盘
+// 事件复现（回归测试见 src/picker/ui_input_test.rs）后定位到两条真因，都出在本
+// 组件，不在事件派发：
+//   ① 值列右对齐 → 文字左边那一大片空白在 Slint 的命中测试里全部映射到偏移 0
+//      （i-slint-core items/text.rs::byte_offset_for_position）。于是「点哪儿光标
+//      都落行首」，而文字右缘紧贴右内边距、右边根本没有可点区域 → 靠鼠标永远
+//      到不了行尾。旧代码想用 `changed has-focus` 里 set-selection-offsets(末,末)
+//      把光标带到右端，但那次赋值发生在**同一次按下事件的前半段**，Rust 侧紧接着
+//      的 set_cursor_position_with_affinity(命中偏移) 又把它覆盖回 0 —— 旧注释说
+//      的「同官方 SpinBox 做法」在这个右对齐 + 单击场景下并不成立。
+//   ② 打字过程中每个按键都经 edited→hex-apply 立刻回写事实源，`changed value`
+//      又把钳过的值塞回输入框：想输入 300 会在第三个键被钳成 255、想输入 173
+//      中间态会被 rem_euclid 拉走，看起来就是「打了没反应 / 数字乱跳」。
+// 现在改成**数值框的通行做法**：
+//   * 点入即全选（`select-all()`），打字/粘贴直接替换整段值 —— 一次点击就能改；
+//     再点一次才落光标（此时是「已聚焦」状态，Slint 的按下定位不再被我们覆盖），
+//     于是「想改某一位」也照常可用；
+//   * 全选**不能**在 `changed has-focus` 里同步做（会被同一次按下的光标定位覆盖，
+//     同上 ①），改用 0ms Timer 推到这次事件派发之后；
+//   * 聚焦期间**不回写**输入框文本（`changed value` 加 `!has-focus` 守卫）：事实源
+//     实时联动照旧（edited 上报），但用户敲到一半的串不会被钳过的值抽走；离焦
+//     （blur-token 或焦点自然移走）时把事实值收敛回输入框。
 component PickerInput inherits Rectangle {
     in property <int> idx;
     in property <string> label;
     in-out property <string> value;
+    // 当前选色（只用于选中块配色；值列本身已经按 value 显示）
+    in property <string> hex: "";
     // 每次「点输入框外」自增 → 已聚焦的输入框自行离焦（无需互查焦点归属）
     in property <int> blur-token: 0;
+    // (#picker-channel 2026-10-15) 只画数值框、不要标签列（分量滑杆行右侧的
+    // 数字框）。标签列连同它那 26px 与 8px 间距一起去掉，宽度交给调用方给。
+    in property <bool> bare: false;
+    // 行尾复制键（HEX 行用）
+    in property <bool> copyable: false;
     callback edited(string);
+    callback copy-requested();
     height: 36px;
     horizontal-stretch: 1;
     border-radius: 8px;
@@ -137,11 +167,23 @@ component PickerInput inherits Rectangle {
         border-width: 3px;
         border-color: Theme.accent-soft;
     }
+    // 点入 → 本轮事件派发结束后全选（见上方 #picker-input-edit ①）
+    property <bool> select-pending: false;
+    select-timer := Timer {
+        interval: 0ms;
+        running: root.select-pending;
+        triggered => {
+            root.select-pending = false;
+            if (inp.has-focus) {
+                inp.select-all();
+            }
+        }
+    }
     HorizontalLayout {
-        padding-left: 10px;
+        padding-left: root.bare ? 8px : 10px;
         padding-right: 10px;
         spacing: 8px;
-        Text {
+        if !root.bare : Text {
             width: 26px;
             text: root.label;
             color: Theme.text-muted;
@@ -158,19 +200,49 @@ component PickerInput inherits Rectangle {
             horizontal-alignment: right;
             vertical-alignment: center;
             single-line: true;
+            // (#picker-input-edit) 点入即全选 → 每次点输入框都会闪一下选中块。
+            // 选中色跟当前选色（与分段滑层同为 accent 系），不用 fluent 默认的蓝：
+            // 这一屏所有"选中/当前"语义都由选色表达，蓝块是唯一的例外色。
+            selection-background-color: PickerMath.hex-color(root.hex).with-alpha(0.32);
+            selection-foreground-color: Theme.slot-t1;
             edited => { root.edited(self.text); }
-            // 点击聚焦：光标直接到文本末尾（右对齐框的「右侧」）
             changed has-focus => {
                 if (self.has-focus) {
-                    inp.set-selection-offsets(inp.text.character-count, inp.text.character-count);
+                    root.select-pending = true;
+                } else {
+                    // 离焦即收敛：打字中间态（非法 HEX、被钳过的数值）回写事实源
+                    self.text = root.value;
                 }
+            }
+        }
+        // (#picker-channel 2026-10-15 方案 B) 行尾复制键：一键把当前值拷走
+        // （HEX 行用）。点它不该动焦点 —— 按下被本 TouchArea 独占，输入框
+        // 收不到 press，聚焦中的那一行不会因复制而离焦、草稿也不会被收敛掉。
+        if root.copyable : Rectangle {
+            width: 22px;
+            height: 22px;
+            border-radius: 6px;
+            background: copy-ta.has-hover ? Theme.bg-hover : transparent;
+            Icon {
+                glyph: "copy";
+                tint: copy-ta.has-hover ? Theme.text-primary : Theme.text-muted;
+                size: 12px;
+            }
+            copy-ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.copy-requested(); }
             }
         }
     }
     // 用户在框内打字会**移除 text 上的绑定**（Slint 语义：内部 set 断开外部绑定），
     // 此后色轮 / 明度条 / 其它分量驱动的外部变化必须手动回写，否则该行永远停在
     // 手输值（官方 SpinBox 同款做法）。edited 走回调上报，单向流动不打架。
-    changed value => { inp.text = root.value; }
+    // ⚠ 聚焦期间跳过：用户在敲字，事实源那边钳过的值不许抢走光标下的串。
+    changed value => {
+        if (!inp.has-focus) {
+            inp.text = root.value;
+        }
+    }
     // (#picker-blur-sync 2026-10-15) 离焦即收敛：打字中间态（非法 HEX、"999"
     // 这类被 hex-apply 钳过的数值）在离焦瞬间回写为事实源的值 —— 输入框永远与
     // 盘上选色一致，不会停在用户敲了一半的串上。
@@ -178,6 +250,104 @@ component PickerInput inherits Rectangle {
         if (inp.has-focus) {
             inp.clear-focus();
             inp.text = root.value;
+        }
+    }
+}
+
+// (#picker-channel 2026-10-15 方案 B) 分量行：标签 + 渐变滑杆 + 数字框。
+// 用户在高保真里选了 B（A + 分量滑杆 + HEX 复制），行高与原先同构（36px），
+// 所以右列总高、色轮尺寸、整卡高度都不变 —— 只把「看得见的值」变成「拖得动的值」。
+//   * 滑杆底：一般分量用「该分量从最小到最大」的两端色做线性渐变，端点色由
+//     PickerMath.hex-apply 现推（其余分量保持不变），不需要预烘焙位图；色相 H
+//     例外 —— 它的两端色（hue 0 → hue 100）不是彩虹，改用七停静态彩虹渐变。
+//   * 数字框 = PickerInput(bare)：聚焦样式、点入全选、打字不回灌、离焦收敛
+//     全部复用同一实现，不另抄一份。
+//   * 拖动：整行高（36px）都是命中区，视觉条只有 6px，好抓；比例经
+//     PickerMath.track-value 转成该分量的值串，再走 hex-apply 写事实源 ——
+//     与手输数字走**同一条**通道（钳制、联动、sync-pos 语义完全一致）。
+component PickerChannel inherits Rectangle {
+    in property <int> idx: 0;
+    in property <string> label;
+    in property <string> hex: "";
+    in property <string> fmt: "rgb";
+    in property <string> value;              // 数字框显示值（与 hex-ch 同源）
+    in property <int> blur-token: 0;
+    callback edited(string);
+    callback picked(float);                  // 拖动滑块 → 0..1
+    height: 36px;
+    horizontal-stretch: 1;
+    // 量程与 hex-ch / hex-apply 同口径：rgb 0..255；H 0..360；S/V/L 0..100
+    property <float> max-value: root.fmt == "rgb" ? 255 : (root.idx == 0 ? 360 : 100);
+    property <float> ratio: Math.max(0, Math.min(1,
+        PickerMath.hex-ch(root.hex, root.idx, root.fmt).to-float() / root.max-value));
+    property <color> lo-color: PickerMath.hex-color(
+        PickerMath.hex-apply(root.hex, root.idx, "0", root.fmt));
+    property <color> hi-color: PickerMath.hex-color(
+        PickerMath.hex-apply(root.hex, root.idx, root.fmt == "rgb" ? "255" : "100", root.fmt));
+    // HSL 的 L 通道两端是黑与白，单纯两停渐变会把中间调色丢掉（看着像一根灰阶
+    // 而非"这根色相的明度条"）→ 中间补一停 l=50 的当前色相。
+    property <color> mid-color: PickerMath.hex-color(
+        PickerMath.hex-apply(root.hex, root.idx, "50", root.fmt));
+    property <bool> mid-stop: root.fmt == "hsl" && root.idx == 2;
+    HorizontalLayout {
+        spacing: 8px;
+        Text {
+            width: 22px;
+            text: root.label;
+            color: Theme.text-muted;
+            font-size: 10px;
+            vertical-alignment: center;
+        }
+        track := Rectangle {
+            horizontal-stretch: 1;
+            height: parent.height;
+            // 视觉条（渐变底）
+            Rectangle {
+                y: (parent.height - 6px) / 2;
+                width: parent.width;
+                height: 6px;
+                border-radius: 3px;
+                background: root.idx == 0 && root.fmt != "rgb"
+                    ? @linear-gradient(90deg, #FF0000 0%, #FFFF00 17%, #00FF00 33%,
+                        #00FFFF 50%, #0000FF 67%, #FF00FF 83%, #FF0000 100%)
+                    : root.mid-stop
+                        ? @linear-gradient(90deg, #000000 0%, root.mid-color 50%, #FFFFFF 100%)
+                        : @linear-gradient(90deg, root.lo-color 0%, root.hi-color 100%);
+            }
+            // 滑块：白圆 + 描边 + 投影（深色渐变上也看得见）
+            Rectangle {
+                x: Math.max(0px, Math.min(root.ratio * parent.width - 6.5px, parent.width - 13px));
+                y: (parent.height - 13px) / 2;
+                width: 13px;
+                height: 13px;
+                border-radius: 7px;
+                background: #ffffff;
+                border-width: 1px;
+                border-color: #00000066;
+                drop-shadow-blur: 3px;
+                drop-shadow-color: #000000a6;
+            }
+            track-ta := TouchArea {
+                mouse-cursor: col-resize;
+                moved => { root.picked(Math.max(0, Math.min(1, self.mouse-x / track.width))); }
+                clicked => { root.picked(Math.max(0, Math.min(1, self.mouse-x / track.width))); }
+                // 滚轮微调：一格 = 该分量 1 个单位（rgb 一格 1、H 一格 1°、S/V/L 一格 1%），
+                // 与数字框的步进语义一致；向下滚 = 减小（同明度条的滚轮方向）。
+                scroll-event(ev) => {
+                    root.picked(Math.max(0, Math.min(1,
+                        root.ratio + (ev.delta-y > 0px ? -1 : 1) / root.max-value)));
+                    accept
+                }
+            }
+        }
+        PickerInput {
+            bare: true;
+            horizontal-stretch: 0;
+            width: 74px;
+            value: root.value;
+            hex: root.hex;
+            blur-token: root.blur-token;
+            edited(v) => { root.edited(v); }
         }
     }
 }
@@ -222,7 +392,14 @@ export global PickerMath {
     pure callback ink-on(string) -> color;                 // 色块字色：深块白字/浅块黑字
     pure callback hex-valid(string) -> string;             // 合法→规范化 #RRGGBB；**非法→空串**
     pure callback hex-ch(string, int, string) -> string;   // 读单分量
-    callback hex-apply(string, int, string, string) -> string; // 写单分量 → 规范化 hex
+    // 写单分量 → 规范化 hex。(#picker-channel 2026-10-15) 从 `callback` 改为
+    // `pure callback`：分量滑杆的两端色要在**绑定**里现推（见 PickerChannel 的
+    // lo-color/hi-color），Slint 只允许 pure 回调出现在绑定里。实现本来就是纯
+    // 函数（不开窗口、无副作用），语义上也是 pure。
+    pure callback hex-apply(string, int, string, string) -> string;
+    // (#picker-channel 2026-10-15) 滑杆比例(0..1) → 该分量的满量程值串。
+    // 量程与 hex-ch / hex-apply 同口径：rgb 各分量 0..255；H 0..360；S/V/L 0..100。
+    pure callback track-value(float, int, string) -> string;
     callback wheel-pick(float, float, float) -> string;    // 色轮命中（顺带重烘明度条）
     pure callback fit-hex(string) -> string;               // 守卫调亮预览（fit_contrast）
     pure callback clamp-wheel(float, float) -> WheelPos;   // 取样点钳制到盘内缘
@@ -246,6 +423,7 @@ export component ColorPickerDialog inherits Rectangle {
     callback confirmed();                          // 「确认」：写回调用方选定色
     callback cancelled();                          // 「取消」/ ✕：放弃修改
     callback sync-pos();                           // hex 变动后回填取样点（Rust 算三角函数）
+    callback copy-requested(string);               // (#picker-channel) HEX 行复制键 → 调用方写剪贴板
 
     width: 600px;
     height: dlg-lay.preferred-height;
@@ -510,7 +688,10 @@ export component ColorPickerDialog inherits Rectangle {
                     idx: 0;
                     label: "HEX";
                     value: root.hex;
+                    hex: root.hex;
+                    copyable: true;
                     blur-token: root.blur-token;
+                    copy-requested => { root.copy-requested(root.hex); }
                     // (#picker-hex-guard 2026-10-15) 只有能规范化的输入才写回事实源。
                     // hex 是全盘唯一事实源：把 "#F279B90" 这类打字中间态写进去，
                     // hex-color 解析失败回黑 → 色轮圆点、色块、确认键当场全变黑
@@ -552,68 +733,86 @@ export component ColorPickerDialog inherits Rectangle {
                         clicked => { root.fmt = "hsl"; root.blur-token += 1; }
                     }
                 }
-                // 三分量：编辑任一，其余（含 HEX/色轮/明度条）实时跟随
+                // 三分量：编辑任一 / 拖动滑杆，其余（含 HEX/色轮/明度条）实时跟随
                 // (#picker-label-g 2026-10-15) 中列标签原写死 "S" —— RGB 模式下
                 // 应为 "G"（用户第 5 轮截图②红框：RGB 的 G）；HSB/HSL 才用 S。
-                for i in [0, 1, 2] : PickerInput {
-                    idx: i + 1;
+                // (#picker-channel 2026-10-15 方案 B) 本行实现换成 PickerChannel
+                // （标签 + 渐变滑杆 + 数字框）：数字框仍是同一个 PickerInput，
+                // 手输通路与改动前逐字一致；滑杆走 track-value → hex-apply，
+                // 与手输汇进同一个出口，不存在第二套钳制/联动逻辑。
+                for i in [0, 1, 2] : PickerChannel {
+                    idx: i;
                     label: i == 0 ? (root.fmt == "rgb" ? "R" : "H")
                         : i == 1 ? (root.fmt == "rgb" ? "G" : "S")
                         : (root.fmt == "rgb" ? "B" : (root.fmt == "hsl" ? "L" : "V"));
+                    hex: root.hex;
+                    fmt: root.fmt;
                     value: PickerMath.hex-ch(root.hex, i, root.fmt);
                     blur-token: root.blur-token;
                     edited(v) => {
                         root.hex = PickerMath.hex-apply(root.hex, i, v, root.fmt);
                         root.sync-pos();
                     }
+                    // 拖动滑块：先离焦（滑杆的 TouchArea 独占按下，卡片吞层收不到
+                    // 这一下，不显式清的话正聚焦的输入框会留着不跟手），再写事实源
+                    picked(r) => {
+                        root.blur-token += 1;
+                        root.hex = PickerMath.hex-apply(
+                            root.hex, i, PickerMath.track-value(r, i, root.fmt), root.fmt);
+                        root.sync-pos();
+                    }
                 }
             }
         }
 
-        // ── 守卫提示：低对比度预告调亮结果（色块显示）+ 写回说明 ──────────
-        // (#warn-row-gap 2026-10-15) 三段是**一句话**：文字 + 行内色块 + 文字。
-        // 原先左侧 Text 也写 horizontal-stretch:1，与右侧 Text 的 2 按 1:2
-        // 分余量；滑出的余量留在本段文字框的**尾部**，把色块推离文字（实测左
-        // 间隙 24.5px、右间隙 5.7px，用户截图④红框 B）。改成左段 stretch:0
-        // （框宽 = 单行 preferred 宽，字贴着框边）、右段 stretch:1 吃全部余量，
-        // 色块两侧间隙都等于 spacing。
-        // cross-axis 居中：同副标题行，防换行时 16px 固定高色块退化成顶部对齐。
-        if root.guarded != root.hex : HorizontalLayout {
-            spacing: 6px;
-            cross-axis-alignment: center;
-            Text {
-                text: root.en ? "⚠ Below 3:1 on the theme panel — applying lightens it to"
-                    : "⚠ 对面板对比度不足 3:1 —— 应用时将自动调亮为";
-                color: Theme.warning;
-                font-size: 11px;
-                wrap: word-wrap;
-                horizontal-stretch: 0;
-            }
-            InfoSwatch {
-                hex: root.guarded;
-                width: 16px;
-                height: 16px;
-            }
-            Text {
-                text: root.en ? ". Confirm writes back; Apply takes effect." : "。「确认」写回弹框，点「应用」后生效。";
-                color: Theme.warning;
-                font-size: 11px;
-                wrap: word-wrap;
-                horizontal-stretch: 1;
-            }
-        }
-        if root.guarded == root.hex : Text {
-            text: root.en ? "✓ Contrast OK on the theme panel. Confirm writes back; Apply takes effect."
-                : "✓ 对面板对比度达标。「确认」写回弹框，点「应用」后生效。";
-            color: Theme.text-muted;
-            font-size: 11px;
-            wrap: word-wrap;
-        }
-
-        // ── 底部：取消 / 确认（写回，不直接生效）────────────────────────
+        // ── 页脚：对比度说明（占剩余宽度）+ 取消 / 确认（写回，不直接生效）──
+        // (#picker-foot-hint 2026-10-15) 用户要求：底部那行对比度说明挪到页脚，
+        // 与「取消 / 确认」同一行 —— 整卡少一行（省下 ~26px 高度，弹框更紧凑）。
+        // 版式两个坑：
+        //   * 这里**不能**写 `alignment: end`：Slint 布局求解只在 alignment ==
+        //     stretch（HorizontalLayout 的默认值）时开启主轴 flex_grow，写了 end
+        //     提示框就吃不到剩余宽度（与正文那段 #picker-fill-width 同一个坑）。
+        //     删掉后提示占满余量，两颗定宽按钮自然靠右。
+        //   * 警示态那句更长（含两个色块），一行放不下 → 文案 wrap，页脚高度由
+        //     文案与按钮的较高者决定；cross-axis 居中让 30px 按钮在换行时仍居中。
+        // 原「守卫提示」独立一行的版式与 #warn-row-gap 的三段间距口径一并作废。
         HorizontalLayout {
             spacing: 8px;
-            alignment: end;
+            cross-axis-alignment: center;
+            if root.guarded != root.hex : HorizontalLayout {
+                horizontal-stretch: 1;
+                spacing: 6px;
+                cross-axis-alignment: center;
+                Text {
+                    text: root.en ? "⚠ Below 3:1 on the theme panel — applying lightens it to"
+                        : "⚠ 对面板对比度不足 3:1 —— 应用时将自动调亮为";
+                    color: Theme.warning;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                    horizontal-stretch: 0;
+                }
+                InfoSwatch {
+                    hex: root.guarded;
+                    width: 16px;
+                    height: 16px;
+                }
+                Text {
+                    text: root.en ? ". Confirm writes back; Apply takes effect." : "。「确认」写回弹框，点「应用」后生效。";
+                    color: Theme.warning;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                }
+            }
+            if root.guarded == root.hex : Text {
+                horizontal-stretch: 1;
+                text: root.en ? "✓ Contrast OK on the theme panel. Confirm writes back; Apply takes effect."
+                    : "✓ 对面板对比度达标。「确认」写回弹框，点「应用」后生效。";
+                color: Theme.text-muted;
+                font-size: 11px;
+                wrap: word-wrap;
+                vertical-alignment: center;
+            }
             Rectangle {
                 width: 84px;
                 height: 30px;

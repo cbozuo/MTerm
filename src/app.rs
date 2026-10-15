@@ -4670,6 +4670,20 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
                     format!("#{:06X}", out).into()
                 }
             });
+            // (#picker-channel 2026-10-15 方案 B) 分量滑杆比例 → 分量值串。
+            // 量程必须与 hex-ch / hex-apply 完全同口径（rgb 0-255；H 0-360；
+            // S/V/L 0-100），否则滑杆拖到两端会与数字框显示的极值对不上。
+            pm.on_track_value({
+                move |ratio: f32, ch: i32, fmt: SharedString| {
+                    let i = ch.clamp(0, 2) as usize;
+                    let max = match fmt.as_str() {
+                        "rgb" => 255.0,
+                        _ if i == 0 => 360.0,
+                        _ => 100.0,
+                    };
+                    format!("{:.0}", (ratio.clamp(0.0, 1.0) * max).round()).into()
+                }
+            });
             // 守卫调亮预览：fit_contrast(选定色, 当前面板, 3.0)。面板色直接读
             // Theme 槽（apply_theme 每次重算回写），无需重建调色板。
             pm.on_fit_hex({
