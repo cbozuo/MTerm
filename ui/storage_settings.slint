@@ -38,6 +38,11 @@ global StorageBox {
 component PathAction inherits Rectangle {
     in property <string> glyph;
     in property <string> tip;
+    // (#copy-done-tip 2026-10-15) 复制类按钮的「已复制」回执:非空时点击后
+    // 原位显示 done-tip 气泡(绿色)1.4s —— 与侧栏主机复制的 Copied 徽标同一
+    // 语言;每次点击都重启计时器。(旧版点完只有 tooltip 被 #tip-hold 收掉、
+    // 没有任何确认,表现为"只有第一次有动静"。)
+    in property <string> done-tip: "";
     callback clicked();
     width: 30px;
     height: 28px;
@@ -48,13 +53,23 @@ component PathAction inherits Rectangle {
     // 恢复默认)点击后弹框开着、指针仍悬在原位,tooltip 会一直悬着(用户截图)。
     // 点击置 hold,指针离开(has-hover 翻 false)复位 —— 下次悬停正常显示。
     property <bool> tip-hold: false;
+    property <bool> copied: false;
+    property <bool> show-done: root.copied && root.done-tip != "";
 
     ta := TouchArea {
         mouse-cursor: pointer;
         changed has-hover => {
             if (!self.has-hover) { root.tip-hold = false; }
         }
-        clicked => { root.clicked(); root.tip-hold = true; }
+        clicked => {
+            root.clicked();
+            root.tip-hold = true;
+            if (root.done-tip != "") {
+                root.copied = true;
+                copied-timer.running = false;
+                copied-timer.running = true;
+            }
+        }
     }
     HorizontalLayout {
         alignment: center;
@@ -64,25 +79,34 @@ component PathAction inherits Rectangle {
             size: 15px;
         }
     }
-    if ta.has-hover && !root.tip-hold : Rectangle {
+    // (#pathaction-tip-style 2026-10-15) 气泡样式对齐顶栏 tooltip 统一浮层
+    // (bg-elevated / radius-sm / 22px 高 / 文字居中 / 阴影 8px #00000070),
+    // 不再各画各的(bg-active / radius-md / 文字左靠 与顶栏不是一个样式)。
+    if root.show-done || (ta.has-hover && !root.tip-hold && !root.copied) : Rectangle {
         x: parent.width - self.width;
         y: -self.height - 4px;
         width: tip-label.preferred-width + 16px;
-        height: tip-label.preferred-height + 10px;
-        background: Theme.bg-active;
-        border-radius: Theme.radius-md;
+        height: 22px;
+        background: Theme.bg-elevated;
+        border-radius: Theme.radius-sm;
         border-width: 1px;
         border-color: Theme.border-strong;
-        drop-shadow-blur: 10px;
-        drop-shadow-color: #00000077;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: #00000070;
         tip-label := Text {
-            x: 8px;
-            y: 5px;
-            width: parent.width - 16px;
-            text: root.tip;
-            color: Theme.text-primary;
+            text: root.show-done ? root.done-tip : root.tip;
+            color: root.show-done ? Theme.success : Theme.text-primary;
             font-size: Theme.fs-xs;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            width: parent.width;
+            height: parent.height;
         }
+    }
+    copied-timer := Timer {
+        interval: 1400ms;
+        running: false;
+        triggered => { root.copied = false; self.running = false; }
     }
 }
 
@@ -111,7 +135,8 @@ component DirChip inherits Rectangle {
         spacing: 2px;
         Icon {
             glyph: root.glyph;
-            tint: Theme.text-muted;
+            // (#theme-dedupe 2026-10-15) 图标跟标签同档:原 muted 比 chip 文字还暗一档
+            tint: Theme.text-secondary;
             size: 12px;
         }
         chip-label := Text {
@@ -383,6 +408,8 @@ export component StorageSettings inherits Rectangle {
                             PathAction {
                                 glyph: "copy";
                                 tip: (root.lang-en ? "Copy path" : "复制路径");
+                                // (#copy-done-tip 2026-10-15) 点击回执:绿色「已复制」1.4s
+                                done-tip: (root.lang-en ? "Copied" : "已复制");
                                 clicked => { root.copy-path(); }
                             }
                         }
@@ -690,6 +717,12 @@ export component StorageSettings inherits Rectangle {
         Icon {
             x: 14px;
             y: (parent.height - 13px) / 2;
+            // (#toast-icon-fix 2026-10-15) 必须给显式宽高:Icon 在**非布局父级**
+            // 里宽高默认铺满整个 toast 盒,内部 Image 再在盒内"居中之居中",
+            // 对勾于是飘到盒子中下部(x:14/y 居中形同虚设)。与 DirChip 记过的
+            // 「Icon 在非布局父级」坑同源。
+            width: 13px;
+            height: 13px;
             glyph: root.status-error ? "error" : "check";
             tint: root.status-error ? Theme.danger : Theme.success;
             size: 13px;

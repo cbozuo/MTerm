@@ -47,19 +47,22 @@ pub(super) fn wire_storage_callbacks(window: &AppWindow, store: Rc<RefCell<Confi
         });
     }
 
-    // Copy the current path; give feedback via the card's status strip.
+    // Copy the current path; feedback = the button's own green「已复制」badge
+    // (#copy-done-tip 2026-10-15). Previously this also fired the page toast —
+    // but the toast only re-arms on status *change*, so the same message showed
+    // only on the first copy after launch while later copies silently fell back
+    // to the badge (user-observed inconsistency). One channel now; the page
+    // toast stays for migration outcomes / errors.
     {
         let weak = window.as_weak();
         window.on_copy_storage_path(move || {
-            let Some(w) = weak.upgrade() else { return };
+            let Some(_w) = weak.upgrade() else { return };
             let text = data_dir().to_string_lossy().into_owned();
             // arboard on the UI thread can pump the Win32 message loop; do it on
             // a thread like the other clipboard writers in app.rs.
             std::thread::spawn(move || {
                 clipboard_set_text(text);
             });
-            w.set_storage_status(t("路径已复制", "Path copied").into());
-            w.set_storage_status_error(false);
         });
     }
 

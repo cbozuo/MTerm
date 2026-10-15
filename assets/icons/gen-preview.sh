@@ -92,6 +92,7 @@ row "常用" no-color "—" "清除颜色 / 无颜色（色样被划掉 · 分�
 row "常用" search "E8B6" "搜索"
 row "常用" refresh "E5D5" "刷新"
 row "常用" edit "E3C9" "编辑（右键菜单）"
+row "常用" click-locate "E762" "点击定位（双弧 + 指针指向中心；库内预留 · 造型对照 Material ads_click）"
 row "编辑与剪贴板" copy "E14D" "复制"
 row "编辑与剪贴板" cut "E14B" "剪切（库内预留 · 原「无颜色」按钮误用，2026-10-02 换成 no-color）"
 row "编辑与剪贴板" paste "E14F" "粘贴"

@@ -168,26 +168,24 @@ component PickerInput inherits Rectangle {
         border-color: Theme.accent-soft;
     }
     // 点入 → 本轮事件派发结束后全选（见上方 #picker-input-edit ①）
-    property <bool> select-pending: false;
-    select-timer := Timer {
-        interval: 0ms;
-        running: root.select-pending;
-        triggered => {
-            root.select-pending = false;
-            if (inp.has-focus) {
-                inp.select-all();
-            }
-        }
-    }
+    // (#picker-copy-ui 2026-10-15) 复制键的「已复制」回执（1.4s 自动收起）
+    property <bool> copied: false;
+    // (#picker-no-select-all 2026-10-15) 「点入即全选」按用户反馈移除：第一次
+    // 点击只落光标（常规输入框行为），要整选请 Ctrl+A / 双击。
+    // (#picker-hex-hash 2026-10-15) hash-mode：# 常驻，编辑时缺席自动补回。
+    in property <bool> hash-mode: false;
     HorizontalLayout {
         padding-left: root.bare ? 8px : 10px;
         padding-right: 10px;
         spacing: 8px;
         if !root.bare : Text {
-            width: 26px;
+            // (#picker-label-size 2026-10-15) 行标识（HEX / R / G / B）按反馈提亮
+            // 放大：原 muted 10px 像"备注说明"，与右侧 13px 的数值明显两层皮；
+            // 改为前景色 + fs-sm，与数值同档同号。
+            width: 30px;
             text: root.label;
-            color: Theme.text-muted;
-            font-size: 10px;
+            color: Theme.text-primary;
+            font-size: Theme.fs-sm;
             vertical-alignment: center;
         }
         inp := TextInput {
@@ -197,7 +195,11 @@ component PickerInput inherits Rectangle {
             color: Theme.text-primary;
             font-size: 13px;
             font-family: Theme.term-font-family;
-            horizontal-alignment: right;
+            // (#picker-caret-fix 2026-10-15) 右对齐会让命中测试全映射到偏移 0
+            // （#picker-input-edit 自己诊断过：点哪儿光标都在行首、行尾永不可达）；
+            // 点入即全选只是绕过了第一次点击，再点"落光标"依旧落在行首。改左对齐，
+            // 光标位置与行尾可达性恢复正常。
+            horizontal-alignment: left;
             vertical-alignment: center;
             single-line: true;
             // (#picker-input-edit) 点入即全选 → 每次点输入框都会闪一下选中块。
@@ -205,34 +207,88 @@ component PickerInput inherits Rectangle {
             // 这一屏所有"选中/当前"语义都由选色表达，蓝块是唯一的例外色。
             selection-background-color: PickerMath.hex-color(root.hex).with-alpha(0.32);
             selection-foreground-color: Theme.slot-t1;
-            edited => { root.edited(self.text); }
+            edited => {
+                // (#picker-hex-hash) # 缺席时补回并写回显示：输入框里永不出现
+                // "没有 # 的 hex"（# 是 HEX 的常驻标识）。
+                if (root.hash-mode && !self.text.starts-with("#")) {
+                    self.text = "#" + self.text;
+                }
+                root.edited(self.text);
+            }
             changed has-focus => {
-                if (self.has-focus) {
-                    root.select-pending = true;
-                } else {
+                if (!self.has-focus) {
                     // 离焦即收敛：打字中间态（非法 HEX、被钳过的数值）回写事实源
                     self.text = root.value;
                 }
             }
         }
-        // (#picker-channel 2026-10-15 方案 B) 行尾复制键：一键把当前值拷走
-        // （HEX 行用）。点它不该动焦点 —— 按下被本 TouchArea 独占，输入框
-        // 收不到 press，聚焦中的那一行不会因复制而离焦、草稿也不会被收敛掉。
-        if root.copyable : Rectangle {
-            width: 22px;
-            height: 22px;
-            border-radius: 6px;
-            background: copy-ta.has-hover ? Theme.bg-hover : transparent;
-            Icon {
-                glyph: "copy";
-                tint: copy-ta.has-hover ? Theme.text-primary : Theme.text-muted;
-                size: 12px;
-            }
-            copy-ta := TouchArea {
-                mouse-cursor: pointer;
-                clicked => { root.copy-requested(); }
+        // (#picker-copy-ui 2026-10-15) 复制键三处一起修：
+        //  ① 固定高子元素在 HL 里默认顶对齐（22px 方块贴行首上沿，用户截图
+        //     "不居中"）→ 包一层 alignment: center 的 VL；
+        //  ② Icon 在非布局父级里不写显式宽高会铺满整盒、内部再"居中之居中"
+        //     （toast 对勾同款坑）→ 显式 12×12 + HL 居中；
+        //  ③ 点击给「已复制」回执：1.4s 绿色气泡（与 PathAction 的 done-tip、
+        //     侧栏 Copied 徽标同款），每次点击重启计时器 —— 此前点了没反馈。
+        if root.copyable : VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 0;
+            copy-box := Rectangle {
+                // (#picker-copy-size 2026-10-15) 22→26 / 图标 12→16：与 13px 的
+                // 数值文字视觉重量协调（用户反馈"再大些"）。
+                width: 26px;
+                height: 26px;
+                border-radius: 7px;
+                background: copy-ta.has-hover ? Theme.bg-hover : transparent;
+                // (#picker-copy-center 2026-10-15) 绝对居中坐标：HL 的
+                // alignment: center 只管主轴，交叉轴 stretch 下固定高子元素仍
+                // 顶对齐（用户实测"只有悬浮背景居中了"——方块居中、图标不居中）。
+                Icon {
+                    glyph: "copy";
+                    tint: copy-ta.has-hover ? Theme.text-primary : Theme.text-muted;
+                    size: 16px;
+                    width: 16px;
+                    height: 16px;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+                copy-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.copy-requested();
+                        root.copied = true;
+                        copied-timer.running = false;
+                        copied-timer.running = true;
+                    }
+                }
+                if root.copied : Rectangle {
+                    x: copy-box.width - self.width;
+                    y: -self.height - 4px;
+                    width: done-txt.preferred-width + 16px;
+                    height: 22px;
+                    background: Theme.bg-elevated;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-strong;
+                    drop-shadow-blur: 8px;
+                    drop-shadow-color: #00000070;
+                    done-txt := Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: @tr("Copied");
+                        color: Theme.success;
+                        font-size: Theme.fs-xs;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
             }
         }
+    }
+    // 「已复制」1.4s 收起；每次点击 false→true 重启（见上方 #picker-copy-ui ③）
+    copied-timer := Timer {
+        interval: 1400ms;
+        running: false;
+        triggered => { root.copied = false; self.running = false; }
     }
     // 用户在框内打字会**移除 text 上的绑定**（Slint 语义：内部 set 断开外部绑定），
     // 此后色轮 / 明度条 / 其它分量驱动的外部变化必须手动回写，否则该行永远停在
@@ -293,9 +349,11 @@ component PickerChannel inherits Rectangle {
         spacing: 8px;
         Text {
             width: 22px;
+            // (#picker-label-size 2026-10-15) 分量标识（R/G/B…）与 HEX 行标签
+            // 同批提亮放大：muted 10px → 前景色 fs-sm，与右侧数值同档同号。
             text: root.label;
-            color: Theme.text-muted;
-            font-size: 10px;
+            color: Theme.text-primary;
+            font-size: Theme.fs-sm;
             vertical-alignment: center;
         }
         track := Rectangle {
@@ -473,60 +531,17 @@ export component ColorPickerDialog inherits Rectangle {
     }
 
     dlg-lay := VerticalLayout {
-        padding-top: 8px;
+        // (#picker-pad-sym 2026-10-15) 上下留白对齐：8 → 14（用户实测上窄下宽）
+        padding-top: 14px;
         padding-bottom: 14px;
         padding-left: 16px;
         padding-right: 16px;
         spacing: 10px;
 
-        // ── 头部：✕（整行可拖动，✕ 独立在拖动层之上）────────────────────
-        head := Rectangle {
-            height: 18px;
-            // 拖动层最先声明（垫底），✕ 最后声明（置顶可点）
-            head-drag := TouchArea {
-                pointer-event(ev) => {
-                    if (ev.kind == PointerEventKind.down) {
-                        root.blur-token += 1;
-                        root.head-dragging = true;
-                        root.drag-ox = root.x;
-                        root.drag-oy = root.y;
-                        root.drag-cx = head-drag.absolute-position.x + head-drag.mouse-x;
-                        root.drag-cy = head-drag.absolute-position.y + head-drag.mouse-y;
-                    } else if (ev.kind == PointerEventKind.up) {
-                        root.head-dragging = false;
-                    }
-                }
-                moved => {
-                    // 用指针窗口绝对坐标差值：mouse-x 相对自身会随卡片移动自馈
-                    root.x = Math.max(8px, Math.min(
-                        root.drag-ox + (head-drag.absolute-position.x + head-drag.mouse-x - root.drag-cx),
-                        Math.max(8px, root.bounds-w - root.width - 8px)));
-                    root.y = Math.max(8px, Math.min(
-                        root.drag-oy + (head-drag.absolute-position.y + head-drag.mouse-y - root.drag-cy),
-                        Math.max(8px, root.bounds-h - root.height - 8px)));
-                }
-            }
-            // (#picker-v3) 标题「调色盘」按反馈移除：样例条上移、圆盘放大
-            Rectangle {  // ✕（置顶于拖动层之上）
-                x: parent.width - self.width - 2px;
-                y: (parent.height - self.height) / 2;
-                width: 22px;
-                height: 22px;
-                border-radius: Theme.radius-sm;
-                background: head-x.has-hover ? Theme.bg-hover : transparent;
-                Text {
-                    text: "✕";
-                    color: head-x.has-hover ? Theme.text-primary : Theme.text-muted;
-                    font-size: 12px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-                head-x := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => { root.cancelled(); }
-                }
-            }
-        }
+        // ── (#picker-head-removed 2026-10-15) 头部整条删除（✕ + 18px 空条 +
+        // 头部拖动层）—— 用户要求"删除干净了"。关闭路径保留：取消 / 确认 /
+        // 遮罩点击 / Esc；拖动保留卡片空白区拖动（card-ta，与设置卡 / 自定义
+        // 弹框同口径：无标题行、无拖动光标、空白处即拖把）。
 
         // ── 色轮 + 明度条 + 数值列 ─────────────────────────────────────
         // (#picker-fill-width 2026-10-15) 此处**不能**写 alignment。
@@ -577,6 +592,17 @@ export component ColorPickerDialog inherits Rectangle {
                         (self.mouse-x / wheel-box.width - 0.5) * (self.mouse-x / wheel-box.width - 0.5)
                         + (self.mouse-y / wheel-box.height - 0.5) * (self.mouse-y / wheel-box.height - 0.5)
                     ) <= 0.5 ? crosshair : default;
+                    // (#picker-wheel-corner-drag 2026-10-15) 圆外四角原本被
+                    // wheel-ta 的整框命中区吃掉 → 卡片空白区拖把在这些位置失效
+                    // （用户截图四角标记"无法拖动"）。圆外按下 = 记录拖动锚点。
+                    pointer-event(ev) => {
+                        if (ev.kind == PointerEventKind.down) {
+                            root.drag-ox = root.x;
+                            root.drag-oy = root.y;
+                            root.drag-cx = self.absolute-position.x + self.mouse-x;
+                            root.drag-cy = self.absolute-position.y + self.mouse-y;
+                        }
+                    }
                     moved => {
                         root.blur-token += 1;
                         if (Math.sqrt(
@@ -589,6 +615,14 @@ export component ColorPickerDialog inherits Rectangle {
                                 self.mouse-x / wheel-box.width, self.mouse-y / wheel-box.height).my;
                             root.hex = PickerMath.wheel-pick(
                                 root.wheel-mx * 2 - 1, 1 - root.wheel-my * 2, root.pick-v);
+                        } else {
+                            // 圆外拖动 = 移动卡片（绝对坐标差值，与 card-ta 同算式）
+                            root.x = Math.max(8px, Math.min(
+                                root.drag-ox + (self.absolute-position.x + self.mouse-x - root.drag-cx),
+                                Math.max(8px, root.bounds-w - root.width - 8px)));
+                            root.y = Math.max(8px, Math.min(
+                                root.drag-oy + (self.absolute-position.y + self.mouse-y - root.drag-cy),
+                                Math.max(8px, root.bounds-h - root.height - 8px)));
                         }
                     }
                     clicked => {
@@ -686,7 +720,11 @@ export component ColorPickerDialog inherits Rectangle {
                 horizontal-stretch: 1;
                 PickerInput {
                     idx: 0;
-                    label: "HEX";
+                    // (#picker-hex-bare 2026-10-15) 去掉框内 "HEX" 标签（用户反馈
+                    // "怎么出现在了输入框中"）—— # 号本身就是 HEX 的标识、常驻值内，
+                    // 标签多余。同时开 hash-mode：# 缺席时自动补回。
+                    bare: true;
+                    hash-mode: true;
                     value: root.hex;
                     hex: root.hex;
                     copyable: true;
@@ -773,35 +811,47 @@ export component ColorPickerDialog inherits Rectangle {
         //     stretch（HorizontalLayout 的默认值）时开启主轴 flex_grow，写了 end
         //     提示框就吃不到剩余宽度（与正文那段 #picker-fill-width 同一个坑）。
         //     删掉后提示占满余量，两颗定宽按钮自然靠右。
-        //   * 警示态那句更长（含两个色块），一行放不下 → 文案 wrap，页脚高度由
-        //     文案与按钮的较高者决定；cross-axis 居中让 30px 按钮在换行时仍居中。
+        //   * 警示态那句更长，一行放不下 → 文案 wrap，页脚高度由文案与按钮的
+        //     较高者决定；cross-axis 居中让按钮在换行时仍居中。
         // 原「守卫提示」独立一行的版式与 #warn-row-gap 的三段间距口径一并作废。
+        // (#picker-foot-line 2026-10-15) 与预设弹框页脚同构：顶部 1px 横线；
+        // 取消/确认 = 64×36（预设弹框同规格，原 84×30 偏大偏矮）。
+        Rectangle { height: Theme.hairline(); background: Theme.border-subtle; }
         HorizontalLayout {
             spacing: 8px;
             cross-axis-alignment: center;
-            if root.guarded != root.hex : HorizontalLayout {
+            if root.guarded != root.hex : VerticalLayout {
                 horizontal-stretch: 1;
-                spacing: 6px;
-                cross-axis-alignment: center;
+                spacing: 3px;
+                // (#picker-foot-warn 2026-10-15) 原版式把 16px 色块塞在警示句中段,
+                // 文案一换行色块就夹在两行文字中间（用户截图"布局乱"）。重组为两行:
+                // 第一行 = 警示句 + 句末色块（调亮目标色），第二行 = 操作说明（弱化）。
+                HorizontalLayout {
+                    spacing: 5px;
+                    cross-axis-alignment: center;
+                    Text {
+                        text: root.en ? "⚠ Below 3:1 on the theme panel — applying lightens it to"
+                            : "⚠ 对面板对比度不足 3:1 —— 应用时将自动调亮为";
+                        color: Theme.warning;
+                        font-size: 11px;
+                        // (#picker-foot-tight 2026-10-15) 不能 wrap：wrap 文本的
+                        // preferred-width 等于整行可用宽 → 色块被挤到行尾（用户
+                        // 实测"间距太大"）。本句 ~240px，一行放得下，不 wrap。
+                        horizontal-stretch: 0;
+                        vertical-alignment: center;
+                    }
+                    InfoSwatch {
+                        hex: root.guarded;
+                        width: 16px;
+                        height: 16px;
+                    }
+                }
                 Text {
-                    text: root.en ? "⚠ Below 3:1 on the theme panel — applying lightens it to"
-                        : "⚠ 对面板对比度不足 3:1 —— 应用时将自动调亮为";
-                    color: Theme.warning;
+                    text: root.en ? "Confirm writes back; Apply takes effect."
+                        : "「确认」写回弹框，点「应用」后生效。";
+                    color: Theme.text-muted;
                     font-size: 11px;
                     wrap: word-wrap;
-                    horizontal-stretch: 0;
-                }
-                InfoSwatch {
-                    hex: root.guarded;
-                    width: 16px;
-                    height: 16px;
-                }
-                Text {
-                    text: root.en ? ". Confirm writes back; Apply takes effect." : "。「确认」写回弹框，点「应用」后生效。";
-                    color: Theme.warning;
-                    font-size: 11px;
-                    wrap: word-wrap;
-                    horizontal-stretch: 1;
                 }
             }
             if root.guarded == root.hex : Text {
@@ -814,8 +864,8 @@ export component ColorPickerDialog inherits Rectangle {
                 vertical-alignment: center;
             }
             Rectangle {
-                width: 84px;
-                height: 30px;
+                width: 64px;
+                height: 36px;
                 border-radius: 8px;
                 background: cancel-ta.has-hover ? Theme.bg-hover : transparent;
                 border-width: 1px;
@@ -835,8 +885,8 @@ export component ColorPickerDialog inherits Rectangle {
                 }
             }
             Rectangle {
-                width: 84px;
-                height: 30px;
+                width: 64px;
+                height: 36px;
                 border-radius: 8px;
                 background: PickerMath.hex-color(root.hex);
                 clip: true;

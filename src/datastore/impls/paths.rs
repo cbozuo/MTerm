@@ -85,6 +85,23 @@ fn resolve_data_dir() -> PathBuf {
         }
     }
 
+    // 2.5 Portable fallback beside the exe: `<exe_dir>/data`. (#data-dir-fallback
+    // 2026-10-15) Reaching this point means the home dir exists but rejects
+    // writes — restricted environments / process-write filters that only allow
+    // certain locations (seen live: freshly-linked exes denied a probe under
+    // ~, while %TEMP% passed). %TEMP% (step 3) loses everything on cleanup, so
+    // keep data in a real directory next to the exe first — it stays visible,
+    // survives reboots, and matches the portable-first story. Normal machines
+    // never get here (home is writable), so step 2 still wins there.
+    if let Some(exe) = std::env::current_exe().ok() {
+        if let Some(exe_dir) = exe.parent() {
+            let portable = exe_dir.join("data");
+            if fs::create_dir_all(&portable).is_ok() && dir_is_writable(&portable) {
+                return portable;
+            }
+        }
+    }
+
     // 3. A temp dir as the last resort so the app still launches.
     let dir = std::env::temp_dir().join("mterm");
     let _ = fs::create_dir_all(&dir);
