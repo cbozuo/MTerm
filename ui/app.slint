@@ -8044,8 +8044,19 @@ export component AppWindow inherits Window {
         height: parent.height;
         TouchArea { clicked => { root.theme-pick-open = false; root.theme-pick-search = ""; root.theme-search-filter(""); root.preview-theme(root.theme-chosen); } }
         Rectangle {
-            x: min(max(8px, root.theme-pick-x), parent.width - self.width - 12px);
-            y: min(root.theme-pick-y, parent.height - self.height - 12px);
+            // (#theme-pick-in-card 2026-10-15) 从**设置卡内**打开时，浮层钳在
+            // 设置弹框内（不超出卡片 —— 用户截图反馈）；从顶栏打开时仍钳全窗。
+            // 锚点是下拉按钮的绝对坐标，按钮贴在卡片右侧 → 浮层 360px 会探出
+            // 卡片右缘，故按 opener 分档取钳制边界。
+            property <length> cx0: root.interface-open ? root.ifd-x + 8px : 8px;
+            property <length> cx1: root.interface-open
+                ? root.ifd-x + root.ifd-w - self.width - 8px
+                : parent.width - self.width - 12px;
+            property <length> cy1: root.interface-open
+                ? root.ifd-y + root.ifd-h - self.height - 8px
+                : parent.height - self.height - 12px;
+            x: min(max(cx0, root.theme-pick-x), max(cx0, cx1));
+            y: min(root.theme-pick-y, max(8px, cy1));
             // (#theme-dedupe §5) 240 → 360px：行内新增 3 色阶条 + ANSI 八色带 +
             // 星标区（预留 70px 文案位）；360 保证最长名（Solarized · 亮）与选中
             // 行（多一个 ✓）都不截断。圆角 9 → 11（mock .pop）。
@@ -8216,6 +8227,9 @@ export component AppWindow inherits Window {
                             // （#theme-dedupe §5 键盘）↑↓ 游标行同用该高亮。
                             // 组头行 = 高保真 mock 的 hd8：更深的色带（.darker）。
                             property <bool> row-hover: false;
+                            // (#theme-fav-chip) 指针是否在行右端星标 chip 内
+                            // （chip 提亮一档的判据；由 row-hit 的 moved 维护）
+                            property <bool> chip-hot: false;
                             background: e.kind == "header"
                                 ? Theme.popup-bg.darker(0.15)
                                 : ((row-rect.row-hover || i == root.theme-key-idx)
@@ -8229,7 +8243,16 @@ export component AppWindow inherits Window {
                             HorizontalLayout {
                                 padding-left: 11px;
                                 padding-right: 11px;
-                                spacing: 9px; alignment: start;
+                                // (#theme-row-align 2026-10-15) **不要**在这里写
+                                // alignment。主轴 alignment 默认就是 stretch，写死
+                                // start 会把下面那根 horizontal-stretch:1 吸空块的
+                                // flex_grow 清零（i-slint-core layout.rs 实证），
+                                // 余量改由 name 文本（max=∞）按"可生长"均摊 →
+                                // 八色带右缘随名字长短漂移。离屏实测（用户截图
+                                // 「色块带没有对齐」）：MTerm·亮 477 / 原子·暗 445
+                                // / 卡布奇诺·暗 493（物理 px）。删掉后吸空块独吞
+                                // 余量，色带右缘各行一致。
+                                spacing: 9px;
                                 // 交叉轴居中（Slint 1.18）：默认 stretch 下固定尺寸
                                 // 子项（色点 11 / 色阶条 15 / 八色带 8）会退化贴顶
                                 // —— 必须显式 center，行内才与文字同一中线。
@@ -8261,6 +8284,10 @@ export component AppWindow inherits Window {
                                     font-size: 12px;
                                     vertical-alignment: center;
                                     overflow: elide;
+                                    // (#theme-row-align) 不参与余量分配：吸空块
+                                    // （下方 stretch:1）独吞，色带右缘才不随名字
+                                    // 长短漂移。
+                                    horizontal-stretch: 0;
                                 }
                                 // (#theme-dedupe §5) 3 色阶条 root→panel→tbg（mock 的 n3：
                                 // 7×13 ×3 + 1.5 间距 + 棋盘衬底 + 内描边）。棋盘衬底是
@@ -8321,22 +8348,43 @@ export component AppWindow inherits Window {
                                         }
                                     }
                                 }
-                                if e.kind != "header" && e.id == root.theme-chosen : Text {
-                                    text: "✓"; color: Theme.accent-solid; font-size: 10px;
-                                    vertical-alignment: center;
+                                // (#theme-row-align) ✓ 选中标记：**常驻定宽槽位**
+                                // （10px，opacity 切换而非元素增删）。旧实现是流内
+                                // 条件元素 —— 选中行多占 19px，八色带整体左移一档
+                                // （用户截图「色块带没有对齐」的第二处成因）；改成
+                                // 常驻槽位后各行色带右缘完全一致，✓ 也有固定位置。
+                                // （也曾试过绝对定位：色带会被吸空块顶到 chip 边，
+                                // ✓ 的落点与色带右端重叠 —— 证据图实测，作废。）
+                                // ⚠ 用 Icon 而非 Text "✓"：U+2713 在字体链里
+                                // 缺字形（离屏探针实测：默认 / 雅黑 / Segoe UI /
+                                // Arial 全部 0 像素），Text 写法 renders nothing。
+                                if e.kind != "header" : Icon {
+                                    width: 10px;
+                                    glyph: "check";
+                                    tint: Theme.accent-solid;
+                                    size: 10px;
+                                    opacity: e.id == root.theme-chosen ? 1 : 0;
                                 }
-                                // (#theme-dedupe §5) 星标区（mock 的 fav）：11px 星形
-                                // + 5 间距 + 11px 文案位。星形用 mock 的同一段 SVG
-                                // 路径（Slint Path，16 视图盒缩到 11px）——实心 =
-                                // 已收藏（warning）、描边 = 未收藏（accent）。
-                                // 文案位常驻（opacity 切换而非元素增删），悬停时
-                                // 不产生位移；整区预留 70px = 10 左余 + 11 星 +
-                                // 5 间距 + 44 文案。
+                                // (#theme-fav-chip 2026-10-15) 星标 + 文案收成一颗
+                                // chip：悬停时显形（底色），指针再进入 chip 自身提亮
+                                // 一档 —— 用户反馈「移出常用 / 设为常用要有对应的样式，
+                                // 让知道可以点击」。常态（未悬停）只留收藏行的淡星，
+                                // 不显 chip 底。整区宽 84 = 8 左衬 + 11 星 + 5 距
+                                // + 44 文案 + 8 右衬…（文案右对齐，右侧不留空）。
                                 if e.kind != "header" : Rectangle {
-                                    width: 70px; height: parent.height;
-                                    opacity: row-rect.row-hover ? 1 : (e.faved ? 0.5 : 0);
-                                    animate opacity { duration: 120ms; }
+                                    width: 84px; height: parent.height;
+                                    // chip 底：仅悬停显形；chip-hot 0.14 → 0.26
+                                    Rectangle {
+                                        y: (parent.height - self.height) / 2;
+                                        width: 100%; height: 22px;
+                                        border-radius: 6px;
+                                        background: e.faved ? Theme.warning : Theme.accent-solid;
+                                        opacity: row-rect.row-hover
+                                            ? (row-rect.chip-hot ? 0.26 : 0.14) : 0;
+                                        animate opacity { duration: 120ms; }
+                                    }
                                     HorizontalLayout {
+                                        padding-left: 8px; padding-right: 8px;
                                         alignment: end; spacing: 5px;
                                         cross-axis-alignment: center;
                                         if e.faved : Path {
@@ -8344,6 +8392,9 @@ export component AppWindow inherits Window {
                                             viewbox-width: 16; viewbox-height: 16;
                                             fill: Theme.warning;
                                             commands: "M8 1.6l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.4l-3.8 2 .7-4.3-3.1-3 4.3-.6z";
+                                            // 未悬停时保留淡星（常用区的常驻标记）
+                                            opacity: row-rect.row-hover ? 1 : 0.5;
+                                            animate opacity { duration: 120ms; }
                                         }
                                         if !e.faved : Path {
                                             width: 11px; height: 11px;
@@ -8352,6 +8403,9 @@ export component AppWindow inherits Window {
                                             stroke: Theme.accent-solid;
                                             stroke-width: 1px;
                                             commands: "M8 1.6l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.4l-3.8 2 .7-4.3-3.1-3 4.3-.6z";
+                                            // 未收藏行未悬停时不显星（悬停才提示可收藏）
+                                            opacity: row-rect.row-hover ? 1 : 0;
+                                            animate opacity { duration: 120ms; }
                                         }
                                         Text {
                                             text: e.faved
@@ -8369,10 +8423,10 @@ export component AppWindow inherits Window {
                             if e.kind != "header" : row-hit := TouchArea {
                                 mouse-cursor: pointer;
                                 clicked => {
-                                    // (#theme-dedupe §5) 行右端星标区点击 = 收藏增删
-                                    //（判定宽 80px ≈ 星标区 70 + 行距 9 + 边距），
-                                    // 其余位置 = 选中主题（原行为）。
-                                    if (self.mouse-x > row-rect.width - 80px) {
+                                    // (#theme-dedupe §5) 行右端星标 chip 点击 =
+                                    // 收藏增删（判定宽 96px = chip 区 84 + 间距 9
+                                    // + 边距余量），其余位置 = 选中主题（原行为）。
+                                    if (self.mouse-x > row-rect.width - 96px) {
                                         root.toggle-favorite-theme(e.id);
                                     } else {
                                         root.theme-chosen = e.id;
@@ -8381,6 +8435,14 @@ export component AppWindow inherits Window {
                                         root.theme-pick-search = "";
                                         root.theme-search-filter("");
                                     }
+                                }
+                                // (#theme-fav-chip) chip 自身悬停：指针进行右端
+                                // 星标区内时提亮一档（0.14 → 0.26），让"这里可以
+                                // 点"有直接反馈。moved 里算（mouse-x 不是属性，
+                                // 表达式绑定不会随指针刷新）；移出行即复位。
+                                moved => {
+                                    row-rect.chip-hot = self.has-hover
+                                        && self.mouse-x > row-rect.width - 96px;
                                 }
                                 // (#theme-dedupe §5) 悬停预览：250ms 触发（1500ms →
                                 // 250ms，高保真 §5 定稿）。预览同步终端色表（Rust
@@ -8395,6 +8457,7 @@ export component AppWindow inherits Window {
                                 }
                                 changed has-hover => {
                                     row-rect.row-hover = self.has-hover;
+                                    if (!self.has-hover) { row-rect.chip-hot = false; }
                                     if (self.has-hover) {
                                         row-delay.restart();
                                     } else {

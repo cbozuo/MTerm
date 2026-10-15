@@ -591,6 +591,9 @@ fn window_ranks(registry: &WindowRegistry<AppWindow>) -> std::collections::HashM
 #[cfg(test)]
 #[path = "../tests/app/window_naming.rs"]
 mod window_naming_tests;
+#[cfg(test)]
+#[path = "../tests/app/theme_picker_group/mod.rs"]
+mod theme_picker_group_tests;
 
 /// (#sync-dialog-v2-fix 2026-10-12) 窗口标题统一刷新：主窗口 = 素 "MTerm"；
 /// 其余按打开顺序带编号（见 [`window_title_for`]）。开窗与关窗（其余窗口仍
@@ -1889,6 +1892,119 @@ pub fn run(intent: crate::app::launch::LaunchIntent) -> Result<()> {
     Ok(())
 }
 
+/// (#theme-dedupe §5) 构建主题选择器的行模型：常用区 → 全部主题区。
+/// 常用 = `fav_ids`（store.favorite_themes()，出厂门面两套），过滤非法 id /
+/// 去重后按列表顺序展开；全部主题区 = 其余套，(#theme-group-mode 2026-10-15)
+/// 按明暗分两组：先暗后亮，各带一条子组头（用户反馈「不要暗亮在一起」）。
+/// 组头行 kind == "header"（搜索时隐藏、键盘游标跳过）。
+/// 只吃收藏 id 列表（不碰 ConfigStore）→ 单测可直接喂列表，无需真实配置目录。
+fn build_theme_entries(favorites: &[String]) -> Vec<crate::ui::ThemeEntry> {
+    // 组头行：zh = 左标签，mode = 右端计数（高保真 §5 的 hd8 左右结构：
+    // 「常用 …… 2 / 最多 8 · 点星可整理」「全部主题 …… 28 套」）。
+    let header = |name: String, cnt: String| crate::ui::ThemeEntry {
+        id: "".into(),
+        zh: name.into(),
+        mode: cnt.into(),
+        kind: "header".into(),
+        root: Default::default(),
+        panel: Default::default(),
+        tbg: Default::default(),
+        tfg: Default::default(),
+        ac: Default::default(),
+        ansi_eight: Default::default(),
+        faved: false,
+        matched: true,
+    };
+    let make = |p: &'static crate::theme::palettes::Palette, faved: bool| crate::ui::ThemeEntry {
+        id: p.id.into(),
+        zh: p.zh.into(),
+        mode: if p.dark { "暗".into() } else { "亮".into() },
+        kind: p.kind.into(),
+        root: crate::theme::color(p.root),
+        panel: crate::theme::color(p.panel),
+        tbg: crate::theme::color(p.tbg),
+        tfg: crate::theme::color(p.tfg),
+        ac: crate::theme::color(p.ac),
+        // §5 行缩略的 ANSI 八色带：槽 1/2/3/4/5/6/9/14（高保真 mock 同款）
+        ansi_eight: ModelRc::from(Rc::new(VecModel::from(
+            [1usize, 2, 3, 4, 5, 6, 9, 14]
+                .iter()
+                .map(|&i| crate::theme::color(p.ansi16[i]))
+                .collect::<Vec<_>>(),
+        ))),
+        faved,
+        matched: true,
+    };
+    // 常用 id：过滤非法 id（老配置 / 手改）并去重（上限已在写入端兜住）。
+    let mut fav_ids: Vec<String> = Vec::new();
+    for id in favorites {
+        if crate::theme::find(id).is_some() && !fav_ids.contains(id) {
+            fav_ids.push(id.clone());
+        }
+    }
+    let mut entries: Vec<crate::ui::ThemeEntry> = Vec::new();
+    let fav_hdr = if crate::i18n::is_en() {
+        (
+            "Favorites".to_string(),
+            format!(
+                "{} / max {}　·　star to organize",
+                fav_ids.len(),
+                crate::theme::FAVORITE_LIMIT
+            ),
+        )
+    } else {
+        (
+            "常用".to_string(),
+            format!(
+                "{} / 最多 {}　·　点星可整理",
+                fav_ids.len(),
+                crate::theme::FAVORITE_LIMIT
+            ),
+        )
+    };
+    entries.push(header(fav_hdr.0, fav_hdr.1));
+    for id in &fav_ids {
+        if let Some(p) = crate::theme::find(id) {
+            entries.push(make(p, true));
+        }
+    }
+    // 全部主题区（其余套，保持 palettes.rs 顺序）；右端计数 = 全套数
+    //（高保真 mock 的 cnt 取值即 D.keep.length，是「目录总数」而非本区行数）。
+    let others: Vec<_> = crate::theme::palettes::PALETTES
+        .iter()
+        .filter(|p| !fav_ids.iter().any(|id| id == p.id))
+        .collect();
+    let all_hdr = if crate::i18n::is_en() {
+        (
+            "All themes".to_string(),
+            format!("{} themes", crate::theme::palettes::PALETTES.len()),
+        )
+    } else {
+        (
+            "全部主题".to_string(),
+            format!("{} 套", crate::theme::palettes::PALETTES.len()),
+        )
+    };
+    entries.push(header(all_hdr.0, all_hdr.1));
+    // (#theme-group-mode 2026-10-15) 全部主题区按明暗分两组：先暗后亮，
+    // 各带一条子组头（用户反馈「不要暗亮在一起，要暗一组 亮一组」）。
+    // 子组头同样用 kind="header"：搜索时随其它组头一起隐藏、键盘游标
+    // 自动跳过（theme_key_move 只认 kind），无需另加分支。
+    // 常用区是用户自藏列表，保持配置顺序不分组（一两套时分组只剩噪音）。
+    for (want_dark, zh, en) in [(true, "暗色", "Dark"), (false, "亮色", "Light")] {
+        let group: Vec<_> = others.iter().filter(|p| p.dark == want_dark).collect();
+        let sub = if crate::i18n::is_en() {
+            (en.to_string(), format!("{} themes", group.len()))
+        } else {
+            (zh.to_string(), format!("{} 套", group.len()))
+        };
+        entries.push(header(sub.0, sub.1));
+        for p in group {
+            entries.push(make(p, false));
+        }
+    }
+    entries
+}
 /// Build and wire one application window. Called for the first window by
 /// `run()` and for every subsequent window by the new-window entry points.
 /// `at` pins the window to a physical screen position (tab detach); without
@@ -4338,103 +4454,6 @@ fn open_window(
     // 合并这些——宏体内的局部变量是定义点上下文，解析不到调用点的 clone
     // 绑定（实测 E0425）。
 
-/// (#theme-dedupe §5) 构建主题选择器的行模型：常用区 → 全部主题区。
-/// 常用 = store.favorite_themes()（出厂门面两套），过滤非法 id / 去重后按列表
-/// 顺序展开；全部主题区 = 其余套，保持 palettes.rs 的 ORDER 顺序（详情见
-/// gen_theme_rust.js 的 ORDER 注释）。组头行 kind == "header"（搜索时隐藏）。
-fn build_theme_entries(store: &ConfigStore) -> Vec<crate::ui::ThemeEntry> {
-    // 组头行：zh = 左标签，mode = 右端计数（高保真 §5 的 hd8 左右结构：
-    // 「常用 …… 2 / 最多 8 · 点星可整理」「全部主题 …… 28 套」）。
-    let header = |name: String, cnt: String| crate::ui::ThemeEntry {
-        id: "".into(),
-        zh: name.into(),
-        mode: cnt.into(),
-        kind: "header".into(),
-        root: Default::default(),
-        panel: Default::default(),
-        tbg: Default::default(),
-        tfg: Default::default(),
-        ac: Default::default(),
-        ansi_eight: Default::default(),
-        faved: false,
-        matched: true,
-    };
-    let make = |p: &'static crate::theme::palettes::Palette, faved: bool| crate::ui::ThemeEntry {
-        id: p.id.into(),
-        zh: p.zh.into(),
-        mode: if p.dark { "暗".into() } else { "亮".into() },
-        kind: p.kind.into(),
-        root: crate::theme::color(p.root),
-        panel: crate::theme::color(p.panel),
-        tbg: crate::theme::color(p.tbg),
-        tfg: crate::theme::color(p.tfg),
-        ac: crate::theme::color(p.ac),
-        // §5 行缩略的 ANSI 八色带：槽 1/2/3/4/5/6/9/14（高保真 mock 同款）
-        ansi_eight: ModelRc::from(Rc::new(VecModel::from(
-            [1usize, 2, 3, 4, 5, 6, 9, 14]
-                .iter()
-                .map(|&i| crate::theme::color(p.ansi16[i]))
-                .collect::<Vec<_>>(),
-        ))),
-        faved,
-        matched: true,
-    };
-    // 常用 id：过滤非法 id（老配置 / 手改）并去重（上限已在写入端兜住）。
-    let mut fav_ids: Vec<String> = Vec::new();
-    for id in store.favorite_themes() {
-        if crate::theme::find(&id).is_some() && !fav_ids.contains(&id) {
-            fav_ids.push(id);
-        }
-    }
-    let mut entries: Vec<crate::ui::ThemeEntry> = Vec::new();
-    let fav_hdr = if crate::i18n::is_en() {
-        (
-            "Favorites".to_string(),
-            format!(
-                "{} / max {}　·　star to organize",
-                fav_ids.len(),
-                crate::theme::FAVORITE_LIMIT
-            ),
-        )
-    } else {
-        (
-            "常用".to_string(),
-            format!(
-                "{} / 最多 {}　·　点星可整理",
-                fav_ids.len(),
-                crate::theme::FAVORITE_LIMIT
-            ),
-        )
-    };
-    entries.push(header(fav_hdr.0, fav_hdr.1));
-    for id in &fav_ids {
-        if let Some(p) = crate::theme::find(id) {
-            entries.push(make(p, true));
-        }
-    }
-    // 全部主题区（其余套，保持 palettes.rs 顺序）；右端计数 = 全套数
-    //（高保真 mock 的 cnt 取值即 D.keep.length，是「目录总数」而非本区行数）。
-    let others: Vec<_> = crate::theme::palettes::PALETTES
-        .iter()
-        .filter(|p| !fav_ids.iter().any(|id| id == p.id))
-        .collect();
-    let all_hdr = if crate::i18n::is_en() {
-        (
-            "All themes".to_string(),
-            format!("{} themes", crate::theme::palettes::PALETTES.len()),
-        )
-    } else {
-        (
-            "全部主题".to_string(),
-            format!("{} 套", crate::theme::palettes::PALETTES.len()),
-        )
-    };
-    entries.push(header(all_hdr.0, all_hdr.1));
-    for p in others {
-        entries.push(make(p, false));
-    }
-    entries
-}
 
 /// (#theme-dedupe §5) 重建行模型 + 同步搜索快照（同一 Rc：过滤永远从全量快照
 /// 出发 —— 改收藏 / 清词恢复都不会丢行）。
@@ -4443,7 +4462,7 @@ fn rebuild_theme_entries(
     store: &ConfigStore,
     full: &Rc<RefCell<Vec<crate::ui::ThemeEntry>>>,
 ) {
-    let entries = build_theme_entries(store);
+    let entries = build_theme_entries(&store.favorite_themes());
     *full.borrow_mut() = entries.clone();
     window.set_theme_entries(ModelRc::from(Rc::new(VecModel::from(entries))));
 }
