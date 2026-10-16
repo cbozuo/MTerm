@@ -15,17 +15,18 @@
 
 use super::build_theme_entries;
 
-/// 常用区之后、全部主题区的结构切片。
+/// 常用区之后、全部主题区（暗/亮分组）的结构切片。2026-10-16 删「全部主题」
+/// 总组头后，第二条组头即「暗色」子组头，全部主题区从它起算（含该子组头）。
 fn all_theme_section(entries: &[crate::ui::ThemeEntry]) -> &[crate::ui::ThemeEntry] {
-    // 第二条组头（index 0 是常用区组头）之后即全部主题区。
+    // 第二条组头（index 0 是常用区组头）即「暗色」子组头 = 全部主题区起点。
     let second = entries
         .iter()
         .enumerate()
         .filter(|(_, e)| e.kind == "header")
         .nth(1)
         .map(|(i, _)| i)
-        .expect("应有常用 / 全部主题两条组头");
-    &entries[second + 1..]
+        .expect("应有常用 / 暗色两条组头");
+    &entries[second..]
 }
 
 fn theme_rows(section: &[crate::ui::ThemeEntry]) -> Vec<&crate::ui::ThemeEntry> {

@@ -378,11 +378,15 @@ component WinBtn inherits Rectangle {
     ta := TouchArea {
         clicked => { root.clicked(); }
     }
+    // (#winbtn-tint 2026-10-16) 三键图标统一**前景档**：原先用 text-secondary，
+    // 三个键在深色标题栏上偏暗、且感知上不齐（✕ 两条对角线墨量最大，看着比 −/□
+    // 亮），用户反馈「只有关闭的是正确的，其两个有些暗了，不统一，要么和左侧
+    // 文字一样的色号」。统一到与正文同档（text-primary），关闭键悬停仍是红底白字。
     Icon {
-    glyph: root.icon;
-    tint: (root.danger && ta.has-hover) ? white : Theme.text-secondary;
-    size: 16px;
-}
+        glyph: root.icon;
+        tint: (root.danger && ta.has-hover) ? white : Theme.text-primary;
+        size: 16px;
+    }
 }
 
 component IconBtn inherits Rectangle {
@@ -1224,6 +1228,7 @@ export component AppWindow inherits Window {
 
     // 宿主（本文件只保留根层一行实例化与顶栏按钮接线）。
     // 当前主题 id / 跟随系统 / 强调色三态的快照（设置页与速选面板显示）。
+    // （#follow-ui-removed 2026-10-16）follow-system 已无 UI 入口，仅作配置态保留。
     // 当前主题 id——**只认确认动作**（set_theme/启动读 config）。不能绑到
     // Theme.theme-id：apply() 写它时会把「预览中的主题」污染成「当前主题」
     //（实测：悬停后点浮层外，恢复错了主题）。
@@ -1248,6 +1253,12 @@ export component AppWindow inherits Window {
     in-out property <float> accent-pick-v: 1.0;     // 明度条当前值（色轮蒙罩同源）
     // 对比度守卫信息（Rust apply_theme 每次重算回写：生效色/面板/原色/比率）
     in-out property <AccentGuard> accent-guard;
+    // (#accent-chip-info 2026-10-16) 设置页强调色色卡的取色信息卡：开关与坐标由
+    // InterfacePanel 在悬停**事件期**上报，卡片在根层画（面板声明在 if 条件元素内，
+    // 其 id 作用域不外泄，只能靠属性桥 —— 与 theme-pick-x/y 同款）。
+    in-out property <bool> accent-info-open: false;
+    in-out property <length> accent-info-x: 0px;
+    in-out property <length> accent-info-y: 0px;
     // 浮层开关（本体在根层，theme-pick 同款桥）
     in-out property <bool> accent-pop-open: false;
     in-out property <bool> accent-pick-open: false;
@@ -2105,8 +2116,9 @@ export component AppWindow inherits Window {
                     }
                     // 主题切换 —— 单色图标(去彩色特例)。
                     // (#theme-split §3-调整③) 主题速选 —— 图标从 sun/moon 换成
-                    // 四宫格调色板（语义 =「配色」而非「亮暗」），点击弹 262px
-                    // 速选面板（8 个代表变体 + 跟随系统 + 更多主题）。
+                    // 四宫格调色板（语义 =「配色」而非「亮暗」）。点击弹的就是
+                    // 设置页那个 theme-pick 浮层**本体**（不是另一套速选面板）；
+                    // 该浮层顶部在 #follow-ui-removed 后只剩「反向（亮↔暗）」。
                     theme-btn := TopbarBtn { height: parent.height;
                         icon: "palette-grid";
                         label: root.lang-en ? "Theme" : "主题";
@@ -7845,6 +7857,9 @@ export component AppWindow inherits Window {
             accent-stage <=> root.accent-stage;
             accent-guard <=> root.accent-guard;
             accent-pop-open <=> root.accent-pop-open;
+            accent-info-open <=> root.accent-info-open;
+            accent-info-x <=> root.accent-info-x;
+            accent-info-y <=> root.accent-info-y;
             wallpaper-active <=> root.wallpaper-active;
             term-alpha <=> root.term-alpha;
             wallpaper-visible <=> root.wallpaper-visible;
@@ -8057,9 +8072,10 @@ export component AppWindow inherits Window {
                 : parent.height - self.height - 12px;
             x: min(max(cx0, root.theme-pick-x), max(cx0, cx1));
             y: min(root.theme-pick-y, max(8px, cy1));
-            // (#theme-dedupe §5) 240 → 360px：行内新增 3 色阶条 + ANSI 八色带 +
-            // 星标区（预留 70px 文案位）；360 保证最长名（Solarized · 亮）与选中
-            // 行（多一个 ✓）都不截断。圆角 9 → 11（mock .pop）。
+            // (#theme-dedupe §5) 240 → 360px：行内有 ANSI 八色带 + 星标区
+            // （预留 70px 文案位）；360 保证最长名（Solarized · 亮）与选中行
+            // （多一个 ✓）都不截断。3 色阶条已于 2026-10-16 删除（#theme-row-opt）。
+            // 圆角 9 → 11（mock .pop）。
             width: 360px;
             height: parent.list-h;
             border-radius: 11px;
@@ -8113,16 +8129,41 @@ export component AppWindow inherits Window {
                 VerticalLayout {
                     padding: 6px;
                     spacing: 4px;
-                    // 搜索行（高保真 §5 定稿的 sear）：**扁平行**（无输入框底/边框）
-                    // + 底部细线 + 右端套数（accent）。匹配 中文名 / id / 色相名
-                    // （Rust 过滤）。占位文案同步改「搜索主题 / 色相 / 名称…」。
+                    // 搜索行 —— **输入框形态**（底色 + 1px 边框 + 聚焦环）。
+                    // (#theme-search-redesign 2026-10-16) 此前是「扁平行」：
+                    // 自身transparent，只有聚焦时才凭空冒出一圈3px 柔光环
+                    // （外径=行高 30+6=36 > 行宽），于是聚焦那一帧整行像被套了
+                    // 一个更大的框，与浮层里其它控件不成一套（用户反馈「聚焦后
+                    // 样式都不一致，不怎么协调」）。改为与 `PickerInput`
+                    // （color_picker.slint:159-173）/ `MiniInput`
+                    // （session_dialog.slint:557-568）完全同款的形态：
+                    //   常驻  Theme.field 底 + border-control 1px 边
+                    //   聚焦  边转 accent + 3px accent-soft 柔光环（同心，8+3=11）
+                    // 三者共用一条聚焦语言，浮层内外一致。匹配 中文名 / id /
+                    // 色相名（Rust 过滤）。有输入时「28 套」左侧出清空钮。
                     Rectangle {
                         height: 30px;
-                        background: transparent;
+                        border-radius: 8px;
+                        background: Theme.field;
+                        border-width: 1px;
+                        border-color: theme-input.has-focus ? Theme.accent : Theme.border-control;
+                        animate border-color { duration: 120ms; }
+                        // 聚焦柔光环（圆角 8 + 3 = 11 与外框同心；3px 外扩仍在
+                        // 浮层 6px 内边距内，不会被卡片的 clip 裁掉）
+                        if theme-input.has-focus : Rectangle {
+                            x: -3px;
+                            y: -3px;
+                            width: parent.width + 6px;
+                            height: parent.height + 6px;
+                            border-radius: 11px;
+                            border-width: 3px;
+                            border-color: Theme.accent-soft;
+                        }
                         theme-input := TextInput {
                             x: 11px;
-                            // 右端计数（「28 套」）的固定让位：约 54px
-                            width: parent.width - 22px - 54px;
+                            // 右端让位：清空钮 20 + 距 4 +「28 套」约 54（英文 themes
+                            // 更宽，故再留余量）
+                            width: parent.width - 22px - 54px - 30px;
                             text <=> root.theme-pick-search;
                             // 输入即过滤：Rust 重发过滤后的 entries（含组头处理）
                             changed text => { root.theme-search-filter(self.text); }
@@ -8140,55 +8181,58 @@ export component AppWindow inherits Window {
                             TouchArea { enabled: false; }
                         }
                         // 右端目录总数（高保真 mock：accent 小字「28 套」）
-                        Text {
+                        count-txt := Text {
                             x: parent.width - 11px - self.width;
                             text: root.theme-total + (root.lang-en ? " themes" : " 套");
                             color: Theme.accent-solid; font-size: 11.5px;
                             vertical-alignment: center;
                         }
-                        // 底部分隔线（mock .sear 的 border-bottom: 1px solid --line）
-                        Rectangle {
-                            y: parent.height - 1px;
-                            width: 100%; height: 1px;
-                            background: Theme.border-control;
-                        }
-                    }
-                    // (#theme-dedupe §5) 顶部常驻动作行：跟随系统 / 反向（亮↔暗）
-                    HorizontalLayout {
-                        spacing: 6px;
-                        // 跟随系统（当前跟随态高亮；点击 = 回到跟随）
-                        Rectangle {
-                            height: 24px;
-                            horizontal-stretch: 1;
-                            border-radius: 6px;
-                            background: root.follow-system ? Theme.accent.with-alpha(0.15) : Theme.bg-panel-alt;
-                            border-width: 1px;
-                            border-color: root.follow-system ? transparent : Theme.border-control;
-                            Text {
-                                text: root.lang-en ? "Follow system" : "跟随系统";
-                                color: root.follow-system ? Theme.accent-solid : Theme.text-primary;
-                                font-size: 11px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
+                        // (#theme-search-clear 2026-10-16) 清空输入：贴「28 套」左侧，
+                        // 仅在有内容时出现（没东西可清就不占视线）；点击清空并把列表
+                        // 恢复全量，焦点留在输入框、浮层不关。悬停图标提亮一档。
+                        if root.theme-pick-search != "" : clear-box := Rectangle {
+                            x: count-txt.x - self.width - 4px;
+                            y: (parent.height - self.height) / 2;
+                            width: 20px;
+                            height: 20px;
+                            background: transparent;
+                            property <bool> hot: false;
+                            Icon {
+                                glyph: "close";
+                                tint: clear-box.hot ? Theme.text-primary : Theme.text-muted;
+                                size: 12px;
                             }
                             TouchArea {
                                 mouse-cursor: pointer;
+                                changed has-hover => { clear-box.hot = self.has-hover; }
                                 clicked => {
-                                    root.set-follow-system(true);
-                                    root.theme-pick-open = false;
                                     root.theme-pick-search = "";
                                     root.theme-search-filter("");
                                 }
                             }
                         }
+                        // 底部分隔线（mock .sear 的 border-bottom: 1px solid --line）
+                        }
+                    // (#theme-search-redesign 2026-10-16) 原搜索行底部的 1px
+                    // 细线随「输入框形态」一起去掉：输入框自带四边，底线在框内
+                    // 底缘再压一条线等于双重边界（且聚焦时那条线还与边框同步
+                    // 变色，看着像框在抖）。分隔靠 4px 间距 + 动作行自己的边框。
+                    // (#theme-dedupe §5 / #follow-ui-removed 2026-10-16) 顶部常驻动作行。
+                    // 原「跟随系统」按钮与设置页的同名开关是同一状态的两个入口，用户
+                    // 判定冗余/冲突，两处都不留 —— 这里只保留「反向（亮↔暗）」。
+                    HorizontalLayout {
+                        spacing: 6px;
                         // 反向（亮↔暗）：切到当前套的明暗配对档（落盘生效）
                         Rectangle {
                             height: 24px;
                             horizontal-stretch: 1;
                             border-radius: 6px;
-                            background: Theme.bg-panel-alt;
+                            // 悬停反馈：bg-hover + 边框提亮 + 120ms 过渡。
+                            property <bool> hot: false;
+                            background: hot ? Theme.bg-hover : Theme.bg-panel-alt;
+                            animate background, border-color { duration: 120ms; }
                             border-width: 1px;
-                            border-color: Theme.border-control;
+                            border-color: hot ? Theme.border-strong : Theme.border-control;
                             Text {
                                 text: root.lang-en ? "Invert light/dark" : "反向（亮↔暗）";
                                 color: Theme.text-primary;
@@ -8198,6 +8242,7 @@ export component AppWindow inherits Window {
                             }
                             TouchArea {
                                 mouse-cursor: pointer;
+                                changed has-hover => { hot = self.has-hover; }
                                 clicked => {
                                     root.invert-theme();
                                     root.theme-pick-open = false;
@@ -8254,8 +8299,8 @@ export component AppWindow inherits Window {
                                 // 余量，色带右缘各行一致。
                                 spacing: 9px;
                                 // 交叉轴居中（Slint 1.18）：默认 stretch 下固定尺寸
-                                // 子项（色点 11 / 色阶条 15 / 八色带 8）会退化贴顶
-                                // —— 必须显式 center，行内才与文字同一中线。
+                                // 子项（色点 11 / 八色带 8）会退化贴顶 —— 必须
+                                // 显式 center，行内才与文字同一中线。
                                 cross-axis-alignment: center;
                                 // 组头左右结构（mock hd8）：左标签（mono 半粗 +
                                 // 字距）+ 弹性 + 右端计数。
@@ -8289,47 +8334,14 @@ export component AppWindow inherits Window {
                                     // 长短漂移。
                                     horizontal-stretch: 0;
                                 }
-                                // (#theme-dedupe §5) 3 色阶条 root→panel→tbg（mock 的 n3：
-                                // 7×13 ×3 + 1.5 间距 + 棋盘衬底 + 内描边）。棋盘衬底是
-                                // mock 的手法（repeating-conic-gradient）——让近黑/近白档
-                                // 的色块在任何主题下都可辨；这里以 4.8×4.34 小格近似。
-                                if e.kind != "header" : Rectangle {
-                                    width: 26px; height: 15px;
-                                    border-radius: 2.5px;
-                                    // 棋盘衬底（15 格 = 5×3，交错两色；Slint 无 % 运算符，
-                                    // 用 Math.mod）。三条循环对应棋盘的三行。
-                                    for k in [0, 1, 2, 3, 4] : Rectangle {
-                                        x: k * 4.8px; y: 0px;
-                                        width: 4.8px; height: 4.34px;
-                                        background: Math.mod(k, 2) == 0 ? #343841 : #1e2128;
-                                    }
-                                    for k in [0, 1, 2, 3, 4] : Rectangle {
-                                        x: k * 4.8px; y: 4.34px;
-                                        width: 4.8px; height: 4.34px;
-                                        background: Math.mod(k, 2) == 0 ? #1e2128 : #343841;
-                                    }
-                                    for k in [0, 1, 2, 3, 4] : Rectangle {
-                                        x: k * 4.8px; y: 8.68px;
-                                        width: 4.8px; height: 4.34px;
-                                        background: Math.mod(k, 2) == 0 ? #343841 : #1e2128;
-                                    }
-                                    Rectangle {
-                                        x: 1px; y: 1px;
-                                        HorizontalLayout {
-                                            spacing: 1.5px;
-                                            Rectangle { width: 7px; height: 13px; border-radius: 1.5px; background: e.root; }
-                                            Rectangle { width: 7px; height: 13px; border-radius: 1.5px; background: e.panel; }
-                                            Rectangle { width: 7px; height: 13px; border-radius: 1.5px; background: e.tbg; }
-                                        }
-                                    }
-                                    // 内描边（mock box-shadow: inset 0 0 0 1px rgba(255,255,255,.14)）
-                                    Rectangle {
-                                        width: 100%; height: 100%;
-                                        border-radius: 2.5px;
-                                        border-width: 1px; border-color: #ffffff24;
-                                    }
-                                }
+                                // (#theme-row-align 2026-10-16) 吸空块在名称之后：主题名
+                                // 居左，「八色带 / ✓ / 星标 chip」右侧成组对齐。仍是行内
+                                // 唯一 stretch:1 —— 八色带右缘各行一致，不回漂。
                                 Rectangle { horizontal-stretch: 1; }
+                                // (#theme-row-opt 2026-10-16) 原「3 色阶条」（root/panel/tbg，
+                                // mock 的 n3）已按用户反馈删除——「好像没啥意义」：三色缩到
+                                // 26×15 已不可辨，观感预览交给八色带。ThemeEntry 的
+                                // root/panel/tbg 字段保留（Rust 仍填，与 tfg 同理）。
                                 // (#theme-dedupe §5) ANSI 八色带（槽 1/2/3/4/5/6/9/14）；
                                 // 悬停时淡出让位给「设为常用」（同一位置两个操作不打架）
                                 if e.kind != "header" : Rectangle {
@@ -8365,27 +8377,30 @@ export component AppWindow inherits Window {
                                     size: 10px;
                                     opacity: e.id == root.theme-chosen ? 1 : 0;
                                 }
-                                // (#theme-fav-chip 2026-10-15) 星标 + 文案收成一颗
-                                // chip：悬停时显形（底色），指针再进入 chip 自身提亮
-                                // 一档 —— 用户反馈「移出常用 / 设为常用要有对应的样式，
-                                // 让知道可以点击」。常态（未悬停）只留收藏行的淡星，
-                                // 不显 chip 底。整区宽 84 = 8 左衬 + 11 星 + 5 距
-                                // + 44 文案 + 8 右衬…（文案右对齐，右侧不留空）。
+                                // (#theme-fav-chip 2026-10-15 / 2026-10-16 收窄居中)
+                                // 星标 + 文案 chip：悬停显形（底色），指针进入 chip 自身
+                                // 再提亮一档。2026-10-16 用户反馈：① 阴影区缩小——不再
+                                // 铺满 84px，改为包裹「星 + 文案」；② 星与文案居中于阴影
+                                // 区内。84px 整区仅作点击判定（row-hit 用 width-96），
+                                // 视觉阴影宽 = 星 11 + 距 5 + 文案 + 左右各 6 衬。
                                 if e.kind != "header" : Rectangle {
                                     width: 84px; height: parent.height;
-                                    // chip 底：仅悬停显形；chip-hot 0.14 → 0.26
+                                    // 阴影区：宽包裹内容并水平居中；高 22 → 20。
                                     Rectangle {
+                                        property <length> shw: 11px + 5px + chip-txt.width + 12px;
+                                        x: (parent.width - shw) / 2;
                                         y: (parent.height - self.height) / 2;
-                                        width: 100%; height: 22px;
+                                        width: shw; height: 20px;
                                         border-radius: 6px;
                                         background: e.faved ? Theme.warning : Theme.accent-solid;
                                         opacity: row-rect.row-hover
                                             ? (row-rect.chip-hot ? 0.26 : 0.14) : 0;
                                         animate opacity { duration: 120ms; }
                                     }
+                                    // 内容（星 + 文案）水平居中于 84px → 同时居中于同心阴影区。
                                     HorizontalLayout {
+                                        alignment: center; spacing: 5px;
                                         padding-left: 8px; padding-right: 8px;
-                                        alignment: end; spacing: 5px;
                                         cross-axis-alignment: center;
                                         if e.faved : Path {
                                             width: 11px; height: 11px;
@@ -8407,7 +8422,7 @@ export component AppWindow inherits Window {
                                             opacity: row-rect.row-hover ? 1 : 0;
                                             animate opacity { duration: 120ms; }
                                         }
-                                        Text {
+                                        chip-txt := Text {
                                             text: e.faved
                                                 ? (root.lang-en ? "Unpin" : "移出常用")
                                                 : (root.lang-en ? "Pin" : "设为常用");
@@ -8488,9 +8503,8 @@ export component AppWindow inherits Window {
                     // 的子项（固定在底部，不随列表滚动）。
                     }
                     // (#theme-dedupe §5) 底部说明栏（mock 的 .foot）：左「悬停即预览 ·
-                    // 点击即落盘」、右「常用写进 config」；11px muted + 顶部分隔线。
-                    // 2026-10-15 用户确认保留（mock 的 .foot 与「现状」mock 的注解栏
-                    // 成对出现，但作为常驻产品文案成立：行为提示 + 落盘位置说明）。
+                    // 点击即落盘」；11px muted + 顶部分隔线。2026-10-16 按用户反馈删去
+                    // 右端「常用写进 config」（与左上行为提示重复的落盘说明，冗余）。
                     Rectangle {
                         height: 29px;
                         background: transparent;
@@ -8503,12 +8517,6 @@ export component AppWindow inherits Window {
                             cross-axis-alignment: center;
                             Text {
                                 text: root.lang-en ? "Hover to preview · Click to apply" : "悬停即预览 · 点击即落盘";
-                                color: Theme.text-muted; font-size: 11px;
-                                vertical-alignment: center;
-                            }
-                            Rectangle { horizontal-stretch: 1; }
-                            Text {
-                                text: root.lang-en ? "Favorites saved in config" : "常用写进 config";
                                 color: Theme.text-muted; font-size: 11px;
                                 vertical-alignment: center;
                             }
@@ -8765,21 +8773,28 @@ export component AppWindow inherits Window {
                     Rectangle { horizontal-stretch: 1; }
                 }
                 // ── 47 预设网格：按色相重排，8 列，名称 + 色号（点选仅选中）──
+                // (#accent-preset-swap 2026-10-16) 「白光色 #FAFAFA」「MTerm 青
+                // #1FC8B4」两块换成 Stripe 紫 / GitHub 绿：色相环量过，白光色是
+                // 唯一 sat=0 的块（深色弹框里几乎看不出色相），MTerm 青与相邻
+                // 青绿/薄荷 ΔE 仅 8~16 挤成一团。Stripe 紫(243°)落在网格最大
+                // 空档225°→259°正中，GitHub 绿(137°)落在 126°→149° 之间。
+                // minΔE(CIE76) 对其余 46 块 = 31.1 / 13.1（网格中位 18.9）。
+                // 与 ACCENT_PRESETS 同源，改一处必须同步另一处。
                 GridLayout {
                     spacing: 6px;
                     for p[i] in [
                         { n: "番茄色", h: "#F44333" }, { n: "植物红", h: "#B71C1C" }, { n: "珊瑚色", h: "#FF7F6B" }, { n: "鲑鱼色", h: "#F29E7B" },
                         { n: "橘黄色", h: "#FFA565" }, { n: "橙色", h: "#F0862C" }, { n: "琥珀橙", h: "#FF9B0B" }, { n: "金色", h: "#FFC069" },
                         { n: "茶色", h: "#FFC100" }, { n: "蟹青色", h: "#FFE831" }, { n: "青柠", h: "#C8FF00" }, { n: "钢色", h: "#B9B119" },
-                        { n: "苔藓色", h: "#B1C784" }, { n: "黄绿色", h: "#A5FF80" }, { n: "鲜绿色", h: "#7CB342" }, { n: "绝命毒药色", h: "#368A3F" }, { n: "微信绿", h: "#07C160" },
-                        { n: "翡翠绿", h: "#29A383" }, { n: "薄荷色", h: "#95E0C1" }, { n: "绿松石色", h: "#88CBBC" }, { n: "海蓝宝石色", h: "#64FFDD" },
+                        { n: "苔藓色", h: "#B1C784" }, { n: "黄绿色", h: "#A5FF80" }, { n: "鲜绿色", h: "#7CB342" }, { n: "绝命毒药色", h: "#368A3F" }, { n: "GitHub 绿", h: "#2DA44E" },
+                        { n: "微信绿", h: "#07C160" }, { n: "翡翠绿", h: "#29A383" }, { n: "薄荷色", h: "#95E0C1" }, { n: "绿松石色", h: "#88CBBC" }, { n: "海蓝宝石色", h: "#64FFDD" },
                         { n: "青绿色", h: "#089B8B" }, { n: "天空色", h: "#64FFFF" }, { n: "水蓝色", h: "#5CCFE6" }, { n: "鲜蓝色", h: "#73D8FF" },
                         { n: "水色", h: "#42A5F5" }, { n: "品牌蓝", h: "#0969DA" }, { n: "宝蓝色", h: "#2979F5" }, { n: "霓虹色", h: "#1D49B1" },
-                        { n: "靛蓝色", h: "#2F51B5" }, { n: "仿紫色", h: "#651FFF" }, { n: "夜色", h: "#676E9A" }, { n: "石板色", h: "#607D8B" },
-                        { n: "海星色", h: "#546E7A" }, { n: "淡紫色", h: "#DFBFFF" }, { n: "薰衣草色", h: "#7E57C2" }, { n: "紫水晶色", h: "#AB47BC" },
+                        { n: "靛蓝色", h: "#2F51B5" }, { n: "Stripe 紫", h: "#635BFF" }, { n: "仿紫色", h: "#651FFF" }, { n: "夜色", h: "#676E9A" },
+                        { n: "石板色", h: "#607D8B" }, { n: "海星色", h: "#546E7A" }, { n: "淡紫色", h: "#DFBFFF" }, { n: "薰衣草色", h: "#7E57C2" }, { n: "紫水晶色", h: "#AB47BC" },
                         { n: "深红色", h: "#E916B5" }, { n: "草绿粉", h: "#FF40CC" }, { n: "洋红", h: "#E1306C" }, { n: "玫瑰色", h: "#F279B9" },
-                        { n: "沙色", h: "#D9AE91" }, { n: "咖啡色", h: "#795548" }, { n: "白光色", h: "#FAFAFA" }, { n: "灰色", h: "#9E9E9E" },
-                        { n: "铅黑色", h: "#616161" }, { n: "碳素色", h: "#424242" }, { n: "MTerm 青", h: "#1FC8B4" },
+                        { n: "沙色", h: "#D9AE91" }, { n: "咖啡色", h: "#795548" }, { n: "灰色", h: "#9E9E9E" },
+                        { n: "铅黑色", h: "#616161" }, { n: "碳素色", h: "#424242" },
                     ] : Rectangle {
                         row: i / 8;
                         col: Math.mod(i, 8);
@@ -9218,6 +9233,17 @@ export component AppWindow inherits Window {
             clip: false;
             commands: "M 8 6.5 A 6.5 6.5 0 0 1 1.5 0";
         }
+    }
+
+    // (#accent-chip-info 2026-10-16) 设置页强调色色卡的取色信息卡（HEX/RGB/HSV/HSL）。
+    // 必须声明在**根层最后**才压得住设置卡里后声明的行：卡片若画在色卡行内，会被
+    // 紧随其后的「界面通透度」整块盖住（Slint 绘制顺序 = 声明顺序，行内元素压不过
+    // 后面的兄弟 —— 用户截图「被覆盖了无法看见」）。开关与坐标由 InterfacePanel 在
+    // 悬停**事件期**上报（布局期 absolute-position 恒 0）。
+    if root.accent-info-open : ColorInfoCard {
+        hex: root.accent-guard.eff;
+        x: root.accent-info-x;
+        y: root.accent-info-y;
     }
 
 }

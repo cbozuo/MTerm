@@ -670,6 +670,15 @@ export component InterfacePanel inherits Rectangle {
     // 文案都读它 —— 跟随态=主题 ac，自定义态=3:1 守卫后的生效色。
     in-out property <AccentGuard> accent-guard;
     in-out property <bool> accent-pop-open: false;
+    // (#accent-chip-info 2026-10-16) 设置页强调色色卡的取色信息卡：**浮层本体在
+    // AppWindow 根层**（与 theme-pick / accent-pop 同款桥）。原因：色卡所在行的
+    // 下方还有「界面通透度」整块内容，卡片若画在行内，会被**后声明**的行整个盖住
+    // （用户截图「被覆盖了无法看见」——Slint 的绘制顺序 = 声明顺序，行内元素压不过
+    // 后面的兄弟）。这里只存悬停态与色卡的窗口坐标：坐标必须在**事件期**从
+    // absolute-position 取（布局期恒 0，见 ChainPicker 的 report-pos 结论）。
+    in-out property <bool> accent-info-open: false;
+    in-out property <length> accent-info-x: 0px;
+    in-out property <length> accent-info-y: 0px;
     in-out property <bool> wallpaper-active;
     in-out property <bool> wallpaper-color-pickup;
     in-out property <float> term-alpha: 1.0;
@@ -1352,10 +1361,15 @@ export component InterfacePanel inherits Rectangle {
                         background: Theme.field;
                         animate background { duration: 100ms; }
                         // 该套强调色圆点（垂直居中）
+                        // (#swatch-round 2026-10-16) 圆角方块 4px → 正圆
+                        // 7px（14px 直径的一半）：与主题下拉列表行内的 11px/5.5px
+                        // 色点同款语言（用户反馈「这里面有两种样式的色块，统一用
+                        // 圆形的」）。下拉行是 11px、本按钮是 14px——直径差是
+                        // 按钮比列表行高，形状规格必须一致。
                         Rectangle {
                             x: 12px;
                             y: (parent.height - self.height) / 2;
-                            width: 14px; height: 14px; border-radius: 4px;
+                            width: 14px; height: 14px; border-radius: 7px;
                             background: Theme.accent-solid;
                         }
                         // 当前主题名（Rust apply 写 theme-name）
@@ -1393,15 +1407,11 @@ export component InterfacePanel inherits Rectangle {
                 }
 
                 Rectangle { height: 10px; }
-                SettingRow {
-                    label: root.lang-en ? "Follow system" : "跟随系统";
-                    desc: root.lang-en ? "Pick dark/light variant by the OS setting" : "按系统的深浅自动选暗/亮变体";
-                    Switch {
-                        on: root.follow-system;
-                        toggled(v) => { root.follow-system = v; root.set-follow-system(v); }
-                    }
-                }
-                Rectangle { height: 6px; }
+                // (#follow-ui-removed 2026-10-16) 「跟随系统」设置项按用户要求删除：
+                // 它与主题下拉框顶部的同名动作是**同一状态的两个入口**，用户判定为
+                // 冗余/冲突，两处都不留。此后「跟随与否」只由「挑了哪套主题」决定
+                // （挑任何一套即 follow_system=false）。配置字段与 Rust 通路保留，
+                // 兼容旧配置。
 
                 // ── 强调色两态（定稿高保真 #accent-pop-v2）──────────────────
                 //    只有两个态：跟随主题 / 自定义。滑块是唯一切换入口 —— 点
@@ -1447,6 +1457,12 @@ export component InterfacePanel inherits Rectangle {
                             }
                         }
                         // 当前生效色 chip：仅展示、不可点（切换只走左侧滑块）
+                        // (#accent-chip-info 2026-10-16) 悬停浮出**取色信息卡**
+                        // （ColorInfoCard，与自定义弹框 / 「最近」行同款 —— 用户
+                        // 要求两处同款）：四行 HEX / RGB / HSV / HSL，值取当前
+                        // **生效**色（跟随态 = 主题 ac；自定义态 = 3:1 守卫后的色，
+                        // 即色卡实际显示的那颗）。卡片放色卡**下方**并右对齐：该行
+                        // 靠页顶，向上会越出设置卡被 clip 裁掉。
                         chip := Rectangle {
                             width: 46px;
                             height: 32px;
@@ -1461,6 +1477,22 @@ export component InterfacePanel inherits Rectangle {
                                 height: parent.height - 6px;
                                 border-radius: 5px;
                                 background: root.accent-hex-color(root.accent-guard.eff);
+                            }
+                            // 悬停检测。chip 本是展示件，点击行为等同卡片空白：
+                            // 推进 combo-clock 清 FontCombo 聚焦戳（输入框失焦由
+                            // 卡片侧负责；本页无输入框，无实际影响）。
+                            // 悬停时上报色卡的窗口坐标，信息卡由根层绘制。
+                            accent-chip-ta := TouchArea {
+                                clicked => { root.blank-clicked(); }
+                                changed has-hover => {
+                                    root.accent-info-open = self.has-hover;
+                                    if (self.has-hover) {
+                                        // 卡片 168 宽（ColorInfoCard 自身定宽）、
+                                        // 右对齐色卡；下沿留 8px。
+                                        root.accent-info-x = self.absolute-position.x + self.width - 168px;
+                                        root.accent-info-y = self.absolute-position.y + self.height + 8px;
+                                    }
+                                }
                             }
                         }
                     }

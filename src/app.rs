@@ -1900,7 +1900,8 @@ pub fn run(intent: crate::app::launch::LaunchIntent) -> Result<()> {
 /// 只吃收藏 id 列表（不碰 ConfigStore）→ 单测可直接喂列表，无需真实配置目录。
 fn build_theme_entries(favorites: &[String]) -> Vec<crate::ui::ThemeEntry> {
     // 组头行：zh = 左标签，mode = 右端计数（高保真 §5 的 hd8 左右结构：
-    // 「常用 …… 2 / 最多 8 · 点星可整理」「全部主题 …… 28 套」）。
+    // 「常用 …… 2 / 最多 8 · 点星可整理」。「全部主题」总组头已于
+    // 2026-10-16 按用户反馈删除，常驻区后直接暗/亮子组头）。
     let header = |name: String, cnt: String| crate::ui::ThemeEntry {
         id: "".into(),
         zh: name.into(),
@@ -1968,24 +1969,12 @@ fn build_theme_entries(favorites: &[String]) -> Vec<crate::ui::ThemeEntry> {
             entries.push(make(p, true));
         }
     }
-    // 全部主题区（其余套，保持 palettes.rs 顺序）；右端计数 = 全套数
-    //（高保真 mock 的 cnt 取值即 D.keep.length，是「目录总数」而非本区行数）。
+    // 全部主题区（其余套）。(#theme-row-align 2026-10-16) 「全部主题」总组头
+    // 按用户反馈删除——它与紧随的暗/亮子组头计数重复，常驻区后直接分组更清爽。
     let others: Vec<_> = crate::theme::palettes::PALETTES
         .iter()
         .filter(|p| !fav_ids.iter().any(|id| id == p.id))
         .collect();
-    let all_hdr = if crate::i18n::is_en() {
-        (
-            "All themes".to_string(),
-            format!("{} themes", crate::theme::palettes::PALETTES.len()),
-        )
-    } else {
-        (
-            "全部主题".to_string(),
-            format!("{} 套", crate::theme::palettes::PALETTES.len()),
-        )
-    };
-    entries.push(header(all_hdr.0, all_hdr.1));
     // (#theme-group-mode 2026-10-15) 全部主题区按明暗分两组：先暗后亮，
     // 各带一条子组头（用户反馈「不要暗亮在一起，要暗一组 亮一组」）。
     // 子组头同样用 kind="header"：搜索时随其它组头一起隐藏、键盘游标
@@ -2440,6 +2429,10 @@ fn open_window(
     let ui_font_effective: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
     let mono_default = resolve_mono_font_family(&db);
     window.set_font_mono(mono_default.clone());
+    // (#nerd-icon-probe) 告知用户所选等宽字体带不带 Nerd Font 图标字形 ——
+    // 不改选择逻辑（多数机器根本没装 Nerd Font，据此拒绝会把字体链清空），
+    // 只报日志：`ls --color` 图标渲染成空白时至少有个说法。
+    report_nerd_icon_support(&db, &mono_default);
     // What the pickers' 默认 row ("" choice) means: the chain defaults. Kept so
     // clearing an explicit font can re-apply them without a re-scan.
     let ui_chain_default = resolve_ui_font_family(&db, "");
@@ -4581,6 +4574,9 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
             let pm = window.global::<crate::ui::PickerMath>();
             pm.set_wheel_image(crate::picker::bake_wheel_image(480));
             pm.set_slider_image(crate::picker::bake_slider_image(0.0));
+            // H 分量滑杆的色相条：内容与选色无关的静态图，开机烘一次即可
+            // （1024×16，贴到约 200×6 的条上）。
+            pm.set_hue_image(crate::picker::bake_hue_image(1024, 16));
             pm.on_wheel_pick({
                 let w = window.as_weak();
                 move |dx: f32, dy: f32, v: f32| {
@@ -10815,6 +10811,23 @@ fn clipboard_set_text(text: String) {
 const SANS_PROBE: &[char] = &['中', 'A', '0'];
 const MONO_PROBE: &[char] = &['A', 'g', '0', '─', '│'];
 
+/// (#nerd-icon-probe 2026-10-16) `ls --color` 常用图标码位。
+///
+/// `MONO_PROBE` 只验ASCII + 制表符，对图标区完全不敏感 —— 系统里的
+/// `Monotype Corsiva` 这类「能画字母、没有图标」的等宽/斜体字体会安静地
+/// 通过探针并进入字体链；一旦选中它，Nerd Font 图标全部缺字形。
+/// 探针实测（`examples/probe_nerd_glyphs.rs`）：你机器上的
+/// `JetBrainsMono Nerd Font` 四个变体 PUA覆盖 56.39%、六个常用图标全 OK，
+/// 而 `Monotype Corsiva` PUA 覆盖 0.28% 却能 pass `MONO_PROBE`。
+const NERD_ICON_PROBE: &[char] = &[
+    '\u{e5fc}', // directory
+    '\u{f15b}', // file
+    '\u{f013}', // settings cog
+    '\u{e615}', // locked file
+    '\u{f121}', // python
+    '\u{f408}', // database
+];
+
 /// One fontdb scan feeding every resolver — enumerating system fonts is not
 /// free, and all font decisions must agree on what "is installed" means.
 fn load_font_database() -> fontdb::Database {
@@ -11114,6 +11127,38 @@ fn resolve_mono_font_family(db: &fontdb::Database) -> slint::SharedString {
         "term-font: no system monospace qualified; leaving the choice to the platform default"
     );
     "".into()
+}
+
+/// (#nerd-icon-probe) The chosen terminal font may or may not carry Nerd Font
+/// icon glyphs. That does **not** change the choice — most systems simply have
+/// no Nerd Font installed, and rejecting such fonts would empty the chain and
+/// leave us worse off. It is reported instead, because the symptom otherwise
+/// has no explanation: `ls --color` icons render as tiny blanks and nothing in
+/// the log says why.
+///
+/// Run `cargo run --release --example probe_nerd_glyphs` for the full per-family
+/// PUA coverage table (the example is the diagnostic tool for this check).
+fn report_nerd_icon_support(db: &fontdb::Database, chosen: &str) {
+    if chosen.trim().is_empty() {
+        return;
+    }
+    let covers_icons = family_covers(db, chosen, NERD_ICON_PROBE);
+    if covers_icons {
+        tracing::debug!(
+            font = chosen,
+            "term-font: chosen family carries Nerd Font icon glyphs"
+        );
+    } else {
+        tracing::warn!(
+            font = chosen,
+            "term-font: chosen family has NO Nerd Font icon glyphs (private-use \
+             area) — `ls --color` icons and other Nerd Font symbols will render \
+             as blanks. Install a Nerd Font (e.g. JetBrainsMono Nerd Font) and \
+             pick it under Interface › Font › Terminal font, or run \
+             `cargo run --release --example probe_nerd_glyphs` to see which \
+             installed families cover the icon range."
+        );
+    }
 }
 
 /// Enumerate installed monospace font families for the Interface font picker.

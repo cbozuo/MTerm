@@ -112,7 +112,7 @@ pub fn ink_on(c: u32) -> u32 {
 
 mod images;
 
-pub use images::{bake_slider_image, bake_wheel_image};
+pub use images::{bake_hue_image, bake_slider_image, bake_wheel_image};
 
 // (#picker-input-edit 2026-10-15) 取色盘输入行的 UI 级回归测试（真派发鼠标/键盘
 // 事件）。跑真断言需要 SLINT_EMIT_DEBUG_INFO=1，否则自行跳过 —— 见文件头。

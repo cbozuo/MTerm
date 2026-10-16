@@ -59,7 +59,10 @@ fn fresh_config() -> ConfigFile {
         wallpaper_overlay: DEFAULT_WALLPAPER_OVERLAY,
         panel_alpha: DEFAULT_PANEL_ALPHA,
         term_alpha: DEFAULT_TERM_ALPHA,
-        follow_system: true,
+        // (#follow-ui-removed 2026-10-16) 不再新装即跟随系统：主题直接落具体一套
+        // （serde 默认的空串是给 rev4 迁移判定「从未挑过」用的，新装不该带它）。
+        follow_system: false,
+        theme: "mterm-dark".to_string(),
         defaults_rev: DEFAULTS_REV,
         ..ConfigFile::default()
     }
@@ -139,6 +142,16 @@ fn migrate_defaults(cfg: &mut ConfigFile) -> bool {
         // 从未挑过壁纸的用户 → 默认无壁纸（serde 默认 builtin:tech = 未动过）。
         if cfg.wallpaper == "builtin:tech" {
             cfg.wallpaper = String::new();
+        }
+    }
+    // rev 5 (#follow-ui-removed 2026-10-16): 「跟随系统」整个概念下线 —— UI 两处
+    // 入口已删，这里把**行为**也终结：跟随着的配置落成具体主题（theme 为空 →
+    // mterm 门面暗色），并一律把 follow_system 关掉。此后主题只有一个轴，不会再
+    // 出现「没动主题、界面却随系统变亮」。
+    if cfg.defaults_rev < 5 {
+        cfg.follow_system = false;
+        if cfg.theme.is_empty() {
+            cfg.theme = "mterm-dark".to_string();
         }
     }
     cfg.defaults_rev = DEFAULTS_REV;
@@ -2425,19 +2438,20 @@ mod tests {
 
     #[test]
     fn wallpaper_defaults_follow_the_migration_chain() {
-        // (#theme-split rev4) Fresh install: 默认无壁纸 + 跟随系统 + mterm 门面
-        // + 三滑杆默认值（§0/§5：零操作即正确）。
+        // (#theme-split rev4 → #follow-ui-removed rev5) Fresh install: 默认无壁纸
+        // + mterm 门面暗色 + 不跟随系统 + 三滑杆默认值（§0/§5：零操作即正确）。
         let fresh = fresh_config();
         assert_eq!(fresh.wallpaper, "");
         assert!((fresh.wallpaper_overlay - 0.85).abs() < f32::EPSILON);
         assert!((fresh.panel_alpha - 0.85).abs() < f32::EPSILON);
         assert!((fresh.term_alpha - 1.0).abs() < f32::EPSILON);
-        assert!(fresh.follow_system);
-        assert_eq!(fresh.theme, "");
+        assert!(!fresh.follow_system);
+        assert_eq!(fresh.theme, "mterm-dark");
         // User upgrading from before the feature: JSON without the key keeps the
         // serde default (builtin:tech) so rev4 can tell "never chose" apart.
         let cfg: ConfigFile = serde_json::from_str("{}").unwrap();
         assert_eq!(cfg.wallpaper, "builtin:tech");
+        // 空串 = 「尚未落定」（serde 默认），交给迁移链处理；不再是「跟随系统」。
         assert_eq!(cfg.theme, "");
         assert!((cfg.panel_alpha - 0.85).abs() < f32::EPSILON);
         // An explicit "无"/none (stored as "") is preserved, not re-defaulted.
@@ -2480,12 +2494,13 @@ mod tests {
         assert!(migrate_defaults(&mut cfg));
         assert_eq!(cfg.theme, "mterm-light");
 
-        // 跟随系统 → theme 留空 + follow_system=true。
+        // 跟随系统 → rev4 先置 follow=true，rev5 再**终结该概念**：落 mterm-dark
+        // 且 follow 关掉（#follow-ui-removed）。
         let mut cfg: ConfigFile =
             serde_json::from_str(r#"{"theme_pref":"","defaults_rev":3}"#).unwrap();
         assert!(migrate_defaults(&mut cfg));
-        assert_eq!(cfg.theme, "");
-        assert!(cfg.follow_system);
+        assert_eq!(cfg.theme, "mterm-dark");
+        assert!(!cfg.follow_system);
 
         // 用户调过滑杆：panel 沿用旧 overlay 值，不覆盖。
         let mut cfg: ConfigFile = serde_json::from_str(
@@ -2502,6 +2517,38 @@ mod tests {
         .unwrap();
         assert!(migrate_defaults(&mut cfg));
         assert_eq!(cfg.wallpaper, "builtin:miku");
+    }
+
+    #[test]
+    fn rev5_retires_follow_system() {
+        // (#follow-ui-removed 2026-10-16) 停在跟随态的老配置（follow=true +
+        // theme 空）：一次性落成具体主题并关掉跟随 —— 「跟随」从行为上消失。
+        let mut cfg: ConfigFile = serde_json::from_str(
+            r#"{"theme":"","follow_system":true,"defaults_rev":4}"#,
+        )
+        .unwrap();
+        assert!(migrate_defaults(&mut cfg));
+        assert_eq!(cfg.theme, "mterm-dark");
+        assert!(!cfg.follow_system);
+
+        // 已经挑过主题的用户：主题原样保留，只把 follow 关掉。
+        let mut cfg: ConfigFile = serde_json::from_str(
+            r#"{"theme":"mterm-light","follow_system":true,"defaults_rev":4}"#,
+        )
+        .unwrap();
+        assert!(migrate_defaults(&mut cfg));
+        assert_eq!(cfg.theme, "mterm-light");
+        assert!(!cfg.follow_system);
+
+        // 已是最新 rev：迁移只跑一次，不再改动任何东西。
+        let mut cfg = ConfigFile {
+            theme: "mterm-light".to_string(),
+            follow_system: true,
+            defaults_rev: DEFAULTS_REV,
+            ..ConfigFile::default()
+        };
+        assert!(!migrate_defaults(&mut cfg));
+        assert!(cfg.follow_system);
     }
 
     #[test]

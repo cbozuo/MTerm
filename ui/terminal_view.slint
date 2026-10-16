@@ -19,6 +19,11 @@ export struct TermSpan {
     col: int,
     cells: int,
     cjk: bool,   // contains CJK chars → render with the CJK-capable font (#54)
+    // (#nerd-icon-scale) span is purely a Nerd Font icon (private-use-area
+    // glyph) → draw it scaled up inside its own cell. The grid, PTY addressing
+    // and click-to-select are untouched; only the glyph size changes, which is
+    // what a free-form-layout terminal effectively gets for free.
+    nerd: bool,
     // (#twemoji-removal 2026-09-05) emoji/emoji-image 字段已随 Twemoji 移除:
     // emoji 交由字体回退渲染单色轮廓,不再有图像 span。
 }
@@ -811,14 +816,28 @@ export component TerminalView inherits Rectangle {
                             // (#twemoji-removal) emoji 图像 span 已移除,统一文本渲染。
                             Text {
                                 x: 0px;
-                                y: 0px;
+                                // (#nerd-icon-scale) 图标 span 在本格内放大：Nerd Font
+                                // 的图标按 em 方框设计，而格宽只有字号的 ~0.7（实测 13px
+                                // 下格宽 8~11px、数字高 20px），按名义字号画会溢出格子
+                                // 再被压成 4×4 的小点。放大后仍锁在本格内 —— 网格、
+                                // PTY 寻址、点选全都不动，只改字形大小。
+                                // 1.75 让图标占到与同级字符相当的高度。
+                                // 纵向居中改用 `y` 偏移而不是 `height` +
+                                // `vertical-alignment`：后者要给 Text 设 height，
+                                // 与上面「不设 height 以免重入 FontContext」的
+                                // 结论冲突。字号放大后 Text 的自然高度超过 cell-h，
+                                // 按 (cell-h − 自然高)/2 居中即可。
+                                property <length> glyph-h: root.term-font-size-px * 1.75 * 1px * 1.2;
+                                y: span.nerd && root.cell-h > glyph-h ? (root.cell-h - glyph-h) / 2 : 0px;
                                 text: span.text;
                                 color: span.fg;
                                 // CJK spans use the CJK-capable UI font: the mono
                                 // terminal font lacks CJK glyphs and Slint tofu's
                                 // *isolated* CJK punctuation (、。,) on fallback (#54).
                                 font-family: span.cjk ? Theme.ui-font-family : Theme.term-font-family;
-                                font-size: root.term-font-size-px * 1px;
+                                // 图标放大不改变字体度量（cell-w/h 仍来自 cell-probe），
+                                // 所以 PTY 列数/行数不会因放大而重排。
+                                font-size: (span.nerd ? root.term-font-size-px * 1.75 : root.term-font-size-px) * 1px;
                                 font-weight: (Theme.term-font-bold || span.bold) ? Theme.fw-strong : Theme.fw-regular;
                             }
                         }
@@ -1319,14 +1338,17 @@ export component TerminalView inherits Rectangle {
                         width: parent.width; height: parent.height;
                         alignment: center;
                         spacing: 3px;
-                        Text { text: @tr("Quick"); color: Theme.text-secondary; font-size: Theme.fs-sm;
+                        // (#cmdbar-tier 2026-10-16) 命令栏三个控件统一**前景档**：
+                        // 用户反馈「命令栏中的字体色号也不协调」—— 原「快捷」/「所有
+                        // 会话」是次级档，而中间的「∧」历史开关是前景档，三者不齐。
+                        Text { text: @tr("Quick"); color: Theme.text-primary; font-size: Theme.fs-sm;
                                vertical-alignment: center; }
                         Icon {
-    glyph: "expand-less";
-    // (#theme-dedupe 2026-10-15) 图标跟标签同档:原 muted 比「Quick」文字还暗
-    tint: Theme.text-secondary;
-    size: Theme.fs-sm;
-}
+                            glyph: "expand-less";
+                            // (#theme-dedupe 2026-10-15) 图标跟标签同档:原 muted 比「Quick」文字还暗
+                            tint: Theme.text-primary;
+                            size: Theme.fs-sm;
+                        }
                     }
                 }
 
@@ -1546,8 +1568,9 @@ export component TerminalView inherits Rectangle {
                     all-row := HorizontalLayout {
                         width: parent.width; height: parent.height;
                         alignment: center;
+                        // (#cmdbar-tier) 与「快捷」/ 历史开关同档（前景）；激活态仍白字 on 强调色
                         Text { text: @tr("All sessions"); font-size: Theme.fs-sm; vertical-alignment: center;
-                               color: root.send-to-all ? #ffffff : Theme.text-secondary; }
+                               color: root.send-to-all ? #ffffff : Theme.text-primary; }
                     }
                 }
 

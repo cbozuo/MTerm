@@ -43,6 +43,8 @@ impl slint::platform::Platform for ProbePlatform {
 struct Frame { buf: Vec<PremultipliedRgbaColor> }
 impl Frame {
     fn new() -> Self { Self { buf: vec![PremultipliedRgbaColor::default(); W * H] } }
+    /// 快照（聚焦前后对比用 —— grab 是覆写式的）。
+    fn snapshot(&self) -> Frame { Frame { buf: self.buf.clone() } }
     fn grab(&mut self, ui: &AppWindow) {
         ui.window().request_redraw();
         WIN.with(|win| win.draw_if_needed(|r| { r.render(&mut self.buf, W); }));
@@ -52,6 +54,11 @@ impl Frame {
         if p.alpha == 0 { return (0, 0, 0, 0); }
         let un = |c: u8| (c as u16 * 255 / p.alpha as u16) as u8;
         (un(p.red), un(p.green), un(p.blue), p.alpha)
+    }
+    /// 只要 RGB（比较色值时用；alpha 全透明处返回 0,0,0）。
+    fn px3(&self, x: usize, y: usize) -> (u8, u8, u8) {
+        let (r, g, b, _) = self.px(x, y);
+        (r, g, b)
     }
     /// 颜色 C（容差 tol）的像素包围盒，限定在给定区域内。
     fn bbox_of(&self, c: (u8, u8, u8), tol: u8, region: (usize, usize, usize, usize))
@@ -150,7 +157,7 @@ fn find_row_centers(f: &Frame, y_from: usize, y_to: usize) -> Vec<usize> {
 
 /// 行内**第一条宽饱和带** = 八色带（~75px）。必须取第一条：选中行的 ✓ 与
 /// 收藏行的淡星也是饱和色，且在色带右侧，取"最右"会把它们算进来（实测跨度
-/// 被拉到 33px）。圆点用灰、色阶条用暗色，都不会误触。
+/// 被拉到 33px）。圆点用灰（原 3 色阶条 2026-10-16 已删），都不会误触。
 fn strip_run(f: &Frame, y: usize) -> Option<(usize, usize)> {
     let mut runs: Vec<(usize, usize)> = Vec::new();
     let mut start: Option<usize> = None;
@@ -221,7 +228,6 @@ fn real_entries() -> Vec<ThemeEntry> {
         header("常用", "2 / 最多 8　·　点星可整理".into()),
         make(crate_free::palettes::find("mterm-dark").unwrap(), true),
         make(crate_free::palettes::find("mterm-light").unwrap(), true),
-        header("全部主题", format!("{} 套", PALETTES.len())),
     ];
     for dark in [true, false] {
         let g: Vec<_> = PALETTES.iter().filter(|p| p.dark == dark).collect();
@@ -447,5 +453,154 @@ fn theme_rows_right_align_chip_and_stay_inside_settings_card() {
         ui.set_theme_pick_open(true);
         f.grab(&ui);
         dump(&f, "theme-pick-in-card");
+    }
+}
+
+/// (#theme-search-redesign 2026-10-16) 搜索框必须是**输入框形态**，与
+/// `PickerInput`（color_picker.slint:159-173）/ `MiniInput`
+/// （session_dialog.slint:557-568）同款：常驻 field 底 + border-control 边，
+/// 聚焦时边转 accent + 外扩 3px accent-soft 柔光环。
+///
+/// 用户反馈的是「聚焦后样式都不一致，不怎么协调」。旧实现是**扁平行**
+/// （自身 transparent、无底无边），聚焦时才凭空冒一圈柔光环 —— 那一帧
+/// 整行像被套了个更大的框，与浮层内其它控件不成一套。本测试从像素侧
+/// 钉住形态：
+///   ① 未聚焦时行内**有** field 底色（不再 transparent）；
+///   ② 聚焦时边框转 accent 且出现柔光环（外扩 3px）；
+///   ③ 柔光环外径 = 行高 + 6（同心 8+3=11），不是「比行宽还宽的整行框」。
+#[test]
+fn theme_search_row_is_an_input_not_a_flat_bar() {
+    let ui = setup();
+    let mut f = Frame::new();
+    let theme = ui.global::<Theme>();
+    let field = brush_rgb(&theme.get_field());
+    let accent = color_rgb(theme.get_accent_solid());
+    let dist = |a: (u8, u8, u8), b: (u8, u8, u8)| {
+        (a.0 as i32 - b.0 as i32).abs()
+            + (a.1 as i32 - b.1 as i32).abs()
+            + (a.2 as i32 - b.2 as i32).abs()
+    };
+
+    ui.set_theme_entries(ModelRc::from(Rc::new(slint::VecModel::from(vec![
+        row("t1", "MTerm · 暗", "暗", true),
+        row("t2", "原子 · 暗", "暗", false),
+    ]))));
+    ui.set_theme_total(2);
+    ui.set_theme_chosen("t1".into());
+    ui.set_theme_pick_x(120.0);
+    ui.set_theme_pick_y(120.0);
+    ui.set_theme_pick_open(true);
+    f.grab(&ui);
+    let idle = f.snapshot();
+    if std::env::var("THEME_DUMP_DIR").is_ok() {
+        dump(&f, "theme-search-input-idle");
+    }
+
+    // 搜索行定位：不能用「field 底色包围盒」—— field 色在窗口别处也有，
+    // 整帧 bbox 会跨几百像素。也不能只看某一行：行有 8px 圆角，靠上下缘
+    // 的行会被圆角切掉两侧（实测同一行取到 332px 而非 348px）。改为在浮层
+    // 顶部扫**field 色连续段最宽的那一行** —— 那正是行的垂直中线，此处圆角
+    // 不咬边，量到的就是完整内容宽 348（浮层 360 − 2×6 内衬）。
+    let mut best: Option<(usize, usize, usize)> = None; // (width, y, x0)
+    for y in 120..200 {
+        let mut run: Option<usize> = None;
+        for x in 0..W {
+            let (r, g, b, a) = f.px(x, y);
+            let hit = a > 0 && dist((r, g, b), field) < 6;
+            if hit {
+                if run.is_none() {
+                    run = Some(x);
+                }
+            } else if let Some(st) = run {
+                let w = x - st;
+                if w >= 300 && best.map(|(bw, _, _)| w > bw).unwrap_or(true) {
+                    best = Some((w, y, st));
+                }
+                run = None;
+            }
+        }
+    }
+    let (seg_w, sy, sx0) = best.expect(
+        "未聚焦的搜索行就该有 field 底色（旧扁平行是 transparent，整行没有）\
+         —— 在浮层顶部找不到≥300px 宽的 field 色横向段",
+    );
+    let sx1 = sx0 + seg_w - 1;
+    assert!(
+        (340..=350).contains(&seg_w),
+        "搜索行内容宽应≈348px（浮层 360 − 2×6 内衬），实测 {seg_w}（y={sy} x {sx0}..{sx1}）"
+    );
+
+    // 聚焦：点进输入框 → 边转 accent + 外扩柔光环。
+    let cx = (sx0 + sx1) / 2;
+    let cy = sy;
+    click_at(&ui, cx as f32, cy as f32);
+    settle();
+    f.grab(&ui);
+    if std::env::var("THEME_DUMP_DIR").is_ok() {
+        dump(&f, "theme-search-input-focused");
+    }
+
+    // 柔光环：聚焦后在**边框外侧**出现 accent-soft 的 3px 环。
+    //
+    // ⚠️ 判据不能写成「变色后更靠近 accent」—— `accent-soft` 是**半透明**
+    // accent，叠在 popup 底上，混色结果离 popup 底更近（实测 idle (35,38,45)
+    // → focused (40,54,73)：离 popup 88、离 accent 277）。正确判据是
+    // **相对 idle 那一帧更靠近 accent**（326 → 277），这才是"往 accent 走"。
+    // 另需与 idle 逐点对照，否则无环时那些弱条件也可能成立。
+    let hx = sx0.saturating_sub(3);
+    let halo_span = (sy - 10..sy + 11)
+        .filter(|&y| {
+            let before = idle.px3(hx, y);
+            let after = f.px3(hx, y);
+            dist(after, before) > 6 && dist(after, accent) < dist(before, accent)
+        })
+        .count();
+    assert!(
+        halo_span >= 12,
+        "聚焦后边框外 3px（x={hx}）应出现 accent-soft 柔光环并纵向贯通，\
+         实测 {halo_span}/21 行变色且向accent 靠拢（搜索行 y={sy} x={sx0}..{sx1}）"
+    );
+
+    // 聚焦时框内底色仍是 field（输入框形态不因聚焦换底）。
+    let inner = { let (r, g, b) = f.px3(cx, sy); (r, g, b) };
+    assert!(
+        dist(inner, field) < 12,
+        "聚焦时框内底色应仍是 Theme.field：{:?} vs {:?}",
+        inner,
+        field
+    );
+
+    // 聚焦时**边框**转 accent。
+    //
+    // ⚠️ 取样坐标有两个坑（都实测踩过）：
+    //  ① `sx0` 是**框内 field 底**的起点，不是边框 —— 未聚焦时边框画的是
+    //     border-control，与 field 色差 >6，所以 field 检测从边框**内侧**起算
+    //     （实测 idle：x126=边框 (49,53,62)、x127 起才是 field (25,27,33)）。
+    //  ② 边框**外侧** x123..125 是柔光环（focused accent-soft (40,54,73)），
+    //     再外 x121 起是 popup 底。三段都不能当"边框"取样。
+    //
+    // 正确做法：idle 最宽 field 段起点 sx0 再**外扩 1~2px** —— 那一列正是
+    // 边框。用「idle → focused 同一坐标变色 + 变化后更靠近 accent」双向确认，
+    // 避开对具体像素值的硬编码。
+    let bx = sx0.saturating_sub(2);
+    let border_idle = idle.px3(bx, sy);
+    let border_focused = f.px3(bx, sy);
+    assert!(
+        dist(border_focused, border_idle) > 10,
+        "聚焦时搜索框边框（x={bx}）应变色：idle {:?} → focused {:?}\
+         （边框位置推错：sx0={sx0}，边框应在 sx0−2 附近）",
+        border_idle,
+        border_focused
+    );
+    assert!(
+        dist(border_focused, accent) < dist(border_idle, accent),
+        "聚焦后边框应更靠近 accent：idle {:?} → focused {:?}（accent {:?}）",
+        border_idle,
+        border_focused,
+        accent
+    );
+
+    if std::env::var("THEME_DUMP_DIR").is_ok() {
+        dump(&f, "theme-search-input-focused");
     }
 }

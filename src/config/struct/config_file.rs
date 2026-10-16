@@ -37,7 +37,8 @@ fn default_wallpaper() -> String {
 }
 
 /// Bump when `migrate_defaults` gains a new one-time default-layout change.
-pub const DEFAULTS_REV: u32 = 4;
+/// rev 5 = #follow-ui-removed（跟随系统下线：一律 follow=false、theme 落成具体一套）。
+pub const DEFAULTS_REV: u32 = 5;
 
 pub(crate) const PREVIOUS_DEFAULT_WALLPAPER_TRANSPARENCY: f32 = 0.38;
 pub(crate) const PREVIOUS_DEFAULT_WALLPAPER_OVERLAY: f32 =
@@ -56,8 +57,12 @@ pub(crate) const DEFAULT_PANEL_ALPHA: f32 = 0.85;
 pub(crate) const DEFAULT_TERM_ALPHA: f32 = 1.0;
 
 pub(crate) fn default_theme() -> String {
-    // 空 = 跟随系统（follow_system = true 时按探测的深浅取 mterm 门面）。
-    // 设计稿 §5：默认壁纸改为无 + 跟随系统，「零操作即正确」。
+    // (#follow-ui-removed 2026-10-16) 「跟随系统」已下线，但这里**必须仍返回空串**：
+    // rev4 迁移靠 `theme.is_empty()` 判定「用户从未挑过主题」（本函数即该字段的
+    // serde 默认），返回具体 id 会让老配置被误判成「已挑过」而整段跳过迁移。
+    // 空串的语义已变：不再是「跟随系统」，而是「尚未落定」—— rev5 迁移把它落成
+    // mterm-dark，`fresh_config()` 也直接给具体 id。运行时 `palette_or_default`
+    // 对空/非法 id 的兜底此后只作异常修复用。
     String::new()
 }
 pub(crate) fn default_panel_alpha() -> f32 {
@@ -70,7 +75,8 @@ pub(crate) fn default_wallpaper_visible() -> f32 {
     1.0
 }
 pub(crate) fn default_follow_system() -> bool {
-    true
+    // (#follow-ui-removed 2026-10-16) 跟随系统下线：不再有「新装即跟随」。
+    false
 }
 /// 常用主题出厂值：门面两套（#theme-dedupe 用户决策：默认只显示 MTerm 暗/亮）。
 pub(crate) fn default_favorite_themes() -> Vec<String> {

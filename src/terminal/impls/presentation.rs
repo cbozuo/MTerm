@@ -359,6 +359,29 @@ pub(crate) fn render_term_span(
     }
     let (fg, bg) = vt_span_colors(span.fg, span.bg, span.bold, span.inverse, is_dark, pal);
     let cjk = contains_cjk(&span.text);
+    // (#nerd-icon-scale) 纯图标 span 交给 UI 放大绘制（网格/协议不变）。
+    let nerd = !cjk && is_nerd_icon_span(&span.text);
+    // (#nerd-icon-diag) 诊断：用户报「图标放大没生效」，需要确认判据是否命中。
+    // 设 MTERM_DIAG_NERD=1 后跑 `ls --color`，日志会打出每个含私用区字符的
+    // span 的码位与判定结果。**不加 cfg(debug_assertions)** —— 出问题的正是
+    // release 包，被编译掉就白加了。只在命中时打，且要求环境变量存在，不刷屏。
+    if std::env::var_os("MTERM_DIAG_NERD").is_some()
+        && span.text.chars().any(is_nerd_icon_char)
+    {
+        let cp: Vec<String> = span
+            .text
+            .chars()
+            .map(|c| format!("U+{:04X}", c as u32))
+            .collect();
+        tracing::info!(
+            row,
+            text = %span.text,
+            codepoints = ?cp,
+            cjk,
+            nerd,
+            "nerd-diag: span 含私用区字符"
+        );
+    }
     vec![TermSpan {
         text: span.text.clone().into(),
         fg,
@@ -368,6 +391,7 @@ pub(crate) fn render_term_span(
         col: span.col,
         cells: span.cells,
         cjk,
+        nerd,
     }]
 }
 
@@ -390,6 +414,42 @@ fn contains_cjk(s: &str) -> bool {
             | 0xFF00..=0xFFEF     // fullwidth / halfwidth forms (，！？：；)
             | 0x20000..=0x2FA1F) // CJK ext B–F + compat supplement
     })
+}
+
+/// True if a span is **purely** one Nerd Font icon (a private-use-area glyph),
+/// so the UI can draw it larger inside its single cell.
+///
+/// (#nerd-icon-scale) Nerd Font draws its icons on the full em box, but the
+/// terminal grid locks every character to one measured cell. Measured on a real
+/// screenshot at 13 px (JetBrainsMono Nerd Font, graphite dark): the cell
+/// advance is **8–11 px** while the digits on the same line stand **20 px**
+/// tall — an icon drawn at the nominal font size overflows its cell, and
+/// Slint's text layout shrinks/clips it down to a **4×4 px** speck. Hence
+/// "the icons look smaller than in another terminal": the glyph is *present*
+/// (a probe of the installed face finds all six common ls icons) but drawn
+/// squashed. Free-form layout is not an option — SSH/PTY addressing, vim/htop
+/// cursor addressing and click-to-select all index by (row, col) — so the fix
+/// is to scale the glyph up within its own cell instead.
+///
+/// The check is deliberately **whole-span**: mixing an icon with ordinary text
+/// would need per-character positioning, and a run like `📁backup.sql` should
+/// still read as one label. Two ranges are recognised:
+///   * U+E000..U+F8FF  — Nerd Font v2/v3 icon blocks (the `ls --color` set);
+///   * U+F0000..U+FFFFD — supplementary plane, for icon sets shipped out there.
+fn is_nerd_icon_span(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !is_nerd_icon_char(first) {
+        return false;
+    }
+    // Surrounding whitespace is fine (`📁 `), any other content is not.
+    chars.all(|c| is_nerd_icon_char(c) || c.is_whitespace())
+}
+
+fn is_nerd_icon_char(c: char) -> bool {
+    matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD)
 }
 
 /// 16-colour ANSI palette for **dark** terminals (VS Code "Dark+" values).
@@ -482,7 +542,9 @@ fn vt_color_to_slint(
             if is_dark {
                 (r, g, b)
             } else {
-                darken_light_fg(r, g, b)
+                // 守卫用**当前主题的 tbg**（per-theme），不是写死的近白
+                let tbg = ((pal.tbg >> 16) as u8, (pal.tbg >> 8) as u8, pal.tbg as u8);
+                darken_light_fg(r, g, b, tbg)
             }
         }
     };
@@ -531,17 +593,75 @@ pub(crate) fn vt_span_colors(
     (fg_color, bg_color)
 }
 
-/// In light mode, remap light true-colour foregrounds to dark so they are
-/// readable on a near-white background.  Colours already dark (L < 0.55)
-/// pass through unchanged.
-fn darken_light_fg(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
-    let (h, s, l) = rgb_to_hsl(r, g, b);
-    if l < 0.55 {
-        return (r, g, b);
+/// sRGB 相对亮度（WCAG 2.x），`/ 255` 的通道线性化。
+fn channel_luminance(c: u8) -> f64 {
+    let v = c as f64 / 255.0;
+    if v <= 0.04045 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
     }
-    // L=0.55 → 0.40 (readable dark grey), L=1.0 (white) → ~0.15 (near-black).
-    let new_l = (0.40 - (l - 0.55) * 0.56).max(0.10);
-    hsl_to_rgb(h, s, new_l)
+}
+
+/// WCAG 对比度（1.0 ~ 21.0）。
+fn contrast_ratio(a: (u8, u8, u8), b: (u8, u8, u8)) -> f64 {
+    let la = 0.2126 * channel_luminance(a.0)
+        + 0.7152 * channel_luminance(a.1)
+        + 0.0722 * channel_luminance(a.2);
+    let lb = 0.2126 * channel_luminance(b.0)
+        + 0.7152 * channel_luminance(b.1)
+        + 0.0722 * channel_luminance(b.2);
+    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// 亮底守卫的目标对比度。取 4.5:1（WCAG AA 正文线），与主题色表的
+/// `_meta.ansi_check` 验收线一致 —— 终端正文也是正文。
+const LIGHT_FG_MIN_CONTRAST: f64 = 4.5;
+
+/// In light mode, remap true-colour foregrounds so they stay readable on the
+/// palette's own `tbg` (not an assumed near-white).
+///
+/// (#term-truecolor-guard 2026-10-16) **This used to branch on HSL lightness
+/// alone** — `L < 0.55` passed through untouched. That is wrong for saturated
+/// hues: HSL lightness is *channel-average based*, so bright cyans/greens/yellows
+/// measure low and slipped straight through. Measured over the full 256-colour
+/// cube on `mterm-light`'s `#FAF8F4`: **98 of 215 colours rendered below
+/// 4.5:1**, 70 of them untouched by this function. Worst offenders were pure
+/// cube colours — `#FFFF00` at **1.01:1** (indistinguishable from the
+/// background) and `#00FF00` at 1.29. The user's report that started this was a
+/// remote host's 256-colour cyan `#00AF87` (cube index 36) landing at 2.65:1.
+///
+/// Now: hold **hue**, then walk lightness down until the colour actually
+/// clears 4.5:1 against the real background. Saturated colours still shift
+/// (they must — a readable light-background rendering of a saturated hue is
+/// necessarily darker), but hue is preserved and nothing passes through
+/// unchecked. Already-dark colours are returned untouched.
+///
+/// `bg` is the palette's `tbg` (per-theme), so a darker light palette such as
+/// `kanagawa-lotus`'s `#F2ECBC` is handled without a second constant.
+fn darken_light_fg(r: u8, g: u8, b: u8, bg: (u8, u8, u8)) -> (u8, u8, u8) {
+    let orig = (r, g, b);
+    if contrast_ratio(orig, bg) >= LIGHT_FG_MIN_CONTRAST {
+        return orig;
+    }
+    let (h, s, l0) = rgb_to_hsl(r, g, b);
+    // 从原亮度**向下细步**到刚好过线，而不是一步降到某个固定 L。
+    // ⚠️ 粗步长（例如直接从 0.6 往下扫）会把饱和色一路推到纯黑、丢掉色相 ——
+    // 实测 #4DC4A8 / #ABE0D1 都被渲成 #000000。步长取 1/1024 保证在
+    // 8 位输出分辨率下连续，停下时就是「刚好达标」的最亮的那一档。
+    const STEPS: u32 = 1024;
+    let mut best = (0u8, 0u8, 0u8);
+    for i in 1..=STEPS {
+        let new_l = l0 * (1.0 - i as f32 / STEPS as f32);
+        let cand = hsl_to_rgb(h, s, new_l);
+        if contrast_ratio(cand, bg) >= LIGHT_FG_MIN_CONTRAST {
+            best = cand;
+            break;
+        }
+        best = cand;
+    }
+    best
 }
 
 /// Convert a vt100 *background* colour to Slint.  The default background maps
@@ -662,7 +782,7 @@ fn idx_to_rgb(
 ) -> (u8, u8, u8) {
     let i = if bold && i < 8 { i + 8 } else { i };
     let palette = ansi16_of(pal);
-    match i {
+    let out = match i {
         0..=15 => palette[i as usize],
         16..=231 => {
             let n = i - 16;
@@ -679,6 +799,16 @@ fn idx_to_rgb(
             let v = 8 + (i - 232) * 10;
             (v, v, v)
         }
+    };
+    // (#term-truecolor-guard 2026-10-16) 16~255 档是 xterm **固定值**，不随主题
+    // 变，浅底上必然有大批不可读（实测 mterm-light 的 #FAF8F4 上 215 个立方体
+    // 色有 98 个低于 4.5:1，纯亮黄 #FFFF00 只有 1.01）。亮色模式下同样过
+    // 守卫；0~15 档是主题自己的色表（已由 `_meta.ansi_check` 守过），不重复处理。
+    if is_dark || i < 16 {
+        out
+    } else {
+        let tbg = ((pal.tbg >> 16) as u8, (pal.tbg >> 8) as u8, pal.tbg as u8);
+        darken_light_fg(out.0, out.1, out.2, tbg)
     }
 }
 
@@ -704,4 +834,216 @@ fn idx_to_rgb_bg(i: u8, is_dark: bool, pal: &crate::theme::palettes::Palette) ->
         }
     }
     idx_to_rgb(i, false, is_dark, pal)
+}
+
+#[cfg(test)]
+mod truecolor_guard_tests {
+    use super::{contrast_ratio, darken_light_fg, idx_to_rgb, LIGHT_FG_MIN_CONTRAST};
+    use crate::theme::palettes;
+
+    fn tbg_of(pal: &palettes::Palette) -> (u8, u8, u8) {
+        ((pal.tbg >> 16) as u8, (pal.tbg >> 8) as u8, pal.tbg as u8)
+    }
+
+    /// 旧实现按 HSL 亮度 `L < 0.55` 放过，漏掉 215 个立方体色里的 70 个
+    /// （纯亮黄 #FFFF00 在 mterm-light 上只有 1.01:1）。这条锁死「256 色立方体
+    /// 在亮色主题下全部过 4.5:1」，且**暗色模式逐值不变**。
+    #[test]
+    fn light_palettes_guard_every_cube_colour() {
+        let mut worst = f64::MAX;
+        let mut worst_at = 0u8;
+        for pal in palettes::PALETTES.iter().filter(|p| !p.dark) {
+            let bg = tbg_of(pal);
+            for i in 16u8..=255 {
+                let (r, g, b) = idx_to_rgb(i, false, false, pal);
+                let c = contrast_ratio((r, g, b), bg);
+                if c < worst {
+                    worst = c;
+                    worst_at = i;
+                }
+                assert!(
+                    c >= LIGHT_FG_MIN_CONTRAST,
+                    "{}: ANSI 索引 {i} 渲染为 #{r:02X}{g:02X}{b:02X}，对 tbg #{:06X} 只有 {c:.2}:1",
+                    pal.id,
+                    pal.tbg
+                );
+            }
+        }
+        // 守卫是逐色收敛的，实际最差值应贴近门槛（而非远低于它）。
+        assert!(
+            worst >= LIGHT_FG_MIN_CONTRAST,
+            "最差色（索引 {worst_at}）只有 {worst:.2}:1"
+        );
+    }
+
+    /// 24 位真彩同样过守卫 —— 用户报的远端青绿 `#00AF87`（HSL L≈0.34）恰好
+/// 低于旧实现的 `L < 0.55` 门槛，被原样透传到浅底上，只有 2.65:1。
+    #[test]
+    fn light_palettes_guard_true_colour_foreground() {
+        for pal in palettes::PALETTES.iter().filter(|p| !p.dark) {
+            let bg = tbg_of(pal);
+            // 用户实际截图里那批远端色 + 立方体两端极值
+            for raw in [
+                (0x00u8, 0xAFu8, 0x87u8), // 远端 ls 的青绿（立方体索引 36）
+                (0xFFu8, 0xFFu8, 0x00u8), // 纯黄（旧实现 1.01:1）
+                (0x00u8, 0xFFu8, 0x00u8), // 纯绿
+                (0xFFu8, 0xFFu8, 0xFFu8), // 纯白
+                (0x00u8, 0xFFu8, 0xFFu8), // 纯青
+            ] {
+                let (r, g, b) = darken_light_fg(raw.0, raw.1, raw.2, bg);
+                let c = contrast_ratio((r, g, b), bg);
+                assert!(
+                    c >= LIGHT_FG_MIN_CONTRAST,
+                    "{}: 真彩 {raw:?} 守卫后 #{r:02X}{g:02X}{b:02X} 对 tbg #{:06X} 只有 {c:.2}:1",
+                    pal.id,
+                    pal.tbg
+                );
+            }
+        }
+    }
+
+    /// 暗色模式**逐值不变** —— 深底上原来的颜色本来就够读。
+    #[test]
+    fn dark_palettes_keep_cube_colours_verbatim() {
+        let cube = |i: u8| -> (u8, u8, u8) {
+            let n = i - 16;
+            let to = |v: u8| -> u8 {
+                if v == 0 {
+                    0
+                } else {
+                    55 + v * 40
+                }
+            };
+            (to(n / 36), to((n % 36) / 6), to(n % 6))
+        };
+        let grey = |i: u8| -> (u8, u8, u8) {
+            let v = 8 + (i - 232) * 10;
+            (v, v, v)
+        };
+        for pal in palettes::PALETTES.iter().filter(|p| p.dark) {
+            // 立方体 16..=231
+            for i in 16u8..=231 {
+                assert_eq!(
+                    idx_to_rgb(i, false, true, pal),
+                    cube(i),
+                    "{}: 暗色下 ANSI 索引 {i} 不该被守卫改动",
+                    pal.id
+                );
+            }
+            // 灰阶 232..=255
+            for i in 232u8..=255 {
+                assert_eq!(
+                    idx_to_rgb(i, false, true, pal),
+                    grey(i),
+                    "{}: 暗色下 ANSI 灰阶 {i} 不该被守卫改动",
+                    pal.id
+                );
+            }
+        }
+    }
+
+    /// 已经足够深的色原样返回（守卫不该无谓改色 —— 那会丢掉远端本意）。
+    #[test]
+    fn already_readable_colours_pass_through() {
+        let bg = (0xFA, 0xF8, 0xF4); // mterm-light tbg
+        for c in [(0x33, 0x30, 0x2Cu8), (0x1F, 0x1C, 0x19), (0x00, 0x00, 0x00)] {
+            assert_eq!(
+                darken_light_fg(c.0, c.1, c.2, bg),
+                c,
+                "{c:?} 已达标，不该被改动"
+            );
+        }
+    }
+
+    /// 守卫只许改亮度，**不许改色相** —— 否则「让文字可读」变成了「把所有
+    /// 彩色字变黑白」。首版用 512 步粗扫时，饱和色（`#4DC4A8`、`#ABE0D1`）
+    /// 直接被推到纯黑；现在细步下降，停下时必须仍是同色相的色。
+    #[test]
+    fn guard_preserves_hue_of_saturated_colours() {
+        let bg = (0xFA, 0xF8, 0xF4);
+        for raw in [
+            (0x4Du8, 0xC4u8, 0xA8u8), // 亮青绿：曾被渲成纯黑
+            (0xABu8, 0xE0u8, 0xD1u8), // 亮薄荷：曾被渲成纯黑
+            (0x00u8, 0xAFu8, 0x87u8), // 用户截图里的远端青绿
+            (0xFFu8, 0xFFu8, 0x00u8), // 纯黄：曾只有 1.01:1
+            (0x00u8, 0xFFu8, 0x00u8), // 纯绿：曾只有 1.29:1
+        ] {
+            let out = darken_light_fg(raw.0, raw.1, raw.2, bg);
+            let spread = |c: (u8, u8, u8)| {
+                c.0.max(c.1).max(c.2) - c.0.min(c.1).min(c.2)
+            };
+            assert!(
+                spread(out) > 8,
+                "{raw:?} 经守卫后成了 {out:?}（通道极差 {}）—— 色相被抹掉了，\
+                 只该调亮度",
+                spread(out)
+            );
+            assert!(
+                contrast_ratio(out, bg) >= LIGHT_FG_MIN_CONTRAST,
+                "{raw:?} → {out:?} 守卫后仍不达标"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod nerd_icon_tests {
+    use super::is_nerd_icon_span;
+
+    /// `ls --color` 的图标都是私用区（PUA）码位。这些 span 会被放大绘制，
+    /// 判错会让普通文本被误放大（或图标没被放大）。
+    #[test]
+    fn recognises_ls_icon_glyphs() {
+        for (text, what) in [
+            ("\u{e5fc}", "directory"),
+            ("\u{f15b}", "file"),
+            ("\u{f013}", "cog"),
+            ("\u{e615}", "locked"),
+            ("\u{f408}", "database"),
+        ] {
+            assert!(is_nerd_icon_span(text), "{what} {text:?} 应识别为图标");
+        }
+    }
+
+    /// 普通文本**绝不能**被误判 —— 否则整行会被放大 1.75 倍、错位。
+    #[test]
+    fn plain_text_is_not_an_icon_span() {
+        for text in [
+            "backup_t_line_dual_name_20260528110821.sql",
+            "drwxr-xr-x.",
+            "root root  4.0 KB",
+            "2026",
+            "[root@localhost ~]#",
+            "",
+            " ",
+            "─│",
+            // 私用区码位与普通字符混排 → 不是纯图标 span（逐字符定位未实现）
+            "\u{e5fc}backup.sql",
+            "a\u{e5fc}",
+        ] {
+            assert!(
+                !is_nerd_icon_span(text),
+                "{text:?} 不该被识别为图标 span"
+            );
+        }
+    }
+
+    /// 图标 + 尾部空白仍算图标（`ls` 会在图标后补一个空格）。
+    ///
+    /// ⚠️ **前导空白不算**：span 必须以图标字符开头。vt100 会把空白归到
+    /// 相邻 run，真实到达这里的一段纯图标 span 是以图标开头的；以空白
+    /// 开头的段说明前面还有别的字符（同一 span），那是混排、不该放大。
+    #[test]
+    fn icon_with_trailing_space_counts() {
+        assert!(is_nerd_icon_span("\u{e5fc} "));
+        assert!(is_nerd_icon_span("\u{e5fc}  "));
+        // 多个图标连排（如 ls 的一个名字前有多个符号）仍算纯图标
+        assert!(is_nerd_icon_span("\u{e5fc}\u{f15b}"));
+    }
+
+    /// 以空白开头的段 = 前面有别的字符 → 混排，不放大。
+    #[test]
+    fn leading_space_is_not_an_icon_span() {
+        assert!(!is_nerd_icon_span(" \u{e5fc}"));
+    }
 }

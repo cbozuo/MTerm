@@ -26,7 +26,11 @@ export component ColorInfoCard inherits Rectangle {
     width: 168px;
     height: 100px;
     border-radius: 8px;
-    background: #111318;
+    // (#info-card-theme 2026-10-16) 底色原先写死暗色 `#111318` —— 浅色主题下
+    // 这张卡仍是深底（用户反馈「没有跟随主题」）。改用统一浮层 token
+    // `bg-elevated`：跟随主题，且比它浮在其上的弹框（`popup-bg` = 面板底色）
+    // 高一档，靠边框 + 14px 投影勾出卡片轮廓。四行文字本就是主题 token，换底即两档正确。
+    background: Theme.bg-elevated;
     border-width: 1px;
     border-color: Theme.border-strong;
     drop-shadow-blur: 14px;
@@ -110,7 +114,7 @@ export component InfoSwatch inherits Rectangle {
 //   * 聚焦样式 = 全应用输入框同款（MiniInput）：边框转 Theme.accent + 外扩 3px
 //    的 accent-soft 柔光环；点输入框外由 blur-token 统一离焦（Slint 点空白
 //     **不会**自动清焦点，必须显式 clear-focus）；
-//   * 标签列定宽 26px（容得下 "HEX"），值列全部右对齐 → 四行标签、值各成一条竖线。
+//   * 标签列定宽 30px（容得下 "HEX"），值列全部右对齐 → 四行标签、值各成一条竖线。
 //
 // (#picker-input-edit 2026-10-15) 用户反馈「第一次点只出聚焦边框、打不进字；
 // 能编辑后光标落在行首，且够不到行尾」。用 Slint 测试后端真派发鼠标/键盘
@@ -348,7 +352,10 @@ component PickerChannel inherits Rectangle {
     HorizontalLayout {
         spacing: 8px;
         Text {
-            width: 22px;
+            // (#picker-label-col 2026-10-16) 标签列 22 → 30px：与 PickerInput 的
+            // 标签列同宽，HEX 行并入右列后四行标签成一条竖线（用户要求「在输入
+            // 左侧加上 HEX」）。滑块相应右移 8px，可拖宽度略减。
+            width: 30px;
             // (#picker-label-size 2026-10-15) 分量标识（R/G/B…）与 HEX 行标签
             // 同批提亮放大：muted 10px → 前景色 fs-sm，与右侧数值同档同号。
             text: root.label;
@@ -365,12 +372,26 @@ component PickerChannel inherits Rectangle {
                 width: parent.width;
                 height: 6px;
                 border-radius: 3px;
-                background: root.idx == 0 && root.fmt != "rgb"
-                    ? @linear-gradient(90deg, #FF0000 0%, #FFFF00 17%, #00FF00 33%,
-                        #00FFFF 50%, #0000FF 67%, #FF00FF 83%, #FF0000 100%)
-                    : root.mid-stop
+                // (#picker-hue-ramp 2026-10-16) H 条改用 **Rust 烘的色相条位图**：
+                // 原来的七停 @linear-gradient 实测有断层（用户反馈「彩色滑动条
+                // 显示不全 → 有断层」）。位图逐像素求色、与明度条同一范式；
+                // 内层再套一层 clip + 圆角，让位图跟着圆角切（Image 自身无圆角）。
+                if root.idx == 0 && root.fmt != "rgb" : Rectangle {
+                    width: 100%; height: 100%;
+                    border-radius: 3px;
+                    clip: true;
+                    Image {
+                        source: PickerMath.hue-image;
+                        width: parent.width;
+                        height: parent.height;
+                    }
+                }
+                if !(root.idx == 0 && root.fmt != "rgb") : Rectangle {
+                    width: 100%; height: 100%;
+                    background: root.mid-stop
                         ? @linear-gradient(90deg, #000000 0%, root.mid-color 50%, #FFFFFF 100%)
                         : @linear-gradient(90deg, root.lo-color 0%, root.hi-color 100%);
+                }
             }
             // 滑块：白圆 + 描边 + 投影（深色渐变上也看得见）
             Rectangle {
@@ -418,13 +439,18 @@ component PickerSeg inherits Rectangle {
     in property <string> label;
     in property <bool> active;
     in property <brush> active-color: Theme.accent;
+    // (#picker-seg-hover 2026-10-16) 悬停底色跟随**当前选色**（原来是中性灰
+    // Theme.bg-hover，与这一屏「所有选中/当前语义都由选色表达」不一致；用户
+    // 要求「悬浮的切换背景色也跟随当前颜色，和确认按钮一致」）。淡染比滑层略
+    // 浅一档，免得悬停看着像已选中。色源由调用方给（守卫后的亮色）。
+    in property <color> hover-tint: transparent;
     callback clicked();
     height: 30px;
     horizontal-stretch: 1;
     min-width: 0px;
     preferred-width: 0px;
     border-radius: 7px;
-    background: active ? transparent : (ta.has-hover ? Theme.bg-hover : transparent);
+    background: active ? transparent : (ta.has-hover ? root.hover-tint : transparent);
     Text {
         text: root.label;
         color: active ? root.active-color : (ta.has-hover ? Theme.text-primary : Theme.text-secondary);
@@ -464,6 +490,7 @@ export global PickerMath {
     pure callback bright-label(v: float) -> string;        // 明度气泡数值（v*255 取整）
     in-out property <image> wheel-image;                   // 色轮位图（一次性烘焙）
     in-out property <image> slider-image;                  // 明度条渐变（随色相重烘）
+    in-out property <image> hue-image;                     // H 滑杆色相条（静态，一次性烘焙）
 }
 
 // 取色盘卡片。显示宽 462；高度由内容撑（~440）。
@@ -646,15 +673,20 @@ export component ColorPickerDialog inherits Rectangle {
                 width: 26px;
                 height: 240px;
                 border-radius: 13px;
-                border-width: 1px;
-                border-color: Theme.border-control;
+                // (#brightbar-edge 2026-10-16) 去掉 1px 描边、渐变铺到边：
+                //   ① 描边在**底端**（渐变的黑端）勾出一道半圆弧细线，孤立看像
+                //      「一个圆形细线」（用户疑问）；旁边的色轮本来就没有描边，
+                //      去掉后两者同款。
+                //   ② Image 原先写死 24×238 贴 1px 内衬，1.25/1.5 缩放下内衬与
+                //      位图各舍各入，底边漏出一行面板色 —— 现在铺满整盒、圆角交给
+                //      clip 裁，边到边无缝。
                 clip: true;
                 Image {
                     source: PickerMath.slider-image;
-                    x: 1px;
-                    y: 1px;
-                    width: 24px;
-                    height: 238px;
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
                 }
                 Rectangle {
                     y: 2px + (1 - root.val-my) * (bright.height - 14px);
@@ -672,7 +704,9 @@ export component ColorPickerDialog inherits Rectangle {
                     width: 58px;
                     height: 22px;
                     border-radius: 6px;
-                    background: #111318;
+                    // (#info-card-theme 2026-10-16) 与取色信息卡同一处理：原先写死
+                    // 暗底、浅色主题下不跟随 —— 改用统一浮层 token bg-elevated。
+                    background: Theme.bg-elevated;
                     border-width: 1px;
                     border-color: Theme.border-strong;
                     opacity: bright-ta.pressed ? 1 : 0;
@@ -710,38 +744,16 @@ export component ColorPickerDialog inherits Rectangle {
                     }
                 }
             }
-            // 右列：HEX 常驻 + RGB|HSV|HSL 分段 + 三分量（任一输入实时联动）
-            // (#picker-col 2026-10-15) 四行同构（用户第 5 轮：「第一行 加个 HEX
+            // 右列：RGB|HSV|HSL 分段 + 三分量 + HEX（任一输入实时联动）
+            // (#picker-col 2026-10-15) 行同构（用户第 5 轮：「第一行 加个 HEX
             // 是不是好些？」「整体布局是不是可以优化下，使其更加协调」）：HEX 行
-            // 从「独行大字框」并入与三分量相同的 PickerInput —— 标签 26px + 值
-            // 右对齐，四行标签、值各成一条竖线；# 为默认输入输出符号，保留值内。
+            // 与三分量同用 PickerInput —— 标签列 30px + 值右对齐，各行标签、值
+            // 成一条竖线；# 为默认输入输出符号，保留值内。
+            // (#picker-hex-row 2026-10-16) 行序改为「分段 → R/G/B → HEX」：用户
+            // 反馈「把 HEX 的色号放在下，即在 B 的下方」，并在其输入左侧加 HEX 标签。
             VerticalLayout {
                 spacing: 15px;
                 horizontal-stretch: 1;
-                PickerInput {
-                    idx: 0;
-                    // (#picker-hex-bare 2026-10-15) 去掉框内 "HEX" 标签（用户反馈
-                    // "怎么出现在了输入框中"）—— # 号本身就是 HEX 的标识、常驻值内，
-                    // 标签多余。同时开 hash-mode：# 缺席时自动补回。
-                    bare: true;
-                    hash-mode: true;
-                    value: root.hex;
-                    hex: root.hex;
-                    copyable: true;
-                    blur-token: root.blur-token;
-                    copy-requested => { root.copy-requested(root.hex); }
-                    // (#picker-hex-guard 2026-10-15) 只有能规范化的输入才写回事实源。
-                    // hex 是全盘唯一事实源：把 "#F279B90" 这类打字中间态写进去，
-                    // hex-color 解析失败回黑 → 色轮圆点、色块、确认键当场全变黑
-                    // （探针实测 hex=#F279B90）。中间态只留在输入框里显示，离焦时
-                    // 由 PickerInput 的 blur 分支收敛回事实源。
-                    edited(v) => {
-                        if (PickerMath.hex-valid(v) != "") {
-                            root.hex = PickerMath.hex-valid(v);
-                            root.sync-pos();
-                        }
-                    }
-                }
                 // (#picker-seg 2026-10-15) 格式分段复用设置页同款 SegGroup（用户
                 // 第 5 轮：「这三个滑块的样式参照强调色里面的」）——容器 36px /
                 // 圆角 10 / 内衬 3px / 段间 2px / 滑层高 30 圆角 7 / 180ms 滑动
@@ -756,18 +768,21 @@ export component ColorPickerDialog inherits Rectangle {
                         label: "RGB";
                         active: root.fmt == "rgb";
                         active-color: PickerMath.hex-color(root.guarded);
+                        hover-tint: PickerMath.hex-color(root.guarded).with-alpha(Theme.dark ? 0.16 : 0.10);
                         clicked => { root.fmt = "rgb"; root.blur-token += 1; }
                     }
                     PickerSeg {
                         label: "HSV";
                         active: root.fmt == "hsv";
                         active-color: PickerMath.hex-color(root.guarded);
+                        hover-tint: PickerMath.hex-color(root.guarded).with-alpha(Theme.dark ? 0.16 : 0.10);
                         clicked => { root.fmt = "hsv"; root.blur-token += 1; }
                     }
                     PickerSeg {
                         label: "HSL";
                         active: root.fmt == "hsl";
                         active-color: PickerMath.hex-color(root.guarded);
+                        hover-tint: PickerMath.hex-color(root.guarded).with-alpha(Theme.dark ? 0.16 : 0.10);
                         clicked => { root.fmt = "hsl"; root.blur-token += 1; }
                     }
                 }
@@ -798,6 +813,31 @@ export component ColorPickerDialog inherits Rectangle {
                         root.hex = PickerMath.hex-apply(
                             root.hex, i, PickerMath.track-value(r, i, root.fmt), root.fmt);
                         root.sync-pos();
+                    }
+                }
+                // (#picker-hex-row 2026-10-16) HEX 行移到 B 之下（用户反馈「把 HEX 的
+                // 色号放在下，即在 B 的下方」），并给出与 R/G/B **同列**的标签「HEX」
+                // —— 此前是 bare:true 的无标签行，四行标签、值不成竖线。仍开
+                // hash-mode：# 是常驻标识，缺席自动补回。
+                PickerInput {
+                    idx: 0;
+                    label: "HEX";
+                    hash-mode: true;
+                    value: root.hex;
+                    hex: root.hex;
+                    copyable: true;
+                    blur-token: root.blur-token;
+                    copy-requested => { root.copy-requested(root.hex); }
+                    // (#picker-hex-guard 2026-10-15) 只有能规范化的输入才写回事实源。
+                    // hex 是全盘唯一事实源：把 "#F279B90" 这类打字中间态写进去，
+                    // hex-color 解析失败回黑 → 色轮圆点、色块、确认键当场全变黑
+                    // （探针实测 hex=#F279B90）。中间态只留在输入框里显示，离焦时
+                    // 由 PickerInput 的 blur 分支收敛回事实源。
+                    edited(v) => {
+                        if (PickerMath.hex-valid(v) != "") {
+                            root.hex = PickerMath.hex-valid(v);
+                            root.sync-pos();
+                        }
                     }
                 }
             }
@@ -845,6 +885,11 @@ export component ColorPickerDialog inherits Rectangle {
                         width: 16px;
                         height: 16px;
                     }
+                    // (#picker-foot-flow 2026-10-16) 尾部吸空块，与强调色弹框的
+                    // #accent-pop-flow 同一修法：无 stretch 子项时 Slint 把多余宽
+                    // 均摊给"可生长"的 Text（max=∞），色块于是被顶到行尾（用户截图
+                    // 「间距太多」）。余量归这块吸空块后，色块紧贴句尾的「自动调亮为」。
+                    Rectangle { horizontal-stretch: 1; }
                 }
                 Text {
                     text: root.en ? "Confirm writes back; Apply takes effect."
