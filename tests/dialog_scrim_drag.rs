@@ -24,6 +24,11 @@
 //!     了（修复前该点与基线逐字节相同）。
 //!   * 透明度：关闭弹框卡片底在「标准」档不透明、切到「通透」档变成玻璃
 //!     （popup-alpha 跟随设置），即用户要求的「支持透明度」。
+//!   * 内衬透明度（#popup-inset-alpha 2026-10-16）：关闭方式两块**内衬卡**
+//!     也要跟随通透档 —— 旧写法 `bg-root` 在无壁纸时不透明，把弹窗玻璃
+//!     「焊死」，只有悬浮（chip 半透明）才透（用户截图：中间两块没有通透性）。
+//!     判据用**棋盘壁纸**做高频背景：无壁纸帧 vs 棋盘帧的「变化像素比例」
+//!     （修复前实心 = 0%；修复后透 = 白格覆盖处整体变化，≥5%）。
 //!   * 拖动：标题行空白处按下并移动 (+120,+80)，卡片随指针位移（阈值判别 +
 //!     窗口内钳制与 SessionDialog 同款）。
 //!
@@ -35,11 +40,26 @@ use slint::platform::software_renderer::{
     MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
 };
 use slint::platform::{PointerEventButton, WindowAdapter, WindowEvent};
-use slint::{ Brush, ComponentHandle, LogicalPosition, LogicalSize};
+use slint::{
+    Brush, ComponentHandle, Image, LogicalPosition, LogicalSize, Rgba8Pixel, SharedPixelBuffer,
+};
 use std::rc::Rc;
 
 const W: usize = 1400;
 const H: usize = 900;
+
+/// 关闭方式弹框「完全退出」卡左半的可扫描区（绝对逻辑 px）。
+/// 关闭卡 440×255 居中 → 内衬卡 y 418.5~500.5、exit 卡 x 705~902；
+/// 内缩 6px 避开 1px 边框与圆角，再取左半避开图标（水平居中 ~792~814）
+/// 与文字（主/副标签宽 ~72px，居中 ≥767）。真值以 SCRIM_DUMP_DIR 导出的
+/// 证据图复核为准（#popup-inset-alpha）。
+const EXIT_SCAN: (usize, usize, usize, usize) = (712, 426, 768, 494);
+
+/// 会话弹框「名称」输入框内的可扫描带（绝对逻辑 px；证据图实测：框体
+/// x 422~691、y 237~272，placeholder 文字占 x 433~556）。取"全框内缩"
+/// 426~686 × 246~266：既覆盖文字右侧空白、又横跨棋盘格边界（格宽 140px，
+/// 跨边界才保证有"白格覆盖区"参与变化检测，单格落在黑格会假阴性）。
+const DIALOG_FIELD_SCAN: (usize, usize, usize, usize) = (426, 246, 686, 266);
 
 thread_local! {
     static WIN: Rc<MinimalSoftwareWindow> =
@@ -144,6 +164,24 @@ fn close(a: (u8, u8, u8), b: (u8, u8, u8), tol: u8) -> bool {
     a.0.abs_diff(b.0) <= tol && a.1.abs_diff(b.1) <= tol && a.2.abs_diff(b.2) <= tol
 }
 
+/// 400×400、40px 格的黑白棋盘（`image-fit: cover` 放大 ~3.5 倍铺满 1400×900）。
+/// 用作"高频背景"：不透明表面 vs 半透明表面在上面的像素变化比例差异极大
+/// （实心 ≈0%，玻璃 ≥5%），是颜色断言在"同色系收敛"场景下的替代判据。
+fn checker_image() -> Image {
+    let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(400, 400);
+    {
+        let px = buf.make_mut_slice();
+        for y in 0..400 {
+            for x in 0..400 {
+                let white = (x / 40 + y / 40) % 2 == 0;
+                let v = if white { 255u8 } else { 0u8 };
+                px[y * 400 + x] = Rgba8Pixel { r: v, g: v, b: v, a: 255 };
+            }
+        }
+    }
+    Image::from_rgba8(buf)
+}
+
 fn setup() -> AppWindow {
     slint::platform::set_platform(Box::new(ProbePlatform)).ok();
     let ui = AppWindow::new().unwrap();
@@ -246,6 +284,16 @@ fn dialog_scrims_unified_and_close_dialog_draggable() {
         );
     }
 
+    // 附带：设置弹框「显示与字体」页证据图（#cursor-seg 自检 —— 光标类型
+    // 行由三按钮改为 SegGroup 滑动分段，此处留帧供证据图复核分段宽度）。
+    ui.set_interface_open(true);
+    ui.set_ifd_page("font".into());
+    f.grab(&ui);
+    maybe_dump(&f, "settings-font");
+    ui.set_interface_open(false);
+    ui.set_ifd_page("theme".into());
+    f.grab(&ui);
+
     // ── ② 关闭弹框卡片透明度跟随「界面通透度」 ─────────────────────────
     // 标准档：popup-alpha = 1.0，卡片不透明。
     ui.set_confirm_close_open(true);
@@ -294,6 +342,203 @@ fn dialog_scrims_unified_and_close_dialog_draggable() {
     );
     maybe_dump(&f, "close-glass-通透");
     ui.set_popup_transparency(0);
+    f.grab(&ui);
+
+    // ── ②c 关闭方式两块内衬卡跟随通透档（#popup-inset-alpha）────────────
+    // 用户截图：通透档下两块卡片没有通透性（旧 bg-root 无壁纸时不透明），
+    // 只有悬浮（chip 半透明）才透。颜色断言在此不可行 —— root 与 panel 只差
+    // 2 级、经 alpha 收敛后 <1.5 级（容差内不可辨）；改用**棋盘壁纸做高频
+    // 背景**：同一档位下「无壁纸帧 → 棋盘帧」的变化像素比例。修复前内衬是
+    // 实心 root，切换壁纸纹丝不动（≈0%）；修复后内衬随档透出棋盘（≥5%）。
+    let scan = |f: &Frame, (x0, y0, x1, y1): (usize, usize, usize, usize)| -> Vec<(u8, u8, u8)> {
+        let mut v = Vec::new();
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let (r, g, b, a) = f.px(x, y);
+                if a > 0 {
+                    v.push((r, g, b));
+                }
+            }
+        }
+        v
+    };
+    let avg_rb = |v: &[(u8, u8, u8)]| -> f32 {
+        v.iter().map(|p| p.0 as f32 - p.2 as f32).sum::<f32>() / v.len() as f32
+    };
+
+    // 护栏：悬停 exit 卡 → 扫描区必须出现 hover 红染（证明区域落在卡内；
+    // 偏到弹框底会假阳性，因为弹框底在通透档本来就透）。
+    // ⚠️ 卡片底有 120ms animate：**动画只在处理指针事件时推进**（i-slint-core
+    // window.rs `process_mouse_input` 首行 `update_animations(now)`；渲染器
+    // 自己不推进）。sleep 完必须**再派发一次同坐标 PointerMoved**，否则渲染到
+    // 的仍是动画起点色（首版实测：无 animate 的图标 tint 已变红、卡底纹丝不动）。
+    let hover = |ui: &AppWindow, x: f32, y: f32| {
+        ui.window().dispatch_event(WindowEvent::PointerMoved {
+            position: LogicalPosition::new(x, y),
+        });
+    };
+    hover(&ui, 100.0, 100.0);
+    f.grab(&ui);
+    let no_hover = avg_rb(&scan(&f, EXIT_SCAN));
+    hover(&ui, 803.0, 459.0); // exit 卡中心
+    f.grab(&ui); // 起始帧（动画 0%）
+    std::thread::sleep(std::time::Duration::from_millis(170));
+    hover(&ui, 803.0, 459.0); // 推进到位的同坐标重发
+    f.grab(&ui);
+    maybe_dump(&f, "inset-hover-exit");
+    let hovered = avg_rb(&scan(&f, EXIT_SCAN));
+    assert!(
+        hovered - no_hover >= 10.0,
+        "exit 卡悬停应出现红染（r-b 均值 {no_hover:.1} → {hovered:.1}）—— \
+         扫描区可能不在卡内（EXIT_SCAN 需按证据图复核）"
+    );
+    hover(&ui, 100.0, 100.0);
+    f.grab(&ui);
+    std::thread::sleep(std::time::Duration::from_millis(170));
+    hover(&ui, 100.0, 100.0); // 恢复同样要推进动画
+    f.grab(&ui);
+
+    // 全透档（popup-alpha 0.55）：同一档位下对比「无壁纸 vs 棋盘壁纸」。
+    // 棋盘 400×400、40px 格，`image-fit: cover` 放大 ~3.5 倍铺满窗口。
+    // ⚠️ 内衬背景带 120ms animate：档位/壁纸变更**不是指针事件**，动画不会
+    // 自己推进 —— 每次变更后必须补一次 tick（sleep + 同坐标 PointerMoved），
+    // 否则渲染停在"上次推进的值"（首版两个帧都量到实色 root，误判修复没生效）。
+    ui.set_popup_transparency(2);
+    f.grab(&ui);
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    hover(&ui, 100.0, 100.0); // tick：推进内衬动画到档 2 目标值
+    f.grab(&ui);
+    maybe_dump(&f, "inset-base-np");
+    let base_np = scan(&f, EXIT_SCAN);
+    // 令牌契约（#popup-inset-alpha）：inset = root 色 × 当前 popup-alpha。
+    // 像素断言之外的第二道保险，锁住"修复的实现核心"——档 2 下 alpha 必须是
+    // 140（0.55×255）而不是实色 255；若先在令牌层失败，报错信息比
+    // "变化像素 0%" 更指向根因。
+    eprintln!(
+        "diag档2: inset={:?} popup-bg={:?} bg-root={:?} alpha={}",
+        brush_solid(&theme.get_popup_bg_inset()),
+        brush_solid(&theme.get_popup_bg()),
+        brush_solid(&theme.get_bg_root()),
+        theme.get_popup_alpha()
+    );
+    let (_, _, _, ia) = brush_solid(&theme.get_popup_bg_inset()).expect("popup-bg-inset 应为纯色");
+    assert!(
+        (ia as i32 - 140).abs() <= 1,
+        "档 2 下 popup-bg-inset 的 alpha 应 = 140（0.55×255，跟随弹窗通透档），实得 {ia}"
+    );
+
+    ui.set_wallpaper_img(checker_image());
+    ui.set_wallpaper_active(true);
+    f.grab(&ui);
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    hover(&ui, 100.0, 100.0); // tick：壁纸激活同样要让内衬动画就位
+    f.grab(&ui);
+    f.grab(&ui); // 壁纸上传后的稳定帧
+    maybe_dump(&f, "inset-checker");
+    let with_wp = scan(&f, EXIT_SCAN);
+
+    let changed = base_np
+        .iter()
+        .zip(with_wp.iter())
+        .filter(|(a, b)| a.0.abs_diff(b.0) > 8 || a.1.abs_diff(b.1) > 8 || a.2.abs_diff(b.2) > 8)
+        .count();
+    let ratio = changed as f32 / base_np.len() as f32;
+    assert!(
+        ratio >= 0.05,
+        "全透档下内衬卡应透出棋盘壁纸（变化像素 {changed}/{} = {:.1}%）—— \
+         修复前内衬被不透明底焊死，此处应为 ≈0%",
+        base_np.len(),
+        ratio * 100.0
+    );
+
+    ui.set_wallpaper_active(false);
+    ui.set_popup_transparency(0);
+    f.grab(&ui);
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    hover(&ui, 100.0, 100.0); // tick：恢复档 0 实色后再进 ③ 段
+    f.grab(&ui);
+
+    // ── ②d 会话弹框的输入框同样跟随通透档（#popup-surface-alpha）──────────
+    // 用户第二轮反馈「其它弹框的没生效，比如会话的输入框」：弹框内的内容表面
+    // （field / bg-root / bg-elevated…）此前是不透明常量，通透档下就是一块块
+    // 实心贴片。判据同 ②c（棋盘帧 vs 无壁纸帧的变化像素比例），扫描「名称」
+    // 输入框内一处空白带（DIALOG_FIELD_SCAN）。
+    ui.set_confirm_close_open(false);
+    ui.set_dialog_open(true);
+    f.grab(&ui);
+    maybe_dump(&f, "dlg-field-std");
+    // 护栏：档 0 时扫描区应基本等于 popup-field 的实色值（证明区域落在输入
+    // 框内 —— 偏到弹框底会让下面的变化断言失去意义）。
+    let want_field = brush_solid(&theme.get_popup_field()).expect("popup-field 应为纯色");
+    let field_stats = |f: &Frame| -> (usize, usize) {
+        let (x0, y0, x1, y1) = DIALOG_FIELD_SCAN;
+        let (mut hit, mut total) = (0usize, 0usize);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let (r, g, b, a) = f.px(x, y);
+                if a == 0 {
+                    continue;
+                }
+                total += 1;
+                if r.abs_diff(want_field.0) <= 6
+                    && g.abs_diff(want_field.1) <= 6
+                    && b.abs_diff(want_field.2) <= 6
+                {
+                    hit += 1;
+                }
+            }
+        }
+        (hit, total)
+    };
+    let (fh, ft) = field_stats(&f);
+    assert!(
+        fh * 2 > ft,
+        "档 0 时名称输入框扫描区应多数为 field 底色（{fh}/{ft} 命中，期望 {want_field:?}）—— \
+         区域可能不在输入框内（DIALOG_FIELD_SCAN 需按证据图复核）"
+    );
+
+    // 档 2 + 棋盘：输入框表面应透出棋盘（tick 规则同 ②c：动画只在指针事件
+    // 推进；field 的底虽多为直接绑定，仍按同款保险处理）。
+    ui.set_popup_transparency(2);
+    f.grab(&ui);
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    hover(&ui, 100.0, 100.0); // tick
+    f.grab(&ui);
+    maybe_dump(&f, "dlg-field-base");
+    let dlg_base = scan(&f, DIALOG_FIELD_SCAN);
+
+    ui.set_wallpaper_img(checker_image());
+    ui.set_wallpaper_active(true);
+    f.grab(&ui);
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    hover(&ui, 100.0, 100.0); // tick
+    f.grab(&ui);
+    f.grab(&ui);
+    maybe_dump(&f, "dlg-field-checker");
+    let dlg_wp = scan(&f, DIALOG_FIELD_SCAN);
+
+    let dlg_changed = dlg_base
+        .iter()
+        .zip(dlg_wp.iter())
+        .filter(|(a, b)| a.0.abs_diff(b.0) > 8 || a.1.abs_diff(b.1) > 8 || a.2.abs_diff(b.2) > 8)
+        .count();
+    let dlg_ratio = dlg_changed as f32 / dlg_base.len() as f32;
+    assert!(
+        dlg_ratio >= 0.05,
+        "全透档下会话弹框的输入框应透出棋盘壁纸（变化像素 {dlg_changed}/{} = {:.1}%）—— \
+         修复前 field 是不透明常量，此处应为 ≈0%",
+        dlg_base.len(),
+        dlg_ratio * 100.0
+    );
+
+    // 收尾：关会话弹框、恢复壁纸/档位，并把关闭弹框重开（③ 段的前置状态）。
+    ui.set_wallpaper_active(false);
+    ui.set_dialog_open(false);
+    ui.set_popup_transparency(0);
+    ui.set_confirm_close_open(true);
+    f.grab(&ui);
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    hover(&ui, 100.0, 100.0); // tick
     f.grab(&ui);
 
     // ── ③ 空白区拖动关闭弹框卡片 ───────────────────────────────────────
@@ -434,4 +679,158 @@ fn modal_dialog_scrims_come_from_the_theme_token() {
             );
         }
     }
+}
+
+/// 弹框内容表面审计（#popup-surface-alpha 2026-10-16）：用户第二轮反馈
+/// 「其它弹框的没生效（比如会话的输入框）」后，弹框系文件内的全部内容表面
+/// 统一走 `Theme.popup-*`（= 基础 token × 弹窗通透档 = popup-alpha）；本测试
+/// 防止新代码在弹框里写回不透明的表面 token。基础 token 在**主界面/独立
+/// 窗口**仍有语义，所以只扫"整文件都属于弹框"的组件。
+#[test]
+fn dialog_content_surfaces_use_popup_tokens() {
+    let ui_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+    let files = [
+        "session_dialog.slint",
+        "sync_input_dialog.slint",
+        "color_picker.slint",
+        "storage_settings.slint",
+        "interface_panel.slint",
+        "seg.slint",
+    ];
+    // 弹框内禁用的基础表面 token（弹框内必须用对应 popup 版）。
+    let banned = [
+        "Theme.field",
+        "Theme.bg-root",
+        "Theme.bg-panel",
+        "Theme.bg-elevated",
+        "Theme.bg-active",
+        "Theme.panel-solid",
+    ];
+    // 白名单 = (文件, 行内片段)，全部"有意保留"并注明理由。
+    let allowed: &[(&str, &str)] = &[
+        // 会话弹框的跳板机 tooltip / 同步输入弹框的悬浮信息卡：瞬时提示层
+        // （与 app.slint 的主界面 tooltip 同款语言），不属于弹框内容面。
+        ("session_dialog.slint", "background: Theme.bg-elevated;"),
+        ("sync_input_dialog.slint", "background: Theme.bg-elevated;"),
+        // 设置「界面」页的通透度实时预览卡：本身就是"弹窗底 × popup-alpha"
+        // 的演示范例（panel-solid 在此是显式语义，不是漏改）。
+        (
+            "interface_panel.slint",
+            "Theme.panel-solid.with-alpha(Theme.popup-alpha)",
+        ),
+    ];
+    let mut violations: Vec<String> = Vec::new();
+    for file in files {
+        let src = std::fs::read_to_string(ui_dir.join(file)).unwrap();
+        for (i, line) in src.lines().enumerate() {
+            let l = line.trim();
+            if l.starts_with("//") || !banned.iter().any(|t| l.contains(t)) {
+                continue;
+            }
+            if allowed.iter().any(|(f, frag)| *f == file && l.contains(frag)) {
+                continue;
+            }
+            violations.push(format!("{}:{}: {}", file, i + 1, l));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "弹框系文件不允许再出现不透明的基础表面 token（应改用 Theme.popup-* 对应版）:\n  {}",
+        violations.join("\n  ")
+    );
+
+    // ── 下拉选项行必须保持「主题下拉行」语言（#select-row-follow-theme）──
+    // 三处（协议项 / 分组项 / SelectField）：悬浮底一律 bg-hover、选中文字
+    // 一律 accent-solid。改回 field-2/accent-soft 的样式会在这里报红。
+    let style_anchors: &[(&str, &str)] = &[
+        (
+            "session_dialog.slint",
+            "background: pita.has-hover ? Theme.bg-hover : transparent;",
+        ),
+        (
+            "session_dialog.slint",
+            "color: root.selected ? Theme.accent-solid : Theme.text-primary;",
+        ),
+        (
+            "session_dialog.slint",
+            "background: g-ta.has-hover ? Theme.bg-hover : transparent;",
+        ),
+        (
+            "widgets.slint",
+            "background: c-ta.has-hover ? Theme.bg-hover : transparent;",
+        ),
+        (
+            "widgets.slint",
+            "color: root.value == c ? Theme.accent-solid : Theme.text-primary;",
+        ),
+    ];
+    for (file, fragment) in style_anchors {
+        let src = std::fs::read_to_string(ui_dir.join(file)).unwrap();
+        assert!(
+            src.contains(fragment),
+            "{} 缺「主题下拉行」样式锚点 {:?}（#select-row-follow-theme 回归）",
+            file,
+            fragment
+        );
+    }
+
+    // ── 红底 × 的 hover 图标必须变白（#close-hover-white）──────────────
+    // 三处 #e81123 红底按钮的图标 tint 必须挂 has-hover —— 红底上恒
+    // text-primary 会「显暗」（用户反馈「悬浮时 X 变暗」；其中两处曾与
+    // 注释 "white glyph" 不符）。
+    let close_anchors: &[(&str, &str)] = &[
+        (
+            "settings_dialog.slint",
+            "tint: if-close-ta.has-hover ? white : Theme.text-primary;",
+        ),
+        (
+            "app.slint",
+            "tint: close-ta.has-hover ? white : Theme.text-primary;",
+        ),
+        (
+            "proc_window.slint",
+            "tint: close-ta.has-hover ? white : Theme.text-secondary;",
+        ),
+    ];
+    for (file, fragment) in close_anchors {
+        let src = std::fs::read_to_string(ui_dir.join(file)).unwrap();
+        assert!(
+            src.contains(fragment),
+            "{} 缺红底 × 的白图标锚点 {:?}（#close-hover-white 回归）",
+            file,
+            fragment
+        );
+    }
+
+    // ── 设置左菜单选中不得再染底色（#nav-follow-dropdown）──────────────
+    // 用户定稿：选中 = 透明底 + 主题色文字（与下拉一致），不回到色块。
+    let nav = std::fs::read_to_string(ui_dir.join("interface_panel.slint")).unwrap();
+    assert!(
+        nav.contains("color: root.active ? Theme.accent-solid : Theme.text-primary;"),
+        "NavItem 选中项应为主题色文字（#nav-follow-dropdown 回归）"
+    );
+    assert!(
+        !nav.contains("root.active ? Theme.popup-bg-active"),
+        "NavItem 选中项不得再使用底色块（#nav-follow-dropdown 回归）"
+    );
+
+    // ── FontCombo 选项行 + 光标类型 SegGroup（2026-10-17）──────────────
+    // FontCombo（设置页全部字体/渲染/规则/颜色下拉共用）的选中/悬浮同样
+    // 对齐主题下拉行；光标类型由三个独立按钮并入 SegGroup 滑动分段。
+    assert!(
+        nav.contains("background: r-ta.has-hover ? Theme.bg-hover : transparent;"),
+        "FontCombo 选项行悬浮应走 bg-hover（#select-row-follow-theme 回归）"
+    );
+    assert!(
+        nav.contains("color: root.value == v ? Theme.accent-solid : Theme.text-primary;"),
+        "FontCombo 选中项应为主题色文字（#select-row-follow-theme 回归）"
+    );
+    assert!(
+        nav.contains("active-index: root.term-cursor-style == \"block\" ? 0"),
+        "光标类型应使用 SegGroup（active-index 绑定 term-cursor-style，#cursor-seg 回归）"
+    );
+    assert!(
+        !nav.contains("CursorStyleButton {"),
+        "旧 CursorStyleButton 实例不得回归（#cursor-seg）"
+    );
 }

@@ -75,7 +75,10 @@ component NavItem inherits Rectangle {
     callback clicked();
     height: 30px;
     border-radius: 6px;
-    background: root.active ? Theme.bg-active : (ta.has-hover ? Theme.bg-hover : transparent);
+    // (#nav-follow-dropdown 2026-10-17) 选中语言对齐下拉/主题行（用户定稿）：
+    // 不再用底色块表达选中（用户反馈「选中的菜单不要这个灰色阴影部分」），
+    // 改为「透明底 + 主题色文字 + 主题色图标」；悬浮保持 bg-hover 浅染。
+    background: ta.has-hover ? Theme.bg-hover : transparent;
     ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
@@ -88,13 +91,13 @@ component NavItem inherits Rectangle {
     // 层级偏弱,图标点亮后更清晰。
     Icon {
     glyph: root.icon;
-    tint: root.active ? Theme.accent : Theme.text-primary;   // (#theme-dedupe §5 B 类：图标跟标签同色)
+    tint: root.active ? Theme.accent-solid : Theme.text-primary;
     size: Theme.fs-md;
 }
         Text { text: root.label;
-               // (#theme-dedupe §5 B 类) 未选中项恒定 primary（选中态由 bg-active
-               // 底色 + accent 图标表达，不由文字颜色承担）
-               color: Theme.text-primary;
+               // (#nav-follow-dropdown 2026-10-17) 选中 = 主题色文字（原恒定
+               // primary、选中态由底色承担 —— 用户要求与下拉选择一致）。
+               color: root.active ? Theme.accent-solid : Theme.text-primary;
                font-size: 13px * Theme.panel-font; vertical-alignment: center; horizontal-stretch: 1; }
     }
 }
@@ -144,7 +147,7 @@ component Switch inherits Rectangle {
     width: 38px;
     height: 22px;
     border-radius: 11px;
-    background: root.on ? Theme.accent : Theme.bg-active;
+    background: root.on ? Theme.accent : Theme.popup-bg-active;
     animate background { duration: 120ms; }
     Rectangle {
         width: 16px;
@@ -172,7 +175,7 @@ component Stepper inherits Rectangle {
     width: 112px;
     height: 26px;
     border-radius: 6px;
-    background: Theme.bg-elevated;
+    background: Theme.popup-bg-elevated;
     border-width: 1px;
     border-color: Theme.border-subtle;
     clip: true;
@@ -255,7 +258,7 @@ component FontCombo inherits Rectangle {
     border-radius: 6px;
     border-width: 1px;
     border-color: root.enabled && (root.focused || fta.has-hover) ? Theme.line-2 : Theme.border-subtle;
-    background: Theme.bg-elevated;
+    background: Theme.popup-bg-elevated;
     HorizontalLayout {
         padding-left: 10px;
         padding-right: 8px;
@@ -313,10 +316,13 @@ component FontCombo inherits Rectangle {
                     padding: 5px;
                     spacing: 1px;
                     for v in root.values : Rectangle {
+                        // (#select-row-follow-theme 2026-10-17) 选中/悬浮对齐
+                        // 主题下拉行：hover = bg-hover（原 field-2 灰系）、
+                        // 选中 = 透明底 + accent 文字 + accent ✓（原 accent-soft
+                        // 底染色；用户反馈"这两个下拉也修改"）。
                         height: 28px;
                         border-radius: 5px;
-                        background: r-ta.has-hover ? Theme.field-2
-                            : (root.value == v ? Theme.accent-soft : transparent);
+                        background: r-ta.has-hover ? Theme.bg-hover : transparent;
                         r-ta := TouchArea {
                             mouse-cursor: pointer;
                             clicked => {
@@ -354,7 +360,7 @@ component FontCombo inherits Rectangle {
                             width: parent.width - 32px;
                             height: parent.height;
                             text: root.label-for(v);
-                            color: Theme.text-primary;
+                            color: root.value == v ? Theme.accent-solid : Theme.text-primary;
                             font-size: 12px * Theme.panel-font;
                             vertical-alignment: center;
                             overflow: elide;
@@ -366,7 +372,7 @@ component FontCombo inherits Rectangle {
                             height: 14px;
                             Icon {
     glyph: root.value == v ? "check" : "";
-    tint: Theme.accent;
+    tint: Theme.accent-solid;
     size: 14px;
 }
                         }
@@ -382,7 +388,7 @@ component FontCombo inherits Rectangle {
                     height: tip-label.preferred-height + 12px;
                     x: parent.width - self.width - 2px;
                     y: clamp(root.tip-y + 27px, 2px, parent.height - self.height - 2px);
-                    background: Theme.bg-active;
+                    background: Theme.popup-bg-active;
                     border-radius: 6px;
                     border-width: 1px;
                     border-color: Theme.line-2;
@@ -404,18 +410,23 @@ component FontCombo inherits Rectangle {
 }
 
 // Compact cursor-shape choice with a live visual sample (#275).
-component CursorStyleButton inherits Rectangle {
+// (#cursor-seg 2026-10-17) 光标类型段：示意图标 + 文字，供 SegGroup 滑动
+// 分段使用（用户定稿「使用（统一提取的）滑块的方式」）。原 CursorStyleButton
+// 三个独立按钮（自带边框 / 固定 74px 宽 / 面底染色）已并入 SegGroup ——
+// 选中块由滑层（thumb）承担，段自身只负责「透明 / 悬浮浅染 + 文字色」，
+// 与 AccentSeg 同构（等宽格子协议：stretch 1 + min/preferred 归零）。
+component CursorSeg inherits Rectangle {
     in property <string> label;
     in property <string> cursor-kind;
-    in property <bool> selected;
+    in property <bool> active;
     callback clicked();
-    width: 74px;
     height: 30px;
-    border-radius: 6px;
-    border-width: 1px;
-    border-color: root.selected ? Theme.accent : Theme.border-subtle;
-    background: root.selected ? Theme.bg-active : (cursor-ta.has-hover ? Theme.bg-hover : Theme.bg-elevated);
-    cursor-ta := TouchArea {
+    horizontal-stretch: 1;
+    min-width: 0px;
+    preferred-width: 0px;
+    border-radius: 7px;
+    background: active ? transparent : (ta.has-hover ? Theme.bg-hover : transparent);
+    ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
@@ -444,7 +455,7 @@ component CursorStyleButton inherits Rectangle {
         }
         Text {
             text: root.label;
-            color: root.selected ? Theme.text-primary : Theme.text-secondary;
+            color: root.active ? Theme.accent : (ta.has-hover ? Theme.text-primary : Theme.text-secondary);
             font-size: 11px * Theme.panel-font;
             vertical-alignment: center;
         }
@@ -480,7 +491,7 @@ component CursorColorInput inherits Rectangle {
     border-radius: 6px;
     border-width: 1px;
     border-color: root.valid ? Theme.border-subtle : #e05252;
-    background: Theme.bg-elevated;
+    background: Theme.popup-bg-elevated;
     Rectangle {
         x: 7px;
         y: 6px;
@@ -1010,24 +1021,28 @@ export component InterfacePanel inherits Rectangle {
                     label: root.lang-en ? "Cursor shape" : "光标类型";
                     desc: root.lang-en ? "Choose the terminal insertion cursor shape."
                                        : "选择终端输入光标的形状。";
-                    HorizontalLayout {
-                        spacing: 5px;
-                        CursorStyleButton {
+                    // (#cursor-seg 2026-10-17) 三个独立按钮 → SegGroup 滑动
+                    // 分段（与「弹窗通透度」同一套滑动语言；用户定稿）。
+                    SegGroup {
+                        active-index: root.term-cursor-style == "block" ? 0
+                            : (root.term-cursor-style == "bar" ? 1 : 2);
+                        count: 3;
+                        CursorSeg {
                             label: root.lang-en ? "Block" : "块状";
                             cursor-kind: "block";
-                            selected: root.term-cursor-style == "block";
+                            active: root.term-cursor-style == "block";
                             clicked => { root.term-cursor-style = "block"; root.set-term-cursor-style("block"); }
                         }
-                        CursorStyleButton {
+                        CursorSeg {
                             label: root.lang-en ? "Bar" : "竖线";
                             cursor-kind: "bar";
-                            selected: root.term-cursor-style == "bar";
+                            active: root.term-cursor-style == "bar";
                             clicked => { root.term-cursor-style = "bar"; root.set-term-cursor-style("bar"); }
                         }
-                        CursorStyleButton {
+                        CursorSeg {
                             label: root.lang-en ? "Line" : "下划线";
                             cursor-kind: "underline";
-                            selected: root.term-cursor-style == "underline";
+                            active: root.term-cursor-style == "underline";
                             clicked => { root.term-cursor-style = "underline"; root.set-term-cursor-style("underline"); }
                         }
                     }
@@ -1358,7 +1373,7 @@ export component InterfacePanel inherits Rectangle {
                         vertical-stretch: 0;   // 防止被 SettingRow 行高拉伸
                         border-radius: 9px;
                         border-width: 1px; border-color: Theme.border-control;
-                        background: Theme.field;
+                        background: Theme.popup-field;
                         animate background { duration: 100ms; }
                         // 该套强调色圆点（垂直居中）
                         // (#swatch-round 2026-10-16) 圆角方块 4px → 正圆
@@ -1469,7 +1484,7 @@ export component InterfacePanel inherits Rectangle {
                             border-radius: 8px;
                             border-width: 1px;
                             border-color: Theme.border-strong;
-                            background: Theme.field;
+                            background: Theme.popup-field;
                             Rectangle {
                                 x: 3px;
                                 y: 3px;
@@ -1500,11 +1515,18 @@ export component InterfacePanel inherits Rectangle {
                 Rectangle { height: 1px; background: Theme.border-subtle; }
                 Rectangle { height: 6px; }
 
-                // ── 界面通透度三档（#popup-transparency-hifi）：滑动分段 +
+                // ── 弹窗通透度三档（#popup-transparency-hifi）：滑动分段 +
                 // 实时预览（壁纸彩块上的迷你弹窗，bg alpha 与全部弹窗同源）──
+                // (#popup-naming 2026-10-16) 原标签「界面通透度」易与壁纸区的
+                // 「面板不透明度」（= 主界面透明度）混淆 —— 本项实际只管弹窗/
+                // 浮层（popup-transparency），改名「弹窗通透度」与字段同词。
+                // (#popup-row-divider 2026-10-16) show-divider: false —— 本行下方
+                // 紧跟的是预览卡（不是下一行），行间分隔线夹在「行→卡」之间
+                // 是多余的（用户反馈「红框处是不是多了一条横线」）。
                 SettingRow {
-                    label: root.lang-en ? "Translucency" : "界面通透度";
+                    label: root.lang-en ? "Dialog translucency" : "弹窗通透度";
                     desc: root.lang-en ? "Glass level of popups / floating layers — applies immediately" : "弹窗 / 浮层（下拉、弹框、调色盘）的玻璃程度，改动立即生效";
+                    show-divider: false;
                     SegGroup {
                         active-index: root.popup-transparency;
                         count: 3;
@@ -1538,7 +1560,7 @@ export component InterfacePanel inherits Rectangle {
                 Rectangle {
                     height: 118px;
                     border-radius: 10px;
-                    background: Theme.bg-active;
+                    background: Theme.popup-bg-active;
                     border-width: 1px;
                     border-color: Theme.border-subtle;
                     clip: true;
@@ -1771,7 +1793,7 @@ export component InterfacePanel inherits Rectangle {
                         }
                         if !root.wp-is-custom : Rectangle {
                             width: 100%; height: 100%;
-                            background: Theme.bg-elevated;
+                            background: Theme.popup-bg-elevated;
                             Icon {
     glyph: "folder-open";
     tint: Theme.text-primary;
@@ -2054,7 +2076,7 @@ export component InterfacePanel inherits Rectangle {
                 for profile in root.wsl-profiles : Rectangle {
                     height: 54px;
                     border-radius: Theme.radius-sm;
-                    background: Theme.bg-elevated;
+                    background: Theme.popup-bg-elevated;
                     HorizontalLayout {
                         padding-left: 10px; padding-right: 8px; spacing: 8px;
                         VerticalLayout {
