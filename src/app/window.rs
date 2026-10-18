@@ -16,6 +16,12 @@ pub(super) static TRAY_WINDOW_NEXT: AtomicBool = AtomicBool::new(false);
 /// 运行时改无效 —— 与 TRAY_WINDOW_NEXT 同一套注入机制。
 pub(super) static TRAY_TRANSPARENT_NEXT: AtomicBool = AtomicBool::new(false);
 
+/// (#zone-alpha-desktop 2026-10-18) 主窗（以及编辑器/进程/系统信息等独立窗）
+/// 是否以 per-pixel alpha 创建。开着不会改变观感：各窗自己的 Slint 底色仍
+/// 不透明（独立窗用 window-base，主窗由四分区面板铺底），只有「分区透明度」
+/// 调低、透出窗口底的地方才会真的看到桌面。关掉它 = 回到"透出窗口底色"。
+pub(super) const WINDOW_TRANSPARENT: bool = true;
+
 /// Set the window icon at runtime. winit 的窗口类不带图标(WNDCLASSEX hIcon=0),
 /// 不主动设置的话任务管理器子行/alt-tab 会显示空白图标,不会回退到 exe 资源。
 /// - Windows: 从 exe 内嵌的 .ico(winresource 资源 ID 1,含 16..256 官方多档
@@ -200,10 +206,14 @@ pub(super) fn setup_windows_platform(renderer_mode: &str) {
     );
     let backend = builder
         .with_window_attributes_hook(|attrs| {
-            // (#tray-round-corner 2026-09-23) 透明属性创建期注入:仅托盘菜单
-            //(TRAY_TRANSPARENT_NEXT 置位)开 per-pixel alpha,其余窗口维持
-            // 不透明(swap 自带复位,置位方无需清理)。
-            let transparent = TRAY_TRANSPARENT_NEXT.swap(false, Ordering::Relaxed);
+            // (#zone-alpha-desktop 2026-10-18) 主窗也要 per-pixel alpha：四分区
+            // 透明度要在无壁纸时**真的透出桌面**（与「弹窗透明度」同一套语义）。
+            // winit 的透明是创建期属性，运行时改无效 —— 所以这里恒开，由 Slint
+            // 侧的窗口底（AppWindow.background = transparent）决定实际观感：
+            // 面板不透明时与以前逐像素一致，只有滑杆调低 alpha 的地方才透。
+            // 托盘菜单仍按自己的置位走（TRAY_TRANSPARENT_NEXT 只影响托盘）。
+            let tray_transparent = TRAY_TRANSPARENT_NEXT.swap(false, Ordering::Relaxed);
+            let transparent = tray_transparent || WINDOW_TRANSPARENT;
             let attrs = attrs
                 .with_transparent(transparent)
                 .with_undecorated_shadow(false);

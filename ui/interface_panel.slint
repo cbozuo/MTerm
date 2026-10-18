@@ -1,4 +1,5 @@
 import { ThemeEntry } from "theme_entry.slint";
+import { WallpaperEntry } from "wallpaper_entry.slint";
 import { Icon } from "icons.slint";
 // Interface settings content (#23 follow-up).
 //
@@ -581,36 +582,94 @@ component CursorColorInput inherits Rectangle {
     }
 }
 
-// A macOS-style wallpaper thumbnail: a rounded, clipped preview (passed via
-// @children) with a selection ring + check badge. The label sits below it in
-// the page, not inside.
-component WallpaperSwatch inherits Rectangle {
-    in property <bool> selected;
-    callback clicked();
-    width: 120px;
-    height: 74px;
-    border-radius: 8px;
-    border-width: root.selected ? 3px : 1px;
-    border-color: root.selected ? Theme.accent : Theme.border-strong;
-    clip: true;
-    @children
-    if root.selected : Rectangle {
-        x: parent.width - self.width - 5px;
-        y: 5px;
-        width: 18px;
-        height: 18px;
-        border-radius: 9px;
-        background: Theme.accent;
-        Icon {
-    glyph: "check";
-    tint: Theme.text-primary;
-    size: Theme.fs-md;
-} // check
+// ── (#wallpaper-library 2026-10-18) 壁纸画廊卡 ──────────────────────────────
+// 与主题卡同语言：79×50 缩略 + 4px 间距 + 10px 标题。@children = 缩略内容
+// （内置渐变 / 自定义缩略图 / 「无」占位），选中态 accent 描边 + ✓ 角标。
+//
+// 自定义卡（removable）悬停时右上角出现 ×：**只有一张 TouchArea** —— 用点击
+// 坐标判定落在 × 区域就删除，否则选中。这样避免"× 自己一个 TouchArea 抢走
+// hover 导致 × 闪没"（两个重叠 TouchArea 的经典抖动）与「透明区仍可点击」。
+component WallpaperCard inherits Rectangle {
+    in property <string> caption;
+    in property <bool> selected: false;
+    in property <bool> removable: false;
+    in property <bool> dashed: false;      // ＋上传图片（虚线感：淡描边 + 图标）
+    width: 79px;
+    height: 68px;
+    background: transparent;
+    // 指针是否正压在右上角的 × 上（决定 × 变红 + 点击语义）
+    property <bool> x-hot: card-ta.has-hover
+        && card-ta.mouse-x > self.width - 24px && card-ta.mouse-y < 24px;
+    VerticalLayout {
+        spacing: 4px;
+        Rectangle {
+            height: 50px;
+            border-radius: 8px;
+            border-width: root.selected ? 2px : 1px;
+            border-color: root.selected ? Theme.accent-solid
+                : (root.dashed
+                    ? Theme.border-strong
+                    : (card-ta.has-hover ? Theme.border-strong : Theme.border-subtle));
+            background: root.dashed ? transparent : Theme.window-base;
+            clip: true;
+            @children
+            if root.dashed : Icon {
+                glyph: "add";
+                tint: card-ta.has-hover ? Theme.text-secondary : Theme.text-muted;
+                size: 16px;
+            }
+            // 选中 ✓（自定义卡：悬停时让位给 ×，二者同一位）
+            if root.selected && !(root.removable && card-ta.has-hover) : Rectangle {
+                x: parent.width - self.width - 4px;
+                y: 4px;
+                width: 15px;
+                height: 15px;
+                border-radius: 7.5px;
+                background: Theme.accent-solid;
+                Icon {
+                    glyph: "check";
+                    tint: Theme.dark ? #08221E : #ffffff;
+                    size: 9px;
+                }
+            }
+            // 悬停 ×：收在卡片内部（外层 clip 会裁掉悬出的部分）
+            if root.removable && card-ta.has-hover : Rectangle {
+                x: parent.width - self.width - 3px;
+                y: 3px;
+                width: 18px;
+                height: 18px;
+                border-radius: 9px;
+                background: root.x-hot ? #E81123 : Theme.popup-bg-alt;
+                border-width: 1px;
+                border-color: root.x-hot ? #E81123 : Theme.border-strong;
+                Icon {
+                    glyph: "close";
+                    tint: root.x-hot ? #ffffff : Theme.text-secondary;
+                    size: 9px;
+                }
+            }
+        }
+        Text {
+            text: root.caption;
+            color: root.selected ? Theme.accent-solid : Theme.text-secondary;
+            font-size: 10px;
+            height: 14px;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
     }
-    ta := TouchArea {
+    card-ta := TouchArea {
         mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        clicked => {
+            if (root.removable && root.x-hot) {
+                root.remove();
+            } else {
+                root.clicked();
+            }
+        }
     }
+    callback clicked();
+    callback remove();
 }
 
 // ── (#theme-gallery 2026-10-17) 外观页专属组件 ─────────────────────────────
@@ -755,23 +814,37 @@ component PercentSliderRow inherits VerticalLayout {
     spacing: 2px;
     padding-top: 7px;
     padding-bottom: 7px;
-    HorizontalLayout {
-        spacing: 8px;
-        Text {
-            text: root.label;
-            color: Theme.text-primary;
-            font-size: 13px * Theme.panel-font;
-            vertical-alignment: center;
-            horizontal-stretch: 1;
+    // (#zone-label-dblclick 2026-10-18) 与四根分区滑杆同款：双击标题/读数恢复
+    // 默认（弹窗透明度 0%、遮罩浓度 32%、壁纸透明度 0%）。
+    Rectangle {
+        height: 18px;
+        background: transparent;
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: root.label;
+                color: Theme.text-primary;
+                font-size: 13px * Theme.panel-font;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: round(root.percent) + "%"
+                    + (round(root.percent) == round(root.default-percent)
+                        ? (root.lang-en ? " (default)" : "（默认）") : "");
+                color: Theme.text-primary;
+                font-size: 12px * Theme.panel-font;
+                vertical-alignment: center;
+                opacity: root.enabled ? 1.0 : 0.45;
+            }
         }
-        Text {
-            text: round(root.percent) + "%"
-                + (round(root.percent) == round(root.default-percent)
-                    ? (root.lang-en ? " (default)" : "（默认）") : "");
-            color: Theme.text-primary;
-            font-size: 12px * Theme.panel-font;
-            vertical-alignment: center;
-            opacity: root.enabled ? 1.0 : 0.45;
+        header-ta := TouchArea {
+            // 与滑杆本体的双击同一条路径：先把值落到默认（changed 回写外部状态），
+            // 再发 reset 让外部写盘 —— 只发 reset 会读到旧值，等于没复位。
+            double-clicked => {
+                root.changed(root.default-percent);
+                root.reset();
+            }
         }
     }
     MTermSlider {
@@ -808,23 +881,37 @@ component ZoneSlider inherits VerticalLayout {
     // 随数值文字变化（「0%（默认）」↔「100%」）→ 拖动时四根滑杆互相伸缩
     //（实测 181/191/191/213）。
     spacing: 3px;
-    HorizontalLayout {
-        spacing: 6px;
-        Text {
-            text: root.label;
-            color: Theme.text-primary;
-            font-size: 12px * Theme.panel-font;
-            vertical-alignment: center;
-            horizontal-stretch: 1;
-            overflow: elide;
+    // (#zone-label-dblclick 2026-10-18) 双击**分区名 / 读数**也恢复默认
+    // （高保真：滑杆本体、标题、分区名都可双击）。只有标题行挂 TouchArea——
+    // 盖住整格会把下面滑杆的拖动吞掉。
+    Rectangle {
+        height: 17px;
+        background: transparent;
+        HorizontalLayout {
+            spacing: 6px;
+            Text {
+                text: root.label;
+                color: Theme.text-primary;
+                font-size: 12px * Theme.panel-font;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Text {
+                text: round(root.percent) + "%"
+                    + (round(root.percent) == round(root.default-percent)
+                        ? (root.lang-en ? " (def)" : "（默认）") : "");
+                color: Theme.text-primary;
+                font-size: 11px * Theme.panel-font;
+                vertical-alignment: center;
+            }
         }
-        Text {
-            text: round(root.percent) + "%"
-                + (round(root.percent) == round(root.default-percent)
-                    ? (root.lang-en ? " (def)" : "（默认）") : "");
-            color: Theme.text-primary;
-            font-size: 11px * Theme.panel-font;
-            vertical-alignment: center;
+        header-ta := TouchArea {
+            // 同 ZoneSlider：先 changed(默认) 再 reset。
+            double-clicked => {
+                root.changed(root.default-percent);
+                root.reset();
+            }
         }
     }
     MTermSlider {
@@ -891,7 +978,7 @@ export component InterfacePanel inherits Rectangle {
     in-out property <bool> mcp-allow-file-transfers: true;
     // ── (#theme-split) 主题/强调色/三滑杆/通透度 ─────────────────────
     in property <[ThemeEntry]> theme-entries;      // 38 套（Rust 从 palettes.rs 构建）
-    // 「常用主题」快捷位（≤4，config 顺序）——外观页画廊的数据源。
+    // 「常用主题」快捷位（≤6，config 顺序）——外观页画廊的数据源。
     in property <[ThemeEntry]> theme-favorites;
     in-out property <string> theme-chosen;          // 当前主题 id（""=跟随系统）
     in-out property <bool> follow-system: true;
@@ -926,7 +1013,7 @@ export component InterfacePanel inherits Rectangle {
     in-out property <float> term-transparency: 0.0;
     in-out property <float> wallpaper-transparency: 0.0;
     in-out property <int> wallpaper-scope: 0;      // 0 整个界面 / 1 终端区
-    in-out property <string> wallpaper-fit: "cover";
+    in-out property <string> wallpaper-fit: "auto";
     in-out property <string> scrim-style: "auto";
     in-out property <float> scrim-strength: 0.32;
     // 遮罩样式下拉：浮层本体在 AppWindow 根层（theme-pick 同款桥；设置页在
@@ -950,6 +1037,12 @@ export component InterfacePanel inherits Rectangle {
     // Active wallpaper id: "" / "builtin:light" / "builtin:dark" / a file path.
     in property <string> current-wallpaper;
     in property <string> custom-wallpaper-name;   // basename for the file row
+    // (#wallpaper-library 2026-10-18) 数据目录 `wallpapers/` 里的自定义壁纸
+    // （Rust 扫描 + 缩略图）；内置 5 套由页面自己画。
+    in property <[WallpaperEntry]> wallpaper-items;
+    // 「填充方式 = 自动」提示行要按作用域区域的比例判定结论（由 app.slint 传）。
+    in property <float> window-aspect: 1.6;
+    in property <float> term-aspect: 1.6;
     in property <[WslProfileInfo]> wsl-profiles;
     in-out property <string> wsl-new-name: "WSL";
     in-out property <string> wsl-new-distribution;
@@ -965,7 +1058,12 @@ export component InterfacePanel inherits Rectangle {
     // whole subtree through the incremental renderer; one full frame per switch
     // keeps stale buffer strips out of the title divider above.
     // 切页同时收起强调色浮层：开关留在根层，不清的话切回主题页会重新弹出。
-    changed ifd-page => { root.request-full-redraw(); root.accent-pop-open = false; }
+    changed ifd-page => {
+        root.request-full-redraw();
+        root.accent-pop-open = false;
+        // 壁纸库以文件夹为准：每次进外观页重扫一次（在外部丢图进来也能出现）。
+        if (root.ifd-page == "theme") { root.refresh-wallpapers(); }
+    }
     property <string> new-rule-pattern;
     property <bool> new-rule-regex;
     property <bool> new-rule-case-sensitive;
@@ -976,6 +1074,16 @@ export component InterfacePanel inherits Rectangle {
         root.current-wallpaper != "" && root.current-wallpaper != "builtin:light"
         && root.current-wallpaper != "builtin:dark" && root.current-wallpaper != "builtin:tech"
         && root.current-wallpaper != "builtin:miku" && root.current-wallpaper != "builtin:ms";
+    // (#wallpaper-auto-fit 2026-10-18) 「自动」的判定结果：0 = 填充 / 1 = 适应。
+    // 规则与 Theme.wallpaper-fit-mode 完全一致（比例差 ≤ 25% → 填充），只是这里
+    // 按**作用域区域**的比例把结论写出来；真正的 image-fit 由 Theme 按各元素尺寸算。
+    pure function auto-fit-resolved() -> int {
+        let region = root.wallpaper-scope == 1 ? root.term-aspect : root.window-aspect;
+        let image = Theme.wallpaper-aspect;
+        if (image <= 0.0 || region <= 0.0) { return 0; }
+        let crop = 1.0 - min(image, region) / max(image, region);
+        return crop <= 0.25 ? 0 : 1;
+    }
 
     callback request-full-redraw();   // (#settings-divider-line) → AppWindow
     callback set-term-font(string);
@@ -1041,6 +1149,9 @@ export component InterfacePanel inherits Rectangle {
     callback set-wallpaper-color-pickup(bool);
     callback set-wallpaper(string);    // none / builtin selection
     callback pick-wallpaper-file();    // open the OS file dialog (Rust)
+    callback reveal-wallpaper(string); // 在资源管理器中定位这张壁纸
+    callback remove-wallpaper(string); // 二次确认后删除这张壁纸（列表刷新）
+    callback refresh-wallpapers();    // 重扫 wallpapers/（文件夹是唯一来源）
     callback add-wsl-profile(string, string, string);
     callback remove-wsl-profile(string);
     callback pick-wsl-directory();
@@ -1601,7 +1712,7 @@ export component InterfacePanel inherits Rectangle {
                     // (#mode-values 2026-10-17) 明暗各一套数值，切换主题自动切换。
                     text: root.lang-en
                         ? "Transparency / scrim values are stored separately for light and dark themes — switching theme switches to that set (a mode you never touched starts at its defaults)."
-                        : "下面的透明度 / 遮罩数值**明暗各存一套**，切换主题即切到那一套；某个模式第一次使用就是默认值。";
+                        : "下面的透明度 / 遮罩数值明暗各存一套，切换主题即切到那一套；某个模式第一次使用就是默认值。";
                     color: Theme.text-muted;
                     font-size: 10.5px * Theme.panel-font;
                     wrap: word-wrap;
@@ -1617,8 +1728,8 @@ export component InterfacePanel inherits Rectangle {
                 Rectangle { height: 3px; }
                 Text {
                     text: root.lang-en
-                        ? "Quick slots for your favourite themes (max 4). “More” opens the full list — star a theme there to add it here (also capped at 4). Hover to preview live."
-                        : "常用主题快捷位（最多 4 个）。「＋更多」打开完整列表（搜索 / 星标 / 明暗分组）—— 在列表里星标即添加到此处（同样封顶 4 个）。悬停实时预览。";
+                        ? "Quick slots for your favourite themes (max 6). “More” opens the full list — star a theme there to add it here (also capped at 6). Hover to preview live."
+                        : "常用主题快捷位（最多 6 个）。「＋更多」打开完整列表（搜索 / 星标 / 明暗分组）—— 在列表里星标即添加到此处（同样封顶 6 个）。悬停实时预览。";
                     color: Theme.text-muted;
                     font-size: 11px * Theme.panel-font;
                     wrap: word-wrap;
@@ -1662,6 +1773,10 @@ export component InterfacePanel inherits Rectangle {
                     HorizontalLayout {
                         spacing: 10px;
                         SegGroup {
+                            // (#accent-seg-width 2026-10-18) 定宽 220px（高保真
+                            // #accSeg）：不定宽时 HorizontalLayout 会把它拉到整行宽，
+                            // 与「作用域 250 / 填充 286」两段语言不一致。
+                            width: 220px;
                             // (#accent-seg-ghost) 选中态 = 「弹框开着」或「已应用自定义」。
                             active-index: (root.accent-pop-open || root.accent-mode == "custom") ? 1 : 0;
                             count: 2;
@@ -1725,88 +1840,72 @@ export component InterfacePanel inherits Rectangle {
                 }
                 Rectangle { height: 8px; }
 
-                // Built-in choices: keep this row horizontally scrollable as
-                // bundled wallpapers grow.
-                builtin-wallpapers-scroll := ScrollView {
-                    height: 106px;
+                // (#wallpaper-library 2026-10-18) 一条画廊（与高保真同款）：
+                // 无 → 内置 5 套 → 数据目录 wallpapers/ 里的自定义图（可多张，
+                // 悬停右上角 × 删除）→ ＋上传图片。卡片 79px：9 张 = 743px，
+                // 正好落在内容宽（≈750px）内；再多横向滚动。
+                wallpaper-scroll := ScrollView {
+                    height: 80px;
                     width: 100%;
-                    content-width: max(self.visible-width, builtin-wallpapers-row.preferred-width);
+                    content-width: max(self.visible-width, wallpaper-row.preferred-width);
                     content-height: self.visible-height;
 
-                    builtin-wallpapers-row := HorizontalLayout {
-                        spacing: 11px;
+                    wallpaper-row := HorizontalLayout {
+                        spacing: 4px;
                         alignment: start;
-                    VerticalLayout {
-                        spacing: 5px;
-                        WallpaperSwatch {
-                            width: 100px;
+                        WallpaperCard {
+                            caption: root.lang-en ? "None" : "无";
                             selected: root.current-wallpaper == "";
                             clicked => { root.set-wallpaper(""); }
                             Rectangle {
                                 width: 100%; height: 100%;
                                 background: Theme.window-base;
                                 Icon {
-    glyph: "select-all";
-    tint: Theme.text-muted;
-    size: 22px * Theme.panel-font;
-} // clear / none
+                                    glyph: "select-all";
+                                    tint: Theme.text-muted;
+                                    size: 20px * Theme.panel-font;
+                                }
                             }
                         }
-                        Text { text: root.lang-en ? "None" : "无"; font-size: 11px * Theme.panel-font;
-                               color: Theme.text-secondary; horizontal-alignment: center; }
-                    }
-                    VerticalLayout {
-                        spacing: 5px;
-                        WallpaperSwatch {
-                            width: 100px;
+                        WallpaperCard {
+                            caption: root.lang-en ? "Meat Light" : "简约·浅";
                             selected: root.current-wallpaper == "builtin:light";
                             clicked => { root.set-wallpaper("builtin:light"); }
                             Rectangle {
                                 width: 100%; height: 100%;
                                 background: @linear-gradient(135deg, #eff3fb 0%, #d5e1f2 100%);
                                 Rectangle {
-                                    x: parent.width * 0.66; y: -parent.height * 0.2;
-                                    width: 56px; height: 56px; border-radius: 28px;
+                                    x: parent.width * 0.62; y: -parent.height * 0.18;
+                                    width: 46px; height: 46px; border-radius: 23px;
                                     background: #4a90e2; opacity: 0.30;
                                 }
                             }
                         }
-                        Text { text: root.lang-en ? "Meat Light" : "简约·浅"; font-size: 11px * Theme.panel-font;
-                               color: Theme.text-secondary; horizontal-alignment: center; }
-                    }
-                    VerticalLayout {
-                        spacing: 5px;
-                        WallpaperSwatch {
-                            width: 100px;
+                        WallpaperCard {
+                            caption: root.lang-en ? "Meat Dark" : "简约·暗";
                             selected: root.current-wallpaper == "builtin:dark";
                             clicked => { root.set-wallpaper("builtin:dark"); }
                             Rectangle {
                                 width: 100%; height: 100%;
                                 background: @linear-gradient(135deg, #10131a 0%, #1b2233 100%);
                                 Rectangle {
-                                    x: parent.width * 0.66; y: -parent.height * 0.2;
-                                    width: 56px; height: 56px; border-radius: 28px;
+                                    x: parent.width * 0.62; y: -parent.height * 0.18;
+                                    width: 46px; height: 46px; border-radius: 23px;
                                     background: #4a6ce0; opacity: 0.40;
                                 }
                             }
                         }
-                        Text { text: root.lang-en ? "Meat Dark" : "简约·暗"; font-size: 11px * Theme.panel-font;
-                               color: Theme.text-secondary; horizontal-alignment: center; }
-                    }
-                    VerticalLayout {
-                        spacing: 5px;
-                        WallpaperSwatch {
-                            width: 100px;
+                        WallpaperCard {
+                            caption: root.lang-en ? "Fantasy 3048" : "幻想3048";
                             selected: root.current-wallpaper == "builtin:tech";
                             clicked => { root.set-wallpaper("builtin:tech"); }
                             Rectangle {
                                 width: 100%; height: 100%;
                                 background: @linear-gradient(180deg, #05060f 0%, #0b1430 55%, #1a0a2e 100%);
-                                clip: true;
                                 // glowing planet
                                 Rectangle {
-                                    x: parent.width * 0.5 - 16px; y: parent.height * 0.22;
-                                    width: 32px; height: 32px; border-radius: 16px;
+                                    x: parent.width * 0.5 - 13px; y: parent.height * 0.22;
+                                    width: 26px; height: 26px; border-radius: 13px;
                                     background: @radial-gradient(circle, #ff5ea8 0%, #ff5ea800 70%);
                                 }
                                 // neon horizon line
@@ -1816,13 +1915,8 @@ export component InterfacePanel inherits Rectangle {
                                 }
                             }
                         }
-                        Text { text: root.lang-en ? "Fantasy 3048" : "幻想3048"; font-size: 11px * Theme.panel-font;
-                               color: Theme.text-secondary; horizontal-alignment: center; }
-                    }
-                    VerticalLayout {
-                        spacing: 5px;
-                        WallpaperSwatch {
-                            width: 100px;
+                        WallpaperCard {
+                            caption: "MS";
                             selected: root.current-wallpaper == "builtin:ms";
                             clicked => { root.set-wallpaper("builtin:ms"); }
                             Image {
@@ -1831,13 +1925,8 @@ export component InterfacePanel inherits Rectangle {
                                 image-fit: cover;
                             }
                         }
-                        Text { text: "MS"; font-size: 11px * Theme.panel-font;
-                               color: Theme.text-secondary; horizontal-alignment: center; }
-                    }
-                    VerticalLayout {
-                        spacing: 5px;
-                        WallpaperSwatch {
-                            width: 100px;
+                        WallpaperCard {
+                            caption: "Miku";
                             selected: root.current-wallpaper == "builtin:miku";
                             clicked => { root.set-wallpaper("builtin:miku"); }
                             Image {
@@ -1846,67 +1935,48 @@ export component InterfacePanel inherits Rectangle {
                                 image-fit: cover;
                             }
                         }
-                        Text { text: "Miku"; font-size: 11px * Theme.panel-font;
-                               color: Theme.text-secondary; horizontal-alignment: center; }
-                    }
+                        // 自定义：数据目录 wallpapers/ 的投影（放进去就出现）
+                        for wp[i] in root.wallpaper-items : WallpaperCard {
+                            caption: wp.name;
+                            removable: true;
+                            selected: root.current-wallpaper == wp.id;
+                            clicked => { root.set-wallpaper(wp.id); }
+                            remove => { root.remove-wallpaper(wp.id); }
+                            Image {
+                                width: 100%; height: 100%;
+                                source: wp.thumb;
+                                image-fit: cover;
+                            }
+                        }
+                        WallpaperCard {
+                            caption: root.lang-en ? "Upload" : "上传图片";
+                            dashed: true;
+                            clicked => { root.pick-wallpaper-file(); }
+                        }
                     }
                 }
 
-                Rectangle { height: 16px; }
-                SectionHeader { text: root.lang-en ? "CUSTOM" : "自定义"; height: 22px; }
-                HorizontalLayout {
-                    spacing: 14px;
+                // 选中自定义壁纸后的工具条（「无」与内置套不显示）
+                if root.wp-is-custom : HorizontalLayout {
+                    spacing: 10px;
                     alignment: start;
-                    WallpaperSwatch {
-                        selected: root.wp-is-custom;
-                        clicked => { root.pick-wallpaper-file(); }
-                        // Show the real image when a custom one is active, else a
-                        // "choose a file" placeholder.
-                        if root.wp-is-custom : Image {
-                            width: 100%; height: 100%;
-                            source: Theme.wallpaper;
-                            image-fit: cover;
-                        }
-                        if !root.wp-is-custom : Rectangle {
-                            width: 100%; height: 100%;
-                            background: Theme.popup-bg-elevated;
-                            Icon {
-    glyph: "folder-open";
-    tint: Theme.text-primary;
-    size: 22px * Theme.panel-font;
-} // folder-open
-                        }
+                    GhostButton {
+                        text: root.lang-en ? "Show in folder" : "在文件夹中显示";
+                        glyph: "folder-open";
+                        clicked => { root.reveal-wallpaper(root.current-wallpaper); }
                     }
-                    VerticalLayout {
-                        alignment: center;
-                        spacing: 6px;
-                        Rectangle {
-                            width: 130px; height: 30px;
-                            border-radius: 6px;
-                            background: pick-ta.has-hover ? Theme.accent-hover : Theme.accent;
-                            pick-ta := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { root.pick-wallpaper-file(); }
-                            }
-                            Text {
-                                text: root.lang-en ? "Choose file…" : "选择文件…";
-                                color: white; font-size: 12px * Theme.panel-font;
-                                width: 100%; height: 100%;
-                                horizontal-alignment: center; vertical-alignment: center;
-                            }
-                        }
-                        if root.wp-is-custom : Text {
-                            text: root.custom-wallpaper-name;
-                            color: Theme.text-muted; font-size: 11px * Theme.panel-font;
-                            width: 150px; overflow: elide;
-                        }
+                    GhostButton {
+                        text: root.lang-en ? "Delete this wallpaper" : "删除这张壁纸";
+                        glyph: "delete";
+                        danger: true;
+                        clicked => { root.remove-wallpaper(root.current-wallpaper); }
                     }
                 }
 
                 Text {
                     text: root.lang-en
-                        ? "Uploaded images are copied into the wallpapers folder of the data directory (PNG / JPG / WEBP)."
-                        : "上传的图片复制保存到数据目录的 wallpapers 文件夹（PNG / JPG / WEBP）。";
+                        ? "Uploaded images are copied into the wallpapers folder of the data directory (PNG / JPG / WEBP). That folder is the library: drop an image in and it appears here, delete the file and it disappears (deletion asks first)."
+                        : "上传的图片复制保存到数据目录的 wallpapers 文件夹（PNG / JPG / WEBP）—— 该文件夹即壁纸列表的来源：放入新图片会自动出现在这里，删除文件即从列表消失（实机删除有二次确认）。";
                     color: Theme.text-muted; font-size: 10.5px * Theme.panel-font;
                     wrap: word-wrap;
                 }
@@ -1914,31 +1984,19 @@ export component InterfacePanel inherits Rectangle {
                 Rectangle { height: 1px; background: Theme.border-subtle; }
                 Rectangle { height: 10px; }
 
-                // ── 显示：壁纸透明度 + 作用域 + 四分区透明度 ──────────────
+                // ── 显示（按设置流排序：作用域 → 填充方式 → 壁纸透明度 →
+                //    分区透明度；未选壁纸（选「无」）时前三项灰化不可点）──────
                 SectionHeader { text: root.lang-en ? "DISPLAY" : "显示"; height: 22px; }
-
-                PercentSliderRow {
-                    label: root.lang-en ? "Wallpaper transparency" : "壁纸透明度";
-                    desc: root.lang-en
-                        ? "How transparent the image itself is — higher = fainter. Double-click the slider to reset."
-                        : "壁纸图自身的透明程度，越高壁纸越淡；双击滑杆恢复默认。";
-                    percent: root.wallpaper-transparency * 100;
-                    default-percent: 0;
-                    enabled: root.wallpaper-active;
-                    lang-en: root.lang-en;
-                    changed(v) => { root.wallpaper-transparency = v / 100; }
-                    released(v) => { root.set-wallpaper-transparency(v / 100); }
-                    reset => { root.set-wallpaper-transparency(root.wallpaper-transparency); }
-                }
 
                 SettingRow {
                     label: root.lang-en ? "Scope" : "作用域";
                     desc: root.lang-en
                         ? "Whole window = fills the window (default); Terminal = only the terminal area shows it, sidebars / tab bar stay solid. Dialogs are never part of the wallpaper."
-                        : "壁纸生效的范围：「整个界面」= 铺满全窗；「终端」= 只在终端区显示（沉浸式终端背景），侧栏 / 标签栏保持纯色主题底。弹窗 / 浮层不在壁纸范围。";
+                        : "壁纸生效的范围：「整个界面」= 铺满全窗（现状）；「终端」= 只在终端区显示（沉浸式终端背景），侧栏 / 标签栏保持纯色主题底。弹窗 / 浮层不在壁纸范围（由「弹窗与遮罩」单独控制）。";
                     HorizontalLayout {
                         SegGroup {
                             width: 250px;
+                            enabled: root.wallpaper-active;
                             active-index: root.wallpaper-scope;
                             count: 2;
                             AccentSeg {
@@ -1959,6 +2017,95 @@ export component InterfacePanel inherits Rectangle {
                             }
                         }
                     }
+                }
+
+                SettingRow {
+                    label: root.lang-en ? "Fill mode" : "填充方式";
+                    desc: root.lang-en
+                        ? "Auto (default) picks Fill or Fit from the image and the scope-area ratio, so you rarely need to choose. Fill = crop to cover; Fit = whole image with margins; Stretch = fill and distort."
+                        : "默认「自动」：按图片与作用域区域（整个界面 / 终端区）的比例在「填充 / 适应」里选，多数情况无需手动挑；填充 = 铺满裁切，适应 = 完整显示留白，拉伸 = 铺满变形。";
+                    HorizontalLayout {
+                        VerticalLayout {
+                            spacing: 4px;
+                            SegGroup {
+                                width: 286px;
+                                enabled: root.wallpaper-active;
+                                active-index: root.wallpaper-fit == "cover" ? 1
+                                    : root.wallpaper-fit == "contain" ? 2
+                                    : root.wallpaper-fit == "fill" ? 3 : 0;
+                                count: 4;
+                                AccentSeg {
+                                    label: root.lang-en ? "Auto" : "自动";
+                                    active: root.wallpaper-fit == "auto";
+                                    clicked => {
+                                        root.wallpaper-fit = "auto";
+                                        root.set-wallpaper-fit("auto");
+                                    }
+                                }
+                                AccentSeg {
+                                    label: root.lang-en ? "Fill" : "填充";
+                                    active: root.wallpaper-fit == "cover";
+                                    clicked => {
+                                        root.wallpaper-fit = "cover";
+                                        root.set-wallpaper-fit("cover");
+                                    }
+                                }
+                                AccentSeg {
+                                    label: root.lang-en ? "Fit" : "适应";
+                                    active: root.wallpaper-fit == "contain";
+                                    clicked => {
+                                        root.wallpaper-fit = "contain";
+                                        root.set-wallpaper-fit("contain");
+                                    }
+                                }
+                                AccentSeg {
+                                    label: root.lang-en ? "Stretch" : "拉伸";
+                                    active: root.wallpaper-fit == "fill";
+                                    clicked => {
+                                        root.wallpaper-fit = "fill";
+                                        root.set-wallpaper-fit("fill");
+                                    }
+                                }
+                            }
+                            Text {
+                                width: 286px;
+                                text: root.wallpaper-fit != "auto"
+                                    ? (root.lang-en
+                                        ? "Manual: always uses the selected mode"
+                                        : "手动：始终按所选模式显示")
+                                    : (!root.wallpaper-active
+                                        ? (root.lang-en
+                                            ? "No wallpaper: not available"
+                                            : "未选壁纸：此项暂不可用")
+                                        : (root.lang-en
+                                            ? "Auto: this image fits the "
+                                                + (root.wallpaper-scope == 1 ? "terminal area" : "whole window")
+                                                + " as " + (root.auto-fit-resolved() == 0 ? "Fill" : "Fit")
+                                            : "自动：这张图在「"
+                                                + (root.wallpaper-scope == 1 ? "终端区" : "整个界面")
+                                                + "」的比例按「"
+                                                + (root.auto-fit-resolved() == 0 ? "填充" : "适应")
+                                                + "」显示"));
+                                color: Theme.accent;
+                                font-size: 10.5px * Theme.panel-font;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                PercentSliderRow {
+                    label: root.lang-en ? "Wallpaper transparency" : "壁纸透明度";
+                    desc: root.lang-en
+                        ? "How transparent the image itself is — higher = fainter. Double-click the slider to reset."
+                        : "壁纸图自身的透明程度，越高壁纸越淡；双击滑杆恢复默认。";
+                    percent: root.wallpaper-transparency * 100;
+                    default-percent: 0;
+                    enabled: root.wallpaper-active;
+                    lang-en: root.lang-en;
+                    changed(v) => { root.wallpaper-transparency = v / 100; }
+                    released(v) => { root.set-wallpaper-transparency(v / 100); }
+                    reset => { root.set-wallpaper-transparency(root.wallpaper-transparency); }
                 }
 
                 HorizontalLayout {
@@ -1985,7 +2132,7 @@ export component InterfacePanel inherits Rectangle {
                         width: (parent.width - 42px) * 0.25;
                         label: root.lang-en ? "Title bar" : "标题栏";
                         percent: root.titlebar-transparency * 100;
-                        default-percent: 15;
+                        default-percent: 0;
                         lang-en: root.lang-en;
                         changed(v) => { root.titlebar-transparency = v / 100; }
                         released(v) => { root.set-titlebar-alpha(1.0 - v / 100); }
@@ -1995,7 +2142,7 @@ export component InterfacePanel inherits Rectangle {
                         width: (parent.width - 42px) * 0.25;
                         label: root.lang-en ? "Tab bar" : "标签栏";
                         percent: root.tabbar-transparency * 100;
-                        default-percent: 15;
+                        default-percent: 0;
                         lang-en: root.lang-en;
                         changed(v) => { root.tabbar-transparency = v / 100; }
                         released(v) => { root.set-tabbar-alpha(1.0 - v / 100); }
@@ -2005,7 +2152,7 @@ export component InterfacePanel inherits Rectangle {
                         width: (parent.width - 42px) * 0.25;
                         label: root.lang-en ? "Sidebars" : "侧栏";
                         percent: root.sidebar-transparency * 100;
-                        default-percent: 15;
+                        default-percent: 0;
                         lang-en: root.lang-en;
                         changed(v) => { root.sidebar-transparency = v / 100; }
                         released(v) => { root.set-sidebar-alpha(1.0 - v / 100); }
@@ -2025,69 +2172,13 @@ export component InterfacePanel inherits Rectangle {
                 Rectangle { height: 4px; }
                 Text {
                     text: root.lang-en
-                        ? "How frosted each zone is over the wallpaper (sidebars include both side panels and the bottom panel). When a zone has no wallpaper behind it (wallpaper = none, or outside the scope) it reveals the window base instead — the value is kept. With no session the centre shows the empty hint and follows the terminal zone."
-                        : "壁纸在四个区域的雾面程度（侧栏含左右侧栏与下方面板）。区域没有壁纸时（选「无」或未在作用域内）透出窗口底色、效果较弱，值会保留。（无会话时中央为空态提示，跟随终端区、参与壁纸。）";
+                        ? "How transparent each of the four zones is (sidebars include both side panels and the bottom panel). Independent of the wallpaper — still adjustable with no wallpaper: a zone that has no wallpaper behind it (wallpaper = none, or outside the scope) reveals the window base instead. With no session the centre shows the empty hint and follows the terminal zone."
+                        : "四个区域各自的面板透明程度（侧栏含左右侧栏与下方面板）；直接拖、双击恢复默认。与壁纸无关，无壁纸时同样可调：没有壁纸（或区域不在作用域内）时透出窗口底色。（无会话时中央为空态提示，跟随终端区、参与壁纸。）";
                     color: Theme.text-muted;
                     font-size: 10.5px * Theme.panel-font;
                     wrap: word-wrap;
                 }
-                // (#zone-alpha-hint 2026-10-17) 没壁纸时四根滑杆只能透出窗口底色，
-                // 与面板色只差 2~4 级 —— 用户实测"改了没效果"。这里给一条上下文提示，
-                // 免得把"无背景可透"误判成功能坏了。
-                if !root.wallpaper-active : Text {
-                    text: root.lang-en
-                        ? "No wallpaper is set, so these values only reveal the window base (almost the same colour as the panels) — the change is barely visible. Pick a wallpaper above to see them work."
-                        : "当前没有设置壁纸：这四个值只会透出窗口底色（与面板色几乎相同），变化很小；选一张壁纸后效果立刻可见。";
-                    color: Theme.accent;
-                    font-size: 10.5px * Theme.panel-font;
-                    wrap: word-wrap;
-                }
                 Rectangle { height: 6px; }
-
-                Rectangle { height: 1px; background: Theme.border-subtle; }
-                Rectangle { height: 10px; }
-
-                // ── 方式：填充 ──────────────────────────────────────────
-                SectionHeader { text: root.lang-en ? "FIT" : "方式"; height: 22px; }
-                SettingRow {
-                    label: root.lang-en ? "Fill mode" : "填充方式";
-                    desc: root.lang-en
-                        ? "Fill = crop to cover; Fit = show the whole image with margins; Stretch = fill and distort."
-                        : "填充 = 铺满裁切；适应 = 完整显示留白；拉伸 = 铺满变形。";
-                    show-divider: false;
-                    HorizontalLayout {
-                        SegGroup {
-                            width: 250px;
-                            active-index: root.wallpaper-fit == "contain" ? 1
-                                : root.wallpaper-fit == "fill" ? 2 : 0;
-                            count: 3;
-                            AccentSeg {
-                                label: root.lang-en ? "Fill" : "填充";
-                                active: root.wallpaper-fit == "cover";
-                                clicked => {
-                                    root.wallpaper-fit = "cover";
-                                    root.set-wallpaper-fit("cover");
-                                }
-                            }
-                            AccentSeg {
-                                label: root.lang-en ? "Fit" : "适应";
-                                active: root.wallpaper-fit == "contain";
-                                clicked => {
-                                    root.wallpaper-fit = "contain";
-                                    root.set-wallpaper-fit("contain");
-                                }
-                            }
-                            AccentSeg {
-                                label: root.lang-en ? "Stretch" : "拉伸";
-                                active: root.wallpaper-fit == "fill";
-                                clicked => {
-                                    root.wallpaper-fit = "fill";
-                                    root.set-wallpaper-fit("fill");
-                                }
-                            }
-                        }
-                    }
-                }
 
                 Rectangle { height: 1px; background: Theme.border-subtle; }
                 Rectangle { height: 10px; }

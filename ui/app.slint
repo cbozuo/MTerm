@@ -19,6 +19,8 @@ import { WindowFrame } from "window_frame.slint";
 import { Theme } from "theme.slint";
 import { ThemeEntry } from "theme_entry.slint";
 export { ThemeEntry }
+import { WallpaperEntry } from "wallpaper_entry.slint";
+export { WallpaperEntry }
 // (#theme-split) 从入口再导出 Theme，让生成的 Rust 侧拿到 global 类型
 // （src/theme/mod.rs 用 window.global::<Theme>() 直接写槽位，免桥属性）。
 export { Theme }
@@ -845,11 +847,12 @@ export component AppWindow inherits Window {
     min-height: 420px;
     preferred-width: 1600px;
     preferred-height: 1000px;
-    // Always-opaque base; the wallpaper Image (when active) covers it and panels
-    // frost over the image. Using window-base (not bg-root) keeps the window
-    // itself opaque even though bg-root turns translucent in immersive mode.
-    // (#zone-backdrop 2026-10-17) 主窗背板：比面板暗一档，供四分区透明时透出。
-    background: Theme.zone-backdrop;
+    // (#zone-alpha-desktop 2026-10-18) 窗口底本身**透明**：四分区各自按透明度
+    // 半透明地叠在桌面上 —— 这就是「分区透明度」本该有的"真透明"（无壁纸时
+    // 100% = 直接看到桌面，与「弹窗透明度」同一套语义）。有壁纸时壁纸层铺满
+    // （或在终端作用域下裁到终端区），透出的是壁纸，窗口底被完全盖住。
+    // 窗口的透明属性是创建期注入（src/app/window.rs，winit 限制：运行时改无效）。
+    background: transparent;
     // A CJK-capable default so UI text (incl. fullwidth punctuation like ：（）)
     // never tofus on glyph fallback (#54). Rust sets Theme.ui-font-family to a
     // system CJK font on startup; empty on Linux keeps the Slint default.
@@ -885,7 +888,10 @@ export component AppWindow inherits Window {
     // (#theme-split §3-调整③) 顶栏主题速选面板开关 + 8 个代表变体。
     in-out property <bool> theme-quick-open: false;
     in-out property <bool> wallpaper-color-pickup: false;
-    // 设置面板当前页（速选面板的「更多主题」直达主题页）。
+    // (#wallpaper-auto-fit 2026-10-18) 终端区（内容区）的纵横比：内容区矩形在
+    // 尺寸变化时回写，供外观页「填充方式 = 自动」的提示行按作用域区域判定
+    // （scope = 终端区时用这个值，整个界面用窗口比例）。
+    property <float> term-aspect: 1.6;    // 设置面板当前页（速选面板的「更多主题」直达主题页）。
     in-out property <string> ifd-page: "theme";
     in-out property <bool> settings-open: false;  // settings menu popup
 
@@ -1286,8 +1292,11 @@ export component AppWindow inherits Window {
     in-out property <bool> accent-pop-open: false;
     in-out property <bool> accent-pick-open: false;
     in-out property <float> popup-transparency <=> Theme.popup-transparency;
-    // 「常用主题」快捷位（≤4，Rust 从 config 构建；外观页主题画廊的数据源）
+    // 「常用主题」快捷位（≤6，Rust 从 config 构建；外观页主题画廊的数据源）
     in property <[ThemeEntry]> theme-favorites;
+    // (#wallpaper-library 2026-10-18) 壁纸库：数据目录 `wallpapers/` 里的
+    // 自定义壁纸（Rust 扫描 + 生成缩略图）。内置 5 套在 UI 里画，不在此列。
+    in property <[WallpaperEntry]> wallpaper-items;
     in property <[string]> term-fonts;             // installed monospace families
     in property <string> term-font-chosen;         // raw stored choice ("" = chain default)
     in property <string> term-font-default-name;   // resolved chain mono, labels the 默认 row
@@ -1374,6 +1383,12 @@ export component AppWindow inherits Window {
     in-out property <string> wsl-new-directory: "~";
     callback set-wallpaper(string);                // apply + persist a wallpaper id
     callback pick-wallpaper-file();                // open the OS file dialog (Rust)
+    // (#wallpaper-library 2026-10-18) 壁纸库工具条 / 悬停 ×：
+    // reveal = 在资源管理器中定位文件；remove = 二次确认后删除文件（列表随之刷新）。
+    callback reveal-wallpaper(string);
+    callback remove-wallpaper(string);
+    // 重扫 wallpapers/ 文件夹（切到外观页时触发，文件夹是唯一来源）。
+    callback refresh-wallpapers();
     // SFTP follows the terminal's cd; opt out in Interface settings.
     in-out property <bool> sftp-follow-cd: true;
     callback set-sftp-follow-cd(bool);             // apply + persist
@@ -1977,16 +1992,20 @@ export component AppWindow inherits Window {
     // Panels/terminal frost over it (see Theme.frost). Only present when active.
     // (#wallpaper-transparency 2026-10-17) 图 alpha = 1 − 透明度滑杆值；填充方式
     // 由「填充 / 适应 / 拉伸」三选驱动。
-    // (#wallpaper-scope 2026-10-17) 作用域 = 终端时**不换绘制矩形**：壁纸仍按窗口
-    // 坐标铺满（裁切连续），由三区在 Theme 侧强制不透明把壁纸盖住 —— 只有终端区
-    // 透出来。这样两种作用域是同一张图、同一套坐标，切换时壁纸不"跳"。
+    // (#wallpaper-scope 2026-10-17) 作用域 = 终端时壁纸仍按窗口坐标铺满（切换
+    // 作用域不"跳"），由三区在 Theme 侧只在该模式下强制不透明把壁纸盖住 ——
+    // 见 theme.slint 的 titlebar/tabbar/sidebar-alpha。
+    // (#zone-alpha-desktop 2026-10-18) 有壁纸时这层铺满全窗；无壁纸时窗口底
+    // 透明 —— 四分区按各自透明度直接透出桌面（与「弹窗透明度」同一套语义）。
     if Theme.wallpaper-active : Image {
         x: 0; y: 0;
         width: parent.width;
         height: parent.height;
         source: Theme.wallpaper;
-        image-fit: Theme.wallpaper-fit == "contain" ? contain
-            : Theme.wallpaper-fit == "fill" ? fill : cover;
+        // (#wallpaper-auto-fit 2026-10-18) 「自动」在填充 / 适应之间按图片与
+        // 该元素自身矩形（= 作用域区域）的比例选；手动三档直通。
+        image-fit: Theme.wallpaper-fit-mode(self.width, self.height) == 1 ? contain
+            : Theme.wallpaper-fit-mode(self.width, self.height) == 2 ? fill : cover;
         opacity: 1.0 - Theme.wallpaper-transparency;
     }
 
@@ -2926,6 +2945,13 @@ export component AppWindow inherits Window {
                     // MTerm 套 root #161619 / tbg #181A1D、darcula-dark、flexoki-dark,
                     // 以及任何开壁纸的场景)就会露出一条深浅相反的条带(用户截图)。
                     background: Theme.term-bg;
+                    // (#wallpaper-auto-fit 2026-10-18) 把终端区纵横比回写给
+                    // 外观页「填充方式 = 自动」的提示行（各 pane 尺寸相同，
+                    // 写的是同一个值）。
+                    // (#wallpaper-scope-clip) 同一处回写终端区矩形（窗口坐标），
+                    // 作用域 = 终端时壁纸只画在这块里。
+                    changed width => { root.term-aspect = self.width / max(1px, self.height); }
+                    changed height => { root.term-aspect = self.width / max(1px, self.height); }
 
                     // Empty pane outside left-sidebar-sidebar mode: keep a small hint for
                     // rare empty panes, but do not cover the wallpaper when the
@@ -7896,6 +7922,11 @@ export component AppWindow inherits Window {
             scrim-pick-y <=> root.scrim-pick-y;
             popup-transparency <=> root.popup-transparency;
             theme-favorites: root.theme-favorites;
+            wallpaper-items: root.wallpaper-items;
+            // (#wallpaper-auto-fit) 「自动」提示行要按作用域区域的比例算结论：
+            // 整个界面 = 窗口矩形；终端区 = 内容区矩形（由布局处回写到根属性）。
+            window-aspect: root.width / max(1px, root.height);
+            term-aspect: root.term-aspect;
             wallpaper-color-pickup <=> root.wallpaper-color-pickup;
             ifd-page <=> root.ifd-page;
             theme-pick-open <=> root.theme-pick-open;
@@ -7990,8 +8021,11 @@ export component AppWindow inherits Window {
             custom-wallpaper-name: root.custom-wallpaper-name;
             wsl-profiles: root.wsl-profiles;
             wsl-new-directory <=> root.wsl-new-directory;
-            set-wallpaper(v) => { root.set-wallpaper(v); }
+            set-wallpaper(id) => { root.set-wallpaper(id); }
             pick-wallpaper-file() => { root.pick-wallpaper-file(); }
+            reveal-wallpaper(id) => { root.reveal-wallpaper(id); }
+            remove-wallpaper(id) => { root.remove-wallpaper(id); }
+            refresh-wallpapers() => { root.refresh-wallpapers(); }
             set-term-font(v) => { root.set-term-font(v); }
             set-term-font-size(v) => { root.set-term-font-size(v); }
             set-terminal-line-spacing(v) => { root.set-terminal-line-spacing(v); }
@@ -8566,7 +8600,7 @@ export component AppWindow inherits Window {
                 background: Theme.popup-bg;
                 border-width: 1px; border-color: Theme.border-subtle;
                 Text {
-                    text: root.lang-en ? "Remove one first (max 4)" : "常用已满 4 套，先移出一套";
+                    text: root.lang-en ? "Remove one first (max 6)" : "常用已满 6 套，先移出一套";
                     color: Theme.warning; font-size: 10.5px;
                     horizontal-alignment: center; vertical-alignment: center;
                 }

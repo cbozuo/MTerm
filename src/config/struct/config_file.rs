@@ -53,7 +53,10 @@ pub(crate) const DEFAULT_WALLPAPER_OVERLAY: f32 = 1.0 - DEFAULT_WALLPAPER_TRANSP
 //   theme_pref = system/"" → theme = ""（follow_system = true）
 //   wallpaper_overlay → panel_alpha(旧值) + term_alpha(1.0)
 //   wallpaper 仍在 serde 默认（builtin:tech，从未挑过）→ ""（默认无壁纸）
-pub(crate) const DEFAULT_PANEL_ALPHA: f32 = 0.85;
+// (#zone-alpha-default0 2026-10-18) 出厂四根透明度全 0% = alpha 1.0：面板即主题
+// 原色，不混桌面/壁纸。想要雾化由用户自己拉滑杆（旧版默认 0.85 = 15% 雾化，
+// 那时窗口不透明，观感上等于原色；窗口改成真透明后 15% 会真的透出桌面）。
+pub(crate) const DEFAULT_PANEL_ALPHA: f32 = 1.0;
 pub(crate) const DEFAULT_TERM_ALPHA: f32 = 1.0;
 /// 遮罩浓度出厂值 = 原「标准档」基线（深色 0.32）。
 pub(crate) const DEFAULT_SCRIM_ALPHA: f32 = 0.32;
@@ -80,7 +83,9 @@ pub(crate) fn default_wallpaper_scope() -> String {
     "window".to_string()
 }
 pub(crate) fn default_wallpaper_fit() -> String {
-    "cover".to_string()
+    // (#wallpaper-auto-fit 2026-10-18) 默认「自动」：按图片与作用域区域的比例
+    // 在填充 / 适应之间选。老配置里显式存过 cover/contain/fill 的保持原值。
+    "auto".to_string()
 }
 pub(crate) fn default_scrim_style() -> String {
     "auto".to_string()

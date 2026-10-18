@@ -58,8 +58,25 @@ export global Theme {
     // (#wallpaper-scope 2026-10-17) 壁纸作用域：0 = 整个界面 / 1 = 终端区。
     // 作用域 = 终端时，标题栏/标签栏/侧栏三区强制不透明，只有终端区允许透出。
     in-out property <int> wallpaper-scope: 0;
-    // 填充方式："cover" 填充 / "contain" 适应 / "fill" 拉伸。
-    in-out property <string> wallpaper-fit: "cover";
+    // 填充方式："auto" 自动 / "cover" 填充 / "contain" 适应 / "fill" 拉伸。
+    in-out property <string> wallpaper-fit: "auto";
+    // (#wallpaper-auto-fit 2026-10-18) 当前壁纸图片的纵横比（宽 ÷ 高），
+    // Rust 在 apply_wallpaper 里按解码后的真实尺寸回写。默认 1.6 = 内置
+    // 程序化壁纸（1600×1000）。自动填充靠它 + 元素自身尺寸判定：
+    // 图片与区域比例接近（裁切 ≤ 25%）→ 填充；差得远 → 适应（不裁切）。
+    in-out property <float> wallpaper-aspect: 1.6;
+    // 计算实际生效的 image-fit：0 = cover（填充）/ 1 = contain（适应）/
+    // 2 = fill（拉伸）。"auto" 按上面那条规则在 0/1 之间选。
+    public pure function wallpaper-fit-mode(w: length, h: length) -> int {
+        if (root.wallpaper-fit == "contain") { return 1; }
+        if (root.wallpaper-fit == "fill") { return 2; }
+        if (root.wallpaper-fit != "auto") { return 0; }
+        let region = w / h;
+        let image = root.wallpaper-aspect;
+        if (image <= 0.0 || region <= 0.0) { return 0; }
+        let crop = 1.0 - min(image, region) / max(image, region);
+        return crop <= 0.25 ? 0 : 1;
+    }
     // 「跟随图片取色」开启时，Rust 把图片主色写进来（仅作 accent 来源，
     // 不再染面板、不再反写深浅）。wp-tint 保留仅为兼容既有桥属性/同步代码
     // （frost 已不再混色——界面被壁纸染色的根源已拆）。
@@ -75,10 +92,15 @@ export global Theme {
     in-out property <float> tabbar-transparency: 0.15;
     in-out property <float> sidebar-transparency: 0.15;
     in-out property <float> term-transparency: 0.0;
-    // 生效 alpha：作用域 = 终端时，除终端区外一律不透明；终端区恒用自身值。
-    out property <float> titlebar-alpha: root.wallpaper-scope == 1 ? 1.0 : 1.0 - root.titlebar-transparency;
-    out property <float> tabbar-alpha:   root.wallpaper-scope == 1 ? 1.0 : 1.0 - root.tabbar-transparency;
-    out property <float> sidebar-alpha:  root.wallpaper-scope == 1 ? 1.0 : 1.0 - root.sidebar-transparency;
+    // (#zone-alpha-desktop 2026-10-18) 四区恒按各自透明度生效 —— 唯一的例外是
+    // 「有壁纸 + 作用域=终端」：那时壁纸铺满全窗，三区必须不透明才能把壁纸挡住
+    // （作用域语义），其余情况（**尤其是没有壁纸**）都按滑杆真实半透明。
+    // 以前的写法是"作用域=终端就一律强制 1.0"，于是无壁纸时三根滑杆也是死的
+    //（用户反馈「四个设置透明没生效」）。
+    out property <bool> zones-masked: root.wallpaper-active && root.wallpaper-scope == 1;
+    out property <float> titlebar-alpha: root.zones-masked ? 1.0 : 1.0 - root.titlebar-transparency;
+    out property <float> tabbar-alpha:   root.zones-masked ? 1.0 : 1.0 - root.tabbar-transparency;
+    out property <float> sidebar-alpha:  root.zones-masked ? 1.0 : 1.0 - root.sidebar-transparency;
     out property <float> term-alpha:     1.0 - root.term-transparency;
     // (#popup-transparency 2026-10-17 语义定稿) 弹窗**透明度**：0 = 实心，
     // 1 = 完全透明。它和「遮罩浓度」是两个独立参数 —— 前者管弹窗自己透多少，
@@ -104,16 +126,10 @@ export global Theme {
     }
 
     // --- Palette -----------------------------------------------------------
-    // Opaque window base — the wallpaper Image covers it when active, so panels
-    // frost over the image rather than over this.
-    // (#zone-backdrop 2026-10-17) 主窗口的**背板**（分区透明后透出的那一层）。
-    // 用户反馈「没有壁纸时四区滑杆看不出效果」：面板色与窗口底色只差 2 级，
-    // 100% 透明也几乎同色。这里把背板相对面板压暗一档（深色 32% / 亮色 7%），
-    // 让"透出背板"这件事肉眼可见；有壁纸时这层被壁纸盖住，完全不受影响。
-    // 独立窗口（编辑器/进程/系统信息）仍用 window-base，不受此改动波及。
-    out property <brush> zone-backdrop: root.dark
-        ? root.slot-root.darker(0.32)
-        : root.slot-root.darker(0.07);
+    // Opaque window base — used by standalone windows (editor / process /
+    // system info) and by the about window. The main window no longer paints it:
+    // its background is transparent so the four zones can reveal the desktop
+    // through their own alpha (#zone-alpha-desktop 2026-10-18).
     out property <brush> window-base: root.slot-root;
 
     property <color> base-bg-root:      root.slot-root;
@@ -133,6 +149,14 @@ export global Theme {
     // 窗口）继续用 bg-panel / bg-root —— 它们不属于任何分区。
     out property <brush> zone-titlebar: root.zone-frost(base-bg-panel, root.titlebar-alpha);
     out property <brush> zone-sidebar:  root.zone-frost(base-bg-panel, root.sidebar-alpha);
+    // (#sidebar-bottom-panel 2026-10-18) 下方面板（命令栏 / 文件传输栏 / 停靠的
+    // 快捷命令面板）在语义上属于「侧栏」这一档（设置页文案：侧栏含左右侧栏与
+    // 下方面板）。它们各自原本的底色档位不同（panel / panel-alt / elevated），
+    // 这里按档位各给一个 token：alpha = 1 时与原色逐像素相同，调低才一起变透。
+    out property <brush> zone-sidebar-alt:  root.zone-frost(base-bg-panel-alt, root.sidebar-alpha);
+    out property <brush> zone-sidebar-elev: root.zone-frost(base-bg-elevated, root.sidebar-alpha);
+    // 文件面板里的"列头 / 目录树标题"这类**压暗一档的条带**（原 bg-root）。
+    out property <brush> zone-sidebar-root: root.zone-frost(base-bg-root, root.sidebar-alpha);
     out property <brush> zone-tabbar:   root.zone-frost(root.slot-tbg,  root.tabbar-alpha);
     // (#hover-accent 2026-10-10) 悬浮高亮统一跟随强调色（用户定稿），
     // 取代原来「frost(slot-hov)」的绝对色写法。原写法的两个问题：

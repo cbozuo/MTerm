@@ -347,6 +347,17 @@ pub(super) fn apply_wallpaper(
     match crate::wallpaper::load(id) {
         Some(wp) => {
             let (ar, ag, ab) = wp.palette.accent;
+            // (#wallpaper-auto-fit 2026-10-18) 「自动」填充要按图片真实比例判定：
+            // 解码后的尺寸随图片一起回写（缩略/自定义都走同一条）。
+            let size = wp.image.size();
+            let aspect = if size.height > 0 {
+                size.width as f32 / size.height as f32
+            } else {
+                1.6
+            };
+            window
+                .global::<crate::ui::Theme>()
+                .set_wallpaper_aspect(aspect);
             window.set_wallpaper_img(wp.image);
             window.set_wp_accent(slint::Color::from_rgb_u8(ar, ag, ab));
             window.set_wallpaper_active(true);

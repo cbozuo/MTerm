@@ -794,12 +794,13 @@ impl ConfigStore {
             _ => "window".to_string(),
         };
     }
-    /// 壁纸填充方式："cover" | "contain" | "fill"。
+    /// 壁纸填充方式："auto"（自动，默认）| "cover" | "contain" | "fill"。
     pub fn wallpaper_fit(&self) -> &str {
         &self.cache.wallpaper_fit
     }
     pub fn set_wallpaper_fit(&mut self, v: String) {
         self.cache.wallpaper_fit = match v.as_str() {
+            "auto" => "auto".to_string(),
             "contain" => "contain".to_string(),
             "fill" => "fill".to_string(),
             _ => "cover".to_string(),
@@ -2543,16 +2544,18 @@ mod tests {
         assert!((fresh.wallpaper_overlay - 0.85).abs() < f32::EPSILON);
         // (#mode-values 2026-10-17) 明暗两套出厂都是默认值。
         for av in [&fresh.appearance_dark, &fresh.appearance_light] {
-            assert!((av.titlebar_alpha - 0.85).abs() < f32::EPSILON);
-            assert!((av.tabbar_alpha - 0.85).abs() < f32::EPSILON);
-            assert!((av.sidebar_alpha - 0.85).abs() < f32::EPSILON);
+            assert!((av.titlebar_alpha - 1.0).abs() < f32::EPSILON);
+            assert!((av.tabbar_alpha - 1.0).abs() < f32::EPSILON);
+            assert!((av.sidebar_alpha - 1.0).abs() < f32::EPSILON);
             assert!((av.term_alpha - 1.0).abs() < f32::EPSILON);
             assert!((av.wallpaper_transparency).abs() < f32::EPSILON);
             assert!((av.popup_transparency).abs() < f32::EPSILON);
             assert!((av.scrim_alpha - 0.32).abs() < f32::EPSILON);
         }
         assert_eq!(fresh.wallpaper_scope, "window");
-        assert_eq!(fresh.wallpaper_fit, "cover");
+        // (#wallpaper-auto-fit 2026-10-18) 出厂 = 「自动」（按图片与作用域区域
+        // 的比例在填充 / 适应之间选）；老配置里显式存过的 cover/contain/fill 保持。
+        assert_eq!(fresh.wallpaper_fit, "auto");
         assert_eq!(fresh.scrim_style, "auto");
         assert!(!fresh.follow_system);
         assert_eq!(fresh.theme, "mterm-dark");
@@ -2562,8 +2565,8 @@ mod tests {
         assert_eq!(cfg.wallpaper, "builtin:tech");
         // 空串 = 「尚未落定」（serde 默认），交给迁移链处理；不再是「跟随系统」。
         assert_eq!(cfg.theme, "");
-        assert!((cfg.appearance_dark.titlebar_alpha - 0.85).abs() < f32::EPSILON);
-        assert!((cfg.appearance_light.sidebar_alpha - 0.85).abs() < f32::EPSILON);
+        assert!((cfg.appearance_dark.titlebar_alpha - 1.0).abs() < f32::EPSILON);
+        assert!((cfg.appearance_light.sidebar_alpha - 1.0).abs() < f32::EPSILON);
         // An explicit "无"/none (stored as "") is preserved, not re-defaulted.
         let cfg: ConfigFile = serde_json::from_str(r#"{"wallpaper":""}"#).unwrap();
         assert_eq!(cfg.wallpaper, "");
@@ -2595,12 +2598,12 @@ mod tests {
         assert_eq!(cfg.theme, "mterm-dark");
         assert!(!cfg.follow_system);
         let av = &cfg.appearance_dark; // theme=mterm-dark → 旧值落暗槽
-        assert!((av.titlebar_alpha - 0.85).abs() < f32::EPSILON);
-        assert!((av.tabbar_alpha - 0.85).abs() < f32::EPSILON);
-        assert!((av.sidebar_alpha - 0.85).abs() < f32::EPSILON);
+        assert!((av.titlebar_alpha - 1.0).abs() < f32::EPSILON);
+        assert!((av.tabbar_alpha - 1.0).abs() < f32::EPSILON);
+        assert!((av.sidebar_alpha - 1.0).abs() < f32::EPSILON);
         assert!((av.term_alpha - 1.0).abs() < f32::EPSILON);
         // 另一套仍是默认值（"第一次使用 = 默认"）
-        assert!((cfg.appearance_light.sidebar_alpha - 0.85).abs() < f32::EPSILON);
+        assert!((cfg.appearance_light.sidebar_alpha - 1.0).abs() < f32::EPSILON);
         assert_eq!(cfg.wallpaper, "");
 
         // 亮色偏好 → mterm-light。
@@ -2627,7 +2630,7 @@ mod tests {
         assert!((cfg.appearance_dark.tabbar_alpha - 0.62).abs() < f32::EPSILON);
         assert!((cfg.appearance_dark.sidebar_alpha - 0.62).abs() < f32::EPSILON);
         // 亮槽不受影响
-        assert!((cfg.appearance_light.titlebar_alpha - 0.85).abs() < f32::EPSILON);
+        assert!((cfg.appearance_light.titlebar_alpha - 1.0).abs() < f32::EPSILON);
 
         // 用户挑过壁纸：不被清成无。
         let mut cfg: ConfigFile = serde_json::from_str(

@@ -116,6 +116,9 @@ pub fn resolve(st: &ThemeState) -> Resolved {
         _ => "window".to_string(),
     };
     let fit = match st.wallpaper_fit.as_str() {
+        // (#wallpaper-auto-fit 2026-10-18) 「自动」必须原样透传：这里曾经只认
+        // contain/fill，其余一律回落 cover —— 会把用户的「自动」静默改成填充。
+        "auto" => "auto".to_string(),
         "contain" => "contain".to_string(),
         "fill" => "fill".to_string(),
         _ => "cover".to_string(),
@@ -316,9 +319,10 @@ pub fn ordered_ids() -> Vec<&'static str> {
     palettes::PALETTES.iter().map(|p| p.id).collect()
 }
 
-/// 「常用主题」上限（#theme-gallery 2026-10-17：外观页画廊 = 常用快捷位，
-/// ≤4 + 「＋更多」，写满时提示「先移出一套」）。
-pub const FAVORITE_LIMIT: usize = 4;
+/// 「常用主题」上限（#theme-gallery 2026-10-18：外观页画廊 = 常用快捷位，
+/// ≤6 + 「＋更多」，写满时提示「先移出一套」）。6 卡 + 更多 = 7 张 82px 卡
+/// 正好落在设置页内容宽内（按高保真 wallpaper-hifi-2026-10-17 的定稿）。
+pub const FAVORITE_LIMIT: usize = 6;
 
 /// 强调色的色相名（#theme-dedupe §5 选择器搜索用）：八段中文标签
 /// 「红 / 橙 / 黄 / 绿 / 青 / 蓝 / 紫 / 粉」；无彩度返回「灰」。
@@ -624,5 +628,32 @@ mod tests {
     fn defaults_are_mterm() {
         assert_eq!(default_for(true), "mterm-dark");
         assert_eq!(default_for(false), "mterm-light");
+    }
+
+    /// (#wallpaper-auto-fit 2026-10-18) `resolve()` 曾把 "auto" 静默回落成
+    /// "cover"（只认 contain/fill），导致设置页选了「自动」、实机却按「填充」画。
+    /// 四个合法值必须原样透传，未知值才回落 cover。
+    #[test]
+    fn wallpaper_fit_keeps_auto() {
+        let mut st = ThemeState {
+            theme_id: "mterm-dark".into(),
+            accent_mode: AccentCfg::Follow,
+            appearance_dark: Default::default(),
+            appearance_light: Default::default(),
+            wallpaper_scope: "window".into(),
+            wallpaper_fit: "auto".into(),
+            scrim_style: "auto".into(),
+            dark_pref: true,
+        };
+        for (stored, resolved) in [
+            ("auto", "auto"),
+            ("cover", "cover"),
+            ("contain", "contain"),
+            ("fill", "fill"),
+            ("bogus", "cover"),
+        ] {
+            st.wallpaper_fit = stored.to_string();
+            assert_eq!(resolve(&st).wallpaper_fit, resolved, "stored={stored}");
+        }
     }
 }

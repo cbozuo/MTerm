@@ -1925,6 +1925,21 @@ fn make_theme_entry(p: &'static crate::theme::palettes::Palette, faved: bool) ->
     }
 }
 
+/// (#wallpaper-library 2026-10-18) 重建「壁纸库」模型（自定义壁纸）。
+/// 单一写入点：启动、导入后、删除后、切到外观页时都走这里；内置 5 套由
+/// Slint 侧画（程序化渐变 / 内嵌图片），不进模型。
+fn refresh_wallpaper_items(window: &crate::ui::AppWindow) {
+    let items: Vec<crate::ui::WallpaperEntry> = crate::wallpaper::library::list()
+        .into_iter()
+        .map(|it| crate::ui::WallpaperEntry {
+            id: it.path.to_string_lossy().into_owned().into(),
+            name: it.name.into(),
+            thumb: it.thumb,
+        })
+        .collect();
+    window.set_wallpaper_items(ModelRc::from(Rc::new(VecModel::from(items))));
+}
+
 /// (#theme-gallery 2026-10-17) 「常用」快捷位模型（外观页主题画廊）：过滤非法
 /// id / 去重，按 config 顺序，上限由写入端（toggle-favorite-theme）兜住。
 fn build_theme_favorites(favorites: &[String]) -> Vec<crate::ui::ThemeEntry> {
@@ -2577,8 +2592,27 @@ fn open_window(
     // Apply the saved immersive wallpaper (a missing custom file falls back to
     // the plain theme; #theme-split：壁纸不再反写主题)。
     {
-        let id = store.borrow().wallpaper().to_string();
+        let saved = store.borrow().wallpaper().to_string();
+        // (#wallpaper-library 2026-10-18) 老配置里的自定义壁纸是「库外原图路径」。
+        // 复制进 `wallpapers/` 并改存库内路径：画廊才看得到它、删除也才安全
+        //（删除只允许动库内文件，用户的原图不动）。
+        let id = if !saved.is_empty() && !crate::wallpaper::is_builtin(&saved) {
+            let src = std::path::Path::new(&saved);
+            match crate::wallpaper::library::import(src) {
+                Some(copied) if copied != src => {
+                    let new_id = copied.to_string_lossy().into_owned();
+                    let mut s = store.borrow_mut();
+                    s.set_wallpaper(new_id.clone());
+                    let _ = s.save();
+                    new_id
+                }
+                _ => saved,
+            }
+        } else {
+            saved
+        };
         apply_wallpaper(&window, &store.borrow(), &bufs, &id);
+        refresh_wallpaper_items(&window);
     }
     // Command bar (#55): seed quick commands + history from the config. Groups
     // start collapsed by default (#55).
@@ -3359,9 +3393,13 @@ fn open_window(
                 .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp"])
                 .pick_file();
             if let Some(path) = picked {
-                let id = path.to_string_lossy().to_string();
+                // (#wallpaper-library 2026-10-18) 选中的图**复制**进数据目录的
+                // wallpapers/（原件不动），列表以该文件夹为准 → 立即多出一张卡。
+                let stored = crate::wallpaper::library::import(&path).unwrap_or(path);
+                let id = stored.to_string_lossy().to_string();
                 if let Some(w) = weak.upgrade() {
                     apply_wallpaper(&w, &store.borrow(), &bufs_wp, &id);
+                    refresh_wallpaper_items(&w);
                     if let Some(p) = proc_weak.upgrade() {
                         sync_proc_theme(&w, &p);
                     }
@@ -3369,6 +3407,67 @@ fn open_window(
                 let mut s = store.borrow_mut();
                 s.set_wallpaper(id);
                 let _ = s.save();
+            }
+        });
+    }
+    // (#wallpaper-library 2026-10-18) 库内删除（二次确认）+ 资源管理器定位。
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let bufs_wp = bufs.clone();
+        let proc_weak = proc_win.as_weak();
+        window.on_remove_wallpaper(move |path: SharedString| {
+            let path = path.to_string();
+            let file = std::path::PathBuf::from(&path);
+            if !file.is_file() {
+                if let Some(w) = weak.upgrade() {
+                    refresh_wallpaper_items(&w);
+                }
+                return;
+            }
+            let name = file
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.clone());
+            let confirmed = rfd::MessageDialog::new()
+                .set_title("删除壁纸 / Delete wallpaper")
+                .set_description(format!(
+                    "将删除 wallpapers 文件夹里的：\n{name}\n\n删除后不可恢复。"
+                ))
+                .set_buttons(rfd::MessageButtons::OkCancel)
+                .show()
+                == rfd::MessageDialogResult::Ok;
+            if !confirmed {
+                return;
+            }
+            let deleted = crate::wallpaper::library::delete(&file).is_ok();
+            let Some(w) = weak.upgrade() else { return };
+            // 删掉的正是当前壁纸 → 回到「无」；库外的（老配置）只清选中态。
+            if w.get_current_wallpaper().as_str() == path {
+                apply_wallpaper(&w, &store.borrow(), &bufs_wp, "");
+                if let Some(p) = proc_weak.upgrade() {
+                    sync_proc_theme(&w, &p);
+                }
+                let mut s = store.borrow_mut();
+                s.set_wallpaper(String::new());
+                let _ = s.save();
+            }
+            if deleted {
+                refresh_wallpaper_items(&w);
+            }
+        });
+    }
+    {
+        window.on_reveal_wallpaper(move |path: SharedString| {
+            crate::wallpaper::library::reveal(std::path::Path::new(path.as_str()));
+        });
+    }
+    // 切到外观页时重扫一次：文件夹是唯一来源，用户在外面丢文件进来也能出现。
+    {
+        let weak = window.as_weak();
+        window.on_refresh_wallpapers(move || {
+            if let Some(w) = weak.upgrade() {
+                refresh_wallpaper_items(&w);
             }
         });
     }
