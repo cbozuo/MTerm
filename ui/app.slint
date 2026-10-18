@@ -890,6 +890,9 @@ export component AppWindow inherits Window {
     // 尺寸变化时回写，供外观页「填充方式 = 自动」的提示行按作用域区域判定
     // （scope = 终端区时用这个值，整个界面用窗口比例）。
     property <float> term-aspect: 1.6;    // 设置面板当前页（速选面板的「更多主题」直达主题页）。
+    // (#wallpaper-scope-workspace 2026-10-19) 主区域（标题栏以下）的宽高比，
+    // 供设置页「自动」填充判定用。由 dock-area 的实际尺寸回写。
+    property <float> workspace-aspect: 1.6;
     in-out property <string> ifd-page: "theme";
     in-out property <bool> settings-open: false;  // settings menu popup
 
@@ -2336,6 +2339,9 @@ export component AppWindow inherits Window {
             // `right-sidebar-dock`, so the sidebar can sit on any window edge (#dock).
             dock-area := Rectangle {
             vertical-stretch: 1;
+            // (#wallpaper-scope-workspace) 主区域矩形比例（终端列不走这条）。
+            changed width => { root.workspace-aspect = self.width / max(1px, self.height); }
+            changed height => { root.workspace-aspect = self.width / max(1px, self.height); }
             // Left-edge layout: a thin always-on icon strip
             // (IDEA-style) + the welcome/session sidebar (0 when collapsed). The rest
             // (resource panel + central terminal, which never collapses) sits to their
@@ -2381,6 +2387,20 @@ export component AppWindow inherits Window {
                 root.quick-panel-dock == "top" ? dock-area.quick-outer-strip : 0px;
             property <length> quick-bottom:
                 root.quick-panel-dock == "bottom" ? dock-area.quick-outer-strip : 0px;
+
+            // (#wallpaper-scope-workspace 2026-10-19) 作用域 = 主区域：壁纸画在
+            // **标题栏以下**的整块区域（左右侧栏 + 终端列 + 下方面板）。
+            // 中间档：标题栏保持实心（图不到那里），其余都有图。
+            // 放在 dock-area 的第一个子元素 → 被侧栏/终端/SFTP 面板各自雾化在上层。
+            if Theme.wallpaper-active && Theme.wallpaper-scope == 1 : Image {
+                x: 0; y: 0;
+                width: parent.width;
+                height: parent.height;
+                source: Theme.wallpaper;
+                image-fit: Theme.wallpaper-fit-mode(self.width, self.height) == 1 ? contain
+                    : Theme.wallpaper-fit-mode(self.width, self.height) == 2 ? fill : cover;
+                opacity: 1.0 - Theme.wallpaper-transparency;
+            }
 
             if dock-area.quick-outer-strip > 0px : ToolStrip {
                 x: root.quick-panel-dock == "right" ? parent.width - parent.quick-outer-strip : 0px;
@@ -2855,7 +2875,7 @@ export component AppWindow inherits Window {
                     // 打开 tab 无关 —— 空态 / 欢迎页同样有壁纸。
                     // 以前这层画在 TerminalView 的 scroll-clip 里，没有 tab 时整棵
                     // TerminalView 都不存在 → 中间只剩纯黑（用户反馈）。
-                    if Theme.wallpaper-active && Theme.wallpaper-scope == 1 : Image {
+                    if Theme.wallpaper-active && Theme.wallpaper-scope == 2 : Image {
                         x: 0; y: 0;
                         width: parent.width;
                         height: parent.height;
@@ -8037,6 +8057,7 @@ export component AppWindow inherits Window {
             // 整个界面 = 窗口矩形；终端区 = 内容区矩形（由布局处回写到根属性）。
             window-aspect: root.width / max(1px, root.height);
             term-aspect: root.term-aspect;
+            workspace-aspect: root.workspace-aspect;
             wallpaper-color-pickup <=> root.wallpaper-color-pickup;
             ifd-page <=> root.ifd-page;
             theme-pick-open <=> root.theme-pick-open;

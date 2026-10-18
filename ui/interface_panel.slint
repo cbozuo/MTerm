@@ -1043,6 +1043,8 @@ export component InterfacePanel inherits Rectangle {
     // 「填充方式 = 自动」提示行要按作用域区域的比例判定结论（由 app.slint 传）。
     in property <float> window-aspect: 1.6;
     in property <float> term-aspect: 1.6;
+    // (#wallpaper-scope-workspace 2026-10-19) 主区域（标题栏以下）的宽高比。
+    in property <float> workspace-aspect: 1.6;
     in property <[WslProfileInfo]> wsl-profiles;
     in-out property <string> wsl-new-name: "WSL";
     in-out property <string> wsl-new-distribution;
@@ -1078,7 +1080,9 @@ export component InterfacePanel inherits Rectangle {
     // 规则与 Theme.wallpaper-fit-mode 完全一致（比例差 ≤ 55% → 填充），只是这里
     // 按**作用域区域**的比例把结论写出来；真正的 image-fit 由 Theme 按各元素尺寸算。
     pure function auto-fit-resolved() -> int {
-        let region = root.wallpaper-scope == 1 ? root.term-aspect : root.window-aspect;
+        // 0 = 整个界面 / 1 = 主区域 / 2 = 终端，各用各自矩形的比例。
+        let region = root.wallpaper-scope == 2 ? root.term-aspect
+            : root.wallpaper-scope == 1 ? root.workspace-aspect : root.window-aspect;
         let image = Theme.wallpaper-aspect;
         if (image <= 0.0 || region <= 0.0) { return 0; }
         let crop = 1.0 - min(image, region) / max(image, region);
@@ -1991,14 +1995,14 @@ export component InterfacePanel inherits Rectangle {
                 SettingRow {
                     label: root.lang-en ? "Scope" : "作用域";
                     desc: root.lang-en
-                        ? "Where the wallpaper is drawn: Whole window = fills the window (default); Terminal = drawn only in the terminal text area. Outside the scope there is no wallpaper at all — those areas composite over the window base (the desktop when no wallpaper), no matter how transparent they are. Dialogs are never part of the wallpaper."
-                        : "壁纸的**绘制区域**：「整个界面」= 铺满全窗（默认）；「终端」= 只画在终端文本区里。作用域之外**没有壁纸**——那些区域按各自透明度叠在窗口底上（无壁纸时即桌面），与透不透明无关；侧栏 / 标签栏 / 命令栏 / 文件面板不再被强制成纯色。弹窗 / 浮层不在壁纸范围（由「弹窗与遮罩」单独控制）。";
+                        ? "Where the wallpaper is drawn. Whole window (default) fills the window including the title bar; Main area covers everything below the title bar — sidebars, terminal and bottom panels — and keeps the title bar solid; Terminal draws it in the terminal column only. Outside the scope there is no wallpaper at all: those areas composite over the window base (the desktop when no wallpaper). Dialogs are never part of it. Note: in Main area, raising the title-bar transparency reveals the desktop, not the wallpaper."
+                        : "壁纸的**绘制区域**：「整个界面」（默认）= 铺满全窗，**含标题栏**；「主区域」= 标题栏**以下**——左右侧栏、终端、下方面板都有图，只有标题栏保持实心；「终端」= 只画在终端列里，侧栏后面没有图。作用域之外**没有壁纸**，那些区域按各自透明度叠在窗口底上（无壁纸时即桌面）。弹窗 / 浮层不在壁纸范围（由「弹窗与遮罩」单独控制）。注意：在「主区域」下把**标题栏透明度**调高，透出来的是桌面而不是壁纸。";
                     HorizontalLayout {
                         SegGroup {
-                            width: 250px;
+                            width: 330px;
                             enabled: root.wallpaper-active;
                             active-index: root.wallpaper-scope;
-                            count: 2;
+                            count: 3;
                             AccentSeg {
                                 label: root.lang-en ? "Whole window" : "整个界面";
                                 active: root.wallpaper-scope == 0;
@@ -2008,10 +2012,18 @@ export component InterfacePanel inherits Rectangle {
                                 }
                             }
                             AccentSeg {
-                                label: root.lang-en ? "Terminal" : "终端";
+                                label: root.lang-en ? "Main area" : "主区域";
                                 active: root.wallpaper-scope == 1;
                                 clicked => {
                                     root.wallpaper-scope = 1;
+                                    root.set-wallpaper-scope("workspace");
+                                }
+                            }
+                            AccentSeg {
+                                label: root.lang-en ? "Terminal" : "终端";
+                                active: root.wallpaper-scope == 2;
+                                clicked => {
+                                    root.wallpaper-scope = 2;
                                     root.set-wallpaper-scope("terminal");
                                 }
                             }
@@ -2079,10 +2091,12 @@ export component InterfacePanel inherits Rectangle {
                                             : "未选壁纸：此项暂不可用")
                                         : (root.lang-en
                                             ? "Auto: this image fits the "
-                                                + (root.wallpaper-scope == 1 ? "terminal area" : "whole window")
+                                                + (root.wallpaper-scope == 2 ? "terminal area"
+                                                    : root.wallpaper-scope == 1 ? "main area" : "whole window")
                                                 + " as " + (root.auto-fit-resolved() == 0 ? "Fill" : "Fit")
                                             : "自动：这张图在「"
-                                                + (root.wallpaper-scope == 1 ? "终端区" : "整个界面")
+                                                + (root.wallpaper-scope == 2 ? "终端区"
+                                                    : root.wallpaper-scope == 1 ? "主区域" : "整个界面")
                                                 + "」的比例按「"
                                                 + (root.auto-fit-resolved() == 0 ? "填充" : "适应")
                                                 + "」显示"));

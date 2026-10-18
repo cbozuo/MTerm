@@ -126,7 +126,9 @@ pub fn resolve(st: &ThemeState) -> Resolved {
     let (accent, _) = resolve_accent(p, st.accent_mode);
     // (#wallpaper-scope-params) 数值已由调用方按 主题×壁纸×作用域 解析好。
     let av = &st.appearance;
+    // (#wallpaper-scope-workspace 2026-10-19) 三档白名单；未知值回落 window。
     let scope = match st.wallpaper_scope.as_str() {
+        "workspace" => "workspace".to_string(),
         "terminal" => "terminal".to_string(),
         _ => "window".to_string(),
     };
@@ -198,7 +200,12 @@ macro_rules! impl_theme_apply {
             t.set_sidebar_transparency(1.0 - r.sidebar_alpha);
             t.set_term_transparency(1.0 - r.term_alpha);
             t.set_wallpaper_transparency(r.wallpaper_transparency);
-            t.set_wallpaper_scope(if r.wallpaper_scope == "terminal" { 1 } else { 0 });
+            // (#wallpaper-scope-workspace) 0 = 整个界面 / 1 = 主区域 / 2 = 终端。
+            t.set_wallpaper_scope(match r.wallpaper_scope.as_str() {
+                "workspace" => 1,
+                "terminal" => 2,
+                _ => 0,
+            });
             t.set_wallpaper_fit(r.wallpaper_fit.as_str().into());
             t.set_scrim_style(r.scrim_style.as_str().into());
             t.set_scrim_strength(r.scrim_alpha);

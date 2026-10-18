@@ -963,7 +963,8 @@ impl ConfigStore {
             self.appearance_for_mut(dark).wallpaper_transparency = v;
         }
     }
-    /// 壁纸作用域："window" | "terminal"（每个主题各记一份）。
+    /// 壁纸作用域："window"（整个界面，默认）| "workspace"（主区域，标题栏以下）
+    /// | "terminal"（终端列）；每个主题各记一份。
     pub fn wallpaper_scope(&self) -> &str {
         self.cache
             .wallpaper_scope_by_theme
@@ -972,7 +973,10 @@ impl ConfigStore {
             .unwrap_or("window")
     }
     pub fn set_wallpaper_scope(&mut self, v: String) {
+        // (#wallpaper-scope-workspace 2026-10-19) 白名单必须显式列全：
+        // 旧实现只认 terminal，其余一律 window —— 新增的 workspace 会被静默吃掉。
         let v = match v.as_str() {
+            "workspace" => "workspace".to_string(),
             "terminal" => "terminal".to_string(),
             _ => "window".to_string(),
         };
@@ -2905,6 +2909,62 @@ mod tests {
         );
         cfg.set_wallpaper("");
         assert_eq!(cfg.default_zone_alphas(), (1.0, 1.0, 1.0, 1.0), "无壁纸默认 0% 透明");
+    }
+
+    /// (#wallpaper-scope-workspace 2026-10-19) 新增的「主区域」档：
+    /// ① 默认档仍是「整个界面」；② 主区域有自己的首设默认值（标题栏实心）；
+    /// ③ 非法值归一化；④ 切走再切回，数值还在。
+    #[test]
+    fn workspace_scope_has_own_defaults() {
+        let mut cfg = ConfigStore {
+            path: PathBuf::new(),
+            cache: fresh_config(),
+            key: [0u8; 32],
+        };
+        cfg.set_theme("mterm-dark".into());
+        cfg.set_wallpaper("builtin:miku");
+
+        // ① 没配过 = 整个界面。
+        assert_eq!(cfg.wallpaper_scope(), "window");
+
+        // ② 主区域首设：标题栏实心，其余三区与「整个界面」同值。
+        cfg.set_wallpaper_scope("workspace".into());
+        assert_eq!(cfg.wallpaper_scope(), "workspace");
+        let ws = cfg.scope_settings().expect("workspace scope");
+        assert!((ws.titlebar_alpha - 1.0).abs() < 1e-6, "主区域标题栏必须实心");
+        assert!((ws.tabbar_alpha - 0.70).abs() < 1e-6);
+        assert!((ws.sidebar_alpha - 0.72).abs() < 1e-6);
+        assert!((ws.term_alpha - 0.60).abs() < 1e-6);
+        assert!(
+            cfg.cache
+                .wallpaper_settings
+                .keys()
+                .any(|k| k.ends_with("|workspace")),
+            "切到主区域应落下 <theme>|<wp>|workspace 条目"
+        );
+
+        // 双击复位的目标跟着档走（标题栏回到实心）。
+        let (tb, _, _, _) = cfg.default_zone_alphas();
+        assert!((tb - 1.0).abs() < 1e-6);
+
+        // ③ 非法值归一化为默认档。
+        cfg.set_wallpaper_scope("nonsense".into());
+        assert_eq!(cfg.wallpaper_scope(), "window");
+        assert!((cfg.titlebar_alpha() - 0.78).abs() < 1e-6);
+
+        // ④ 切回主区域：之前那套还在（等于默认，因为没改过）。
+        cfg.set_wallpaper_scope("workspace".into());
+        assert!((cfg.term_alpha() - 0.60).abs() < 1e-6);
+        // 与「整个界面」是两套独立条目。
+        let keys: Vec<String> = cfg
+            .cache
+            .wallpaper_settings
+            .keys()
+            .filter(|k| k.starts_with("mterm-dark|builtin:miku|"))
+            .cloned()
+            .collect();
+        assert!(keys.iter().any(|k| k.ends_with("|window")));
+        assert!(keys.iter().any(|k| k.ends_with("|workspace")));
     }
 
     #[test]

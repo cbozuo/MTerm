@@ -204,27 +204,37 @@ pub struct ScopeSettings {
 /// 实测「都是黑色的」）。这里给出一套「一设就能看见壁纸」的起点，用户随后
 /// 随便调，调过的值就地保存。
 pub(crate) fn default_scope_settings(scope: &str) -> ScopeSettings {
-    if scope == "terminal" {
-        // 作用域 = 终端：壁纸只在中间区，三区后面没有图 → 保持主题原色。
-        ScopeSettings {
+    match scope {
+        "terminal" => ScopeSettings {
+            // 作用域 = 终端：壁纸只在终端列，三区后面没有图 → 保持主题原色。
             titlebar_alpha: DEFAULT_PANEL_ALPHA,
             tabbar_alpha: DEFAULT_PANEL_ALPHA,
             sidebar_alpha: DEFAULT_PANEL_ALPHA,
             term_alpha: 0.72,
             wallpaper_transparency: 0.0,
             fit: default_wallpaper_fit(),
-        }
-    } else {
-        // 作用域 = 整个界面：四区各压一点，壁纸整屏可见但仍读得清字
-        // （2026-10-18 实机截图校准：再透一档侧栏正文就糊在亮色壁纸上了）。
-        ScopeSettings {
+        },
+        "workspace" => ScopeSettings {
+            // 作用域 = 主区域（标题栏以下）：图不进标题栏，标题栏必须实心 ——
+            // 半透明时透出来的是**桌面**而不是壁纸。其余三区与「整个界面」
+            // 逐值相同，两档来回切时侧栏/终端观感连续。
+            titlebar_alpha: DEFAULT_PANEL_ALPHA,
+            tabbar_alpha: 0.70,
+            sidebar_alpha: 0.72,
+            term_alpha: 0.60,
+            wallpaper_transparency: 0.0,
+            fit: default_wallpaper_fit(),
+        },
+        _ => ScopeSettings {
+            // 作用域 = 整个界面：四区各压一点，壁纸整屏可见但仍读得清字
+            // （2026-10-18 实机截图校准：再透一档侧栏正文就糊在亮色壁纸上了）。
             titlebar_alpha: 0.78,
             tabbar_alpha: 0.70,
             sidebar_alpha: 0.72,
             term_alpha: 0.60,
             wallpaper_transparency: 0.0,
             fit: default_wallpaper_fit(),
-        }
+        },
     }
 }
 
