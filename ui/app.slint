@@ -10,6 +10,10 @@ export struct ChannelBarInfo {
 }
 
 import { Icon } from "icons.slint";
+// (#group-manager 2026-10-19) 分组管理弹框的数据结构与组件。GroupSwatch
+// 原先定义在本文件，抽到 group_types.slint 以避开 app ↔ 组件的循环引用。
+import { GroupSwatch, GroupRow, GmMember } from "group_types.slint";
+import { GroupManagerDialog } from "group_manager.slint";
 // (#win-edge-frame-r7 2026-10-18) 主窗口最外圈描边抽成组件（便于离屏像素回归）。
 import { WindowFrame } from "window_frame.slint";
 // (#icon-svg-migration 2026-10-02) Embedded Material icon font removed: every
@@ -165,14 +169,7 @@ export struct SplitterInfo {
     vertical: bool,   // true = vertical handle (drag left/right)
 }
 
-// (#group-color 2026-09-14) 取色面板的一个候选色。`hex` 是提交给 Rust 的原文
-// (也用作"当前选中"的判定依据),`swatch` 是画色块用的颜色。两者由 Rust 从
-// 同一份调色板常量一并注入 —— Slint 1.8 没有 color → "#RRGGBB" 的转换,
-// 若在 .slint 侧定义颜色数组,点色格时就拿不到可提交的 hex 字符串。
-export struct GroupSwatch {
-    hex: string,
-    swatch: color,
-}
+// (#group-manager 2026-10-19) GroupSwatch / GroupRow / GmMember 见 group_types.slint。
 
 // (#close-behavior) 关闭确认卡第③段的一行:会话名 + 主机。
 // 名称与主机分列,主机右对齐并省略 —— 长 host 不会挤坏名称列。
@@ -1531,6 +1528,34 @@ export component AppWindow inherits Window {
     // 即时回显(点色格 / 手输 hex 都要让色块跟着变),但此时还不该写配置。
     // hex 非法时返回全透明,由色块的描边兜底(仍是"空"的样子)。
     callback resolve-color(string /* hex */) -> color;
+    // ── 分组管理弹框（高保真 group-manager-hifi-2026-10-19）───────────────
+    // 与 #41 的单组弹框并存：单组弹框负责"快速建一个 / 改一个"，管理台负责
+    // 横向比较、批量搬人、删有成员的组、重排多个组。
+    // 所有改动即时落盘（与 ConfigStore 的既有语义一致），没有确定/取消。
+    in-out property <bool> gm-open: false;
+    in-out property <string> gm-selected: "";
+    in property <[GroupRow]> gm-groups: [];
+    in property <[GmMember]> gm-members: [];
+    in property <int> gm-visited: 0;      // 统计口径占位（保留给后续"共 N 个会话"）
+    in property <int> gm-picked: 0;       // 已勾选条数（Rust 维护）
+    // 当前组的高亮信息随 selected 一起下发（Slint 侧不查表）
+    in property <color> gm-cur-color: transparent;
+    in property <string> gm-cur-color-hex: "";
+    in-out property <string> gm-query: "";   // 搜索词（过滤在 Rust）
+    callback gm-open-request();
+    callback gm-search(string /* query */);
+    callback gm-select(string /* group */);
+    callback gm-rename(string /* orig */, string /* name */) -> string;
+    callback gm-create(string /* name */) -> string;
+    callback gm-remove(string /* name */, string /* target */);
+    callback gm-set-color(string /* name */, string /* hex */);
+    callback gm-reorder-group(string /* group */, string /* before */);
+    callback gm-toggle-pick(string /* id */);
+    callback gm-paint-pick(int /* from */, int /* to */, bool /* on */);
+    callback gm-clear-picks();
+    callback gm-move-members(string /* id */, string /* target */, bool /* whole */);
+    callback gm-reorder-members(string /* id */, string /* before */, bool /* after */, bool /* whole */);
+    callback gm-move-out(string /* id */, bool /* whole */);
     // (#theme-split) toggle-theme 退役：顶栏改主题速选面板（§3-调整③）。
     // set-theme = 速选面板/设置页的选主题入口；cycle-theme = Ctrl+Alt+T 在
     // mterm 暗/亮间快速翻转。
@@ -4219,6 +4244,37 @@ export component AppWindow inherits Window {
                     Text { text: @tr("New group"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
                 }
             }
+            // (#group-manager 2026-10-19) 管理台入口：跨两栏的粗粒度操作，
+            // 与上面的单组动作用一条分隔线隔开，避免误点。
+            Rectangle { height: 1px; background: Theme.border-subtle; }
+            Rectangle {
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: gm-ta.has-hover ? Theme.bg-hover : transparent;
+                gm-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.ctx-open-key = "";
+                        root.gm-open-request();
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 10px;
+                    spacing: 9px;
+                    Icon {
+                        glyph: "settings";
+                        tint: Theme.text-primary;
+                        size: Theme.fs-sm;
+                    }
+                    Text {
+                        text: @tr("Manage groups");
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-md;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                }
+            }
             // (#ctx-menu-narrow 2026-09-15) system 保留组无「删除分组」可谈
             // (它永远非空且不可删),一并收起。
             if root.ctx-menu-empty && root.ctx-menu-group != "system" : Rectangle {
@@ -6076,6 +6132,36 @@ export component AppWindow inherits Window {
                 }
             }
         }
+    }
+
+    // --- Group manager dialog (#group-manager 2026-10-19) ---------------------
+    // 与上面的单组弹框同级：它可能从欢迎页组头、空白右键、设置页入口打开，
+    // 因此挂在根层、盖在所有弹框之上（后声明 = 更靠上）。
+    GroupManagerDialog {
+        open: root.gm-open;
+        selected <=> root.gm-selected;
+        groups: root.gm-groups;
+        members: root.gm-members;
+        picked-count: root.gm-picked;
+        cur-color: root.gm-cur-color;
+        cur-color-hex: root.gm-cur-color-hex;
+        query <=> root.gm-query;
+        palette: root.group-palette;
+        lang-en: root.lang-en;
+        close => { root.gm-open = false; }
+        search(q) => { root.gm-search(q); }
+        select(g) => { root.gm-select(g); }
+        rename(o, n) => { return root.gm-rename(o, n); }
+        create-group(n) => { return root.gm-create(n); }
+        remove-group(n, t) => { root.gm-remove(n, t); }
+        set-group-color(n, h) => { root.gm-set-color(n, h); }
+        reorder-group(g, b) => { root.gm-reorder-group(g, b); }
+        toggle-pick(id) => { root.gm-toggle-pick(id); }
+        paint-pick(a, b, on) => { root.gm-paint-pick(a, b, on); }
+        clear-picks() => { root.gm-clear-picks(); }
+        move-members(id, t, w) => { root.gm-move-members(id, t, w); }
+        reorder-members(id, b, a, w) => { root.gm-reorder-members(id, b, a, w); }
+        move-out(id, w) => { root.gm-move-out(id, w); }
     }
 
     // --- Rename-session dialog ----------------------------------------------

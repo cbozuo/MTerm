@@ -1,0 +1,1305 @@
+// 分组管理弹框 —— 高保真落地（docs/design/group-manager-hifi-2026-10-19.html）
+//
+// 设计要点（与稿子一一对应）：
+//  ① 双栏：左栏管组（选中 / 改色 / 双击改名 / 删除 / 拖拽排序 / 新建），
+//     右栏管这个组的人（勾选 / 刷选 / 拖拽换组 / 组内排序 / 移出 / 批量移动）。
+//  ② 只有复选框改变勾选 —— 单击行不做任何事，避免拖动时误勾。
+//  ③ 改名：Enter 或点空白确认，Esc 放弃；左栏行与右栏标题都能双击。
+//  ④ 删除不再要求空组：右栏顶部展开删除条，先选成员去向再删。
+//  ⑤ 没有撤销 —— ConfigStore 每次改动即时落盘，删除条是唯一防线。
+//
+// Slint 落地约束（踩过的坑，别再犯）：
+//  · 布局子项不能设 x / y / width（由布局给），否则报 "cannot be set" 或绑定循环。
+//  · 布局子项的 width 不能引用 parent.width（preferred-width 反向依赖 → 循环）。
+//  · Rectangle 没有 padding / margin —— 只能包一层 HorizontalLayout / VerticalLayout。
+//  · 组件函数在表达式里不能带连字符（a-b() 会被当减法），一律蛇形命名；
+//    函数体内没有 if 语句和 for，用三元；局部 let 变量不能二次赋值。
+//  · 拖动落点用「位移 / 行高」推算，不依赖每行的绝对坐标；跨栏命中用容器绝对 y。
+import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+import { ProtocolIcon, Scrim } from "widgets.slint";
+import { GroupRow, GroupSwatch, GmMember } from "group_types.slint";
+
+export component GroupManagerDialog inherits Rectangle {
+    in property <bool> lang-en;
+    in property <bool> open;
+    in-out property <string> selected: "";
+    in property <[GroupRow]> groups: [];
+    in property <[GmMember]> members: [];
+    in property <[GroupSwatch]> palette: [];
+    // 已选条数由 Rust 维护（Slint 1.8 的数组没有 filter / map）。
+    in property <int> picked-count: 0;
+    // 当前组的高亮信息由 Rust 随 selected 一起下发（省掉在 Slint 里查表）。
+    in property <color> cur-color: transparent;
+    in property <string> cur-color-hex: "";
+
+    callback close();
+    callback search(string /* query */);
+    callback select(string /* group */);
+    callback rename(string /* orig */, string /* name */) -> string;
+    callback create-group(string /* name */) -> string;
+    callback remove-group(string /* name */, string /* target */);
+    callback set-group-color(string /* name */, string /* hex */);
+    callback reorder-group(string /* group */, string /* before */);
+    callback toggle-pick(string /* id */);
+    callback paint-pick(int /* from */, int /* to */, bool /* on */);
+    callback clear-picks();
+    // whole = true → Rust 取全部已选；false → 只处理这一条
+    callback move-members(string /* id */, string /* target */, bool /* whole */);
+    callback reorder-members(string /* id */, string /* before */, bool /* after */, bool /* whole */);
+    callback move-out(string /* id */, bool /* whole */);
+
+    // ── 弹框内临时态（不落盘）──
+    in-out property <string> editing: "";        // 正在改名的组名（"" = 无）
+    in-out property <string> editing-text: "";
+    in-out property <string> editing-error: "";
+    in-out property <bool> creating: false;
+    in-out property <string> confirm-del: "";    // 展开删除条的组名
+    in-out property <string> del-target: "";     // 成员去向（"" = 未分组）
+    in-out property <string> color-for: "";      // 展开色板的组名
+    in-out property <int> color-row: 0;
+    in-out property <bool> move-menu: false;
+    // 搜索：过滤交给 Rust（Slint 的字符串没有 contains）
+    in-out property <string> query: "";
+    // 悬浮卡：tip-row = 正在悬停的成员行号（-1 = 无），150ms 后才置
+    in-out property <int> hover-row: -1;
+    in-out property <int> tip-row: -1;
+    in-out property <length> tip-y: 0px;
+    // 拖到左栏时命中的组行（-1 = 不是换组）
+    in-out property <int> drop-gi: -1;
+
+    // 拖动
+    in-out property <bool> dragging: false;
+    in-out property <string> drag-kind: "";      // "group" | "member"
+    in-out property <string> drag-id: "";
+    in-out property <int> drag-index: 0;
+    in-out property <int> drag-to: 0;
+    in-out property <length> drag-abs-x: -1000px;
+    in-out property <length> drag-abs-y: -1000px;
+    in-out property <bool> drop-group: false;    // 指针在左栏组行上
+
+    // 列表顶部的绝对 y（跨栏命中 / 刷选命中）
+    in-out property <length> list-top: 0px;
+    in-out property <length> mem-top: 0px;
+
+    property <length> row-h: 36px;
+    property <length> mem-h: 38px;
+
+    out property <int> total-count: root.members.length;
+    out property <string> cur-name: root.selected;
+
+    // 进入改名：预填原名（TextInput 拿焦点后全选，直接输入即覆盖）
+    function start_edit(name: string) {
+        root.editing = name;
+        root.editing-text = name;
+        root.editing-error = "";
+        root.color-for = "";
+        root.creating = false;
+    }
+
+    // 确认改名 / 新建：Enter、点空白、点关闭都走这里。
+    function commit_edit() {
+        let active = root.creating || root.editing != "";
+        let err = !active
+            ? ""
+            : (root.creating
+                ? root.create-group(root.editing-text)
+                : root.rename(root.editing, root.editing-text));
+        // err 只在这里被移动一次：先算 bool，再决定要不要把它交给属性
+        let ok = err == "";
+        root.editing-error = !active ? root.editing-error : (ok ? "" : err);
+        root.editing = active && ok ? "" : root.editing;
+        root.creating = active && ok ? false : root.creating;
+        root.editing-text = active && ok ? "" : root.editing-text;
+    }
+
+    // 悬停 150ms 出卡（与列表侧同一口径）；移开或开始拖拽立刻收起
+    tip-timer := Timer {
+        interval: 150ms;
+        running: root.hover-row >= 0 && root.tip-row != root.hover-row && !root.dragging;
+        triggered => { root.tip-row = root.hover-row; }
+    }
+    changed hover-row => {
+        if (root.hover-row < 0) { root.tip-row = -1; }
+    }
+    changed dragging => {
+        if (root.dragging) { root.tip-row = -1; }
+    }
+    // 关窗时把弹框内的临时态全部复位：下次打开是干净的一份
+    changed open => {
+        if (!root.open) {
+            root.hover-row = -1;
+            root.tip-row = -1;
+            root.color-for = "";
+            root.confirm-del = "";
+            root.move-menu = false;
+            root.editing = "";
+            root.creating = false;
+            root.editing-error = "";
+            root.drop-gi = -1;
+            root.dragging = false;
+            root.drag-kind = "";
+        }
+    }
+
+    width: 100%;
+    height: 100%;
+
+    if root.open : Rectangle {
+        width: 100%;
+        height: 100%;
+
+        Scrim { }
+        // 点遮罩：先确认改名再关（改名不会因为点了一下外面就丢）
+        TouchArea {
+            clicked => { commit_edit(); root.close(); }
+        }
+
+        gm := Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: min(760px, parent.width - 32px);
+            height: min(522px, parent.height - 32px);
+            background: Theme.popup-bg;
+            border-radius: Theme.radius-lg;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 28px;
+            drop-shadow-color: #00000080;
+            clip: true;
+
+            TouchArea { }   // 吞掉内部点击
+
+            // Esc：编辑中先取消编辑，否则关窗（与稿子一致）。
+            // 焦点给 FocusScope，TextInput 不处理的按键会冒泡上来。
+            fs := FocusScope {
+                x: 0px;
+                y: 0px;
+                width: 100%;
+                height: 100%;
+                init => { self.focus(); }
+                key-pressed(ev) => {
+                    if (ev.text == Key.Escape) {
+                        if (root.editing != "" || root.creating) {
+                            root.editing = "";
+                            root.creating = false;
+                            root.editing-error = "";
+                        } else {
+                            root.close();
+                        }
+                        return accept;
+                    }
+                    return reject;
+                }
+
+            VerticalLayout {
+                spacing: 0px;
+
+                // ══ 标题区 ══
+                Rectangle {
+                    height: 56px;
+                    HorizontalLayout {
+                        padding-left: 18px;
+                        padding-right: 12px;
+                        spacing: 10px;
+                        cross-axis-alignment: center;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 0px;
+                            alignment: start;
+                            Text {
+                                text: root.lang-en ? "Manage groups" : "分组管理";
+                                color: Theme.text-primary;
+                                font-size: Theme.fs-lg;
+                                font-weight: Theme.fw-strong;
+                            }
+                            Text {
+                                text: root.groups.length + (root.lang-en ? " groups" : " 个分组");
+                                color: Theme.text-muted;
+                                font-size: Theme.fs-xs;
+                            }
+                        }
+                        // 搜索（组名 / 会话名 / 主机，过滤在 Rust 侧）
+                        Rectangle {
+                            width: 196px;
+                            height: 30px;
+                            border-radius: Theme.radius-md;
+                            background: Theme.popup-bg-inset;
+                            border-width: 1px;
+                            border-color: q-ta.has-focus ? Theme.accent-solid : Theme.border-strong;
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 6px;
+                                spacing: 6px;
+                                cross-axis-alignment: center;
+                                Icon { glyph: "search"; tint: Theme.text-muted; size: 12px; }
+                                q-ta := TextInput {
+                                    horizontal-stretch: 1;
+                                    height: 100%;
+                                    text <=> root.query;
+                                    font-size: Theme.fs-xs;
+                                    color: Theme.text-primary;
+                                    vertical-alignment: center;
+                                    single-line: true;
+                                    edited => { root.search(root.query); }
+                                }
+                            }
+                        }
+                        Rectangle {
+                            width: 28px;
+                            height: 28px;
+                            border-radius: Theme.radius-md;
+                            background: x-ta.has-hover ? Theme.bg-hover : transparent;
+                            x-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { commit_edit(); root.close(); }
+                            }
+                            Icon { glyph: "close"; tint: Theme.text-secondary; size: 14px; }
+                        }
+                    }
+                    Rectangle {
+                        y: parent.height - 1px;
+                        width: 100%;
+                        height: 1px;
+                        background: Theme.border-subtle;
+                    }
+                }
+
+                // ══ 主体双栏 ══
+                HorizontalLayout {
+                    spacing: 0px;
+                    vertical-stretch: 1;
+
+                    // ── 左栏：组清单 ──
+                    Rectangle {
+                        width: 248px;
+                        background: Theme.popup-bg-inset;
+                        VerticalLayout {
+                            spacing: 0px;
+                            glist := Rectangle {
+                                vertical-stretch: 1;
+                                clip: true;
+                                changed absolute-position => {
+                                    root.list-top = self.absolute-position.y + 8px;
+                                }
+                                VerticalLayout {
+                                    padding-top: 8px;
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    spacing: 0px;
+                                    alignment: start;
+
+                                    for i in root.groups.length : Rectangle {
+                                        height: root.row-h;
+                                        border-radius: Theme.radius-md;
+                                        background: root.selected == root.groups[i].name
+                                            ? Theme.bg-active
+                                            : (grow-ta.has-hover ? Theme.bg-hover : transparent);
+
+                                        // 选中竖条（呼应侧栏脊线）
+                                        if root.selected == root.groups[i].name : Rectangle {
+                                            x: 0px;
+                                            y: 6px;
+                                            width: 2px;
+                                            height: parent.height - 12px;
+                                            border-radius: 1px;
+                                            background: Theme.accent-solid;
+                                        }
+                                        // 拖成员时的落点：2px accent 内描边
+                                        if root.drop-gi == i && root.drag-kind == "member" : Rectangle {
+                                            width: 100%;
+                                            height: 100%;
+                                            border-radius: Theme.radius-md;
+                                            border-width: 2px;
+                                            border-color: Theme.accent-solid;
+                                            background: transparent;
+                                        }
+                                        // 未分组之下画分隔线（行内元素，不占布局高度）
+                                        if root.groups[i].reserved : Rectangle {
+                                            y: parent.height - 1px;
+                                            width: 100%;
+                                            height: 1px;
+                                            background: Theme.border-subtle;
+                                        }
+
+                                        grow-ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                commit_edit();
+                                                root.color-for = "";
+                                                root.move-menu = false;
+                                                if (root.selected != root.groups[i].name) {
+                                                    root.selected = root.groups[i].name;
+                                                    root.confirm-del = "";
+                                                    root.clear-picks();
+                                                    root.select(root.groups[i].name);
+                                                }
+                                            }
+                                            double-clicked => {
+                                                if (!root.groups[i].reserved) {
+                                                    start_edit(root.groups[i].name);
+                                                }
+                                            }
+                                            moved => {
+                                                if (root.editing != "" || root.creating || root.query != "") { return; }
+                                                if (!root.dragging) {
+                                                    root.dragging = true;
+                                                    root.drag-kind = "group";
+                                                    root.drag-id = root.groups[i].name;
+                                                    root.drag-index = i;
+                                                }
+                                                if (root.drag-kind == "group") {
+                                                    let off = Math.round(self.mouse-y / root.row-h);
+                                                    root.drag-to = Math.max(0, Math.min(
+                                                        root.groups.length - 1, i + off));
+                                                }
+                                            }
+                                            pointer-event(ev) => {
+                                                if (ev.kind == PointerEventKind.up
+                                                    && root.dragging && root.drag-kind == "group") {
+                                                    // before = 目标位置当前的组（拖走自己后重取）
+                                                    let to = root.drag-to;
+                                                    let before = to > root.drag-index
+                                                        ? (to + 1 < root.groups.length ? root.groups[to + 1].name : "")
+                                                        : root.groups[to].name;
+                                                    if (to != root.drag-index) {
+                                                        root.reorder-group(root.drag-id, before);
+                                                    }
+                                                    root.dragging = false;
+                                                    root.drag-kind = "";
+                                                    root.drag-id = "";
+                                                }
+                                            }
+                                        }
+
+                                        HorizontalLayout {
+                                            padding-left: 12px;
+                                            padding-right: 4px;
+                                            spacing: 7px;
+                                            cross-axis-alignment: center;
+
+                                            // 色点
+                                            Rectangle {
+                                                width: 10px;
+                                                height: 10px;
+                                                border-radius: 5px;
+                                                background: root.groups[i].color-hex != ""
+                                                    ? root.groups[i].color : transparent;
+                                                border-width: 1px;
+                                                border-color: root.groups[i].color-hex != ""
+                                                    ? transparent : Theme.text-muted;
+                                            }
+
+                                            // 名称 / 编辑框
+                                            if root.editing == root.groups[i].name : Rectangle {
+                                                horizontal-stretch: 1;
+                                                height: 22px;
+                                                border-radius: Theme.radius-sm;
+                                                background: Theme.popup-bg;
+                                                border-width: 1px;
+                                                border-color: root.editing-error != ""
+                                                    ? Theme.danger : Theme.accent-solid;
+                                                TextInput {
+                                                    x: 4px;
+                                                    width: parent.width - 8px;
+                                                    height: parent.height;
+                                                    text <=> root.editing-text;
+                                                    font-size: Theme.fs-sm;
+                                                    color: Theme.text-primary;
+                                                    vertical-alignment: center;
+                                                    single-line: true;
+                                                    edited => { root.editing-error = ""; }
+                                                    accepted => { commit_edit(); }
+                                                }
+                                            }
+                                            if root.editing != root.groups[i].name : Text {
+                                                horizontal-stretch: 1;
+                                                text: root.groups[i].name;
+                                                color: root.groups[i].reserved
+                                                    ? Theme.text-muted : Theme.text-secondary;
+                                                font-size: Theme.fs-sm;
+                                                vertical-alignment: center;
+                                                overflow: elide;
+                                            }
+                                            // 计数（hover / 选中让位给操作按钮）
+                                            if !grow-ta.has-hover && root.selected != root.groups[i].name : Text {
+                                                text: root.groups[i].count;
+                                                color: Theme.text-muted;
+                                                font-size: Theme.fs-2xs;
+                                                vertical-alignment: center;
+                                            }
+                                            // 操作（未分组没有）
+                                            if !root.groups[i].reserved
+                                                && (grow-ta.has-hover || root.selected == root.groups[i].name) : HorizontalLayout {
+                                                spacing: 1px;
+                                                Rectangle {
+                                                    width: 22px;
+                                                    height: 22px;
+                                                    border-radius: Theme.radius-sm;
+                                                    background: ed-ta.has-hover ? Theme.bg-hover : transparent;
+                                                    ed-ta := TouchArea {
+                                                        mouse-cursor: pointer;
+                                                        clicked => { start_edit(root.groups[i].name); }
+                                                    }
+                                                    Icon { glyph: "edit"; tint: Theme.text-secondary; size: 12px; }
+                                                }
+                                                Rectangle {
+                                                    width: 22px;
+                                                    height: 22px;
+                                                    border-radius: Theme.radius-sm;
+                                                    background: del-ta.has-hover ? Theme.bg-hover : transparent;
+                                                    del-ta := TouchArea {
+                                                        mouse-cursor: pointer;
+                                                        clicked => {
+                                                            commit_edit();
+                                                            root.selected = root.groups[i].name;
+                                                            root.select(root.groups[i].name);
+                                                            root.confirm-del = root.groups[i].name;
+                                                            root.del-target = "";
+                                                            root.clear-picks();
+                                                        }
+                                                    }
+                                                    Icon { glyph: "delete"; tint: Theme.text-secondary; size: 12px; }
+                                                }
+                                            }
+                                        }
+
+                                        // 色点点击区（压在行 TouchArea 之上）
+                                        Rectangle {
+                                            x: 8px;
+                                            y: 0px;
+                                            width: 24px;
+                                            height: parent.height;
+                                            background: transparent;
+                                            cdot-ta := TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => {
+                                                    commit_edit();
+                                                    root.color-row = i;
+                                                    root.color-for = root.color-for == root.groups[i].name
+                                                        ? "" : root.groups[i].name;
+                                                    root.move-menu = false;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // 新建行（编辑态）
+                                    if root.creating : Rectangle {
+                                        height: root.row-h;
+                                        border-radius: Theme.radius-md;
+                                        background: Theme.bg-active;
+                                        HorizontalLayout {
+                                            padding-left: 12px;
+                                            padding-right: 4px;
+                                            spacing: 7px;
+                                            cross-axis-alignment: center;
+                                            Rectangle {
+                                                width: 10px;
+                                                height: 10px;
+                                                border-radius: 5px;
+                                                border-width: 1px;
+                                                border-color: Theme.text-muted;
+                                            }
+                                            Rectangle {
+                                                horizontal-stretch: 1;
+                                                height: 22px;
+                                                border-radius: Theme.radius-sm;
+                                                background: Theme.popup-bg;
+                                                border-width: 1px;
+                                                border-color: root.editing-error != ""
+                                                    ? Theme.danger : Theme.accent-solid;
+                                                TextInput {
+                                                    x: 4px;
+                                                    width: parent.width - 8px;
+                                                    height: parent.height;
+                                                    text <=> root.editing-text;
+                                                    font-size: Theme.fs-sm;
+                                                    color: Theme.text-primary;
+                                                    vertical-alignment: center;
+                                                    single-line: true;
+                                                    edited => { root.editing-error = ""; }
+                                                    accepted => { commit_edit(); }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 错误提示（改名 / 新建共用）
+                            if root.editing-error != "" : HorizontalLayout {
+                                height: 20px;
+                                padding-left: 12px;
+                                padding-right: 8px;
+                                Text {
+                                    text: root.editing-error;
+                                    color: Theme.danger;
+                                    font-size: Theme.fs-2xs;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+
+                            // 新建按钮
+                            HorizontalLayout {
+                                height: 40px;
+                                padding: 6px;
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    border-radius: Theme.radius-md;
+                                    border-width: 1px;
+                                    border-color: new-ta.has-hover ? Theme.accent-solid : Theme.border-strong;
+                                    new-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            commit_edit();
+                                            root.creating = true;
+                                            root.editing = "";
+                                            root.editing-text = "";
+                                            root.editing-error = "";
+                                            root.color-for = "";
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        alignment: center;
+                                        spacing: 5px;
+                                        Icon {
+                                            glyph: "add";
+                                            tint: new-ta.has-hover ? Theme.accent-solid : Theme.text-secondary;
+                                            size: 12px;
+                                        }
+                                        Text {
+                                            text: root.lang-en ? "New group" : "新建分组";
+                                            color: new-ta.has-hover ? Theme.accent-solid : Theme.text-secondary;
+                                            font-size: Theme.fs-xs;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── 右栏：当前组的成员 ──
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        background: Theme.popup-bg;
+                        VerticalLayout {
+                            spacing: 0px;
+
+                            // 标题行
+                            Rectangle {
+                                height: 46px;
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 12px;
+                                    spacing: 8px;
+                                    cross-axis-alignment: center;
+
+                                    // 色点（点开色板）
+                                    Rectangle {
+                                        width: 11px;
+                                        height: 11px;
+                                        border-radius: 6px;
+                                        background: root.cur-color-hex != "" ? root.cur-color : transparent;
+                                        border-width: 1px;
+                                        border-color: root.cur-color-hex != "" ? transparent : Theme.text-muted;
+                                        rdot-ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                root.color-for = root.cur-name;
+                                                root.move-menu = false;
+                                            }
+                                        }
+                                    }
+
+                                    // 名称 / 编辑框
+                                    if root.editing != "" && root.editing == root.cur-name : Rectangle {
+                                        width: 210px;
+                                        height: 24px;
+                                        border-radius: Theme.radius-sm;
+                                        background: Theme.popup-bg-inset;
+                                        border-width: 1px;
+                                        border-color: root.editing-error != "" ? Theme.danger : Theme.accent-solid;
+                                        TextInput {
+                                            x: 5px;
+                                            width: parent.width - 10px;
+                                            height: parent.height;
+                                            text <=> root.editing-text;
+                                            font-size: Theme.fs-md;
+                                            color: Theme.text-primary;
+                                            vertical-alignment: center;
+                                            single-line: true;
+                                            edited => { root.editing-error = ""; }
+                                            accepted => { commit_edit(); }
+                                        }
+                                    }
+                                    if root.editing == "" || root.editing != root.cur-name : Text {
+                                        horizontal-stretch: 1;
+                                        text: root.cur-name;
+                                        color: Theme.text-primary;
+                                        font-size: Theme.fs-md;
+                                        font-weight: Theme.fw-strong;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        rtt-ta := TouchArea {
+                                            double-clicked => { start_edit(root.cur-name); }
+                                        }
+                                    }
+
+                                    // 计数
+                                    Text {
+                                        text: root.total-count;
+                                        color: Theme.text-muted;
+                                        font-size: Theme.fs-2xs;
+                                        vertical-alignment: center;
+                                    }
+
+                                    Rectangle { width: 8px; height: 1px; }
+
+                                    // 全选 / 已选
+                                    if root.total-count > 0 : Rectangle {
+                                        height: 22px;
+                                        border-radius: Theme.radius-sm;
+                                        background: all-ta.has-hover ? Theme.bg-hover : transparent;
+                                        all-ta := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => {
+                                                if (root.picked-count > 0) { root.clear-picks(); }
+                                                else { root.paint-pick(0, root.total-count - 1, true); }
+                                            }
+                                        }
+                                        HorizontalLayout {
+                                            padding-left: 8px;
+                                            padding-right: 8px;
+                                            Text {
+                                                text: root.picked-count > 0
+                                                    ? (root.picked-count + " / " + root.total-count)
+                                                    : (root.lang-en ? "Select all" : "全选");
+                                                color: root.picked-count > 0
+                                                    ? Theme.accent-solid : Theme.text-secondary;
+                                                font-size: Theme.fs-2xs;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                                Rectangle {
+                                    y: parent.height - 1px;
+                                    width: 100%;
+                                    height: 1px;
+                                    background: Theme.border-subtle;
+                                }
+                            }
+
+                            // 删除条
+                            if root.confirm-del != "" : HorizontalLayout {
+                                height: 68px;
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                padding-top: 8px;
+                                padding-bottom: 8px;
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    background: #e25c5c18;
+                                    border-width: 1px;
+                                    border-color: #e25c5c60;
+                                    border-radius: Theme.radius-md;
+                                    VerticalLayout {
+                                        padding: 8px;
+                                        spacing: 6px;
+                                        HorizontalLayout {
+                                            spacing: 6px;
+                                            cross-axis-alignment: center;
+                                            Icon { glyph: "warning"; tint: Theme.danger; size: 13px; }
+                                            Text {
+                                                text: (root.lang-en ? "Delete " : "删除「") + root.confirm-del
+                                                    + (root.lang-en ? "?" : "」？");
+                                                color: Theme.text-primary;
+                                                font-size: Theme.fs-xs;
+                                                font-weight: Theme.fw-strong;
+                                                vertical-alignment: center;
+                                            }
+                                            Text {
+                                                horizontal-stretch: 1;
+                                                text: root.members.length + (root.lang-en
+                                                    ? " sessions move to →" : " 个会话移到 →");
+                                                color: Theme.text-secondary;
+                                                font-size: Theme.fs-2xs;
+                                                horizontal-alignment: right;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                        HorizontalLayout {
+                                            spacing: 5px;
+                                            cross-axis-alignment: center;
+                                            for g in root.groups : Rectangle {
+                                                height: 22px;
+                                                border-radius: Theme.radius-sm;
+                                                border-width: 1px;
+                                                border-color: root.del-target == (g.reserved ? "" : g.name)
+                                                    ? Theme.accent-solid : Theme.border-strong;
+                                                background: dt-ta.has-hover ? Theme.bg-hover : transparent;
+                                                dt-ta := TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => { root.del-target = g.reserved ? "" : g.name; }
+                                                }
+                                                HorizontalLayout {
+                                                    padding-left: 8px;
+                                                    padding-right: 8px;
+                                                    Text {
+                                                        text: g.name;
+                                                        color: root.del-target == (g.reserved ? "" : g.name)
+                                                            ? Theme.accent-solid : Theme.text-secondary;
+                                                        font-size: Theme.fs-2xs;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+                                            Rectangle { horizontal-stretch: 1; height: 1px; }
+                                            Rectangle {
+                                                width: 46px;
+                                                height: 22px;
+                                                border-radius: Theme.radius-sm;
+                                                border-width: 1px;
+                                                border-color: Theme.border-strong;
+                                                dc-ta := TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => { root.confirm-del = ""; }
+                                                }
+                                                Text {
+                                                    text: root.lang-en ? "Cancel" : "取消";
+                                                    color: Theme.text-secondary;
+                                                    font-size: Theme.fs-2xs;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                            Rectangle {
+                                                width: 72px;
+                                                height: 22px;
+                                                border-radius: Theme.radius-sm;
+                                                background: dk-ta.has-hover ? #e25c5c : #cc3333;
+                                                dk-ta := TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        root.remove-group(root.confirm-del, root.del-target);
+                                                        root.confirm-del = "";
+                                                        root.clear-picks();
+                                                    }
+                                                }
+                                                Text {
+                                                    text: root.lang-en ? "Delete" : "删除分组";
+                                                    color: white;
+                                                    font-size: Theme.fs-2xs;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 成员列表
+                            mlist := Rectangle {
+                                vertical-stretch: 1;
+                                clip: true;
+                                changed absolute-position => {
+                                    root.mem-top = self.absolute-position.y + 6px;
+                                }
+                                VerticalLayout {
+                                    padding-top: 6px;
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    padding-bottom: 44px;   // 给批量条留位，列表不跳
+                                    spacing: 0px;
+                                    alignment: start;
+
+                                    if root.total-count == 0 : Rectangle {
+                                        height: 120px;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 3px;
+                                            Text {
+                                                text: root.cur-name + (root.lang-en
+                                                    ? " has no sessions" : " 还没有会话");
+                                                color: Theme.text-secondary;
+                                                font-size: Theme.fs-sm;
+                                                horizontal-alignment: center;
+                                            }
+                                            Text {
+                                                text: root.lang-en
+                                                    ? "Tick sessions elsewhere, then Move to."
+                                                    : "到其他分组勾选会话，再用「移动到」搬进来。";
+                                                color: Theme.text-muted;
+                                                font-size: Theme.fs-2xs;
+                                                horizontal-alignment: center;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
+
+                                    for j in root.members.length : Rectangle {
+                                        height: root.mem-h;
+                                        border-radius: Theme.radius-md;
+                                        background: root.members[j].picked
+                                            ? Theme.bg-active
+                                            : (mrow-ta.has-hover ? Theme.bg-hover : transparent);
+
+                                        mrow-ta := TouchArea {
+                                            mouse-cursor: default;
+                                            changed has-hover => {
+                                                if (self.has-hover) {
+                                                    root.hover-row = j;
+                                                    root.tip-y = self.absolute-position.y
+                                                        - gm.absolute-position.y + root.mem-h + 2px;
+                                                } else if (root.hover-row == j) {
+                                                    root.hover-row = -1;
+                                                }
+                                            }
+                                            moved => {
+                                                if (root.editing != "" || root.creating || root.query != "") { return; }
+                                                if (!root.dragging) {
+                                                    root.dragging = true;
+                                                    root.drag-kind = "member";
+                                                    root.drag-id = root.members[j].id;
+                                                    root.drag-index = j;
+                                                }
+                                                if (root.drag-kind == "member") {
+                                                    root.drag-abs-x = self.absolute-position.x + self.mouse-x;
+                                                    root.drag-abs-y = self.absolute-position.y + self.mouse-y;
+                                                    let off = Math.round(self.mouse-y / root.mem-h);
+                                                    root.drag-to = Math.max(0, Math.min(
+                                                        root.members.length - 1, j + off));
+                                                    root.drop-group = root.drag-abs-x
+                                                        < gm.absolute-position.x + 248px;
+                                                    root.drop-gi = root.drop-group
+                                                        ? Math.max(0, Math.min(root.groups.length - 1,
+                                                            Math.floor((root.drag-abs-y - root.list-top) / root.row-h)))
+                                                        : -1;
+                                                }
+                                            }
+                                            pointer-event(ev) => {
+                                                if (ev.kind != PointerEventKind.up
+                                                    || !root.dragging || root.drag-kind != "member") { return; }
+                                                if (root.drop-group) {
+                                                    // 左栏：按指针绝对 y 命中组行（行高固定、列表不滚）
+                                                    let gi = Math.max(0, Math.min(root.groups.length - 1,
+                                                        Math.floor((root.drag-abs-y - root.list-top) / root.row-h)));
+                                                    if (root.groups[gi].name != root.selected) {
+                                                        root.move-members(root.members[j].id,
+                                                            root.groups[gi].reserved ? "" : root.groups[gi].name,
+                                                            root.picked-count > 0);
+                                                    }
+                                                } else if (root.drag-to != root.drag-index) {
+                                                    let to = root.drag-to;
+                                                    let before = to > root.drag-index
+                                                        ? (to + 1 < root.members.length ? root.members[to + 1].id : "")
+                                                        : root.members[to].id;
+                                                    root.reorder-members(root.members[j].id, before,
+                                                        to > root.drag-index, root.picked-count > 0);
+                                                }
+                                                root.dragging = false;
+                                                root.drag-kind = "";
+                                                root.drag-id = "";
+                                                root.drop-group = false;
+                                                root.drop-gi = -1;
+                                            }
+                                        }
+
+                                        HorizontalLayout {
+                                            padding-left: 4px;
+                                            padding-right: 8px;
+                                            spacing: 9px;
+                                            cross-axis-alignment: center;
+
+                                            // 复选框（16px 命中区，视觉同尺寸）
+                                            Rectangle {
+                                                width: 16px;
+                                                height: 16px;
+                                                border-radius: 3px;
+                                                background: root.members[j].picked
+                                                    ? Theme.accent-solid : transparent;
+                                                border-width: 1px;
+                                                border-color: root.members[j].picked
+                                                    ? Theme.accent-solid : Theme.border-strong;
+                                                cb-ta := TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        root.toggle-pick(root.members[j].id);
+                                                        root.move-menu = false;
+                                                    }
+                                                    // 刷选：按住这一列上下拖，经过即勾
+                                                    moved => {
+                                                        let ay = self.absolute-position.y + self.mouse-y;
+                                                        let to = Math.max(0, Math.min(root.members.length - 1,
+                                                            Math.floor((ay - root.mem-top) / root.mem-h)));
+                                                        root.paint-pick(0, to, !root.members[0].picked);
+                                                    }
+                                                }
+                                                if root.members[j].picked : Icon {
+                                                    glyph: "check";
+                                                    tint: white;
+                                                    size: 10px;
+                                                }
+                                            }
+                                            ProtocolIcon {
+                                                proto-id: root.members[j].kind;
+                                                width: 16px;
+                                                height: 16px;
+                                                icon-color: Theme.text-secondary;
+                                                icon-size: 16px;
+                                            }
+                                            VerticalLayout {
+                                                horizontal-stretch: 1;
+                                                spacing: 0px;
+                                                alignment: center;
+                                                Text {
+                                                    text: root.members[j].name;
+                                                    color: Theme.text-primary;
+                                                    font-size: Theme.fs-sm;
+                                                    overflow: elide;
+                                                }
+                                                Text {
+                                                    text: root.members[j].host;
+                                                    color: Theme.text-muted;
+                                                    font-size: Theme.fs-2xs;
+                                                    overflow: elide;
+                                                }
+                                            }
+                                            if mrow-ta.has-hover : Rectangle {
+                                                height: 22px;
+                                                border-radius: Theme.radius-sm;
+                                                border-width: 1px;
+                                                border-color: Theme.border-strong;
+                                                out-ta := TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        root.move-out(root.members[j].id,
+                                                            root.members[j].picked && root.picked-count > 1);
+                                                    }
+                                                }
+                                                HorizontalLayout {
+                                                    padding-left: 7px;
+                                                    padding-right: 7px;
+                                                    Text {
+                                                        text: root.lang-en ? "Remove" : "移出";
+                                                        color: Theme.text-secondary;
+                                                        font-size: Theme.fs-2xs;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 批量条：浮在列表底部（不占流 —— 刷选时不会推挤列表）
+                        if root.picked-count > 0 : Rectangle {
+                            x: 8px;
+                            y: parent.height - 44px;
+                            width: parent.width - 16px;
+                            height: 36px;
+                            border-radius: Theme.radius-md;
+                            background: Theme.bg-active;
+                            border-width: 1px;
+                            border-color: Theme.accent-solid;
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 6px;
+                                spacing: 8px;
+                                cross-axis-alignment: center;
+                                Text {
+                                    text: (root.lang-en ? "Selected " : "已选 ")
+                                        + root.picked-count + (root.lang-en ? "" : " 项");
+                                    color: Theme.text-primary;
+                                    font-size: Theme.fs-2xs;
+                                    font-weight: Theme.fw-strong;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle {
+                                    height: 24px;
+                                    border-radius: Theme.radius-sm;
+                                    border-width: 1px;
+                                    border-color: Theme.border-strong;
+                                    background: Theme.popup-bg;
+                                    mv-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.move-menu = !root.move-menu; }
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 6px;
+                                        spacing: 3px;
+                                        Text {
+                                            text: root.lang-en ? "Move to" : "移动到";
+                                            color: Theme.text-secondary;
+                                            font-size: Theme.fs-2xs;
+                                            vertical-alignment: center;
+                                        }
+                                        Icon { glyph: "expand-more"; tint: Theme.text-muted; size: 10px; }
+                                    }
+                                }
+                                Rectangle {
+                                    height: 24px;
+                                    border-radius: Theme.radius-sm;
+                                    border-width: 1px;
+                                    border-color: Theme.border-strong;
+                                    mo-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.move-out("", true); }
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        Text {
+                                            text: root.lang-en ? "Ungroup" : "移出分组";
+                                            color: Theme.text-secondary;
+                                            font-size: Theme.fs-2xs;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: root.lang-en ? "Clear" : "取消选择";
+                                    color: Theme.text-muted;
+                                    font-size: Theme.fs-2xs;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                    cl-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.clear-picks(); root.move-menu = false; }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 「移动到」下拉
+                        if root.move-menu : Rectangle {
+                            x: parent.width - 186px;
+                            y: parent.height - 50px - min(220px, root.groups.length * 28px + 10px);
+                            width: 178px;
+                            height: min(220px, root.groups.length * 28px + 10px);
+                            border-radius: Theme.radius-md;
+                            background: Theme.popup-bg-elevated;
+                            border-width: 1px;
+                            border-color: Theme.border-strong;
+                            drop-shadow-blur: 16px;
+                            drop-shadow-color: #00000070;
+                            VerticalLayout {
+                                padding: 5px;
+                                alignment: start;
+                                for g in root.groups : Rectangle {
+                                    height: 28px;
+                                    border-radius: Theme.radius-sm;
+                                    background: mm-ta.has-hover ? Theme.bg-hover : transparent;
+                                    mm-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.move-members("", g.reserved ? "" : g.name, true);
+                                            root.move-menu = false;
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        spacing: 6px;
+                                        cross-axis-alignment: center;
+                                        Text {
+                                            horizontal-stretch: 1;
+                                            text: g.name;
+                                            color: g.name == root.cur-name
+                                                ? Theme.text-muted : Theme.text-primary;
+                                            font-size: Theme.fs-xs;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: g.count;
+                                            color: Theme.text-muted;
+                                            font-size: Theme.fs-2xs;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ══ 底部 ══
+                Rectangle {
+                    height: 48px;
+                    Rectangle {
+                        width: 100%;
+                        height: 1px;
+                        background: Theme.border-subtle;
+                    }
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 12px;
+                        spacing: 8px;
+                        cross-axis-alignment: center;
+                        Icon { glyph: "check"; tint: Theme.success; size: 12px; }
+                        Text {
+                            text: root.lang-en ? "Changes save immediately" : "改动已自动保存";
+                            color: Theme.text-muted;
+                            font-size: Theme.fs-2xs;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; height: 1px; }
+                        Rectangle {
+                            width: 72px;
+                            height: 28px;
+                            border-radius: Theme.radius-md;
+                            background: Theme.accent-solid;
+                            done-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { commit_edit(); root.close(); }
+                            }
+                            Text {
+                                text: root.lang-en ? "Done" : "完成";
+                                color: white;
+                                font-size: Theme.fs-xs;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+            }
+
+            // ── 成员悬浮卡：锚在成员行下方，150ms 首锚 ──
+            if root.tip-row >= 0 && root.tip-row < root.members.length && !root.dragging : Rectangle {
+                x: 250px;
+                y: Math.min(gm.height - 120px, root.tip-y);
+                width: 216px;
+                border-radius: Theme.radius-md;
+                background: Theme.popup-bg-elevated;
+                border-width: 1px;
+                border-color: Theme.border-strong;
+                drop-shadow-blur: 18px;
+                drop-shadow-color: #00000080;
+                VerticalLayout {
+                    padding: 9px;
+                    spacing: 2px;
+                    Text {
+                        text: root.members[root.tip-row].name;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-xs;
+                        font-weight: Theme.fw-strong;
+                        overflow: elide;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { width: 30px; text: root.lang-en ? "Host" : "主机"; color: Theme.text-muted; font-size: Theme.fs-2xs; }
+                        Text { horizontal-stretch: 1; text: root.members[root.tip-row].host; color: Theme.text-secondary; font-size: Theme.fs-2xs; overflow: elide; }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { width: 30px; text: root.lang-en ? "User" : "用户"; color: Theme.text-muted; font-size: Theme.fs-2xs; }
+                        Text { horizontal-stretch: 1; text: root.members[root.tip-row].user; color: Theme.text-secondary; font-size: Theme.fs-2xs; overflow: elide; }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { width: 30px; text: root.lang-en ? "Auth" : "认证"; color: Theme.text-muted; font-size: Theme.fs-2xs; }
+                        Text { horizontal-stretch: 1; text: root.members[root.tip-row].auth; color: Theme.text-secondary; font-size: Theme.fs-2xs; overflow: elide; }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { width: 30px; text: root.lang-en ? "Group" : "分组"; color: Theme.text-muted; font-size: Theme.fs-2xs; }
+                        Text { horizontal-stretch: 1; text: root.cur-name; color: Theme.text-secondary; font-size: Theme.fs-2xs; overflow: elide; }
+                    }
+                    if root.members[root.tip-row].note != "" : Text {
+                        text: root.members[root.tip-row].note;
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-2xs;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            // ── 色板浮层（锚在被点的组行上）──
+            if root.color-for != "" : Rectangle {
+                width: 194px;
+                height: 96px;
+                x: 240px;
+                y: Math.max(60px, Math.min(gm.height - 108px,
+                    56px + 8px + root.color-row * root.row-h - 24px));
+                border-radius: Theme.radius-md;
+                background: Theme.popup-bg-elevated;
+                border-width: 1px;
+                border-color: Theme.border-strong;
+                drop-shadow-blur: 18px;
+                drop-shadow-color: #00000080;
+                VerticalLayout {
+                    padding: 8px;
+                    spacing: 6px;
+                    Text {
+                        text: (root.lang-en ? "Group color · " : "分组颜色 · ") + root.color-for;
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-2xs;
+                    }
+                    GridLayout {
+                        spacing: 5px;
+                        for k in 24 : Rectangle {
+                            row: k / 8;
+                            col: Math.mod(k, 8);
+                            width: 18px;
+                            height: 18px;
+                            border-radius: 4px;
+                            background: root.palette[k].swatch;
+                            border-width: 2px;
+                            border-color: root.palette[k].hex == root.cur-color-hex
+                                ? white : transparent;
+                            pw-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.set-group-color(root.color-for, root.palette[k].hex);
+                                    root.color-for = "";
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── 拖动浮层 ──
+            if root.dragging : Rectangle {
+                x: min(gm.width - 190px, root.drag-abs-x - root.absolute-position.x + 12px);
+                y: root.drag-abs-y - root.absolute-position.y + 12px;
+                width: 178px;
+                height: 28px;
+                border-radius: Theme.radius-md;
+                background: Theme.popup-bg-elevated;
+                border-width: 1px;
+                border-color: root.drop-group ? Theme.accent-solid : Theme.border-strong;
+                drop-shadow-blur: 16px;
+                drop-shadow-color: #00000070;
+                HorizontalLayout {
+                    padding-left: 9px;
+                    padding-right: 9px;
+                    spacing: 6px;
+                    cross-axis-alignment: center;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.drag-kind == "member"
+                            ? (root.picked-count > 1
+                                ? (root.lang-en ? root.picked-count + " sessions" : root.picked-count + " 项")
+                                : "移动会话")
+                            : root.drag-id;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-2xs;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}

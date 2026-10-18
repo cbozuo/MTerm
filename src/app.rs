@@ -6723,6 +6723,116 @@ fn refresh_session_markers(window: &slint::Weak<AppWindow>) {
     }
 }
 
+/// 分组管理里「未分组」这一行的显示名。
+/// ConfigStore 里它的存储值是空串；UI 需要一个可显示、可比较的名字，
+/// 也是删除分组时的默认去向。它不是 system，不可改名 / 删除。
+pub(crate) const GM_UNGROUPED: &str = "未分组";
+
+fn gm_belongs(session: &Session, selected: &str) -> bool {
+    if selected == GM_UNGROUPED {
+        session.group.is_empty() || is_reserved_session_group(session.group.trim())
+    } else {
+        session.group == selected
+    }
+}
+
+/// 分组管理弹框的数据刷新：组清单 + 当前组成员 + 当前组色。
+///
+/// 与侧栏列表同源（都读 ConfigStore），但口径不同：
+///  · 侧栏要把 system / 折叠态 / 搜索算进去；
+///  · 管理台只关心「有哪些用户组、每组几个人」，所以 **system 不出现**
+///    （内置本地终端不可改名/删除，放进来只会让人以为能改），
+///    未分组固定在第一行、不可改名/删除/排序。
+fn refresh_group_manager(
+    window: &AppWindow,
+    store: &ConfigStore,
+    picked: &std::collections::HashSet<String>,
+) {
+    let selected = window.get_gm_selected().to_string();
+    let sessions = store.sessions();
+    // 搜索：组名命中，或该组里有会话的 名称/主机 命中。
+    // 过滤放在 Rust —— Slint 的字符串没有 contains，模型也不能就地筛。
+    let query = window.get_gm_query().to_lowercase();
+    let hit_session = |s: &Session| -> bool {
+        query.is_empty()
+            || s.name.to_lowercase().contains(&query)
+            || s.host.to_lowercase().contains(&query)
+    };
+    let hit_group = |name: &str, ungrouped: bool| -> bool {
+        if query.is_empty() {
+            return true;
+        }
+        if name.to_lowercase().contains(&query) {
+            return true;
+        }
+        sessions.iter().any(|s| {
+            let in_this = if ungrouped {
+                s.group.is_empty() || is_reserved_session_group(s.group.trim())
+            } else {
+                s.group == name
+            };
+            in_this && hit_session(s)
+        })
+    };
+
+    let count_ungrouped = sessions
+        .iter()
+        .filter(|s| s.group.is_empty() || is_reserved_session_group(s.group.trim()))
+        .count() as i32;
+
+    let mut rows: Vec<crate::ui::GroupRow> = Vec::with_capacity(store.groups().len() + 1);
+    if hit_group(GM_UNGROUPED, true) {
+    rows.push(crate::ui::GroupRow {
+        name: GM_UNGROUPED.into(),
+        color: slint::Color::default(),
+        color_hex: SharedString::new(),
+        count: count_ungrouped,
+        reserved: true,
+    });
+    }
+    for name in store.groups() {
+        if !hit_group(name, false) {
+            continue;
+        }
+        let hex = store.group_colors().get(name).cloned().unwrap_or_default();
+        rows.push(crate::ui::GroupRow {
+            name: name.as_str().into(),
+            color: parse_hex_color(&hex).unwrap_or_default(),
+            color_hex: hex.as_str().into(),
+            count: sessions.iter().filter(|s| &s.group == name).count() as i32,
+            reserved: false,
+        });
+    }
+
+    let members: Vec<crate::ui::GmMember> = sessions
+        .iter()
+        .filter(|s| gm_belongs(s, &selected) && hit_session(s))
+        .map(|s| crate::ui::GmMember {
+            id: s.id.as_str().into(),
+            name: s.name.as_str().into(),
+            host: s.host.as_str().into(),
+            user: s.user.as_str().into(),
+            auth: s.auth.as_str().into(),
+            note: s.note.as_str().into(),
+            kind: s.kind.as_str().into(),
+            online: false,
+            picked: picked.contains(&s.id),
+        })
+        .collect();
+
+    let cur_hex = if selected == GM_UNGROUPED {
+        String::new()
+    } else {
+        store.group_colors().get(&selected).cloned().unwrap_or_default()
+    };
+
+    window.set_gm_groups(ModelRc::new(VecModel::from(rows)));
+    window.set_gm_members(ModelRc::new(VecModel::from(members)));
+    window.set_gm_picked(picked.len() as i32);
+    window.set_gm_cur_color_hex(cur_hex.as_str().into());
+    window.set_gm_cur_color(parse_hex_color(&cur_hex).unwrap_or_default());
+}
+
 fn sync_sessions_for_window(
     window: &slint::Weak<AppWindow>,
     store: &ConfigStore,
@@ -7957,6 +8067,432 @@ fn wire_session_callbacks(
             registry.broadcast_config_changed();
             if let Some(w) = weak.upgrade() {
                 let _ = w.get_sessions();
+            }
+        });
+    }
+
+    // ══ 分组管理弹框（#group-manager 2026-10-19）══════════════════════════
+    // 数据流：ConfigStore → gm-groups / gm-members 两个 model；UI 只发意图，
+    // 这里负责校验、落盘、刷新（侧栏列表 + 弹框自身）。
+    // 所有改动只 save() 一次 —— 这是与"逐条 move-session"最大的区别：
+    // 后者每条都要写盘 + 重建列表，批量搬 20 条会肉眼可见地连闪 20 下。
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let sessions_model = sessions_model.clone();
+        let registry = registry.clone();
+        // 勾选是弹框内的临时态，不落盘；跨刷新（换组、改名）要保留。
+        let picked: Rc<std::cell::RefCell<std::collections::HashSet<String>>> =
+            Rc::new(std::cell::RefCell::new(std::collections::HashSet::new()));
+
+        window.on_gm_open_request({
+            let weak = weak.clone();
+            let store = store.clone();
+            let picked = picked.clone();
+            move || {
+                let Some(w) = weak.upgrade() else { return };
+                {
+                    let st = store.borrow();
+                    if w.get_gm_selected().is_empty() {
+                        let first = st
+                            .groups()
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| GM_UNGROUPED.to_string());
+                        w.set_gm_selected(first.as_str().into());
+                    }
+                }
+                picked.borrow_mut().clear();
+                // 搜索词不跨会话保留：每次打开都是完整清单
+                w.set_gm_query("".into());
+                refresh_group_manager(&w, &store.borrow(), &picked.borrow());
+                w.set_gm_open(true);
+            }
+        });
+
+        window.on_gm_search({
+            let weak = weak.clone();
+            let store = store.clone();
+            let picked = picked.clone();
+            move |_q: SharedString| {
+                if let Some(w) = weak.upgrade() {
+                    refresh_group_manager(&w, &store.borrow(), &picked.borrow());
+                }
+            }
+        });
+
+        window.on_gm_select({
+            let weak = weak.clone();
+            let store = store.clone();
+            let picked = picked.clone();
+            move |_name| {
+                if let Some(w) = weak.upgrade() {
+                    picked.borrow_mut().clear();
+                    refresh_group_manager(&w, &store.borrow(), &picked.borrow());
+                }
+            }
+        });
+
+        window.on_gm_rename({
+            let weak = weak.clone();
+            let store = store.clone();
+            let sessions_model = sessions_model.clone();
+            let registry = registry.clone();
+            let picked = picked.clone();
+            move |orig: SharedString, name: SharedString| -> SharedString {
+                let n = name.trim().to_string();
+                if n.is_empty() {
+                    return "名称不能为空".into();
+                }
+                if is_reserved_session_group(&n) || n == GM_UNGROUPED {
+                    return "该名称为系统保留，不能使用".into();
+                }
+                {
+                    let mut st = store.borrow_mut();
+                    // (#group-manager) rename_group 撞名是**静默 return**（返回 ()），
+                    // UI 无从得知失败 —— 所以校验必须在这里前置做掉。
+                    if !n.eq_ignore_ascii_case(orig.trim()) && st.session_group_exists(&n) {
+                        return "已存在同名分组（不区分大小写）".into();
+                    }
+                    st.rename_group(orig.as_str(), n.clone());
+                    if let Err(err) = st.save() {
+                        tracing::warn!("failed to save config: {err:#}");
+                    }
+                }
+                if let Some(w) = weak.upgrade() {
+                    if w.get_gm_selected() == orig {
+                        w.set_gm_selected(n.as_str().into());
+                    }
+                }
+                sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
+                registry.broadcast_config_changed();
+                if let Some(w) = weak.upgrade() {
+                    refresh_group_manager(&w, &store.borrow(), &picked.borrow());
+                }
+                SharedString::new()
+            }
+        });
+
+        window.on_gm_create({
+            let weak = weak.clone();
+            let store = store.clone();
+            let sessions_model = sessions_model.clone();
+            let registry = registry.clone();
+            let picked = picked.clone();
+            move |name: SharedString| -> SharedString {
+                let n = name.trim().to_string();
+                if n.is_empty() {
+                    return "名称不能为空".into();
+                }
+                if is_reserved_session_group(&n) || n == GM_UNGROUPED {
+                    return "该名称为系统保留，不能使用".into();
+                }
+                {
+                    let mut st = store.borrow_mut();
+                    if st.session_group_exists(&n) {
+                        return "已存在同名分组（不区分大小写）".into();
+                    }
+                    st.add_group(n.clone());
+                    if let Err(err) = st.save() {
+                        tracing::warn!("failed to save config: {err:#}");
+                    }
+                }
+                if let Some(w) = weak.upgrade() {
+                    w.set_gm_selected(n.as_str().into());
+                }
+                sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
+                registry.broadcast_config_changed();
+                if let Some(w) = weak.upgrade() {
+                    picked.borrow_mut().clear();
+                    refresh_group_manager(&w, &store.borrow(), &picked.borrow());
+                }
+                SharedString::new()
+            }
+        });
+
+        window.on_gm_remove({
+            let weak = weak.clone();
+            let store = store.clone();
+            let sessions_model = sessions_model.clone();
+            let registry = registry.clone();
+            let picked = picked.clone();
+            move |name: SharedString, target: SharedString| {
+                if name.is_empty() || is_reserved_session_group(name.trim()) {
+                    return;
+                }
+                {
+                    let mut st = store.borrow_mut();
+                    // 先迁成员再删组：一次 borrow_mut、一次 save，
+                    // 避免"成员短暂出现在目标组而源组仍在"的中间态。
+                    let ids: Vec<String> = st
+                        .sessions()
+                        .iter()
+                        .filter(|x| x.group == name.as_str())
+                        .map(|x| x.id.clone())
+                        .collect();
+                    let to_group = if target.is_empty() || target.as_str() == GM_UNGROUPED {
+                        String::new()
+                    } else {
+                        target.to_string()
+                    };
+                    for id in ids {
+                        if let Some(mut sess) = st.get(&id).cloned() {
+                            sess.group = to_group.clone();
+                            st.upsert(sess);
+                        }
+                    }
+                    st.remove_group(name.as_str());
+                    if let Err(err) = st.save() {
+                        tracing::warn!("failed to save config: {err:#}");
+                    }
+                }
+                if let Some(w) = weak.upgrade() {
+                    if w.get_gm_selected() == name {
+                        let next = store
+                            .borrow()
+                            .groups()
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| GM_UNGROUPED.to_string());
+                        w.set_gm_selected(next.as_str().into());
+                    }
+                }
+                sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
+                registry.broadcast_config_changed();
+                if let Some(w) = weak.upgrade() {
+                    picked.borrow_mut().clear();
+                    refresh_group_manager(&w, &store.borrow(), &picked.borrow());
+                }
+            }
+        });
+
+        window.on_gm_set_color({
+            let weak = weak.clone();
+            let store = store.clone();
+            let sessions_model = sessions_model.clone();
+            let registry = registry.clone();
+            let picked = picked.clone();
+            let tabs_model = tabs_model.clone();
+            let panes_model = panes_model.clone();
+            move |name: SharedString, hex: SharedString| {
+                if name.is_empty() {
+                    return;
+                }
+                {
+                    let mut st = store.borrow_mut();
+                    st.set_group_color(name.as_str(), hex.as_str());
+                    if let Err(err) = st.save() {
+                        tracing::warn!("failed to save config: {err:#}");
+                    }
+                }
+                sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
+                registry.broadcast_config_changed();
+                if let Some(w) = weak.upgrade() {
+                    refresh_group_manager(&w, &store.borrow(), &picked.borrow());
+                    refresh_tab_group_colors(&store.borrow(), &tabs_model, &panes_model);
+                }
+            }
+        });
+
+        window.on_gm_reorder_group({
+            let weak = weak.clone();
+            let store = store.clone();
+            let sessions_model = sessions_model.clone();
+            let registry = registry.clone();
+            let picked = picked.clone();
+            move |group: SharedString, before: SharedString| {
+                if group.is_empty() {
+                    return;
+                }
+                {
+                    let mut st = store.borrow_mut();
+                    let moved = if before.is_empty() {
+                        st.move_group_to_end(group.as_str())
+                    } else {
+                        st.move_group_before(group.as_str(), before.as_str())
+                    };
+                    if moved {
+                        if let Err(err) = st.save() {
+                            tracing::warn!("failed to save config: {err:#}");
+                        }
+                    }
+                }
+                sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
+                registry.broadcast_config_changed();
+                if let Some(w) = weak.upgrade() {
+                    refresh_group_manager(&w, &store.borrow(), &picked.borrow());
+                }
+            }
+        });
+
+        window.on_gm_toggle_pick({
+            let weak = weak.clone();
+            let store = store.clone();
+            let picked = picked.clone();
+            move |id: SharedString| {
+                if id.is_empty() {
+                    return;
+                }
+                {
+                    let mut set = picked.borrow_mut();
+                    let key = id.to_string();
+                    if !set.remove(&key) {
+                        set.insert(key);
+                    }
+                }
+                if let Some(w) = weak.upgrade() {
+                    refresh_group_manager(&w, &store.borrow(), &picked.borrow());
+                }
+            }
+        });
+
+        window.on_gm_paint_pick({
+            let weak = weak.clone();
+            let store = store.clone();
+            let picked = picked.clone();
+            move |from: i32, to: i32, on: bool| {
+                let Some(w) = weak.upgrade() else { return };
+                // 刷选：把 [from, to] 区间内的行整段设成 on —— 与设计稿一致
+                // （从已选行起拖是反向刷选，on=false）。
+                let ids: Vec<String> = w.get_gm_members().iter().map(|m| m.id.to_string()).collect();
+                if ids.is_empty() {
+                    return;
+                }
+                let a = from.max(0).min(ids.len() as i32 - 1) as usize;
+                let b = to.max(0).min(ids.len() as i32 - 1) as usize;
+                let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+                {
+                    let mut set = picked.borrow_mut();
+                    for id in &ids[lo..=hi] {
+                        if on {
+                            set.insert(id.clone());
+                        } else {
+                            set.remove(id);
+                        }
+                    }
+                }
+                refresh_group_manager(&w, &store.borrow(), &picked.borrow());
+            }
+        });
+
+        window.on_gm_clear_picks({
+            let weak = weak.clone();
+            let store = store.clone();
+            let picked = picked.clone();
+            move || {
+                picked.borrow_mut().clear();
+                if let Some(w) = weak.upgrade() {
+                    refresh_group_manager(&w, &store.borrow(), &picked.borrow());
+                }
+            }
+        });
+
+        window.on_gm_move_members({
+            let weak = weak.clone();
+            let store = store.clone();
+            let sessions_model = sessions_model.clone();
+            let registry = registry.clone();
+            let picked = picked.clone();
+            move |id: SharedString, target: SharedString, whole: bool| {
+                let ids: Vec<String> = if whole {
+                    picked.borrow().iter().cloned().collect()
+                } else {
+                    vec![id.to_string()]
+                };
+                if ids.is_empty() {
+                    return;
+                }
+                {
+                    let mut st = store.borrow_mut();
+                    let to_group = if target.is_empty() || target.as_str() == GM_UNGROUPED {
+                        String::new()
+                    } else {
+                        target.to_string()
+                    };
+                    for one in &ids {
+                        if let Some(mut sess) = st.get(one).cloned() {
+                            sess.group = to_group.clone();
+                            st.upsert(sess);
+                        }
+                    }
+                    if let Err(err) = st.save() {
+                        tracing::warn!("failed to save config: {err:#}");
+                    }
+                }
+                picked.borrow_mut().clear();
+                sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
+                registry.broadcast_config_changed();
+                if let Some(w) = weak.upgrade() {
+                    refresh_group_manager(&w, &store.borrow(), &picked.borrow());
+                }
+            }
+        });
+
+        window.on_gm_reorder_members({
+            let weak = weak.clone();
+            let store = store.clone();
+            let sessions_model = sessions_model.clone();
+            let registry = registry.clone();
+            let picked = picked.clone();
+            move |id: SharedString, before: SharedString, after: bool, whole: bool| {
+                let ids: Vec<String> = if whole {
+                    picked.borrow().iter().cloned().collect()
+                } else {
+                    vec![id.to_string()]
+                };
+                if ids.is_empty() || before == id {
+                    return;
+                }
+                {
+                    let mut st = store.borrow_mut();
+                    for one in &ids {
+                        st.move_session_relative(one, before.as_str(), after);
+                    }
+                    if let Err(err) = st.save() {
+                        tracing::warn!("failed to save config: {err:#}");
+                    }
+                }
+                sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
+                registry.broadcast_config_changed();
+                if let Some(w) = weak.upgrade() {
+                    refresh_group_manager(&w, &store.borrow(), &picked.borrow());
+                }
+            }
+        });
+
+        window.on_gm_move_out({
+            let weak = weak.clone();
+            let store = store.clone();
+            let sessions_model = sessions_model.clone();
+            let registry = registry.clone();
+            let picked = picked.clone();
+            move |id: SharedString, whole: bool| {
+                let ids: Vec<String> = if whole {
+                    picked.borrow().iter().cloned().collect()
+                } else {
+                    vec![id.to_string()]
+                };
+                if ids.is_empty() {
+                    return;
+                }
+                {
+                    let mut st = store.borrow_mut();
+                    for one in &ids {
+                        if let Some(mut sess) = st.get(one).cloned() {
+                            sess.group.clear();
+                            st.upsert(sess);
+                        }
+                    }
+                    if let Err(err) = st.save() {
+                        tracing::warn!("failed to save config: {err:#}");
+                    }
+                }
+                picked.borrow_mut().clear();
+                sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
+                registry.broadcast_config_changed();
+                if let Some(w) = weak.upgrade() {
+                    refresh_group_manager(&w, &store.borrow(), &picked.borrow());
+                }
             }
         });
     }
