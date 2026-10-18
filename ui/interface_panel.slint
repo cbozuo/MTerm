@@ -1075,14 +1075,14 @@ export component InterfacePanel inherits Rectangle {
         && root.current-wallpaper != "builtin:dark" && root.current-wallpaper != "builtin:tech"
         && root.current-wallpaper != "builtin:miku" && root.current-wallpaper != "builtin:ms";
     // (#wallpaper-auto-fit 2026-10-18) 「自动」的判定结果：0 = 填充 / 1 = 适应。
-    // 规则与 Theme.wallpaper-fit-mode 完全一致（比例差 ≤ 25% → 填充），只是这里
+    // 规则与 Theme.wallpaper-fit-mode 完全一致（比例差 ≤ 55% → 填充），只是这里
     // 按**作用域区域**的比例把结论写出来；真正的 image-fit 由 Theme 按各元素尺寸算。
     pure function auto-fit-resolved() -> int {
         let region = root.wallpaper-scope == 1 ? root.term-aspect : root.window-aspect;
         let image = Theme.wallpaper-aspect;
         if (image <= 0.0 || region <= 0.0) { return 0; }
         let crop = 1.0 - min(image, region) / max(image, region);
-        return crop <= 0.25 ? 0 : 1;
+        return crop <= 0.55 ? 0 : 1;
     }
 
     callback request-full-redraw();   // (#settings-divider-line) → AppWindow
@@ -1711,8 +1711,8 @@ export component InterfacePanel inherits Rectangle {
                 Text {
                     // (#mode-values 2026-10-17) 明暗各一套数值，切换主题自动切换。
                     text: root.lang-en
-                        ? "Transparency / scrim values are stored separately for light and dark themes — switching theme switches to that set (a mode you never touched starts at its defaults)."
-                        : "下面的透明度 / 遮罩数值明暗各存一套，切换主题即切到那一套；某个模式第一次使用就是默认值。";
+                        ? "Wallpaper and its display values are stored per theme × wallpaper × scope: switching theme brings that theme's own wallpaper (a theme you never configured starts with no wallpaper), and each scope keeps its own set of values. Something you never touched starts at its defaults."
+                        : "壁纸与它的显示数值按「主题 × 壁纸 × 作用域」分开存：换主题就换成那个主题自己的壁纸（没配过的主题 = 无壁纸），两种作用域各存一套数值；没动过的组合就是默认值。";
                     color: Theme.text-muted;
                     font-size: 10.5px * Theme.panel-font;
                     wrap: word-wrap;
@@ -1991,8 +1991,8 @@ export component InterfacePanel inherits Rectangle {
                 SettingRow {
                     label: root.lang-en ? "Scope" : "作用域";
                     desc: root.lang-en
-                        ? "Whole window = fills the window (default); Terminal = only the terminal area shows it, sidebars / tab bar stay solid. Dialogs are never part of the wallpaper."
-                        : "壁纸生效的范围：「整个界面」= 铺满全窗（现状）；「终端」= 只在终端区显示（沉浸式终端背景），侧栏 / 标签栏保持纯色主题底。弹窗 / 浮层不在壁纸范围（由「弹窗与遮罩」单独控制）。";
+                        ? "Where the wallpaper is drawn: Whole window = fills the window (default); Terminal = drawn only in the terminal text area. Outside the scope there is no wallpaper at all — those areas composite over the window base (the desktop when no wallpaper), no matter how transparent they are. Dialogs are never part of the wallpaper."
+                        : "壁纸的**绘制区域**：「整个界面」= 铺满全窗（默认）；「终端」= 只画在终端文本区里。作用域之外**没有壁纸**——那些区域按各自透明度叠在窗口底上（无壁纸时即桌面），与透不透明无关；侧栏 / 标签栏 / 命令栏 / 文件面板不再被强制成纯色。弹窗 / 浮层不在壁纸范围（由「弹窗与遮罩」单独控制）。";
                     HorizontalLayout {
                         SegGroup {
                             width: 250px;
@@ -2022,8 +2022,8 @@ export component InterfacePanel inherits Rectangle {
                 SettingRow {
                     label: root.lang-en ? "Fill mode" : "填充方式";
                     desc: root.lang-en
-                        ? "Auto (default) picks Fill or Fit from the image and the scope-area ratio, so you rarely need to choose. Fill = crop to cover; Fit = whole image with margins; Stretch = fill and distort."
-                        : "默认「自动」：按图片与作用域区域（整个界面 / 终端区）的比例在「填充 / 适应」里选，多数情况无需手动挑；填充 = 铺满裁切，适应 = 完整显示留白，拉伸 = 铺满变形。";
+                        ? "Auto (default) crops to fill unless the image and the scope area differ wildly (only then it fits the whole image, which leaves margins). Fill = crop to cover; Fit = whole image with margins; Stretch = fill and distort."
+                        : "默认「自动」：**铺满裁切**；只有图片与作用域区域的比例差得离谱（竖图放进超宽区）才改成「适应」完整显示。「填充」= 铺满裁切，「适应」= 完整显示留白（上下会有空缺），「拉伸」= 铺满变形。";
                     HorizontalLayout {
                         VerticalLayout {
                             spacing: 4px;
@@ -2132,7 +2132,7 @@ export component InterfacePanel inherits Rectangle {
                         width: (parent.width - 42px) * 0.25;
                         label: root.lang-en ? "Title bar" : "标题栏";
                         percent: root.titlebar-transparency * 100;
-                        default-percent: 0;
+                        default-percent: Theme.titlebar-default-transparency * 100;
                         lang-en: root.lang-en;
                         changed(v) => { root.titlebar-transparency = v / 100; }
                         released(v) => { root.set-titlebar-alpha(1.0 - v / 100); }
@@ -2142,7 +2142,7 @@ export component InterfacePanel inherits Rectangle {
                         width: (parent.width - 42px) * 0.25;
                         label: root.lang-en ? "Tab bar" : "标签栏";
                         percent: root.tabbar-transparency * 100;
-                        default-percent: 0;
+                        default-percent: Theme.tabbar-default-transparency * 100;
                         lang-en: root.lang-en;
                         changed(v) => { root.tabbar-transparency = v / 100; }
                         released(v) => { root.set-tabbar-alpha(1.0 - v / 100); }
@@ -2152,7 +2152,7 @@ export component InterfacePanel inherits Rectangle {
                         width: (parent.width - 42px) * 0.25;
                         label: root.lang-en ? "Sidebars" : "侧栏";
                         percent: root.sidebar-transparency * 100;
-                        default-percent: 0;
+                        default-percent: Theme.sidebar-default-transparency * 100;
                         lang-en: root.lang-en;
                         changed(v) => { root.sidebar-transparency = v / 100; }
                         released(v) => { root.set-sidebar-alpha(1.0 - v / 100); }
@@ -2162,7 +2162,7 @@ export component InterfacePanel inherits Rectangle {
                         width: (parent.width - 42px) * 0.25;
                         label: root.lang-en ? "Terminal" : "终端区";
                         percent: root.term-transparency * 100;
-                        default-percent: 0;
+                        default-percent: Theme.term-default-transparency * 100;
                         lang-en: root.lang-en;
                         changed(v) => { root.term-transparency = v / 100; }
                         released(v) => { root.set-term-alpha(1.0 - v / 100); }
@@ -2172,8 +2172,8 @@ export component InterfacePanel inherits Rectangle {
                 Rectangle { height: 4px; }
                 Text {
                     text: root.lang-en
-                        ? "How transparent each of the four zones is (sidebars include both side panels and the bottom panel). Independent of the wallpaper — still adjustable with no wallpaper: a zone that has no wallpaper behind it (wallpaper = none, or outside the scope) reveals the window base instead. With no session the centre shows the empty hint and follows the terminal zone."
-                        : "四个区域各自的面板透明程度（侧栏含左右侧栏与下方面板）；直接拖、双击恢复默认。与壁纸无关，无壁纸时同样可调：没有壁纸（或区域不在作用域内）时透出窗口底色。（无会话时中央为空态提示，跟随终端区、参与壁纸。）";
+                        ? "How transparent each of the four zones is (sidebars include both side panels and the bottom panel). These values belong to the current theme × wallpaper × scope — a combination you use for the first time starts at a set that lets the wallpaper show (otherwise everything would just be solid black). With no wallpaper the light/dark base values are used. Double-click restores the default of the current context (with a wallpaper that is NOT 0%). A zone with nothing behind it (no wallpaper, or outside the scope) reveals the window base instead."
+                        : "四个区域各自的面板透明程度（侧栏含左右侧栏与下方面板）。这组数值属于「当前主题 × 当前壁纸 × 当前作用域」：第一次使用的组合会自动给一套能看见壁纸的默认值（否则满屏纯黑）；没有壁纸时用明暗各一套的基础值。双击恢复的是**当前组合**的默认值（有壁纸时不是 0%）。没有壁纸（或区域不在作用域内）时透出窗口底色。";
                     color: Theme.text-muted;
                     font-size: 10.5px * Theme.panel-font;
                     wrap: word-wrap;
@@ -2192,8 +2192,8 @@ export component InterfacePanel inherits Rectangle {
                 PercentSliderRow {
                     label: root.lang-en ? "Dialog transparency" : "弹窗透明度";
                     desc: root.lang-en
-                        ? "How transparent the dialog itself is: 0% = solid, 100% = fully transparent (you see straight through to the content behind). How dark that content is, is controlled by “Scrim strength” below. Double-click to reset."
-                        : "弹窗 / 浮层（下拉、弹框、调色盘）自身的透明度：0% = 实心，100% = 完全透明（直接看到背后的内容）。背后压多暗由下面的「遮罩浓度」单独决定。双击滑杆恢复默认。";
+                        ? "How transparent the dialog itself is: 0% = solid, 100% = fully transparent (you see straight through to the content behind). Hover bubbles / floating info cards follow this same value. How dark that content is, is controlled by “Scrim strength” below. Double-click to reset."
+                        : "弹窗 / 浮层（下拉、弹框、调色盘，以及悬浮提示气泡、拖拽信息卡这些浮在界面上的小卡）自身的透明度：0% = 实心，100% = 完全透明（直接看到背后的内容）。背后压多暗由下面的「遮罩浓度」单独决定。双击滑杆恢复默认。";
                     percent: root.popup-transparency * 100;
                     default-percent: 0;
                     lang-en: root.lang-en;

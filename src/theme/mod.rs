@@ -33,10 +33,13 @@ fn color_model(vals: &[u32]) -> ModelRc<Color> {
 pub struct ThemeState {
     pub theme_id: String,
     pub accent_mode: AccentCfg,
-    /// (#mode-values 2026-10-17) 外观数值**暗 / 亮各一套**；resolve() 依据
-    /// 解析出的主题明暗选槽。切换主题 = 换一套数值，互不影响。
-    pub appearance_dark: AppearanceValues,
-    pub appearance_light: AppearanceValues,
+    /// (#wallpaper-scope-params 2026-10-18) 当前**生效**的一整套外观数值：
+    /// 有壁纸时来自 (主题, 壁纸, 作用域) 那一套，没有壁纸时来自明暗槽 ——
+    /// 由 `Config::effective_appearance()` 统一解析，resolve() 不再自己选槽。
+    pub appearance: AppearanceValues,
+    /// (#zone-default-context 2026-10-19) 四根分区滑杆「双击恢复」的目标
+    /// （有壁纸 = 该组合首设默认值；无壁纸 = 全不透明）。
+    pub zone_defaults: ZoneDefaults,
     /// 壁纸作用域："window" | "terminal"（与明暗无关，全局）。
     pub wallpaper_scope: String,
     /// 壁纸填充方式："cover" | "contain" | "fill"（全局）。
@@ -80,6 +83,21 @@ impl AccentCfg {
     }
 }
 
+/// (#zone-default-context 2026-10-19) 四根分区滑杆的「默认」值（alpha）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ZoneDefaults {
+    pub titlebar: f32,
+    pub tabbar: f32,
+    pub sidebar: f32,
+    pub term: f32,
+}
+
+impl Default for ZoneDefaults {
+    fn default() -> Self {
+        Self { titlebar: 1.0, tabbar: 1.0, sidebar: 1.0, term: 1.0 }
+    }
+}
+
 /// 解析后的整套应用状态（apply 各窗口版本的公共输入）。
 pub struct Resolved {
     pub palette: &'static Palette,
@@ -94,6 +112,7 @@ pub struct Resolved {
     pub scrim_style: String,
     pub scrim_alpha: f32,
     pub popup_transparency: f32,
+    pub zone_defaults: ZoneDefaults,
 }
 
 /// 计算（与窗口无关）：主题套解析 + 强调色三态叠加 + 各透明度钳制。
@@ -105,12 +124,8 @@ pub fn resolve(st: &ThemeState) -> Resolved {
     };
     let p = palette_or_default(&st.theme_id, dark_now);
     let (accent, _) = resolve_accent(p, st.accent_mode);
-    // (#mode-values) 选槽：整套外观数值按主题明暗取。
-    let av = if p.dark {
-        &st.appearance_dark
-    } else {
-        &st.appearance_light
-    };
+    // (#wallpaper-scope-params) 数值已由调用方按 主题×壁纸×作用域 解析好。
+    let av = &st.appearance;
     let scope = match st.wallpaper_scope.as_str() {
         "terminal" => "terminal".to_string(),
         _ => "window".to_string(),
@@ -142,6 +157,7 @@ pub fn resolve(st: &ThemeState) -> Resolved {
         scrim_style: style,
         scrim_alpha: av.scrim_alpha.clamp(0.0, 1.0),
         popup_transparency: av.popup_transparency.clamp(0.0, 1.0),
+        zone_defaults: st.zone_defaults,
     }
 }
 
@@ -187,6 +203,11 @@ macro_rules! impl_theme_apply {
             t.set_scrim_style(r.scrim_style.as_str().into());
             t.set_scrim_strength(r.scrim_alpha);
             t.set_popup_transparency(r.popup_transparency);
+            // (#zone-default-context) 双击复位的目标值（滑杆语义 = 透明程度）。
+            t.set_titlebar_default_transparency(1.0 - r.zone_defaults.titlebar);
+            t.set_tabbar_default_transparency(1.0 - r.zone_defaults.tabbar);
+            t.set_sidebar_default_transparency(1.0 - r.zone_defaults.sidebar);
+            t.set_term_default_transparency(1.0 - r.zone_defaults.term);
             p
         }
     };
@@ -603,8 +624,8 @@ mod tests {
         let mut st = ThemeState {
             theme_id: "mterm-dark".into(),
             accent_mode: AccentCfg::Follow,
-            appearance_dark: dark_av,
-            appearance_light: light_av,
+            appearance: dark_av.clone(),
+            zone_defaults: ZoneDefaults::default(),
             wallpaper_scope: "window".into(),
             wallpaper_fit: "cover".into(),
             scrim_style: "auto".into(),
@@ -615,12 +636,14 @@ mod tests {
         assert!((r.popup_transparency - 0.20).abs() < 1e-6);
 
         st.theme_id = "mterm-light".into();
+        st.appearance = light_av;
         let r = resolve(&st);
         assert!((r.titlebar_alpha - 0.95).abs() < 1e-6, "亮主题应取亮槽");
         assert!((r.popup_transparency - 0.60).abs() < 1e-6);
 
         // 切回暗主题：暗槽原值仍在。
         st.theme_id = "mterm-dark".into();
+        st.appearance = dark_av;
         assert!((resolve(&st).titlebar_alpha - 0.55).abs() < 1e-6);
     }
 
@@ -638,8 +661,8 @@ mod tests {
         let mut st = ThemeState {
             theme_id: "mterm-dark".into(),
             accent_mode: AccentCfg::Follow,
-            appearance_dark: Default::default(),
-            appearance_light: Default::default(),
+            appearance: Default::default(),
+            zone_defaults: ZoneDefaults::default(),
             wallpaper_scope: "window".into(),
             wallpaper_fit: "auto".into(),
             scrim_style: "auto".into(),

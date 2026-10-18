@@ -55,15 +55,18 @@ export component PrimaryButton inherits Rectangle {
     // preferred 是文本真实宽度。
     property <length> natural-w: label-t.preferred-width + 32px;   // 32 = 左右 padding
     callback clicked();
+    // (#sidebar-surface-alpha 2026-10-18) 放在半透明面板里时（侧栏「新建会话」），
+    // 按钮底色也要跟着面板一起透，否则它是整块实心色。默认 1.0 = 行为不变。
+    in property <float> surface-alpha: 1.0;
 
     height: root.btn-height;
     min-width: root.hug-width ? max(root.btn-min-width, root.natural-w) : root.btn-min-width;
     max-width: root.hug-width ? max(root.btn-min-width, root.natural-w) : 100000px;
     border-radius: root.btn-radius;
-    background: disabled
+    background: (disabled
         ? Theme.bg-elevated
         : (touch.pressed ? Theme.accent-pressed
-           : (touch.has-hover ? Theme.accent-hover : Theme.accent));
+           : (touch.has-hover ? Theme.accent-hover : Theme.accent))).with-alpha(root.surface-alpha);
     animate background { duration: 120ms; }
 
     // (#btn-center 2026-09-20) 居中职责从"布局 alignment"换成"文字自居中":
@@ -384,8 +387,11 @@ export component LabeledInput inherits VerticalLayout {
 export component Sparkline inherits Rectangle {
     in property <[float]> values;
     in property <brush> line-color: Theme.accent;
+    // (#sidebar-surface-alpha 2026-10-18) 迷你图底色可替换：侧栏用它时必须跟着
+    // 「侧栏透明度」走，否则整块是不透明的 bg-root（用户圈的就是这块）。
+    in property <brush> ground: Theme.bg-root;
 
-    background: Theme.bg-root;
+    background: root.ground;
     border-radius: Theme.radius-sm;
     clip: true;
 
@@ -789,17 +795,46 @@ export component MTermSlider inherits Rectangle {
         background: Theme.accent-solid;
         opacity: root.enabled ? 1.0 : 0.45;
     }
-    // 圆点（14px，2px 面板色描边 = 轨道上的缺口感）
+    // 圆点（高保真同款，2026-10-19）：14px 实心 + 2px 面板色间隙 + 1px 强调色外环
+    // = 20px 视觉直径。高保真 CSS：
+    //   width:14px;height:14px;border-radius:50%;background:var(--ac);
+    //   border:2px solid var(--panel);box-shadow:0 0 0 1px var(--ac);
+    // 旧实现只有「实心 + 面板色描边」，缺了最外那 1px 强调环 —— 用户对比稿子
+    // 指出圆点样式不一致。三层同心圆逐像素还原，外圈溢出 18px 行高 1px 由
+    // 不透明的父级（设置页卡片）正常覆盖。
     Rectangle {
         x: max(0px, min(root.width - self.width, root.width * root.pct - self.width / 2));
         y: (parent.height - self.height) / 2;
-        width: 14px;
-        height: 14px;
-        border-radius: 7px;
-        background: Theme.accent-solid;
-        border-width: 2px;
-        border-color: Theme.panel-solid;
+        width: 20px;
+        height: 20px;
+        border-radius: 10px;
+        background: transparent;
         opacity: root.enabled ? 1.0 : 0.45;
+        // 1px 强调色外环
+        Rectangle {
+            width: parent.width;
+            height: parent.height;
+            border-radius: parent.width / 2;
+            background: Theme.accent-solid;
+        }
+        // 2px 面板色间隙
+        Rectangle {
+            x: 1px;
+            y: 1px;
+            width: parent.width - 2px;
+            height: parent.height - 2px;
+            border-radius: (parent.width - 2px) / 2;
+            background: Theme.panel-solid;
+        }
+        // 14px 实心圆点
+        Rectangle {
+            x: 3px;
+            y: 3px;
+            width: parent.width - 6px;
+            height: parent.height - 6px;
+            border-radius: (parent.width - 6px) / 2;
+            background: Theme.accent-solid;
+        }
     }
     ta := TouchArea {
         enabled: root.enabled;

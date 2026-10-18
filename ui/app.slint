@@ -772,7 +772,8 @@ component TopbarBtn inherits Rectangle {
             y: parent.height + 5px;
             width: logo-tip-txt.preferred-width + 16px;
             height: 22px;
-            background: Theme.panel-solid;
+            // (#popup-tip 2026-10-18) 悬浮气泡跟随「弹窗透明度」（原实色 panel-solid）。
+            background: Theme.popup-bg-elevated;
             border-radius: Theme.radius-sm;
             border-width: 1px;
             border-color: Theme.border-strong;
@@ -1992,12 +1993,12 @@ export component AppWindow inherits Window {
     // Panels/terminal frost over it (see Theme.frost). Only present when active.
     // (#wallpaper-transparency 2026-10-17) 图 alpha = 1 − 透明度滑杆值；填充方式
     // 由「填充 / 适应 / 拉伸」三选驱动。
-    // (#wallpaper-scope 2026-10-17) 作用域 = 终端时壁纸仍按窗口坐标铺满（切换
-    // 作用域不"跳"），由三区在 Theme 侧只在该模式下强制不透明把壁纸盖住 ——
-    // 见 theme.slint 的 titlebar/tabbar/sidebar-alpha。
-    // (#zone-alpha-desktop 2026-10-18) 有壁纸时这层铺满全窗；无壁纸时窗口底
-    // 透明 —— 四分区按各自透明度直接透出桌面（与「弹窗透明度」同一套语义）。
-    if Theme.wallpaper-active : Image {
+    // (#wallpaper-scope-clip 2026-10-18) 作用域 = **壁纸的绘制区域**：
+    //   整个界面 → 这一层铺满全窗（下方 layout 各自按分区透明度雾化在上面）；
+    //   终端     → 这一层不画，改由 TerminalView 在终端文本区里画（见该文件
+    //               central 内的 wallpaper-clip），侧栏/标签栏/命令栏后面**没有**
+    //               壁纸，透出的是窗口底（无壁纸时即桌面），与是否透明无关。
+    if Theme.wallpaper-active && Theme.wallpaper-scope == 0 : Image {
         x: 0; y: 0;
         width: parent.width;
         height: parent.height;
@@ -2392,7 +2393,11 @@ export component AppWindow inherits Window {
                     : parent.width - parent.quick-left - parent.quick-right;
                 height: parent.left-sidebar-horizontal
                     ? parent.height - parent.quick-top - parent.quick-bottom : parent.left-sidebar-size;
-                background: Theme.zone-sidebar;
+                // (#panel-layer-parity 2026-10-18) 这里原来也铺了一层 zone-sidebar，
+                // 于是左栏 = 容器 + LeftSidebar 根 + 紧凑卡片 = **3 层**半透明叠加，
+                // 右栏 = RightSidebar 根 + 内层卡片 = **2 层**。同一档透明度两边实际
+                // 不透明度不同（0.5 时左 87.5% / 右 75%），看起来「右边更透、像没铺满」。
+                // 底色由 LeftSidebar 根统一负责，这里不再叠一层。
                 clip: true;
                 LeftSidebar {
                     // macOS 原生标题栏没有侧栏切换按钮 → 保留面板内箭头；
@@ -2626,7 +2631,12 @@ export component AppWindow inherits Window {
                 // Docked top/bottom → lay the resource widgets out in a row.
                 lay-horizontal: !root.right-sidebar-horizontal;
                 dock-edge: root.right-sidebar-dock;
-                animate width, height { duration: root.right-sidebar-dragging ? 0ms : 150ms; easing: ease-out; }
+                // (#right-panel-no-anim 2026-10-18) 删掉 `animate width, height
+                // {150ms}`：Slint 的 animate 在**元素首次布局**时也会播（0 → 目标
+                // 尺寸），所以右侧面板每次被重建/重排都会「从上往下长出来」，能
+                // 看出一段生长过程；左侧面板（LeftSidebar）从来没有这个动画，于是
+                // 两边切换观感不一致。拖动时本来 duration 就是 0ms，删掉不影响拖动
+                // 跟手；折叠/展开与左栏一样变成瞬时。
                 connection-state: root.connection-state;
                 conn-host: root.conn-host;
                 conn-state: root.conn-state;
@@ -2814,6 +2824,21 @@ export component AppWindow inherits Window {
                     height: parent.height;
                     changed width => { root.content-resized(self.width, self.height); }
                     changed height => { root.content-resized(self.width, self.height); }
+
+                    // (#wallpaper-scope-tabless 2026-10-18) 作用域 = 终端：壁纸画在
+                    // **整个终端区**（所有 pane 的并集，含标签栏行与命令栏），与是否
+                    // 打开 tab 无关 —— 空态 / 欢迎页同样有壁纸。
+                    // 以前这层画在 TerminalView 的 scroll-clip 里，没有 tab 时整棵
+                    // TerminalView 都不存在 → 中间只剩纯黑（用户反馈）。
+                    if Theme.wallpaper-active && Theme.wallpaper-scope == 1 : Image {
+                        x: 0; y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        source: Theme.wallpaper;
+                        image-fit: Theme.wallpaper-fit-mode(self.width, self.height) == 1 ? contain
+                            : Theme.wallpaper-fit-mode(self.width, self.height) == 2 ? fill : cover;
+                        opacity: 1.0 - Theme.wallpaper-transparency;
+                    }
                 for pane[pi] in root.panes : Rectangle {
                     x: pane.x; y: pane.y; width: pane.w; height: pane.h;
                     clip: true;
@@ -2936,6 +2961,9 @@ export component AppWindow inherits Window {
                     stat-tip-off() => { root.chbar-stat-tip = ""; }
                 }
                 // Content area swaps based on active tab kind.
+                // (#bottom-dock-alpha 2026-10-18) 容器底改透明：终端底色由
+                // TerminalView 的画布自己铺（空态由下面的占位矩形铺），
+                // 这样命令栏 / 文件传输面板半透明时能透到窗口底/桌面。
                 Rectangle {
                     vertical-stretch: 1;
                     // (#tabbar-term-bg 2026-10-11) 必须是 term-bg,不是 bg-root:
@@ -2944,7 +2972,7 @@ export component AppWindow inherits Window {
                     // 一致;**无会话**时这里只剩容器底色,root≠tbg 的主题(自带
                     // MTerm 套 root #161619 / tbg #181A1D、darcula-dark、flexoki-dark,
                     // 以及任何开壁纸的场景)就会露出一条深浅相反的条带(用户截图)。
-                    background: Theme.term-bg;
+                    background: transparent;
                     // (#wallpaper-auto-fit 2026-10-18) 把终端区纵横比回写给
                     // 外观页「填充方式 = 自动」的提示行（各 pane 尺寸相同，
                     // 写的是同一个值）。
@@ -2953,21 +2981,15 @@ export component AppWindow inherits Window {
                     changed width => { root.term-aspect = self.width / max(1px, self.height); }
                     changed height => { root.term-aspect = self.width / max(1px, self.height); }
 
-                    // Empty pane outside left-sidebar-sidebar mode: keep a small hint for
-                    // rare empty panes, but do not cover the wallpaper when the
-                    // session list is already visible as a sidebar.
+                    // 空 pane（未打开任何标签）：只铺一层终端底色。
+                    // (#empty-hint-removed 2026-10-19) 原来这里还有一句
+                    // 「从左侧选择一个会话开始」—— 用户定稿删掉：侧栏已经常驻
+                    // 显示会话列表，这句话没有信息量。底色必须保留：容器底是
+                    // 透明的，没有这一层壁纸就不会被「终端区透明度」雾化。
                     if pane.tabs.length == 0 : Rectangle {
                         width: parent.width;
                         height: parent.height;
-                        Text {
-                            text: root.lang-en
-                                ? "Pick a session on the left to begin"
-                                : "从左侧选择一个会话开始";
-                            color: Theme.text-muted;
-                            font-size: Theme.fs-sm;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
+                        background: Theme.term-bg;
                     }
 
                     // Welcome tab — fill the content area explicitly (some renderers
@@ -3559,7 +3581,8 @@ export component AppWindow inherits Window {
         y: parent.topbar-tip-y;
         width: topbar-tip-txt.preferred-width + 16px;
         height: 22px;
-        background: Theme.bg-elevated;
+        // (#popup-tip 2026-10-18) 悬浮气泡跟随「弹窗透明度」。
+        background: Theme.popup-bg-elevated;
         border-radius: Theme.radius-sm;
         border-width: 1px;
         border-color: Theme.border-strong;
@@ -4335,7 +4358,7 @@ export component AppWindow inherits Window {
         // (#session-card-twin 2026-10-05) 视觉参数对齐跳板机 tip 卡(#proxy-fields):
         // elevated 底 / 9px 圆角 / subtle 边框 / 24px 大投影 / 行距 2px,
         // 名称行主色、其余次色 —— 两处悬浮卡同款(用户要求)。
-        background: Theme.bg-elevated;
+        background: Theme.popup-bg-elevated;
         border-radius: 9px;
         border-width: 1px;
         border-color: Theme.border-subtle;
@@ -4407,7 +4430,7 @@ export component AppWindow inherits Window {
                      tc-m-group.preferred-width,
                      tc-m-channel.preferred-width) + 76px);
         height: 18px + self.row-n * 22px;
-        background: Theme.bg-elevated;
+        background: Theme.popup-bg-elevated;
         border-radius: 9px;
         border-width: 1px;
         border-color: Theme.border-subtle;
@@ -4511,7 +4534,8 @@ export component AppWindow inherits Window {
             ? chbar-stat-tip-y + 20px : chbar-stat-tip-y - self.height - 8px;
         width: self.tip-w;
         height: 22px;
-        background: Theme.bg-elevated;
+        // (#popup-tip 2026-10-18) 悬浮气泡跟随「弹窗透明度」。
+        background: Theme.popup-bg-elevated;
         border-radius: Theme.radius-sm;
         border-width: 1px;
         border-color: Theme.border-strong;

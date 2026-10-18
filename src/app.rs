@@ -673,6 +673,7 @@ impl WindowCloser {
         // (#sync-dialog-v2-fix2) 摘掉本窗口的托盘图标与登记。
         TRAY_HANDLES.with(|h| h.borrow_mut().remove(&self.window_id));
         TRAY_CLOSERS.with(|c| c.borrow_mut().remove(&self.window_id));
+        TRAY_RETRIES.with(|m| m.borrow_mut().remove(&self.window_id));
         WIN_IO.with(|m| m.borrow_mut().remove(&self.window_id));
         if was_last {
             request_quit();
@@ -774,6 +775,8 @@ thread_local! {
     static TRAY_CLOSERS: RefCell<HashMap<u64, WindowCloser>> =
         RefCell::new(HashMap::new());
     static TRAY_HANDLES: RefCell<HashMap<u64, Tray>> = RefCell::new(HashMap::new());
+    // (#tray-add-retry 2026-10-18) 每窗口的 NIM_ADD 重试计数（成功即清零）。
+    static TRAY_RETRIES: RefCell<HashMap<u64, u8>> = RefCell::new(HashMap::new());
     // Current tray flyout only。hide 走 take+0ms-drop **现建现毁**(每次打开
     // 新 HWND),不是旧注释说的"只创建一次并复用";配套机制见 arm_tray_flyout_chrome。
     static TRAY_MENU: RefCell<Option<Rc<TrayMenuWindow>>> = const { RefCell::new(None) };
@@ -866,12 +869,41 @@ fn ensure_tray_for(win_id: u64) {
     if Tray::update_tip(win_id as u32, &tip) {
         return;
     }
+    // (#tray-resurrect-order 2026-10-18) **先摘旧句柄再重建**。旧句柄的 Drop
+    // 会 `NIM_DELETE` 一次；若先 ensure 再 insert，`HashMap::insert` 返回的旧
+    // 句柄会在新图标 ADD 成功之后析构 → 把刚建好的图标又摘掉（表现为「点最小化
+    // 到托盘，图标一闪就没」）。图标本来就没建成时摘掉是无害的。
+    TRAY_HANDLES.with(|h| {
+        h.borrow_mut().remove(&win_id);
+    });
     let handle = Tray::ensure(
         win_id as u32,
         Box::new(move |action| handle_tray_action(win_id, action)),
         &tip,
     );
     TRAY_HANDLES.with(|h| h.borrow_mut().insert(win_id, handle));
+    // (#tray-add-retry 2026-10-18) NIM_ADD 在登录初期 / 外壳刚重建时可能失败
+    // （Explorer 尚未就绪）。失败后最多再试两次，给外壳一点时间；真正的权限
+    // 拒绝仍然会失败，由 minimize_to_tray 的兜底路径处理。
+    if !Tray::icon_ok(win_id as u32) {
+        let attempt = TRAY_RETRIES.with(|m| {
+            let mut m = m.borrow_mut();
+            let n = m.entry(win_id).or_insert(0);
+            *n += 1;
+            *n
+        });
+        if attempt <= 2 {
+            tracing::warn!(win_id, attempt, "tray: icon add failed — retrying shortly");
+            slint::Timer::single_shot(
+                std::time::Duration::from_millis(900 * attempt as u64),
+                move || ensure_tray_for(win_id),
+            );
+        }
+    } else {
+        TRAY_RETRIES.with(|m| {
+            m.borrow_mut().remove(&win_id);
+        });
+    }
 }
 
 /// (#window-title-sync 2026-10-12) 托盘 tooltip 文案 = 该窗口标题文案，
@@ -956,13 +988,17 @@ fn minimize_to_tray(win: &AppWindow) {
     ensure_tray_for(win.get_win_id() as u64);
     if !Tray::icon_ok(win.get_win_id() as u32) {
         tracing::error!(
-            "tray: Shell_NotifyIconW failed — refusing to hide the window, \
-             falling back to the close-confirm card"
+            "tray: Shell_NotifyIconW failed — falling back to a normal minimize \
+             (window stays in the taskbar, sessions keep running)"
         );
-        win.set_close_sessions(ModelRc::from(Rc::new(VecModel::from(Vec::<
-            CloseSessionRow,
-        >::new()))));
-        win.set_confirm_close_open(true);
+        // (#tray-unavailable-fallback 2026-10-18) 托盘图标建不出来（安全软件/
+        // 权限策略拦下 Shell_NotifyIcon 时是 ERROR_ACCESS_DENIED，实测存在）：
+        // 旧行为是重新弹回关闭确认卡 —— 用户点了「最小化到托盘」却像没反应。
+        // 改为**普通最小化**：窗口还在任务栏、会话不断，随时点得回来。
+        win.set_confirm_close_open(false);
+        let _ = win
+            .window()
+            .with_winit_window(|ww| ww.set_minimized(true));
         return;
     }
     tracing::info!("close: tray ok, hiding window (event loop keeps running)");
@@ -3363,19 +3399,24 @@ fn open_window(
         let registry = registry.clone();
         window.on_set_wallpaper(move |id: SharedString| {
             let id = id.to_string();
+            // (#wallpaper-scope-params 2026-10-18) 先落盘：`set_wallpaper` 会在
+            // 首设时给两种作用域各写一套默认参数，随后 apply_theme 才能读到。
+            {
+                let mut s = store.borrow_mut();
+                s.set_wallpaper(id.clone());
+                let _ = s.save();
+            }
             if let Some(w) = weak.upgrade() {
                 // (#theme-split) 壁纸只负责背后那张图：不再反写主题深浅、
                 // 不再顶替强调色。
                 apply_wallpaper(&w, &store.borrow(), &bufs_wp, &id);
+                // 换壁纸 = 换那一套参数：四根分区滑杆 / 壁纸透明度 / 填充方式
+                // 立刻切到这张壁纸在当前作用域下的值。
+                apply_theme(&w, &bufs_wp, &store.borrow());
                 // Keep an already-open process window in sync with the change.
                 if let Some(p) = proc_weak.upgrade() {
                     sync_proc_theme(&w, &p);
                 }
-            }
-            {
-                let mut s = store.borrow_mut();
-                s.set_wallpaper(id);
-                let _ = s.save();
             }
             // (#theme-split §3-调整⑤) 壁纸也跨窗口广播：遮罩/可见度影响所有
             // 独立窗口的观感；子窗口主题槽位由各处 sync_*_theme 拷贝跟上。
@@ -3397,16 +3438,19 @@ fn open_window(
                 // wallpapers/（原件不动），列表以该文件夹为准 → 立即多出一张卡。
                 let stored = crate::wallpaper::library::import(&path).unwrap_or(path);
                 let id = stored.to_string_lossy().to_string();
+                {
+                    let mut s = store.borrow_mut();
+                    s.set_wallpaper(id.clone());
+                    let _ = s.save();
+                }
                 if let Some(w) = weak.upgrade() {
                     apply_wallpaper(&w, &store.borrow(), &bufs_wp, &id);
+                    apply_theme(&w, &bufs_wp, &store.borrow());
                     refresh_wallpaper_items(&w);
                     if let Some(p) = proc_weak.upgrade() {
                         sync_proc_theme(&w, &p);
                     }
                 }
-                let mut s = store.borrow_mut();
-                s.set_wallpaper(id);
-                let _ = s.save();
             }
         });
     }
@@ -3444,13 +3488,16 @@ fn open_window(
             let Some(w) = weak.upgrade() else { return };
             // 删掉的正是当前壁纸 → 回到「无」；库外的（老配置）只清选中态。
             if w.get_current_wallpaper().as_str() == path {
+                {
+                    let mut s = store.borrow_mut();
+                    s.set_wallpaper(String::new());
+                    let _ = s.save();
+                }
                 apply_wallpaper(&w, &store.borrow(), &bufs_wp, "");
+                apply_theme(&w, &bufs_wp, &store.borrow());
                 if let Some(p) = proc_weak.upgrade() {
                     sync_proc_theme(&w, &p);
                 }
-                let mut s = store.borrow_mut();
-                s.set_wallpaper(String::new());
-                let _ = s.save();
             }
             if deleted {
                 refresh_wallpaper_items(&w);
@@ -4369,6 +4416,10 @@ fn open_window(
                 let _ = s.save();
             }
             apply_theme(&w, &bufs_theme, &store.borrow());
+            // (#wallpaper-scope-params 2026-10-18) 切主题 = 切到该主题**自己的**
+            // 壁纸与那套参数：没设过的主题就是「无壁纸」，绝不把上一套带过来。
+            let wp = store.borrow().wallpaper().to_string();
+            apply_wallpaper(&w, &store.borrow(), &bufs_theme, &wp);
             w.set_theme_chosen(id.clone());
             w.set_follow_system(store.borrow().follow_system());
             // 分组取色面板的候选 24 色随新主题换（§3-调整⑤）。

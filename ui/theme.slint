@@ -66,7 +66,12 @@ export global Theme {
     // 图片与区域比例接近（裁切 ≤ 25%）→ 填充；差得远 → 适应（不裁切）。
     in-out property <float> wallpaper-aspect: 1.6;
     // 计算实际生效的 image-fit：0 = cover（填充）/ 1 = contain（适应）/
-    // 2 = fill（拉伸）。"auto" 按上面那条规则在 0/1 之间选。
+    // 2 = fill（拉伸）。"auto" 按下面那条规则在 0/1 之间选。
+    //
+    // (#wallpaper-auto-fit-fill 2026-10-18) 阈值从 25% 提到 55%：用户实测
+    // 宽屏窗口 + 16:9 图片时裁切 28% 就被判成「适应」，上下留出两条空白
+    // （「上下壁纸的空缺」）。自动的默认行为应当是**铺满**，只有长宽比差得
+    // 离谱（竖图放进超宽区，硬铺会把主体裁光）才退回「适应」。
     public pure function wallpaper-fit-mode(w: length, h: length) -> int {
         if (root.wallpaper-fit == "contain") { return 1; }
         if (root.wallpaper-fit == "fill") { return 2; }
@@ -75,7 +80,7 @@ export global Theme {
         let image = root.wallpaper-aspect;
         if (image <= 0.0 || region <= 0.0) { return 0; }
         let crop = 1.0 - min(image, region) / max(image, region);
-        return crop <= 0.25 ? 0 : 1;
+        return crop <= 0.55 ? 0 : 1;
     }
     // 「跟随图片取色」开启时，Rust 把图片主色写进来（仅作 accent 来源，
     // 不再染面板、不再反写深浅）。wp-tint 保留仅为兼容既有桥属性/同步代码
@@ -92,15 +97,20 @@ export global Theme {
     in-out property <float> tabbar-transparency: 0.15;
     in-out property <float> sidebar-transparency: 0.15;
     in-out property <float> term-transparency: 0.0;
-    // (#zone-alpha-desktop 2026-10-18) 四区恒按各自透明度生效 —— 唯一的例外是
-    // 「有壁纸 + 作用域=终端」：那时壁纸铺满全窗，三区必须不透明才能把壁纸挡住
-    // （作用域语义），其余情况（**尤其是没有壁纸**）都按滑杆真实半透明。
-    // 以前的写法是"作用域=终端就一律强制 1.0"，于是无壁纸时三根滑杆也是死的
-    //（用户反馈「四个设置透明没生效」）。
-    out property <bool> zones-masked: root.wallpaper-active && root.wallpaper-scope == 1;
-    out property <float> titlebar-alpha: root.zones-masked ? 1.0 : 1.0 - root.titlebar-transparency;
-    out property <float> tabbar-alpha:   root.zones-masked ? 1.0 : 1.0 - root.tabbar-transparency;
-    out property <float> sidebar-alpha:  root.zones-masked ? 1.0 : 1.0 - root.sidebar-transparency;
+    // (#wallpaper-scope-clip 2026-10-18) 四区**恒按各自透明度生效**：作用域已经由
+    // 壁纸的**绘制区域**表达（整窗 / 终端区），不再需要"把三区涂不透明来挡壁纸"。
+    // 那套遮挡写法同时废掉三根滑杆，也让「设置了壁纸却看不到」（用户实测）。
+    // (#zone-default-context 2026-10-19) 四根分区滑杆「双击恢复」的目标值。
+    // 有壁纸时 = 当前 (主题 × 壁纸 × 作用域) 的首设默认值；无壁纸时 = 0%。
+    // 设置页的「（默认）」标记与双击复位都读这里 —— 之前写死 0%，于是
+    // 有壁纸时双击把「铺满可见」的默认值改成了无壁纸的 0%（用户反馈）。
+    in-out property <float> titlebar-default-transparency: 0.0;
+    in-out property <float> tabbar-default-transparency: 0.0;
+    in-out property <float> sidebar-default-transparency: 0.0;
+    in-out property <float> term-default-transparency: 0.0;
+    out property <float> titlebar-alpha: 1.0 - root.titlebar-transparency;
+    out property <float> tabbar-alpha:   1.0 - root.tabbar-transparency;
+    out property <float> sidebar-alpha:  1.0 - root.sidebar-transparency;
     out property <float> term-alpha:     1.0 - root.term-transparency;
     // (#popup-transparency 2026-10-17 语义定稿) 弹窗**透明度**：0 = 实心，
     // 1 = 完全透明。它和「遮罩浓度」是两个独立参数 —— 前者管弹窗自己透多少，
@@ -157,6 +167,8 @@ export global Theme {
     out property <brush> zone-sidebar-elev: root.zone-frost(base-bg-elevated, root.sidebar-alpha);
     // 文件面板里的"列头 / 目录树标题"这类**压暗一档的条带**（原 bg-root）。
     out property <brush> zone-sidebar-root: root.zone-frost(base-bg-root, root.sidebar-alpha);
+    // 侧栏里的**实心选中/徽标块**（原 bg-active）。
+    out property <brush> zone-sidebar-active: root.zone-frost(base-bg-active, root.sidebar-alpha);
     out property <brush> zone-tabbar:   root.zone-frost(root.slot-tbg,  root.tabbar-alpha);
     // (#hover-accent 2026-10-10) 悬浮高亮统一跟随强调色（用户定稿），
     // 取代原来「frost(slot-hov)」的绝对色写法。原写法的两个问题：

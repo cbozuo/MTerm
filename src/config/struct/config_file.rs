@@ -38,7 +38,8 @@ fn default_wallpaper() -> String {
 
 /// Bump when `migrate_defaults` gains a new one-time default-layout change.
 /// rev 5 = #follow-ui-removed（跟随系统下线：一律 follow=false、theme 落成具体一套）。
-pub const DEFAULTS_REV: u32 = 6;
+/// rev 7 = #wallpaper-scope-params（壁纸参数按 主题 × 壁纸 × 作用域 分层）。
+pub const DEFAULTS_REV: u32 = 7;
 
 pub(crate) const PREVIOUS_DEFAULT_WALLPAPER_TRANSPARENCY: f32 = 0.38;
 pub(crate) const PREVIOUS_DEFAULT_WALLPAPER_OVERLAY: f32 =
@@ -171,6 +172,73 @@ impl Default for AppearanceValues {
             scrim_alpha: DEFAULT_SCRIM_ALPHA,
         }
     }
+}
+
+/// (#wallpaper-scope-params 2026-10-18) 一张壁纸在**一种作用域下**的整套显示
+/// 数值。用户定稿：「一个壁纸有作用域有两种方式，每个方式都对应的参数」——
+/// 两种作用域各存一份，切作用域就是切这一套，互不覆盖。
+///
+/// 字段语义与 `AppearanceValues` 一致（alpha = 1 − 透明度）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScopeSettings {
+    #[serde(default = "default_panel_alpha")]
+    pub titlebar_alpha: f32,
+    #[serde(default = "default_panel_alpha")]
+    pub tabbar_alpha: f32,
+    #[serde(default = "default_panel_alpha")]
+    pub sidebar_alpha: f32,
+    #[serde(default = "default_term_alpha")]
+    pub term_alpha: f32,
+    /// 壁纸图自身透明度（0 = 完全显示）。
+    #[serde(default)]
+    pub wallpaper_transparency: f32,
+    /// 填充方式："auto" | "cover" | "contain" | "fill"。
+    #[serde(default = "default_wallpaper_fit")]
+    pub fit: String,
+}
+
+/// 首次给某个 (主题, 壁纸, 作用域) 建条目时用的出厂值。
+///
+/// (#wallpaper-first-defaults) 为什么不能沿用「四区全 0%」：出厂四区是不透明
+/// 的主题原色，壁纸在它们后面，一张也露不出来 → 刚设完壁纸满屏纯黑（用户
+/// 实测「都是黑色的」）。这里给出一套「一设就能看见壁纸」的起点，用户随后
+/// 随便调，调过的值就地保存。
+pub(crate) fn default_scope_settings(scope: &str) -> ScopeSettings {
+    if scope == "terminal" {
+        // 作用域 = 终端：壁纸只在中间区，三区后面没有图 → 保持主题原色。
+        ScopeSettings {
+            titlebar_alpha: DEFAULT_PANEL_ALPHA,
+            tabbar_alpha: DEFAULT_PANEL_ALPHA,
+            sidebar_alpha: DEFAULT_PANEL_ALPHA,
+            term_alpha: 0.72,
+            wallpaper_transparency: 0.0,
+            fit: default_wallpaper_fit(),
+        }
+    } else {
+        // 作用域 = 整个界面：四区各压一点，壁纸整屏可见但仍读得清字
+        // （2026-10-18 实机截图校准：再透一档侧栏正文就糊在亮色壁纸上了）。
+        ScopeSettings {
+            titlebar_alpha: 0.78,
+            tabbar_alpha: 0.70,
+            sidebar_alpha: 0.72,
+            term_alpha: 0.60,
+            wallpaper_transparency: 0.0,
+            fit: default_wallpaper_fit(),
+        }
+    }
+}
+
+impl Default for ScopeSettings {
+    fn default() -> Self {
+        default_scope_settings("window")
+    }
+}
+
+/// (#wallpaper-scope-params) 壁纸设置的存储键：`<主题 id>|<壁纸 id>|<作用域>`。
+/// Windows 文件名不允许 `|`，自定义壁纸路径不会含它；主题 id 是固定表里的
+/// 短标识，同样安全。
+pub(crate) fn wallpaper_key(theme: &str, wallpaper: &str, scope: &str) -> String {
+    format!("{theme}|{wallpaper}|{scope}")
 }
 
 /// On-disk layout. Keep additive to ease forward-compat.
@@ -438,6 +506,20 @@ pub struct ConfigFile {
     /// 壁纸填充方式："cover"（默认，铺满裁切）| "contain" | "fill"。
     #[serde(default = "default_wallpaper_fit")]
     pub wallpaper_fit: String,
+    // ── (#wallpaper-scope-params 2026-10-18) 主题 × 壁纸 × 作用域 三级参数 ──
+    // 用户定稿：「一个主题有多个壁纸，一个壁纸有作用域两种方式，每个方式都
+    // 对应的参数……切换主题，上一个主题的壁纸参数不要带入进来」。
+    /// 每个主题各自选中的壁纸 id（缺省 = 该主题没有壁纸）。
+    #[serde(default)]
+    pub wallpaper_by_theme: HashMap<String, String>,
+    /// 每个主题各自选中的作用域："window"（整个界面）| "terminal"（终端区）。
+    #[serde(default)]
+    pub wallpaper_scope_by_theme: HashMap<String, String>,
+    /// (主题, 壁纸, 作用域) → 四区不透明度 / 壁纸透明度 / 填充方式。
+    /// 键见 [`wallpaper_key`]；缺条目 = 该组合还没调过，读的时候用
+    /// `default_scope_settings`（首设默认值），调过之后就地写回。
+    #[serde(default)]
+    pub wallpaper_settings: HashMap<String, ScopeSettings>,
     /// (#scrim-style 2026-10-17) 遮罩样式：auto / dark / light / tint / soft /
     /// frost / spot / sheen / random。
     #[serde(default = "default_scrim_style")]

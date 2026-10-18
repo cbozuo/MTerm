@@ -244,9 +244,15 @@ pub(super) fn theme_state_of(window: &AppWindow, store: &ConfigStore) -> crate::
     crate::theme::ThemeState {
         theme_id: store.theme().to_string(),
         accent_mode,
-        // (#mode-values 2026-10-17) 两套都带上，resolve() 按主题明暗选槽。
-        appearance_dark: store.appearance_for(true).clone(),
-        appearance_light: store.appearance_for(false).clone(),
+        // (#wallpaper-scope-params 2026-10-18) 一次性解析出「当前生效」的一整套
+        // 数值：有壁纸 → (主题, 壁纸, 作用域) 那一套；无壁纸 → 明暗槽。
+        appearance: store.effective_appearance(),
+        // (#zone-default-context 2026-10-19) 双击复位的目标：有壁纸用该组合
+        // 首设默认值，无壁纸回 0% 透明（两者确实不同，用户定稿）。
+        zone_defaults: {
+            let (titlebar, tabbar, sidebar, term) = store.default_zone_alphas();
+            crate::theme::ZoneDefaults { titlebar, tabbar, sidebar, term }
+        },
         wallpaper_scope: store.wallpaper_scope().to_string(),
         wallpaper_fit: store.wallpaper_fit().to_string(),
         scrim_style: store.scrim_style().to_string(),
