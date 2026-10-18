@@ -244,10 +244,12 @@ pub(super) fn theme_state_of(window: &AppWindow, store: &ConfigStore) -> crate::
     crate::theme::ThemeState {
         theme_id: store.theme().to_string(),
         accent_mode,
-        panel_alpha: store.panel_alpha(),
-        term_alpha: store.term_alpha(),
-        wallpaper_visible: store.wallpaper_visible(),
-        popup_transparency: store.popup_transparency(),
+        // (#mode-values 2026-10-17) 两套都带上，resolve() 按主题明暗选槽。
+        appearance_dark: store.appearance_for(true).clone(),
+        appearance_light: store.appearance_for(false).clone(),
+        wallpaper_scope: store.wallpaper_scope().to_string(),
+        wallpaper_fit: store.wallpaper_fit().to_string(),
+        scrim_style: store.scrim_style().to_string(),
         dark_pref: theme_pref_is_dark(store),
     }
 }

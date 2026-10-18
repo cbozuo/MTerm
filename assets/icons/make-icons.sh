@@ -270,6 +270,22 @@ mk host-server '<rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="1
 # 故定在 3 格（近竖直）。实测 12 / 16 / 20px 分量 3，最高对手 arrow-up 0.471。
 mk quick-command '<path d="M7 7 3 12l4 5"/><path d="M13.5 6 10.5 18"/><path d="M17 7l4 5-4 5"/>'
 mk plug '<path d="M17 19a1 1 0 0 1-1-1v-2a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2a1 1 0 0 1-1 1z"/><path d="M17 21v-2"/><path d="M19 14V6.5a1 1 0 0 0-7 0v11a1 1 0 0 1-7 0V10"/><path d="M21 21v-2"/><path d="M3 5V3"/><path d="M4 10a2 2 0 0 1-2-2V6a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2a2 2 0 0 1-2 2z"/><path d="M7 5V3"/>'
+# ── 外观（Appearance，设置侧栏首个 NavItem，interface_panel.slint:1080）────────────
+# 【2026-10-18 重画】旧形 = 整圆 + 右半实心（macOS Appearance 语言），用户判定「丑、不协调」。
+# 实测旧形（scripts/icon-sim.py，16px 档）：墨量 0.369（全库均值 0.229）——右半实心那一块
+#   让它成为全库偏重的一档；r=0.607 click-locate / 0.561 play / 0.555 refresh，都与
+#   play（r=9 圆 + 内部实心三角）同骨架。
+# 第一轮候选（抽象向）结论：**凡是「圆 + 内部笔画」都躲不开 play / refresh 骨架**
+#   半调轮廓圆（圆 + 内半弧）  墨量 0.226  vs play 0.880  ← 出局
+#   粗细对比环（圆 + 粗弧）    墨量 0.292  vs play 0.723  ← 出局（且破 2px 统一线宽）
+#   双圆叠加                   墨量 0.255  最高 0.599     ← 数据过关但用户判「不协调」，未采用
+# 第二轮按用户方向改走**服饰隐喻**（用户原话「有个小裙子的形象」）。三款同体检表：
+#   A 字裙   墨量 0.201  最高 0.488 (table-rows)
+#   T 恤★   墨量 0.257  最高 0.459 (session-reconnect)  ← 用户选定
+#   水滴     墨量 0.166  最高 0.559 (warning)
+# 取 Lucide shirt 原形：语义「换装 / 皮肤」，比纯几何更直观；且与 palette / palette-grid
+# （调色）、wallpaper（画框）三条已有路线都不撞。
+mk appearance '<path d="M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z"/>'
 mk refresh '<path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/>'
 
 echo "generated: $(ls *.svg | wc -l) icons"

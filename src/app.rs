@@ -1104,9 +1104,15 @@ fn sync_tray_theme(main: &AppWindow, tray: &TrayMenuWindow) {
     to.set_slot_dg(from.get_slot_dg());
     to.set_group_colors(from.get_group_colors());
     to.set_channel_colors(from.get_channel_colors());
-    to.set_panel_alpha(from.get_panel_alpha());
-    to.set_term_alpha(from.get_term_alpha());
-    to.set_wallpaper_visible(from.get_wallpaper_visible());
+    to.set_titlebar_transparency(from.get_titlebar_transparency());
+    to.set_tabbar_transparency(from.get_tabbar_transparency());
+    to.set_sidebar_transparency(from.get_sidebar_transparency());
+    to.set_term_transparency(from.get_term_transparency());
+    to.set_wallpaper_transparency(from.get_wallpaper_transparency());
+    to.set_wallpaper_scope(from.get_wallpaper_scope());
+    to.set_wallpaper_fit(from.get_wallpaper_fit());
+    to.set_scrim_style(from.get_scrim_style());
+    to.set_scrim_strength(from.get_scrim_strength());
     to.set_popup_transparency(from.get_popup_transparency());
 }
 
@@ -1216,7 +1222,8 @@ fn arm_tray_flyout_chrome(sw: &slint::Window) {
     if TRAY_CHROME_DONE.with(|c| c.get()) {
         return;
     }
-    apply_window_chrome(sw);
+    // 托盘弹层不需要自绘主窗框，圆角结果忽略即可。
+    let _ = apply_window_chrome(sw);
     #[cfg(windows)]
     {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -1892,6 +1899,51 @@ pub fn run(intent: crate::app::launch::LaunchIntent) -> Result<()> {
     Ok(())
 }
 
+/// (#theme-gallery 2026-10-17) 一套主题 → 选择器/画廊通用行模型。
+/// entries（完整列表）与 favorites（外观页画廊）共用同一份字段填充 —— 两处
+/// 展示必须逐字段一致（同色点、同八色带、同明暗），避免各写一份迟早漂移。
+fn make_theme_entry(p: &'static crate::theme::palettes::Palette, faved: bool) -> crate::ui::ThemeEntry {
+    crate::ui::ThemeEntry {
+        id: p.id.into(),
+        zh: p.zh.into(),
+        mode: if p.dark { "暗".into() } else { "亮".into() },
+        kind: p.kind.into(),
+        root: crate::theme::color(p.root),
+        panel: crate::theme::color(p.panel),
+        tbg: crate::theme::color(p.tbg),
+        tfg: crate::theme::color(p.tfg),
+        ac: crate::theme::color(p.ac),
+        // §5 行缩略的 ANSI 八色带：槽 1/2/3/4/5/6/9/14（高保真 mock 同款）
+        ansi_eight: ModelRc::from(Rc::new(VecModel::from(
+            [1usize, 2, 3, 4, 5, 6, 9, 14]
+                .iter()
+                .map(|&i| crate::theme::color(p.ansi16[i]))
+                .collect::<Vec<_>>(),
+        ))),
+        faved,
+        matched: true,
+    }
+}
+
+/// (#theme-gallery 2026-10-17) 「常用」快捷位模型（外观页主题画廊）：过滤非法
+/// id / 去重，按 config 顺序，上限由写入端（toggle-favorite-theme）兜住。
+fn build_theme_favorites(favorites: &[String]) -> Vec<crate::ui::ThemeEntry> {
+    let mut seen: Vec<&str> = Vec::new();
+    let mut out = Vec::new();
+    for id in favorites {
+        let Some(p) = crate::theme::find(id) else { continue };
+        if seen.contains(&p.id) {
+            continue;
+        }
+        seen.push(p.id);
+        out.push(make_theme_entry(p, true));
+        if out.len() >= crate::theme::FAVORITE_LIMIT {
+            break;
+        }
+    }
+    out
+}
+
 /// (#theme-dedupe §5) 构建主题选择器的行模型：常用区 → 全部主题区。
 /// 常用 = `fav_ids`（store.favorite_themes()，出厂门面两套），过滤非法 id /
 /// 去重后按列表顺序展开；全部主题区 = 其余套，(#theme-group-mode 2026-10-15)
@@ -1916,31 +1968,19 @@ fn build_theme_entries(favorites: &[String]) -> Vec<crate::ui::ThemeEntry> {
         faved: false,
         matched: true,
     };
-    let make = |p: &'static crate::theme::palettes::Palette, faved: bool| crate::ui::ThemeEntry {
-        id: p.id.into(),
-        zh: p.zh.into(),
-        mode: if p.dark { "暗".into() } else { "亮".into() },
-        kind: p.kind.into(),
-        root: crate::theme::color(p.root),
-        panel: crate::theme::color(p.panel),
-        tbg: crate::theme::color(p.tbg),
-        tfg: crate::theme::color(p.tfg),
-        ac: crate::theme::color(p.ac),
-        // §5 行缩略的 ANSI 八色带：槽 1/2/3/4/5/6/9/14（高保真 mock 同款）
-        ansi_eight: ModelRc::from(Rc::new(VecModel::from(
-            [1usize, 2, 3, 4, 5, 6, 9, 14]
-                .iter()
-                .map(|&i| crate::theme::color(p.ansi16[i]))
-                .collect::<Vec<_>>(),
-        ))),
-        faved,
-        matched: true,
+    let make = |p: &'static crate::theme::palettes::Palette, faved: bool| {
+        make_theme_entry(p, faved)
     };
-    // 常用 id：过滤非法 id（老配置 / 手改）并去重（上限已在写入端兜住）。
+    // 常用 id：过滤非法 id（老配置 / 手改）并去重；上限按 FAVORITE_LIMIT 截断
+    // —— 旧配置上限是 8，画廊只有 4 格，两处必须同源（否则列表里的「常用」
+    // 比画廊多出几套却看不见）。
     let mut fav_ids: Vec<String> = Vec::new();
     for id in favorites {
         if crate::theme::find(id).is_some() && !fav_ids.contains(id) {
             fav_ids.push(id.clone());
+            if fav_ids.len() >= crate::theme::FAVORITE_LIMIT {
+                break;
+            }
         }
     }
     let mut entries: Vec<crate::ui::ThemeEntry> = Vec::new();
@@ -2674,12 +2714,12 @@ fn open_window(
             let mut s = store.borrow_mut();
             s.set_zen_mode(enabled);
             let _ = s.save();
-            let sidebar_visible = weak
+            let right_sidebar_visible = weak
                 .upgrade()
-                .map(|window| !window.get_sidebar_collapsed())
+                .map(|window| !window.get_right_sidebar_collapsed())
                 .unwrap_or(false);
             for handle in handles.borrow().values() {
-                handle.set_resource_monitoring(!enabled && sidebar_visible);
+                handle.set_resource_monitoring(!enabled && right_sidebar_visible);
             }
         });
     }
@@ -2688,38 +2728,36 @@ fn open_window(
     // checkboxes, apply the collapsed state once at startup, and persist toggles.
     {
         let s = store.borrow();
-        let collapse_sidebar = s.collapse_sidebar_default();
+        let collapse_sidebar = s.collapse_right_sidebar_default();
         let collapse_sftp = s.collapse_sftp_default();
-        let sidebar_dock = s.sidebar_dock();
-        let welcome_as_sidebar = s.welcome_as_sidebar();
+        let right_sidebar_dock = s.right_sidebar_dock();
         let quick_commands_as_sidebar = s.quick_commands_as_sidebar();
         let quick_panel_open = quick_commands_as_sidebar && s.quick_panel_open();
         let quick_panel_collapsed = s.quick_panel_collapsed();
         let quick_panel_dock = s.quick_panel_dock();
-        let welcome_sidebar_dock = s.welcome_sidebar_dock();
-        let mut sidebar_collapsed = s.sidebar_collapsed().unwrap_or(collapse_sidebar);
-        let mut welcome_collapsed = s.welcome_collapsed().unwrap_or(false);
-        if welcome_as_sidebar
-            && sidebar_dock == welcome_sidebar_dock
-            && !sidebar_collapsed
-            && !welcome_collapsed
+        let left_sidebar_dock = s.left_sidebar_dock();
+        let mut right_sidebar_collapsed = s.right_sidebar_collapsed().unwrap_or(collapse_sidebar);
+        let mut left_sidebar_collapsed = s.left_sidebar_collapsed().unwrap_or(false);
+        if right_sidebar_dock == left_sidebar_dock
+            && !right_sidebar_collapsed
+            && !left_sidebar_collapsed
         {
-            sidebar_collapsed = true;
+            right_sidebar_collapsed = true;
         }
         if quick_panel_open && !quick_panel_collapsed {
-            if sidebar_dock == quick_panel_dock {
-                sidebar_collapsed = true;
+            if right_sidebar_dock == quick_panel_dock {
+                right_sidebar_collapsed = true;
             }
-            if welcome_as_sidebar && welcome_sidebar_dock == quick_panel_dock {
-                welcome_collapsed = true;
+            if left_sidebar_dock == quick_panel_dock {
+                left_sidebar_collapsed = true;
             }
         }
-        window.set_collapse_sidebar_default(collapse_sidebar);
+        window.set_collapse_right_sidebar_default(collapse_sidebar);
         window.set_collapse_sftp_default(collapse_sftp);
         // Restore the persisted panel docking layout (#dock).
-        window.set_sidebar_width(s.sidebar_width());
-        window.set_sidebar_height(s.sidebar_height());
-        window.set_sidebar_dock(sidebar_dock.into());
+        window.set_right_sidebar_width(s.right_sidebar_width());
+        window.set_right_sidebar_height(s.right_sidebar_height());
+        window.set_right_sidebar_dock(right_sidebar_dock.into());
         window.set_sftp_panel_width(s.sftp_panel_width());
         window.set_sftp_panel_height(s.sftp_panel_height());
         window.set_sftp_tree_width(s.sftp_tree_width());
@@ -2737,12 +2775,10 @@ fn open_window(
         window.set_quick_panel_width(s.quick_panel_width());
         window.set_quick_panel_height(s.quick_panel_height());
         window.set_quick_panel_dock(quick_panel_dock.into());
-        window.set_welcome_as_sidebar(welcome_as_sidebar);
-        window.set_welcome_sidebar_width(s.welcome_sidebar_width());
-        window.set_welcome_sidebar_dock(welcome_sidebar_dock.into());
-        window.set_welcome_collapsed(welcome_collapsed);
-        window.set_sidebar_collapsed(sidebar_collapsed);
-        window.set_wallpaper_overlay(s.wallpaper_overlay());
+        window.set_left_sidebar_width(s.left_sidebar_width());
+        window.set_left_sidebar_dock(left_sidebar_dock.into());
+        window.set_left_sidebar_collapsed(left_sidebar_collapsed);
+        window.set_right_sidebar_collapsed(right_sidebar_collapsed);
         if collapse_sftp {
             window.set_sftp_collapsed(true);
             window.set_sftp_saved_height(s.sftp_panel_height());
@@ -2756,9 +2792,9 @@ fn open_window(
     }
     {
         let store = store.clone();
-        window.on_set_collapse_sidebar_default(move |v| {
+        window.on_set_collapse_right_sidebar_default(move |v| {
             let mut s = store.borrow_mut();
-            s.set_collapse_sidebar_default(v);
+            s.set_collapse_right_sidebar_default(v);
             let _ = s.save();
         });
     }
@@ -2782,9 +2818,9 @@ fn open_window(
     }
     {
         let store = store.clone();
-        window.on_persist_sidebar_width(move |w| {
+        window.on_persist_right_sidebar_width(move |w| {
             let mut s = store.borrow_mut();
-            s.set_sidebar_width(w);
+            s.set_right_sidebar_width(w);
             let _ = s.save();
         });
     }
@@ -2792,9 +2828,9 @@ fn open_window(
         let store = store.clone();
         let handles = handles.clone();
         let weak = window.as_weak();
-        window.on_set_sidebar_collapsed(move |v| {
+        window.on_set_right_sidebar_collapsed(move |v| {
             let mut s = store.borrow_mut();
-            s.set_sidebar_collapsed(v);
+            s.set_right_sidebar_collapsed(v);
             let _ = s.save();
             let zen = weak
                 .upgrade()
@@ -2807,33 +2843,25 @@ fn open_window(
     }
     {
         let store = store.clone();
-        window.on_persist_welcome_sidebar_width(move |w| {
+        window.on_persist_left_sidebar_width(move |w| {
             let mut s = store.borrow_mut();
-            s.set_welcome_sidebar_width(w);
+            s.set_left_sidebar_width(w);
             let _ = s.save();
         });
     }
     {
         let store = store.clone();
-        window.on_persist_welcome_sidebar_dock(move |dock| {
+        window.on_persist_left_sidebar_dock(move |dock| {
             let mut s = store.borrow_mut();
-            s.set_welcome_sidebar_dock(dock.to_string());
+            s.set_left_sidebar_dock(dock.to_string());
             let _ = s.save();
         });
     }
     {
         let store = store.clone();
-        window.on_set_welcome_collapsed(move |v| {
+        window.on_set_left_sidebar_collapsed(move |v| {
             let mut s = store.borrow_mut();
-            s.set_welcome_collapsed(v);
-            let _ = s.save();
-        });
-    }
-    {
-        let store = store.clone();
-        window.on_persist_wallpaper_overlay(move |v| {
-            let mut s = store.borrow_mut();
-            s.set_wallpaper_overlay(v);
+            s.set_left_sidebar_collapsed(v);
             let _ = s.save();
         });
     }
@@ -3567,14 +3595,10 @@ fn open_window(
     // Split-pane layout tree (v0.5). Starts as a single pane owning the welcome
     // tab; tab opens/closes/moves mutate it and re-flatten into the `panes`
     // model. `content_size` is the pane-area px size reported from Slint.
-    // In welcome-as-sidebar mode the session list lives in a left panel, so the
-    // layout starts empty (no "welcome" tab); otherwise it owns the welcome tab.
-    let welcome_sidebar = store.borrow().welcome_as_sidebar();
-    let layout: Rc<RefCell<crate::layout::Layout>> = Rc::new(RefCell::new(if welcome_sidebar {
-        crate::layout::Layout::new(Vec::new(), String::new())
-    } else {
-        crate::layout::Layout::new(vec!["welcome".into()], "welcome".into())
-    }));
+    // The session list lives in the left panel, so the tab layout starts empty
+    // (no "welcome" tab).
+    let layout: Rc<RefCell<crate::layout::Layout>> =
+        Rc::new(RefCell::new(crate::layout::Layout::new(Vec::new(), String::new())));
     let content_size: Rc<std::cell::Cell<(f32, f32)>> =
         Rc::new(std::cell::Cell::new((1200.0, 800.0)));
     // Persistent pane / splitter models. refresh_panes updates these IN PLACE so
@@ -3620,57 +3644,6 @@ fn open_window(
                     &splitters_model,
                 );
             }
-        });
-    }
-    // Toggle welcome-as-sidebar at runtime: persist, then move the welcome tab in
-    // or out of the split-tree (sidebar mode = no welcome tab) and re-flatten.
-    {
-        let weak = window.as_weak();
-        let store = store.clone();
-        let layout = layout.clone();
-        let content_size = content_size.clone();
-        let tabs_model = tabs_model.clone();
-        let panes_model = panes_model.clone();
-        let splitters_model = splitters_model.clone();
-        window.on_set_welcome_as_sidebar(move |v| {
-            // The property is two-way-bound through InterfacePanel and changing
-            // it destroys/recreates the Welcome subtree that owns the Switch.
-            // Persist first: saving config does not touch the Slint tree, and
-            // doing it synchronously means an immediate window close cannot
-            // lose the preference. Only the property/layout transition needs
-            // to wait until this Switch callback has returned (#323).
-            {
-                let mut s = store.borrow_mut();
-                s.set_welcome_as_sidebar(v);
-                if let Err(error) = s.save() {
-                    tracing::warn!("failed to persist welcome sidebar preference: {error:#}");
-                }
-            }
-            let weak = weak.clone();
-            let layout = layout.clone();
-            let content_size = content_size.clone();
-            let tabs_model = tabs_model.clone();
-            let panes_model = panes_model.clone();
-            let splitters_model = splitters_model.clone();
-            let store = store.clone();
-            slint::Timer::single_shot(std::time::Duration::ZERO, move || {
-                if let Some(w) = weak.upgrade() {
-                    w.set_welcome_as_sidebar(v);
-                    {
-                        let mut lay = layout.borrow_mut();
-                        update_welcome_tab(&mut lay, v);
-                    }
-                    refresh_panes(
-                        &w,
-                        &layout.borrow(),
-                        content_size.get(),
-                        &store.borrow(),
-                        &tabs_model,
-                        &panes_model,
-                        &splitters_model,
-                    );
-                }
-            });
         });
     }
     // Per-session SFTP state: collapse + sizes live in each tab's TerminalState so
@@ -4455,9 +4428,15 @@ fn rebuild_theme_entries(
     store: &ConfigStore,
     full: &Rc<RefCell<Vec<crate::ui::ThemeEntry>>>,
 ) {
-    let entries = build_theme_entries(&store.favorite_themes());
+    let favorites = store.favorite_themes();
+    let entries = build_theme_entries(&favorites);
     *full.borrow_mut() = entries.clone();
     window.set_theme_entries(ModelRc::from(Rc::new(VecModel::from(entries))));
+    // (#theme-gallery 2026-10-17) 外观页画廊的快捷位 = 同一份 config 列表的投影。
+    // 与完整列表同一次重建，星标增删后画廊立刻跟着变（单一数据源）。
+    window.set_theme_favorites(ModelRc::from(Rc::new(VecModel::from(
+        build_theme_favorites(&favorites),
+    ))));
 }
 
 /// (#theme-dedupe §5) 搜索过滤：匹配 中文名 / id / 明暗词 / 色相名
@@ -4823,11 +4802,31 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
                 }
             }
         });
-        window.on_set_panel_alpha({
+        // (#zone-alpha 2026-10-17) 四分区透明度：标题栏 / 标签栏 / 侧栏 / 终端区。
+        window.on_set_titlebar_alpha({
             let (weak, store, bufs, registry) =
                 (weak.clone(), store.clone(), bufs_theme.clone(), registry.clone());
             move |v: f32| {
-                store.borrow_mut().set_panel_alpha(v);
+                let dark = weak.upgrade().map(|w| w.get_dark_mode()).unwrap_or(true);
+                store.borrow_mut().set_titlebar_alpha(v, dark);
+                reapply_theme(&weak, &bufs, &store.borrow(), &registry);
+            }
+        });
+        window.on_set_tabbar_alpha({
+            let (weak, store, bufs, registry) =
+                (weak.clone(), store.clone(), bufs_theme.clone(), registry.clone());
+            move |v: f32| {
+                let dark = weak.upgrade().map(|w| w.get_dark_mode()).unwrap_or(true);
+                store.borrow_mut().set_tabbar_alpha(v, dark);
+                reapply_theme(&weak, &bufs, &store.borrow(), &registry);
+            }
+        });
+        window.on_set_sidebar_alpha({
+            let (weak, store, bufs, registry) =
+                (weak.clone(), store.clone(), bufs_theme.clone(), registry.clone());
+            move |v: f32| {
+                let dark = weak.upgrade().map(|w| w.get_dark_mode()).unwrap_or(true);
+                store.borrow_mut().set_sidebar_alpha(v, dark);
                 reapply_theme(&weak, &bufs, &store.borrow(), &registry);
             }
         });
@@ -4835,23 +4834,83 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
             let (weak, store, bufs, registry) =
                 (weak.clone(), store.clone(), bufs_theme.clone(), registry.clone());
             move |v: f32| {
-                store.borrow_mut().set_term_alpha(v);
+                let dark = weak.upgrade().map(|w| w.get_dark_mode()).unwrap_or(true);
+                store.borrow_mut().set_term_alpha(v, dark);
                 reapply_theme(&weak, &bufs, &store.borrow(), &registry);
             }
         });
-        window.on_set_wallpaper_visible({
+        window.on_set_wallpaper_transparency({
             let (weak, store, bufs, registry) =
                 (weak.clone(), store.clone(), bufs_theme.clone(), registry.clone());
             move |v: f32| {
-                store.borrow_mut().set_wallpaper_visible(v);
+                let dark = weak.upgrade().map(|w| w.get_dark_mode()).unwrap_or(true);
+                store.borrow_mut().set_wallpaper_transparency(v, dark);
+                reapply_theme(&weak, &bufs, &store.borrow(), &registry);
+                // 透明度只影响壁纸层 alpha，不必重渲染终端 buffer；但 apply 已经
+                // 是最小路径，这里不再额外优化。
+            }
+        });
+        window.on_set_wallpaper_scope({
+            let (weak, store, bufs, registry) =
+                (weak.clone(), store.clone(), bufs_theme.clone(), registry.clone());
+            move |v: SharedString| {
+                store.borrow_mut().set_wallpaper_scope(v.to_string());
                 reapply_theme(&weak, &bufs, &store.borrow(), &registry);
             }
         });
+        window.on_set_wallpaper_fit({
+            let (weak, store, bufs, registry) =
+                (weak.clone(), store.clone(), bufs_theme.clone(), registry.clone());
+            move |v: SharedString| {
+                store.borrow_mut().set_wallpaper_fit(v.to_string());
+                reapply_theme(&weak, &bufs, &store.borrow(), &registry);
+            }
+        });
+        window.on_set_scrim_style({
+            let (weak, store, bufs, registry) =
+                (weak.clone(), store.clone(), bufs_theme.clone(), registry.clone());
+            move |v: SharedString| {
+                store.borrow_mut().set_scrim_style(v.to_string());
+                reapply_theme(&weak, &bufs, &store.borrow(), &registry);
+            }
+        });
+        window.on_set_scrim_alpha({
+            let (weak, store, bufs, registry) =
+                (weak.clone(), store.clone(), bufs_theme.clone(), registry.clone());
+            move |v: f32| {
+                let dark = weak.upgrade().map(|w| w.get_dark_mode()).unwrap_or(true);
+                store.borrow_mut().set_scrim_alpha(v, dark);
+                reapply_theme(&weak, &bufs, &store.borrow(), &registry);
+            }
+        });
+        // (#scrim-rand 2026-10-17) 「随机」遮罩样式：Scrim 每次出现（= 弹框打开）
+        // 调一次本回调，这里重掷 0..8 的抽签 —— 即「每次打开弹窗换一种」。
+        // 其它档位直接不管（Scrim 只在 random 时依赖抽签值）。
+        {
+            let weak = window.as_weak();
+            window
+                .global::<crate::ui::Theme<'_>>()
+                .on_scrim_roll(move || {
+                    let Some(w) = weak.upgrade() else { return };
+                    let t = w.global::<crate::ui::Theme<'_>>();
+                    if t.get_scrim_style() != "random" {
+                        return;
+                    }
+                    // 无 rand 依赖：SystemTime 纳秒低位足够（每次开框只需"换个样子"，
+                    // 不需要统计随机性）。
+                    let nanos = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.subsec_nanos())
+                        .unwrap_or(0);
+                    t.set_scrim_random_pick((nanos % 8) as i32);
+                });
+        }
         window.on_set_popup_transparency({
             let (weak, store, bufs, registry) =
                 (weak.clone(), store.clone(), bufs_theme.clone(), registry.clone());
-            move |v: i32| {
-                store.borrow_mut().set_popup_transparency(v);
+            move |v: f32| {
+                let dark = weak.upgrade().map(|w| w.get_dark_mode()).unwrap_or(true);
+                store.borrow_mut().set_popup_transparency(v, dark);
                 reapply_theme(&weak, &bufs, &store.borrow(), &registry);
             }
         });
@@ -5212,7 +5271,7 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
         SystemSampler::recommended_interval(),
         move || {
             let Some(window) = weak.upgrade() else { return };
-            if window.get_sidebar_collapsed() || window.get_zen_mode() {
+            if window.get_right_sidebar_collapsed() || window.get_zen_mode() {
                 return;
             }
             // Skip the (non-trivial) sysinfo refresh + sidebar repaint when no one
@@ -5240,7 +5299,7 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
 
             // Everything (status, CPU/mem/swap, both graphs) follows the
             // active tab; refresh_sidebar reads the stores we just updated.
-            if sidebar_updates_visible(&window) {
+            if right_sidebar_updates_visible(&window) {
                 refresh_sidebar(&window, &tick_statuses, &tick_local, &tick_net);
             }
         },
@@ -5304,7 +5363,11 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
                         if !chrome_done {
                             chrome_done = true;
                             if let Some(win) = weak.upgrade() {
-                                apply_window_chrome(win.window());
+                                // (#win-edge-frame-r7 2026-10-18) DWM 圆角的
+                                // HRESULT 回写 UI：Win10 / 调用失败时只画直角
+                                // 直边（窗口本身直角，直边铺满即贴边）。
+                                let rounded = apply_window_chrome(win.window());
+                                win.set_win_rounded(rounded);
                             }
                             // (#win-icon-hook-merge 2026-10-10) 图标设置并入本钩子的
                             // 首事件分支。on_winit_window_event 是**单槽**回调(后注册
@@ -6224,33 +6287,33 @@ fn app_content_area(win: &AppWindow) -> LogicalRect {
         return area;
     }
 
-    if win.get_welcome_as_sidebar() {
-        let dock = win.get_welcome_sidebar_dock().to_string();
-        let sidebar_strip_outside = !win.get_welcome_collapsed()
-            && win.get_sidebar_collapsed()
-            && win.get_sidebar_dock().as_str() == dock.as_str();
-        let welcome_taken = (if win.get_welcome_collapsed() {
+    {
+        let dock = win.get_left_sidebar_dock().to_string();
+        let right_sidebar_strip_outside = !win.get_left_sidebar_collapsed()
+            && win.get_right_sidebar_collapsed()
+            && win.get_right_sidebar_dock().as_str() == dock.as_str();
+        let left_sidebar_taken = (if win.get_left_sidebar_collapsed() {
             36.0
         } else {
-            win.get_welcome_sidebar_width()
-        }) + if sidebar_strip_outside { 36.0 } else { 0.0 };
+            win.get_left_sidebar_width()
+        }) + if right_sidebar_strip_outside { 36.0 } else { 0.0 };
         shrink_edge(
             &mut area.x,
             &mut area.y,
             &mut area.w,
             &mut area.h,
             &dock,
-            welcome_taken,
+            left_sidebar_taken,
         );
     }
 
-    let side_dock = win.get_sidebar_dock().to_string();
-    let side_take = if win.get_sidebar_collapsed() {
+    let side_dock = win.get_right_sidebar_dock().to_string();
+    let side_take = if win.get_right_sidebar_collapsed() {
         36.0
     } else if side_dock == "left" || side_dock == "right" {
-        win.get_sidebar_width() + 4.0
+        win.get_right_sidebar_width() + 4.0
     } else {
-        win.get_sidebar_height() + 4.0
+        win.get_right_sidebar_height() + 4.0
     };
     shrink_edge(
         &mut area.x,
@@ -6263,10 +6326,9 @@ fn app_content_area(win: &AppWindow) -> LogicalRect {
     if win.get_quick_panel_open() {
         let quick_dock = win.get_quick_panel_dock().to_string();
         let quick_merged = win.get_quick_panel_collapsed()
-            && ((win.get_welcome_as_sidebar()
-                && win.get_welcome_collapsed()
-                && win.get_welcome_sidebar_dock().as_str() == quick_dock.as_str())
-                || (win.get_sidebar_collapsed() && side_dock.as_str() == quick_dock.as_str()));
+            && ((win.get_left_sidebar_collapsed()
+                && win.get_left_sidebar_dock().as_str() == quick_dock.as_str())
+                || (win.get_right_sidebar_collapsed() && side_dock.as_str() == quick_dock.as_str()));
         if quick_merged {
             return area;
         }
@@ -8813,10 +8875,10 @@ fn save_layout(win: &AppWindow, store: &Rc<RefCell<ConfigStore>>) {
     let w = size.width as f32 / scale;
     let h = size.height as f32 / scale;
     let mut s = store.borrow_mut();
-    s.set_sidebar_width(win.get_sidebar_width());
-    s.set_sidebar_height(win.get_sidebar_height());
-    s.set_sidebar_dock(win.get_sidebar_dock().to_string());
-    s.set_sidebar_collapsed(win.get_sidebar_collapsed());
+    s.set_right_sidebar_width(win.get_right_sidebar_width());
+    s.set_right_sidebar_height(win.get_right_sidebar_height());
+    s.set_right_sidebar_dock(win.get_right_sidebar_dock().to_string());
+    s.set_right_sidebar_collapsed(win.get_right_sidebar_collapsed());
     s.set_sftp_panel_width(win.get_sftp_panel_width());
     s.set_sftp_panel_height(win.get_sftp_panel_height());
     s.set_sftp_dock(win.get_sftp_dock().to_string());
@@ -8825,9 +8887,9 @@ fn save_layout(win: &AppWindow, store: &Rc<RefCell<ConfigStore>>) {
     s.set_quick_panel_width(win.get_quick_panel_width());
     s.set_quick_panel_height(win.get_quick_panel_height());
     s.set_quick_panel_dock(win.get_quick_panel_dock().to_string());
-    s.set_welcome_sidebar_width(win.get_welcome_sidebar_width());
-    s.set_welcome_sidebar_dock(win.get_welcome_sidebar_dock().to_string());
-    s.set_welcome_collapsed(win.get_welcome_collapsed());
+    s.set_left_sidebar_width(win.get_left_sidebar_width());
+    s.set_left_sidebar_dock(win.get_left_sidebar_dock().to_string());
+    s.set_left_sidebar_collapsed(win.get_left_sidebar_collapsed());
     // A maximized size isn't a useful "preferred" size to restore to, so only
     // remember the windowed size. Ask the native window too, because the Slint
     // property can lag during startup/shutdown on frameless Windows (#234).
@@ -8889,18 +8951,6 @@ fn update_terminal_row(
         }
     }
 }
-
-fn update_welcome_tab(layout: &mut crate::layout::Layout, as_sidebar: bool) {
-    if as_sidebar {
-        layout.remove_tab("welcome");
-    } else if layout.leaf_of_tab("welcome").is_none() {
-        layout.add_tab("welcome".into());
-    }
-}
-
-#[cfg(test)]
-#[path = "../tests/app/welcome_sidebar/mod.rs"]
-mod welcome_sidebar_tests;
 
 fn refresh_panes(
     window: &AppWindow,

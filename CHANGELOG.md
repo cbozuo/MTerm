@@ -1,11 +1,58 @@
-
 # Changelog / 更新日志
 
-All notable changes are documented here. 本文件记录所有重要变更。
+All notable changes are documented here. 本文件记录所有重要变更。  
 中英对照（中文在前，English after）.
+
 
 ## [Unreleased]
 
+- **主界面区域边界线统一为 1 设备像素：修掉"不同区域重叠时线条加粗"（#line-dedup）。** 用户截图圈出 6 处：左右侧栏边界线、标题栏底线在左右侧栏上方都变成了 2 像素。真机 + 代码核对出三处叠线：① 左栏容器里残留一条 `1px`（**逻辑**像素）边线——200% 下就是 **2 设备像素**；② compact 侧栏卡片、右栏根节点各有一圈 hairline 边框，与标题栏底线 / splitter 可见线 / 窗口描边**相邻叠画**（相邻两行/列各一条 = 2 像素）；③ splitter 可见线原来"在 4px 命中区里居中"，125%/150%/200% 这类缩放下会落在半设备像素上，被抗锯齿摊成两个半透明像素（又粗又虚）。现在每条区域边界**全屏只保留一条线**：由 splitter 可见线承担——位置经 `Theme.snap-to-device` 对齐侧栏真实边缘（dock 左/上用边界内侧一设备像素，dock 右/下用边界本身），厚 1 设备像素；左栏容器那条逻辑像素边线、compact 卡片边框、右栏根边框全部删除（它们的边由标题栏底线 / splitter 线 / 窗口描边各自负责）。200% 真机（软件渲染 + femtovg 两套）实测：左/右边界、标题栏底线在左右侧栏上方、以及用户圈出的各个高度，全部恰好 1 物理像素 `border-subtle`，无第二条线。
+- **左右两条可拖宽的边界线 hover 高亮（#line-dedup）。** hover 或拖动时边界线整条转强调色（120ms 过渡），仍是 1 设备像素、不变粗；左右两条行为一致。真机验证：hover 时该像素 = accent `(31,200,180)`（mterm-dark），左右邻像素仍是面板/终端底色（没有第二条、没有加粗）；新增离屏像素回归 `tests/sidebar_boundaries.rs`（边界 1 像素 + 标题栏底线在侧栏上方 1 像素 + hover 变 accent + 移开复原）。
+- **Zone boundaries are a single device pixel again; no more doubled lines where regions meet (#line-dedup).** The user circled six spots where the left/right sidebar boundary and the title-bar underline above each sidebar looked twice as thick. Three overlapping line sources were found: (1) the left sidebar container still drew a `1px` **logical** line — 2 device px at 200%; (2) the compact sidebar card and the right sidebar root each had their own hairline border, drawn *next to* the title-bar underline / splitter line / window frame (two adjacent rows/cols = 2 px); (3) the splitter's visible line was centred inside its 4 px hit area, so at 125/150/200% it landed on a half device pixel and was antialiased into two half-transparent columns. Now each zone boundary has exactly **one** line: the splitter's visible line, snapped to the device grid and aligned with the sidebar's real edge (one device px inside for left/top docks, the boundary itself for right/bottom docks), 1 device px thick. The left container's logical-pixel line, the compact card border and the right sidebar root border were removed; their edges are covered by the title-bar underline, the splitter line and the window frame respectively. On-device at 200% (software and femtovg renderers) every circled spot is exactly one physical pixel of `border-subtle`, with no second line.
+- **The two draggable sidebar boundaries highlight on hover (#line-dedup).** Hovering or dragging turns the whole boundary line accent-coloured (120 ms transition) while staying exactly one device pixel thick; both sides behave identically. Verified on-device: the hovered pixel becomes accent `(31,200,180)` (mterm-dark) and its neighbours stay panel/terminal background (no second column, no thickening). New offscreen pixel regression: `tests/sidebar_boundaries.rs` (one-pixel boundaries, one-pixel title-bar underline above the sidebars, accent on hover, restore after leaving).
+
+- **主窗口外框改成「线与窗口边界重合」：修掉四角断线 + 直边 1 像素缝（#win-edge-frame-r7）。** 用户反馈「主界面周围的细线与边界没有真正重叠贴合」。真机实测（200% DPI，把 DWM 系统边框染成主题色后拟合窗口外缘圆）发现两处根因：① **Win11 的 DWM 圆角是 8 DIP**（200% 下 16 物理像素），旧代码 `radius-win = 8px / device-pixel-ratio` 把它当成「固定 8 物理像素」——200% 下自绘角弧半径只有应有的一半，整段落在窗口裁剪区外被 DWM 裁掉，**四角根本没有线**；直边也被圆角切断。② Slint `Path` 渲染前会把路径 fit 进 (元素尺寸 − stroke-width) 再平移 stroke/2（`i-slint-core items/path.rs::fitted_path_events`），旧注释按「1 单位 = 1 物理像素」写坐标，弧又整体缩进约一个 stroke。现在：`radius-win` 改为 **8px 逻辑值**（不再除 DPR）；四条直边贴真实边界（第 0 行/列、倒数第 1 行/列，厚 1 设备像素）；四角描边弧用**反解 viewbox** `2R(R−h)/(2R−h)` 抵消 fit 缩进 —— 弧外缘正好压在 8 DIP 裁剪弧上、厚度 1 设备像素，端点精确落在直边中心线上；Rust 把 DWM 圆角调用结果回写成 `win-rounded`，Win10 / 属性失败时只画直角直边（窗口本身直角，天然贴边）。外框抽成 `ui/window_frame.slint`，新增离屏像素回归 `tests/window_frame_geometry.rs`（旧实现必红）。200% 实测：四边最外一圈像素 = `border-strong`（旧实现最外一圈是内容、线内缩 1 设备像素），四角弧连续且紧贴裁剪边。
+- **The main window frame now coincides with the real window boundary (#win-edge-frame-r7).** Reported as "the thin lines around the main window do not really overlap the boundary". On-device measurement at 200% DPI (with the DWM system border tinted, fitting a circle to the window's outer edge) found two causes: (1) the Win11 DWM corner radius is **8 DIP** (16 physical px at 200%), but `radius-win = 8px / device-pixel-ratio` assumed a fixed 8 *physical* px — so at 200% the self-drawn corner arc had only half the required radius and lay entirely outside the window's clip region, i.e. **the four corners had no line at all**, with the straight edges cut by the rounded clip; (2) Slint's `Path` first fits the path into (element size − stroke-width) and then translates by stroke/2 (`i-slint-core items/path.rs::fitted_path_events`), while the old code wrote coordinates assuming 1 unit = 1 physical px. Now `radius-win` is a plain 8px logical value; the four straight edges sit on the true boundary (first/last pixel row and column, 1 device px thick); the corner arc uses an **inverse-fit viewbox** `2R(R−h)/(2R−h)` so its outer edge lands exactly on the 8 DIP clip arc with 1 device px thickness and its endpoints meet the straight edges' centre lines. Rust feeds the DWM corner-call HRESULT back as `win-rounded`; Windows 10 / failed calls fall back to a square frame (the window itself is square there, so the frame is naturally flush). The frame moved into `ui/window_frame.slint` with an offscreen pixel regression test (`tests/window_frame_geometry.rs`, which the old implementation fails). Measured at 200%: the outermost pixel row/column is `border-strong` (previously the outermost pixel was content, with the line inset by 1 device px), and the corner arcs are continuous and hug the clip edge.
+
+- **无壁纸时四区透明度「看不出效果」→ 主窗背板压暗一档，效果与弹窗同级可见；四根分区滑杆改为等宽。** 上一版把滑杆接通了（`zone-frost`），但面板色 `#181A1D` 与窗口底色 `#161619` 只差 2 级，100% 透明肉眼仍不可辨。新增 `zone-backdrop`（主窗背板 = 窗口底色再压暗：深色 32%、亮色 7%），四区透明时透出的就是它 —— 实测 100% 档标题栏 (14,15,17) vs 面板 (24,26,29)，差 9 级；默认 15% 只差 1 级（观感不变）。独立窗口（编辑器/进程/系统信息）仍用 `window-base`，不受影响。
+  - 同轮修「拖动时滑杆长度会变」：四根分区滑杆原来用 `horizontal-stretch`，Slint 按「首选宽 + 均分余量」分配，而每列首选宽随数值文字变化（`0%（默认）` ↔ `100%`）→ 四根互相伸缩（实测 181/191/191/213 px）。改为固定份额 `(行宽 − 42px) × 0.25`，实测四根轨道恒为 174px、间距 192px，拖动过程中不变。
+- **"No visible effect" for zone transparency without a wallpaper → the main window now has a darker backdrop; the four zone sliders are equal-width.** The previous fix connected the sliders, but the panel colour (#181A1D) and the window base (#161619) differ by only 2 levels, so 100% still looked identical. A new `zone-backdrop` token darkens the main window's base (32% in dark themes, 7% in light); the zones reveal it. Measured: at 100% the title bar is (14,15,17) vs the panel's (24,26,29) — 9 levels; at the default 15% the difference is 1 level (look unchanged). Standalone windows keep `window-base`.
+  - Also fixed the slider length changing while dragging: the four zone sliders used `horizontal-stretch`, which Slint distributes as "preferred width + equal share"; since each column's preferred width depends on its value text (`0%（默认）` ↔ `100%`), the four tracks resized each other (measured 181/191/191/213 px). They now get a fixed share `(row width − 42px) × 0.25`; measured tracks are a constant 174 px with 192 px pitch.
+
+- **修「分区透明度」四根滑杆在无壁纸时完全无效。** 用户截图：四区拉到 100% 毫无变化。根因：分区底走 `frost()`，而它在**没有壁纸**时直接返回不透明实色（历史写法），等于把滑杆短路；页面文案却写着「没有壁纸时透出窗口底色、效果较弱」，实现与文案不一致。新增 `zone-frost()`（始终按 alpha 半透明），四分区 + 终端区改用它；菜单/卡片/独立窗口仍走 `frost`，默认观感不变（默认 15% 下与实色只差 1 级）。实测：无壁纸时标题栏 15% = (23,25,27) → 100% = (22,22,25)（窗口底色）。同时补一条上下文提示：未设壁纸时四根滑杆下方显示「只会透出窗口底色、变化很小，选壁纸后效果立即可见」，避免把「无背景可透」误判成功能坏了。
+- **Fixed the four zone-transparency sliders doing nothing without a wallpaper.** The zone surfaces went through `frost()`, which returned an opaque solid whenever no wallpaper was active — short-circuiting the sliders even though the copy promised "reveals the window base, effect is weak". A new `zone-frost()` always applies the alpha; the four zones and the terminal use it, while menus/cards/standalone windows keep `frost` (default look unchanged — at 15% the difference is one level). Measured without a wallpaper: title bar at 15% = (23,25,27), at 100% = (22,22,25) (the window base). A contextual hint now appears under the sliders when no wallpaper is set: "only reveals the window base, the change is barely visible — pick a wallpaper to see it".
+
+- **弹窗投影全部删除；「100% 透明仍是黑的」真凶就是它。** 排查：卡片本身 alpha=0，但 `drop-shadow-color: #000000a0`（62.7% 黑）画在它**背后**，透过透明卡片看到的是一块影子 —— 浅色壁纸 249 → 卡片区 93（249 × 0.373），卡片边缘还有 24px 模糊渐变（投影的签名）。该现象在 DPR=1 的离屏探针里不出现（渲染器不在元素内部画投影），只有真机 200% 缩放才暴露，所以前几轮像素测试全绿。用户定稿「全删」：61 处弹窗表面的阴影统一改为 `transparent`，弹窗只靠 1px 描边 + 遮罩分层；新增审计测试 `popup_surfaces_have_no_drop_shadow` 锁死。
+- **外观数值改为「明暗各一套」。** 用户反馈「暗主题调好了，切亮主题为什么用暗主题的数值」。config 从 7 个平铺字段改为 `appearance_dark` / `appearance_light` 两个 `AppearanceValues`（四分区 alpha + 壁纸透明度 + 弹窗透明度 + 遮罩浓度）；`resolve()` 先解析主题再按 `p.dark` 选槽，切主题 = 换一套；写入侧 `set_*(v, dark)`，`dark` 取窗口当前的 `dark_mode`。rev 6 迁移：旧值写进**当前主题所属模式**的槽，另一槽留默认 —— 即「某模式第一次使用 = 默认值」。壁纸作用域/填充/遮罩样式保持全局（与明暗无关）；页头补了一句说明。
+- **右侧栏：收起不再留 36px 空白竖条；外缘改直角贴边。** 收起时 `sb-w/sb-h` 仍给 36px（当年那个图标条早已被标题栏切换按钮取代），窗口右边留一条 root 底色的空白带（截图实测 35 逻辑 px）—— 与左栏 `left-sidebar-size`「收起 = 0」对齐；右侧面板外缘的 `border-radius: radius-md` 让左上/左下露出一段 1px 弧线（用户圈出），改 0 后描边直角收口，与终端贴合。
+- **侧栏标题行的 `<` / `>` 收起箭头删除。** 左栏两处 `CollapseButton`、右栏 `StatusBlock` 内 18px 按钮改为受 `show-collapse` 控制；Windows/Linux 由标题栏按钮（左上 LOGO / 右上切换）承担，macOS 原生标题栏没有该入口 → 传 `!custom-titlebar` 保留箭头，避免 mac 无法收起。同轮把标题栏新增的侧栏切换图标从 `text-secondary` 提到 `text-primary`（截图实测笔画 (122,126,133) vs 三键 (188,190,196)，差 66 级）。
+- **Dialogs lose their drop shadows entirely — and that shadow was the real cause of "100% transparency still looks black".** The card itself was alpha 0, but `drop-shadow-color: #000000a0` (62.7% black) was painted *behind* it: a light wallpaper of 249 showed as 93 inside the card (249 × 0.373), with a 24 px blur ramp at the edge (the shadow's signature). It never reproduced in the DPR=1 offscreen probe (the renderer does not paint a shadow inside the element), only on a real 200% display, which is why the earlier pixel tests were green. Per the decision to remove them, all 61 popup surfaces now use `transparent`, leaving the 1 px border and the scrim for separation; a new audit test (`popup_surfaces_have_no_drop_shadow`) enforces it.
+- **Appearance values are stored per light/dark mode.** The 7 flat config fields became two `AppearanceValues` slots (`appearance_dark` / `appearance_light`); `resolve()` picks the slot from the resolved palette's `dark` flag, so switching theme switches the whole set; writes go through `set_*(v, dark)` with `dark` taken from the window. Migration rev 6 copies the old single set into the slot of the *current* mode and leaves the other at defaults — i.e. a mode you never touched starts at its defaults. Wallpaper scope/fit and scrim style stay global (they are not mode-dependent); a note was added to the page header.
+- **Right sidebar: no 36 px gap when collapsed, square outer corners.** `sb-w/sb-h` still reserved 36 px while collapsed (the icon strip they were for is long gone), leaving a root-coloured band on the right edge; now zero, matching the left sidebar. The panel's `border-radius: radius-md` produced a 1 px arc at the top-left/bottom-left corners; now square so it meets the terminal.
+- **The `<` / `>` collapse chevrons on both panels are gone.** Two `CollapseButton`s in the left sidebar and the 18 px button inside the right `StatusBlock` are now gated by `show-collapse`; Windows/Linux use the title-bar toggles, while macOS (no self-drawn title bar) keeps the chevrons via `!custom-titlebar`. The new title-bar sidebar toggle was also brightened from `text-secondary` to `text-primary` (measured stroke (122,126,133) vs the window buttons' (188,190,196)).
+
+- **弹窗「通透度」= 透明度（语义定稿）：100% 完全透出，且与「遮罩浓度」彻底解耦。** 用户澄清：「通透度和遮罩浓度不是一回事，通透度就是透明度；没有壁纸时 100% 就该看到背后的内容」。上一版为了「看起来像玻璃」加的三处隐藏处理全部撤销：
+  - ① `popup-alpha` 顶部 0.35 下限 → 改回 **`1 − 透明度` 一条直线**（100% = alpha 0，弹窗表面完全透出）；
+  - ② 玻璃高光 `popup-sheen` / `glass()`（面板往白里提 10%）**删除** —— 弹窗表面颜色不再随透明度漂移，`popup-*` 令牌回到「基础色 × alpha」；
+  - ③ 遮罩随弹窗透明度自动 +0.10 的加成**删除** —— `遮罩浓度` 滑杆写 32% 就是 32%。
+  - 因此弹窗在高透明档下"看着黑"是**真实结果**：背后内容 × 遮罩浓度；要更亮就把遮罩浓度调低（两个参数各管各的）。设置卡 / 会话 / 同步输入 / 确认四处卡片描边回到常规 token（不再随透明度换"玻璃边"）。
+  - 文案：设置项「弹窗通透度」→「**弹窗透明度**」（与「壁纸透明度 / 分区透明度」同词），说明改为「0% = 实心，100% = 完全透明（直接看到背后内容）；背后压多暗由遮罩浓度单独决定」，预览卡描述同步。
+  - 回归：`dialog_scrim_drag` ②e 从"好看度断言"改为**语义断言** —— `popup-alpha` 必须严格 = 1 − t（57% / 100% 两档），卡片像素必须 = 背景与面板色按该 alpha 的混合，100% 档必须逐像素等于「遮罩后的背景」（面板色零贡献）。上一版的下限/高光写法会在这里直接报红；② 段的遮罩期望也去掉自动加成。
+- **"Dialog transparency" now means exactly that: 100% is fully see-through, and it is fully decoupled from "Scrim strength".** The clarification: translucency and scrim strength are two different things; translucency *is* transparency, and at 100% with no wallpaper you should see straight through to what is behind. All three hidden adjustments added in the previous round are reverted:
+  - (1) the 0.35 floor at the top of `popup-alpha` is gone — it is a straight **`1 − transparency`** again (100% = alpha 0);
+  - (2) the glass sheen (`popup-sheen` / `glass()`, +10% white) is removed, so a popup's colour never drifts with its transparency; `popup-*` tokens are back to "base colour × alpha";
+  - (3) the automatic +0.10 scrim boost is removed — a 32% scrim now is 32%.
+  - A dialog "looking black" at high transparency is therefore the honest result of *content behind × scrim strength*; lower the scrim to brighten it. The four dialog cards (settings / session / sync-input / confirm) keep their regular border tokens again (no more transparency-driven "glass rim").
+  - Copy: the row is renamed "Dialog transparency" (matching "Wallpaper transparency" / "Zone transparency") with the description "0% = solid, 100% = fully transparent (you see the content behind); how dark that content is, is up to Scrim strength"; the preview caption follows.
+  - Regression: section ②e of `dialog_scrim_drag` now asserts the **semantics** — `popup-alpha` must equal 1 − t at 57% and 100%, the card pixel must be the backdrop/panel blend at that alpha, and at 100% it must match the scrimmed backdrop pixel-for-pixel (zero panel contribution). The previous floor/sheen implementation fails this test by construction; the scrim expectation in section ② also drops the auto boost.
+
+- **Appearance page rebuilt: theme gallery (≤4 favourites + More) · per-zone transparency · wallpaper scope/transparency · 9 scrim styles with a strength slider · one unified slider style.** Following the approved hi-fi (`docs/design/wallpaper-hifi-2026-10-17.html`), the page is reordered along the "skin flow": **theme gallery** (≤4 quick slots + "More", which opens the full list; starring stays single-source, hover previews after 220 ms and a click commits; the cap drops 8 → **4**, and the gallery is a projection `theme-favorites` of config `favorite_themes`) → accent → wallpaper library → display → fit → dialogs & scrim.
+  - **Per-zone transparency**: the single `panel_alpha` splits into title bar / tab bar / sidebars (left + right + bottom panel) / terminal (defaults 15 / 15 / 15 / 0%), backed by `Theme.zone-titlebar` / `zone-tabbar` / `zone-sidebar`; the tab bar no longer borrows the terminal alpha (`tab-bar-bg` / `tab-active-bg` read the tab-bar value); the old 0.30 / 0.75 floors are gone (full 0–100 range).
+  - **Wallpaper scope** (whole window / terminal): with "terminal" the image still fills the window at window coordinates (so switching never makes it jump) and the other three zones are forced opaque, leaving only the terminal area to show it; dialogs are never part of the wallpaper.
+  - **Wallpaper transparency** (renamed from "visibility", now 1 − visibility, default 0%) drives image alpha; a new **fill mode** (cover / contain / stretch) maps to `image-fit`.
+  - **Nine scrim styles + a strength slider**: auto / dark / light / tinted glass / soft light / frost / spotlight / sheen / random (re-rolled per dialog open). Every scrim now goes through one `Scrim` component (16 overlay sites changed from `background: Theme.modal-scrim` to `background: transparent; Scrim { }`); strength defaults to 32% (the old standard baseline) and rises automatically as dialogs get more translucent (capped at +0.18). The style dropdown is a root-level popover (the settings page lives in a ScrollView) using the project's dropdown row language.
+  - **One slider style**: a new `MTermSlider` (accent-filled track + accent thumb + double-click reset) replaces the std-widgets sliders in settings; "Dialog translucency" also becomes a continuous transparency slider (0 solid ≈ 18% ≈ 45% full glass, `popup-alpha = 1 − transparency`), and the scrim follows it.
+  - Regressions: `dialog_scrim_drag` 3/3 (the audit now checks "transparent overlay + Scrim component", continuous transparency values, and a drag scan region that avoids the sidebars); 479 lib tests plus `accent_seg_state` / `theme_row_align` / `ansi_light_yellow` are green; offscreen evidence frames verified both themes, the four zones and the scope (checkerboard variance: 69.3 in the title bar vs 0.0 in the sidebar with scope = terminal), and the slider (drag → 0.81, double-click → 0.32).
 - **弹框内全部内容表面跟随「弹窗通透度」；会话弹框的下拉选中/悬浮语言对齐主题下拉。** 承接上一条（关闭弹框两块内衬）：用户第二轮反馈「其它弹框的没生效，比如会话的输入框」—— 弹框内的输入框/下拉/列表底此前是**不透明常量**（`field` / `field-2` / 各种 `bg-*`），通透档下就是一块块实心贴片。新增五个 popup 版令牌（`popup-field` / `popup-field-2` / `popup-bg-elevated` / `popup-bg-active` + color 版 `popup-panel` 供渐隐条渐变端点；均基于基础 token 定义，色值单源），把**弹框系文件**（会话 / 同步输入 / 强调色 / 确认 / 设置两个页面 / `seg` / `widgets` 的 dialog 分支 / `app.slint` 的 16 处内联弹框元素）内的全部内容表面（80+ 处）统一乘上 `popup-alpha`；标准档 alpha=1.0 逐像素零回归。瞬时提示层（tooltip / 悬浮信息卡）与主界面、独立窗口继续用基础 token。
   - 用户同步提出「会话弹框的下拉选中状态对齐主题下拉」：协议项（`ProtoItem`）、分组项、`SelectField` 三处选项行统一为主题下拉行的语言 —— 悬浮 = `bg-hover`（accent 浅染，原 `field-2` 灰系）、选中 = 透明底 + **accent 文字** + **accent ✓**（原 accent-soft 底染色 + 主色文字）；协议项图标也随选中变 accent，分组项补上常驻 ✓ 槽位（成员数左移让位）。
   - 回归：`tests/dialog_scrim_drag.rs` 新增 ②d 段（棋盘壁纸判据扫会话弹框「名称」输入框：档 0 先断言扫描区 = field 实色作护栏，档 2 断言透出棋盘）+ 新审计测试 `dialog_content_surfaces_use_popup_tokens`（弹框系文件禁止出现不透明基础 token，白名单逐条注明理由）。
@@ -18,7 +65,6 @@ All notable changes are documented here. 本文件记录所有重要变更。
   - Four small fixes from the same screenshot: (1) the settings row **"Translucency" was renamed "Dialog translucency"** (the old label read as *the* UI translucency, which actually lives in the wallpaper section as "Panel opacity"; this row only drives popups/floating layers); (2) the stray row divider between that row and its preview card was turned off (`SettingRow { show-divider: false }` — the line belongs between two rows, not between a row and the card); (3) the settings nav's selected item no longer paints a fill (`NavItem`: the `popup-bg-active` slab became transparent background + accent text/icon, matching the dropdown selected language); (4) the × on the Settings and Transfers dialogs now turns pure white on hover (its tint was pinned to `text-primary`, which reads as *dimmer* on the `#e81123` red fill — the comments said "white glyph" but the code never did; now aligned with ProcWindow's correct button, with a regression anchor added).
   - Two more from the second screenshot round: (5) the settings `FontCombo` (shared by **every** settings dropdown: UI/terminal font, renderer, rule set, colour) now follows the theme-row language too (hover `bg-hover`; selected = transparent + accent text + accent ✓); a full sweep found four dropdowns in total (protocol / group / `SelectField` / `FontCombo`) plus the theme picker, all now unified (context menus and the colour palette popover were checked and are not dropdowns). (6) The terminal **"Cursor shape"** choice moved from three standalone buttons into a **`SegGroup` sliding segmented control** (the same sliding language as "Dialog translucency"; the block/bar/underline diagram icons are kept, and the old `CursorStyleButton` is removed).
   - Note: `bg-hover` is itself an 8% accent tint (already translucent) and needs no popup variant.
-
 - **弹框内衬随「弹窗通透度」档位变透明（关闭方式两块不再被焊死）。** 用户截图反馈「关于通透性，中间两块怎么没有，只有鼠标悬浮的时候才会有？」。根因：关闭方式弹框的两块卡（最小化到托盘 / 完全退出）常态底用的是 `Theme.bg-root`，而 `frost()` 只在**壁纸激活**时半透明，无壁纸时返回**不透明实色** —— 通透档（82%/55%）下把弹框玻璃「焊死」，只有悬浮（chip 半透明）才透，与用户的对照观察完全一致。
   - 修法：新增令牌 `popup-bg-inset`（= root 色 × 弹窗通透档 `popup-alpha`，与弹框底 `popup-bg` 同透明度来源；标准档 alpha=1.0，观感与此前逐像素一致），替换关闭弹框两块 + 会话弹框的选项 pill（`PillToggle`）、跳板机空态/链可视化、确认弹框详情大块共 5 处「弹框内衬」；输入框类内衬刻意保持实心（可读性优先）。**不用** `popup-bg` 本身 —— 同色 × 半透明叠在同色卡底上会「二次混色反而显形」（`#foot-flat` 的教训），内衬必须保持 root↔panel 的色差。
   - 回归（`tests/dialog_scrim_drag.rs` 新增 ②c 段）：颜色断言在此不可行（root 与 panel 只差 8 级、经 alpha 收敛更小），改用**棋盘壁纸做高频背景** —— 同档位下「无壁纸帧 → 棋盘帧」的变化像素比例：修复前 **0/3808 = 0.0%**（准确报红），修复后透出（内衬 delta 23 级、弹框底 delta 51），外加令牌 alpha 契约断言（档 2 → 140）。481 lib + 集成测试全绿。
@@ -36,7 +82,6 @@ All notable changes are documented here. 本文件记录所有重要变更。
   - Going fully free-form is not available: SSH/PTY transmits "N columns × M rows per character", `vim`/`htop` address the cursor with `\e[row;colH`, click-to-select inverts (row, col) back to pixels, and a column-count change reflows the scrollback. So the equivalent was applied instead: the **grid, PTY addressing and hit-testing are untouched**, and only a **pure private-use-area span** is drawn 1.75× larger and vertically centred inside its own cell. `is_nerd_icon_span` follows the existing `contains_cjk` pattern (one more `nerd` flag on `TermSpan`); it accepts only spans made entirely of icon characters (whitespace allowed), so mixed text like `📁backup.sql` is left alone — per-character positioning would need a separate rendering path.
   - Scaling **does not change font metrics** (`cell-w/h` still come from `cell-probe`), so PTY rows/columns never reflow because of it.
   - One diagnostic came out of this too: `MONO_PROBE` (`A g 0 ─ │`) checks only ASCII plus box-drawing and is **entirely blind to the icon ranges** — the probe measured `Monotype Corsiva` at 0.28 % PUA coverage while still passing it. Added `NERD_ICON_PROBE` (six common icon code points) and `report_nerd_icon_support()`: the **selection logic is unchanged** (most machines have no Nerd Font, and rejecting on that would empty the chain and leave things worse), but when the chosen family lacks icon glyphs a WARN lands in the log so "the icons go blank" has an explanation. For the full per-family coverage table run `cargo run --release --example probe_nerd_glyphs`.
-
 - **亮色主题下 256 色调色板不再大面积不可读（对比度守卫取代拍脑袋的亮度阈值）。** 前两条修的是主题自己的 ANSI 16 色表，但用户第三次反馈「终端上面的显示依旧看不清楚」—— 截图取证（背景 `#FAF8F4` → MTerm·亮）后定位到**另一条根本不同的路径**：那批发青的字（`#00AF87`，占屏墨色第一位、只有 2646 px 却是最多的色）**不在任何主题的 `ansi16` 表里**，它是 **256 色调色板的固定值**（`55 + v*40`，恰好等于立方体索引 36），也就是远端程序发 `\e[38;5;36m` 之类色码时用的标准立方体 —— **不随主题变化**，所以前面修色表对它完全无效。
   - 旧守卫 `darken_light_fg` 的判断依据是 **HSL 亮度**：`L < 0.55` 就原样放行。可 HSL 的 L 是**通道均值**，高饱和的青/绿/黄天然偏低 —— 实测 `#00AF87` 的 L 只有 0.34，于是直接漏网。遍历全部 216 个立方体色：**158 个在 `#FAF8F4` 上低于 4.5:1，其中 70 个是守卫根本没动的**；最刺眼的是纯亮黄 `#FFFF00` 只有 **1.01:1**（等于背景）、纯绿 `#00FF00` 只有 1.29。
   - 现在改为**按真实对比度收敛**：先算 WCAG 对比度，不足则**保持色相**、从原亮度细步（1/1024）下降直到对**当前主题的 `tbg`** 达到 4.5:1。背景从「假设的近白」换成实际的 `tbg`（逐主题），所以 `kanagawa-lotus` 那种偏黄的浅底也一并正确。守卫同时接到了此前完全没设防的**立方体与灰阶路径**（`idx_to_rgb` 的 16~255 档原先原样透传）。暗色模式**逐值不变**。
@@ -47,76 +92,52 @@ All notable changes are documented here. 本文件记录所有重要变更。
   - The guard now **converges on real contrast**: compute the WCAG ratio, and if it falls short, **hold the hue** and step lightness down finely (1/1024) until the colour reaches 4.5:1 against the **palette's actual `tbg`** rather than an assumed near-white. Per-theme backgrounds mean a tinted light palette such as `kanagawa-lotus`'s `#F2ECBC` is now handled too. The guard was also extended to the **cube and grayscale arms of `idx_to_rgb`** (indices 16–255), which previously had no protection at all. Dark mode is **value-for-value unchanged**.
   - Result: cube colours below the line drop from 158 to **0**; the screenshot's `#00AF87` rises from 2.65:1 to 4.52:1. One regression locks in "**lightness only, hue never erased**" — the first cut used a coarse 512-step sweep that pushed saturated colours (`#4DC4A8`, `#ABE0D1`) all the way to black: readable, but every bit of colour information lost.
   - Five new regressions (inline in `presentation.rs`, since `vt_span_colors` is `pub(crate)` and invisible to integration tests): all 240 indices × 14 light palettes clear 4.5:1, 24-bit true colour is guarded too, **dark palettes keep cube and grayscale values verbatim**, already-readable colours pass through untouched, and saturated colours keep their hue.
-
-- **亮色主题的「白色」也不可读了 —— 撤销白/灰/亮白三槽的对比度豁免。** 上一条只修了 12 个彩色槽（yellow 那两槽），用户复测仍报「白色和黄色在亮色主题还是有些看不清楚」。截图取证：背景 `#F2ECBC` → **Kanagawa·亮**。放大后看清「黄色」其实混了两处 —— `K`/`B` 单位是槽 3 yellow（**4.62:1，已达标**），数字部分 `4.0` 是**槽 7 white**（**2.93:1**）；而整片列表的**日期列是槽 8 brightBlack**（**2.23:1**）。根因在验收标准本身：`_ansi-group.json` 的 `_meta.ansi_check` 写着「12 彩色槽 ≥4.5:1，**0/7/8/15 按终端惯例只记录不判失败**」—— 那是暗底惯例（白/浅黑在深底上本就该弱），落到浅色 tbg 上直接塌：亮色 14 套里 **13 套**槽7/8 有一项不达标，极端例 **flexoki·亮槽7 = 1.00（等于背景，肉眼完全不可见）**，另有 8 套**槽 15 brightWhite**同样塌（最低 solarized 1.14 —— 加粗白字也读不出）。按用户拍板，**三槽撤销豁免、同样按 ≥4.5:1 判**，亮色 14 套全部压到达标线（4.70~4.77）；暗色 14 套一行未动。改色脚本 `scripts/_audit/fix_light_grey_slots.py` 里有个必须记的坑：**不能用 HSL 的饱和度判断「这是不是灰」** —— 近白色在 HSL 里 S 会爆表（`#FFFCF0` 算出 S=100%、H=48°），「保色相降 L」会把白色档一路带成**暗黄 `#8A6E00`**（白色档变黄色档，flexoki / gruvbox 都中招）；改用**通道极差** max(r,g,b)−min(r,g,b) 三档判：≤48 锁 sat=0、48~80 压到 0.12 封顶、>80 才算彩色档。另一处是**自家门面主题有额外纪律**：`mterm-light` 的槽 8 必须与 t3 同色相 ≤10°（`theme/mod.rs` 的灰族同源断言），不能压成中性灰 —— 脚本对该套走「朝 t3 色相对齐后降 L」，得 `#766E64`（色相差 2.0°、对比 4.73）。回归加到 `tests/ansi_light_yellow.rs`（共 7 条）：白/灰/亮白三槽达标、**三槽压深后仍须是中性灰**（结果侧兜住色相污染）、**暗色 14 套三槽与修正前逐值一致**。
+- **亮色主题的「白色」也不可读了 —— 撤销白/灰/亮白三槽的对比度豁免。** 上一条只修了 12 个彩色槽（yellow 那两槽），用户复测仍报「白色和黄色在亮色主题还是有些看不清楚」。截图取证：背景 `#F2ECBC` → **Kanagawa·亮**。放大后看清「黄色」其实混了两处 —— `K`/`B` 单位是槽 3 yellow（**4.62:1，已达标**），数字部分 `4.0` 是**槽 7 white**（**2.93:1**）；而整片列表的**日期列是槽 8 brightBlack**（**2.23:1**）。根因在验收标准本身：`_ansi-group.json` 的 `_meta.ansi_check` 写着「12 彩色槽 ≥4.5:1，**0/7/8/15 按终端惯例只记录不判失败**」—— 那是暗底惯例（白/浅黑在深底上本就该弱），落到浅色 tbg 上直接塌：亮色 14 套里 **13 套**槽7/8 有一项不达标，极端例 **flexoki·亮槽7 = 1.00（等于背景，肉眼完全不可见）**，另有 8 套**槽 15 brightWhite**同样塌（最低 solarized 1.14 —— 加粗白字也读不出）。按用户拍板，**三槽撤销豁免、同样按 ≥4.5:1 判**，亮色 14 套全部压到达标线（4.70~~4.77）；暗色 14 套一行未动。改色脚本 `scripts/_audit/fix_light_grey_slots.py` 里有个必须记的坑：**不能用 HSL 的饱和度判断「这是不是灰」** —— 近白色在 HSL 里 S 会爆表（`#FFFCF0` 算出 S=100%、H=48°），「保色相降 L」会把白色档一路带成**暗黄 `#8A6E00`**（白色档变黄色档，flexoki / gruvbox 都中招）；改用**通道极差** max(r,g,b)−min(r,g,b) 三档判：≤48 锁 sat=0、48~~80 压到 0.12 封顶、>80 才算彩色档。另一处是**自家门面主题有额外纪律**：`mterm-light` 的槽 8 必须与 t3 同色相 ≤10°（`theme/mod.rs` 的灰族同源断言），不能压成中性灰 —— 脚本对该套走「朝 t3 色相对齐后降 L」，得 `#766E64`（色相差 2.0°、对比 4.73）。回归加到 `tests/ansi_light_yellow.rs`（共 7 条）：白/灰/亮白三槽达标、**三槽压深后仍须是中性灰**（结果侧兜住色相污染）、**暗色 14 套三槽与修正前逐值一致**。
 - **Light themes' white was unreadable too — the contrast exemption for the white/grey/bright-white slots is withdrawn.** The previous entry fixed only the 12 colour slots (the two yellow ones); re-testing still reported "white and yellow are still hard to read in light themes". From the screenshot: the background `#F2ECBC` identifies **Kanagawa light**. Zooming in shows "yellow" actually mixed two things — the `K`/`B` units are slot 3 yellow (**4.62:1, already passing**), while the digits are **slot 7 white** (**2.93:1**); and the whole **date column is slot 8 brightBlack** (**2.23:1**). The root cause is the acceptance line itself: `_ansi-group.json`'s `_meta.ansi_check` said "12 colour slots ≥ 4.5:1, **0/7/8/15 recorded but not judged by convention**" — a dark-background convention (white and bright-black *should* be weak on a dark background) that collapses on a light tbg: **13 of the 14** light palettes have a slot 7/8 below the line, with **flexoki light's slot 7 at 1.00** (identical to the background, entirely invisible to the eye), and **8 palettes' slot 15 brightWhite** collapse too (solarized at 1.14 — even bold white text is unreadable). At the user's call, all three slots are withdrawn from exemption and judged at ≥4.5:1; all 14 light palettes are brought to the line (4.70–4.77) and **not one line of the 14 dark palettes changed**. One trap worth recording in the generator (`scripts/_audit/fix_light_grey_slots.py`): **you cannot use HSL saturation to tell whether a colour is grey** — near-whites blow up S (near-white `#FFFCF0` computes as S=100%, H=48°), so "hold hue, drop lightness" drags the white slot all the way to **mustard `#8A6E00`** (the white slot becomes a yellow one — flexoki and gruvbox both hit it). Use **channel spread** max(r,g,b)−min(r,g,b) in three bands instead: ≤48 locks sat to 0, 48–80 caps sat at 0.12, >80 counts as a real colour. A second trap: the **in-house facade theme carries an extra rule** — `mterm-light`'s slot 8 must stay within 10° of t3 on the hue circle (the grey-family assertion in `theme/mod.rs`), so it cannot simply become neutral grey; that palette takes a "rotate toward t3's hue, then drop lightness" path, landing on `#766E64` (2.0° apart, 4.73:1). The regressions went into `tests/ansi_light_yellow.rs` (7 tests total): the three slots meet the line, **the three slots stay neutral grey after darkening** (guards hue contamination from the result side), and **all 14 dark palettes keep their exact pre-fix values** across the three slots.
-
 - **亮色主题的终端黄字不再看不见（9 套 ANSI 黄色重制）。** 用户反馈「亮色主题，终端里面的黄色字体看不见」。根因：那9 套的 yellow（ANSI 槽 3）/ brightYellow（槽 11）照搬上游原色，可那些黄本来是配深色底的 —— 落到浅色 tbg 上对比度只有 **2.05~4.50:1**（ayu-light 的亮黄最低 2.05，肉眼几乎读不出），而 `_ansi-group.json` 的 `_meta.ansi_check` 验收线本就是「12 彩色槽 ≥ 4.5:1」。现按色相环保 H/S 降 L 压到达标线（生成脚本 `scripts/_audit/fix_light_yellow.py`，真源 `scripts/_ansi-group.json`，`node scripts/gen_theme_rust.js` 重生成 `palettes.rs`），**暗色档一律不动**（深底上的黄本来就够读，压暗反而看不清）。槽 11 一律压到比槽 3 更深（≥5.2:1），沿用 mterm-light 早就有的「亮底 bright=更深同色相」纪律。明细：nord 4.50→4.63 / catppuccin 2.79→4.61 / rosepine 2.58→4.64 / everforest 3.01→4.61 / gruvbox 3.49→4.66 / ayu 2.44→4.63（亮黄 2.05→5.21）/ flexoki 3.24→4.61 / solarized 3.07→4.63 / darcula 3.20→4.63。新增 `tests/ansi_light_yellow.rs` 四条回归：亮色两槽达标、修过的 9 套 bright 严格深于 normal、**暗色 14 套黄色两槽与修正前逐值一致**（防止以后顺手压暗）、三套被点名过的锁死具体色值。
 - **Yellow ANSI text is readable again in light themes (9 palettes reworked).** Reported as "in light themes the yellow terminal text is invisible". Root cause: those 9 palettes' yellow (ANSI slot 3) and brightYellow (slot 11) were taken straight from upstream, but those yellows were authored for dark backgrounds — on a light tbg they landed at only **2.05–4.50:1** (ayu-light's bright yellow is 2.05, effectively unreadable), while the acceptance line in `_ansi-group.json`'s `_meta.ansi_check` has always been "12 colour slots ≥ 4.5:1". Hue is now held while lightness drops until the line is met (generator `scripts/_audit/fix_light_yellow.py`, source of truth `scripts/_ansi-group.json`, regenerated into `palettes.rs` by `node scripts/gen_theme_rust.js`); **dark palettes are untouched** — their yellows already read fine on a dark background and darkening would only hurt. Slot 11 always drops deeper than slot 3 (≥5.2:1), following mterm-light's long-standing "on a light background, bright is a deeper same-hue" rule. Details: nord 4.50→4.63 / catppuccin 2.79→4.61 / rosepine 2.58→4.64 / everforest 3.01→4.61 / gruvbox 3.49→4.66 / ayu 2.44→4.63 (bright 2.05→5.21) / flexoki 3.24→4.61 / solarized 3.07→4.63 / darcula 3.20→4.63. Four new regressions in `tests/ansi_light_yellow.rs`: both light slots meet the line, the reworked 9 have bright strictly deeper than normal, **all 14 dark palettes keep their exact pre-fix yellows**, and the three named palettes are pinned to concrete values.
-
 - **强调色预设网格：两块换成主流色。** 用户红框圈出「白光色 #FAFAFA」与「MTerm 青 #1FC8B4」，要求换成其它主流、与现有色块不冲突且美观的颜色。按色相环量化后替换为 **Stripe 紫 `#635BFF`** 与 **GitHub 绿 `#2DA44E`**：白光色是网格里唯一 sat=0 的块（深色弹框里看不出色相，纯粹占位），MTerm 青与相邻青绿 / 薄荷的 ΔE 只有 8~16、挤成一团；而色相环上最大的空档恰是 225°(靛蓝)→259°(仿紫) 断掉的 34°，Stripe 紫(243°)正落其中，GitHub 绿(137°)落在 126°(绝命毒药)→149°(微信绿) 之间。新块对网格其余各块的 minΔE(CIE76) = 31.1 / 13.1（网格中位数 18.9），深底 / 浅底对比度均过 3:1。两块新色**按色相插到对应分区**而非留在原位，网格顺序仍是「色相环顺排」。顺带修掉一处既存偏差：`ACCENT_PRESETS`（Rust，单一出处）此前比 `ui/app.slint` 的网格字面量少一项「微信绿」，两处不同源；现两处都是 48 项、逐项同源。两块的旧 key（`white-glow` / `mterm-cyan`）解析不到即回落 `Follow`，老配置不会指向已下线的色。
 - **Two accent presets swapped for mainstream colours.** The report circled "White glow #FAFAFA" and "MTerm cyan #1FC8B4" and asked for mainstream replacements that don't clash with the existing swatches. After measuring the hue wheel they become **Stripe violet `#635BFF`** and **GitHub green `#2DA44E`**: white glow was the only zero-saturation swatch (no visible hue in the dark popup, purely a placeholder), and MTerm cyan sat ΔE 8–16 from its neighbours, clumping with them; meanwhile the wheel's largest gap is exactly the 34° break between 225° (indigo) and 259° (ultraviolet), where Stripe violet (243°) lands, with GitHub green (137°) between 126° (toxic green) and 149° (WeChat green). Their minΔE (CIE76) against the rest of the grid is 31.1 / 13.1 (grid median 18.9), and both clear 3:1 on dark and light backgrounds. The two new swatches are **placed in their hue partitions** rather than left in the old slots, so the grid still reads as one sweep of the wheel. This also fixes a pre-existing divergence: `ACCENT_PRESETS` (Rust, the single source of truth) was missing one entry ("WeChat green") relative to the literal list in `ui/app.slint`; both now hold the same 48 entries. The retired keys (`white-glow` / `mterm-cyan`) resolve to `Follow`, so old configs never point at a colour that's gone.
-
 - **设置页主题按钮的色点改圆形；主题下拉搜索框改成真正的输入框。** ① 设置 › 主题 的下拉按钮里那颗强调色圆点由圆角方块（14px / 圆角 4）改为正圆（14px / 圆角 7），与主题下拉列表行内的色点（11px / 圆角 5.5）同一套形状语言 —— 用户反馈「这里面有两种样式的色块，统一用圆形的」。② 下拉浮层的搜索行由**扁平行**改为**输入框形态**：常驻 `field` 底 + `border-control` 1px 边，聚焦时边转 `accent` + 外扩 3px `accent-soft` 柔光环（同心 8+3=11），与 `PickerInput`（调色盘）/ `MiniInput`（会话弹框）完全同款；行底那条 1px 细线一并删除（输入框自带四边，底线等于双重边界，聚焦时还与边框同步变色、看着像框在抖）。用户反馈是「聚焦后样式都不一致，不怎么协调」：旧行自身 transparent、无底无边，聚焦那一帧才凭空冒出一圈柔光环，外径（行高 30 + 6 = 36）比行内控件都大，整行像被套了个更大的框。清空钮与「N 套」计数位置不变。新增 `tests/theme_row_align.rs::theme_search_row_is_an_input_not_a_flat_bar` 从像素侧钉住形态（未聚焦有 field 底、聚焦有环、环在框外 3px）。
 - **The settings theme button's dot is now round, and the theme dropdown's search row is a real input.** ① The accent dot inside the Settings › Theme dropdown button changes from a rounded square (14 px / radius 4) to a circle (14 px / radius 7), matching the dot in the dropdown's own rows (11 px / radius 5.5) — reported as "there are two styles of swatch here, make them all round". ② The dropdown's search row changes from a **flat bar** to an **input**: a standing `field` background with a `border-control` 1 px border, turning `accent` on focus with a 3 px `accent-soft` ring expanding outward (concentric, 8 + 3 = 11) — identical to `PickerInput` (colour picker) and `MiniInput` (session dialog). The 1 px hairline along the row's bottom edge is removed too (an input already has four sides, so the hairline was a double boundary, and it changed colour together with the border, making the frame look like it was shaking). The report was "after focusing, the styles don't match and it doesn't look coordinated": the old row was transparent with no fill or border, so focusing made a ring appear out of nowhere whose outer size (row height 30 + 6 = 36) dwarfed the row's own controls, as if a bigger box had been slipped over it. The clear button and the "N themes" counter keep their positions. `tests/theme_row_align.rs::theme_search_row_is_an_input_not_a_flat_bar` pins the shape from the pixel side (field fill when idle, ring outside the frame on focus, 3 px out).
-
 - **分段控件的内距统一 + 明度条去描边、渐变铺满。** ① `SegGroup`（RGB|HSV|HSL、设置页强调色分段等共用）：`gap` 由 2px 改为与 `pad` 同值，且 `pad` 过一遍 `snap-to-device` —— 原先滑块的「到外框」与「到相邻格」差 1px；且 3px 在 125% / 150% 缩放下是 3.75 / 4.5 物理像素，滑块 `y` 与 `height`（= h − 2·pad）取整方向相反，上下留白一个舍一个入（实测上 2px / 下 3px）。现在三条内距恒等。② 调色盘的明度条去掉 1px 描边（它在底端黑色处勾出一道半圆弧细线，孤立看像"一个圆形细线"；旁边的色轮本来就没有描边），并让渐变位图铺满整盒、圆角交给 `clip` 裁 —— 原先写死 24×238 贴 1px 内衬，分数缩放下底边会漏出一行面板色。
 - **Uniform segment insets, and a borderless edge-to-edge brightness strip.** ① `SegGroup` (shared by the RGB|HSV|HSL tabs, the settings accent segment, …): `gap` now equals `pad`, and `pad` runs through `snap-to-device` — the thumb's "to the frame" and "to the next cell" insets used to differ by 1 px, and at 125 % / 150 % scaling 3 px is 3.75 / 4.5 device pixels, so the thumb's `y` and `height` rounded in opposite directions and its top and bottom gaps disagreed (measured 2 px vs 3 px). All three insets are now identical. ② The palette's brightness strip drops its 1 px outline (it drew a half-circle hairline across the black end — reading as a stray "circular line" — while the neighbouring colour wheel has no outline at all) and its gradient bitmap now fills the whole box with `clip` cutting the rounded ends; previously a hard-coded 24×238 inset by 1 px leaked a row of panel colour along the bottom at fractional scales.
-
 - **取色信息卡（及调色盘的亮度气泡）跟随主题；设置页强调色色卡的悬浮提示换成同款信息卡。** ① `ColorInfoCard`（HEX / RGB / HSV / HSL 四行那张卡，强调色弹框 / 「最近」行 / 设置色卡共用）与调色盘亮度条的「亮度 N」气泡，底色原先**都写死暗色 `#111318`**，浅色主题下仍是深底 —— 用户反馈「没有跟随主题」。两者改用统一浮层 token `bg-elevated`：跟随主题，且比弹框自身的 `popup-bg`（= 面板底色）高一档，靠边框 + 投影勾出卡片轮廓。② 设置 › 主题页强调色色卡的悬浮提示，由一句「强调色 #hex」的气泡换成**同一张 ColorInfoCard**（用户要求与自定义弹框同款）。卡片**声明在根层最后**（与 theme-pick / accent-pop 同款桥：面板只报悬停态与色卡的窗口坐标，事件期取 absolute-position），放色卡**下方**并右对齐 —— 该行靠页顶，向上会越界；而画在行内又会被紧随其后的「界面通透度」整块盖住（Slint 绘制顺序 = 声明顺序，行内元素压不过后面的兄弟 —— 用户截图「被覆盖了无法看见」）。
 - **The colour info card (and the palette's brightness bubble) now follow the theme, and the settings accent swatch shows the same card.** ① `ColorInfoCard` (the HEX / RGB / HSV / HSL card shared by the accent popup, the "recent" row and the settings swatch) and the brightness strip's "Bright N" bubble both had a hard-coded dark background (`#111318`) that stayed dark under a light theme — reported as "it doesn't follow the theme". Both now use the unified overlay token `bg-elevated`: theme-aware, and one step above the dialog's own `popup-bg` (= the panel colour) so the border and the shadow still draw the card's outline. ② The Settings › Theme accent swatch's hover tip swaps its one-line "Accent #hex" bubble for the **same ColorInfoCard** (asked to match). The card is **declared last at the root layer** (the same bridge as theme-pick / accent-pop: the panel only reports the hover state and the swatch's window coordinates, read from `absolute-position` inside the event) and sits below the swatch, right-aligned — above it would overflow the page, while drawing it inside the row let the following "interface transparency" block cover it (Slint paints in declaration order, so an in-row element can never out-paint a later sibling — reported as "it's covered and invisible").
-
 - **「跟随系统」整个下线（界面两处入口 + 运行时行为）。** ① UI：设置 › 主题 页那一行整行删除；主题下拉框顶部只留「反向（亮↔暗）」，占满原来两键的行宽。② 行为：它原本**不是独立轴**，而是「主题为空」的别名 —— 挑任何一套主题都会把它写掉，两者抢同一个槽位，所以开着它再选主题会被静默顶掉（用户反馈「和主题的交互性并不怎么好」；在浅色系统的机器上表现为「不管什么主题都变成 MTerm·亮」）。现在默认值改为 `follow_system=false`、默认主题落成 `mterm-dark`，并加 **rev5 一次性迁移**：停留在跟随态的老配置落成具体主题（theme 为空 → mterm-dark）且跟随关闭。此后主题只有一个轴，不会再出现「没动主题、界面却随系统变亮」。配置字段与 Rust 通路保留（已无界面入口）。
 - **"Follow system" is retired entirely (both UI entries and the runtime behaviour).** ① UI: the row is removed from Settings › Theme, and the theme dropdown's top row keeps only "Invert light/dark", filling the row that used to hold two buttons. ② Behaviour: it was never an independent axis but an alias for "the theme is empty" — picking any theme wrote it off, so the two fought over a single slot and enabling it then choosing a theme silently dropped it (reported as "it doesn't interact well with the theme"; on a light-OS machine it showed up as "whatever theme I pick, it turns into MTerm light"). The default is now `follow_system=false` with `mterm-dark` as the default theme, plus a **one-time rev 5 migration**: configs left in the following state resolve to a concrete theme (empty → mterm-dark) with following switched off. The theme now has exactly one axis and can no longer go light just because the OS did. The config field and its Rust path remain, with no UI entry.
-
 - **命令栏三个控件统一到前景档。** 「快捷」chip（文字 + ∧ 图标）与「所有会话」原用次级档 `text-secondary`，而夹在中间的「∧」历史开关用前景档，三者亮度不齐 —— 用户反馈「命令栏中的字体色号也不协调」。现三者统一取 `text-primary`；「所有会话」的激活态仍是白字 on 强调色，「$」提示符（强调色）与占位符（弱化档）按既有设计不变。
 - **The command bar's three controls now share the foreground tier.** The "Quick" chip (label + ∧ glyph) and "All sessions" used the secondary tier `text-secondary` while the history toggle between them used the foreground tier, leaving the three uneven — reported as "the command bar's font tiers don't match either". All three now take `text-primary`; "All sessions" keeps its white-on-accent active state, and the "$" prompt (accent) and the placeholder (faint tier) stay as designed.
-
 - **窗口三键（最小化 / 最大化 / 关闭）的图标统一到前景档。** 三个键原本同用一个次级档 `text-secondary`，但压在深色标题栏上偏暗；又因字形墨量不同（✕ 的两条对角线跨度最大，− 只有一条 14 单位短线），肉眼看着并不齐 —— 用户反馈「只有关闭的是正确的，其两个有些暗了，不统一」。现统一取 `text-primary`（与左侧正文同档）。关闭键悬停仍是红底白字（`#e81123` + 白图标），未变。
 - **The window controls (minimize / maximize / close) now use the foreground tier.** All three already shared the secondary tier `text-secondary`, but that reads dim on the dark title bar, and their differing ink coverage (the ✕'s two diagonals span the most, the − is a single 14-unit dash) made them look uneven — reported as "only close looks right, the other two are dim". They now take `text-primary`, the same tier as the body text on the left. Close keeps its white-on-red hover (`#e81123`).
-
 - **调色盘 H 滑杆的彩虹条改为位图。** HSV / HSL 的 H 分量滑杆原本用 Slint 的**七停** `@linear-gradient` 画彩虹（其余分量是两停），实测出现可见断层。现改由 Rust 逐像素烘焙色相条位图（`bake_hue_image`，与色轮 / 明度条同一范式 —— Slint 侧只负责按尺寸贴图，内套 clip + 圆角保证两端圆头），H 条再无断层。位图与选色无关，开机烘一次即可。
 - **The palette's H slider now uses a baked hue ramp.** The HSV / HSL hue slider drew its rainbow with Slint's **seven-stop** `@linear-gradient` (the other components use two-stop ones) and showed visible breaks. It now blits a per-pixel baked hue image from Rust (`bake_hue_image`, the same scheme as the wheel and the brightness strip — Slint only draws it at size, with an inner clip + radius for the rounded ends), so the ramp carries no seams. The image is colour-independent and baked once at startup.
-
 - **调色盘三项调整。** ① HEX 色号行移到 B 之下（行序改为「RGB|HSV|HSL 分段 → R/G/B → HEX」），并给出与 R/G/B **同列**的左侧「HEX」标签（标签列统一 30px，各行标签与值各成一条竖线）。② RGB/HSV/HSL 分段的**悬停底色改为跟随当前选色**（原是中性灰 `bg-hover`，与这一屏「所有选中 / 当前语义都由选色表达」不一致，确认键同源）——淡染 16%（暗）/ 10%（亮），比激活滑层浅一档，免得看着像已选中。③ 对比度警示句末的预览色块改为**紧贴句尾「自动调亮为」**：补一块尾部吸空块（与强调色弹框 `#accent-pop-flow` 同一修法 —— 无 stretch 子项时 Slint 把余宽均摊给「可生长」的 Text，色块于是被顶到行尾）。
 - **Three colour-picker adjustments.** ① The HEX row moves below B (order: format tabs → R/G/B → HEX) and gains a left-hand "HEX" label in the same column as R/G/B (the label column is unified at 30 px, so every row's label and value line up). ② The format tabs' hover fill now follows the current colour (it used to be the neutral bg-hover, out of step with a screen where every "selected / current" cue comes from the colour, and with the confirm button) — a 16 % (dark) / 10 % (light) tint, one step lighter than the active thumb so hovering never reads as selected. ③ The preview swatch at the end of the contrast warning now hugs the sentence: a trailing flexible spacer (the same fix as the accent popup's `#accent-pop-flow` — without one, Slint spreads the leftover width over the growable Texts and shoves the swatch to the row's end).
-
 - **主题弹框的搜索框：补了聚焦态，并加了清空按钮。** ① 聚焦时底部细线转为强调色（120ms 过渡），外圈套一道强调色柔光环（与取色盘输入框 / MiniInput 同一套聚焦语言；浮层 6px 内边距足以容纳 3px 外扩，不会被卡片裁剪）。② 有输入时，「28 套」计数左侧出现一个 ✕ 清空钮（close 图标，悬停提亮一档），点击即清空并把列表恢复全量，焦点留在输入框、浮层不关。输入框右侧让位相应加宽，避免输入文字压到清空钮。
 - **The theme picker's search field: focus state and a clear button.** ① On focus the bottom hairline turns accent (120 ms transition) and a soft accent ring wraps the row — the same focus language as the colour picker's fields and MiniInput (the popup's 6 px padding absorbs the 3 px ring, so the card's clip never cuts it). ② While there is text, a ✕ clear button (close glyph, brightening on hover) appears left of the "N themes" counter; clicking it clears the field and restores the full list, keeping focus in the field and the popup open. The field's right-hand reservation widens so typed text never runs under the button.
-
 - **设置 › 主题页的「强调色」色卡加了悬停提示框。** 色卡（46×32 的方框，仅展示当前生效色）此前悬停无任何反馈。现在悬停即在其正上方弹出提示，显示当前**生效**色的 hex（跟随主题态 = 主题强调色；自定义态 = 3:1 对比度守卫校正后的色，即色卡实际画出的那颗）。气泡沿用顶栏统一浮层规格（bg-elevated / radius-sm / 22px 高 / 文字居中 / 阴影 8px，与存储页 PathAction 的气泡同源），画在色卡上方并右对齐 —— 避开设置页滚动视口的裁剪边；色卡原有的「点击等同卡片空白」行为保持不变。
 - **The settings › Theme page's accent swatch now has a hover tip.** The swatch (the 46×32 well that only displays the effective accent) gave no feedback on hover. Hovering it now pops a tip directly above, showing the hex of the **effective** accent (under Follow theme it is the theme's accent; under Custom it is the 3:1-guard-corrected colour — the very colour the well paints). The bubble follows the top-bar overlay spec (bg-elevated / radius-sm / 22px tall / centred text / 8px shadow, the same one the storage page's PathAction bubble uses) and is drawn above the swatch, right-aligned, so the settings page's scroll viewport never clips it; the swatch's existing "click behaves like card blank space" semantics are unchanged.
-
 - **主题下拉框去掉每行的「三色块」。** 用户反馈「好像没啥意义」：色阶条（root / panel / tbg 三色，26×15，含棋盘衬底与内描边）缩到行内已基本不可辨，主题观感由右侧八色带承担，故整块删除。行内现为「色点 + 名称 …… 八色带 / ✓ / 星标」。`ThemeEntry` 的 root / panel / tbg 字段保留（Rust 侧仍填，与早已无人读的 tfg 同理）。
 - **The theme dropdown drops the per-row three-tone block.** Reported as meaningless: the root/panel/tbg swatch (26×15, checkerboard backing and inner stroke included) had shrunk past recognition in-row, and the ANSI band on the right already carries the theme's look — the block is gone. Rows now read "dot + name … ANSI band / ✓ / star". `ThemeEntry`'s root/panel/tbg fields stay populated from Rust (the same state as the long-unused tfg).
-
 - **主题选择弹框四项整理。** ① 删「全部主题 …… N 套」总组头——它与紧随的暗/亮子组头计数重复，常驻区后直接分组（`build_theme_entries` 少 push 一条）。② 行内右侧组（八色带 / ✓ / 星标 chip）统一靠右：吸空块上移到名称之后，原跟随名称漂移的色阶条并入右组（下一轮已整块删除）。③ 「跟随系统 / 反向（亮↔暗）」两按钮补悬停动效（激活态强调色加深、常态换 bg-hover、边框提亮，120ms 过渡）。④ 星标 chip 的阴影区缩小为包裹「星 + 文案」并整体居中（此前铺满 84px、文案右对齐，左侧留一截空阴影）；悬停显形 / 进入提亮两档不变。⑤ 删右下角「常用写进 config」。
 - **Four theme-picker tweaks.** ① The "All themes … N" section header is gone — it duplicated the dark/light sub-headers' counts, so the favourites block now runs straight into the grouped list (`build_theme_entries` pushes one fewer row). ② The row's right-hand group (ANSI band / ✓ / star chip) is uniformly right-aligned: the flex spacer moved to just after the name, pulling the 3-tone bar — which used to trail the name — into that group (removed outright in the next round). ③ "Follow system" and "Invert light/dark" gained hover feedback (the active state deepens the accent, idle switches to bg-hover, the border brightens, 120 ms transition). ④ The star chip's backdrop shrinks to wrap "star + label" and is centred as a whole (it used to fill the full 84 px with right-aligned text, leaving an empty shadow on the left); the show-on-hover / brighten-on-chip-hover two-step is unchanged. ⑤ The bottom-right "Favorites saved in config" note is removed.
-
 - **调色盘第三轮细节。** ① HEX 行：去掉框内 "HEX" 标签（# 号已是常驻标识），# 缺席时自动补回（输入框永不出现无 # 的 hex）；「点入即全选」按反馈移除——第一次点击只落光标。② 复制键图标改**绝对居中坐标**（此前内层 HL 的 `alignment: center` 只管主轴，交叉轴 stretch 下固定高图标仍顶对齐——"只有悬浮背景居中了"）。③ 页脚警示行去掉 `wrap`：wrap 文本的 preferred-width 等于整行可用宽，色块被挤到行尾——现色块紧贴"自动调亮为"句尾。④ **色轮圆外四角改为可拖卡片**：`wheel-ta` 的 240×240 整框命中区把四角点击吃了（用户四角标记"无法拖动"），圆外按下 / 移动 = 卡片拖动。⑤ 卡片上留白 8 → 14px，与下留白一致。
 - **Color-picker polish, round three.** ① The HEX row drops its in-field "HEX" label (the always-present # is the identifier) and auto-restores the # if it goes missing; the click-to-select-all behaviour is removed — the first click just places the caret. ② The copy glyph uses absolute centring coordinates — the inner layout's centre alignment only covers the main axis, so a fixed-height glyph still rode high under cross-axis stretch ("only the hover background was centred"). ③ The footer warning drops word-wrap: a wrapping text's preferred width equals the full row, which shoved the swatch to the far end — it now hugs the sentence. ④ The wheel's four outside-circle corners now drag the card — the wheel touch area's full 240×240 hit box used to swallow those clicks (the four corner markers in the report). ⑤ The card's top padding grows 8 → 14px to match the bottom.
-
 - **调色盘细节优化（第二轮）。** ① HEX 行复制键放大到 26×26 / 图标 16px（与 13px 数值协调），保持居中；② 行标识（HEX / R / G / B）从 muted 10px 提亮为**前景色 + 13px**，与右侧数值同档同号（此前像"备注说明"）；③ 右上角 ✕ 与 18px 头部空条**整条删除**（关闭走 取消 / 确认 / 遮罩 / Esc，拖动走卡片空白区，与设置卡 / 自定义弹框同口径）；④ 页脚加**顶部横线**，取消 / 确认改为 **64×36**（与预设弹框按钮同规格，原 84×30 偏大偏矮）。
 - **Color-picker polish, round two.** ① The HEX row's copy key grows to 26×26 with a 16px glyph (matching the 13px value text) and stays centred. ② Row identifiers (HEX / R / G / B) move from muted 10px to the foreground tier at 13px — the same tier and size as the values they label. ③ The top-right ✕ and the empty 18px header strip are removed entirely (closing goes through Cancel / Confirm / backdrop / Esc; dragging stays on the card's blank areas, the same convention as the settings and custom dialogs). ④ The footer gains a top divider line, and Cancel / Confirm resize to 64×36 — the preset popup's button spec (the old 84×30 was wider and shorter).
-
 - **调色盘三项修复。** ① 输入框光标**行尾永不可达**：值列右对齐会把命中测试全映射到偏移 0（#picker-input-edit 自己诊断过的老问题，"点入即全选"只绕过第一次点击，再点落光标仍回行首）——改为左对齐，行尾可达。② HEX 行复制键：固定高方块在 HL 里顶对齐（图标偏上）+ Icon 未写宽高铺满整盒 → 包居中 VL + 显式 12×12；并新增「已复制」回执（1.4s 绿字气泡，每次点击重启，与侧栏 Copied 徽标同款）——此前点击无任何反馈。③ 页脚警示行重组：16px 色块原先塞在句中段，换行时夹在两行文字中间；改为两行版式（第一行警示句 + 句末色块，第二行操作说明）。
 - **Three color-picker fixes.** ① The caret could never reach the end of a value — right-aligned inputs map all hit-testing to offset 0 (the defect already diagnosed during the click-to-select-all rework, which only worked around the first click); values are now left-aligned so the caret lands where you click. ② The HEX row's copy key: its fixed-height button sat top-aligned in the row (glyph rode high) and the glyph filled its whole box — now wrapped in a centring layout with explicit 12×12 sizing; a click also raises a green "Copied" receipt for 1.4s, restarting on every click (same language as the sidebar's Copied badge), where previously there was no feedback at all. ③ The footer's contrast warning is restructured into two lines — the warning sentence with the target swatch at its end, then the usage hint — instead of a mid-sentence swatch wedged between wrapped lines.
-
 - **复制回执统一为一处；「数据目录」toast 的对勾归位；设置弹框每次打开都回默认页。** ① 复制路径此前有两套反馈：页面右上角的 toast（「路径已复制」）与按钮自带徽标——而 toast 只在 status「变化」时重新弹出，所以每次启动只有第一次复制会弹它、之后只剩徽标（用户实测的不一致）。现统一保留按钮徽标（贴着按钮、每次点击都有），复制不再触发页面 toast（toast 仍服务于迁移结果 / 错误）。② toast 里的对勾 / 错误图标此前未写显式宽高——`Icon` 在非布局父级里默认铺满整盒、内部再居中，图标飘到盒子中下部；补上 13×13 后 x/y 定位生效。③ 设置弹框此前「会话内记住上次页、重启回默认」；现统一为**每次打开都回默认页（主题）**（与速选面板 Tab 直达主题的既有重置同口径）。
 - **Copy feedback unified; the directory toast's check mark fixed; the settings dialog now always opens on its default page.** ① "Copy path" used to give two kinds of feedback — a page-level toast ("Path copied") plus the button's own badge — but the toast only re-armed when the status string *changed*, so only the first copy after each launch showed it while later copies fell back to the badge alone (the inconsistency reported from testing). The badge (anchored at the button, shown on every click) is now the single channel; copying no longer fires the page toast, which stays for migration outcomes and errors. ② The toast's check/error glyph lacked explicit dimensions — inside a non-layout parent the `Icon` fills the whole box and re-centres itself, dropping the glyph into the middle of the toast; a 13×13 size makes the x/y placement stick. ③ The settings dialog used to remember the last page within a session but reset on restart; it now consistently reopens on its default page (Theme), matching the existing reset used by the theme-picker's Tab shortcut.
-
 - **资源栏「内存 / 交换」数值对齐设计稿。** 这两个数值此前是全批「数值回前景档」里唯一漏网的一处：颜色停在描述灰、也没用设计稿的等宽数字字形。现按 mock `.ui-num` 规格改为**前景色 + mono + 600 字重**（与磁盘「可用/大小」、滑块百分比等数值同类同档）。
 - **The resource dock's Memory / Swap figures now follow the design spec.** These two values were the last hold-out of the "resource figures return to the foreground tier" pass — left in description grey and without the spec's monospaced digits. They now use the mock's `.ui-num` treatment: **foreground tier + mono + 600 weight** (matching the disk Free/Total figures, slider percentages and the other resource values).
-
 - **「数据目录」路径栏的复制按钮有了回执，悬停提示样式并入统一规范。** 点击「复制路径」此前没有任何确认——唯一的「消息」是悬停 tooltip，而点击又会被 tooltip 抑制逻辑（#tip-hold）收掉，表现为「只有第一次有动静」；且这个气泡是自绘的（`bg-active` / `radius-md` / 文字左靠），与顶栏 tooltip 统一浮层（`bg-elevated` / `radius-sm` / 22px 高 / 文字居中 / 阴影 8px）不是一个样式。现在：点击复制后原位弹出绿色「已复制」气泡 1.4 秒（**每次点击都重新计时**，与侧栏主机复制的 Copied 徽标同一语言）；tooltip 与回执共用同一气泡，样式逐项对齐顶栏统一浮层。
 - **The path bar's copy button now gives a receipt, and its hover tip follows the app's tooltip spec.** Clicking "Copy path" used to give no confirmation at all — the only "message" was the hover tooltip, which the click then suppressed via the tip-hold logic, reading as "something only happens the first time"; the self-drawn bubble also used its own styling (`bg-active` / `radius-md` / left-aligned text) instead of the top bar's unified tooltip overlay spec (`bg-elevated` / `radius-sm` / 22px tall / centred text / 8px shadow). Now a green "Copied" bubble replaces it in place for 1.4s on **every** click (the timer restarts each time — the same language as the sidebar host-copy's Copied badge), and the tooltip and the receipt share one bubble aligned with the unified overlay spec.
-
 - **弹框字段标签对齐设置面板：常态改用前景色。** 「新建会话」等弹框里每个输入框 / 下拉上方的字段标签（名称、连接协议、主机 / IP、端口、认证方式、用户名、密码…）原先停在描述灰（`text-secondary`），而设置面板的行标签早已是前景色——同为「行标识」，两处两种亮度。现把弹框侧统一到设置面板口径（`text-primary`）：改动 = 五处共享定义（`LabeledInput` 标签、带标签下拉的标签、`ProtoSelect`、`GroupCombo`、「认证方式」小节标签，所有弹框一次生效），外加自绘标签一次收口——同步输入弹框的左右栏头（当前窗口中的会话 / 频道 X 成员）、重命名 / 新建分组 / 快捷命令 / 下载目录 / SFTP 提示 / 优化权限等弹框内的同类标签、新建会话高级区的小节标签；分组对话框的名称预览两态一分为二（有名 = 前景色，空 = 弱化档占位）。占位符与辅助说明仍保持弱化档，label 亮 → 提示暗 的两级对比不受影响（分段控件未选中态等 hover 三元语义不变）。
 - **Dialog field labels now match the settings panel: the resting colour moves to the foreground tier.** In "New session" and the other dialogs, the field label above each input or dropdown (Name, Protocol, Host / IP, Port, Authentication, Username, Password, …) sat one tier below the settings panel's row labels — description grey (`text-secondary`) versus `text-primary` for what is the same "row identifier" role. The dialogs are now aligned with the settings panel via five shared definition points (`LabeledInput`'s label, the labelled dropdown's label, `ProtoSelect`, `GroupCombo`, and the "Authentication" section label — every dialog updates at once), plus a sweep of hand-drawn labels (the sync-input dialog's two column headers, the rename / new-group / quick-command / downloads / SFTP-prompt / permissions dialogs, the new-session advanced section labels, and the group dialog's name preview, whose two states are now split: named = foreground, empty = faint placeholder). Placeholders and helper text keep the faint tier, so the bright-label / dim-hint contrast is unchanged (segmented-control idle states and other hover ternaries are untouched).
-
 - **界面灰度补遗：分组名、资源栏、协议图标等回到前景档。** 上一轮灰度收敛扫的是裸值 `tint:`，漏了两类绑定：一是两个组件的自定义属性 `icon-color`（`ProtocolIcon` / `IconBtn`，7 处）；二是一批按高保真 mock 口径应为前景档、实际留在次级或弱化档的文字与图标——会话列表的分组名、资源栏的 CPU/内存/交换标签、↑↓ 流量数值、「服务器资源 / 本机资源」标题、本地网络图题「本机」、磁盘表头与磁盘行（mock 的 `.ui-metric` / `.ui-delta` / `.ui-disk` 与「服务器资源 / 本机」内联全部是前景色）。本批同时处理 mock 未覆盖界面的同类问题：菜单分区标签（两处「Move to」）与快捷键弹框四个分区标题从弱化档提到次级档、三个不透明度滑块的百分比数值、进程窗 MEM 列（原本比 CPU 列暗一档）、跳板信息卡 Host/User/Auth/Group/Note 五行（原本比同卡 Name 行暗）、以及三处图标与标签不同档的小 chip（快速命令「Quick」、存储路径 chip、同步窗口 chip）。窗口控制键、占位符、提示文字与字段标签维持原语义；全部只改目标档位，不动任何色值。
 - **Grayscale follow-up: group names, the resource dock and protocol icons return to the foreground tier.** The previous grayscale rebalance swept bare `tint:` values and missed two kinds of bindings: the `icon-color` custom property on the `ProtocolIcon` / `IconBtn` components (seven sites), and a set of texts and icons that the high-fidelity mock puts in the foreground tier while the code had left them one or two steps down — session group names, the resource dock's CPU/Memory/Swap labels, the ↑↓ throughput figures, the "Server resources / Local resources" titles, the local network graph's "Local" caption, and the disk table's header and rows (the mock's `.ui-metric` / `.ui-delta` / `.ui-disk` and its inline "Server resources / Local" are all foreground). The batch also covers the same class of issues on surfaces the mock does not draw: the menu section labels ("Move to" in two menus) and the shortcuts dialog's four section titles move from the faint tier up to secondary, the three opacity sliders' percentage readouts, the process window's MEM column (it sat one tier below CPU), the jump-chain info card's Host/User/Auth/Group/Note rows (they sat one tier below the card's own Name row), and three chips whose icon disagreed with its label (the Quick-command chip, the storage path chip, the sync window chip). Window controls, placeholders, hints and field labels keep their semantics; only the target tier changes, and no colour value is touched.
-
 - **调色盘那四个输入框，现在一次点击就能改。** 反馈是「第一次点只出聚焦边框、打不进字；能编辑之后光标又落在行首、怎么也到不了行尾」。用 Slint 官方测试后端真派发鼠标 / 键盘事件复现（`src/picker/probe_test.rs` 探针）后，两条真因都在输入行自身，与事件派发无关：其一，值列是右对齐，文字左边那一大片空白在命中测试里全部映射到偏移 0 —— 点哪儿光标都落「行首」，而文字右缘紧贴内边距、右边根本没有可点区域，靠鼠标永远到不了行尾（旧代码想用「聚焦时把选区设到末端」把光标带过去，但那次赋值发生在同一次按下的前半段，紧接着的光标定位又把它覆盖回 0）；其二，打字途中每按一个键，都被 `hex-apply` 钳过的值回灌进输入框，想输入 300 就会在第三个键上看到 255。现在改成数值框的通行做法：**点入即全选**（0ms 计时器推到本次事件派发之后执行，避开上面那次覆盖），打字 / 粘贴直接替换整段值；**再点一次才落光标**，想改哪一位点哪一位，右端空白也能点到行尾；**聚焦期间不回灌**，离焦（点空白或焦点移走）那一刻再收敛回事实值。
 - **Palette value fields: a single click is now enough to edit.** The report was "the first click only draws the focus ring and nothing can be typed; once it does accept input the caret sits at the start of the line and cannot be moved to the end". Reproduced by dispatching real pointer/key events through Slint's official testing backend (probe in `src/picker/probe_test.rs`); both causes are in the field itself, not in event delivery. First, the value column is right-aligned, so all the empty space left of the text maps to offset 0 in hit-testing — the caret lands at the start wherever you click, and since the text's right edge sits against the inner padding there is no clickable area past it, so the end of the line is unreachable with the mouse (the old code tried to carry the caret to the end with a selection-offset assignment on focus, but that ran in the first half of the press and the caret placement right after it overwrote it back to 0). Second, every keystroke echoed the hex-apply-clamped value back into the field, so typing 300 showed 255 on the third key. Both are now handled the way numeric fields normally are: **clicking selects the whole value** (deferred through a 0 ms timer so it lands after the press's own caret placement), so typing or pasting replaces it outright; **a second click places the caret**, so any single digit can still be edited, including at the end; and while the field has focus the value is **not** echoed back — it reconciles on blur (blank click or focus moving away).
 - **对比度说明并入页脚。** 「✓ 对面板对比度达标…」「⚠ 对面板对比度不足 3:1…」这两句原来自占一行，现在挪到页脚左侧，与「取消 / 确认」同一行，调色盘整卡矮了约 26px。页脚布局刻意不写 `alignment: end` —— Slint 的主轴 flex_grow 只在 `alignment: stretch`（HorizontalLayout 默认值）下开启，写了 end 提示框就吃不到剩余宽度。
@@ -127,62 +148,42 @@ All notable changes are documented here. 本文件记录所有重要变更。
 - **The accent popup's "Selected / Palette" button no longer shows a seam along its bottom edge.** Between the colour well and the card border a row of card background showed along the bottom edge only, reading as a well that failed to fill its box while the top edge sat flush. Two things were fixed. The popup's height is the sum of its contents and carries a fraction, so at 125% / 150% scaling the card itself fell off the device-pixel grid; height, position and drag landing now snap to the grid (the same routine the settings card and the window frame use). The card border and the well's 1-pixel inset are 1.25 physical pixels at 125%, so the boundary they share always carried a fraction and the fill and stroke paths rounded it differently, leaving a blank row; those vertical insets now use one device pixel (hairline), matching the settings card and the window frame. Both edges land on the grid and the seam is gone.
 - **主题精简到 28 套，速选浮层按高保真重做，界面灰度收敛。** 色表从 38 套精简到 28 套：下线 12 套「伪重复」（Radix 六族各两套同底改色、Tokyo Night 双份、Ayu 暗档、GitHub 暗档），补回 3 套此前缺位的明暗配对亮档（Dracula 亮 / Everforest 亮 / One Dark 亮），并对 26 套做色值修正——门面 MTerm 两套的注释槽 / 强调色 / 24 色分组与频道色全部重算，t3 注释色全表优化，Rosé Pine 的状态槽与语义色解耦，亮档彩槽补足对比度，Solarized 与 Darcula 亮档重制。默认主题改为门面 **MTerm 暗 / 亮**（Ctrl+Alt+T 亦在其间循环），`islands-*` / `idea-*` 随改名归位 `mterm-*` / `darcula-*`，新增的 One Dark 亮档由 GitHub Light 重着色而来。主题速选浮层重做：顶部「常用」区（出厂 MTerm 暗 / 亮两套，可自选增删、上限 8 套，点星即整理）+「全部主题」滚动区；每行 = 强调色圆点 + 名称 + 3 色阶条（root/panel/tbg，带棋盘衬底，暗档也看得清）+ ANSI 八色带；悬停 **250ms** 即预览且**同步终端色表**（预览与落盘观感一致），八色带淡出让位给「设为常用 / 移出常用」；搜索从「只匹配中文名」扩到中文名 / id / 色相名；新增 ↑↓ / Enter / Esc / Tab 键盘导航与「跟随系统 / 反向（亮↔暗）」入口，底部常驻「悬停即预览 · 点击即落盘 / 常用写进 config」说明栏。界面灰度收敛：77 处图标与 4 处常态导航文字从 `text-secondary` 提到 `text-primary`（原先占全部文字 68% 的灰档在浅色主题下过淡），状态区分交回底色与竖条表达，**不改任何色值**。另：强调色网格首格的「深渊色」机能性最弱（极深色作强调色，在暗色面板上几乎不可见且必被对比度守卫改写），替换为「MTerm 青」。
 - **28 themes instead of 38, a rebuilt theme picker, and a grayscale rebalance.** The palette shrinks from 38 to 28: twelve pseudo-duplicates are gone (the six Radix families each kept two themes that were the same base recoloured, plus the two Tokyo Night variants, Ayu Dark and GitHub Dark), three missing light counterparts are back (Dracula Light, Everforest Light, One Dark Light), and 26 themes had their colours corrected — the MTerm facade pair's muted/accent/24-colour group and channel colours are recomputed, the t3 muted slot is optimised across the table, Rosé Pine's state slots are decoupled from its semantic ones, the light themes' colour slots gain contrast, and Solarized Light and Darcula Light are rebuilt. The default theme is now the **MTerm facade** (Ctrl+Alt+T cycles the two MTerm themes), `islands-*` / `idea-*` are renamed `mterm-*` / `darcula-*`, and the new One Dark Light is GitHub Light recoloured. The quick-pick popup is rebuilt: a "Favorites" section on top (the two MTerm themes out of the box, self-editable up to 8, star to pin/unpin) over a scrolling "All themes" list; each row is an accent dot, the name, a 3-step root/panel/tbg swatch strip (checker-backed so dark themes stay legible) and an ANSI eight-colour band; hovering previews after **250ms** and **syncs the terminal palette** so preview and commit look identical, with the band fading out for "Pin / Unpin"; search now matches name / id / hue name instead of the Chinese name only; ↑↓ / Enter / Esc / Tab keyboard navigation and "Follow system / Invert" entries are added, with a footer that states "hover to preview · click to apply / favorites saved in config". The grayscale rebalance lifts 77 icons and 4 idle navigation labels from `text-secondary` to `text-primary` (that grey tier used to cover 68% of all text and washed out on light themes); state is expressed by background and accent bars instead, and **no colour value changes**. Also: the accent grid's first cell, "Abyss", was the weakest possible accent (near-black, invisible on dark panels and always rewritten by the contrast guard), so it is replaced by "MTerm Cyan".
-
 - **修复内置 RDP 一改窗口尺寸就掉线的问题。** 选了「跟随标签页」的会话会把新的桌面大小发给服务端，服务端随即进入协议的停用—重激活流程；而内置客户端依赖的 ironrdp-client 0.1.0 在重激活后重建 FastPath 处理器时丢掉了连接时协商好的批量解压器（写死 `bulk_decompressor: None`），于是服务端随后发来的压缩画面数据被当成未压缩数据解码，必然失败、会话结束——表现为一改尺寸就「已断线」，点重连又能进去并撞上「另一个会话被阻止」。修复方式是把 ironrdp-client 0.1.0 收进 `vendor/` 打补丁（沿用 winit 后端本地补丁的先例）：重激活完成时按连接时协商的压缩类型重建解压器。上游 master 已把解压器移进 `ActiveStage` 从根本上修掉这个问题，但修复尚未发布（0.17.0 / 0.1.0 仍是最新版），故暂用本地补丁，`Cargo.toml` 的 patch 段写了重新应用的方法。
 - **Fix the built-in RDP client dropping the session whenever the window is resized.** A "Follow tab" session sends the new desktop size to the server, which then runs the protocol's deactivation–reactivation sequence; ironrdp-client 0.1.0 rebuilt its FastPath processor afterwards without the bulk decompressor negotiated at connect time (hard-coded `bulk_decompressor: None`), so the server's next compressed frame was decoded as plaintext, failed, and ended the session — resizing once meant "Disconnected", and reconnecting worked but ran into "another session was blocked". The fix vendors ironrdp-client 0.1.0 under `vendor/` (same pattern as the local winit backend patch) and recreates the decompressor from the compression type negotiated at connect time. Upstream master fixes this properly by moving the decompressor into `ActiveStage`, but the fix is unreleased (0.17.0 / 0.1.0 are still the latest), so a local patch stands in; the `[patch.crates-io]` section of `Cargo.toml` documents how to re-apply it.
-
 - **「跟随标签页」不再被存丢，新建内置 RDP 会话默认就用它。** 「跟随标签页」是唯一能让远端桌面铺满标签页的选项，但在会话对话框里选它**从来没生效过**：分辨率下拉只写 `draft.rdp_resolution`，而保存时另一条手写的构造路径直接读 `draft.rdp_follow_tab_size`（一个界面根本没有控件能写的字段，永远是 `false`），于是这个选择每次都被静默丢弃，桌面停在一个写死的尺寸上。现在保存路径与构造路径共用同一个判据（`session_models::follows_tab_size`：下拉选了 follow 或存量配置带了该标记都算），下拉与这个 bool 也同步改写——所以**从「跟随标签页」改回固定分辨率同样能生效**，不再单向卡死。其次，新建会话时切到「内置客户端」若分辨率还是出厂值，会自动预置为「跟随标签页」（编辑存量会话不碰已存值；切回「系统客户端」会自动还原），不必每次新建都手动挑一遍。
 - **"Follow tab" is no longer dropped on save, and it is the default for a new built-in RDP session.** "Follow tab" is the only option that makes the remote desktop fill the tab, but picking it in the session dialog **never took effect**: the resolution dropdown writes only `draft.rdp_resolution`, while the save path read `draft.rdp_follow_tab_size` — a field with no control in the UI, therefore always `false` — so the choice was silently dropped every time and the desktop stayed at a hard-coded size. The save path and the constructor now share one judgement (`session_models::follows_tab_size`: the dropdown says follow, or a stored config carries the flag), and the dropdown keeps the two fields in sync — so **switching back from "Follow tab" to a fixed resolution works too**, instead of latching one-way. Also, switching a new session to the built-in client now presets the resolution to "Follow tab" when it is still at its factory value (an existing session's stored value is never touched; switching back to the system client restores the default), so a new built-in RDP session no longer needs the dropdown touched by hand.
-
 - **删掉远程桌面标签页上的连接状态点。** 标签栏左侧的小圆点（绿=已连接 / 黄=连接中 / 红=断线或失败）已移除——远程桌面的连接状态本来就在 Tab 内容区里用整页状态（转圈 / 「重连中…」/ 「已断线 — <原因>」/ 「连接失败」）表达，标签栏再画一个点是同一件事的第二种说法，且颜色语义与内容区并不总是一致。左侧会话列表的在线状态点不受影响（那是另一处、另一种汇总口径）。
 - **Remove the connection status dot from remote-desktop tabs.** The little dot on the left of the tab strip (green = connected, amber = connecting, red = disconnected or failed) is gone: a remote tab already states its connection in its content area — the full-page spinner, "Reconnecting…", "Disconnected — <reason>", "Connection failed" — so the dot was a second way of saying the same thing, and its colour semantics did not always agree with the content area. The online dot in the session list is unaffected (different place, different aggregation).
-
 - **VNC 连接被拒绝时立刻说明原因，不再先空转 7 秒。** VNC 连不上、且原因是端口上没有服务在听（TCP 被拒）时，驱动此前会按「传输错误」重试 3 次（退避 1+2+4 秒）才报失败——而这 7 秒里界面停在「重连中…」，看不到任何原因，而「端口上没有服务」这个结论在第一次握手失败时就已经成立。现在 `ECONNREFUSED` 直接判失败，其余传输错误（超时、重置、不可达）仍然照旧重试。
 - **A refused VNC connection now reports its reason immediately instead of spinning for seven seconds.** When a VNC connection fails because nothing is listening on the port (TCP refused), the driver used to treat it as a retryable transport error and try three times (backoff 1+2+4s) before failing — and for those seven seconds the UI sat on "Reconnecting…" with no reason, even though "nothing listens on this port" is already true at the first handshake. `ECONNREFUSED` now fails immediately; every other transport error (timeout, reset, unreachable) still retries as before.
-
 - **「重新连接」从空转修成真能用、断线带上原因、状态页居中。** 远程桌面 Tab 上的「重新连接」此前是个**彻底的空操作**：它往一条在创建处就被丢掉接收端的通道里发消息（发送必然失败，且错误被吞掉），而这个按钮又只在会话已经结束（重连中 / 已断线 / 失败）时才出现 —— 那一刻驱动早已丢掉 client future、关掉 socket 并把会话标成已关闭，句柄上的任何发送都是空操作。现在它**在同一个 Tab 里重新起一次会话**：面板位置、分组、标题、只读标记全部保留，上一段的失败原因与残留画面在重开前清掉，凭据仍按原样取（会话密码 / Windows 凭据管理器），证书信任按指纹复用、不会重问；连会话配置都起不来的极端情况也会把原因写在页面上，而不是让 Tab 永远停在「连接中」。其次，「已断线」一直是真话（对端挂断、会话被接管、传输中断都落到这一态），但驱动手上那条断开原因原来只写进日志、没告诉用户 —— 现在会翻成一句话贴在状态后面（如「已断线 — 服务器断开了连接」「已断线 — 远端用户断开了连接」）；驱动说不出原因时仍是朴素的「已断线」，不会硬凑成「已断线 — 连接失败」。最后是版式：转圈与「重新连接」按钮此前都贴着 Tab 左边缘（状态区只做了垂直居中，这两个固定尺寸元素没有水平居中的包裹），现在转圈在文案上方、两者都居中。
 - **The Reconnect button does something, a disconnect says why, and the status page is centred.** The Reconnect button on a remote-desktop tab used to be a **complete no-op**: it sent to a channel whose receiver was dropped where it was created (the send always failed, and the error was swallowed), and the button only appears once the session is already over (reconnecting / disconnected / failed) — by which point the driver has dropped its client future, closed its sockets and marked the session closed, so nothing sent through the handle can do anything. It now **starts a new session in the same tab**: position, group, title and read-only flag are all kept, the previous failure text and the stale picture are cleared first, credentials are read the same way as before (session password / Windows Credential Manager), and the certificate trust is reused by fingerprint rather than asked again. Even a session definition that cannot start reports its reason on the page instead of leaving the tab on "Connecting…" forever. Second, "Disconnected" was always true (the peer hung up, the session was taken over, the transport died) but the reason the driver held was only ever written to the log — it is now translated into a clause appended to the state, such as "Disconnected — the server closed the connection" or "Disconnected — the remote user disconnected". A driver with nothing to say keeps the bare "Disconnected" rather than inventing "Disconnected — connection failed". Finally, layout: the spinner and the Reconnect button used to hug the tab's left edge (the status area only centred vertically, and neither fixed-size child had a horizontal centring wrapper); the spinner now sits above the text and both are centred.
-
 - **内置 RDP 在密码框留空时会改用 Windows 凭据管理器里已存的密码。** 此前「系统客户端」能免输密码直连、而「内置客户端」停在远端登录界面，差别从来不在主机，而在取密码的地方：系统模式把连接整个交给 `mstsc`，由 `mstsc` 自己去读凭据管理器里的 `TERMSRV/<主机>`；内置客户端只认密码框。现在密码框留空时，内置客户端也去读同一条（`普通` 类型）凭据，读到就用它认证（NLA，直达桌面）；没有条目、条目不可读或内容为空，则维持原行为（纯 TLS，由远端登录界面收密码）。存在凭据里的密码不会被读回到界面、也不会被回写。Windows 上会话编辑框的占位符相应改为「留空 — 用已保存的 Windows 凭据，否则连接时提示」。
 - **The built-in RDP client now fills a blank password field from the Windows Credential Manager.** The system client could always connect without typing a password while the built-in one stopped at the remote logon screen, and the difference was never the host: system mode hands the connection to `mstsc`, which reads `TERMSRV/<host>` itself, whereas the built-in client only knew the password box. With a blank field it now reads that same entry (type "generic") and authenticates with it — NLA, straight to the desktop. No entry, an unreadable entry, or an empty one keeps the previous behaviour: plain TLS, with the server's own logon screen collecting the password. The stored password is never echoed back or written over. On Windows the dialog placeholder now reads "Leave blank — saved Windows credential, else prompt".
-
 - **连接失败改为「一句人话 + 可展开的错误详情」。** 远程桌面（RDP/VNC）连接失败时，界面主标题不再直接铺驱动返回的原始错误文本（形如 `CredSSP: InvalidToken: CredSSP server returned an error status; status is STATUS_LOGON_FAILURE [0xc000006d]`），而是先给一句话——按 NTSTATUS 码与 socket 错误码归类为「用户名或密码不正确」「账户已被锁定」「目标主机拒绝了连接」「连接超时」「服务器证书未被接受」等；驱动原文一字不改地收进「显示错误详情」开关（排查与反馈仍需要它）。此前同一段原文还会在标题与详情两处各显示一遍，现在两处各司其职。
 - **A failed connection now leads with one readable line, with the driver's own text one toggle away.** The headline used to be exactly what the driver returned (`CredSSP: InvalidToken: CredSSP server returned an error status; status is STATUS_LOGON_FAILURE [0xc000006d]`). It is now classified — by NTSTATUS value or socket error code — into a sentence such as "Wrong username or password", "The account is locked out", "The host refused the connection", "Connection timed out" or "The server certificate was not accepted". The original text is kept verbatim behind a "Show error details" toggle, because diagnosing and reporting still need it, and it no longer appears twice at once (headline and detail).
-
 - **密码框改为「留空即写入空密码」。** 编辑会话时，密码框里的内容就是保存结果——清空它就把已存密码抹掉。此前「留空」表示"保留原密码"，于是没有任何办法把一个会话退回无密码（远程主机没设密码时正需要这个）。这一个框同时承担 SSH 密码、SSH 私钥口令、RDP 密码和 VNC 密码。**注意**：出于安全考虑该框仍不回显已存密码，所以**编辑任何字段并保存都会清掉已存密码**（只改个名字也一样），下次连接时由各协议重新询问。粘贴的私钥保持原语义（留空仍保留）。
 - **Blank now means "no password" in the session dialog.** When editing a session the password box is the source of truth: clearing it stores an empty password. Previously "blank" meant *keep the saved one*, which left no way to take a password back off a session — exactly what a host without a password needs. The one box covers the SSH password, the SSH key passphrase, RDP and VNC. **Note**: the box still never echoes the stored secret for security, so **saving any edit — a rename included — clears a saved password**; the next connection asks again per protocol. The pasted private key keeps its old blank-keeps behaviour.
-
 - **移除协议下拉里 VNC 的「即将」徽标。** VNC 已实装（内置 vnc-rs 客户端在标签页里承载桌面），却仍挂着「即将」。徽标本身与背后的 preview/soon 机制（`preview-kind`、`is-preview`、`badge-of`、`start-preview` 及「预览不可创建」的守卫）已一并删除 —— 五个协议现在全是实装项。
 - **Remove VNC's "Soon" badge from the protocol dropdown.** VNC is implemented (the built-in vnc-rs client hosts a desktop in a tab) but still carried a "Soon" chip. The badge and the preview/soon machinery behind it (`preview-kind`, `is-preview`, `badge-of`, `start-preview` and the "preview cannot be created" guard) are gone — all five protocols are live.
-
 - **新增「MTerm · 亮」主题（自有设计「素纸」），与「MTerm · 暗」配对。** 设置 → 主题的「浅色主题」组新增一套纸白底 + 单一青绿强调（`#1f766b`）的亮色主题，与既有的「MTerm · 暗」同族、在选择器里相邻。三条配色纪律写进了回归测试：①底与灰只留约 6% 暖相——质感来自低饱和而非明显米黄；②全屏一套灰——终端前景直接等于正文一级灰、ANSI 注释色等于最弱灰，不再有"界面暖灰 + 终端冷灰"的双灰并存；③彩色只有强调色一处——终端 ANSI 的青与强调色同族。终端 ANSI 为自建谱系（饱和收进一档靠明度分层，亮底上 bright 档取更深的同色相），12 个彩色槽在该套底色上最低 4.54:1。切换时终端调色板一并生效，独立进程/编辑器窗口同步跟随。
 - **Add the "MTerm · Light" theme (an original "paper" design), pairing with "MTerm · Dark".** The Light themes group gains a paper-white theme with a single teal accent (`#1f766b`), same family as the existing "MTerm · Dark" and adjacent to it in the picker. Three colour rules are pinned by regression tests: (1) backgrounds and greys keep only ~6% warmth — the feel comes from low saturation, not visible beige; (2) one grey family on screen — the terminal foreground *is* the primary text grey and the ANSI comment grey *is* the faintest grey, so a warm UI grey and a cool terminal grey can never coexist; (3) the accent is the only hue — the terminal's cyan shares the accent's hue. The terminal ANSI palette is built in-house (saturation gathered into one band and separated by lightness, with bright slots taking a deeper shade of the same hue on a light background); the lowest of its twelve coloured slots measures 4.54:1 on this theme's background. The terminal palette switches together with the UI, and the detached process/editor windows follow along.
-
 - **新增「MTerm」主题（上游 Islands Dark 移植）。** 设置 → 主题的「深色主题」组新增一套：深底浮岛造型，界面本体几乎无彩色、只有强调色与状态色说话。留白面、文字、成功/警告/危险与终端 ANSI 均采用上游原色（12 个彩色槽在该套底色上全部达到 4.5:1）；强调色按本项目的观感定档为上游的**青** `#2aacb8`（上游 `textLink`/`button` 原本用蓝，与既有「经典蓝/霓蓝」重复，故改用该套自己的青）。切换时终端调色板一并生效，独立进程/编辑器窗口同步跟随。
 - **Add the "MTerm" theme (a port of Islands Dark).** The Dark themes group gains a deep-canvas, floating-panel look where the chrome stays almost colorless and only the accent and status colours speak. Canvas, text, success/warning/danger and the terminal ANSI palette all use upstream's values (all twelve coloured slots clear 4.5:1 on that theme's own background); the accent is set to that theme's own **cyan** `#2aacb8` (upstream's `textLink`/`button` used blue, which duplicated the existing "classic blue / neon blue" presets). The terminal palette switches together with the UI, and the detached process/editor windows follow along.
-
 - **统一鼠标悬浮背景并让它跟随主题强调色。** 此前悬浮高亮有两套互不相干的实现——列表行用写死的反色蒙版，工具栏图标用主题里的固定灰色——同一屏里是两种观感，且各主题的"重"程度相差最多 12 倍。现在合并为一个跟随强调色的浅染（强调色压暗 10% 后叠 8%），列表行、工具栏、按钮、标签的悬浮完全一致；参数按 37 套主题 × 4 种底面的正文对比度逐一核算选出，可读性不劣于改动前。
 - **Unify hover highlighting and make it follow the theme accent.** Hover used to be two unrelated implementations — a hard-coded inverted overlay for list rows and a fixed theme grey for toolbar icons — so one screen showed two different looks, and the "weight" of a hover varied by up to 12× across themes. They are now a single accent-tinted wash (the accent darkened 10%, laid down at 8%), identical on list rows, toolbars, buttons and tabs; the values were picked by checking body-text contrast across all 37 themes × 4 surfaces, so legibility is no worse than before.
-
 - **修复分组脊线上的亮点与分组拖动的浮卡错位。** 组内成员之间的组色竖线不再因上下两段重叠而出现比线身更亮的短段；把一个分组拖到末位后再拖动它时，跟手的浮起卡片不再飞到列表顶部，落点判定也同步恢复正常。
 - **Fix the bright spot on group spines and the misplaced drag card when dragging a group.** The group-colored spine no longer shows a brighter 2px segment between rows, and the floating drag card no longer jumps to the top of the list — the drop target tracks correctly again — when a group that was just moved to the end is dragged once more.
-
 - **修复分组拖到末位后一直自我展开收缩。** 指针停在列表首/尾的越界区时，分组的"临时展开"与"拖离收起"会互相触发，形成每约 450ms 一次的展开收缩死循环（再点一次组名才停）；现在收起判定不再把越界停留当成"已离开"，组拖动期间也不收起，非拖动状态下更不会因残留的指针坐标自动展开。
 - **Fix a group that keeps expanding and collapsing by itself after being dragged to the end.** With the pointer parked in the top/bottom overflow zone, a group's temporary expand and its "dragged away" collapse kept retriggering each other in a ~450ms loop (clicking the group name again was the only way to stop it). Collapsing no longer treats parking in the overflow zone as leaving, never runs during a group drag, and no longer auto-expands outside a drag at all.
-
 - **拖到列表末尾的落点更好读，也不再把最后一组弹开。** 拖动分组到最下方时，折叠的最后一组不再被自动展开；插入线按最后一组的中线分区 —— 上半区仍是"插到它之前"，下半区改为"放到最后"：未展开时线落在组名下方，已展开时落在最后一个成员之后，并整体画在内容底下方一点，避免与成员行的组色脊线末端叠在一起。
 - **Clearer drop feedback at the end of the list, and the last group no longer pops open.** Dragging a group to the bottom no longer expands a collapsed last group. The insert line now splits the last group at its middle: above means "before it", below means "at the end" — drawn under the group name when collapsed and after the last member when expanded, sitting just below the content bottom so it no longer overlaps the group-colored spine.
-
 - **拖动成员到组内第一位时组名不再让位，落点框与让位同步推进。** 组头只在"待出组 / 出组"时下移（那才是抽屉动作），指针瞄准组内某一位时组名钉住不动，第一位才拖得进去；虚线框改为跟随让位位移、钉在真实插入位上，成员依次级联让位，不再出现"框先跳到组名下面、成员还没动"的错拍；浮卡顶边压住哪一行，那一行左侧与竖线相接的枝干横线就点亮。
 - **The group name no longer yields while dragging a member to the first slot, and the drop box moves in step with yielding.** The group header now only shifts in the pending/leaving states (the real drawer motion), so aiming at a slot inside the group keeps the name in place and the first slot stays reachable. The dashed drop box follows the row's yield offset and stays pinned to the actual insertion point, members cascade in step, and the branch line of any row the card's top edge covers lights up.
-
 - **成员拖动的手感与落点修正。** 拖动方向改由**指针位移**判定（原先看"指针是否在被拖行下方"，而拖起瞬间指针本就在行内，落点会凭空深一行、把虚线框推到下面去）；组名作为容器标题**恒定不动**——整条"组头让位"逻辑删除，ghost 碰到组名下边不再带动组名；组名的中线成为"上一组末位"与"本组第一位"的分界，跨组时虚线框跟着 ghost 翻到上一组末尾。
 - **Drag feel and drop targeting for member sorting.** The drag direction now comes from the pointer's displacement (it used to ask whether the pointer sat below the dragged row — always true at pickup, which pushed the drop target a row too deep and sent the dashed box downwards). The group name now stays put as a container title: the whole header-yield path is gone, so the ghost touching the name no longer moves it. The name's midline divides "end of the previous group" from "first slot of this group", so the box flips to the previous group's tail as the ghost crosses it.
-
 - **组排序插入线跟着浮卡走，不再提前一格。** 插入线原来按**指针**判定、且命中区覆盖整个组段（组头 + 全部成员），于是 ghost 还在组的中间或尾部时，线已经挂到该组名上方一格（拖动组别上移时尤其明显）。现在判定基准换成浮卡自己的**前导边**，命中区收窄成"本组头上方 → 下一组头上方"这一段，线与卡同拍换手。
-
 - **成员拖动的落点框与让位严格对齐。** 落点框的位置改为"本行原位减去本行的让位位移"，唯一来源、不再叠加方向偏移（旧式在下移时会把框甩到**两个身位**之外）；命中行也改为"**前导边刚越过中线的那一行**"——也就是真正让位的那一行，于是"ghost 只负责定位、最终落点就是框的位置"这条规则成立：上移看顶边、下移看底边，越过成员一半即让位，框同时落到那一格。
-
 - **新增列表空白处右键菜单，并统一成员拖动的命中基准。** 在列表空白处右键可"全部展开 / 全部折叠"分组，以及隐藏或显示"本地终端"保留组；组头右键菜单里同样放了一份，文案随当前状态切换。成员拖动时命中行与让位行共用浮卡的前导边，虚线框不会再压在成员身上、也不会甩出一个身位。
 - **Right-click menu for empty list space, plus a unified hit basis for member dragging.** Right-clicking empty space in the list now offers "Expand all", "Collapse all", and hiding/showing the "Local Terminals" reserved group; the group header menu carries the same hide/show entry with a label that follows the current state. Member dragging derives both its hit row and its yield row from the drag card's leading edge, so the dashed box never covers a row or lands a slot off.
 
@@ -190,19 +191,14 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 - **停止 Android Beta 支持。** 移除 Android 客户端源码、APK 构建和发布任务，发布流程仅保留桌面平台。
 - **Discontinue Android Beta support.** Remove the Android client source, APK builds, and release tasks; releases now target desktop platforms only.
-
 - **修复内置文本查看器和编辑器的行号错位。** 行号按正文自动折行后的显示高度排列，保留空行与末尾换行，并随编辑、替换和窗口宽度变化同步更新；查找与替换输入框的文字和光标统一垂直居中。
 - **Fix line-number alignment in the built-in text viewer and editor.** Align the gutter with wrapped text, preserve blank and trailing lines, and update it after edits, replacements, and width changes. Vertically center text and cursors in the find and replace fields.
-
 - **修复串口会话误显示 SSH 端口（#406）。** 左侧和完整会话列表现在显示串口设备名、波特率及通信参数（如 `115200 baud · 8N1`），不再显示无关的 `:22`。
 - **Fix serial sessions showing an SSH port (#406).** The sidebar and full session list now show the serial device, baud rate, and framing (such as `115200 baud · 8N1`) instead of an unrelated `:22`.
-
 - **修复会话输入框提示文字重叠（#415）。** 提示文字置于输入控件下层，获得焦点时隐藏，避免与输入法尚未提交的组合文字重叠；覆盖普通输入框、分组框和端口转发字段。
 - **Fix overlapping placeholders in session fields (#415).** Placeholders render beneath input controls and hide on focus to avoid overlapping uncommitted IME composition text, covering labeled inputs, the group field, and port-forward fields.
-
 - **修复命令输入框全选与多行滚动（#416，输入框部分）。** `Ctrl+A` / `Cmd+A` 现在全选文本，支持滚动查看多行内容，并在选择时跟随光标。该更新不包含 `top` 无法通过 `Ctrl+C` 退出问题的修复。
 - **Fix command-input select-all and multiline scrolling (input-field portion of #416).** `Ctrl+A` / `Cmd+A` now selects all text. Multiline content can scroll, and selection keeps the cursor visible. This update does not resolve the reported inability to exit `top` with `Ctrl+C`.
-
 - **保留 Intel Mac 安装包。** 正式发布同时提供 Intel (`macos-x86_64`) 和 Apple Silicon (`macos-aarch64`) 安装包。
 - **Keep Intel Mac packages.** Releases provide packages for both Intel (`macos-x86_64`) and Apple Silicon (`macos-aarch64`).
 
@@ -210,25 +206,18 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 - **修复旧版 macOS 启动闪退。** 在 macOS 上禁用 Slint/winit 的 AppKit DisplayLink 帧节流，回退到计时器帧节流，避免旧系统收到不存在的 `displayLinkWithTarget:selector:` 消息。
 - **Fix startup crashes on older macOS.** Disable Slint/winit's AppKit DisplayLink frame throttling on macOS and use timer throttling instead, avoiding calls to the unavailable `displayLinkWithTarget:selector:` method on older systems.
-
 - **支持终端鼠标追踪与 VT100 线框字符（#399、#400）。** 鼠标事件现在可转发给启用追踪的 TUI 程序，并正确解析 DEC Special Graphics 字符集；会话设置可按需关闭线框转换。
 - **Support terminal mouse tracking and VT100 line drawing (#399, #400).** Mouse events are now forwarded to TUI applications that enable tracking, and the DEC Special Graphics character set is rendered correctly, with an option to disable line-drawing conversion per session.
-
 - **修复多项 SFTP 文件操作问题（#401、#402、#403）。** 上传完成后会正确清空选择计数，调整工具栏拖拽手柄与路径输入框布局，并在批量归档、复制路径时安全处理符号链接，避免空文件、卡死或越界访问。
 - **Fix several SFTP file-operation issues (#401, #402, #403).** Clear the selection count after uploads, improve the transfer toolbar and path-field layout, and handle symbolic links safely during batch archives and path copying to prevent empty files, hangs, and traversal outside the selected tree.
-
 - **修复 Wayland 启动后出现多个任务栏窗口（#404）。** 调整 Linux 窗口初始化与资源信息展示，避免应用启动时创建多余的可见窗口。
 - **Fix duplicate taskbar windows after startup on Wayland (#404).** Adjust Linux window initialization and resource presentation so startup no longer creates extra visible windows.
-
 - **支持在多个标签栏之间拖动标签页（#408）。** 标签页现在可以跨分屏和多标签容器拖动，并在目标位置正确重排，方便整理复杂的终端工作区。
 - **Support dragging tabs across tab bars (#408).** Tabs can now be moved between split panes and multi-tab containers and reordered at the destination, making complex terminal workspaces easier to organize.
-
 - **修复右键重命名标签页时闪退（#411）。** 调整窗口菜单事件处理，避免从标签页上下文菜单执行重命名时发生重入崩溃。
 - **Fix crashes when renaming tabs from the context menu (#411).** Adjust window-menu event handling to prevent re-entrant crashes when renaming a tab from its context menu.
-
 - **优化终端内存管理与跨平台分配器（#410）。** 终端关闭后会及时释放缓存及关联状态，并按平台选择合适的全局内存分配器，降低长时间、多会话使用时的内存占用。
 - **Improve terminal memory management and cross-platform allocation (#410).** Release terminal buffers and associated state promptly after tabs close, and select an appropriate global allocator per platform to reduce memory use during long-running, multi-session workloads.
-
 - **修复通过 JumpServer/Koko 连接后 Shell 自动断开（#359）。** SSH 兼容模式现在只建立单一 PTY 连接，不再自动启动独立 SFTP 旁路；界面同步隐藏不可用的 SFTP 状态，避免堡垒机关闭被代理的 Shell。
 - **Fix shells disconnecting through JumpServer/Koko (#359).** SSH compatibility mode now keeps a single PTY connection instead of automatically starting a separate SFTP side channel, and the UI reflects that SFTP is unavailable so bastions do not close the proxied shell.
 
@@ -236,34 +225,24 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 - **SFTP 子系统不可用时自动回退到 SCP 传输。** 当 SFTP 通道因服务器不支持或配置禁用而无法建立时，自动以 SCP 协议完成上传与下载，保证文件传输不中断。
 - **Fall back to SCP when SFTP is unavailable.** When the SFTP subsystem cannot be started (server unsupported or disabled in config), uploads and downloads automatically use SCP so transfer always works.
-
 - **SFTP 工具栏「下载」按钮始终提供「逐个下载 / 打包下载」菜单；下载完成后保留勾选状态。** 即便只勾选 1 项也保留该菜单，因为该文件可能是文件夹，需要打包下载。保留勾选便于对同批文件重复下载、删除或移动。
 - **SFTP toolbar's Download button always offers the individual / archive menu; selection persists after downloads.** Even with a single row selected (it could be a folder that needs archiving), the menu stays available. Keeping the selection makes it easy to re-download, remove, or move the same batch.
-
 - **打包下载统一为 `.zip` 并正确跟随符号链接。** 所有打包下载（含单文件右键）统一为 `.zip`；修复批量下载 `.pem` 等符号链接文件时退化为空/破损连接的缺陷（`tar -cf` 加上 `-h` 旗标跟随 symlink）。
 - **Unify archive downloads to `.zip` and follow symlinks.** All archive downloads (including the single-file right-click) use `.zip`. Fixes batch-downloading symlinked files such as `.pem` becoming empty/broken links (`tar -cf` now passes `-h`).
-
 - **删除确认框行为一致。** 勾选恰好 1 项时，右键删除与右上角删除按钮均弹出单文件确认框（与无勾选右键删除一致）；勾选 ≥2 项走批量确认框；有勾选时两者共用同一批量确认框。
 - **Unify delete-confirmation dialogs.** With exactly one row selected, both the right-click menu and the toolbar's Delete button show the single-file dialog; two or more rows use the batch dialog; both entry points share the same batch dialog when rows are selected.
-
 - **修复 SFTP 工具栏拖拽手柄与 Files 标签重叠、路径输入框过窄的问题。** 手柄不再悬浮粘连，路径输入框在中等宽度面板下保持可用宽度；紧凑工具栏与折叠态的布局、置灰及悬浮交互优化。
 - **Fix the SFTP toolbar drag handle overlapping the Files label and the too-narrow path input.** The handle no longer sticks, the path input keeps a usable width at medium panel sizes, and the compact/collapsed toolbar layout, dimming, and hover behavior are improved.
-
 - **视觉细节优化。** 列头分隔线常驻不闪；右键菜单位置随滚动贴住点击点；tooltip 渲染到按钮上方不再被遮挡；目录切换「加载中」改为淡入淡出。
 - **Visual polish.** The column-header divider stays put instead of flickering; right-click menus stick to the click point while scrolling; tooltips render above buttons so they are no longer clipped; the directory-switching "loading" indicator now fades in and out.
-
 - **修复点击「复制路径」时面板卡死的缺陷。** 剪贴板写入移至后台线程，避免阻塞 UI 事件循环。
 - **Fix the panel freeze when clicking "Copy path".** The clipboard write now runs on a background thread so the UI event loop is never blocked.
-
 - **修复上传文件后，工具栏选中计数与批量下载/删除按钮未随列表刷新同步清零的问题。** 计数在模型重建处统一重置，所有重建路径自动兜底。
 - **Fix stale selection count after uploads.** The toolbar's selection count and the batch-download/delete buttons now reset in lockstep with the rebuilt file list, so every code path that rebuilds the model is covered.
-
 - **修复 Wayland 下启动后任务栏出现三个窗口的问题。**
 - **Fix three taskbar windows appearing on Wayland at startup.**
-
 - **忽略构建/发布产物二进制。** `.gitignore` 加入发布 `.exe` 与验证产物路径，避免误提交。
 - **Ignore build and release artifacts.** The `.gitignore` now excludes release `.exe` files and the verify package to keep them out of the repo.
-
 - **同步上游 main 的 10 个提交。** 包括终端鼠标事件转发、VT100 线框绘制、Linux/macOS 若干修复与 CI 改进。
 - **Sync 10 upstream commits from main.** Includes terminal mouse-event forwarding, VT100 line-drawing, several Linux/macOS fixes, and CI improvements.
 
@@ -271,7 +250,6 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 - **完善终端内 ZMODEM `rz` 上传（#308）。** 采用贡献者实现，补充完整关闭握手、远端跳过与握手失败反馈，并限制数据块大小以提升与 `lrzsz` 的兼容性；`sz` 下载保持不变。
 - **Improve in-terminal ZMODEM `rz` uploads (#308).** Adopt the contributor implementation with a complete close handshake, remote-skip and handshake-failure feedback, plus capped data blocks for better `lrzsz` compatibility. Existing `sz` downloads remain unchanged.
-
 - **优化文件传输工具栏与拖拽上传（#397）。** 改善传输列表工具栏、拖拽上传交互、缩放手柄和传输状态呼吸灯显示。
 - **Polish the file-transfer toolbar and drag-and-drop uploads (#397).** Improve the transfer-list toolbar, drag-and-drop upload interaction, resize handle, and transfer-state breathing indicator.
 
@@ -279,10 +257,8 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 - **终端内 ZMODEM 支持 `rz` 上传（#308）。** 远端执行 `rz` 后会自动打开本地多文件选择器，通过当前 SSH PTY 上传所选文件，并在传输列表显示进度；取消选择、协议错误或远端取消时会发送标准取消序列，避免会话卡住。握手检测现在会区分 `sz` 的 `ZRQINIT` 与 `rz` 的 `ZRINIT`，已有 `sz` 下载保持不变。
 - **Support in-terminal ZMODEM uploads with `rz` (#308).** Running `rz` remotely now opens a local multi-file picker, uploads the selected files over the current SSH PTY, and reports progress in the transfer list. Cancelling the picker, protocol failures, and remote aborts send the standard cancel sequence so the shell does not hang. Handshake detection now distinguishes `sz`'s `ZRQINIT` from `rz`'s `ZRINIT`, while existing `sz` downloads remain unchanged.
-
 - **新增 Android Beta 安装包。** 发布流水线现在构建 ARM64 APK，以 `-beta.apk` 后缀作为工作流产物并自动附加到 GitHub Release。首个实验版提供密码认证、交互式 SSH Shell 和每次连接前的服务器 SHA-256 密钥指纹确认；桌面版的构建与功能保持不变。
 - **Add an Android Beta package.** The release workflow now builds an ARM64 APK, stores it as a `-beta.apk` workflow artifact, and attaches it to tagged GitHub Releases. This first experimental build provides password authentication, an interactive SSH shell, and per-connection SHA-256 server-key confirmation; desktop builds and features remain unchanged.
-
 - **修复 SSH 私钥选择器与多行粘贴键盘操作（#392、#393）。** 私钥选择器在所有平台均可显示 `id_rsa`、`id_ed25519` 等无扩展名文件；多行粘贴安全确认框可使用 Enter 确认，且不会将该快捷键扩展到删除或主机密钥等高风险弹窗。
 - **Fix SSH key selection and multiline-paste keyboard handling (#392, #393).** The private-key picker now shows extensionless files such as `id_rsa` and `id_ed25519` on every platform. Multiline-paste confirmation accepts Enter without enabling keyboard confirmation for destructive delete or host-key prompts.
 
@@ -290,7 +266,6 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 - **新增 Debian 与 Flatpak 安装包。** 发布流水线现在为 Linux x86_64 和 ARM64 生成 `.deb`，并为 x86_64 生成可直接安装的 Flatpak bundle；这些安装包会作为工作流产物保存，并在标签发版时自动附加到 GitHub Release。现有 tar.gz 与 AppImage 保持不变。
 - **Add Debian and Flatpak packages.** The release workflow now builds `.deb` packages for Linux x86_64 and ARM64 and an installable Flatpak bundle for x86_64. They are retained as workflow artifacts and automatically attached to tagged GitHub Releases, alongside the existing tar.gz and AppImage assets.
-
 - **修复 Linux 安装包流水线并改善 Windows 占用升级。** DEB 构建现在为 `dpkg-shlibdeps` 提供所需的软件包元数据，避免 amd64 与 ARM64 任务以代码 25 退出；Flatpak 改由独立 job 在 Flathub 官方 25.08 容器中打包，不再依赖 Ubuntu 22.04 的旧工具链。Windows MSI 升级检测到 MeatShell 或无窗口 MCP 服务仍在运行时会提示用户关闭，必要时经用户确认后结束旧进程，避免 `meatshell.exe` 被占用而无法替换。
 - **Fix Linux package CI and Windows in-use upgrades.** DEB builds now provide the package metadata required by `dpkg-shlibdeps`, preventing exit code 25 on amd64 and ARM64. Flatpak packaging now runs as a separate job in Flathub's official 25.08 container instead of relying on Ubuntu 22.04's older toolchain. During a Windows MSI upgrade, a running MeatShell or windowless MCP server now produces a close/retry prompt and can be terminated after explicit user confirmation so the installer can replace `meatshell.exe`.
 
@@ -298,75 +273,54 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 - **修复 Fedora 等非 Debian Linux 桌面按下 Ctrl 即触发终端快捷键的问题（#369）。** Linux 下 Slint/winit 可能把裸 Control 按键上报为 `U+0011` 或 `U+0016`；过滤范围现已从 Debian 系扩展到所有 Linux 发行版，避免 nano 在只按 Ctrl 时误触发搜索或其他操作。真正的 Ctrl+Q、Ctrl+V、Ctrl+X 等组合键仍由最终字母事件生成；Windows 与 macOS 保持各自独立的输入适配。
 - **Fix bare Ctrl triggering terminal shortcuts on Fedora and other non-Debian Linux desktops (#369).** Slint/winit may report a physical Control press as `U+0011` or `U+0016` on Linux. Filtering now applies to every Linux distribution instead of only the Debian family, preventing nano and other terminal programs from reacting when Ctrl alone is pressed. Genuine Ctrl+Q, Ctrl+V, Ctrl+X, and similar chords still come from the final letter event, while Windows and macOS retain their separate input handling.
-
 - **新增 MCP 与 CLI 自动化入口。** `meatshell mcp serve` 通过本机 stdio 提供会话查询、SSH 命令执行、SFTP 目录浏览、有界文本读取以及文件上传/下载，并在“设置 → 界面 → MCP”中独立控制服务、保存凭据、任意命令及文件传输权限；密码、私钥和代理凭据不会出现在协议响应中。`meatshell cli` 复用同一核心能力，提供人类可读输出及 `--json`。
 - **Add MCP and CLI automation entry points.** `meatshell mcp serve` exposes session discovery, SSH command execution, SFTP directory listing, bounded text reads, and file uploads/downloads over local stdio, with separate service, saved-credential, arbitrary-command, and file-transfer controls under Settings → Interface → MCP. Passwords, private keys, and proxy credentials never appear in protocol responses. `meatshell cli` reuses the same core and supports both human-readable output and `--json`.
+
 
 ## [0.6.12] - 2026-08-16
 
 - **降低键盘输入后的字符回显延迟。** 检测到真实按键发送后，对应会话会在短暂交互窗口内把终端刷新间隔从约 33 ms 降至约 8 ms，使本地 CMD、PowerShell、WSL 和低延迟 SSH 会话的逐字输入更跟手；停止输入后自动恢复原有日志流限速，滚屏阅读仍使用低频刷新。
 - **Reduce character-echo latency after keyboard input.** After a real key is sent, the corresponding session temporarily lowers its terminal refresh interval from roughly 33 ms to 8 ms, making typing in local CMD, PowerShell, WSL, and low-latency SSH sessions feel more immediate. It automatically returns to the existing firehose throttle when typing stops, while scrolled-back views retain their lower refresh rate.
-
 - **自动格式化并分类着色 JSON 输出（#350）。** 终端现在只对占据完整一行、能够正确解析的 JSON 对象或数组进行缩进展开，并分别着色键、字符串、数字、布尔值和 `null`；已有 ANSI SGR 颜色会先安全归一化，提示符、半截 JSON、标量以及包含光标控制的输出保持原样。可在“设置 → 输出高亮”中关闭。
 - **Automatically format and syntax-colour JSON output (#350).** The terminal now pretty-prints only complete, whole-line JSON objects or arrays and assigns distinct colours to keys, strings, numbers, booleans, and `null`. Existing ANSI SGR colours are safely normalized first, while prompts, partial JSON, scalars, and cursor-controlled output remain untouched. The behavior can be disabled under Settings → Output Highlighting.
-
 - **支持双击标签复制连接（#340）。** 双击任意终端会话标签会创建一条独立的新连接，与右键“复制连接”一致；欢迎页标签不会被复制，现有单击选择和拖动排序/分屏行为保持不变。
 - **Support duplicating connections by double-clicking tabs (#340).** Double-clicking any terminal session tab now opens an independent duplicate connection, matching the context-menu action. The Welcome tab is excluded, and existing single-click selection plus drag reorder/split behavior remain unchanged.
-
 - **在隐藏运行状态时暂停采样（#340）。** 收起运行状态面板或开启专注模式后，本地 `sysinfo` 采样和 SSH 远端资源/进程监控会暂停，重新展开时自动恢复，避免隐藏面板继续消耗本机与服务器资源。
 - **Pause hidden status sampling (#340).** Collapsing the status panel or enabling Zen mode pauses local `sysinfo` sampling plus remote SSH resource/process monitoring, and expanding it resumes monitoring automatically so hidden UI no longer consumes local or server resources.
-
 - **命令栏新增历史命令自动提示（#349）。** 输入命令时会自动筛选并向上展示曾执行过的匹配命令，可用方向键选择、Tab 补全、Esc 关闭；原有的历史按钮、`Ctrl+R` 搜索、复制、删除和直接运行功能保持不变，且无需修改远端 Shell 配置。
 - **Add command-history autocomplete to the command bar (#349).** Typing now filters previously executed commands into an upward suggestion list with arrow-key selection, Tab completion, and Esc dismissal. Existing history-button and `Ctrl+R` search, copy, delete, and run actions remain available, with no remote shell configuration required.
-
 - **快捷命令支持手动排序（#310）。** 管理列表中的每条命令新增上移/下移按钮，可在当前分组内调整并持久化顺序；不同分组不会被意外交叉，现有 GUI 编辑、分组和滚动管理方式保持不变。
 - **Support manual quick-command ordering (#310).** Each command in the management list now has move-up and move-down controls that persist its order within the current group. Commands never cross group boundaries accidentally, and the existing GUI editing, grouping, and scrollable management remain intact.
-
 - **完善快捷命令 GUI 管理（#310）。** 管理窗口现在可通过右下角拖动放大，并默认提供更宽、更高的工作区；命令编辑框支持多行内容，长列表仍可滚动，配合组内上移/下移即可在不编辑配置文件的情况下完成批量整理。
 - **Complete the quick-command GUI manager (#310).** The manager can now be enlarged from its bottom-right resize grip and opens with a wider, taller workspace. Its command editor accepts multiline content, long lists remain scrollable, and in-group move controls allow bulk organization without editing configuration files.
-
 - **修复右键内置 WSL/PowerShell/CMD 时显示空白菜单（#336）。** 内置会话没有编辑、移动或删除操作，因此不再打开所有项目均被隐藏的右键弹窗；普通保存会话的上下文菜单保持不变。
 - **Fix the blank context menu on built-in WSL/PowerShell/CMD rows (#336).** Built-in sessions have no edit, move, or delete actions, so they no longer open a popup whose items are all hidden. Context menus for regular saved sessions are unchanged.
-
 - **支持配置多个 WSL 启动项和默认目录（#336）。** Windows 设置新增 WSL 页面，可添加多个命名启动项、指定发行版，并通过目录选择器或直接粘贴路径设置启动目录；目录留空时统一回退到 `~`，因此默认进入所选 Linux 用户的主目录。旧配置继续显示原有的默认 WSL 入口。
 - **Support multiple WSL entries and startup directories (#336).** Settings on Windows now include a WSL page for adding named launch entries, selecting a distribution, and choosing or pasting a startup directory. Blank directories consistently fall back to `~`, opening the selected Linux user's home, while existing configurations retain the original default WSL entry.
-
 - **彻底修复切换“欢迎页设为侧栏”时闪退（#323）。** 设置开关不再在自身回调栈内修改双向绑定并同步销毁 Welcome/设置组件树；属性应用、配置保存和分屏刷新现在整体延迟到下一次界面事件循环，覆盖 0.6.11 中仍可复现的 Windows 闪退及错误配置导致的后续启动问题。
 - **Fully fix crashes when toggling “Welcome page as sidebar” (#323).** The settings switch no longer changes its two-way binding and synchronously destroys the Welcome/settings component tree from inside its own callback. Property application, persistence, and pane refresh are now deferred together to the next UI turn, covering the Windows crash still reproducible in 0.6.11 and the resulting bad-startup state.
-
 - **优化侧栏快速连接的服务器信息显示（#339）。** 窄侧栏中的会话行改为两行紧凑布局，首行显示名称，次行始终显示 `用户@主机:端口`，避免固定宽度列把 IP 地址裁出可视区域；完整欢迎页继续保留原来的分栏布局。
 - **Improve server details in the Quick Connect sidebar (#339).** Session rows in the narrow sidebar now use a compact two-line layout with the name first and `user@host:port` always visible beneath it, preventing fixed-width columns from clipping the IP address. The full Welcome page retains its existing column layout.
-
 - **SSH config 导入支持 `Include`（#341）。** 导入 `~/.ssh/config` 时会在指令原位置递归读取包含文件，支持 `~`、相对 `~/.ssh` 的路径和 glob，并通过循环检测与深度上限避免恶意或误配置的递归引用。
 - **Support `Include` while importing SSH config (#341).** Importing `~/.ssh/config` now recursively expands included files at the directive position, supports `~`, paths relative to `~/.ssh`, and globs, and guards against cyclic or excessively deep include chains.
-
 - **防止不同服务器的同名文件在外部编辑时互相覆盖（#318）。** 外部打开/编辑使用按连接隔离的临时目录，并在本地文件名中加入服务器地址；编辑监视器会把修改上传到原始远端完整路径，而不再从带前缀的临时文件名推导目标，因此同时编辑多台服务器上的 `nginx.conf` 不会共用文档或传错服务器。
 - **Prevent same-named files from different servers colliding during external editing (#318).** External open/edit now uses a connection-isolated temporary directory and includes the server address in the local filename. The edit watcher uploads changes to the exact original remote path instead of deriving a target from the prefixed temp name, so concurrent `nginx.conf` edits across servers cannot share a document or upload to the wrong server.
-
 - **修复 Windows 右键打开终端查找时闪退（#343）。** 从右键菜单创建查找栏时，输入框现在会等弹窗点击事件和首轮布局完成后再获取焦点，避免 Windows 的 IME/无障碍焦点处理重入 Slint 运行时；`Ctrl+F` 与右键“查找”仍会自动聚焦搜索框。
 - **Fix the Windows crash when opening terminal Find from the context menu (#343).** When the find bar is created from the right-click menu, its input now waits for popup event dispatch and the first layout pass to finish before taking focus, avoiding re-entry into Slint through Windows IME/accessibility focus handling. Both `Ctrl+F` and right-click → Find still focus the search field automatically.
-
 - **SSH 终端支持多字符集（#338）。** 会话高级设置新增字符集选择，可使用 UTF-8、GBK（兼容 GB2312）、Big5、Shift_JIS、EUC-KR 和 Windows-1252；远端输出与键盘输入/粘贴会在 SSH PTY 边界双向转码，并通过有状态解码正确处理跨网络包拆分的多字节字符。旧会话继续默认使用 UTF-8。
 - **Support multiple character encodings in SSH terminals (#338).** Session advanced settings now offer UTF-8, GBK (including GB2312), Big5, Shift_JIS, EUC-KR, and Windows-1252. Remote output and keyboard/paste input are transcoded bidirectionally at the SSH PTY boundary, with stateful decoding for multibyte characters split across network packets. Existing sessions continue to default to UTF-8.
-
 - **修复通过命令栏启动 `top`、`iftop` 等程序后 `q` 难以退出（#345）。** 命令框、快捷命令和历史记录的所有“立即执行”入口现在会在发送命令后把键盘焦点安全地交还终端，因此后续 `q`、方向键及其他交互按键会直接到达远端 TUI；仅填充但不执行命令时仍保留输入框焦点。
 - **Fix `q` not exiting `top`, `iftop`, and similar programs launched from the command bar (#345).** Every immediate-execution path—command input, quick commands, and history—now safely returns keyboard focus to the terminal after sending, so `q`, arrows, and other interactive keys reach the remote TUI. Filling a command without executing it still keeps focus in the input field.
-
 - **支持在设置中关闭多行粘贴确认（#346）。** 多行粘贴安全提示默认开启；用户可在“设置 → 界面 → 确认多行粘贴”中持久化关闭或重新开启。超过 100 KiB 的超大粘贴始终强制确认。
 - **Allow disabling multiline-paste confirmation in Settings (#346).** The safety prompt remains enabled by default and can be persistently disabled or re-enabled under Settings → Interface → Confirm multiline paste. Pastes over 100 KiB always require review.
-
 - **修复 macOS 使用 `Ctrl+Space` 切换输入法时误删字符（#348）。** 部分 macOS 输入法会把裸 Control 错误上报为 `U+0008`；该标记现在仅在 macOS 输入边界被过滤，不再作为 Backspace 发送到终端。Windows、Linux 及真正由最终字母事件生成的 Ctrl+H 不受影响。
 - **Fix character deletion when switching macOS input methods with `Ctrl+Space` (#348).** Some macOS input methods report bare Control as `U+0008`; that marker is now filtered only at the macOS input boundary instead of being sent as Backspace. Windows, Linux, and genuine Ctrl+H generated from the final letter event remain unchanged.
-
 - **彻底阻止 zsh 泄漏 shell integration 初始化命令（#344）。** 不再依赖回显文本形态、软换行或 16 KiB 容量上限来判断初始化结束；注入命令现在输出专用的不可见完成标记，客户端在收到标记前持续隐藏并滚动丢弃内部回显。zsh/ZLE 即使反复重绘长命令也不会再把 `test -z "$FISH_VERSION" ...` 放到终端首屏，同时缓冲内存保持有界。
 - **Reliably prevent zsh shell-integration setup leaks (#344).** Setup completion no longer depends on echoed text shape, soft wrapping, or a 16 KiB threshold. The injected command now emits a private invisible completion marker, while the client hides and rolls over internal echo until that marker arrives. Repeated zsh/ZLE redraws can no longer expose `test -z "$FISH_VERSION" ...`, and buffering remains bounded.
-
 - **修复 macOS 无法在文件选择器中选择无扩展名 OpenSSH 私钥的问题（#325）。** macOS 的私钥浏览器不再按扩展名过滤，因此可直接选择 `~/.ssh/id_ed25519`、`id_rsa` 等标准无扩展名私钥；Windows 和 Linux 保持原有文件过滤行为。
 - **Fix selecting extensionless OpenSSH private keys on macOS (#325).** The macOS private-key picker no longer filters by extension, allowing standard files such as `~/.ssh/id_ed25519` and `id_rsa` to be selected directly. Windows and Linux retain their existing file filters.
-
 - **完善 macOS `Ctrl+X` 修复（#312）。** 真机日志确认部分 macOS 26.5 设备会在物理 Control 按住期间连续产生 `U+0017`（Ctrl+W）裸标记，导致 nano 在收到真正的 Ctrl+X 前先打开搜索。现在会一并过滤该设备相关标记，同时仍由组合键最后的字母事件生成真正的 Ctrl+W/Ctrl+X 控制码。
 - **Complete the macOS `Ctrl+X` fix (#312).** On-device logs confirmed that some macOS 26.5 systems repeatedly emit a bare `U+0017` (Ctrl+W) marker while physical Control is held, making nano open search before the real Ctrl+X arrives. That device-specific marker is now filtered while the chord's final letter event continues to generate genuine Ctrl+W/Ctrl+X bytes.
-
 - **macOS 新增 CPU 渲染并设为默认。** “设置 → 界面 → 渲染”现在可选择 CPU、FemtoVG 和 Skia；新安装及未保存渲染器偏好的配置默认使用 CPU 渲染，已有的 FemtoVG/Skia 明确选择保持不变。设置在重启 MeatShell 后生效，`SLINT_BACKEND` 环境变量仍具有最高优先级。
 - **Add CPU rendering on macOS and make it the default.** Settings → Interface → Rendering now offers CPU, FemtoVG, and Skia. New installations and configurations without a saved renderer preference default to CPU rendering, while explicit existing FemtoVG/Skia choices are preserved. Changes apply after restarting MeatShell, and `SLINT_BACKEND` keeps the highest priority.
 
@@ -374,19 +328,14 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 - **修复关闭“欢迎页设为侧栏”时闪退（#323）。** 欢迎页在侧栏与标签页之间切换时，分屏模型现在会延迟到下一次界面事件循环再刷新，并跳过尺寸和内容均未变化的重复更新，避免 Windows 下递归重建界面导致当前进程及后续启动闪退。
 - **Fix crashes when disabling “Welcome page as sidebar” (#323).** Switching the welcome page between sidebar and tab mode now defers pane-model rebuilding to the next UI event-loop turn and skips unchanged model updates, preventing recursive UI reconstruction on Windows during the toggle and subsequent launches.
-
 - **修复快速连接中重复的 system 分组和空白右键菜单（#316、#324）。** 内置 `system` 与隐式 `default` 现在统一视为保留分组，不再出现在服务器的“移动到”目标中，也无法通过新建、重命名、编辑或导入写入；新建或重命名为已有分组时会保留弹窗并提示“分组已存在”。升级时会自动把旧版本误放进 `system` 的服务器迁回 `default`。内置终端行改用显式标记识别，包括空密码 SSH 会话在内的普通服务器不会再因组名碰撞而隐藏右键操作。
 - **Fix duplicate system groups and empty context menus in Quick Connect (#316, #324).** The built-in `system` and implicit `default` groups are now reserved across move, create, rename, edit, and import paths. Creating or renaming to an existing group keeps the dialog open and reports that the group already exists. Existing servers accidentally filed under `system` are migrated back to `default`, while explicit built-in-row markers prevent ordinary servers, including passwordless SSH sessions, from losing their context-menu actions due to a group-name collision.
-
 - **回复终端状态与设备属性查询（#328）。** 远端程序发送 DSR 状态/光标位置查询或 DA1 主设备属性查询时，MeatShell 现在会立即向 PTY 返回对应的状态、CPR 光标坐标或保守的 VT100 能力标识；查询序列即使被拆分到多个 SSH 输出块也能正确识别，依赖终端握手的交互式程序不再等待超时或卡死。
 - **Respond to terminal status and device-attribute queries (#328).** MeatShell now immediately returns status, CPR cursor coordinates, or a conservative VT100 identity when remote programs issue DSR or primary DA1 queries. Split query sequences are recognized across SSH output chunks, preventing interactive applications that rely on terminal handshakes from timing out or hanging.
-
 - **修复内置编辑器打开大文件时崩溃，并调整历史命令排序（#331）。** 内置查看/编辑现在采用有界读取，并在文件超过 512 KB、行数过多或存在超长单行时安全拒绝并引导使用外部打开/编辑；历史命令弹窗改为从新到旧显示，同时保留输入框 ↑/↓ 的原有回溯顺序。
 - **Prevent large-file editor crashes and reorder command history (#331).** Built-in viewing/editing now uses bounded reads and safely redirects files over 512 KB, excessive line counts, or exceptionally long lines to external tools. The history popup now lists newest commands first while preserving the input field's existing ↑/↓ recall order.
-
 - **修复 zsh 中 Home 和 End 按键无效（#329）。** 远端 shell 启用应用光标模式时，Home/End 现在会像方向键一样改用对应的 SS3 控制序列，恢复 oh-my-zsh/ZLE 中的行首和行尾移动。
 - **Fix Home and End keys in zsh (#329).** When the remote shell enables application cursor mode, Home/End now use their corresponding SS3 sequences like the arrow keys, restoring beginning/end-of-line movement in oh-my-zsh/ZLE.
-
 - **Linux 支持选择界面渲染器（#330）。** “设置 → 界面 → 渲染”现在可选择自动、GPU 与软件模式，默认继续使用 Slint 自动选择；设置在重启 MeatShell 后生效，`SLINT_BACKEND` 环境变量仍具有最高优先级。
 - **Select the UI renderer on Linux (#330).** Settings → Interface → Rendering now offers Automatic, GPU, and Software modes while retaining Slint's automatic selection by default. Changes apply after restarting MeatShell, and `SLINT_BACKEND` keeps the highest priority.
 
@@ -506,7 +455,6 @@ All notable changes are documented here. 本文件记录所有重要变更。
 ### Changed
 
 - **Reorganize source files into feature-oriented packages.** Rust modules other than `main.rs` and `app.rs` now live under `src/<feature>/`, covering configuration, terminal, SSH, SFTP, layout, resource monitoring, and other features. Data structures live in `struct/`, implementations in `impls/`, and each package exposes a focused `mod.rs` facade.
-
 
 ## [0.6.6] - 2026-07-23
 
@@ -833,7 +781,6 @@ All notable changes are documented here. 本文件记录所有重要变更。
 - **Fix UI freeze on heavy output across multiple sessions (#209).** VT100 parsing moved off the UI thread, rendering throttled to ~30fps, output chunks coalesced, and per-tab buffer locks adopted, so unzipping many files on one server no longer stalls other sessions or the whole UI.
 - **Stop the welcome session panel height jump on the first session (#214).** The quick-connect card now always fills the remaining height and the empty-state placeholder stretches to match, keeping the panel height stable before and after adding a session.
 
-
 ## [0.5.3] - 2026-07-04
 
 ### 新增 / Added
@@ -866,1382 +813,1282 @@ All notable changes are documented here. 本文件记录所有重要变更。
 - **Prevent same-edge double-expanded panels on startup.** If restored config would expand both quick connect and the resource panel on the same edge, the resource panel is collapsed at startup.
 - **Normalize collapse arrow placement and icons across dock edges.** Collapse buttons now use Material Icons and move according to the current dock edge.
 
-
 ## [0.5.1] - 2026-07-01
 
 ### Added / 新增
 
-- **会话备注 + 快捷命令「点击是否自动回车」选项(B站建议)
-  1. 会话备注:新建/编辑会话对话框加「备注(可选)」字段,存跳板机信息、
-         账号提示、负责人等任意文字。Session 新增 note 字段(serde 默认空,兼容
-         老配置),随会话持久化。2. 快捷命令回车选项:新增/编辑快捷命令时多一个开关「点击即发送执行」
-         (默认开,保持现状)。关闭后,点击该快捷命令只把命令填入输入框、不加
-         末尾回车、不发送,方便先微调再回车发送(仿 FinalShell)。QuickCommand
-         新增 send_enter 字段(serde 默认 true,老命令照常点击即执行)。 涉及 config.rs(两个字段 + default_true)、app.rs(两条 plumbing)、 session_dialog.slint(备注字段)、app.slint(对话框属性/回调/复选框)、 terminal_view.slint(QuickCmd.send-enter + 点击分支)。
+- \*\*会话备注 + 快捷命令「点击是否自动回车」选项(B站建议)
+  1. 会话备注:新建/编辑会话对话框加「备注(可选)」字段,存跳板机信息、  
+     账号提示、负责人等任意文字。Session 新增 note 字段(serde 默认空,兼容  
+     老配置),随会话持久化。2. 快捷命令回车选项:新增/编辑快捷命令时多一个开关「点击即发送执行」  
+     (默认开,保持现状)。关闭后,点击该快捷命令只把命令填入输入框、不加  
+     末尾回车、不发送,方便先微调再回车发送(仿 FinalShell)。QuickCommand  
+     新增 send_enter 字段(serde 默认 true,老命令照常点击即执行)。 涉及 config.rs(两个字段 + default_true)、app.rs(两条 plumbing)、 session_dialog.slint(备注字段)、app.slint(对话框属性/回调/复选框)、 terminal_view.slint(QuickCmd.send-enter + 点击分支)。
 
 ---
 
-  per-session note + quick-command "send on click" toggle (bilibili suggestions)
+per-session note + quick-command "send on click" toggle (bilibili suggestions)
 
-  1. Session note: the new/edit session dialog gains an optional "Note" field for
-       stashing jump-host details, credential hints, an owner, etc. Session gets a
-       `note` field (serde default empty, so old configs load) persisted with it.2. Quick-command Return toggle: adding/editing a quick command now has a "Send +
-       run on click" switch (on by default = current behaviour). When off, clicking
-       the command only drops it into the input box — no trailing Return, not sent —
-       so it can be tweaked before sending (like FinalShell). QuickCommand gets a
-       `send_enter` field (serde default true, existing commands keep executing).Touches config.rs (two fields + default_true), app.rs (both plumbings), session_dialog.slint (note field), app.slint (dialog props/callbacks/checkbox), terminal_view.slint (QuickCmd.send-enter + the click branch).
-
+1. Session note: the new/edit session dialog gains an optional "Note" field for  
+   stashing jump-host details, credential hints, an owner, etc. Session gets a  
+   `note` field (serde default empty, so old configs load) persisted with it.2. Quick-command Return toggle: adding/editing a quick command now has a "Send +  
+   run on click" switch (on by default = current behaviour). When off, clicking  
+   the command only drops it into the input box — no trailing Return, not sent —  
+   so it can be tweaked before sending (like FinalShell). QuickCommand gets a  
+   `send_enter` field (serde default true, existing commands keep executing).Touches config.rs (two fields + default_true), app.rs (both plumbings), session_dialog.slint (note field), app.slint (dialog props/callbacks/checkbox), terminal_view.slint (QuickCmd.send-enter + the click branch).
 
 ## [0.5.0] - 2026-06-30
 
 ### Added / 新增
 
-- **分屏(IDEA 式拖动分屏)。** 标签右键「向右拆分 / 向下拆分」,或直接把标签拖到某个 pane 的上/下/左/右
-  边缘(带高亮预览)即可分屏;中间的分隔条可拖动调整两边比例,支持任意嵌套。每个 pane 有自己独立的标签组
-  和当前标签;关掉某个 pane 的最后一个标签会自动折叠回去。
-  **Split panes (IDEA-style drag-to-split).** Right-click a tab → "Split right / Split down", or just
-  drag a tab to a pane's top / bottom / left / right edge (with a highlight preview) to split; drag the
-  splitter between panes to rebalance, nest arbitrarily. Each pane has its own tab group and active tab;
+- **分屏(IDEA 式拖动分屏)。** 标签右键「向右拆分 / 向下拆分」,或直接把标签拖到某个 pane 的上/下/左/右  
+  边缘(带高亮预览)即可分屏;中间的分隔条可拖动调整两边比例,支持任意嵌套。每个 pane 有自己独立的标签组  
+  和当前标签;关掉某个 pane 的最后一个标签会自动折叠回去。  
+  **Split panes (IDEA-style drag-to-split).** Right-click a tab → "Split right / Split down", or just  
+  drag a tab to a pane's top / bottom / left / right edge (with a highlight preview) to split; drag the  
+  splitter between panes to rebalance, nest arbitrarily. Each pane has its own tab group and active tab;  
   closing a pane's last tab collapses it back.
-
-- **复制打开(再开一个当前会话)。** 终端标签右键「复制打开」,对当前会话再开一条独立连接,落在同一个 pane。
-  **Duplicate connection.** A terminal tab's right-click menu opens a second, independent connection to
+- **复制打开(再开一个当前会话)。** 终端标签右键「复制打开」,对当前会话再开一条独立连接,落在同一个 pane。  
+  **Duplicate connection.** A terminal tab's right-click menu opens a second, independent connection to  
   the same session, landing in the same pane.
-
-- **欢迎页可设为侧栏 + IDEA 式收起抽屉。** 设置 → 界面 → 欢迎页,可把会话列表停靠到左侧(不再占用一个「新
-  标签页」标签),打开的会话占据中央;欢迎页 / 资源面板 / SFTP 收起后都变成沿停靠边的「图标条」(点图标
-  展开),取代原来的箭头展开按钮。欢迎侧栏宽度可拖动调整。
-  **Welcome page as a sidebar + IDEA-style collapse drawers.** Interface → Welcome page can dock the
-  session list on the left (no more "New tab" tab); opened sessions fill the centre. The welcome /
-  resource / SFTP panels now collapse to an icon strip along their docked edge (click to re-open),
+- **欢迎页可设为侧栏 + IDEA 式收起抽屉。** 设置 → 界面 → 欢迎页,可把会话列表停靠到左侧(不再占用一个「新  
+  标签页」标签),打开的会话占据中央;欢迎页 / 资源面板 / SFTP 收起后都变成沿停靠边的「图标条」(点图标  
+  展开),取代原来的箭头展开按钮。欢迎侧栏宽度可拖动调整。  
+  **Welcome page as a sidebar + IDEA-style collapse drawers.** Interface → Welcome page can dock the  
+  session list on the left (no more "New tab" tab); opened sessions fill the centre. The welcome /  
+  resource / SFTP panels now collapse to an icon strip along their docked edge (click to re-open),  
   replacing the old arrow expand button. The welcome sidebar is drag-resizable.
-
-- **沉浸式壁纸遮罩透明度可调 + 界面字体大小。** 设置 → 界面 → 壁纸 新增「壁纸遮罩透明度」拖动条,自己调
-  壁纸透出的程度(只影响背景填充,不动文字);设置 → 界面 → 字体 新增「界面字体大小」,可单独放大设置面板。
-  **Adjustable wallpaper-overlay opacity + settings font size.** Interface → Wallpaper adds a
-  "Wallpaper transparency" slider controlling how much the wallpaper shows through (background fills
+- **沉浸式壁纸遮罩透明度可调 + 界面字体大小。** 设置 → 界面 → 壁纸 新增「壁纸遮罩透明度」拖动条,自己调  
+  壁纸透出的程度(只影响背景填充,不动文字);设置 → 界面 → 字体 新增「界面字体大小」,可单独放大设置面板。  
+  **Adjustable wallpaper-overlay opacity + settings font size.** Interface → Wallpaper adds a  
+  "Wallpaper transparency" slider controlling how much the wallpaper shows through (background fills  
   only, text untouched); Interface → Font adds a "Settings font size" control to enlarge the panel.
-
-- **每个会话独立记住自己的 SFTP 状态。** SFTP 的收起 / 高度 / 宽度改为按会话独立,分屏下各 pane 互不影响
-  (新会话默认读「默认收起 SFTP」等公共配置)。
-  **Per-session SFTP state.** SFTP collapse / height / width are now remembered per session, so split
+- **每个会话独立记住自己的 SFTP 状态。** SFTP 的收起 / 高度 / 宽度改为按会话独立,分屏下各 pane 互不影响  
+  (新会话默认读「默认收起 SFTP」等公共配置)。  
+  **Per-session SFTP state.** SFTP collapse / height / width are now remembered per session, so split  
   panes no longer interfere with one another (new sessions seed from the shared defaults).
 
 ### Fixed / 修复
 
-- **设置面板字体发虚。** 设置卡片居中后落在半像素位置,导致面板内文字渲染在亚像素偏移上而发虚;现对齐到
-  整数逻辑像素,和资源面板一样清晰。
-  **Blurry settings-panel text.** The settings card was centred on a half-pixel, so its text rendered on
+- **设置面板字体发虚。** 设置卡片居中后落在半像素位置,导致面板内文字渲染在亚像素偏移上而发虚;现对齐到  
+  整数逻辑像素,和资源面板一样清晰。  
+  **Blurry settings-panel text.** The settings card was centred on a half-pixel, so its text rendered on  
   subpixel offsets and looked soft; it now snaps to whole logical pixels, as crisp as the resource panel.
 
 ## [0.4.20] - 2026-06-28
 
 ### Added / 新增
 
-- **终端内容随窗口缩放重排 (reflow) (#169)。** 此前拖动窗口宽度时,已打印的内容会被截断(变窄丢右半、
-  变宽接不回)。现保留喂给 vt100 的字节流(限长 2 MiB),窗口宽度变化时用新宽度重放一遍,历史与当前屏
-  按新宽度重新折行——变窄换行、变宽接回,全程不丢字符;对齐 FinalShell。alt-screen(tmux/vim)仍由
-  远端 SIGWINCH 重绘。
-  **Terminal content reflows on window resize (#169).** Dragging the width used to clip already-printed
-  lines. meatshell now retains a capped (2 MiB) copy of the byte stream and replays it at the new width,
-  rewrapping scrollback and the live screen with no lost characters, matching FinalShell. Alt-screen
+- **终端内容随窗口缩放重排 (reflow) (#169)。** 此前拖动窗口宽度时,已打印的内容会被截断(变窄丢右半、  
+  变宽接不回)。现保留喂给 vt100 的字节流(限长 2 MiB),窗口宽度变化时用新宽度重放一遍,历史与当前屏  
+  按新宽度重新折行——变窄换行、变宽接回,全程不丢字符;对齐 FinalShell。alt-screen(tmux/vim)仍由  
+  远端 SIGWINCH 重绘。  
+  **Terminal content reflows on window resize (#169).** Dragging the width used to clip already-printed  
+  lines. meatshell now retains a capped (2 MiB) copy of the byte stream and replays it at the new width,  
+  rewrapping scrollback and the live screen with no lost characters, matching FinalShell. Alt-screen  
   programs (tmux/vim) still rely on the remote's SIGWINCH redraw.
-
-- **alt-screen 里把鼠标滚轮转发给程序 (#170)。** 之前在 tmux / less / vim 等全屏程序里滚轮被吞掉、滚不动。
-  现转发给远端:程序开了鼠标跟踪(如 tmux `mouse on`)就发滚轮鼠标事件(SGR / X10),否则退化为方向键
-  (alternate-scroll),让 less / man / vim 也能滚。对齐 FinalShell / MobaXterm。
-  **Forward the mouse wheel to alt-screen programs (#170).** In tmux / less / vim the wheel did nothing.
-  It is now forwarded — a mouse-wheel event when the app tracks the mouse (e.g. tmux `mouse on`), else
+- **alt-screen 里把鼠标滚轮转发给程序 (#170)。** 之前在 tmux / less / vim 等全屏程序里滚轮被吞掉、滚不动。  
+  现转发给远端:程序开了鼠标跟踪(如 tmux `mouse on`)就发滚轮鼠标事件(SGR / X10),否则退化为方向键  
+  (alternate-scroll),让 less / man / vim 也能滚。对齐 FinalShell / MobaXterm。  
+  **Forward the mouse wheel to alt-screen programs (#170).** In tmux / less / vim the wheel did nothing.  
+  It is now forwarded — a mouse-wheel event when the app tracks the mouse (e.g. tmux `mouse on`), else  
   arrow keys (alternate-scroll) so less / man / vim scroll. Matches FinalShell / MobaXterm.
-
-- **文本批量导入 SSH 连接 (#150)。** 设置菜单新增「批量导入(文本)」,每行 `host|port|user|password|name`
-  (后面字段可省略),一次粘贴导入多台主机;按 host+user+port 去重,密码加密入库。
-  **Batch-import SSH connections from text (#150).** A new "Batch import (text)" menu item accepts
-  `host|port|user|password|name` per line (trailing fields optional), importing many hosts from one
+- **文本批量导入 SSH 连接 (#150)。** 设置菜单新增「批量导入(文本)」,每行 `host|port|user|password|name`  
+  (后面字段可省略),一次粘贴导入多台主机;按 host+user+port 去重,密码加密入库。  
+  **Batch-import SSH connections from text (#150).** A new "Batch import (text)" menu item accepts  
+  `host|port|user|password|name` per line (trailing fields optional), importing many hosts from one  
   paste; dedupes by host+user+port, passwords encrypted at rest.
-
-- **新建 / 编辑会话的「分组」改为可输入下拉框 (#179)。** 既能手输新分组,也能点 ▼ 从已有分组里选。
-  **The session dialog's "Group" field is now an editable dropdown (#179).** Type a new group, or pick
+- **新建 / 编辑会话的「分组」改为可输入下拉框 (#179)。** 既能手输新分组,也能点 ▼ 从已有分组里选。  
+  **The session dialog's "Group" field is now an editable dropdown (#179).** Type a new group, or pick  
   an existing one from the ▼ list.
-
-- **终端支持 Shift+Insert 粘贴 (#144)。** X11 / xterm 的经典粘贴键现在也认。
+- **终端支持 Shift+Insert 粘贴 (#144)。** X11 / xterm 的经典粘贴键现在也认。  
   **Paste with Shift+Insert in the terminal (#144).** The classic X11 / xterm paste shortcut now works.
 
 ### Fixed / 修复
 
-- **主机密钥被拒后不再卡死新连接 (#152)。** 首次连接弹「未知主机」确认框时,若误点卡片外背景把它关掉,
-  之前会把该主机缓存成「拒绝」,导致这一轮运行里之后每次连它都直接报 "Unknown server key",必须重启。
-  现在:拒绝不再写缓存(下次连接照常再弹),且安全确认框不再响应背景点击关闭。
-  **A rejected host key no longer locks out new connections (#152).** Dismissing the "Unknown host"
-  dialog by clicking the backdrop used to cache a reject for the whole run, so every later connect
-  failed with "Unknown server key" until restart. Rejections are no longer cached (the next connect
+- **主机密钥被拒后不再卡死新连接 (#152)。** 首次连接弹「未知主机」确认框时,若误点卡片外背景把它关掉,  
+  之前会把该主机缓存成「拒绝」,导致这一轮运行里之后每次连它都直接报 "Unknown server key",必须重启。  
+  现在:拒绝不再写缓存(下次连接照常再弹),且安全确认框不再响应背景点击关闭。  
+  **A rejected host key no longer locks out new connections (#152).** Dismissing the "Unknown host"  
+  dialog by clicking the backdrop used to cache a reject for the whole run, so every later connect  
+  failed with "Unknown server key" until restart. Rejections are no longer cached (the next connect  
   prompts again), and the security dialog no longer dismisses on a backdrop click.
-
-- **兼容旧服务器算法,修复 "No common algorithm" 连不上 (#172)。** russh 默认只协商现代算法,老服务器 /
-  网络设备只支持旧 KEX(group14 / group1-sha1)或 CBC 加密时握手失败。现把这些作为兜底追加(现代算法
-  仍优先),终端与 SFTP 一致,旧设备也能连。
-  **Reach legacy servers, fixing "No common algorithm" (#172).** russh's defaults negotiate only modern
-  algorithms; old servers / gear that only speak legacy KEX (group14 / group1-sha1) or CBC ciphers failed
+- **兼容旧服务器算法,修复 "No common algorithm" 连不上 (#172)。** russh 默认只协商现代算法,老服务器 /  
+  网络设备只支持旧 KEX(group14 / group1-sha1)或 CBC 加密时握手失败。现把这些作为兜底追加(现代算法  
+  仍优先),终端与 SFTP 一致,旧设备也能连。  
+  **Reach legacy servers, fixing "No common algorithm" (#172).** russh's defaults negotiate only modern  
+  algorithms; old servers / gear that only speak legacy KEX (group14 / group1-sha1) or CBC ciphers failed  
   the handshake. These are now offered as fallbacks (modern still preferred) for both the shell and SFTP.
-
-- **SFTP 文件修改时间按本地时区显示 (#168)。** 之前按 UTC 显示,UTC+8 用户看到的时间差 8 小时。现用本机
-  时区换算(跟随系统,不写死)。
-  **SFTP file mtime shown in local time (#168).** It was rendered as UTC (8 h early for a UTC+8 user);
+- **SFTP 文件修改时间按本地时区显示 (#168)。** 之前按 UTC 显示,UTC+8 用户看到的时间差 8 小时。现用本机  
+  时区换算(跟随系统,不写死)。  
+  **SFTP file mtime shown in local time (#168).** It was rendered as UTC (8 h early for a UTC+8 user);  
   now converted to the machine's local timezone.
-
-- **Linux 缩放窗口后鼠标卡在缩放态 (#159)。** 从边角缩放后,窗口管理器吃掉了结束缩放的松开事件,Slint
-  一直保持着对缩放热区的指针抓取——之后到处点都触发缩放。现在缩放后主动补一个释放事件让 Slint 丢掉抓取
-  (X11 必现、Wayland 偶发都修)。
-  **Mouse stuck in resize mode after a Linux window resize (#159).** The window manager consumed the
-  button-release that ends a resize, so Slint kept its pointer grab on the resize handle and every click
-  re-started a resize. We now dispatch a synthetic release afterwards so Slint drops the grab (fixes both
+- **Linux 缩放窗口后鼠标卡在缩放态 (#159)。** 从边角缩放后,窗口管理器吃掉了结束缩放的松开事件,Slint  
+  一直保持着对缩放热区的指针抓取——之后到处点都触发缩放。现在缩放后主动补一个释放事件让 Slint 丢掉抓取  
+  (X11 必现、Wayland 偶发都修)。  
+  **Mouse stuck in resize mode after a Linux window resize (#159).** The window manager consumed the  
+  button-release that ends a resize, so Slint kept its pointer grab on the resize handle and every click  
+  re-started a resize. We now dispatch a synthetic release afterwards so Slint drops the grab (fixes both  
   the reliable X11 case and the occasional Wayland one).
-
-- **shell 集成回显抑制窗口 1.2s→2s (#176)。** 慢速 PTY / SSH 上,注入的初始化命令回显 + OSC 7 晚于 1.2s
-  到达,导致回退过早、注入行泄漏到终端。放宽到 2s。
-  **Widen the shell-integration echo-suppression window 1.2s→2s (#176).** On slow PTY / SSH the injected
-  setup line's echo + OSC 7 arrived after 1.2 s, so it fell back early and the line leaked into the
+- **shell 集成回显抑制窗口 1.2s→2s (#176)。** 慢速 PTY / SSH 上,注入的初始化命令回显 + OSC 7 晚于 1.2s  
+  到达,导致回退过早、注入行泄漏到终端。放宽到 2s。  
+  **Widen the shell-integration echo-suppression window 1.2s→2s (#176).** On slow PTY / SSH the injected  
+  setup line's echo + OSC 7 arrived after 1.2 s, so it fell back early and the line leaked into the  
   terminal.
-
-- **设置菜单加批量导入后溢出 (#150)。** 设置下拉菜单原来写死高度,加第 8 项后末项溢出圆角背景;改为跟随
-  内容高度自适应。
-  **Settings menu overflowed after the batch-import entry (#150).** The dropdown had a hardcoded height;
+- **设置菜单加批量导入后溢出 (#150)。** 设置下拉菜单原来写死高度,加第 8 项后末项溢出圆角背景;改为跟随  
+  内容高度自适应。  
+  **Settings menu overflowed after the batch-import entry (#150).** The dropdown had a hardcoded height;  
   it now sizes to its content.
 
 ### Performance / 性能
 
-- **合并 shell 输出事件,修复 tail -f 等高频输出导致界面假死 (#171)。** 事件泵原来逐个把每段输出投递到 UI
-  线程并整屏渲染,`tail -f` / 大文件刷屏时 UI 被淹没成假死。现一次性扫空已排队事件、合并相邻输出,一波
-  突发只解析 + 渲染一次,界面保持响应。
-  **Coalesce shell output events, fixing the tail -f UI freeze (#171).** The pump dispatched every output
-  chunk to the UI thread for a full render; under high-frequency output the UI drowned. It now drains
+- **合并 shell 输出事件,修复 tail -f 等高频输出导致界面假死 (#171)。** 事件泵原来逐个把每段输出投递到 UI  
+  线程并整屏渲染,`tail -f` / 大文件刷屏时 UI 被淹没成假死。现一次性扫空已排队事件、合并相邻输出,一波  
+  突发只解析 + 渲染一次,界面保持响应。  
+  **Coalesce shell output events, fixing the tail -f UI freeze (#171).** The pump dispatched every output  
+  chunk to the UI thread for a full render; under high-frequency output the UI drowned. It now drains  
   queued events at once and merges adjacent output, parsing + rendering a burst once.
 
 ## [0.4.19] - 2026-06-28
 
 ### Added / 新增
 
-- **macOS 沉浸式标题栏 (#162)。** 此前 Mac 保留原生标题栏,暗模式下顶部是一条突兀的白条。现把
-  原生标题栏设为透明并让窗口内容延伸到其下(fullSizeContentView),标题栏改为显示窗口底色 / 壁纸,
-  跟随暗 / 浅色;顶部预留交通灯按钮的位置并做磨砂,与其它面板统一。Windows/Linux 不受影响。
-  **Immersive title bar on macOS (#162).** macOS kept the native title bar, which showed a jarring
-  white strip at the top in dark mode. The native title bar is now transparent with the window content
-  extending under it (fullSizeContentView), so it shows the window background / wallpaper and follows
-  dark / light; the top reserves room for the traffic-light buttons and is frosted to match the other
+- **macOS 沉浸式标题栏 (#162)。** 此前 Mac 保留原生标题栏,暗模式下顶部是一条突兀的白条。现把  
+  原生标题栏设为透明并让窗口内容延伸到其下(fullSizeContentView),标题栏改为显示窗口底色 / 壁纸,  
+  跟随暗 / 浅色;顶部预留交通灯按钮的位置并做磨砂,与其它面板统一。Windows/Linux 不受影响。  
+  **Immersive title bar on macOS (#162).** macOS kept the native title bar, which showed a jarring  
+  white strip at the top in dark mode. The native title bar is now transparent with the window content  
+  extending under it (fullSizeContentView), so it shows the window background / wallpaper and follows  
+  dark / light; the top reserves room for the traffic-light buttons and is frosted to match the other  
   panels. Windows/Linux unaffected.
 
 ### Fixed / 修复
 
-- **修正 macOS 快捷键映射,0.4.18 写反了 (#158)。** Slint 在 macOS 上把 `control` 报成 Cmd(⌘)、
-  `meta` 报成物理 Ctrl,0.4.18 正好用反,导致 ⌘ 快捷键不触发、物理 Ctrl 反而误触发,基本不可用。
-  本版改正并在真机(Mac mini M4)逐一验证:⌘C / ⌘V / ⌘F / ⌘⇧R / ⌘S 正常触发,物理 Ctrl 的
-  ^C / ^X / ^U / ^W 正常直达 shell。另外 macOS 上 Cmd+字母 经 Slint 送来的是控制字符(⌘S = `\u{13}`),
-  编辑器保存据此补上识别,修复 ⌘S 失灵。
-  **Corrected the macOS shortcut mapping that 0.4.18 had backwards (#158).** On macOS Slint reports
-  `control` as Cmd (⌘) and `meta` as the physical Ctrl; 0.4.18 used them the wrong way round, so ⌘
-  shortcuts did nothing and the physical Ctrl triggered them instead — essentially unusable. This
-  release fixes it and verifies every case on real hardware (Mac mini M4): ⌘C / ⌘V / ⌘F / ⌘⇧R / ⌘S
-  fire correctly and the physical Ctrl's ^C / ^X / ^U / ^W reach the shell. Also, on macOS Cmd+letter
+- **修正 macOS 快捷键映射,0.4.18 写反了 (#158)。** Slint 在 macOS 上把 `control` 报成 Cmd(⌘)、  
+  `meta` 报成物理 Ctrl,0.4.18 正好用反,导致 ⌘ 快捷键不触发、物理 Ctrl 反而误触发,基本不可用。  
+  本版改正并在真机(Mac mini M4)逐一验证:⌘C / ⌘V / ⌘F / ⌘⇧R / ⌘S 正常触发,物理 Ctrl 的  
+  ^C / ^X / ^U / ^W 正常直达 shell。另外 macOS 上 Cmd+字母 经 Slint 送来的是控制字符(⌘S = `\u{13}`),  
+  编辑器保存据此补上识别,修复 ⌘S 失灵。  
+  **Corrected the macOS shortcut mapping that 0.4.18 had backwards (#158).** On macOS Slint reports  
+  `control` as Cmd (⌘) and `meta` as the physical Ctrl; 0.4.18 used them the wrong way round, so ⌘  
+  shortcuts did nothing and the physical Ctrl triggered them instead — essentially unusable. This  
+  release fixes it and verifies every case on real hardware (Mac mini M4): ⌘C / ⌘V / ⌘F / ⌘⇧R / ⌘S  
+  fire correctly and the physical Ctrl's ^C / ^X / ^U / ^W reach the shell. Also, on macOS Cmd+letter  
   arrives as a control char (⌘S = `\u{13}`), so the editor's save now recognizes that form too, fixing ⌘S.
 
 ## [0.4.18] - 2026-06-26
 
 ### Added / 新增
 
-- **Windows 11 圆角窗口 + 投影 (#162 / #166)。** 自绘标题栏的无边框窗口此前是直角、无阴影,
-  不符合 Win11 风格。现用 DWM 给它补上系统**圆角**(DWMWA_WINDOW_CORNER_PREFERENCE)和**投影**
-  (DwmExtendFrameIntoClientArea);Win10 自动忽略圆角属性,其他平台无影响。
-  **Native rounded corners + drop shadow on Windows 11 (#162 / #166).** The frameless window (custom
-  title bar) had square corners and no shadow. DWM now gives it the system rounded corners and
+- **Windows 11 圆角窗口 + 投影 (#162 / #166)。** 自绘标题栏的无边框窗口此前是直角、无阴影,  
+  不符合 Win11 风格。现用 DWM 给它补上系统**圆角**(DWMWA_WINDOW_CORNER_PREFERENCE)和**投影**  
+  (DwmExtendFrameIntoClientArea);Win10 自动忽略圆角属性,其他平台无影响。  
+  **Native rounded corners + drop shadow on Windows 11 (#162 / #166).** The frameless window (custom  
+  title bar) had square corners and no shadow. DWM now gives it the system rounded corners and  
   shadow; ignored on Windows 10, a no-op elsewhere.
-
-- **macOS 上 app 快捷键改用 Cmd(⌘),释放 Ctrl 给终端 (#158)。** Mac 有 Ctrl 和 Cmd 两个键,之前
-  app 快捷键全占了 Ctrl,导致 nano 里 ^X 等控制键发不到 shell。现按 macOS 习惯:查找 / 复制 /
-  粘贴 / 历史 / 保存用 ⌘,物理 Ctrl 原样直达 shell;命令框的 Ctrl+A/E/K/U 行编辑保留 Ctrl;设置 →
-  快捷键也显示 ⌘ / ⌃。Windows/Linux 不变。
-  **macOS app shortcuts now use Cmd (⌘), freeing Ctrl for the terminal (#158).** macOS has both Ctrl
-  and Cmd; app shortcuts all used Ctrl, so terminal control keys (^X in nano…) couldn't reach the
-  shell. Now find / copy / paste / history / save use ⌘ and the physical Ctrl passes straight through;
-  the command box's Ctrl+A/E/K/U line editing stays on Ctrl; Settings → Shortcuts shows ⌘ / ⌃.
+- **macOS 上 app 快捷键改用 Cmd(⌘),释放 Ctrl 给终端 (#158)。** Mac 有 Ctrl 和 Cmd 两个键,之前  
+  app 快捷键全占了 Ctrl,导致 nano 里 ^X 等控制键发不到 shell。现按 macOS 习惯:查找 / 复制 /  
+  粘贴 / 历史 / 保存用 ⌘,物理 Ctrl 原样直达 shell;命令框的 Ctrl+A/E/K/U 行编辑保留 Ctrl;设置 →  
+  快捷键也显示 ⌘ / ⌃。Windows/Linux 不变。  
+  **macOS app shortcuts now use Cmd (⌘), freeing Ctrl for the terminal (#158).** macOS has both Ctrl  
+  and Cmd; app shortcuts all used Ctrl, so terminal control keys (^X in nano…) couldn't reach the  
+  shell. Now find / copy / paste / history / save use ⌘ and the physical Ctrl passes straight through;  
+  the command box's Ctrl+A/E/K/U line editing stays on Ctrl; Settings → Shortcuts shows ⌘ / ⌃.  
   Windows/Linux unchanged.
 
 ### Fixed / 修复
 
-- **SFTP 闲置一段时间后失效 (#160)。** SFTP 连接没有 keepalive,空闲时被 NAT / 防火墙 / 服务器空闲
-  超时掐断,之后点目录"文件夹读取失败"、增删改全废。两条连接(终端 + SFTP)现都加 30s keepalive
-  保活,真死了由 keepalive_max 关闭。
-  **SFTP stopped working after sitting idle (#160).** The SFTP connection had no keepalive, so it was
-  silently dropped by NAT / firewall / server idle timeouts; afterwards every operation failed. Both
+- **SFTP 闲置一段时间后失效 (#160)。** SFTP 连接没有 keepalive,空闲时被 NAT / 防火墙 / 服务器空闲  
+  超时掐断,之后点目录"文件夹读取失败"、增删改全废。两条连接(终端 + SFTP)现都加 30s keepalive  
+  保活,真死了由 keepalive_max 关闭。  
+  **SFTP stopped working after sitting idle (#160).** The SFTP connection had no keepalive, so it was  
+  silently dropped by NAT / firewall / server idle timeouts; afterwards every operation failed. Both  
   connections now send a 30 s keepalive, with keepalive_max still closing a genuinely dead one.
-
-- **git clone / curl 输出在极窄列(~10)乱折行 (#163)。** 布局回流时 root.width 瞬间读成 ≈0,终端
-  列数塌到下限 10 并立刻 resize 远程 PTY,正在跑的输出就按 10 列乱折。现给 PTY resize 加 150ms
-  防抖,只应用静置后的尺寸,一闪而过的坏值不再发到服务器。
-  **git clone / curl output wrapped at ~10 columns (#163).** A layout reflow momentarily reported a
-  near-zero width, collapsing the terminal column count to its floor of 10 and resizing the remote
-  PTY, which garbled in-flight output. PTY resizes are now debounced (150 ms) so only the settled
+- **git clone / curl 输出在极窄列(~10)乱折行 (#163)。** 布局回流时 root.width 瞬间读成 ≈0,终端  
+  列数塌到下限 10 并立刻 resize 远程 PTY,正在跑的输出就按 10 列乱折。现给 PTY resize 加 150ms  
+  防抖,只应用静置后的尺寸,一闪而过的坏值不再发到服务器。  
+  **git clone / curl output wrapped at ~10 columns (#163).** A layout reflow momentarily reported a  
+  near-zero width, collapsing the terminal column count to its floor of 10 and resizing the remote  
+  PTY, which garbled in-flight output. PTY resizes are now debounced (150 ms) so only the settled  
   size reaches the server.
-
-- **设置 / 下载下拉菜单在资源面板停靠时错位。** 资源面板停右 / 上时齿轮 / 下载按钮会随工具栏位移,
-  但两个下拉用的是固定坐标,会飘到资源面板上。现让下拉跟随按钮位移。
-  **Settings / download dropdowns floated over the docked resource panel.** The gear / download
-  buttons shift with the toolbar when the resource panel docks right / top, but the two dropdowns
+- **设置 / 下载下拉菜单在资源面板停靠时错位。** 资源面板停右 / 上时齿轮 / 下载按钮会随工具栏位移,  
+  但两个下拉用的是固定坐标,会飘到资源面板上。现让下拉跟随按钮位移。  
+  **Settings / download dropdowns floated over the docked resource panel.** The gear / download  
+  buttons shift with the toolbar when the resource panel docks right / top, but the two dropdowns  
   used fixed coordinates. They now follow their buttons.
-
-- **浅色模式次要 / 弱化文字太浅。** 沉浸壁纸 + 浅色下,副标题、磁盘 / 路径标签、说明文字等灰得发飘、
-  对比度差。浅色模式的 text-secondary / text-muted 已加深(深色模式不变)。
-  **Faint secondary / muted text in light mode.** With the immersive wallpaper + light mode,
-  subtitles, disk / path labels and hints were too pale on the bright background. Light-mode
+- **浅色模式次要 / 弱化文字太浅。** 沉浸壁纸 + 浅色下,副标题、磁盘 / 路径标签、说明文字等灰得发飘、  
+  对比度差。浅色模式的 text-secondary / text-muted 已加深(深色模式不变)。  
+  **Faint secondary / muted text in light mode.** With the immersive wallpaper + light mode,  
+  subtitles, disk / path labels and hints were too pale on the bright background. Light-mode  
   secondary / muted text is darkened (dark mode unchanged).
-
-- **沉浸壁纸下,收起的资源面板展开按钮旁露出"黑块"。** 给展开按钮预留的 30px 空位没有背景,露出
-  底下深色壁纸,浅色主题里就是一小块黑。现补上与按钮一致的磨砂背景。
-  **A "black block" next to the collapsed resource-panel expand button in immersive mode.** The 30px
-  gap reserved for the expand button had no background and showed the raw (dark) wallpaper; it now
+- **沉浸壁纸下,收起的资源面板展开按钮旁露出"黑块"。** 给展开按钮预留的 30px 空位没有背景,露出  
+  底下深色壁纸,浅色主题里就是一小块黑。现补上与按钮一致的磨砂背景。  
+  **A "black block" next to the collapsed resource-panel expand button in immersive mode.** The 30px  
+  gap reserved for the expand button had no background and showed the raw (dark) wallpaper; it now  
   uses the same frosted background as the button.
 
 ### Security / 安全
 
-- **记录 RUSTSEC-2026-0154 不可达,暂不升级 russh (#151)。** 该 DoS 在 russh 的 ssh-agent 帧解析,
-  meatshell 完全不用 ssh-agent,漏洞代码路径在本二进制里不可达、不可利用;而唯一修复版
-  (russh ≥ 0.60.3)会引入一堆**预发布**加密库(ed25519-dalek pre、aes-gcm rc…),在 SSH 客户端里
-  用未审计的 rc 密码库风险更大。故 russh 暂留 0.49,等其依赖脱离 -rc 再迁移;新增 audit.toml 附完整理由。
-  **Documented RUSTSEC-2026-0154 as unreachable; holding russh at 0.49 (#151).** The DoS is in russh's
-  ssh-agent frame parsing, which meatshell never uses — the path is dead code here. The only patched
-  russh (>= 0.60.3) drags in a stack of pre-release crypto crates, a worse trade than this unreachable
-  DoS, so russh stays at 0.49 until its deps leave the -rc channel. Adds audit.toml with the full
+- **记录 RUSTSEC-2026-0154 不可达,暂不升级 russh (#151)。** 该 DoS 在 russh 的 ssh-agent 帧解析,  
+  meatshell 完全不用 ssh-agent,漏洞代码路径在本二进制里不可达、不可利用;而唯一修复版  
+  (russh ≥ 0.60.3)会引入一堆**预发布**加密库(ed25519-dalek pre、aes-gcm rc…),在 SSH 客户端里  
+  用未审计的 rc 密码库风险更大。故 russh 暂留 0.49,等其依赖脱离 -rc 再迁移;新增 audit.toml 附完整理由。  
+  **Documented RUSTSEC-2026-0154 as unreachable; holding russh at 0.49 (#151).** The DoS is in russh's  
+  ssh-agent frame parsing, which meatshell never uses — the path is dead code here. The only patched  
+  russh (>= 0.60.3) drags in a stack of pre-release crypto crates, a worse trade than this unreachable  
+  DoS, so russh stays at 0.49 until its deps leave the -rc channel. Adds audit.toml with the full  
   rationale.
 
 ## [0.4.17] - 2026-06-24
 
 ### Added / 新增
 
-- **MFA / 验证码登录(JumpServer 等强制开启 MFA 的堡垒机)(#86)。** 这类堡垒机在
-  keyboard-interactive 里先要密码、再要动态验证码;旧版对每个提示都回填密码,验证码那步
-  必然失败(这正是"不支持 JumpServer"的真实原因)。现在密码挑战自动用已保存密码应答,
-  其余挑战(MFA / 验证码)弹出「双重验证」对话框向你索取,回车即继续;终端与 SFTP 并发
-  连接只问一次,输错码重连会重新弹框,而非静默重放旧码。
-  **MFA / verification-code login on bastions that force MFA (JumpServer etc.) (#86).** Such
-  bastions ask for the password then a one-time code over keyboard-interactive; the old code
-  answered every prompt with the password, so the code step always failed. Now the password
-  challenge is answered automatically and any other challenge pops a "Two-factor (MFA)" dialog
-  showing the server's prompt; the shell and SFTP ask once, and a wrong code re-prompts on
+- **MFA / 验证码登录(JumpServer 等强制开启 MFA 的堡垒机)(#86)。** 这类堡垒机在  
+  keyboard-interactive 里先要密码、再要动态验证码;旧版对每个提示都回填密码,验证码那步  
+  必然失败(这正是"不支持 JumpServer"的真实原因)。现在密码挑战自动用已保存密码应答,  
+  其余挑战(MFA / 验证码)弹出「双重验证」对话框向你索取,回车即继续;终端与 SFTP 并发  
+  连接只问一次,输错码重连会重新弹框,而非静默重放旧码。  
+  **MFA / verification-code login on bastions that force MFA (JumpServer etc.) (#86).** Such  
+  bastions ask for the password then a one-time code over keyboard-interactive; the old code  
+  answered every prompt with the password, so the code step always failed. Now the password  
+  challenge is answered automatically and any other challenge pops a "Two-factor (MFA)" dialog  
+  showing the server's prompt; the shell and SFTP ask once, and a wrong code re-prompts on  
   reconnect instead of being replayed.
-
-- **纯键盘命令历史检索(#140)。** 命令框按 `Ctrl+R` 唤出历史并聚焦搜索框,`↑↓` 选择、
-  回车执行、`Esc` 关闭并回到终端;终端里 `Ctrl+Shift+R` 跳过去(用 Shift 保留 shell 自身的
-  反向搜索)。整个历史检索可全程不碰鼠标。
-  **Keyboard-only command-history search (#140).** `Ctrl+R` in the command box opens the
-  history with its search box focused; `↑↓` select, Enter runs, `Esc` closes and returns to
-  the terminal. `Ctrl+Shift+R` jumps there from the terminal (Shift keeps the shell's own
+- **纯键盘命令历史检索(#140)。** 命令框按 `Ctrl+R` 唤出历史并聚焦搜索框,`↑↓` 选择、  
+  回车执行、`Esc` 关闭并回到终端;终端里 `Ctrl+Shift+R` 跳过去(用 Shift 保留 shell 自身的  
+  反向搜索)。整个历史检索可全程不碰鼠标。  
+  **Keyboard-only command-history search (#140).** `Ctrl+R` in the command box opens the  
+  history with its search box focused; `↑↓` select, Enter runs, `Esc` closes and returns to  
+  the terminal. `Ctrl+Shift+R` jumps there from the terminal (Shift keeps the shell's own  
   reverse-search).
-
-- **会话选项:禁用 shell 集成(Windows / pwsh 服务端)(#140)。** 会话编辑「高级」里新增
-  开关,勾上后跳过 cwd 跟随注入与远程资源监控——专为非 POSIX shell(Windows pwsh/cmd)
-  准备,避免注入破坏 shell。
-  **Session option: disable shell integration (Windows / pwsh server) (#140).** A new toggle
-  in the session dialog's advanced section skips the cwd-follow hook and the resource monitor —
+- **会话选项:禁用 shell 集成(Windows / pwsh 服务端)(#140)。** 会话编辑「高级」里新增  
+  开关,勾上后跳过 cwd 跟随注入与远程资源监控——专为非 POSIX shell(Windows pwsh/cmd)  
+  准备,避免注入破坏 shell。  
+  **Session option: disable shell integration (Windows / pwsh server) (#140).** A new toggle  
+  in the session dialog's advanced section skips the cwd-follow hook and the resource monitor —  
   for non-POSIX shells (Windows pwsh/cmd) where injecting them breaks the shell.
 
 ### Changed / 优化
 
-- **空闲降耗:失焦停光标闪烁 + 后台暂停/降频系统采样(#127)。** 几个周期性定时器原先即便
-  窗口在后台、终端空闲也照常触发整窗重绘。现在:光标在窗口失焦时停止闪烁(改为常亮);
-  系统采样在最小化/被遮挡时暂停、仅失焦时降到 ~5s。实测后台空闲 CPU 从约 10% 降到接近 0。
-  **Cut idle CPU: stop the cursor blink when unfocused, pause/throttle the system sampler in
-  the background (#127).** Periodic timers used to repaint the whole window even backgrounded
-  and idle. The cursor now stops blinking (shows solid) when the window is unfocused, and the
+- **空闲降耗:失焦停光标闪烁 + 后台暂停/降频系统采样(#127)。** 几个周期性定时器原先即便  
+  窗口在后台、终端空闲也照常触发整窗重绘。现在:光标在窗口失焦时停止闪烁(改为常亮);  
+  系统采样在最小化/被遮挡时暂停、仅失焦时降到 ~5s。实测后台空闲 CPU 从约 10% 降到接近 0。  
+  **Cut idle CPU: stop the cursor blink when unfocused, pause/throttle the system sampler in  
+  the background (#127).** Periodic timers used to repaint the whole window even backgrounded  
+  and idle. The cursor now stops blinking (shows solid) when the window is unfocused, and the  
   sampler pauses when minimized/occluded and backs off to ~5 s when merely unfocused.
-
-- **弹窗交互:Esc 关闭 + 关闭确认抢焦点(#140)。** 设置 / 关闭确认 / 凭据 / MFA 现在都能用
-  `Esc` 关闭;关闭确认弹窗会抢走键盘焦点——回车/空格关闭、`Esc` 取消(「点叉 + 空格」一气
-  呵成),终端背后不再被误输入。快捷键弹窗内容过多时可滚动。
-  **Dialog interaction: Esc-to-close + focus the close-confirm dialog (#140).** Settings /
-  close-confirm / credential / MFA dialogs now close with `Esc`; the close-confirm dialog grabs
-  keyboard focus (Enter/Space close, `Esc` cancels) so X-then-Space closes it and the terminal
+- **弹窗交互:Esc 关闭 + 关闭确认抢焦点(#140)。** 设置 / 关闭确认 / 凭据 / MFA 现在都能用  
+  `Esc` 关闭;关闭确认弹窗会抢走键盘焦点——回车/空格关闭、`Esc` 取消(「点叉 + 空格」一气  
+  呵成),终端背后不再被误输入。快捷键弹窗内容过多时可滚动。  
+  **Dialog interaction: Esc-to-close + focus the close-confirm dialog (#140).** Settings /  
+  close-confirm / credential / MFA dialogs now close with `Esc`; the close-confirm dialog grabs  
+  keyboard focus (Enter/Space close, `Esc` cancels) so X-then-Space closes it and the terminal  
   no longer keeps receiving input behind it. The shortcuts dialog scrolls when it's too tall.
 
 ### Fixed / 修复
 
-- **Windows / pwsh 服务端 shell 失效(回归,自 0.4.7)(#140)。** cwd 跟随注入的是 POSIX
-  专用 hook,pwsh/cmd 既跑不了、也不回吐它等待的 OSC 7,导致客户端一直屏蔽终端输出、空白
-  卡死(SFTP 是独立通道,所以不受影响)。现给屏蔽窗口加 1.2s 超时兜底:非 POSIX shell 也能
-  正常显示;配合上面的「禁用 shell 集成」开关可做完全干净的处理。
-  **Windows / pwsh server shell stopped working (regression since 0.4.7) (#140).** The
-  cwd-follow setup injects a POSIX-only hook; a Windows pwsh/cmd shell can't run it and never
-  echoes the OSC 7 the client waits for, so output stayed hidden and the terminal went blank.
-  The suppression now has a 1.2 s timeout so a non-POSIX shell is usable again; pair it with the
+- **Windows / pwsh 服务端 shell 失效(回归,自 0.4.7)(#140)。** cwd 跟随注入的是 POSIX  
+  专用 hook,pwsh/cmd 既跑不了、也不回吐它等待的 OSC 7,导致客户端一直屏蔽终端输出、空白  
+  卡死(SFTP 是独立通道,所以不受影响)。现给屏蔽窗口加 1.2s 超时兜底:非 POSIX shell 也能  
+  正常显示;配合上面的「禁用 shell 集成」开关可做完全干净的处理。  
+  **Windows / pwsh server shell stopped working (regression since 0.4.7) (#140).** The  
+  cwd-follow setup injects a POSIX-only hook; a Windows pwsh/cmd shell can't run it and never  
+  echoes the OSC 7 the client waits for, so output stayed hidden and the terminal went blank.  
+  The suppression now has a 1.2 s timeout so a non-POSIX shell is usable again; pair it with the  
   new "disable shell integration" toggle for a fully clean result.
-
-- **修正 macOS 安装说明(#135)。** README 写的是 `tar -xzf …macos-*.tar.gz` + 裸 `meatshell`
-  二进制,但实际发布产物是 `.zip` + `meatshell.app` 应用包,三条命令全对不上。已改为:解压
-  `.zip` →(可选)移入 `/Applications` → 去 `com.apple.quarantine` 隔离属性 → `open`。
-  **Fixed the macOS install instructions (#135).** The README said to `tar -xzf …macos-*.tar.gz`
-  and run a bare `meatshell` binary, but the release artifact is a `.zip` containing
-  `meatshell.app`. Updated to: unzip → optionally move to `/Applications` → clear
+- **修正 macOS 安装说明(#135)。** README 写的是 `tar -xzf …macos-*.tar.gz` + 裸 `meatshell`  
+  二进制,但实际发布产物是 `.zip` + `meatshell.app` 应用包,三条命令全对不上。已改为:解压  
+  `.zip` →(可选)移入 `/Applications` → 去 `com.apple.quarantine` 隔离属性 → `open`。  
+  **Fixed the macOS install instructions (#135).** The README said to `tar -xzf …macos-*.tar.gz`  
+  and run a bare `meatshell` binary, but the release artifact is a `.zip` containing  
+  `meatshell.app`. Updated to: unzip → optionally move to `/Applications` → clear  
   `com.apple.quarantine` → `open`.
 
 ## [0.4.16] - 2026-06-23
 
 ### Added / 新增
 
-- **沉浸式壁纸主题(可换壁纸 + 全局沉浸配色)。** 新增「设置 → 界面 → 壁纸」,提供
-  macOS 风格的缩略图选择器:内置 **3 张**(简约·浅、简约·暗、**幻想3048**——赛博朋克合成波,
-  星空 + 发光星球 + 霓虹网格,均为程序化绘制、无图片资源),也可「选择文件…」用自己的图片。
-  选定后壁纸铺满整个窗口(含终端、侧栏、SFTP,以及独立的进程窗),各面板**磨砂半透**让壁纸
-  透出,同时从壁纸提取主色**自动重着色强调色并微调背景**,深浅由壁纸亮度决定(内置款),
-  自定义照片则交给主题开关手动控制可读性。**下个版本默认即「幻想3048 + 暗色」。**
-  **Immersive wallpaper theming (custom wallpaper + global tinting).** Adds Settings →
-  Interface → Wallpaper with a macOS-style thumbnail picker: **3 built-ins** (Meat Light,
-  Meat Dark, and **Fantasy 3048** — a cyberpunk synthwave scene with a starfield, a glowing
-  planet and a neon grid, all drawn procedurally with no image assets) plus a "Choose
-  file…" option for your own image. The wallpaper fills the whole window (terminal,
-  sidebars, SFTP and the detached process window), panels **frost translucently** to let it
-  show through, the accent is **recoloured from the image's dominant colour** and surfaces
-  are subtly tinted, with light/dark taken from the wallpaper's brightness (built-ins) while
-  custom photos leave light/dark to the theme toggle for readability. **The next release
+- **沉浸式壁纸主题(可换壁纸 + 全局沉浸配色)。** 新增「设置 → 界面 → 壁纸」,提供  
+  macOS 风格的缩略图选择器:内置 **3 张**(简约·浅、简约·暗、**幻想3048**——赛博朋克合成波,  
+  星空 + 发光星球 + 霓虹网格,均为程序化绘制、无图片资源),也可「选择文件…」用自己的图片。  
+  选定后壁纸铺满整个窗口(含终端、侧栏、SFTP,以及独立的进程窗),各面板**磨砂半透**让壁纸  
+  透出,同时从壁纸提取主色**自动重着色强调色并微调背景**,深浅由壁纸亮度决定(内置款),  
+  自定义照片则交给主题开关手动控制可读性。**下个版本默认即「幻想3048 + 暗色」。**  
+  **Immersive wallpaper theming (custom wallpaper + global tinting).** Adds Settings →  
+  Interface → Wallpaper with a macOS-style thumbnail picker: **3 built-ins** (Meat Light,  
+  Meat Dark, and **Fantasy 3048** — a cyberpunk synthwave scene with a starfield, a glowing  
+  planet and a neon grid, all drawn procedurally with no image assets) plus a "Choose  
+  file…" option for your own image. The wallpaper fills the whole window (terminal,  
+  sidebars, SFTP and the detached process window), panels **frost translucently** to let it  
+  show through, the accent is **recoloured from the image's dominant colour** and surfaces  
+  are subtly tinted, with light/dark taken from the wallpaper's brightness (built-ins) while  
+  custom photos leave light/dark to the theme toggle for readability. **The next release  
   ships with "Fantasy 3048 + dark" as the default.**
-
-- **便携模式:配置改存到程序同目录的 `config/`(#141)。** 用户数据(`sessions.json`、
-  加密密钥、`known_hosts`、`error.log`)现在优先存放在**可执行文件旁的 `config/` 文件夹**,
-  整个程序可以随 U 盘携带,也不再往用户目录(`%APPDATA%`)里塞东西。当程序装在只读位置
-  (如 Program Files / `/usr`)时,自动回退到原来的「按用户的系统配置目录」——这也是旧版本
-  的存放位置,所以**老安装原样可用**。首次切到便携目录时,会把旧用户目录里的数据**复制**
-  过去(只复制不删除、不覆盖已存在文件,作为兜底),升级用户不会丢失已保存的会话。
-  **Portable mode: config moves to a `config/` folder next to the app (#141).** User data
-  (`sessions.json`, the encryption key, `known_hosts`, `error.log`) is now stored, by
-  preference, in a **`config/` folder beside the executable**, so the whole app can travel
-  on a USB stick and stops cluttering the user profile (`%APPDATA%`). When the app is
-  installed somewhere read-only (Program Files / `/usr`), it falls back to the per-user OS
-  config dir — the same place older versions used, so **existing installs keep working
-  untouched**. On the first launch that lands on the portable dir, data from the legacy
-  per-user dir is **copied** over (copy-not-move, never overwriting, as a safety net) so
+- **便携模式:配置改存到程序同目录的 `config/`(#141)。** 用户数据(`sessions.json`、  
+  加密密钥、`known_hosts`、`error.log`)现在优先存放在**可执行文件旁的 `config/` 文件夹**,  
+  整个程序可以随 U 盘携带,也不再往用户目录(`%APPDATA%`)里塞东西。当程序装在只读位置  
+  (如 Program Files / `/usr`)时,自动回退到原来的「按用户的系统配置目录」——这也是旧版本  
+  的存放位置,所以**老安装原样可用**。首次切到便携目录时,会把旧用户目录里的数据**复制**  
+  过去(只复制不删除、不覆盖已存在文件,作为兜底),升级用户不会丢失已保存的会话。  
+  **Portable mode: config moves to a `config/` folder next to the app (#141).** User data  
+  (`sessions.json`, the encryption key, `known_hosts`, `error.log`) is now stored, by  
+  preference, in a **`config/` folder beside the executable**, so the whole app can travel  
+  on a USB stick and stops cluttering the user profile (`%APPDATA%`). When the app is  
+  installed somewhere read-only (Program Files / `/usr`), it falls back to the per-user OS  
+  config dir — the same place older versions used, so **existing installs keep working  
+  untouched**. On the first launch that lands on the portable dir, data from the legacy  
+  per-user dir is **copied** over (copy-not-move, never overwriting, as a safety net) so  
   upgrading users don't lose saved sessions.
-
-- **终端内查找:Ctrl+F 唤出查找栏。** 在会话里按 Ctrl+F 即可弹出顶部查找栏(与右键菜单
-  → 查找一致),输入即时高亮所有匹配,Esc 关闭;已在「设置 → 快捷键」中登记。
-  **Find in terminal: Ctrl+F opens the find bar.** Press Ctrl+F in a session to bring up
-  the find bar (same as right-click → Find); matches highlight as you type and Esc closes
+- **终端内查找:Ctrl+F 唤出查找栏。** 在会话里按 Ctrl+F 即可弹出顶部查找栏(与右键菜单  
+  → 查找一致),输入即时高亮所有匹配,Esc 关闭;已在「设置 → 快捷键」中登记。  
+  **Find in terminal: Ctrl+F opens the find bar.** Press Ctrl+F in a session to bring up  
+  the find bar (same as right-click → Find); matches highlight as you type and Esc closes  
   it. Now listed under Settings → Shortcuts.
-
-- **面板可拖动吸附停靠(资源面板 + SFTP)。** 资源面板和 SFTP 面板现在都能拖到四条边
-  (上/下/左/右):拖动面板手柄时,四条边浮现高亮放置区,松手即吸附到那条边。两个面板都
-  可拖动调节大小;折叠后会缩成停靠边缘的一个小展开按钮(彻底隐藏面板)。**自适应:** 资源
-  面板横向(上/下)停靠时,内部小组件自动改为横排;SFTP 竖向(左/右、窄)停靠时隐藏目录树,
-  并随宽度**渐进隐藏「大小→时间」列**(名称快被挤成「…」时才让位),横向(上/下、宽)停靠
-  则恒显示全部列。SFTP 工具栏左侧新增专用拖动手柄,密集控件下也能稳稳拖动。
-  **Drag-to-dock panels (resource panel + SFTP).** Both the resource panel and the SFTP
-  panel can now be dragged to any edge (top / bottom / left / right): dragging the
-  panel's handle shows highlighted drop zones on all four edges, and releasing snaps it
-  there. Both panels are drag-resizable and collapse to a small expand button on their
-  docked edge (fully hiding the panel). **Responsive:** the resource panel lays its
-  widgets out in a row when docked horizontally; the SFTP panel hides its directory tree
-  when docked vertically (narrow) and progressively drops the **Size → Modified** columns
-  as it narrows (only once the Name would elide to “…”), while a horizontal (wide) dock
-  always shows every column. A dedicated drag grip was added to the SFTP toolbar so the
+- **面板可拖动吸附停靠(资源面板 + SFTP)。** 资源面板和 SFTP 面板现在都能拖到四条边  
+  (上/下/左/右):拖动面板手柄时,四条边浮现高亮放置区,松手即吸附到那条边。两个面板都  
+  可拖动调节大小;折叠后会缩成停靠边缘的一个小展开按钮(彻底隐藏面板)。**自适应:** 资源  
+  面板横向(上/下)停靠时,内部小组件自动改为横排;SFTP 竖向(左/右、窄)停靠时隐藏目录树,  
+  并随宽度**渐进隐藏「大小→时间」列**(名称快被挤成「…」时才让位),横向(上/下、宽)停靠  
+  则恒显示全部列。SFTP 工具栏左侧新增专用拖动手柄,密集控件下也能稳稳拖动。  
+  **Drag-to-dock panels (resource panel + SFTP).** Both the resource panel and the SFTP  
+  panel can now be dragged to any edge (top / bottom / left / right): dragging the  
+  panel's handle shows highlighted drop zones on all four edges, and releasing snaps it  
+  there. Both panels are drag-resizable and collapse to a small expand button on their  
+  docked edge (fully hiding the panel). **Responsive:** the resource panel lays its  
+  widgets out in a row when docked horizontally; the SFTP panel hides its directory tree  
+  when docked vertically (narrow) and progressively drops the **Size → Modified** columns  
+  as it narrows (only once the Name would elide to “…”), while a horizontal (wide) dock  
+  always shows every column. A dedicated drag grip was added to the SFTP toolbar so the  
   panel is grabbable even though its toolbar is full of controls.
-
-- **布局持久化。** 两个面板的停靠边与宽/高,以及父窗口大小,都会在退出时保存、下次启动
-  恢复——可以保留你喜欢的窗口尺寸和面板布局。
-  **Layout persistence.** Each panel's docked edge and size, plus the window size, are
-  saved on exit and restored on the next launch — so your preferred window size and
+- **布局持久化。** 两个面板的停靠边与宽/高,以及父窗口大小,都会在退出时保存、下次启动  
+  恢复——可以保留你喜欢的窗口尺寸和面板布局。  
+  **Layout persistence.** Each panel's docked edge and size, plus the window size, are  
+  saved on exit and restored on the next launch — so your preferred window size and  
   panel arrangement stick.
 
 ### Changed / 优化
 
-- **历史命令的搜索框移到下拉框底部 (#131)。** 命令历史下拉向上展开,搜索框原先在顶部、
-  位置随历史条数上下浮动、不好找;现在固定在下拉框**底部**(紧挨命令输入框),列表在其上方
-  填充并可滚动——位置稳定、一眼可见,和 FinalShell 一致。
-  **History search box moved to the bottom of the dropdown (#131).** The command-history
-  dropdown opens upward; the search box used to sit at the top, drifting up and down with
-  the number of entries and hard to find. It's now pinned to the **bottom** of the
-  dropdown (right above the command input), with the scrollable list filling the space
+- **历史命令的搜索框移到下拉框底部 (#131)。** 命令历史下拉向上展开,搜索框原先在顶部、  
+  位置随历史条数上下浮动、不好找;现在固定在下拉框**底部**(紧挨命令输入框),列表在其上方  
+  填充并可滚动——位置稳定、一眼可见,和 FinalShell 一致。  
+  **History search box moved to the bottom of the dropdown (#131).** The command-history  
+  dropdown opens upward; the search box used to sit at the top, drifting up and down with  
+  the number of entries and hard to find. It's now pinned to the **bottom** of the  
+  dropdown (right above the command input), with the scrollable list filling the space  
   above it — a fixed, immediately visible spot, matching FinalShell.
-
-- **SFTP 折叠按钮与资源面板统一,并保持在右侧。** 两个面板现在共用同一个展开按钮组件;
-  SFTP 的控件本就在右侧,折叠后的展开按钮也随之停在右下/右上,不再突兀地跳到左边。
-  **SFTP collapse button unified with the resource panel, kept on the right.** Both panels
-  now share one expand-button component; since SFTP's controls live on the right, its
+- **SFTP 折叠按钮与资源面板统一,并保持在右侧。** 两个面板现在共用同一个展开按钮组件;  
+  SFTP 的控件本就在右侧,折叠后的展开按钮也随之停在右下/右上,不再突兀地跳到左边。  
+  **SFTP collapse button unified with the resource panel, kept on the right.** Both panels  
+  now share one expand-button component; since SFTP's controls live on the right, its  
   collapsed expand button stays at the bottom-/top-right instead of jumping to the left.
 
 ### Fixed / 修复
 
-- **含中文的行复制/查找列错位 (#132)。** 终端纯文本按「一字一字符」存储,而中文(CJK)字
-  在网格上占两列;复制时把选区列号当作字符下标,导致丢失的字符数恰好等于选区前面的中文
-  字数(如选「1pctl update password」实际只复制到「e password」)。现引入 unicode-width
-  做「字符↔网格列」换算:复制所见即所得,在宽字形第二格起选也会整字纳入;查找高亮框(同源
-  问题)改按网格列绘制,中文行之后也能精确罩住文字。
-  **Copy & find column drift on lines with CJK glyphs (#132).** The terminal's plain text
-  stores one char per glyph, but a wide (CJK) glyph spans two grid cells; copy treated a
-  selection's column as a char index, dropping as many characters as there were wide glyphs
-  before the selection (selecting “1pctl update password” yielded only “e password”). A
-  char-to-column conversion (via unicode-width) makes copy WYSIWYG — anchoring on the
-  second cell of a wide glyph still grabs the whole glyph — and find highlights (same root
+- **含中文的行复制/查找列错位 (#132)。** 终端纯文本按「一字一字符」存储,而中文(CJK)字  
+  在网格上占两列;复制时把选区列号当作字符下标,导致丢失的字符数恰好等于选区前面的中文  
+  字数(如选「1pctl update password」实际只复制到「e password」)。现引入 unicode-width  
+  做「字符↔网格列」换算:复制所见即所得,在宽字形第二格起选也会整字纳入;查找高亮框(同源  
+  问题)改按网格列绘制,中文行之后也能精确罩住文字。  
+  **Copy & find column drift on lines with CJK glyphs (#132).** The terminal's plain text  
+  stores one char per glyph, but a wide (CJK) glyph spans two grid cells; copy treated a  
+  selection's column as a char index, dropping as many characters as there were wide glyphs  
+  before the selection (selecting “1pctl update password” yielded only “e password”). A  
+  char-to-column conversion (via unicode-width) makes copy WYSIWYG — anchoring on the  
+  second cell of a wide glyph still grabs the whole glyph — and find highlights (same root  
   cause) now sit on grid columns so they line up after CJK.
-
-- **macOS 欢迎页布局错位。** 欢迎页的标题、副标题、快速连接卡片在 macOS 上被拉开(标题与
-  副标题间出现大空隙)。现在 Welcome 显式填满内容区、头部固定在顶部按自然高度排列,卡片填满
-  其余空间。
-  **macOS welcome-page layout spread apart.** The title, tagline and quick-connect card
-  were spaced out on macOS (a large gap between the title and tagline). The Welcome view
-  now explicitly fills the content area and the header is pinned to the top at its
+- **macOS 欢迎页布局错位。** 欢迎页的标题、副标题、快速连接卡片在 macOS 上被拉开(标题与  
+  副标题间出现大空隙)。现在 Welcome 显式填满内容区、头部固定在顶部按自然高度排列,卡片填满  
+  其余空间。  
+  **macOS welcome-page layout spread apart.** The title, tagline and quick-connect card  
+  were spaced out on macOS (a large gap between the title and tagline). The Welcome view  
+  now explicitly fills the content area and the header is pinned to the top at its  
   natural height, with the card filling the rest.
 
 ## [0.4.13] - 2026-06-21
 
 ### Fixed / 修复
 
-- **堡垒机(JumpServer 等)密码登录“认证失败” (#86)。** 这类堡垒机默认只放行
-  `keyboard-interactive` 认证、关闭 `password` 方法,旧版只尝试 `password`,因此直接
-  “认证失败”——Xshell/MobaXterm/WindTerm 能登正是因为会自动回退。现在密码认证失败后会
-  断开并重连一条全新连接,改用 `keyboard-interactive` 以密码应答服务器提示。注意:russh
-  在一次失败的认证后无法在同一句柄上切换认证方法(会卡死),因此回退必须重连。已在真实的
-  keyboard-interactive-only sshd 上验证登录成功。
-  **Password login through bastions (JumpServer etc.) failed with “authentication
-  failed” (#86).** Such bastions disable the `password` SSH method and only accept
-  `keyboard-interactive`; the old code only tried `password`, so it failed outright —
-  other clients get in because they fall back automatically. Now, on password-auth
-  failure we disconnect and reconnect on a fresh handle, then authenticate via
-  `keyboard-interactive`, answering each prompt with the password. (russh hangs if a
-  second auth method is attempted on a handle whose first attempt already failed, so a
+- **堡垒机(JumpServer 等)密码登录“认证失败” (#86)。** 这类堡垒机默认只放行  
+  `keyboard-interactive` 认证、关闭 `password` 方法,旧版只尝试 `password`,因此直接  
+  “认证失败”——Xshell/MobaXterm/WindTerm 能登正是因为会自动回退。现在密码认证失败后会  
+  断开并重连一条全新连接,改用 `keyboard-interactive` 以密码应答服务器提示。注意:russh  
+  在一次失败的认证后无法在同一句柄上切换认证方法(会卡死),因此回退必须重连。已在真实的  
+  keyboard-interactive-only sshd 上验证登录成功。  
+  **Password login through bastions (JumpServer etc.) failed with “authentication  
+  failed” (#86).** Such bastions disable the `password` SSH method and only accept  
+  `keyboard-interactive`; the old code only tried `password`, so it failed outright —  
+  other clients get in because they fall back automatically. Now, on password-auth  
+  failure we disconnect and reconnect on a fresh handle, then authenticate via  
+  `keyboard-interactive`, answering each prompt with the password. (russh hangs if a  
+  second auth method is attempted on a handle whose first attempt already failed, so a  
   reconnect is required.) Verified against a real keyboard-interactive-only sshd.
 
 ### Changed / 优化
 
-- **设置·界面简约重做。** 右侧从竖排改为「分区 + 标签左·控件右」的紧凑布局(iOS 风
-  开关、`[− 值 +]` 步进器、固定字号不随界面缩放放大,解决“字体过大”观感);仍为内嵌
-  模态浮层,打开时遮罩吞鼠标 + 抢焦点吞键盘,禁止对主窗口的一切输入,卡片只能在窗口内拖动。
-  **Redesigned Interface settings.** The right pane moves from stacked fields to a
-  compact “section + label-left · control-right” layout (iOS-style switches,
-  `[− value +]` steppers, fixed typography that ignores UI scale — fixing the
-  “fonts too big” feel). Still an embedded modal overlay that blocks all input while
-  open (veil swallows mouse, focus scope swallows keys); the card only drags within
+- **设置·界面简约重做。** 右侧从竖排改为「分区 + 标签左·控件右」的紧凑布局(iOS 风  
+  开关、`[− 值 +]` 步进器、固定字号不随界面缩放放大,解决“字体过大”观感);仍为内嵌  
+  模态浮层,打开时遮罩吞鼠标 + 抢焦点吞键盘,禁止对主窗口的一切输入,卡片只能在窗口内拖动。  
+  **Redesigned Interface settings.** The right pane moves from stacked fields to a  
+  compact “section + label-left · control-right” layout (iOS-style switches,  
+  `[− value +]` steppers, fixed typography that ignores UI scale — fixing the  
+  “fonts too big” feel). Still an embedded modal overlay that blocks all input while  
+  open (veil swallows mouse, focus scope swallows keys); the card only drags within  
   the window.
-
-- **初始窗口放大到 1440×900。** 从 1200×760 提升到更舒适的默认尺寸,对齐同类客户端。
+- **初始窗口放大到 1440×900。** 从 1200×760 提升到更舒适的默认尺寸,对齐同类客户端。  
   **Larger default window, 1440×900.** Up from 1200×760, matching comparable clients.
-
-- **Quieter startup logs.** Silenced fontdb's harmless "malformed font" warning for
-  system fonts it can't parse but skips anyway (e.g. Windows' `mstmc.ttf`), and
-  demoted the routine UI-font-selection line to `debug` — only an actual font-load
-  failure still warns. `error.log` stays clean.
-  **更安静的启动日志。** 屏蔽 fontdb 对无法解析(但会自动跳过)的系统字体发出的
-  「malformed font」无害告警(如 Windows 的 `mstmc.ttf`),并把常规的界面字体选择日志
+- **Quieter startup logs.** Silenced fontdb's harmless "malformed font" warning for  
+  system fonts it can't parse but skips anyway (e.g. Windows' `mstmc.ttf`), and  
+  demoted the routine UI-font-selection line to `debug` — only an actual font-load  
+  failure still warns. `error.log` stays clean.  
+  **更安静的启动日志。** 屏蔽 fontdb 对无法解析(但会自动跳过)的系统字体发出的  
+  「malformed font」无害告警(如 Windows 的 `mstmc.ttf`),并把常规的界面字体选择日志  
   降为 `debug`——只有真正的字体加载失败才会告警。`error.log` 保持干净。
 
 ### Added / 新增
 
-- **侧栏可拖动调宽。** 在资源面板与主区之间加了可拖动分隔条,宽度可在 160–520px 间
-  调节并持久化到配置(重启保留);折叠侧栏时分隔条自动隐藏,拖动期间禁用折叠动画以跟手。
-  **Drag-resize the sidebar.** A draggable splitter sits between the resource panel and
-  the main area; the width is adjustable within 160–520px and persisted to config
-  (survives restart). The splitter hides when the sidebar is collapsed, and the
+- **侧栏可拖动调宽。** 在资源面板与主区之间加了可拖动分隔条,宽度可在 160–520px 间  
+  调节并持久化到配置(重启保留);折叠侧栏时分隔条自动隐藏,拖动期间禁用折叠动画以跟手。  
+  **Drag-resize the sidebar.** A draggable splitter sits between the resource panel and  
+  the main area; the width is adjustable within 160–520px and persisted to config  
+  (survives restart). The splitter hides when the sidebar is collapsed, and the  
   collapse animation is disabled while dragging for 1:1 tracking.
-
-- **进程监视独立窗口。** 进程监视从内嵌浮层提升为真正的独立 OS 窗口,可拖出主窗口、
-  拖到第二块屏幕;无边框自绘标题栏 + 右下角缩放手柄,与主窗口实时共享同一份进程数据。
-  **Detachable process-monitor window.** The process monitor is now a real top-level OS
-  window that can be dragged outside the main window or onto a second monitor, with a
-  frameless custom titlebar and a bottom-right resize grip; it shares one live process
+- **进程监视独立窗口。** 进程监视从内嵌浮层提升为真正的独立 OS 窗口,可拖出主窗口、  
+  拖到第二块屏幕;无边框自绘标题栏 + 右下角缩放手柄,与主窗口实时共享同一份进程数据。  
+  **Detachable process-monitor window.** The process monitor is now a real top-level OS  
+  window that can be dragged outside the main window or onto a second monitor, with a  
+  frameless custom titlebar and a bottom-right resize grip; it shares one live process  
   model with the main window.
-
-- **Group quick commands, collapsible (#55).** Quick commands now take an optional
-  group/folder name. Leaving it empty drops the command into the implicit
-  "default" group. In the command-bar popup each group shows a header that can be
-  clicked to collapse/expand it — same behaviour as the welcome page's quick-connect
-  session groups. The manage dialog gained a "Group (optional)" field and shows the
-  grouping.
-  **快捷命令支持分组、可收起 (#55)。** 快捷命令新增可选的分组名,留空则归入隐式的
-  「default」分组。命令栏弹窗里每个分组带标题,点击即可收起/展开——和欢迎页快速连接的
+- **Group quick commands, collapsible (#55).** Quick commands now take an optional  
+  group/folder name. Leaving it empty drops the command into the implicit  
+  "default" group. In the command-bar popup each group shows a header that can be  
+  clicked to collapse/expand it — same behaviour as the welcome page's quick-connect  
+  session groups. The manage dialog gained a "Group (optional)" field and shows the  
+  grouping.  
+  **快捷命令支持分组、可收起 (#55)。** 快捷命令新增可选的分组名,留空则归入隐式的  
+  「default」分组。命令栏弹窗里每个分组带标题,点击即可收起/展开——和欢迎页快速连接的  
   会话分组体验一致。管理对话框新增「分组（可选）」输入框并按分组展示。
-
-- **Full quick-command management, mirroring the session panel (#55).** Right-click
-  a command — in the command-bar popup or the manage dialog — for Edit / Duplicate /
-  Delete / Move to group, and right-click a group header for Rename / Delete (empty) /
-  New group; the manage dialog also has a "+ New group" button. Same right-click
-  model as the welcome page's quick-connect sessions. Groups start **collapsed** by
-  default, and empty groups persist so you can pre-create folders.
-  **快捷命令完整管理,对齐会话面板 (#55)。** 在命令栏弹窗或管理对话框里右键命令(编辑、
-  复制、删除、移动到分组),右键分组标题(重命名、删除空分组、新建分组),管理对话框另有
-  「+ 新建分组」按钮——与欢迎页快速连接会话的右键体验一致。分组**默认收起**,空分组会被
+- **Full quick-command management, mirroring the session panel (#55).** Right-click  
+  a command — in the command-bar popup or the manage dialog — for Edit / Duplicate /  
+  Delete / Move to group, and right-click a group header for Rename / Delete (empty) /  
+  New group; the manage dialog also has a "+ New group" button. Same right-click  
+  model as the welcome page's quick-connect sessions. Groups start **collapsed** by  
+  default, and empty groups persist so you can pre-create folders.  
+  **快捷命令完整管理,对齐会话面板 (#55)。** 在命令栏弹窗或管理对话框里右键命令(编辑、  
+  复制、删除、移动到分组),右键分组标题(重命名、删除空分组、新建分组),管理对话框另有  
+  「+ 新建分组」按钮——与欢迎页快速连接会话的右键体验一致。分组**默认收起**,空分组会被  
   保留以便预先建好文件夹。
 
 ## [0.4.12] - 2026-06-20
 
 ### Fixed / 修复
 
-- **macOS 26 blank text — switch the default CJK UI font to one femtovg can render
-  (#129, #108).** Root cause finally pinned: on some macOS 26 machines femtovg
-  cannot rasterize the *modern* system CJK fonts (PingFang SC, Hiragino) — fontdb
-  finds them but every glyph comes out blank — while the older Heiti/STHeiti/Songti
-  faces render perfectly (verified per-font on an M2 / macOS 26). It was never the
-  renderer (0.4.11's femtovg revert alone didn't help) nor font *loading* (fontdb
-  loaded 900+ faces). The UI now prefers the reliably-rendering "Heiti SC" (a clean
-  sans-serif that ships on every macOS), with STHeiti/Songti as further fallbacks
-  and the embedded "Meatshell Mono" as a last resort so the window is never blank.
-  A `MEATSHELL_UI_FONT="<family>"` env var can force any family without a rebuild.
-  **修复 macOS 26 文字全白——默认中文界面字体改用 femtovg 能渲染的字体 (#129, #108)。**
-  根因最终定位:部分 macOS 26 机器上 femtovg 无法栅格化*新版*系统中文字体(PingFang
-  SC、Hiragino)——fontdb 能找到它们,但每个字形都画成空白;而老字体
-  Heiti/STHeiti/Songti 渲染完全正常(已在 M2 / macOS 26 上逐字体实测)。既不是渲染器
-  (0.4.11 单独退回 femtovg 没用),也不是字体*加载*(fontdb 加载了 900+ 个 face)。
-  界面现在优先用稳定渲染的「Heiti SC」(所有 macOS 自带的干净黑体),STHeiti/Songti
-  作为后备,内置「Meatshell Mono」兜底,确保窗口永不全白。可用环境变量
+- **macOS 26 blank text — switch the default CJK UI font to one femtovg can render  
+  (#129, #108).** Root cause finally pinned: on some macOS 26 machines femtovg  
+  cannot rasterize the *modern* system CJK fonts (PingFang SC, Hiragino) — fontdb  
+  finds them but every glyph comes out blank — while the older Heiti/STHeiti/Songti  
+  faces render perfectly (verified per-font on an M2 / macOS 26). It was never the  
+  renderer (0.4.11's femtovg revert alone didn't help) nor font *loading* (fontdb  
+  loaded 900+ faces). The UI now prefers the reliably-rendering "Heiti SC" (a clean  
+  sans-serif that ships on every macOS), with STHeiti/Songti as further fallbacks  
+  and the embedded "Meatshell Mono" as a last resort so the window is never blank.  
+  A `MEATSHELL_UI_FONT="<family>"` env var can force any family without a rebuild.  
+  **修复 macOS 26 文字全白——默认中文界面字体改用 femtovg 能渲染的字体 (#129, #108)。**  
+  根因最终定位:部分 macOS 26 机器上 femtovg 无法栅格化*新版*系统中文字体(PingFang  
+  SC、Hiragino)——fontdb 能找到它们,但每个字形都画成空白;而老字体  
+  Heiti/STHeiti/Songti 渲染完全正常(已在 M2 / macOS 26 上逐字体实测)。既不是渲染器  
+  (0.4.11 单独退回 femtovg 没用),也不是字体*加载*(fontdb 加载了 900+ 个 face)。  
+  界面现在优先用稳定渲染的「Heiti SC」(所有 macOS 自带的干净黑体),STHeiti/Songti  
+  作为后备,内置「Meatshell Mono」兜底,确保窗口永不全白。可用环境变量  
   `MEATSHELL_UI_FONT="<字体名>"` 免重编强制指定任意字体。
 
 ## [0.4.11] - 2026-06-20
 
 ### Fixed / 修复
 
-- **macOS text-invisible regression — renderer no longer force-switched (#129, #108).**
-  0.4.10 force-set the Skia renderer on macOS to work around femtovg failing to
-  render text on macOS 26 (#108). That shipped unverified and broke a *different*
-  set of Macs (Apple Silicon, macOS 26.5): Skia could not resolve the "PingFang SC"
-  UI font, so all text vanished there instead (icons survived because they use an
-  embedded font). The default now stays femtovg (known-good for the majority);
-  Skia is still compiled in on macOS and can be opted into at launch with
-  `SLINT_BACKEND=winit-skia` for machines where femtovg fails.
-  **修复 macOS 文本全部消失的回退问题——不再强制切换渲染器 (#129, #108)。** 0.4.10 为
-  绕过 macOS 26 上 femtovg 取字失败(#108),在 macOS 强制改用 Skia 渲染器;该改动
-  未经真机验证就发布,反而弄坏了另一批 Mac(Apple Silicon / macOS 26.5):Skia 无法
-  解析「PingFang SC」界面字体,导致这些机器上文字全部消失(图标因使用内嵌字体而正常)。
-  现默认改回 femtovg(对绝大多数机器正常);macOS 仍编译 Skia,femtovg 失效的机器可在
+- **macOS text-invisible regression — renderer no longer force-switched (#129, #108).**  
+  0.4.10 force-set the Skia renderer on macOS to work around femtovg failing to  
+  render text on macOS 26 (#108). That shipped unverified and broke a *different*  
+  set of Macs (Apple Silicon, macOS 26.5): Skia could not resolve the "PingFang SC"  
+  UI font, so all text vanished there instead (icons survived because they use an  
+  embedded font). The default now stays femtovg (known-good for the majority);  
+  Skia is still compiled in on macOS and can be opted into at launch with  
+  `SLINT_BACKEND=winit-skia` for machines where femtovg fails.  
+  **修复 macOS 文本全部消失的回退问题——不再强制切换渲染器 (#129, #108)。** 0.4.10 为  
+  绕过 macOS 26 上 femtovg 取字失败(#108),在 macOS 强制改用 Skia 渲染器;该改动  
+  未经真机验证就发布,反而弄坏了另一批 Mac(Apple Silicon / macOS 26.5):Skia 无法  
+  解析「PingFang SC」界面字体,导致这些机器上文字全部消失(图标因使用内嵌字体而正常)。  
+  现默认改回 femtovg(对绝大多数机器正常);macOS 仍编译 Skia,femtovg 失效的机器可在  
   启动时用 `SLINT_BACKEND=winit-skia` 手动启用。
 
 ### Added / 新增
 
-- **Cancel an in-progress upload, with remote cleanup (#100).** Uploads can now be
-  cancelled like downloads; cancelling removes the half-written file on the remote
-  so no partial junk is left behind.
-  **上传也支持取消并清理远端半成品 (#100)。** 上传可像下载一样取消;取消会删除远端已
+- **Cancel an in-progress upload, with remote cleanup (#100).** Uploads can now be  
+  cancelled like downloads; cancelling removes the half-written file on the remote  
+  so no partial junk is left behind.  
+  **上传也支持取消并清理远端半成品 (#100)。** 上传可像下载一样取消;取消会删除远端已  
   写入的半成品文件,服务端不留垃圾。
-
-- **Sponsor / donation link in the README.** Added a WeChat sponsor QR for anyone
-  who'd like to support development.
+- **Sponsor / donation link in the README.** Added a WeChat sponsor QR for anyone  
+  who'd like to support development.  
   **README 增加赞助/捐赠入口。** 加入微信赞助二维码,欢迎支持项目开发。
 
 ### Changed / 优化
 
-- **Silenced ICU4X segmentation-data log noise.** Suppressed the spurious ICU4X
-  data-error warnings so they no longer clutter the log / error.log.
-  **屏蔽 ICU4X 段落数据噪音日志。** 抑制无意义的 ICU4X data-error 警告,不再污染日志
+- **Silenced ICU4X segmentation-data log noise.** Suppressed the spurious ICU4X  
+  data-error warnings so they no longer clutter the log / error.log.  
+  **屏蔽 ICU4X 段落数据噪音日志。** 抑制无意义的 ICU4X data-error 警告,不再污染日志  
   与 error.log。
 
 ## [0.4.10] - 2026-06-19
 
 ### Added / 新增
 
-- **SFTP multi-select with one-archive download (#100).** Check multiple files in
-  the SFTP panel and download them together: the selection is packed into a single
-  `tar` on the remote (named after the first item, e.g. `11等文件.tar`), pulled in
-  one transfer, then the temp is removed. Any download action (right-click, row,
-  toolbar) packs the whole checked set when 2+ are checked; a single selection
-  downloads as a plain file. Batch delete is also supported, and an empty folder
-  is reported instead of creating an empty local directory.
-  **SFTP 文件多选 + 打包下载 (#100)。** 在 SFTP 面板勾选多个文件即可一起下载:选中
-  项在远端打包成单个 `tar`(以第一个文件命名,如 `11等文件.tar`),一次性下载后删除
-  临时包。勾选 ≥2 项时,任意下载动作(右键/行内/工具栏)都打包整组;单选则按普通
+- **SFTP multi-select with one-archive download (#100).** Check multiple files in  
+  the SFTP panel and download them together: the selection is packed into a single  
+  `tar` on the remote (named after the first item, e.g. `11等文件.tar`), pulled in  
+  one transfer, then the temp is removed. Any download action (right-click, row,  
+  toolbar) packs the whole checked set when 2+ are checked; a single selection  
+  downloads as a plain file. Batch delete is also supported, and an empty folder  
+  is reported instead of creating an empty local directory.  
+  **SFTP 文件多选 + 打包下载 (#100)。** 在 SFTP 面板勾选多个文件即可一起下载:选中  
+  项在远端打包成单个 `tar`(以第一个文件命名,如 `11等文件.tar`),一次性下载后删除  
+  临时包。勾选 ≥2 项时,任意下载动作(右键/行内/工具栏)都打包整组;单选则按普通  
   文件下载。同时支持批量删除;下载空文件夹会给出提示而非创建空目录。
-
-- **Cancel an in-progress transfer (#100).** Each transfer row shows a cancel
-  button while active or preparing; cancelling removes the partial local file and,
-  for archive downloads, the remote temp archive — no junk left on either side.
-  **可取消进行中的传输 (#100)。** 传输记录每行在下载中/准备中时显示取消按钮;取消会
+- **Cancel an in-progress transfer (#100).** Each transfer row shows a cancel  
+  button while active or preparing; cancelling removes the partial local file and,  
+  for archive downloads, the remote temp archive — no junk left on either side.  
+  **可取消进行中的传输 (#100)。** 传输记录每行在下载中/准备中时显示取消按钮;取消会  
   删除本地半成品文件,打包下载还会删除远端临时包,本地与服务端都不留垃圾。
-
-- **Name port-forward rules (#100).** Port-forward rules can be given an optional
-  name so they're easy to tell apart in the list.
+- **Name port-forward rules (#100).** Port-forward rules can be given an optional  
+  name so they're easy to tell apart in the list.  
   **端口转发规则可命名 (#100)。** 转发规则可设置可选名称,便于在列表中区分。
-
-- **Global UI scale setting (#100 #117 #118).** A scale control in Interface
-  settings zooms the whole UI (fonts, spacing, radii) from 80% to 200%.
-  **界面整体缩放设置 (#100 #117 #118)。** 界面设置新增缩放控件,可将整个界面(字体、
+- **Global UI scale setting (#100 #117 #118).** A scale control in Interface  
+  settings zooms the whole UI (fonts, spacing, radii) from 80% to 200%.  
+  **界面整体缩放设置 (#100 #117 #118)。** 界面设置新增缩放控件,可将整个界面(字体、  
   间距、圆角)从 80% 到 200% 缩放。
 
 ### Changed / 优化
 
-- **Much faster downloads (#100).** Downloads now use a dedicated, pipelined SFTP
-  channel that keeps many READ requests in flight at once (like uploads already
-  did), hiding round-trip latency — large files and archive bundles download
-  noticeably faster.
-  **下载大幅提速 (#100)。** 下载改用专用、流水线化的 SFTP 通道,多个读请求并发在途
+- **Much faster downloads (#100).** Downloads now use a dedicated, pipelined SFTP  
+  channel that keeps many READ requests in flight at once (like uploads already  
+  did), hiding round-trip latency — large files and archive bundles download  
+  noticeably faster.  
+  **下载大幅提速 (#100)。** 下载改用专用、流水线化的 SFTP 通道,多个读请求并发在途  
   (与上传一致),掩盖往返延迟 —— 大文件和打包包下载明显更快。
-
-- **Switch directories during transfers.** SFTP transfers run on their own task,
-  so listing and changing directories stays responsive while files move.
-  **传输时仍可切换目录。** SFTP 传输在独立任务上运行,文件传输期间列目录、切换目录
+- **Switch directories during transfers.** SFTP transfers run on their own task,  
+  so listing and changing directories stays responsive while files move.  
+  **传输时仍可切换目录。** SFTP 传输在独立任务上运行,文件传输期间列目录、切换目录  
   依然流畅。
 
 ### Fixed / 修复
 
-- **macOS 26 (Tahoe): all UI text invisible (#108).** The default femtovg renderer
-  failed CoreText font lookup on macOS 26, blanking every glyph including the
-  embedded mono font. macOS now uses the Skia renderer (Windows/Linux unchanged).
-  **macOS 26 (Tahoe) 界面文本全部消失 (#108)。** 默认 femtovg 渲染器在 macOS 26 上
-  取字失败,所有文字(含内嵌等宽字体)消失。macOS 现改用 Skia 渲染器(Windows/Linux
+- **macOS 26 (Tahoe): all UI text invisible (#108).** The default femtovg renderer  
+  failed CoreText font lookup on macOS 26, blanking every glyph including the  
+  embedded mono font. macOS now uses the Skia renderer (Windows/Linux unchanged).  
+  **macOS 26 (Tahoe) 界面文本全部消失 (#108)。** 默认 femtovg 渲染器在 macOS 26 上  
+  取字失败,所有文字(含内嵌等宽字体)消失。macOS 现改用 Skia 渲染器(Windows/Linux  
   不变)。
-
-- **Welcome session list now scrolls (#116).** When there are more sessions than
-  fit, the welcome screen's session list scrolls instead of clipping.
+- **Welcome session list now scrolls (#116).** When there are more sessions than  
+  fit, the welcome screen's session list scrolls instead of clipping.  
   **欢迎页会话列表可滚动 (#116)。** 会话过多时,欢迎页的会话列表可滚动,不再被裁切。
 
 ## [0.4.9] - 2026-06-19
 
 ### Added / 新增
 
-- **Searchable command-history dropdown (#101).** The command-history list is now
-  filterable — type in the search box to narrow entries instantly, then click or
-  press Enter to run the match.
-  **命令历史下拉支持搜索 (#101)。** 历史列表新增搜索框,输入关键字即可实时过滤,
+- **Searchable command-history dropdown (#101).** The command-history list is now  
+  filterable — type in the search box to narrow entries instantly, then click or  
+  press Enter to run the match.  
+  **命令历史下拉支持搜索 (#101)。** 历史列表新增搜索框,输入关键字即可实时过滤,  
   点击或回车直接执行匹配项。
-
-- **Readline keys in the command box + shortcuts reference (#103).** The command
-  box now honours common readline bindings (Ctrl+A/E/K/U/W, Alt+B/F/D/Backspace,
-  etc.) for fast inline editing; a keyboard-shortcuts reference panel is also
-  added so users can discover available bindings at a glance.
-  **命令输入框支持 Readline 快捷键 + 快捷键参考 (#103)。** 命令框现在支持常见
-  readline 绑定(Ctrl+A/E/K/U/W、Alt+B/F/D/Backspace 等)进行快速行内编辑;
+- **Readline keys in the command box + shortcuts reference (#103).** The command  
+  box now honours common readline bindings (Ctrl+A/E/K/U/W, Alt+B/F/D/Backspace,  
+  etc.) for fast inline editing; a keyboard-shortcuts reference panel is also  
+  added so users can discover available bindings at a glance.  
+  **命令输入框支持 Readline 快捷键 + 快捷键参考 (#103)。** 命令框现在支持常见  
+  readline 绑定(Ctrl+A/E/K/U/W、Alt+B/F/D/Backspace 等)进行快速行内编辑;  
   另加快捷键参考面板,方便用户一览可用组合键。
-
-- **Scroll arrows when tabs overflow (#122).** When open tabs exceed the tab bar
-  width, left/right arrow buttons appear so users can scroll through the hidden
-  tabs instead of losing access to them.
-  **标签溢出时显示滚动箭头 (#122)。** 当打开的标签超出标签栏宽度时,左右箭头
+- **Scroll arrows when tabs overflow (#122).** When open tabs exceed the tab bar  
+  width, left/right arrow buttons appear so users can scroll through the hidden  
+  tabs instead of losing access to them.  
+  **标签溢出时显示滚动箭头 (#122)。** 当打开的标签超出标签栏宽度时,左右箭头  
   按钮出现,可滚动查看被遮挡的标签。
-
-- **Slim scrollbar for the terminal output area (#103).** The terminal's vertical
-  scrollbar is now a thin, auto-hiding overlay that doesn't eat into the column
-  count, giving more screen real estate to the actual output.
-  **终端输出区窄滚动条 (#103)。** 终端纵向滚动条改为细窄的自动隐藏覆盖层,
+- **Slim scrollbar for the terminal output area (#103).** The terminal's vertical  
+  scrollbar is now a thin, auto-hiding overlay that doesn't eat into the column  
+  count, giving more screen real estate to the actual output.  
+  **终端输出区窄滚动条 (#103)。** 终端纵向滚动条改为细窄的自动隐藏覆盖层,  
   不再占用列数,把更多屏幕空间留给实际输出。
 
 ### Fixed / 修复
 
-- **Preserve the MOTD/banner when hiding the injected setup line (#98).** The
-  previous approach stripped too aggressively and could swallow the server's
-  MOTD/banner that arrives before the shell prompt; the matcher now only discards
-  the single injected line, leaving the banner intact.
-  **隐藏注入设置行时保留 MOTD/横幅 (#98)。** 之前的做法剥离过度,会把 shell 提示符
+- **Preserve the MOTD/banner when hiding the injected setup line (#98).** The  
+  previous approach stripped too aggressively and could swallow the server's  
+  MOTD/banner that arrives before the shell prompt; the matcher now only discards  
+  the single injected line, leaving the banner intact.  
+  **隐藏注入设置行时保留 MOTD/横幅 (#98)。** 之前的做法剥离过度,会把 shell 提示符  
   之前到达的服务器 MOTD/横幅一并吞掉;现在匹配器仅丢弃注入的那一行,横幅原样保留。
-
-- **Reserve space for toolbar icons + scroll overflowing tabs (#122).** The tab
-  bar now leaves a right margin so the last tab's close button isn't hidden
-  behind the toolbar icons; tabs that still overflow are scrollable.
-  **为工具栏图标预留空间 + 溢出标签可滚动 (#122)。** 标签栏右侧留出余量,
+- **Reserve space for toolbar icons + scroll overflowing tabs (#122).** The tab  
+  bar now leaves a right margin so the last tab's close button isn't hidden  
+  behind the toolbar icons; tabs that still overflow are scrollable.  
+  **为工具栏图标预留空间 + 溢出标签可滚动 (#122)。** 标签栏右侧留出余量,  
   最后一个标签的关闭按钮不再被工具栏图标遮挡;仍然溢出的标签可滚动查看。
 
 ## [0.4.8] - 2026-06-18
 
 ### Added / 新增
 
-- **Immersive frameless title bar.** On Windows/Linux the app draws its own
-  themed title bar (app icon + name, minimize/maximize/close, draggable to move,
-  double-click to maximize, edge/corner resize) instead of the OS chrome — so the
-  top follows the light/dark theme instead of staying a mismatched native bar.
-  macOS keeps its native decorations. (#119)
-  **沉浸式无边框标题栏。** Windows/Linux 下自绘主题色标题栏(应用图标+名称、
-  最小化/最大化/关闭、拖动移动、双击最大化、边角缩放),不再使用系统标题栏,顶部
+- **Immersive frameless title bar.** On Windows/Linux the app draws its own  
+  themed title bar (app icon + name, minimize/maximize/close, draggable to move,  
+  double-click to maximize, edge/corner resize) instead of the OS chrome — so the  
+  top follows the light/dark theme instead of staying a mismatched native bar.  
+  macOS keeps its native decorations. (#119)  
+  **沉浸式无边框标题栏。** Windows/Linux 下自绘主题色标题栏(应用图标+名称、  
+  最小化/最大化/关闭、拖动移动、双击最大化、边角缩放),不再使用系统标题栏,顶部  
   跟随明暗主题;macOS 保留原生标题栏。
 
 ### Fixed / 修复
 
-- **htop/btop box-drawing and braille no longer render as tofu** on machines
-  without Cascadia Mono installed (e.g. Win11 Home). The embedded font is now a
-  uniquely-named family ("Meatshell Mono") so the OS can't substitute a
-  glyph-poor fallback for it. (#114)
-  **htop/btop 的线框和盲文字符不再显示为方块**(在未安装 Cascadia Mono 的机器上,
-  如 Win11 家庭版)。内嵌字体改用独一无二的族名「Meatshell Mono」,系统无法再用
+- **htop/btop box-drawing and braille no longer render as tofu** on machines  
+  without Cascadia Mono installed (e.g. Win11 Home). The embedded font is now a  
+  uniquely-named family ("Meatshell Mono") so the OS can't substitute a  
+  glyph-poor fallback for it. (#114)  
+  **htop/btop 的线框和盲文字符不再显示为方块**(在未安装 Cascadia Mono 的机器上,  
+  如 Win11 家庭版)。内嵌字体改用独一无二的族名「Meatshell Mono」,系统无法再用  
   缺字形的字体顶替它。
-- **The injected setup line no longer leaks to the terminal on connect**, even
-  when it wraps across the terminal width. Output is buffered until the hook's
-  OSC sequence arrives, then everything up to it is discarded. (#98)
+- **The injected setup line no longer leaks to the terminal on connect**, even  
+  when it wraps across the terminal width. Output is buffered until the hook's  
+  OSC sequence arrives, then everything up to it is discarded. (#98)  
   **连接后不再出现注入的设置命令**,即使它按终端宽度换行也能正确隐藏。
-- **Smooth scrollback across the live/scrolled boundary.** After shrinking then
-  restoring the terminal (e.g. dragging the SFTP panel over it and back),
-  scrolling back through history no longer jumps near the bottom. (#119)
-  **回滚历史在实时/滚动边界处平滑。** 把 SFTP 面板拉上来盖住终端再放下后,往回翻
+- **Smooth scrollback across the live/scrolled boundary.** After shrinking then  
+  restoring the terminal (e.g. dragging the SFTP panel over it and back),  
+  scrolling back through history no longer jumps near the bottom. (#119)  
+  **回滚历史在实时/滚动边界处平滑。** 把 SFTP 面板拉上来盖住终端再放下后,往回翻  
   历史时接近底部不再跳。
-- **Fast drag-selection in the terminal works again.** A quick drag is no longer
-  stolen by the Flickable, so selecting text by dragging fast still selects. (#119)
+- **Fast drag-selection in the terminal works again.** A quick drag is no longer  
+  stolen by the Flickable, so selecting text by dragging fast still selects. (#119)  
   **终端里快速拖动选择恢复正常。** 快速拖动不再被滚动容器抢走,快速拖选也能选中。
-- **The Interface dialog's close button can't be dragged off-screen.** Its drag
-  is clamped inside the window, so the modal dialog can no longer become
-  unclosable. (#119)
-  **「界面」设置对话框的关闭按钮不会被拖出屏幕。** 拖动被限制在窗口内,模态对话框
+- **The Interface dialog's close button can't be dragged off-screen.** Its drag  
+  is clamped inside the window, so the modal dialog can no longer become  
+  unclosable. (#119)  
+  **「界面」设置对话框的关闭按钮不会被拖出屏幕。** 拖动被限制在窗口内,模态对话框  
   不会再变得无法关闭。
 
 ## [0.4.7] - 2026-06-16
 
 ### Added / 新增
 
-- **Host-key verification with a first-connect confirmation dialog.** On first
-  contact a dialog shows the host, key type and SHA256 fingerprint; the key is
-  remembered (a known_hosts file beside sessions.json) only after you trust it.
-  A later key that differs is flagged as a possible MITM and needs re-confirming.
-  Replaces the previous "accept any key" behaviour. (#109)
-  **主机密钥校验 + 首次连接确认弹窗。** 首次连接会弹窗显示主机、密钥类型和 SHA256
-  指纹,确认信任后才记住(known_hosts 文件,与 sessions.json 同目录);之后密钥若
+- **Host-key verification with a first-connect confirmation dialog.** On first  
+  contact a dialog shows the host, key type and SHA256 fingerprint; the key is  
+  remembered (a known_hosts file beside sessions.json) only after you trust it.  
+  A later key that differs is flagged as a possible MITM and needs re-confirming.  
+  Replaces the previous "accept any key" behaviour. (#109)  
+  **主机密钥校验 + 首次连接确认弹窗。** 首次连接会弹窗显示主机、密钥类型和 SHA256  
+  指纹,确认信任后才记住(known_hosts 文件,与 sessions.json 同目录);之后密钥若  
   变化会作为疑似中间人攻击提示并要求重新确认。取代了原先「接受任意密钥」的行为。
-- **Quick-connect login, Xshell-style.** New SSH/Telnet sessions now require a
-  host. The username no longer defaults to `root`; if a session is missing its
-  username and/or (password-auth) password, you're prompted for them on connect,
-  with an optional "remember". Auto-naming uses `user@host`, or just the host
-  when no username is given. (#110)
-  **类 Xshell 的快速连接登录。** 新建 SSH/Telnet 会话需填主机;用户名不再默认
-  `root`;会话缺用户名 和/或(密码认证)密码时,连接时弹窗补充,可勾选「记住」。
+- **Quick-connect login, Xshell-style.** New SSH/Telnet sessions now require a  
+  host. The username no longer defaults to `root`; if a session is missing its  
+  username and/or (password-auth) password, you're prompted for them on connect,  
+  with an optional "remember". Auto-naming uses `user@host`, or just the host  
+  when no username is given. (#110)  
+  **类 Xshell 的快速连接登录。** 新建 SSH/Telnet 会话需填主机;用户名不再默认  
+  `root`;会话缺用户名 和/或(密码认证)密码时,连接时弹窗补充,可勾选「记住」。  
   自动命名用 `user@host`,无用户名时仅用主机名。
-- **Commands typed in the terminal now join the command history.** Captured via
-  the shell integration hook (bash/zsh), so the command box and ↑/↓ recall
-  include what you ran in the terminal — passwords typed at prompts are never
-  captured. (#113)
-  **终端里直接敲的命令现在也进命令历史。** 通过 shell 集成钩子(bash/zsh)捕获,
+- **Commands typed in the terminal now join the command history.** Captured via  
+  the shell integration hook (bash/zsh), so the command box and ↑/↓ recall  
+  include what you ran in the terminal — passwords typed at prompts are never  
+  captured. (#113)  
+  **终端里直接敲的命令现在也进命令历史。** 通过 shell 集成钩子(bash/zsh)捕获,  
   命令栏和 ↑/↓ 回溯都会包含;在提示符处输入的密码不会被捕获。
 
 ### Changed / 变更
 
-- **Command history is de-duplicated, most-recent last.** Re-running a command
-  moves it to the end instead of leaving duplicates; existing history is cleaned
-  up on load. (#113)
-  **命令历史全局去重,最近使用排在最后。** 重复执行只会把命令移到末尾而不再留重复
+- **Command history is de-duplicated, most-recent last.** Re-running a command  
+  moves it to the end instead of leaving duplicates; existing history is cleaned  
+  up on load. (#113)  
+  **命令历史全局去重,最近使用排在最后。** 重复执行只会把命令移到末尾而不再留重复  
   项;已有历史在加载时清理一次。
 
 ### Fixed / 修复
 
-- **The injected prompt-setup line no longer leaks to the terminal on connect.**
-  When the echoed setup line was split across packets the matcher missed it,
-  showing `test -z "$FISH_VERSION" && eval '…'`; output is now buffered until the
-  line is complete so it's reliably stripped however it's chunked. (#98)
-  **连接后不再出现注入的设置命令。** 该回显行被分包拆开时旧逻辑匹配不到,会显示
+- **The injected prompt-setup line no longer leaks to the terminal on connect.**  
+  When the echoed setup line was split across packets the matcher missed it,  
+  showing `test -z "$FISH_VERSION" && eval '…'`; output is now buffered until the  
+  line is complete so it's reliably stripped however it's chunked. (#98)  
+  **连接后不再出现注入的设置命令。** 该回显行被分包拆开时旧逻辑匹配不到,会显示  
   `test -z "$FISH_VERSION" && eval '…'`;现在缓冲到该行完整再剥离,无论如何分块都能隐藏。
-- **ZMODEM `sz a b c` now receives every file**, not just the first — ZEOF ends a
-  file, not the session. (#109)
-  **ZMODEM `sz a b c` 现在会接收每个文件**,而不只是第一个(ZEOF 表示单个文件结束,
+- **ZMODEM `sz a b c` now receives every file**, not just the first — ZEOF ends a  
+  file, not the session. (#109)  
+  **ZMODEM `sz a b c` 现在会接收每个文件**,而不只是第一个(ZEOF 表示单个文件结束,  
   而非整个会话结束)。
-- **A denied directory listing is handled gracefully.** Instead of spinning
-  forever on a permission error, the panel stops loading and shows a clear
-  "permission denied" message while keeping the current view. (#112)
-  **目录无权限时优雅处理。** 不再卡在加载转圈,面板会停止加载并明确提示「权限不足」,
+- **A denied directory listing is handled gracefully.** Instead of spinning  
+  forever on a permission error, the panel stops loading and shows a clear  
+  "permission denied" message while keeping the current view. (#112)  
+  **目录无权限时优雅处理。** 不再卡在加载转圈,面板会停止加载并明确提示「权限不足」,  
   同时保留当前视图。
-- **IPv6 bind addresses are bracketed** for `-L`/`-D` port forwards
-  (`[::1]:8080`). (#109/#105)
+- **IPv6 bind addresses are bracketed** for `-L`/`-D` port forwards  
+  (`[::1]:8080`). (#109/#105)  
   **端口转发的 IPv6 绑定地址加方括号**(`[::1]:8080`),`-L`/`-D` 现在可用。
 
 ## [0.4.6] - 2026-06-14
 
 ### Fixed / 修复
 
-- **Session-sync upload now works for drag-and-drop too.** Dropping a file onto
-  the SFTP panel used a separate code path that skipped the session-sync mirror;
-  now both the upload button and drag-and-drop mirror the file to every other
-  online session, each into its own current SFTP directory. (Removed the
-  temporary upload diagnostics added in 0.4.5.)
-  **会话同步上传现在对「拖拽」也生效。** 拖文件到 SFTP 面板走的是另一条代码路径,
-  之前漏掉了会话同步;现在上传按钮和拖拽都会把文件同步到其他在线会话(各进各自
+- **Session-sync upload now works for drag-and-drop too.** Dropping a file onto  
+  the SFTP panel used a separate code path that skipped the session-sync mirror;  
+  now both the upload button and drag-and-drop mirror the file to every other  
+  online session, each into its own current SFTP directory. (Removed the  
+  temporary upload diagnostics added in 0.4.5.)  
+  **会话同步上传现在对「拖拽」也生效。** 拖文件到 SFTP 面板走的是另一条代码路径,  
+  之前漏掉了会话同步;现在上传按钮和拖拽都会把文件同步到其他在线会话(各进各自  
   当前目录)。(移除了 0.4.5 加的临时上传诊断日志。)
 
 ## [0.4.5] - 2026-06-14
 
 ### Fixed / 修复
 
-- **Session-sync upload now targets each session's own current directory.**
-  Uploading from one session no longer reuses that session's path for the others
-  (which failed when paths differed, e.g. /home/jeff vs /home/root); each session
-  receives the file in its own current SFTP directory. (Includes temporary
-  diagnostics to nail down a remaining report.)
-  **会话同步上传改为各会话用自己的当前目录。** 从某会话上传不再把它的路径套用到
-  其他会话(路径不同就会失败,如 /home/jeff 与 /home/root);每个会话都收到文件到
+- **Session-sync upload now targets each session's own current directory.**  
+  Uploading from one session no longer reuses that session's path for the others  
+  (which failed when paths differed, e.g. /home/jeff vs /home/root); each session  
+  receives the file in its own current SFTP directory. (Includes temporary  
+  diagnostics to nail down a remaining report.)  
+  **会话同步上传改为各会话用自己的当前目录。** 从某会话上传不再把它的路径套用到  
+  其他会话(路径不同就会失败,如 /home/jeff 与 /home/root);每个会话都收到文件到  
   它自己当前的 SFTP 目录。(含临时诊断日志以定位残留问题。)
 
 ## [0.4.4] - 2026-06-14
 
 ### Added / 新增
 
-- **Session sync / broadcast input.** A new ⟳ toggle in the top-right bar
-  mirrors keystrokes typed in any terminal to every online session
-  (Xshell-style). Off by default, runtime-only. Settings → Session sync also
-  adds "Sync file uploads during session sync": an upload is mirrored to the
-  same path on each session (or that session's current SFTP dir if the path
-  doesn't exist there).
-  **会话同步 / 广播输入。** 右上角新增 ⟳ 开关,把任意终端里敲的键同步到所有在线
-  会话(Xshell 风格);默认关闭、仅本次运行有效。设置 → 会话同步 还有「会话同步时
-  文件上传同步」:上传会同步到各会话的相同路径(该路径不存在则用该会话当前 SFTP
+- **Session sync / broadcast input.** A new ⟳ toggle in the top-right bar  
+  mirrors keystrokes typed in any terminal to every online session  
+  (Xshell-style). Off by default, runtime-only. Settings → Session sync also  
+  adds "Sync file uploads during session sync": an upload is mirrored to the  
+  same path on each session (or that session's current SFTP dir if the path  
+  doesn't exist there).  
+  **会话同步 / 广播输入。** 右上角新增 ⟳ 开关,把任意终端里敲的键同步到所有在线  
+  会话(Xshell 风格);默认关闭、仅本次运行有效。设置 → 会话同步 还有「会话同步时  
+  文件上传同步」:上传会同步到各会话的相同路径(该路径不存在则用该会话当前 SFTP  
   目录)。
-
-- **Tooltips on the top-bar icons** (theme / download / settings / session sync).
+- **Tooltips on the top-bar icons** (theme / download / settings / session sync).  
   **右上角图标悬停提示**(切换主题 / 下载 / 设置 / 会话同步)。
 
 ### Fixed / 修复
 
-- **Light-mode dialogs.** Inputs and buttons in the group / rename / quick-command
-  dialogs no longer blend into the background under the light theme — Slint's
-  std-widget palette now follows the app theme.
-  **浅色模式对话框。** 分组 / 重命名 / 快捷命令等对话框里的输入框和按钮在浅色主题
+- **Light-mode dialogs.** Inputs and buttons in the group / rename / quick-command  
+  dialogs no longer blend into the background under the light theme — Slint's  
+  std-widget palette now follows the app theme.  
+  **浅色模式对话框。** 分组 / 重命名 / 快捷命令等对话框里的输入框和按钮在浅色主题  
   下不再与背景融为一体——std-widget 调色板现在跟随应用主题。
-
-- **Empty session groups** now show a collapse chevron and can be expanded /
-  collapsed, lining up with non-empty groups.
+- **Empty session groups** now show a collapse chevron and can be expanded /  
+  collapsed, lining up with non-empty groups.  
   **空会话分组** 现在也显示折叠箭头、可展开 / 收起,与非空分组对齐。
 
 ## [0.4.3] - 2026-06-14
 
 ### Fixed / 修复
 
-- **Wide CJK glyphs are grid-aligned in the terminal.** With a Chinese path, the
-  trailing `/` after `ll`, the cursor after `cd`, and the prompt `$` no longer
-  overlap or drift away from the last CJK character — each wide character now
-  occupies exactly its two terminal cells.
-  **终端里的中文(宽字符)对齐到网格。** 中文路径下,`ll` 后目录名的 `/`、`cd`
-  之后的光标、提示符 `$` 不再与中文末字重叠或拉开很远——每个宽字符现在正好
+- **Wide CJK glyphs are grid-aligned in the terminal.** With a Chinese path, the  
+  trailing `/` after `ll`, the cursor after `cd`, and the prompt `$` no longer  
+  overlap or drift away from the last CJK character — each wide character now  
+  occupies exactly its two terminal cells.  
+  **终端里的中文(宽字符)对齐到网格。** 中文路径下,`ll` 后目录名的 `/`、`cd`  
+  之后的光标、提示符 `$` 不再与中文末字重叠或拉开很远——每个宽字符现在正好  
   占它的两个终端格。
 
 ## [0.4.1] - 2026-06-14
 
 ### Added / 新增
 
-- **Run / copy / delete actions on command history (#96).** Each entry in the
-  command-history dropdown now has run (▶), copy (⧉) and delete (🗑) buttons —
-  run executes it immediately, copy puts it on the clipboard, delete removes it.
-  **命令历史的运行 / 复制 / 删除 (#96)。** 历史下拉里每条记录新增 ▶ 运行、
+- **Run / copy / delete actions on command history (#96).** Each entry in the  
+  command-history dropdown now has run (▶), copy (⧉) and delete (🗑) buttons —  
+  run executes it immediately, copy puts it on the clipboard, delete removes it.  
+  **命令历史的运行 / 复制 / 删除 (#96)。** 历史下拉里每条记录新增 ▶ 运行、  
   ⧉ 复制、🗑 删除按钮——运行即时执行,复制到剪贴板,删除移除该条。
-
-- **Default-collapse settings for the sidebars (#78).** Settings → Interface →
-  Sidebars adds two checkboxes to collapse the left resource panel and the bottom
-  SFTP panel on startup — handy on low-spec jump hosts.
-  **侧栏默认收起设置 (#78)。** 设置 → 界面 → 侧栏 新增两个复选框,可在启动时
+- **Default-collapse settings for the sidebars (#78).** Settings → Interface →  
+  Sidebars adds two checkboxes to collapse the left resource panel and the bottom  
+  SFTP panel on startup — handy on low-spec jump hosts.  
+  **侧栏默认收起设置 (#78)。** 设置 → 界面 → 侧栏 新增两个复选框,可在启动时  
   收起左侧资源面板和底部 SFTP 面板——适合低配跳板机。
 
 ## [0.4.0] - 2026-06-14
 
 ### Added / 新增
 
-- **SSH port forwarding / tunnels (#56).** Per-session tunnels configured in the
-  session dialog's Advanced section: local (-L), remote (-R) and dynamic
-  (-D / SOCKS5). They auto-establish on connect and tear down on disconnect.
-  **SSH 端口转发 / 隧道 (#56)。** 在会话对话框「高级」里按会话配置:本地 -L、
+- **SSH port forwarding / tunnels (#56).** Per-session tunnels configured in the  
+  session dialog's Advanced section: local (-L), remote (-R) and dynamic  
+  (-D / SOCKS5). They auto-establish on connect and tear down on disconnect.  
+  **SSH 端口转发 / 隧道 (#56)。** 在会话对话框「高级」里按会话配置:本地 -L、  
   远程 -R、动态 -D（SOCKS5）。连接时自动建立,断开时拆除。
-
-- **Quick commands, command box & history (#55).** A command bar below the
-  terminal: save named commands and click to run them, type into a command box
-  (with an "all sessions" broadcast toggle), and recall history with ↑/↓.
-  **快捷命令、命令输入框与历史 (#55)。** 终端下方的命令栏:保存命名命令点击即发、
+- **Quick commands, command box & history (#55).** A command bar below the  
+  terminal: save named commands and click to run them, type into a command box  
+  (with an "all sessions" broadcast toggle), and recall history with ↑/↓.  
+  **快捷命令、命令输入框与历史 (#55)。** 终端下方的命令栏:保存命名命令点击即发、  
   命令输入框（含「所有会话」群发开关）、↑/↓ 回溯历史。
-
-- **Remote process monitor (#23).** The server-resource panel gains a "Processes"
-  button that opens a read-only table (PID / user / CPU% / MEM% / command), sorted
-  by CPU and refreshed live.
-  **远端进程监控 (#23)。** 服务器资源面板新增「进程」按钮,打开只读进程表
+- **Remote process monitor (#23).** The server-resource panel gains a "Processes"  
+  button that opens a read-only table (PID / user / CPU% / MEM% / command), sorted  
+  by CPU and refreshed live.  
+  **远端进程监控 (#23)。** 服务器资源面板新增「进程」按钮,打开只读进程表  
   （PID / 用户 / CPU% / 内存% / 命令）,按 CPU 排序、实时刷新。
-
-- **Encrypted private keys (#90).** Key auth now accepts a passphrase for
-  encrypted private keys.
+- **Encrypted private keys (#90).** Key auth now accepts a passphrase for  
+  encrypted private keys.  
   **加密私钥 (#90)。** 私钥认证支持为加密私钥输入密码短语。
 
 ### Fixed / 修复
 
-- **CJK rendering (#54).** Chinese (especially isolated punctuation like 、：（）)
-  no longer renders as tofu in editable inputs or the terminal — editable fields
-  and the window now use a CJK-capable font, and CJK terminal spans fall back
-  correctly.
-  **中文渲染 (#54)。** 输入框和终端里的中文（尤其「、：（）」这类孤立标点）不再
+- **CJK rendering (#54).** Chinese (especially isolated punctuation like 、：（）)  
+  no longer renders as tofu in editable inputs or the terminal — editable fields  
+  and the window now use a CJK-capable font, and CJK terminal spans fall back  
+  correctly.  
+  **中文渲染 (#54)。** 输入框和终端里的中文（尤其「、：（）」这类孤立标点）不再  
   显示为方块——可编辑控件与窗口改用支持 CJK 的字体,终端的 CJK 片段也正确回退。
-
-- **SFTP cd-follow under zsh (#91).** The SFTP panel now follows `cd` under zsh
-  (and other shells), not just bash — the cwd notification is registered via the
-  shell's proper hook instead of bash's `PROMPT_COMMAND` only.
-  **zsh 下 SFTP 跟随 cd (#91)。** SFTP 面板现在在 zsh（及其它 shell）下也能跟随
+- **SFTP cd-follow under zsh (#91).** The SFTP panel now follows `cd` under zsh  
+  (and other shells), not just bash — the cwd notification is registered via the  
+  shell's proper hook instead of bash's `PROMPT_COMMAND` only.  
+  **zsh 下 SFTP 跟随 cd (#91)。** SFTP 面板现在在 zsh（及其它 shell）下也能跟随  
   `cd`,不再只支持 bash——按各 shell 正确的钩子注册 cwd 通知。
-
-- **Compact, scrollable session dialog.** Proxy and port-forwarding settings are
-  collapsed under an "Advanced" toggle, and the dialog scrolls instead of being
-  clipped when it would exceed the window.
-  **会话对话框更紧凑、可滚动。** 代理与端口转发收进「高级」折叠;对话框超出窗口
+- **Compact, scrollable session dialog.** Proxy and port-forwarding settings are  
+  collapsed under an "Advanced" toggle, and the dialog scrolls instead of being  
+  clipped when it would exceed the window.  
+  **会话对话框更紧凑、可滚动。** 代理与端口转发收进「高级」折叠;对话框超出窗口  
   时内部滚动而非被截断。
 
-## [0.3.8] - 2026-06-12
+## 0.3.8 - 2026-06-12
 
 ### Added / 新增
 
-- **Confirm before closing when there are active sessions (#88).** Double-clicking
-  the title-bar icon (or X / Alt+F4) no longer silently drops live sessions — a
-  confirm dialog appears; with no sessions the window closes as before.
-  **有活动会话时关闭前先确认 (#88)。** 双击标题栏图标(或点 X / Alt+F4)不再静默
+- **Confirm before closing when there are active sessions (#88).** Double-clicking  
+  the title-bar icon (or X / Alt+F4) no longer silently drops live sessions — a  
+  confirm dialog appears; with no sessions the window closes as before.  
+  **有活动会话时关闭前先确认 (#88)。** 双击标题栏图标(或点 X / Alt+F4)不再静默  
   断开正在进行的会话——会弹出确认框;没有会话时则照旧直接关闭。
-
-- **"Always ask where to save" download option (#87).** Settings → Interface →
-  Download adds a checkbox (default off); when on, every download prompts for the
-  folder instead of using the preset.
-  **「总是询问保存去何处」下载选项 (#87)。** 设置 → 界面 → 下载 新增复选框
+- **"Always ask where to save" download option (#87).** Settings → Interface →  
+  Download adds a checkbox (default off); when on, every download prompts for the  
+  folder instead of using the preset.  
+  **「总是询问保存去何处」下载选项 (#87)。** 设置 → 界面 → 下载 新增复选框  
   (默认关闭);勾选后每次下载都询问保存位置,而非直接用预设目录。
-
-- **The transfers popup opens automatically when a download starts**, so progress
-  is visible without opening it by hand.
+- **The transfers popup opens automatically when a download starts**, so progress  
+  is visible without opening it by hand.  
   **下载开始时自动弹出传输面板**,无需手动打开即可看到进度。
-
-- **Capped diagnostic log file (groundwork for #86).** Writes to
-  `<config_dir>/error.log` at WARN and above — a single file capped at 5 MiB that
-  auto-overwrites when full — so users can share what went wrong (e.g. a bastion
-  disconnect reason) without setting RUST_LOG.
-  **容量受限的诊断日志文件(为 #86 铺路)。** 写入 `<配置目录>/error.log`
-  (WARN 及以上)——单文件、上限 5 MiB、满了自动覆盖——用户无需设置 RUST_LOG 即可
+- **Capped diagnostic log file (groundwork for #86).** Writes to  
+  `<config_dir>/error.log` at WARN and above — a single file capped at 5 MiB that  
+  auto-overwrites when full — so users can share what went wrong (e.g. a bastion  
+  disconnect reason) without setting RUST_LOG.  
+  **容量受限的诊断日志文件(为 #86 铺路)。** 写入 `<配置目录>/error.log`  
+  (WARN 及以上)——单文件、上限 5 MiB、满了自动覆盖——用户无需设置 RUST_LOG 即可  
   把出错信息(如堡垒机断开原因)发来。
 
 ### Fixed / 修复
 
-- **Settings checkboxes now persist visually after reopening the dialog (#87).**
-  "Always ask where to save" and "SFTP follows cd" used a one-way binding, so
-  reopening the settings dialog (without restarting) showed the stale state even
-  though the value was saved; switched to a two-way binding.
-  **设置里的复选框重新打开对话框后状态保持 (#87)。** 「总是询问保存去何处」和
-  「SFTP 跟随 cd」原用单向绑定,不重启 app 时重开设置对话框会显示旧状态(尽管值
+- **Settings checkboxes now persist visually after reopening the dialog (#87).**  
+  "Always ask where to save" and "SFTP follows cd" used a one-way binding, so  
+  reopening the settings dialog (without restarting) showed the stale state even  
+  though the value was saved; switched to a two-way binding.  
+  **设置里的复选框重新打开对话框后状态保持 (#87)。** 「总是询问保存去何处」和  
+  「SFTP 跟随 cd」原用单向绑定,不重启 app 时重开设置对话框会显示旧状态(尽管值  
   已保存);改为双向绑定。
 
-## [0.3.7] - 2026-06-12
+## 0.3.7 - 2026-06-12
 
 ### Added / 新增
 
-- **Right-click anywhere in the SFTP file list (#84).** The list fills the panel
-  height, so right-clicking the whitespace below the items works too; item
-  actions grey out when nothing was hit, leaving new folder / new file / refresh.
-  **SFTP 文件列表任意处可右键 (#84)。** 列表填满面板高度,条目下方空白也能右键;
+- **Right-click anywhere in the SFTP file list (#84).** The list fills the panel  
+  height, so right-clicking the whitespace below the items works too; item  
+  actions grey out when nothing was hit, leaving new folder / new file / refresh.  
+  **SFTP 文件列表任意处可右键 (#84)。** 列表填满面板高度,条目下方空白也能右键;  
   未点中条目时,条目相关操作置灰,仅保留 新建文件夹 / 新建文件 / 刷新。
-
-- **Visual permissions dialog (#84).** Permissions opens a checkbox matrix
-  (Owner/Group/Other × Read/Write/Execute) prefilled from the file's current
-  mode, instead of typing an octal string.
-  **可视化权限对话框 (#84)。** 「权限」打开勾选矩阵(所有者/组/其他 × 读取/写入/
+- **Visual permissions dialog (#84).** Permissions opens a checkbox matrix  
+  (Owner/Group/Other × Read/Write/Execute) prefilled from the file's current  
+  mode, instead of typing an octal string.  
+  **可视化权限对话框 (#84)。** 「权限」打开勾选矩阵(所有者/组/其他 × 读取/写入/  
   执行),按文件当前权限预填,不再手输八进制。
-
-- **Open / Edit externally (#81).** New SFTP context-menu items hand the file to
-  the OS default app (e.g. VS Code) for syntax highlighting / large files; edit
-  mode watches the temp copy and re-uploads on change.
-  **外部程序查看 / 编辑 (#81)。** SFTP 右键新增菜单项,把文件交给系统默认程序
+- **Open / Edit externally (#81).** New SFTP context-menu items hand the file to  
+  the OS default app (e.g. VS Code) for syntax highlighting / large files; edit  
+  mode watches the temp copy and re-uploads on change.  
+  **外部程序查看 / 编辑 (#81)。** SFTP 右键新增菜单项,把文件交给系统默认程序  
   (如 VS Code)打开以获得语法高亮 / 处理大文件;编辑模式监听临时副本并自动重传。
-
-- **Line numbers in the built-in editor (#81).**
+- **Line numbers in the built-in editor (#81).**  
   **内置编辑器加行号 (#81)。**
-
-- **Upload a whole folder from the Upload button (#85).** The button now offers
-  "Upload file" (multi-select) / "Upload folder".
+- **Upload a whole folder from the Upload button (#85).** The button now offers  
+  "Upload file" (multi-select) / "Upload folder".  
   **上传按钮支持整个文件夹 (#85)。** 现在提供「上传文件」(可多选) /「上传文件夹」。
-
-- **Linux ARM64 release build (#82)** and **AUR packaging scaffolding (#61).**
+- **Linux ARM64 release build (#82)** and **AUR packaging scaffolding (#61).**  
   **Linux ARM64 发布构建 (#82)** 与 **AUR 打包脚手架 (#61)。**
 
 ### Changed / 变更
 
-- **Downloads default to the user's Downloads folder (#85)** instead of prompting
-  every time; the settings button reads "Choose save path".
-  **下载目录默认设为用户的「下载」文件夹 (#85)**,不再每次询问;设置按钮文案改为
+- **Downloads default to the user's Downloads folder (#85)** instead of prompting  
+  every time; the settings button reads "Choose save path".  
+  **下载目录默认设为用户的「下载」文件夹 (#85)**,不再每次询问;设置按钮文案改为  
   「选择保存路径」。
 
 ### Fixed / 修复
 
-- **No more error under fish (#71).** The OSC 7 prompt injection is guarded with
-  `test -z "$FISH_VERSION"`, so it's a no-op under fish (which emits OSC 7 on its
-  own, keeping cd-follow working) and unchanged under bash/zsh/sh.
-  **fish 下不再报错 (#71)。** OSC 7 提示符注入加了 `test -z "$FISH_VERSION"` 守卫,
+- **No more error under fish (#71).** The OSC 7 prompt injection is guarded with  
+  `test -z "$FISH_VERSION"`, so it's a no-op under fish (which emits OSC 7 on its  
+  own, keeping cd-follow working) and unchanged under bash/zsh/sh.  
+  **fish 下不再报错 (#71)。** OSC 7 提示符注入加了 `test -z "$FISH_VERSION"` 守卫,  
   在 fish 下为空操作(fish 自带 OSC 7,cd 跟随照常),bash/zsh/sh 行为不变。
 
 ## [0.3.5] - 2026-06-12
+
 - 我和claude都快冒烟了，不想写，让我摆烂一会吧。Claude and I are both about to explode with frustration. We don't want to write anymore. Let me just laze around for a while.
 
-## [0.3.3] - 2026-06-11
+## 0.3.3 - 2026-06-11
 
 ### Added / 新增
 
-- **In-app new-version notification (#48).** On startup a background thread
-  checks the GitHub releases API; if a newer version exists, a dismissible
-  top-centre banner offers a Download button (opens the release page). Purely
-  informational — the app keeps working on the current version, never forced.
-  **应用内新版本通知 (#48)。** 启动时后台线程查询 GitHub releases API,若有更
-  新版本则在顶部居中显示一个可关闭的横幅,带"下载"按钮(打开 release 页)。纯
+- **In-app new-version notification (#48).** On startup a background thread  
+  checks the GitHub releases API; if a newer version exists, a dismissible  
+  top-centre banner offers a Download button (opens the release page). Purely  
+  informational — the app keeps working on the current version, never forced.  
+  **应用内新版本通知 (#48)。** 启动时后台线程查询 GitHub releases API,若有更  
+  新版本则在顶部居中显示一个可关闭的横幅,带"下载"按钮(打开 release 页)。纯  
   提示性质——应用照常在当前版本运行,绝不强制更新。
-
-- **Editable SFTP path bar with copy & paste-to-jump (#54).** The path bar is
-  now an input: type or paste a path and press Enter to jump there, plus a copy
-  button and a paste-and-jump button.
-  **可编辑的 SFTP 路径栏,支持复制和粘贴跳转 (#54)。** 路径栏现在是输入框:输入
+- **Editable SFTP path bar with copy & paste-to-jump (#54).** The path bar is  
+  now an input: type or paste a path and press Enter to jump there, plus a copy  
+  button and a paste-and-jump button.  
+  **可编辑的 SFTP 路径栏,支持复制和粘贴跳转 (#54)。** 路径栏现在是输入框:输入  
   或粘贴路径后回车即跳转,另有复制按钮和粘贴跳转按钮。
 
 ### Fixed / 修复
 
-- **SFTP panel no longer gets stuck "loading" after manual navigation (#59).**
-  The panel only follows a real cd now (cwd actually changed), not the OSC 7 that
-  every prompt re-emits — so manual browsing isn't overridden and a later cd
-  reloads correctly instead of hanging.
-  **SFTP 面板手动导航后不再卡"加载中" (#59)。** 面板现在只跟随真正的 cd(cwd 确
-  实变化),而非每个命令提示符都重发的 OSC 7——手动浏览不被覆盖,之后的 cd 也能
+- **SFTP panel no longer gets stuck "loading" after manual navigation (#59).**  
+  The panel only follows a real cd now (cwd actually changed), not the OSC 7 that  
+  every prompt re-emits — so manual browsing isn't overridden and a later cd  
+  reloads correctly instead of hanging.  
+  **SFTP 面板手动导航后不再卡"加载中" (#59)。** 面板现在只跟随真正的 cd(cwd 确  
+  实变化),而非每个命令提示符都重发的 OSC 7——手动浏览不被覆盖,之后的 cd 也能  
   正确重新加载而非卡住。
-
-- **SFTP path bar renders Chinese instead of tofu (#54).** The embedded Cascadia
-  Mono has no CJK glyphs and native TextInput doesn't glyph-fallback; editable
-  inputs now use a CJK-capable system font.
-  **SFTP 路径栏正常显示中文,不再是豆腐块 (#54)。** 嵌入的 Cascadia Mono 没有
+- **SFTP path bar renders Chinese instead of tofu (#54).** The embedded Cascadia  
+  Mono has no CJK glyphs and native TextInput doesn't glyph-fallback; editable  
+  inputs now use a CJK-capable system font.  
+  **SFTP 路径栏正常显示中文,不再是豆腐块 (#54)。** 嵌入的 Cascadia Mono 没有  
   CJK 字形,而原生 TextInput 不做字形回退;可编辑输入现改用含 CJK 的系统字体。
 
-## [0.3.2] - 2026-06-11
+## 0.3.2 - 2026-06-11
 
 ### Added / 新增
 
-- **MSI installer for Windows (best-effort).** Built by cargo-wix with a
-  WixUI_InstallDir wizard, so you can change the install location during setup.
-  **Windows MSI 安装包(尽力而为)。** 由 cargo-wix 构建,带 WixUI_InstallDir
+- **MSI installer for Windows (best-effort).** Built by cargo-wix with a  
+  WixUI_InstallDir wizard, so you can change the install location during setup.  
+  **Windows MSI 安装包(尽力而为)。** 由 cargo-wix 构建,带 WixUI_InstallDir  
   向导,安装时可更改安装位置。
-
-- **Explicit session folders (#41).** Groups are now first-class: create / rename
-  / delete them, keep empty folders, and right-click a group header to manage it.
-  Right-click a session to "move to" any group (incl. empty ones).
-  **显式会话文件夹 (#41)。** 分组成为一等公民:可新建 / 重命名 / 删除,可保留空
+- **Explicit session folders (#41).** Groups are now first-class: create / rename  
+  / delete them, keep empty folders, and right-click a group header to manage it.  
+  Right-click a session to "move to" any group (incl. empty ones).  
+  **显式会话文件夹 (#41)。** 分组成为一等公民:可新建 / 重命名 / 删除,可保留空  
   文件夹,右键分组标题进行管理;右键会话可"移动到"任意分组(含空文件夹)。
 
 ### Changed / 变更
 
-- **Interface settings dialog** is now draggable (by its title bar), truly modal
-  (background click no longer closes it), and its font controls no longer span
-  the full pane.
-  **「界面」设置对话框**现在可拖动(拖标题栏)、真模态(点背景不再关闭),字体控件
+- **Interface settings dialog** is now draggable (by its title bar), truly modal  
+  (background click no longer closes it), and its font controls no longer span  
+  the full pane.  
+  **「界面」设置对话框**现在可拖动(拖标题栏)、真模态(点背景不再关闭),字体控件  
   也不再占满整个面板。
-
-- **Session right-click menu reordered:** Edit / Duplicate / Delete above the
-  divider, the "move to group" list below it with a header hint.
-  **会话右键菜单重排:** 编辑 / 复制副本 / 删除在分割线上方,"移动到分组"列表带
+- **Session right-click menu reordered:** Edit / Duplicate / Delete above the  
+  divider, the "move to group" list below it with a header hint.  
+  **会话右键菜单重排:** 编辑 / 复制副本 / 删除在分割线上方,"移动到分组"列表带  
   提示在下方。
 
 ### Fixed / 修复
 
-- **Wide (CJK) characters no longer misalign the cursor (#60).** A wide glyph's
-  blank continuation cell was being filled with a space, pushing the line and
-  cursor one cell right per character; it now emits nothing.
-  **宽(CJK)字符不再导致光标错位 (#60)。** 宽字形的空白延续格此前被补了空格,
+- **Wide (CJK) characters no longer misalign the cursor (#60).** A wide glyph's  
+  blank continuation cell was being filled with a space, pushing the line and  
+  cursor one cell right per character; it now emits nothing.  
+  **宽(CJK)字符不再导致光标错位 (#60)。** 宽字形的空白延续格此前被补了空格,  
   每个字符把行和光标右推一格;现在延续格不输出任何内容。
-
-- **Download & settings popups close on click-outside.** A full-window backdrop
-  under each popup closes it when you click outside.
+- **Download & settings popups close on click-outside.** A full-window backdrop  
+  under each popup closes it when you click outside.  
   **下载/设置弹窗点击外部即关闭。** 每个弹窗下方铺一层全窗背景,点击外部即关闭。
-
-- **Disk tooltip clears when the pointer leaves the panel**, and the OSC 7
-  shell-integration command no longer leaves an extra blank prompt on connect.
-  **磁盘 tooltip 在指针离开面板时消失**,OSC 7 shell 集成命令也不再在连接时留下
+- **Disk tooltip clears when the pointer leaves the panel**, and the OSC 7  
+  shell-integration command no longer leaves an extra blank prompt on connect.  
+  **磁盘 tooltip 在指针离开面板时消失**,OSC 7 shell 集成命令也不再在连接时留下  
   多余的空提示符。
 
-## [0.3.1] - 2026-06-10
+## 0.3.1 - 2026-06-10
 
 ### Security / 安全
 
-- **Restrict sessions.json to owner-only on Unix (#34).** The config file holds
-  (encrypted) credentials, so it is now written with mode 0600 — like
-  secret.key — and other local accounts can't read it. Windows %APPDATA% is
-  already owner-restricted by default ACLs.
-  **将 sessions.json 限制为仅属主可读(Unix)(#34)。** 配置文件含(加密的)凭据,
-  现在以 0600 权限写入(与 secret.key 一致),其它本地账户无法读取。Windows 的
+- **Restrict sessions.json to owner-only on Unix (#34).** The config file holds  
+  (encrypted) credentials, so it is now written with mode 0600 — like  
+  secret.key — and other local accounts can't read it. Windows %APPDATA% is  
+  already owner-restricted by default ACLs.  
+  **将 sessions.json 限制为仅属主可读(Unix)(#34)。** 配置文件含(加密的)凭据,  
+  现在以 0600 权限写入(与 secret.key 一致),其它本地账户无法读取。Windows 的  
   %APPDATA% 默认 ACL 已限制为属主。
 
 ### Build / 构建
 
-- **Build macos-x86_64 by cross-compiling on Apple Silicon runners.** The
-  dedicated Intel (macos-13) runners queue for ages and often time out, so the
-  x86_64 Mac binary is now cross-compiled on a plentiful macos-14 runner.
-  **在 Apple Silicon runner 上交叉编译 macos-x86_64。** 专用 Intel(macos-13)
-  runner 排队极久且常超时,x86_64 Mac 二进制改为在充足的 macos-14 runner 上
+- **Build macos-x86_64 by cross-compiling on Apple Silicon runners.** The  
+  dedicated Intel (macos-13) runners queue for ages and often time out, so the  
+  x86_64 Mac binary is now cross-compiled on a plentiful macos-14 runner.  
+  **在 Apple Silicon runner 上交叉编译 macos-x86_64。** 专用 Intel(macos-13)  
+  runner 排队极久且常超时,x86_64 Mac 二进制改为在充足的 macos-14 runner 上  
   交叉编译。
 
-## [0.3.0] - 2026-06-10
+## 0.3.0 - 2026-06-10
 
 ### Added / 新增
 
-- **Interface settings — terminal font & size.** The gear menu's new "Interface"
-  item opens a modal dialog (27% nav / 73% content) whose Font page lets you pick
-  from the system's installed monospace fonts and set the size (8–32 px) with a
-  live preview. Both apply immediately (cell size / cols / rows re-derive) and
-  persist.
-  **「界面」设置 —— 终端字体与字号。** 齿轮菜单新增「界面」项,打开模态对话框
-  (27% 导航 / 73% 内容),「字体」页可从系统已安装的等宽字体中选择并设置字号
+- **Interface settings — terminal font & size.** The gear menu's new "Interface"  
+  item opens a modal dialog (27% nav / 73% content) whose Font page lets you pick  
+  from the system's installed monospace fonts and set the size (8–32 px) with a  
+  live preview. Both apply immediately (cell size / cols / rows re-derive) and  
+  persist.  
+  **「界面」设置 —— 终端字体与字号。** 齿轮菜单新增「界面」项,打开模态对话框  
+  (27% 导航 / 73% 内容),「字体」页可从系统已安装的等宽字体中选择并设置字号  
   (8–32 px),带实时预览。两者即时生效(cell 尺寸 / 列 / 行重新推导)并持久化。
-
-- **Session folders / groups (#41).** Each session can belong to an optional
-  group; Quick Connect shows folder headings (sorted; ungrouped under "default")
-  that collapse when clicked. Right-click a session to move it to another group
-  or duplicate it; right-click a group header to create a new group.
-  **会话文件夹 / 分组 (#41)。** 每个会话可归入可选分组;「快速连接」按分组显示
-  文件夹标题(排序;未分组归入「default」),点击标题可折叠。右键会话可移动到其它
+- **Session folders / groups (#41).** Each session can belong to an optional  
+  group; Quick Connect shows folder headings (sorted; ungrouped under "default")  
+  that collapse when clicked. Right-click a session to move it to another group  
+  or duplicate it; right-click a group header to create a new group.  
+  **会话文件夹 / 分组 (#41)。** 每个会话可归入可选分组;「快速连接」按分组显示  
+  文件夹标题(排序;未分组归入「default」),点击标题可折叠。右键会话可移动到其它  
   分组或复制副本;右键分组标题可新建分组。
-
-- **Recursive SFTP folder transfer (#50).** Upload, download and delete whole
-  directory trees: drag a folder onto the panel to upload, right-click a folder
-  to download, and delete now removes non-empty directories too.
-  **SFTP 文件夹递归传输 (#50)。** 可上传、下载、删除整个目录树:把文件夹拖到面板
+- **Recursive SFTP folder transfer (#50).** Upload, download and delete whole  
+  directory trees: drag a folder onto the panel to upload, right-click a folder  
+  to download, and delete now removes non-empty directories too.  
+  **SFTP 文件夹递归传输 (#50)。** 可上传、下载、删除整个目录树:把文件夹拖到面板  
   上传,右键文件夹下载,删除现在也能删非空目录。
-
-- **Collapsible panels (#41).** Both the left sidebar and the SFTP panel can be
-  minimized to reclaim screen space.
+- **Collapsible panels (#41).** Both the left sidebar and the SFTP panel can be  
+  minimized to reclaim screen space.  
   **可折叠面板 (#41)。** 左侧栏与 SFTP 面板都可最小化以腾出屏幕空间。
-
-- **Export / import connections (#46).** New "Export connections" / "Import
-  connections" in the settings menu to migrate sessions between machines. The
-  exported JSON keeps host/user/port in plaintext and obfuscates only the
-  password with a built-in key, so it opens on any machine; key-auth sessions
-  export the key path. Imports skip duplicates (host+user+port+kind).
-  **导出 / 导入连接 (#46)。** 设置菜单新增「导出连接」「导入连接」,用于在多台
-  机器间迁移会话。导出的 JSON 中 host/user/port 为明文,仅密码用内置 key 混淆,
-  因此在任意机器都能打开;密钥认证的会话导出私钥路径。导入会跳过重复
+- **Export / import connections (#46).** New "Export connections" / "Import  
+  connections" in the settings menu to migrate sessions between machines. The  
+  exported JSON keeps host/user/port in plaintext and obfuscates only the  
+  password with a built-in key, so it opens on any machine; key-auth sessions  
+  export the key path. Imports skip duplicates (host+user+port+kind).  
+  **导出 / 导入连接 (#46)。** 设置菜单新增「导出连接」「导入连接」,用于在多台  
+  机器间迁移会话。导出的 JSON 中 host/user/port 为明文,仅密码用内置 key 混淆,  
+  因此在任意机器都能打开;密钥认证的会话导出私钥路径。导入会跳过重复  
   (host+user+port+kind)。
-
-- **Pick SOCKS5 or HTTP proxy type in the session dialog (#46).** The proxy
-  field is now a None / SOCKS5 / HTTP selector plus a `host:port` input. HTTP
-  CONNECT was already supported by the backend but wasn't selectable in the UI.
-  The stored proxy URL format is unchanged.
-  **会话对话框选择 SOCKS5 或 HTTP 代理类型 (#46)。** 代理项改为 不使用 / SOCKS5 /
-  HTTP 选择器加 `host:port` 输入框。HTTP CONNECT 后端早已支持,只是 UI 无法选择。
+- **Pick SOCKS5 or HTTP proxy type in the session dialog (#46).** The proxy  
+  field is now a None / SOCKS5 / HTTP selector plus a `host:port` input. HTTP  
+  CONNECT was already supported by the backend but wasn't selectable in the UI.  
+  The stored proxy URL format is unchanged.  
+  **会话对话框选择 SOCKS5 或 HTTP 代理类型 (#46)。** 代理项改为 不使用 / SOCKS5 /  
+  HTTP 选择器加 `host:port` 输入框。HTTP CONNECT 后端早已支持,只是 UI 无法选择。  
   存储的代理 URL 格式不变。
-
-- **Confirmation prompt before deleting a remote file (#28).** SFTP delete is
-  irreversible (there is no trash), so the context-menu *Delete* now asks for
-  confirmation — showing the full path — before removing anything; a misclick
-  no longer silently destroys a file.
-  **删除远程文件前先确认 (#28)。** SFTP 删除不可撤销(没有回收站),右键菜单的
+- **Confirmation prompt before deleting a remote file (#28).** SFTP delete is  
+  irreversible (there is no trash), so the context-menu *Delete* now asks for  
+  confirmation — showing the full path — before removing anything; a misclick  
+  no longer silently destroys a file.  
+  **删除远程文件前先确认 (#28)。** SFTP 删除不可撤销(没有回收站),右键菜单的  
   「删除」现在会先弹出确认框(显示完整路径)再执行,误点不会再悄悄删掉文件。
-
-- **Serial port sessions (#14, #17).** New session type for connecting to
-  switches, routers and embedded devices over a serial console. Pick
-  **Serial** in the session dialog and set the port (`COM3`, `/dev/ttyUSB0`),
-  baud rate, data/stop bits, parity and flow control. The serial line reuses
-  the full terminal pipeline (output, input, scrollback, copy/paste); SFTP and
-  the resource monitor are not applicable and are hidden.
-  **串口会话 (#14, #17)。** 新增串口会话类型,用于通过串口控制台连接交换机、
-  路由器和嵌入式设备。在会话对话框选择 **串口**,填写串口号(`COM3`、
-  `/dev/ttyUSB0`)、波特率、数据/停止位、校验位和流控。串口复用完整的终端管线
+- **Serial port sessions (#14, #17).** New session type for connecting to  
+  switches, routers and embedded devices over a serial console. Pick  
+  **Serial** in the session dialog and set the port (`COM3`, `/dev/ttyUSB0`),  
+  baud rate, data/stop bits, parity and flow control. The serial line reuses  
+  the full terminal pipeline (output, input, scrollback, copy/paste); SFTP and  
+  the resource monitor are not applicable and are hidden.  
+  **串口会话 (#14, #17)。** 新增串口会话类型,用于通过串口控制台连接交换机、  
+  路由器和嵌入式设备。在会话对话框选择 **串口**,填写串口号(`COM3`、  
+  `/dev/ttyUSB0`)、波特率、数据/停止位、校验位和流控。串口复用完整的终端管线  
   (输出、输入、回滚、复制粘贴);SFTP 和资源监控不适用,已隐藏。
-
-- **Telnet sessions (#17).** New session type for legacy gear that only speaks
-  Telnet. Handles RFC 854 option negotiation (suppress-go-ahead / echo /
-  window-size), strips IAC sequences from the stream, and tunnels through the
-  same SOCKS5 / HTTP proxy as SSH when configured.
-  **Telnet 会话 (#17)。** 新增 Telnet 会话类型,用于只支持 Telnet 的老旧设备。
-  处理 RFC 854 选项协商(抑制 Go-Ahead / 回显 / 窗口大小),从数据流中剥离 IAC
+- **Telnet sessions (#17).** New session type for legacy gear that only speaks  
+  Telnet. Handles RFC 854 option negotiation (suppress-go-ahead / echo /  
+  window-size), strips IAC sequences from the stream, and tunnels through the  
+  same SOCKS5 / HTTP proxy as SSH when configured.  
+  **Telnet 会话 (#17)。** 新增 Telnet 会话类型,用于只支持 Telnet 的老旧设备。  
+  处理 RFC 854 选项协商(抑制 Go-Ahead / 回显 / 窗口大小),从数据流中剥离 IAC  
   序列,并可经与 SSH 相同的 SOCKS5 / HTTP 代理隧道连接。
 
 ### Performance / 性能
 
-- **Pipelined SFTP upload (#16).** Uploads now keep ~32 WRITE requests in flight
-  on a dedicated SFTP channel instead of writing one chunk and waiting for each
-  ack, hiding the round-trip latency that made transfers ~15x slower than `scp`.
-  Out-of-order completion is safe (every chunk carries its absolute offset).
-  **SFTP 上传流水线化 (#16)。** 上传改为在专用 SFTP 通道上保持约 32 个 WRITE 请求
-  并发在途,而不是写一块等一块的 ack,消除了让传输比 `scp` 慢约 15 倍的往返延迟。
+- **Pipelined SFTP upload (#16).** Uploads now keep ~32 WRITE requests in flight  
+  on a dedicated SFTP channel instead of writing one chunk and waiting for each  
+  ack, hiding the round-trip latency that made transfers ~15x slower than `scp`.  
+  Out-of-order completion is safe (every chunk carries its absolute offset).  
+  **SFTP 上传流水线化 (#16)。** 上传改为在专用 SFTP 通道上保持约 32 个 WRITE 请求  
+  并发在途,而不是写一块等一块的 ack,消除了让传输比 `scp` 慢约 15 倍的往返延迟。  
   乱序完成也安全(每块都带绝对偏移)。
 
 ### Fixed / 修复
 
-- **Drag-select no longer auto-scrolls within the visible area (#41).** Selecting
-  text now only scrolls once the drag leaves the viewport edge, so the view no
-  longer jumps and the selection no longer snaps to an edge row.
-  **拖动选择在可见区内不再自动滚动 (#41)。** 现在仅当拖动离开视口边缘才滚动,
+- **Drag-select no longer auto-scrolls within the visible area (#41).** Selecting  
+  text now only scrolls once the drag leaves the viewport edge, so the view no  
+  longer jumps and the selection no longer snaps to an edge row.  
+  **拖动选择在可见区内不再自动滚动 (#41)。** 现在仅当拖动离开视口边缘才滚动,  
   视图不再乱跳、选区也不再吸附到边缘行。
-
-- **Alt no longer clears the typed command (#43).** Slint encodes a lone
-  modifier key as a C0 code point (Alt=0x12); pressing Alt (e.g. to Alt+Tab
-  away) sent ESC+0x12 to the PTY, which bash/readline treated as Meta and
-  discarded the input line. Bare modifier codes are now dropped, with a guard
-  that preserves a real Ctrl+P..Ctrl+X.
-  **按 Alt 不再清空已输入命令 (#43)。** Slint 把单独的修饰键编码成 C0 码位
-  (Alt=0x12);按 Alt(如 Alt+Tab 切换)会向 PTY 发送 ESC+0x12,被 bash/readline
+- **Alt no longer clears the typed command (#43).** Slint encodes a lone  
+  modifier key as a C0 code point (Alt=0x12); pressing Alt (e.g. to Alt+Tab  
+  away) sent ESC+0x12 to the PTY, which bash/readline treated as Meta and  
+  discarded the input line. Bare modifier codes are now dropped, with a guard  
+  that preserves a real Ctrl+P..Ctrl+X.  
+  **按 Alt 不再清空已输入命令 (#43)。** Slint 把单独的修饰键编码成 C0 码位  
+  (Alt=0x12);按 Alt(如 Alt+Tab 切换)会向 PTY 发送 ESC+0x12,被 bash/readline  
   当作 Meta 而丢弃输入行。现在丢弃单独的修饰键码位,并保留真实的 Ctrl+P..Ctrl+X。
-
-- **Multi-line / backslash-continued commands now paste intact.** Pasted text
-  kept its CRLF/LF line breaks, but the terminal expects CR for Enter, so CRLF
-  made the shell see two breaks per line and end a `\`-continued command early.
-  Pasted line endings are normalised to a single CR.
-  **多行 / 反斜杠续行命令现在能完整粘贴。** 粘贴文本保留了 CRLF/LF 换行,而终端
-  回车应为 CR,CRLF 会让 shell 每行看到两个换行、提前结束 `\` 续行命令。现在把
+- **Multi-line / backslash-continued commands now paste intact.** Pasted text  
+  kept its CRLF/LF line breaks, but the terminal expects CR for Enter, so CRLF  
+  made the shell see two breaks per line and end a `\`-continued command early.  
+  Pasted line endings are normalised to a single CR.  
+  **多行 / 反斜杠续行命令现在能完整粘贴。** 粘贴文本保留了 CRLF/LF 换行,而终端  
+  回车应为 CR,CRLF 会让 shell 每行看到两个换行、提前结束 `\` 续行命令。现在把  
   粘贴的换行统一规范为单个 CR。
-
-- **Session dialog no longer mis-lays-out when switching connection type.** The
-  card had a fixed height, so Telnet/Serial (with fewer fields) left slack space
-  that stretched inputs apart. The card height now follows its content.
-  **切换连接类型时会话对话框不再排版错乱。** 卡片此前固定高度,Telnet/串口
+- **Session dialog no longer mis-lays-out when switching connection type.** The  
+  card had a fixed height, so Telnet/Serial (with fewer fields) left slack space  
+  that stretched inputs apart. The card height now follows its content.  
+  **切换连接类型时会话对话框不再排版错乱。** 卡片此前固定高度,Telnet/串口  
   (字段更少)会留出空白把输入框撑开。现在卡片高度跟随内容。
-
-- **Copy/paste works on Wayland sessions (#47).** arboard's default Linux
-  backend is X11, which fails on Wayland (Debian sid / KDE) without XWayland.
-  Enabled arboard's native `wayland-data-control` backend, and copy now uses
-  set().wait() so the selection survives after the clipboard handle is dropped.
-  **Wayland 会话下复制粘贴恢复可用 (#47)。** arboard 默认 Linux 后端是 X11,在
-  无 XWayland 的 Wayland(Debian sid / KDE)下失效。启用 arboard 原生
-  `wayland-data-control` 后端,复制改用 set().wait() 使选区在剪贴板句柄 drop 后
+- **Copy/paste works on Wayland sessions (#47).** arboard's default Linux  
+  backend is X11, which fails on Wayland (Debian sid / KDE) without XWayland.  
+  Enabled arboard's native `wayland-data-control` backend, and copy now uses  
+  set().wait() so the selection survives after the clipboard handle is dropped.  
+  **Wayland 会话下复制粘贴恢复可用 (#47)。** arboard 默认 Linux 后端是 X11,在  
+  无 XWayland 的 Wayland(Debian sid / KDE)下失效。启用 arboard 原生  
+  `wayland-data-control` 后端,复制改用 set().wait() 使选区在剪贴板句柄 drop 后  
   仍然有效。
-
-- **Hide the shell-integration command from the terminal.** meatshell injects a
-  one-line `PROMPT_COMMAND` (OSC 7) on connect so the SFTP panel can follow the
-  terminal's working directory. Its echo used to show up on every connect (and
-  pollute shell history); the line now carries a leading space (kept out of
-  history) and its echo is stripped from the output before display.
-  **隐藏 shell 集成注入命令。** meatshell 连接时会注入一行 `PROMPT_COMMAND`
-  (OSC 7),让 SFTP 面板跟随终端当前目录。此前它的回显每次连接都显示在终端
+- **Hide the shell-integration command from the terminal.** meatshell injects a  
+  one-line `PROMPT_COMMAND` (OSC 7) on connect so the SFTP panel can follow the  
+  terminal's working directory. Its echo used to show up on every connect (and  
+  pollute shell history); the line now carries a leading space (kept out of  
+  history) and its echo is stripped from the output before display.  
+  **隐藏 shell 集成注入命令。** meatshell 连接时会注入一行 `PROMPT_COMMAND`  
+  (OSC 7),让 SFTP 面板跟随终端当前目录。此前它的回显每次连接都显示在终端  
   (并污染命令历史);现在该行带前导空格(不进历史),回显也会在显示前被剥离。
-
-- **Dragging the SFTP panel up no longer clears terminal output (#18).** vt100's
-  shrink truncated the grid from the bottom, dropping the most recent output;
-  before shrinking we now save the top rows to scrollback and scroll so the
-  bottom (recent) rows stay visible. Two follow-ups: (1) the shrink now only
-  scrolls off as many rows as needed to keep the cursor visible, so rapid
-  up/down dragging on a not-yet-full screen no longer pushes the prompt into
-  scrollback and strands the cursor at the top (also reported as #24); (2) drag-selection is now stored
-  in absolute scrollback coordinates, so selecting from the top of the history
-  down through several screens copies every line instead of losing everything
-  above the final window when the view auto-scrolls.
-  **上拉 SFTP 面板不再清空终端输出 (#18)。** vt100 缩小时从底部截断,丢掉最近输出;
-  现在缩小前把顶部行存入回滚区并滚动,使底部(最近)行保持可见。两处后续修复:
-  (1) 缩小时只滚走"保持光标可见所需"的行数,疯狂上下拖动未填满的屏幕时不再把
-  提示符推进回滚区、光标卡在顶部;(2) 拖选改用绝对回滚坐标存储,从历史顶部往下
+- **Dragging the SFTP panel up no longer clears terminal output (#18).** vt100's  
+  shrink truncated the grid from the bottom, dropping the most recent output;  
+  before shrinking we now save the top rows to scrollback and scroll so the  
+  bottom (recent) rows stay visible. Two follow-ups: (1) the shrink now only  
+  scrolls off as many rows as needed to keep the cursor visible, so rapid  
+  up/down dragging on a not-yet-full screen no longer pushes the prompt into  
+  scrollback and strands the cursor at the top (also reported as #24); (2) drag-selection is now stored  
+  in absolute scrollback coordinates, so selecting from the top of the history  
+  down through several screens copies every line instead of losing everything  
+  above the final window when the view auto-scrolls.  
+  **上拉 SFTP 面板不再清空终端输出 (#18)。** vt100 缩小时从底部截断,丢掉最近输出;  
+  现在缩小前把顶部行存入回滚区并滚动,使底部(最近)行保持可见。两处后续修复:  
+  (1) 缩小时只滚走"保持光标可见所需"的行数,疯狂上下拖动未填满的屏幕时不再把  
+  提示符推进回滚区、光标卡在顶部;(2) 拖选改用绝对回滚坐标存储,从历史顶部往下  
   跨多屏选择时能复制到每一行,而不是在视图自动滚动后丢掉最后一屏以上的内容。
 
 ### Security / 安全
 
-- **Redact proxy credentials and zero them in memory (#32).** The HTTP/SOCKS
-  proxy password is now wrapped in `Secret` (zeroed on drop) and ProxyConfig has
-  a manual Debug that redacts auth, so credentials can't leak via {:?}/tracing
-  or linger in core dumps.
-  **代理凭据脱敏并在内存清零 (#32)。** HTTP/SOCKS 代理密码改用 `Secret` 包装
-  (drop 时清零),ProxyConfig 手写 Debug 对凭据脱敏,使其无法经 {:?}/tracing
+- **Redact proxy credentials and zero them in memory (#32).** The HTTP/SOCKS  
+  proxy password is now wrapped in `Secret` (zeroed on drop) and ProxyConfig has  
+  a manual Debug that redacts auth, so credentials can't leak via {:?}/tracing  
+  or linger in core dumps.  
+  **代理凭据脱敏并在内存清零 (#32)。** HTTP/SOCKS 代理密码改用 `Secret` 包装  
+  (drop 时清零),ProxyConfig 手写 Debug 对凭据脱敏,使其无法经 {:?}/tracing  
   泄露或残留于 core dump。
-
-- **Validate HostName when importing ~/.ssh/config (#33).** Imported HostName
-  values are now checked — IP literals and DNS hostnames accepted; shell
-  metacharacters, whitespace and scheme prefixes rejected — and invalid entries
-  are skipped with a warning.
-  **导入 ~/.ssh/config 时校验 HostName (#33)。** 现在校验导入的 HostName(接受
+- **Validate HostName when importing ~/.ssh/config (#33).** Imported HostName  
+  values are now checked — IP literals and DNS hostnames accepted; shell  
+  metacharacters, whitespace and scheme prefixes rejected — and invalid entries  
+  are skipped with a warning.  
+  **导入 ~/.ssh/config 时校验 HostName (#33)。** 现在校验导入的 HostName(接受  
   IP 字面量与 DNS 域名,拒绝 shell 元字符、空白与协议前缀),非法条目跳过并告警。
-
-- **Harden the remote resource monitor against a hostile server (#27).** The
-  monitor runs a small loop over an SSH exec channel. It now (1) resets `PATH`
-  to the standard system dirs so a server with a hijacked `PATH`/`BASH_ENV`
-  can't shadow `awk`/`cat`/`df`/`sleep`; (2) caps the reassembly buffer at 1 MiB
-  so a server that streams data without the sync marker can't exhaust memory;
-  and (3) parses `/proc` and `df` output with saturating arithmetic and a
-  64-row cap per sample, so crafted huge values or a flood of fake interfaces
-  can't overflow-panic or swamp the sidebar.
-  **加固远程资源监控以防恶意服务器 (#27)。** 监控通过 SSH exec 通道跑一个小循环。
-  现在:(1) 重置 `PATH` 为标准系统目录,使被劫持 `PATH`/`BASH_ENV` 的服务器无法
-  替换 `awk`/`cat`/`df`/`sleep`;(2) 重组缓冲上限 1 MiB,防止只发数据不发同步标记
-  的服务器耗尽内存;(3) 解析 `/proc` 与 `df` 输出改用饱和运算并对每次采样限 64 行,
+- **Harden the remote resource monitor against a hostile server (#27).** The  
+  monitor runs a small loop over an SSH exec channel. It now (1) resets `PATH`  
+  to the standard system dirs so a server with a hijacked `PATH`/`BASH_ENV`  
+  can't shadow `awk`/`cat`/`df`/`sleep`; (2) caps the reassembly buffer at 1 MiB  
+  so a server that streams data without the sync marker can't exhaust memory;  
+  and (3) parses `/proc` and `df` output with saturating arithmetic and a  
+  64-row cap per sample, so crafted huge values or a flood of fake interfaces  
+  can't overflow-panic or swamp the sidebar.  
+  **加固远程资源监控以防恶意服务器 (#27)。** 监控通过 SSH exec 通道跑一个小循环。  
+  现在:(1) 重置 `PATH` 为标准系统目录,使被劫持 `PATH`/`BASH_ENV` 的服务器无法  
+  替换 `awk`/`cat`/`df`/`sleep`;(2) 重组缓冲上限 1 MiB,防止只发数据不发同步标记  
+  的服务器耗尽内存;(3) 解析 `/proc` 与 `df` 输出改用饱和运算并对每次采样限 64 行,  
   使构造的超大数值或伪造网卡洪流无法触发溢出 panic 或拖垮侧栏。
-
-- **Sanitize remote file names before saving downloads (#26).** SFTP downloads
-  built the local path straight from the server-supplied name, so a malicious
-  server could use path separators, shell-special characters or a Windows
-  reserved device name (`CON`, `NUL`, `COM1`…) to write outside the chosen
-  folder or hit a device. Downloads now run the name through `sanitize_filename`
-  (already used by the open/edit flow), which also gained reserved-device-name
-  and leading-whitespace handling.
-  **保存下载前清洗远程文件名 (#26)。** SFTP 下载直接用服务器给的文件名拼本地路径,
-  恶意服务器可借路径分隔符、shell 特殊字符或 Windows 保留设备名(`CON`、`NUL`、
-  `COM1`…)写到目标目录之外或命中设备。现在下载会先经 `sanitize_filename`
+- **Sanitize remote file names before saving downloads (#26).** SFTP downloads  
+  built the local path straight from the server-supplied name, so a malicious  
+  server could use path separators, shell-special characters or a Windows  
+  reserved device name (`CON`, `NUL`, `COM1`…) to write outside the chosen  
+  folder or hit a device. Downloads now run the name through `sanitize_filename`  
+  (already used by the open/edit flow), which also gained reserved-device-name  
+  and leading-whitespace handling.  
+  **保存下载前清洗远程文件名 (#26)。** SFTP 下载直接用服务器给的文件名拼本地路径,  
+  恶意服务器可借路径分隔符、shell 特殊字符或 Windows 保留设备名(`CON`、`NUL`、  
+  `COM1`…)写到目标目录之外或命中设备。现在下载会先经 `sanitize_filename`  
   (查看/编辑流程已在用)清洗,并新增了保留设备名与前导空白的处理。
-
-- **Stop logging raw keystroke bytes (#15).** Debug logs recorded the hex of SSH
-  input, which could include passwords; now they record only the byte length.
-  A follow-up found two more leak sites in the key handler: `send_key` logged
-  the raw key string (`key={:?}`) at debug level, and the `[KEY_DIAG]` IME
-  diagnostic logged each Shift-typed key's code point at **info** level (no
-  `RUST_LOG` needed) — both could expose password characters. They now go
-  through a `redact_key` helper that reveals only C0/C1 control codes (what the
-  IME diagnostics actually need) and masks every printable character.
-  **不再记录原始按键字节 (#15)。** debug 日志原本记录 SSH 输入的十六进制(可能含
-  密码),现在只记录字节长度。后续又发现按键处理里还有两处泄露:`send_key` 以
-  debug 级打印按键原文(`key={:?}`),`[KEY_DIAG]` IME 诊断更是以 **info 级**
-  (无需 `RUST_LOG`)打印每个带 Shift 按键的码位——都可能暴露密码字符。现在统一
+- **Stop logging raw keystroke bytes (#15).** Debug logs recorded the hex of SSH  
+  input, which could include passwords; now they record only the byte length.  
+  A follow-up found two more leak sites in the key handler: `send_key` logged  
+  the raw key string (`key={:?}`) at debug level, and the `[KEY_DIAG]` IME  
+  diagnostic logged each Shift-typed key's code point at **info** level (no  
+  `RUST_LOG` needed) — both could expose password characters. They now go  
+  through a `redact_key` helper that reveals only C0/C1 control codes (what the  
+  IME diagnostics actually need) and masks every printable character.  
+  **不再记录原始按键字节 (#15)。** debug 日志原本记录 SSH 输入的十六进制(可能含  
+  密码),现在只记录字节长度。后续又发现按键处理里还有两处泄露:`send_key` 以  
+  debug 级打印按键原文(`key={:?}`),`[KEY_DIAG]` IME 诊断更是以 **info 级**  
+  (无需 `RUST_LOG`)打印每个带 Shift 按键的码位——都可能暴露密码字符。现在统一  
   经 `redact_key` 处理,只保留 C0/C1 控制码(IME 诊断真正需要的),可打印字符一律掩码。
 
 ## [0.2.3] - 2026-06-05
 
 ### Added / 新增
 
-- **Proxy support for SSH / SFTP (#7).** Connections can tunnel through a
-  **SOCKS5** (`socks5://`) or **HTTP CONNECT** (`http://`) proxy, with optional
-  `user:pass@` credentials. Set it per session in the dialog, or leave it blank
-  to use the `$ALL_PROXY` environment variable; empty = direct.
-  **SSH / SFTP 代理支持 (#7)。** 连接可经 **SOCKS5**(`socks5://`)或
-  **HTTP CONNECT**(`http://`)代理(支持 `user:pass@` 认证)。会话对话框里按需
+- **Proxy support for SSH / SFTP (#7).** Connections can tunnel through a  
+  **SOCKS5** (`socks5://`) or **HTTP CONNECT** (`http://`) proxy, with optional  
+  `user:pass@` credentials. Set it per session in the dialog, or leave it blank  
+  to use the `$ALL_PROXY` environment variable; empty = direct.  
+  **SSH / SFTP 代理支持 (#7)。** 连接可经 **SOCKS5**(`socks5://`)或  
+  **HTTP CONNECT**(`http://`)代理(支持 `user:pass@` 认证)。会话对话框里按需  
   填写,留空则用 `$ALL_PROXY` 环境变量,再空则直连。
-
-- **Import hosts from `~/.ssh/config` (#1).** The "Import ~/.ssh/config" action
-  (in the settings menu) parses the standard SSH config (`Host` / `HostName` /
-  `User` / `Port` / `IdentityFile`, wildcard `Host *` blocks skipped) and adds
-  each host as a session, skipping duplicates. Hosts with an `IdentityFile`
-  default to key auth.
-  **从 `~/.ssh/config` 导入主机 (#1)。** 设置菜单里的「导入 ~/.ssh/config」解析
-  标准 SSH 配置(`Host` / `HostName` / `User` / `Port` / `IdentityFile`,跳过
+- **Import hosts from `~/.ssh/config` (#1).** The "Import ~/.ssh/config" action  
+  (in the settings menu) parses the standard SSH config (`Host` / `HostName` /  
+  `User` / `Port` / `IdentityFile`, wildcard `Host *` blocks skipped) and adds  
+  each host as a session, skipping duplicates. Hosts with an `IdentityFile`  
+  default to key auth.  
+  **从 `~/.ssh/config` 导入主机 (#1)。** 设置菜单里的「导入 ~/.ssh/config」解析  
+  标准 SSH 配置(`Host` / `HostName` / `User` / `Port` / `IdentityFile`,跳过  
   `Host *` 通配块),将每个主机加为会话并跳过重复;带 `IdentityFile` 的默认用密钥。
-
-- **GitHub Actions release workflow** building native binaries for Windows /
-  Linux / macOS (arm64 + x86_64) on each `v*` tag.
-  **GitHub Actions 发布工作流**,每个 `v*` 标签自动构建 Windows / Linux /
+- **GitHub Actions release workflow** building native binaries for Windows /  
+  Linux / macOS (arm64 + x86_64) on each `v*` tag.  
+  **GitHub Actions 发布工作流**,每个 `v*` 标签自动构建 Windows / Linux /  
   macOS(arm64 + x86_64)三平台二进制。
 
 ### Fixed / 修复
 
-- The full-width `＋` before "New session" rendered as a tofu box in English;
-  switched to an ASCII `+`.
+- The full-width `＋` before "New session" rendered as a tofu box in English;  
+  switched to an ASCII `+`.  
   英文下「New session」前的全角 `＋` 显示为豆腐块,改用 ASCII `+`。
-
-- `install-linux.sh` now auto-detects the `meatshell` binary sitting next to it
-  in a release package, so it works with no arguments (it previously defaulted to
-  the source-tree `./target/release` path and failed for end users).
-  `install-linux.sh` 现在自动识别发布包里同目录的 `meatshell`,无需传参即可使用
+- `install-linux.sh` now auto-detects the `meatshell` binary sitting next to it  
+  in a release package, so it works with no arguments (it previously defaulted to  
+  the source-tree `./target/release` path and failed for end users).  
+  `install-linux.sh` 现在自动识别发布包里同目录的 `meatshell`,无需传参即可使用  
   (之前默认指向源码树的 `./target/release`,普通用户直接跑会报错)。
 
-## [0.2.2] - 2026-06-05
+## 0.2.2 - 2026-06-05
 
 ### Security / 安全
 
-- **Fix Windows command injection (#12)** — `open_with_os` no longer shells out
-  via `cmd /C start`; it calls `ShellExecuteW` directly so a malicious remote
-  file name (e.g. `foo&calc.exe`) can't inject commands. Added `sanitize_filename`
-  as defence-in-depth.
-  **修复 Windows 命令注入 (#12)** —— 打开文件不再经 `cmd /C start`，改用
-  `ShellExecuteW` 直接打开，恶意远程文件名（如 `foo&calc.exe`）无法注入命令；
+- **Fix Windows command injection (#12)** — `open_with_os` no longer shells out  
+  via `cmd /C start`; it calls `ShellExecuteW` directly so a malicious remote  
+  file name (e.g. `foo&calc.exe`) can't inject commands. Added `sanitize_filename`  
+  as defence-in-depth.  
+  **修复 Windows 命令注入 (#12)** —— 打开文件不再经 `cmd /C start`，改用  
+  `ShellExecuteW` 直接打开，恶意远程文件名（如 `foo&calc.exe`）无法注入命令；  
   并新增 `sanitize_filename` 清洗作为纵深防御。
-
-- **Stop echoing the saved password when editing a session (#10)** — the field
-  is left blank with a "leave blank to keep" hint; an empty field on save keeps
-  the existing password.
-  **编辑会话时不再回显已保存密码 (#10)** —— 密码框留空并提示「留空则不修改」，
+- **Stop echoing the saved password when editing a session (#10)** — the field  
+  is left blank with a "leave blank to keep" hint; an empty field on save keeps  
+  the existing password.  
+  **编辑会话时不再回显已保存密码 (#10)** —— 密码框留空并提示「留空则不修改」，  
   保存时为空则保留原密码。
-
-- **Zero passwords in memory on drop (#8)** — passwords now use a `Secret` type
-  (`zeroize`) that wipes its heap buffer on drop and redacts itself in logs; the
-  on-disk JSON format is unchanged.
-  **密码内存清零 (#8)** —— 密码改用 `Secret` 类型（`zeroize`），Drop 时清零堆
+- **Zero passwords in memory on drop (#8)** — passwords now use a `Secret` type  
+  (`zeroize`) that wipes its heap buffer on drop and redacts itself in logs; the  
+  on-disk JSON format is unchanged.  
+  **密码内存清零 (#8)** —— 密码改用 `Secret` 类型（`zeroize`），Drop 时清零堆  
   内存、日志中脱敏；磁盘 JSON 格式不变。
 
 ### Added / 新增
 
-- **Internationalization — Chinese / English with runtime switching (#9).**
-  Static UI uses Slint `@tr` + bundled `.po`; dynamic Rust strings use a `t()`
-  helper. Switch via the gear menu; the choice is persisted and the default
-  follows the system locale.
-  **国际化 —— 中 / 英双语，运行时实时切换 (#9)。** 静态界面用 Slint `@tr` +
-  bundled `.po`；Rust 动态文本用 `t()`。设置菜单里切换，选择会持久化，首次启动
+- **Internationalization — Chinese / English with runtime switching (#9).**  
+  Static UI uses Slint `@tr` + bundled `.po`; dynamic Rust strings use a `t()`  
+  helper. Switch via the gear menu; the choice is persisted and the default  
+  follows the system locale.  
+  **国际化 —— 中 / 英双语，运行时实时切换 (#9)。** 静态界面用 Slint `@tr` +  
+  bundled `.po`；Rust 动态文本用 `t()`。设置菜单里切换，选择会持久化，首次启动  
   跟随系统语言。
-
-- **Private-key file picker** in the session dialog, plus `.pub` fallback (auto
-  strips the suffix to load the matching private key) and uniform `/` path
-  separators across platforms.
-  **会话弹窗的私钥文件选择器**，并支持 `.pub` 容错（自动去后缀加载对应私钥）、
+- **Private-key file picker** in the session dialog, plus `.pub` fallback (auto  
+  strips the suffix to load the matching private key) and uniform `/` path  
+  separators across platforms.  
+  **会话弹窗的私钥文件选择器**，并支持 `.pub` 容错（自动去后缀加载对应私钥）、  
   路径分隔符统一为 `/`。
-
-- **Linux desktop integration** — `assets/meatshell.desktop` + `install-linux.sh`
-  and an `xdg_app_id` so the GNOME/Ubuntu dock shows the app icon on Wayland.
-  **Linux 桌面集成** —— `assets/meatshell.desktop` + `install-linux.sh`，并设置
+- **Linux desktop integration** — `assets/meatshell.desktop` + `install-linux.sh`  
+  and an `xdg_app_id` so the GNOME/Ubuntu dock shows the app icon on Wayland.  
+  **Linux 桌面集成** —— `assets/meatshell.desktop` + `install-linux.sh`，并设置  
   `xdg_app_id`，使 Wayland 下 GNOME/Ubuntu 任务栏显示应用图标。
-
-- **Screenshots in the README** (`docs/screenshots/`, sensitive info redacted).
+- **Screenshots in the README** (`docs/screenshots/`, sensitive info redacted).  
   **README 增加截图**（`docs/screenshots/`，敏感信息已打码）。
-
-[0.3.8]: https://github.com/yituorou/meatshell/releases/tag/v0.3.8
-[0.3.7]: https://github.com/yituorou/meatshell/releases/tag/v0.3.7
-[0.3.3]: https://github.com/yituorou/meatshell/releases/tag/v0.3.3
-[0.3.2]: https://github.com/yituorou/meatshell/releases/tag/v0.3.2
-[0.3.1]: https://github.com/yituorou/meatshell/releases/tag/v0.3.1
-[0.3.0]: https://github.com/yituorou/meatshell/releases/tag/v0.3.0
-[0.2.2]: https://github.com/yituorou/meatshell/releases/tag/v0.2.2

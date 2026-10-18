@@ -1,0 +1,149 @@
+// 主窗口最外圈描边（#win-edge-frame-r7 2026-10-18）
+//
+// 目标：让"细线"与窗口真实边界**重合**，同时保持 1 **设备**像素粗细。
+//
+// 背景（真机实测，200% DPI，详见 docs/window-edge-frame-plan-2026-10-18.md）：
+//   * 可见的"边界"= DWM 对无边框窗口的裁剪边：直边 + 8 DIP 圆角（200% 下 16 物理像素）。
+//   * 旧实现把整圈线内缩 1 设备像素（直边留缝），四角弧又按"固定 8 物理像素
+//     半径"画（实际是 8 DIP）→ 角弧整段被 DWM 裁掉，四角根本没有线。
+//   * 旧实现还踩了 Slint `Path` 的 fit 变换坑（见下）。
+//
+// 几何：
+//   1. 四条直边 = 贴真实边界的填充矩形（第 0 行/列、倒数第 1 行/列），厚 1 设备像素；
+//      圆角时两端让到角弧切点（x/y = radius-win），直角时铺满。
+//   2. 四角 = 1 设备像素描边弧，**外缘正好压在 DWM 裁剪弧上**（半径 = radius-win）。
+//
+//   为什么不能直接按 1 单位 = 1 像素写 commands：
+//   Slint 的 Path 渲染前会先做一次 fit（i-slint-core items/path.rs
+//   `fitted_path_events`）：把路径 fit 进 (元素尺寸 − stroke-width)、再把整条路径
+//   平移 stroke-width/2（渲染器 `translate(offset)`）。所以"元素 8×8、viewbox 8×8"
+//   实际画出来会缩进约 1 个 stroke：渲染半径 = 元素半径 − stroke/2、圆心也随之
+//   内移 stroke/2。
+//
+//   这里用**反解 viewbox** 把它抵消掉：设裁剪半径 R（= radius-win 的数值）、
+//   1 设备像素 h = hairline()，取
+//       viewbox = 2R(R − h) / (2R − h)
+//   此时 fit 的缩放 scale=(R−h)/viewbox、offset=h/2，于是
+//       渲染半径 = R·scale = R − h/2   → 描边外缘 = R（= 裁剪弧，完全重合）
+//       圆心     = h/2 + R·scale = R  → 与 DWM 裁剪弧同心
+//       线厚     = h（正好 1 设备像素）
+//   弧端点落在直边中心线上（横/竖向切点），与直边无缝衔接。
+//   ⚠️ commands 里的 8 = radius-win 的数值；改 radius-win-px 时这里要同步。
+//
+// 只在 DWM 圆角真正生效时画弧（调用方传 rounded；Win10 / 属性失败 → 直角框，
+// 窗口本来就是直角，直边铺满即天然贴边）。
+import { Theme } from "theme.slint";
+
+export component WindowFrame inherits Rectangle {
+    // DWM 圆角是否生效（Rust apply_window_chrome 的返回值）。
+    in property <bool> rounded: true;
+    in property <brush> line-color: Theme.border-strong;
+
+    // 实例请铺满窗口（width/height = 窗口逻辑尺寸）；这里再按设备网格取整。
+    property <length> win-w: Theme.snap-to-device(root.width);
+    property <length> win-h: Theme.snap-to-device(root.height);
+    property <length> edge: Theme.hairline();
+    property <length> cw: Theme.radius-win;
+
+    // 反 fit viewbox（推导见文件头）：viewbox 是"路径坐标系"的数值（float，单位
+    // = radius-win 数值对应的逻辑 px），所以这里是 float 而不是 length。
+    property <float> rn: Theme.radius-win-px;
+    property <float> hf: 1.0 / Theme.device-pixel-ratio;
+    property <float> corner-vb:
+        2.0 * root.rn * (root.rn - root.hf) / (2.0 * root.rn - root.hf);
+
+    // ---- 四条直边（中心线落在边界内 h/2，外缘=窗口边界） ----
+    // 上
+    Rectangle {
+        x: root.rounded ? root.cw : 0px;
+        y: 0px;
+        width: root.win-w - (root.rounded ? root.cw * 2 : 0px);
+        height: root.edge;
+        background: root.line-color;
+    }
+    // 下
+    Rectangle {
+        x: root.rounded ? root.cw : 0px;
+        y: root.win-h - root.edge;
+        width: root.win-w - (root.rounded ? root.cw * 2 : 0px);
+        height: root.edge;
+        background: root.line-color;
+    }
+    // 左
+    Rectangle {
+        x: 0px;
+        y: root.rounded ? root.cw : 0px;
+        width: root.edge;
+        height: root.win-h - (root.rounded ? root.cw * 2 : 0px);
+        background: root.line-color;
+    }
+    // 右
+    Rectangle {
+        x: root.win-w - root.edge;
+        y: root.rounded ? root.cw : 0px;
+        width: root.edge;
+        height: root.win-h - (root.rounded ? root.cw * 2 : 0px);
+        background: root.line-color;
+    }
+
+    if root.rounded : Rectangle {
+        background: transparent;
+        // ---- 四角 90° 描边弧：外缘 = DWM 裁剪弧，厚 1 设备像素 ----
+        // 左上（弧圆心在元素内 (8,8) 处；x/y 已含反 fit 的 h/2 偏移）
+        Path {
+            x: 0px;
+            y: 0px;
+            width: root.cw;
+            height: root.cw;
+            viewbox-width: root.corner-vb;
+            viewbox-height: root.corner-vb;
+            stroke: root.line-color;
+            stroke-width: root.edge;
+            fill: transparent;
+            clip: false;
+            commands: "M 0 8 A 8 8 0 0 1 8 0";
+        }
+        // 右上
+        Path {
+            x: root.win-w - root.cw - root.edge / 2;
+            y: 0px;
+            width: root.cw;
+            height: root.cw;
+            viewbox-width: root.corner-vb;
+            viewbox-height: root.corner-vb;
+            stroke: root.line-color;
+            stroke-width: root.edge;
+            fill: transparent;
+            clip: false;
+            commands: "M 0 0 A 8 8 0 0 1 8 8";
+        }
+        // 右下
+        Path {
+            x: root.win-w - root.cw - root.edge / 2;
+            y: root.win-h - root.cw - root.edge / 2;
+            width: root.cw;
+            height: root.cw;
+            viewbox-width: root.corner-vb;
+            viewbox-height: root.corner-vb;
+            stroke: root.line-color;
+            stroke-width: root.edge;
+            fill: transparent;
+            clip: false;
+            commands: "M 8 0 A 8 8 0 0 1 0 8";
+        }
+        // 左下
+        Path {
+            x: 0px;
+            y: root.win-h - root.cw - root.edge / 2;
+            width: root.cw;
+            height: root.cw;
+            viewbox-width: root.corner-vb;
+            viewbox-height: root.corner-vb;
+            stroke: root.line-color;
+            stroke-width: root.edge;
+            fill: transparent;
+            clip: false;
+            commands: "M 8 8 A 8 8 0 0 1 0 0";
+        }
+    }
+}

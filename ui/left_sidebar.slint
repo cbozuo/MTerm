@@ -852,7 +852,7 @@ component CollapseButton inherits Rectangle {
 }
 
 // --- Welcome ---------------------------------------------------------------
-export component Welcome inherits Rectangle {
+export component LeftSidebar inherits Rectangle {
     in property <[SessionInfo]> sessions;
     in property <string> import-hint;        // result text after an import
     in-out property <string> search-query;
@@ -1093,17 +1093,24 @@ export component Welcome inherits Rectangle {
     callback remove-session(string);
     callback search-changed(string);
     callback cycle-tab(bool /* reverse */);
-    // Compact mode (welcome-as-sidebar): drop the big title/tagline header and
+    // Compact mode: drop the big title/tagline header and
     // tighten padding so the session list fits a narrow docked panel (#v0.5).
     in property <bool> compact;
     in property <string> dock-edge: "left";
     property <bool> dock-horizontal: root.dock-edge == "left" || root.dock-edge == "right";
     // Collapse the sidebar to the edge icon strip (compact mode only) (#v0.5 M5).
     callback collapse();
+    // (#sidebar-chevron 2026-10-17) 是否显示标题行里的收起箭头。默认显示；
+    // 调用方在 Windows/Linux（自绘标题栏，已有 LOGO 切换按钮）传 false 隐藏，
+    // macOS 原生标题栏没有该按钮 → 保持显示，否则无法收起侧栏。
+    in property <bool> show-collapse: true;
     callback dock-drag-move(length, length);
     callback dock-drag-end();
 
-    background: Theme.bg-root;
+    // Flush panel ground: the sidebar sits on the panel colour (not the recessed
+    // app root), so it joins the panel material chain (frost over wallpaper).
+    // (#zone-alpha 2026-10-17) 侧栏分区：读「侧栏」透明度（左右与下方面板同源）。
+    background: Theme.zone-sidebar;
 
     // (#drag-deferred-commit 2026-09-07) 延迟提交分派:running 绑 commit-op,
     // triggered 里先清 op 再执行,防重入。0ms = 下一轮事件循环,模型重建时
@@ -1191,15 +1198,15 @@ export component Welcome inherits Rectangle {
     // AccessKit may instantiate this conditional scope while walking the
     // accessibility tree, so defer focus to the next event-loop turn instead of
     // re-entering Slint's winit adapter from `init` (#323).
-    if !root.compact : welcome-key-scope := FocusScope {
+    if !root.compact : left-sidebar-key-scope := FocusScope {
         property <bool> focus-pending: false;
         init => { self.focus-pending = true; }
         Timer {
             interval: 0ms;
-            running: welcome-key-scope.focus-pending;
+            running: left-sidebar-key-scope.focus-pending;
             triggered => {
-                welcome-key-scope.focus-pending = false;
-                welcome-key-scope.focus();
+                left-sidebar-key-scope.focus-pending = false;
+                left-sidebar-key-scope.focus();
             }
         }
         key-pressed(event) => {
@@ -1224,7 +1231,7 @@ export component Welcome inherits Rectangle {
         }
     }
 
-    // (#welcome-fill 2026-09-05) Quick Connect 卡改为绝对定位铺满:红/绿标
+    // (#left-sidebar-fill 2026-09-05) Quick Connect 卡改为绝对定位铺满:红/绿标
     // 记实验证实 Rectangle 里的 VerticalLayout 会收缩到内容首选高度,且显式
     // height / min-height 均无法覆盖(布局引擎行为),卡片高度因此缩水、与
     // 右侧资源面板不一致。卡片直接绑定根尺寸;卡内改为固定 y 的绝对分区
@@ -1252,17 +1259,19 @@ export component Welcome inherits Rectangle {
     }
 
     // Quick Connect card — fills the remaining height so the panel doesn't
-    // jump when the first session is added (#214); see #welcome-fill above.
+    // jump when the first session is added (#214); see #left-sidebar-fill above.
     Rectangle {
-        x: root.compact ? 12px : 24px;
-        y: root.compact ? 12px : 106px;
-        width: parent.width - (root.compact ? 24px : 48px);
-        height: parent.height - (root.compact ? 24px : 130px);
-        background: Theme.bg-panel;
-        border-radius: Theme.radius-md;
-        // (#panel-line-hairline 2026-10-11) 逻辑 1px 在 125% 下占 1.25 设备行,
-        // 比窗口描边(hairline = 1 设备像素)粗一圈 —— 主界面边框线统一取 hairline。
-        border-width: Theme.hairline();
+        x: root.compact ? 0px : 24px;
+        y: root.compact ? 0px : 106px;
+        width: parent.width - (root.compact ? 0px : 48px);
+        height: parent.height - (root.compact ? 0px : 130px);
+        background: Theme.zone-sidebar;
+        border-radius: root.compact ? 0px : Theme.radius-md;
+        // (#line-dedup 2026-10-18) compact（停靠侧栏）时这张卡铺满整块侧栏：
+        // 上沿=标题栏底线、下/左沿=窗口描边、右沿=splitter 边界线，四条边都已有
+        // 别的线负责；再画一圈自身 hairline 边框就会叠成 2 设备像素（用户截图
+        // "不同区域重叠时线条加粗"）。只在非 compact（欢迎页内嵌卡片）保留边框。
+        border-width: root.compact ? 0px : Theme.hairline();
         border-color: Theme.border-subtle;
 
         // 头部行(绝对 y=12,高 30,容纳 30px 的主按钮)。
@@ -1284,7 +1293,7 @@ export component Welcome inherits Rectangle {
                     }
                     header-row := HorizontalLayout {
                         spacing: 8px;
-                        if root.compact && root.dock-edge != "left" : CollapseButton {
+                        if root.compact && root.show-collapse && root.dock-edge != "left" : CollapseButton {
                             glyph: root.dock-edge == "right" ? "chevron-right"
                                  : root.dock-edge == "top" ? "expand-less"
                                  : "expand-more";
@@ -1298,7 +1307,7 @@ export component Welcome inherits Rectangle {
                             vertical-alignment: center;
                             horizontal-stretch: 1;
                         }
-                        if root.compact && root.dock-edge == "left" : CollapseButton {
+                        if root.compact && root.show-collapse && root.dock-edge == "left" : CollapseButton {
                             glyph: "chevron-left";
                             clicked => { root.collapse(); }
                         }

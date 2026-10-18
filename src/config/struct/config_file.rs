@@ -38,7 +38,7 @@ fn default_wallpaper() -> String {
 
 /// Bump when `migrate_defaults` gains a new one-time default-layout change.
 /// rev 5 = #follow-ui-removed（跟随系统下线：一律 follow=false、theme 落成具体一套）。
-pub const DEFAULTS_REV: u32 = 5;
+pub const DEFAULTS_REV: u32 = 6;
 
 pub(crate) const PREVIOUS_DEFAULT_WALLPAPER_TRANSPARENCY: f32 = 0.38;
 pub(crate) const PREVIOUS_DEFAULT_WALLPAPER_OVERLAY: f32 =
@@ -55,6 +55,8 @@ pub(crate) const DEFAULT_WALLPAPER_OVERLAY: f32 = 1.0 - DEFAULT_WALLPAPER_TRANSP
 //   wallpaper 仍在 serde 默认（builtin:tech，从未挑过）→ ""（默认无壁纸）
 pub(crate) const DEFAULT_PANEL_ALPHA: f32 = 0.85;
 pub(crate) const DEFAULT_TERM_ALPHA: f32 = 1.0;
+/// 遮罩浓度出厂值 = 原「标准档」基线（深色 0.32）。
+pub(crate) const DEFAULT_SCRIM_ALPHA: f32 = 0.32;
 
 pub(crate) fn default_theme() -> String {
     // (#follow-ui-removed 2026-10-16) 「跟随系统」已下线，但这里**必须仍返回空串**：
@@ -71,8 +73,17 @@ pub(crate) fn default_panel_alpha() -> f32 {
 pub(crate) fn default_term_alpha() -> f32 {
     DEFAULT_TERM_ALPHA
 }
-pub(crate) fn default_wallpaper_visible() -> f32 {
-    1.0
+pub(crate) fn default_scrim_alpha() -> f32 {
+    DEFAULT_SCRIM_ALPHA
+}
+pub(crate) fn default_wallpaper_scope() -> String {
+    "window".to_string()
+}
+pub(crate) fn default_wallpaper_fit() -> String {
+    "cover".to_string()
+}
+pub(crate) fn default_scrim_style() -> String {
+    "auto".to_string()
 }
 pub(crate) fn default_follow_system() -> bool {
     // (#follow-ui-removed 2026-10-16) 跟随系统下线：不再有「新装即跟随」。
@@ -86,10 +97,10 @@ pub(crate) fn default_channel_members() -> [Vec<String>; 4] {
     [Vec::new(), Vec::new(), Vec::new(), Vec::new()]
 }
 
-pub(crate) fn default_sidebar_width() -> f32 {
+pub(crate) fn default_right_sidebar_width() -> f32 {
     220.0
 }
-pub(crate) fn default_sidebar_height() -> f32 {
+pub(crate) fn default_right_sidebar_height() -> f32 {
     240.0
 }
 pub(crate) fn default_sftp_width() -> f32 {
@@ -115,6 +126,46 @@ pub(crate) fn default_quick_panel_width() -> f32 {
 
 pub(crate) fn default_quick_panel_height() -> f32 {
     220.0
+}
+
+/// (#mode-values 2026-10-17) 一套「外观数值」—— 暗 / 亮各存一份。
+///
+/// 用户定稿：「暗主题调好了，切亮主题不该用暗主题的数值；明暗不共用，某个
+/// 模式第一次使用就是默认值」。字段语义与之前的平铺版本一致（alpha = 1 − 透明度）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppearanceValues {
+    /// 四分区不透明度（0–1）。
+    #[serde(default = "default_panel_alpha")]
+    pub titlebar_alpha: f32,
+    #[serde(default = "default_panel_alpha")]
+    pub tabbar_alpha: f32,
+    #[serde(default = "default_panel_alpha")]
+    pub sidebar_alpha: f32,
+    #[serde(default = "default_term_alpha")]
+    pub term_alpha: f32,
+    /// 壁纸透明度（0 = 完全显示）。
+    #[serde(default)]
+    pub wallpaper_transparency: f32,
+    /// 弹窗透明度（0 = 实心）。
+    #[serde(default)]
+    pub popup_transparency: f32,
+    /// 遮罩浓度（0–1，默认 0.32）。
+    #[serde(default = "default_scrim_alpha")]
+    pub scrim_alpha: f32,
+}
+
+impl Default for AppearanceValues {
+    fn default() -> Self {
+        Self {
+            titlebar_alpha: DEFAULT_PANEL_ALPHA,
+            tabbar_alpha: DEFAULT_PANEL_ALPHA,
+            sidebar_alpha: DEFAULT_PANEL_ALPHA,
+            term_alpha: DEFAULT_TERM_ALPHA,
+            wallpaper_transparency: 0.0,
+            popup_transparency: 0.0,
+            scrim_alpha: DEFAULT_SCRIM_ALPHA,
+        }
+    }
 }
 
 /// On-disk layout. Keep additive to ease forward-compat.
@@ -262,21 +313,21 @@ pub struct ConfigFile {
     pub command_history: Vec<String>,
     /// Collapse the left resource sidebar on startup (#78).
     #[serde(default)]
-    pub collapse_sidebar_default: bool,
+    pub collapse_right_sidebar_default: bool,
     /// Last resource-sidebar collapsed state. None means fall back to
-    /// `collapse_sidebar_default` for older configs.
+    /// `collapse_right_sidebar_default` for older configs.
     #[serde(default)]
-    pub sidebar_collapsed: Option<bool>,
+    pub right_sidebar_collapsed: Option<bool>,
     /// User-adjustable width of the left resource sidebar, in logical pixels.
     /// Persisted across restarts so the drag-resized width sticks.
-    #[serde(default = "default_sidebar_width")]
-    pub sidebar_width: f32,
+    #[serde(default = "default_right_sidebar_width")]
+    pub right_sidebar_width: f32,
     /// Resource-panel docking: size when docked top/bottom, and which edge it is
     /// docked to (left|right|top|bottom). Persisted so the layout sticks (#dock).
-    #[serde(default = "default_sidebar_height")]
-    pub sidebar_height: f32,
+    #[serde(default = "default_right_sidebar_height")]
+    pub right_sidebar_height: f32,
     #[serde(default)]
-    pub sidebar_dock: String,
+    pub right_sidebar_dock: String,
     /// SFTP-panel docking: extents (px) and docked edge, persisted (#dock).
     #[serde(default = "default_sftp_width")]
     pub sftp_panel_width: f32,
@@ -319,20 +370,18 @@ pub struct ConfigFile {
     pub webdav_accept_invalid_certs: bool,
     /// Render the welcome page (session list) as a docked left sidebar instead of
     /// a "New tab" tab (v0.5). Persisted so the layout choice sticks.
-    #[serde(default)]
-    pub welcome_as_sidebar: bool,
     /// Width (logical px) of the welcome/session sidebar when docked (v0.5).
     #[serde(default)]
-    pub welcome_sidebar_width: f32,
+    pub left_sidebar_width: f32,
     /// Welcome/session sidebar dock edge (left|right|top|bottom).
     #[serde(default)]
-    pub welcome_sidebar_dock: String,
+    pub left_sidebar_dock: String,
     /// Welcome sidebar collapsed to the edge icon strip (IDEA-style) (v0.5).
     /// None means the user has not explicitly collapsed/expanded it yet.
     #[serde(default)]
-    pub welcome_collapsed: Option<bool>,
-    /// Frosted-panel opacity over a wallpaper (0.30–1.00); user-adjustable via the
-    /// Interface › Wallpaper opacity slider. 0 = use the current default.
+    pub left_sidebar_collapsed: Option<bool>,
+    /// 面板不透明度（0.30–1.00 的旧全局值）。四分区改造后不再直接驱动界面：
+    /// 仅作 rev4 迁移的来源值（迁到三区各自的 alpha）。
     #[serde(default)]
     pub wallpaper_overlay: f32,
     // ── (#theme-split 2026-10-07) 主题/强调色/壁纸三层解耦 ──────────────
@@ -357,18 +406,39 @@ pub struct ConfigFile {
     /// accent_mode = "custom" 时的 "#RRGGBB"。
     #[serde(default)]
     pub accent_custom: String,
-    /// 面板不透明度（30–100 滑杆 → 0.30–1.00）。由旧 wallpaper_overlay 迁移。
-    #[serde(default = "default_panel_alpha")]
-    pub panel_alpha: f32,
-    /// 终端不透明度（75–100 滑杆 → 0.75–1.00，下限保护 ANSI 可读）。
-    #[serde(default = "default_term_alpha")]
-    pub term_alpha: f32,
-    /// 壁纸图自身可见度（0–100 滑杆 → 0.00–1.00）。
-    #[serde(default = "default_wallpaper_visible")]
-    pub wallpaper_visible: f32,
-    /// 弹窗通透度三档：0 标准（实心）| 1 通透 | 2 全透。
+    /// (#mode-values 2026-10-17) 外观数值：**暗 / 亮各一套**，切换主题即切换那套；
+    /// 某模式第一次使用 = 默认值（新配置两套都是默认）。
     #[serde(default)]
-    pub popup_transparency: i32,
+    pub appearance_dark: AppearanceValues,
+    #[serde(default)]
+    pub appearance_light: AppearanceValues,
+    // ── rev6 迁移用的旧单套数值（只读、不再序列化）────────────────────
+    #[serde(default, rename = "titlebar_alpha", skip_serializing)]
+    pub legacy_titlebar_alpha: Option<f32>,
+    #[serde(default, rename = "tabbar_alpha", skip_serializing)]
+    pub legacy_tabbar_alpha: Option<f32>,
+    #[serde(default, rename = "sidebar_alpha", skip_serializing)]
+    pub legacy_sidebar_alpha: Option<f32>,
+    #[serde(default, rename = "term_alpha", skip_serializing)]
+    pub legacy_term_alpha: Option<f32>,
+    #[serde(default, rename = "wallpaper_transparency", skip_serializing)]
+    pub legacy_wallpaper_transparency: Option<f32>,
+    #[serde(default, rename = "popup_transparency", skip_serializing)]
+    pub legacy_popup_transparency: Option<f32>,
+    #[serde(default, rename = "scrim_alpha", skip_serializing)]
+    pub legacy_scrim_alpha: Option<f32>,
+    /// 壁纸作用域："window"（整个界面，默认）| "terminal"（仅终端区）。
+    #[serde(default = "default_wallpaper_scope")]
+    pub wallpaper_scope: String,
+    /// 壁纸填充方式："cover"（默认，铺满裁切）| "contain" | "fill"。
+    #[serde(default = "default_wallpaper_fit")]
+    pub wallpaper_fit: String,
+    /// (#scrim-style 2026-10-17) 遮罩样式：auto / dark / light / tint / soft /
+    /// frost / spot / sheen / random。
+    #[serde(default = "default_scrim_style")]
+    pub scrim_style: String,
+
+
     /// 「跟随图片取色」——唯一让壁纸反向影响界面的开关（默认关，§6-待定①）。
     #[serde(default)]
     pub wallpaper_color_pickup: bool,

@@ -12,9 +12,9 @@
 //   L2 强调色 Accent = 独立于主题（跟随主题 / 9 预设 / 自定义，3:1 守卫在 Rust）
 //   L3 壁纸 Wallpaper = 一张图 + 三个独立透明度，不读不写主题
 //
-// 绘制栈：z0 窗口底色(不透明) → z1 壁纸图(受"壁纸可见度") → z2 面板雾面
-// (主题面色 + 面板不透明度) → z3 终端底(主题 tbg + 终端不透明度，下限 0.75)
-// → z4 弹窗(主题面色，通透度三档可选)。
+// 绘制栈：z0 窗口底色(不透明) → z1 壁纸图(受「壁纸透明度」与「作用域」)
+// → z2 四分区雾面(标题栏 / 标签栏 / 侧栏 / 终端区各自 alpha，作用域=终端时
+//    前三个强制不透明) → z3 弹窗(主题面色 × 弹窗透明度) + Scrim 遮罩(9 样式)。
 
 export global Theme {
     // ── 当前主题（Rust 在 apply_theme 里写）──────────────────────────
@@ -52,23 +52,38 @@ export global Theme {
     // ── L3 壁纸：只负责"背后那张图"，不参与任何颜色决策 ───────────────
     in-out property <image> wallpaper;
     in-out property <bool>  wallpaper-active: false;
-    // 壁纸图自身可见度（0–100 滑杆；无壁纸时置灰）。Rust 写入，app.slint
-    // 的壁纸 Image 的 alpha 读它。
-    in-out property <float> wallpaper-visible: 1.0;
+    // (#wallpaper-transparency 2026-10-17) 壁纸图自身**透明度**（0 = 完全
+    // 清晰，1 = 完全透明）。滑杆语义 = 透明程度，图 alpha = 1 − 本值。
+    in-out property <float> wallpaper-transparency: 0.0;
+    // (#wallpaper-scope 2026-10-17) 壁纸作用域：0 = 整个界面 / 1 = 终端区。
+    // 作用域 = 终端时，标题栏/标签栏/侧栏三区强制不透明，只有终端区允许透出。
+    in-out property <int> wallpaper-scope: 0;
+    // 填充方式："cover" 填充 / "contain" 适应 / "fill" 拉伸。
+    in-out property <string> wallpaper-fit: "cover";
     // 「跟随图片取色」开启时，Rust 把图片主色写进来（仅作 accent 来源，
     // 不再染面板、不再反写深浅）。wp-tint 保留仅为兼容既有桥属性/同步代码
     // （frost 已不再混色——界面被壁纸染色的根源已拆）。
     in-out property <color> wp-accent: #4a90e2;
     in-out property <color> wp-tint: #808080;
-    // 面板雾面不透明度（30–100 滑杆）。不再混图片平均色（wp-tint 已删——
-    // "界面被壁纸染色"的根源，§0）。
-    in-out property <float> panel-alpha: 0.85;
-    // 终端不透明度（75–100 滑杆，config 层钳下限 0.75——终端是唯一承载
-    // 不可控 ANSI 输出的区域，浅色终端在亮壁纸上文字发飘的坑，§1）。
-    in-out property <float> term-alpha: 1.0;
-    // 弹窗通透度三档：0 标准（实心，现状）/ 1 通透（跟随面板不透明度）/
-    // 2 全透（88% + 强遮罩）。§3-调整④。
-    in-out property <int> popup-transparency: 0;
+    // 非分区表面（菜单 / 卡片 / 独立窗口）的基准雾面。四分区各有自己的滑杆
+    // 后，面板基准不再由 UI 驱动，保持 #theme-split 的 0.85 观感。
+    property <float> panel-alpha: 0.85;
+
+    // ── (#zone-alpha 2026-10-17) 四分区透明度（0 = 不透明，1 = 全透）──────
+    // 语义与「壁纸透明度」一致：滑杆值 = 透明程度，面板 alpha = 1 − 值。
+    in-out property <float> titlebar-transparency: 0.15;
+    in-out property <float> tabbar-transparency: 0.15;
+    in-out property <float> sidebar-transparency: 0.15;
+    in-out property <float> term-transparency: 0.0;
+    // 生效 alpha：作用域 = 终端时，除终端区外一律不透明；终端区恒用自身值。
+    out property <float> titlebar-alpha: root.wallpaper-scope == 1 ? 1.0 : 1.0 - root.titlebar-transparency;
+    out property <float> tabbar-alpha:   root.wallpaper-scope == 1 ? 1.0 : 1.0 - root.tabbar-transparency;
+    out property <float> sidebar-alpha:  root.wallpaper-scope == 1 ? 1.0 : 1.0 - root.sidebar-transparency;
+    out property <float> term-alpha:     1.0 - root.term-transparency;
+    // (#popup-transparency 2026-10-17 语义定稿) 弹窗**透明度**：0 = 实心，
+    // 1 = 完全透明。它和「遮罩浓度」是两个独立参数 —— 前者管弹窗自己透多少，
+    // 后者管弹窗背后压多暗；不做任何互相联动/隐藏加成。
+    in-out property <float> popup-transparency: 0.0;
 
     // Frost a base surface: with a wallpaper active it becomes translucent so
     // the image shows through; otherwise the plain opaque base (#theme-split:
@@ -79,9 +94,26 @@ export global Theme {
             : base;
     }
 
+    // (#zone-alpha-fix 2026-10-17) 四分区 / 终端区**始终**按 alpha 半透明：
+    // `frost()` 在没有壁纸时直接返回实色，于是「分区透明度」四根滑杆被短路
+    // （用户截图：调到 100% 毫无变化）。页面文案本来就写着"没有壁纸时透出窗口
+    // 底色、效果较弱" —— 窗口底色（root）与面板色只差 2~4 级，所以效果弱，
+    // 但不该是"零"。其余表面（菜单/卡片/独立窗口）仍走 frost，默认观感不变。
+    pure function zone-frost(base: color, alpha: float) -> brush {
+        return base.with-alpha(alpha);
+    }
+
     // --- Palette -----------------------------------------------------------
     // Opaque window base — the wallpaper Image covers it when active, so panels
     // frost over the image rather than over this.
+    // (#zone-backdrop 2026-10-17) 主窗口的**背板**（分区透明后透出的那一层）。
+    // 用户反馈「没有壁纸时四区滑杆看不出效果」：面板色与窗口底色只差 2 级，
+    // 100% 透明也几乎同色。这里把背板相对面板压暗一档（深色 32% / 亮色 7%），
+    // 让"透出背板"这件事肉眼可见；有壁纸时这层被壁纸盖住，完全不受影响。
+    // 独立窗口（编辑器/进程/系统信息）仍用 window-base，不受此改动波及。
+    out property <brush> zone-backdrop: root.dark
+        ? root.slot-root.darker(0.32)
+        : root.slot-root.darker(0.07);
     out property <brush> window-base: root.slot-root;
 
     property <color> base-bg-root:      root.slot-root;
@@ -96,6 +128,12 @@ export global Theme {
     out property <brush> bg-panel:     frost(base-bg-panel, root.panel-alpha);
     out property <brush> bg-panel-alt: frost(base-bg-panel-alt, root.panel-alpha);
     out property <brush> bg-elevated:  frost(base-bg-elevated, root.panel-alpha);
+    // (#zone-alpha 2026-10-17) 四分区专用底：主界面标题栏 / 标签栏 / 侧栏
+    // 各读自己的 alpha（终端区走 term-bg）。其余表面（菜单、弹框内衬、独立
+    // 窗口）继续用 bg-panel / bg-root —— 它们不属于任何分区。
+    out property <brush> zone-titlebar: root.zone-frost(base-bg-panel, root.titlebar-alpha);
+    out property <brush> zone-sidebar:  root.zone-frost(base-bg-panel, root.sidebar-alpha);
+    out property <brush> zone-tabbar:   root.zone-frost(root.slot-tbg,  root.tabbar-alpha);
     // (#hover-accent 2026-10-10) 悬浮高亮统一跟随强调色（用户定稿），
     // 取代原来「frost(slot-hov)」的绝对色写法。原写法的两个问题：
     //   ① slot-hov 是绝对色，各套取值随意，相对底色亮度倍率实测从 0.60 抖到
@@ -119,16 +157,11 @@ export global Theme {
     // grey labels stay legible even at a low wallpaper overlay (user request).
     out property <brush> bg-panel-strong: frost(base-bg-panel, min(1.0, root.panel-alpha + 0.20));
 
-    // (#popup-transparency §3-调整④) 弹窗层从"恒不透明"改为三档：
-    //   标准(0) = 实心（现状，20 处调用点的默认观感不变）
-    //   通透(1) = 82% 玻璃（深色遮罩兜底）
-    //   全透(2) = 55% 玻璃 + 强遮罩
-    // (#popup-transparency-hifi 2026-10-14) 三档无条件生效（不再依赖壁纸）：
-    // 露出纯窗口底色同样是「透」，且三档差异肉眼可辨；Slint 无 backdrop-blur，
-    // 全透档靠强遮罩兜住可读性（modal-scrim 在档 2 加深 0.18）。
-    out property <float> popup-alpha: root.popup-transparency == 2 ? 0.55
-        : root.popup-transparency == 1 ? 0.82
-        : 1.0;
+    // 弹窗不透明度 = 1 − 透明度，**一条直线**：0% 实心，100% 完全透明。
+    // 刻意不做下限 / 分段 / 高光 —— 用户定稿「通透度就是透明度，100% 就该
+    // 看到背后的内容」；弹窗透出来的"黑"是背后内容 × 遮罩浓度，由遮罩这个
+    // 独立参数决定，不在这里偷偷联动。
+    out property <float> popup-alpha: 1.0 - root.popup-transparency;
     out property <brush> popup-bg: base-bg-panel.with-alpha(root.popup-alpha);
     out property <brush> popup-bg-alt: base-bg-panel-alt.with-alpha(root.popup-alpha);
     // (#popup-inset-alpha 2026-10-16) 弹窗内衬底：root 色 × 弹窗通透档。
@@ -158,9 +191,9 @@ export global Theme {
 
     // (#tab-flush 2026-09-14 / #tab-32 2026-10-07) 选中标签底色与标签栏底色
     // 都 = 终端底色（tab-row-idia 稿：条带底色 = term-bg，选中态全靠 3px 横线，
-    // 三者同色）。壁纸模式下 term-bg 自身半透明，直接引用即自动跟随。
-    out property <brush> tab-active-bg: root.term-bg;
-    out property <brush> tab-bar-bg: root.term-bg;
+    // 三者同色）。(#zone-alpha 2026-10-17) 标签栏改读**自己的**分区 alpha。
+    out property <brush> tab-active-bg: root.zone-tabbar;
+    out property <brush> tab-bar-bg: root.zone-tabbar;
     // (#tab-32) 旧 tab-active-border（1px 灰线）删除：零引用死 token，选中
     // 标识已改为顶部 3px accent 横线（tabs.slint）。
 
@@ -210,19 +243,62 @@ export global Theme {
     // 跟强调色走，避免实心 accent 和「创建」主按钮抢层级。modal-scrim 是方案 A：
     // 低 alpha 纯色，无 blur（Slint 无元素级 backdrop-filter）。全屏弹窗要
     // 看得出遮罩，alpha 略高于原型舞台值（暗 0.32 / 亮 0.36）。
-    // (#popup-transparency) 弹窗通透/全透档位下遮罩自动上调（稿约束：无论
-    // 哪档，弹窗之上文字对比度要兜住），封顶 0.60。
     out property <brush> chip:        root.accent-solid.with-alpha(root.dark ? 0.22 : 0.14);
     out property <brush> accent-soft: root.accent-solid.with-alpha(root.dark ? 0.16 : 0.12);
 
-    // (#menu-hover 2026-10-08 → 2026-10-10 退役) 旧 `menu-hover` token 已删除：
-    // 它是写死的反色蒙版（深 12% 白 / 浅 8% 黑），与 bg-hover 并存导致同一屏
-    // 出现两套悬浮语言。14 处引用已全部迁到 `bg-hover`（定义在文件上方），
-    // 不再保留别名（`bg-hover` 本身已是 out property，重复声明会编译报错）。
-    out property <float> scrim-alpha: min(0.60, (root.dark ? 0.32 : 0.36)
-        + (root.popup-transparency == 2 ? 0.18 : 0.0)
-        + (root.popup-transparency == 1 ? 0.10 : 0.0));
-    out property <brush> modal-scrim: (root.dark ? #0c0d11 : #f4f5f8).with-alpha(root.scrim-alpha);
+    // ── (#scrim-style 2026-10-17) 遮罩样式 9 选 + 浓度滑杆 ─────────────
+    // 样式：auto / dark / light / tint / soft / frost / spot / sheen / random
+    // 浓度：0..1（默认 0.32 = 原「标准档」基线）。**不随弹窗透明度联动**。
+    in-out property <string> scrim-style: "auto";
+    in-out property <float> scrim-strength: 0.32;
+    in-out property <int> scrim-random-pick: 0;
+    callback scrim-roll();
+
+    public pure function scrim-name(i: int) -> string {
+        return i == 1 ? "dark" : i == 2 ? "light" : i == 3 ? "tint"
+            : i == 4 ? "soft" : i == 5 ? "frost" : i == 6 ? "spot"
+            : i == 7 ? "sheen" : "auto";
+    }
+    public pure function scrim-label(id: string, en: bool) -> string {
+        return id == "dark" ? (en ? "Dark" : "深色")
+            : id == "light" ? (en ? "Light" : "浅色")
+            : id == "tint" ? (en ? "Tinted glass" : "染色玻璃")
+            : id == "soft" ? (en ? "Soft light" : "柔光")
+            : id == "frost" ? (en ? "Frost" : "磨砂")
+            : id == "spot" ? (en ? "Spotlight" : "聚光")
+            : id == "sheen" ? (en ? "Sheen" : "高光")
+            : id == "random" ? (en ? "Random (each time)" : "随机（每次打开换）")
+            : (en ? "Auto" : "自动");
+    }
+    out property <string> scrim-eff: root.scrim-style == "random"
+        ? root.scrim-name(root.scrim-random-pick)
+        : root.scrim-style;
+
+    // 遮罩浓度 = 用户设的值，就是这个值（不随弹窗透明度自动加重）。
+    out property <float> scrim-alpha: root.scrim-strength;
+    property <color> scrim-base: root.dark ? #0c0d11 : #f4f5f8;
+    property <color> scrim-ink: root.dark ? #000000 : #18140e;
+    // 压暗基座：五种装饰样式由 Scrim 组件叠加（基座透明），其余为纯色基座。
+    out property <float> scrim-base-alpha:
+        root.scrim-eff == "tint" || root.scrim-eff == "soft"
+        || root.scrim-eff == "frost" || root.scrim-eff == "spot"
+        || root.scrim-eff == "sheen" ? 0.0
+        : root.scrim-alpha;
+    out property <brush> modal-scrim: (root.scrim-eff == "dark" ? #0c0d11
+        : root.scrim-eff == "light" ? #f4f5f8
+        : root.scrim-base).with-alpha(root.scrim-base-alpha);
+
+    out property <color> scrim-tint-a: root.accent-solid.with-alpha(root.scrim-alpha * 0.85);
+    out property <color> scrim-tint-b: root.accent-solid.with-alpha(root.scrim-alpha * 0.40);
+    out property <color> scrim-soft-a: root.scrim-ink.with-alpha(min(root.scrim-alpha * 1.15, 0.80));
+    out property <color> scrim-soft-b: root.scrim-ink.with-alpha(root.scrim-alpha * 0.30);
+    out property <color> scrim-spot-a: root.scrim-ink.with-alpha(root.scrim-alpha * 0.22);
+    out property <color> scrim-spot-b: root.scrim-ink.with-alpha(min(root.scrim-alpha * 1.10, 1.0));
+    out property <color> scrim-sheen-a: #ffffff.with-alpha(root.scrim-alpha * 0.38);
+    out property <color> scrim-sheen-b: #ffffff.with-alpha(0.0);
+    out property <color> scrim-sheen-c: root.scrim-ink.with-alpha(root.scrim-alpha * 0.78);
+    out property <color> scrim-frost-top: #ffffff.with-alpha(min(root.scrim-alpha * 0.16, 0.10));
+    out property <color> scrim-frost-body: root.scrim-base.with-alpha(root.scrim-alpha * 0.70);
     // 滚动渐隐用的不透明面板色（不能走 frost 后的 brush，否则渐变混成灰）。
     out property <color> panel-solid: root.base-bg-panel;
 
@@ -234,11 +310,9 @@ export global Theme {
     // Terminal uses its own background so it stays readable regardless of
     // what the shell / remote app outputs via ANSI colour codes. With a
     // wallpaper it frosts (kept neutral, not tinted) at the **terminal's own**
-    // opacity（不再与面板共用一个 alpha；下限 0.75 由 config 层钳制）。
+    // transparency（#zone-alpha 2026-10-17：下限 0.75 已按用户要求移除）。
     property <color> base-term-bg: root.slot-tbg;
-    out property <brush> term-bg: root.wallpaper-active
-        ? base-term-bg.with-alpha(root.term-alpha)
-        : base-term-bg;
+    out property <brush> term-bg: root.zone-frost(base-term-bg, root.term-alpha);
     out property <brush> term-fg: root.slot-tfg;
 
     // True on macOS (set by Rust). App shortcuts use Cmd (⌘) here instead of
@@ -379,14 +453,19 @@ export global Theme {
     out property <length> radius-lg: 10px * root.ui-scale;
     out property <length> radius-xl: 16px * root.ui-scale;
 
-    // (#win-edge-frame 2026-10-10) 主窗口四角的目标半径 = **8 物理像素**:
-    // Win11 DWM 给窗口切的圆角是固定 8 物理像素,**不随 DPI 缩放**。Slint
-    // 长度是逻辑像素,必须除以 device-pixel-ratio 换回物理值,自绘的描边弧
-    // 才能与 DWM 裁剪弧重合。写死逻辑 8px 在 125% 缩放下是 10 物理像素,
-    // 比裁剪弧大 —— 靠角的一段弧被裁剪弧削掉,弧线折断成"尖角",削掉的
-    // 弧段留下反锯齿碎点,弧与裁剪边之间还露出一楔形窗口底色(用户截图)。
-    // device-pixel-ratio 由 AppWindow 从 root.scale-factor 镜像(含 DPI 变化)。
-    out property <length> radius-win: 8px / root.device-pixel-ratio;
+    // (#win-edge-frame-r7 2026-10-18) 主窗口四角的 DWM 裁剪半径 = **8 DIP（逻辑
+    // 像素）**，**随 DPI 缩放**（= 8 × device-pixel-ratio 物理像素）。
+    //
+    // 2026-10-18 真机实测（200% DPI，把 DWMWA_BORDER_COLOR 染成主题色后拟合窗口
+    // 外缘圆）：圆心距窗角 ≈16.5 物理、半径 ≈16.1~16.3 物理 → 8.0~8.15 DIP。
+    // 旧注释（r1 2026-10-10）断言"Win11 圆角固定 8 物理像素、不随 DPI 缩放"是
+    // **错的**：把 100% 缩放下的 8 物理与 8 DIP 混为一谈了。按旧值
+    // `8px / device-pixel-ratio`，200% 下只得到 8 物理像素（= 真实裁剪半径的一
+    // 半），自绘角弧整段落在 DWM 裁剪区外被裁掉 → 四角没有边框线。
+    // 真机像素实测（200%）：窗口外缘 16 物理像素半径处才从桌面切进窗口。
+    // 该 token 同时用于 BrandLogoBtn / 关闭键的角落高亮圆角（必须与裁剪弧一致）。
+    out property <float> radius-win-px: 8.0;
+    out property <length> radius-win: root.radius-win-px * 1px;
 
     out property <length> gap-xs: 4px * root.ui-scale;
     out property <length> gap-sm: 8px * root.ui-scale;

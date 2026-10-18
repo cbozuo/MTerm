@@ -106,7 +106,7 @@ pub(super) fn start_session_in_tab(tab_id: &str, session: Session, ctx: &Connect
     let monitoring_enabled = ctx
         .weak
         .upgrade()
-        .map(|window| !window.get_sidebar_collapsed() && !window.get_zen_mode())
+        .map(|window| !window.get_right_sidebar_collapsed() && !window.get_zen_mode())
         .unwrap_or(true);
     handle.set_resource_monitoring(monitoring_enabled);
     ctx.handles.borrow_mut().insert(tab_id.to_string(), handle);

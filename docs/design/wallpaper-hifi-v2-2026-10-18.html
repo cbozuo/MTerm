@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MTerm 外观（主题 + 壁纸）v3 · 单栏精简 · 高保真原型（2026-10-17）</title>
+<style>
+/* ══════════════════════════════════════════════════════════════════════════
+   v3（按评审收敛）：
+     · 去掉 v2 左侧大画布 → 壁纸库下方一张小预览卡（与弹窗遮罩预览卡同款
+       语言，实时联动）
+     · 精简冗余/冲突：删「壁纸暗化」（与壁纸透明度重叠）、删「显示区域」
+       （与分区透明度是两层控制）→ 透明度 3 滑杆即覆盖
+     · 自定义壁纸多张化：悬停 × 快捷删除 + 选中后工具条（在文件夹中显示/删除）
+     · 遮罩样式 9 项 chips → 下拉框（与全项目下拉同款：选中 = accent 文字 + ✓）
+     · 「外观」页合并主题与壁纸（导航少一项）
+   token 逐值取自 src/theme/palettes.rs（mterm-dark / mterm-light）。
+   ════════════════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"]{
+  --root:#161619; --panel:#181A1D; --palt:#1B1D21; --elev:#1E2024;
+  --t1:#BCBEC4; --t2:#7A7E85; --t3:#6F737A;
+  --line:#232428; --lstr:#4E5157;
+  --ac:#1FC8B4; --ac2:#7CE0D4;
+  --card-rgb:24,26,29; --shadow:0 12px 40px rgba(0,0,0,.5);
+}
+:root[data-theme="light"]{
+  --root:#F2F0EC; --panel:#FAF8F4; --palt:#E9E6DF; --elev:#FFFEFA;
+  --t1:#33302C; --t2:#7B766F; --t3:#968F85;
+  --line:#E0DEDA; --lstr:#D0CECB;
+  --ac:#1F766B; --ac2:#4A9D91;
+  --card-rgb:250,248,244; --shadow:0 12px 40px rgba(60,50,30,.18);
+}
+:root{
+  --accent-soft:rgba(31,200,180,.16); --chip:rgba(31,200,180,.22);
+  --field:#191b21; --ctrl:#31353e; --line2:#3f444f; --tfg:#BCBEC4;
+  --f-2xs:10px; --f-xs:11px; --f-sm:13px; --f-lg:15px;
+  --r-sm:4px; --ui:"Segoe UI","Microsoft YaHei UI","PingFang SC",sans-serif;
+  --mono:"Cascadia Mono",Consolas,"Courier New",monospace;
+  --noise:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+:root[data-theme="light"]{ --field:#f4f5f8; --ctrl:#dcdce3; --line2:#c7c7cc; --tfg:#33302C; --accent-soft:rgba(31,118,107,.12); --chip:rgba(31,118,107,.14); }
+
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0f1013;color:#c9ccd6;font-family:var(--ui);font-size:var(--f-sm);line-height:1.6;padding:28px 28px 70px}
+.stage-head{max-width:1000px;margin:0 auto 20px}
+.stage-head h1{font-size:22px;color:#e8eaf0;font-weight:700;letter-spacing:.5px}
+.stage-head .sub{margin-top:6px;color:#8a8f9c;font-size:var(--f-sm)}
+.stage-head .sub code{color:#9dc3f0;background:#1c1f27;padding:1px 6px;border-radius:4px;font-family:var(--mono);font-size:var(--f-xs)}
+.stage-head .v2note{margin-top:8px;font-size:12px;color:#c8a24a;background:rgba(200,162,74,.10);border:1px solid rgba(200,162,74,.35);border-radius:8px;padding:8px 12px;line-height:1.6}
+/* v2：演示工具台 → 右下角浮层，与产品界面视觉隔离 */
+.stage-bar{position:fixed;right:18px;bottom:18px;z-index:200;max-width:300px;flex-direction:column;align-items:stretch;gap:7px;background:var(--palt);border:1px solid var(--line2);border-radius:12px;padding:11px 13px;box-shadow:0 14px 36px rgba(0,0,0,.45)}
+.stage-bar .hd{font-size:10px;color:var(--t3);letter-spacing:.5px;border-bottom:1px solid var(--line);padding-bottom:6px;margin-bottom:1px}
+.stage-bar .hd b{color:var(--ac);font-weight:600}
+.stage-bar .lbl{color:#6b7080;font-size:var(--f-xs);margin-right:2px}
+.chip-btn{border:1px solid #2a2d36;background:#17191f;color:#aeb4c0;font-size:var(--f-xs);padding:5px 12px;border-radius:99px;cursor:pointer;transition:all .15s;font-family:var(--ui)}
+.chip-btn:hover{border-color:#3d4250;color:#dfe3ea}
+.chip-btn.on{background:#1FC8B4;border-color:#1FC8B4;color:#08221e}
+
+/* ── 卡片 ── */
+.card{width:1000px;margin:0 auto;border-radius:16px;overflow:hidden;box-shadow:var(--shadow);background:rgba(var(--card-rgb),1);border:1px solid var(--line)}
+.card+.card{margin-top:26px}
+.card-head{display:flex;align-items:center;padding:0 18px;height:52px;border-bottom:1px solid var(--line)}
+.card-head .t{font-size:var(--f-lg);font-weight:700;color:var(--t1)}
+.card-head .sub{font-size:var(--f-sm);color:var(--t2);margin-left:9px}
+.card-head .x{margin-left:auto;width:26px;height:26px;border-radius:var(--r-sm);display:flex;align-items:center;justify-content:center;color:var(--t2);cursor:pointer}
+.card-head .x:hover{background:#e81123;color:#fff}
+.body{display:flex}
+.nav{width:150px;border-right:1px solid var(--line);padding:10px 8px;flex:0 0 auto}
+.nav .it{display:flex;align-items:center;gap:9px;height:30px;padding:0 10px;border-radius:6px;font-size:var(--f-sm);color:var(--t1);white-space:nowrap}
+.nav .it.on{color:var(--ac)}
+.pane{flex:1;min-width:0;padding:14px 22px 20px;display:flex;flex-direction:column;gap:12px}
+/* v2：分节小组卡片 —— 五个区块各自成组，一扫就知道边界在哪 */
+.grp{background:var(--palt);border:1px solid var(--line);border-radius:12px;padding:10px 12px 12px}
+.grp>.sh:first-child{margin-top:2px}
+
+.sh{font-size:11px;font-weight:600;color:var(--t3);letter-spacing:.6px;margin-top:6px}
+.sh:first-child{margin-top:0}
+
+/* 行（label + 控件） */
+.srow{display:flex;align-items:flex-start;gap:14px;padding:8px 0;border-bottom:1px solid var(--line)}
+.srow:last-child{border-bottom:none}
+.srow .lb{flex:1;min-width:0}
+.srow .lb .n{font-size:13px;color:var(--t1)}
+.srow .lb .d{font-size:11px;color:var(--t2);margin-top:3px;line-height:1.55}
+/* v2：控件列定宽 + 右对齐 —— 让右侧一列整齐 */
+.srow .ctl{flex:0 0 auto;display:flex;align-items:center;justify-content:flex-end;gap:10px;padding-top:2px;min-width:290px}
+.divider{height:1px;background:var(--line);margin:6px 0}
+
+/* 统一画廊（主题 / 壁纸同款横排卡，82px 等宽 —— 壁纸 9 卡单行放下） */
+.gal{display:flex;gap:5px;flex-wrap:wrap}
+.gal-card{width:81px;flex:0 0 auto;display:flex;flex-direction:column;gap:4px;cursor:pointer}
+.gal-card .th{height:52px;border-radius:8px;overflow:hidden;position:relative;border:1px solid var(--line);background:var(--root);transition:box-shadow .12s,border-color .12s}
+.gal-card:hover .th{box-shadow:0 0 0 2px var(--line2)}
+.gal-card.on .th{border-color:var(--ac);box-shadow:0 0 0 2px var(--ac)}
+.gal-card .th .wp-in{position:absolute;inset:0}
+.gal-card .cap{font-size:10px;color:var(--t2);text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gal-card.on .cap{color:var(--ac)}
+.gal-card .badge{position:absolute;top:4px;right:4px;width:15px;height:15px;border-radius:50%;background:var(--ac);color:#08221e;font-size:9px;font-weight:700;display:none;align-items:center;justify-content:center}
+.gal-card.on .badge{display:flex}
+.gal-card .none{width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--t3);font-size:15px;background:var(--root)}
+.gal-card.add .th, .gal-card.more .th{border-style:dashed;border-color:var(--lstr);display:flex;align-items:center;justify-content:center;color:var(--lstr);font-size:16px}
+.gal-card.add:hover .th, .gal-card.more:hover .th{color:var(--t2)}
+/* 主题卡（色块 + 明暗角标） */
+.thm-th{display:flex;align-items:center;justify-content:center}
+.thm-th i{width:26px;height:26px;border-radius:50%;box-shadow:0 2px 8px rgba(0,0,0,.35)}
+.thm-th .mode{position:absolute;right:4px;bottom:3px;font-size:8.5px;line-height:13px;padding:0 5px;border-radius:7px;background:rgba(90,90,90,.45);color:#fff}
+/* 悬停删除角标（仅自定义壁纸）——放卡片内部右上角：.th 有 overflow:hidden（圆角裁剪），悬出会被裁掉一半 */
+.gal-card .del{position:absolute;top:4px;right:4px;width:18px;height:18px;border-radius:50%;background:var(--palt);border:1px solid var(--line2);color:var(--t2);font-size:10px;display:none;align-items:center;justify-content:center;z-index:2;transition:all .12s;line-height:1}
+.gal-card .del:hover{background:#e81123;border-color:#e81123;color:#fff}
+.gal-card.has-del:hover .del{display:flex}
+body.dbg-del .gal-card.has-del .del{display:flex}   /* 调试：?del=1 常显，供截图验证位置 */
+.lib-tools{display:flex;gap:7px;align-items:center;margin-top:2px}
+.lib-tools[hidden]{display:none}
+
+/* v2：当前外观总览（mini 实时窗 + 右侧读数） */
+.prev-strip{display:flex;gap:18px;align-items:center;background:var(--palt);border:1px solid var(--line);border-radius:12px;padding:12px 16px}
+.mini-win{width:236px;height:134px;border-radius:8px;overflow:hidden;position:relative;flex:0 0 auto;border:1px solid var(--line2)}
+.mini-win .desk{position:absolute;inset:0;background:repeating-conic-gradient(#2c3037 0% 25%, #23262c 0% 50%) 0 0/16px 16px}
+.mini-win .wall-layer{position:absolute;inset:0;transition:opacity .2s,background .2s}
+.mini-win .r{position:absolute;transition:background .2s}
+.mini-win .titlebar{left:0;right:0;top:0;height:18px}
+.mini-win .tabbar{left:0;right:0;top:18px;height:20px}
+.mini-win .sidebar{left:0;top:38px;bottom:0;width:54px}
+.mini-win .term{left:54px;right:0;top:38px;bottom:0}
+.mini-win .term span{position:absolute;left:8px;top:8px;font-family:var(--mono);font-size:9px;color:#C6C9D0;opacity:.9}
+.mini-win .term span i{display:block;margin-top:3px;width:52px;height:3px;border-radius:1.5px;background:#C6C9D0;opacity:.45}
+.prev-meta{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.prev-meta .l1{font-size:13px;color:var(--t1)}
+.prev-meta .l2{font-size:11px;color:var(--t2);font-variant-numeric:tabular-nums}
+.prev-meta .l3{font-size:10.5px;color:var(--t3);line-height:1.6}
+.prev-meta .l3 b{color:var(--t2)}
+
+/* 预览卡（与弹窗遮罩预览卡同款语言；壁纸实时联动） */
+.prev-card{margin-top:4px;border-radius:10px;border:1px solid var(--line);background:var(--palt);display:flex;align-items:center;padding:12px 16px;gap:18px}
+.prev-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px}
+.prev-text .t1l{font-size:11px;color:var(--t2);line-height:1.65}
+.prev-text .t2l{font-size:10px;color:var(--t3);line-height:1.6}
+
+/* 满宽滑杆行 */
+.prow{display:flex;flex-direction:column;gap:3px;padding:7px 0;border-bottom:1px solid var(--line)}
+.prow:last-child{border-bottom:none}
+.prow.dis,.srow.dis{opacity:.4;pointer-events:none}
+/* 标题 / 描述 / 分区名支持双击恢复默认 → 双击不选中文字 */
+.prow .n,.prow .d,.ztop .zn{user-select:none}
+.prow .top{display:flex;align-items:baseline;justify-content:space-between}
+.prow .top .n{font-size:13px;color:var(--t1)}
+.prow .top .v{font-size:12.5px;color:var(--t1);font-variant-numeric:tabular-nums}
+.prow .d{font-size:11px;color:var(--t3);line-height:1.5}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:4px;border-radius:2px;background:var(--ctrl);outline:none;cursor:pointer;margin-top:2px}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:var(--ac);border:2px solid var(--panel);box-shadow:0 0 0 1px var(--ac)}
+/* 分区透明度：四等分网格 */
+/* v2：四分区改 2×2 —— 滑杆从 ~150px 变成 ~390px，拖动精度大幅提升 */
+.zone-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px 22px;padding:6px 0 3px}
+.zcell{display:flex;flex-direction:column;gap:4px;min-width:0}
+.ztop{display:flex;align-items:baseline;justify-content:space-between}
+.ztop .zn{font-size:12.5px;color:var(--t1)}
+.ztop .zv{font-size:12px;color:var(--t1);font-variant-numeric:tabular-nums}
+.zhead{display:flex;align-items:baseline;justify-content:space-between;padding:8px 0 0}
+.zhead .n{font-size:13px;color:var(--t1)}
+.zhead .hint{font-size:10.5px;color:var(--t3)}
+/* 分段（seg 定义见下） */
+
+/* 分段 / 开关 / 按钮 */
+/* 分段（seg 定义见下） */
+
+.seg{position:relative;display:inline-flex;gap:3px;background:var(--field);border:1px solid var(--ctrl);border-radius:10px;padding:3px;height:34px}
+.seg b{position:relative;z-index:1;flex:1;display:flex;align-items:center;justify-content:center;font-weight:400;font-size:12.5px;color:var(--t3);border-radius:7px;padding:0 16px;cursor:pointer;transition:color .15s;white-space:nowrap}
+.seg b:hover{color:var(--t1)}
+.seg b.on{color:var(--ac)}
+.seg .thumb{position:absolute;top:3px;bottom:3px;border-radius:7px;background:var(--chip);transition:left .18s ease,width .18s ease}
+.sw{width:38px;height:22px;border-radius:11px;background:var(--ctrl);position:relative;cursor:pointer;transition:background .15s;flex:0 0 auto}
+.sw i{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .15s ease}
+.sw.on{background:var(--ac)}
+.sw.on i{left:19px}
+.btn{height:32px;padding:0 14px;border-radius:8px;border:none;font-size:12px;font-family:var(--ui);cursor:pointer;transition:all .15s}
+/* v2：次要操作 = 文字链，破坏性操作 hover 才变红 */
+.lnk{background:transparent;border:none;padding:0;height:26px;font-family:var(--ui);font-size:12px;color:var(--t2);cursor:pointer;transition:color .15s}
+.lnk:hover{color:var(--ac)}
+.lnk.danger:hover{color:#e81123}
+.lnk-sep{width:1px;height:12px;background:var(--line2)}
+
+/* 下拉框（与全项目下拉同款：选中 = accent 文字 + ✓、悬浮浅染） */
+.dd{position:relative;display:inline-block}
+.dd-btn{height:34px;min-width:170px;padding:0 12px;border-radius:9px;border:1px solid var(--ctrl);background:var(--field);color:var(--t1);font-size:12.5px;display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;font-family:var(--ui);transition:border-color .15s}
+.dd-btn:hover{border-color:var(--lstr)}
+.dd.open .dd-btn{border-color:var(--ac)}
+.dd-btn .caret{color:var(--t3);font-size:9px;transition:transform .15s}
+.dd.open .caret{transform:rotate(180deg)}
+.dd-pop{position:absolute;right:0;top:38px;width:190px;background:var(--panel);border:1px solid var(--line2);border-radius:10px;padding:5px;box-shadow:0 12px 32px rgba(0,0,0,.45);z-index:20;display:none}
+.dd.open .dd-pop{display:block}
+.dd-opt{height:30px;border-radius:7px;display:flex;align-items:center;justify-content:space-between;padding:0 10px;font-size:12.5px;color:var(--t2);cursor:pointer}
+.dd-opt:hover{background:var(--accent-soft);color:var(--t1)}
+.dd-opt.on{color:var(--ac)}
+.dd-opt .ck{font-size:11px;color:var(--ac);visibility:hidden}
+.dd-opt.on .ck{visibility:visible}
+
+/* 弹窗遮罩预览卡（沿用） */
+.prev-scene{width:250px;height:126px;border-radius:8px;position:relative;overflow:hidden;flex:0 0 auto;background:linear-gradient(135deg,#2a2140 0%,#141827 100%)}
+.prev-scene .blob{position:absolute;border-radius:50%}
+.prev-scene .b1{left:18px;top:8px;width:92px;height:92px;background:#7a5ce0;opacity:.9}
+.prev-scene .b2{right:14px;bottom:6px;width:54px;height:54px;background:#26b89a;opacity:.85}
+.prev-scene .b3{right:52px;top:6px;width:44px;height:44px;background:#ffb648;opacity:.9}
+.prev-scene .veil{position:absolute;inset:0;pointer-events:none;transition:background .2s}
+.prev-scene .veil .grain{position:absolute;inset:0;background-image:var(--noise);background-size:140px;opacity:0;transition:opacity .2s;mix-blend-mode:overlay}
+.mini-dlg{position:absolute;left:34px;top:17px;width:128px;height:92px;border-radius:9px;border:1px solid rgba(255,255,255,.22);box-shadow:0 12px 24px rgba(0,0,0,.4);padding:10px 11px;display:flex;flex-direction:column;gap:6px;transition:background .2s}
+.mini-dlg .ln1{width:40px;height:7px;border-radius:3.5px;background:var(--t1);opacity:.88}
+.mini-dlg .ln2{width:96px;height:5px;border-radius:2.5px;background:var(--t1);opacity:.45}
+.mini-dlg .ln3{width:68px;height:5px;border-radius:2.5px;background:var(--t1);opacity:.45}
+.mini-dlg .btn2{width:48px;height:13px;border-radius:6px;background:var(--ac)}
+
+.tag{display:inline-block;font-size:10px;line-height:15px;padding:0 6px;border-radius:9px;color:var(--ac);font-weight:600;margin-left:7px;vertical-align:1px;border:0.5px solid var(--lstr)}
+/* v2：「新」标签去底色（原 chip 实底在页内出现 3 次，噪音大于提示作用） */
+
+/* 壁纸渐变 */
+.g-light{background:linear-gradient(135deg,#eff3fb 0%,#d5e1f2 100%)}
+.g-dark{background:linear-gradient(135deg,#10131a 0%,#1b2233 100%)}
+.g-tech{background:linear-gradient(180deg,#05060f 0%,#0b1430 55%,#1a0a2e 100%)}
+.g-ms{background:linear-gradient(135deg,#1f3a4d 0%,#0c1620 60%,#2b1d3a 100%)}
+.g-miku{background:linear-gradient(135deg,#ff9ec7 0%,#b06ab3 55%,#4a90e2 100%)}
+.g-mine1{background:linear-gradient(160deg,#31435f 0%,#1a2636 55%,#0d141d 100%)}
+.g-mine2{background:linear-gradient(200deg,#3d2b4f 0%,#1c1729 60%,#0b0a12 100%)}
+
+/* 主题色点 / 强调色块 */
+.ac-dot{width:9px;height:9px;border-radius:50%;background:var(--ac);display:inline-block;flex:0 0 auto}
+.ac-swatch{width:44px;height:34px;border-radius:9px;background:var(--ac);border:1px solid var(--line2);cursor:pointer;transition:background .2s;flex:0 0 auto}
+
+.toast{position:fixed;left:50%;bottom:30px;transform:translateX(-50%) translateY(10px);background:var(--palt);border:1px solid var(--line2);color:var(--t1);font-size:12px;padding:9px 18px;border-radius:10px;opacity:0;pointer-events:none;transition:all .22s;z-index:99;box-shadow:0 10px 30px rgba(0,0,0,.4);max-width:560px;text-align:center}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+<div class="stage-head">
+  <h1>「外观」页（主题 + 壁纸）· v2 方案稿 <span style="font-size:13px;color:#6b7080;font-weight:400">2026-10-18 · 待确认后再改最终稿</span></h1>
+  <div class="v2note">这是<b>候选方案（v2）</b>，最终稿 <code>wallpaper-hifi-2026-10-17.html</code> 保持不动。相对最终稿改动：①新增「当前外观」实时总览小窗 ②分节小组卡片化 ③控件右边界对齐 ④四分区改 2×2 ⑤「新」标签去底色 ⑥次要操作转文字链 ⑦演示控件剥离到右下角浮层。</div>
+  <div class="sub">
+    <b>画廊语言统一</b>（主题 / 壁纸同款横排卡）：主题 = 常用快捷位（<b>≤6</b> + ＋更多，点卡的明暗会真实切换演示）；壁纸库 9 卡单行。
+    <b>顺序按「皮肤流」</b>：主题 → 强调色 → 壁纸 → 弹窗与遮罩垫底；<b>「作用域」</b>（整个界面 / 终端）+ <b>「分区透明度」四等分</b>（标题栏 / 标签栏 / 侧栏〔含左右与下方面板〕/ 终端区，直接拖 · 双击恢复默认）；无预览卡、无暗化/取色开关。
+  </div>
+  <div class="stage-bar">
+    <div class="hd">演示工具台 · <b>非产品界面</b></div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <span class="lbl">主题</span>
+    <button class="chip-btn" id="tDark" onclick="setTheme('dark')">暗色</button>
+    <button class="chip-btn" id="tLight" onclick="setTheme('light')">亮色</button>
+    <span class="lbl" style="margin-left:14px">试：点主题卡明暗切实切换；悬停自定义壁纸右上角 ×；强调色切「自定义」</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ 画面 A：外观（主题 + 壁纸） ═══════════════ -->
+<div class="card">
+  <div class="card-head">
+    <div class="t">设置</div><div class="sub">外观</div>
+    <div class="x">✕</div>
+  </div>
+  <div class="body">
+    <div class="nav">
+      <div class="it on">◧ 外观</div>
+      <div class="it">✎ 显示与字体</div>
+      <div class="it">⌨ 输入</div>
+      <div class="it">◇ SFTP</div>
+      <div class="it">⇄ 会话同步</div>
+      <div class="it">⌂ 数据目录</div>
+    </div>
+    <div class="pane">
+
+      <!-- v2 新增：当前外观总览（主题 + 壁纸 + 分区透明度的实时合成） -->
+      <div class="prev-strip">
+        <div class="mini-win">
+          <i class="desk"></i>
+          <i class="wall-layer" id="wallLayer"></i>
+          <div class="r titlebar" id="pTitlebar"></div>
+          <div class="r tabbar" id="pTabbar"></div>
+          <div class="r sidebar" id="pSidebar"></div>
+          <div class="r term" id="pTerm"><span>user@host:~$<i></i></span></div>
+        </div>
+        <div class="prev-meta">
+          <div class="l1" id="pm1">MTerm · 暗 · 无壁纸</div>
+          <div class="l2" id="pm2">分区透明度：标题栏 15% · 标签栏 15% · 侧栏 15% · 终端区 0%</div>
+          <div class="l3">小窗按上方设置实时合成。底层<b>棋盘格＝桌面</b>：没有壁纸（或区域不在作用域内）时，各分区从这里透出来；有壁纸时透出壁纸。改完先在这里确认<b>文字还能不能看清</b>。</div>
+        </div>
+      </div>
+
+      <div class="grp">
+      <!-- 主题画廊（横排卡；明暗卡可真实切换演示；实机悬停主界面实时预览） -->
+      <div style="font-size:11px;color:var(--t2);line-height:1.7">整套配色（含终端 ANSI 调色板），与壁纸无关；壁纸只作背景。</div>
+      <div class="srow" style="display:block;border-bottom:none;padding-bottom:2px">
+        <div class="lb" style="margin-bottom:7px"><div class="n">主题</div><div class="d">此处为<b>常用主题快捷位（最多 6 个）</b>；「＋更多」打开完整列表（搜索 / 星标 / 明暗分组）——在列表里星标即添加到此处（同样封顶 6 个）。悬停可在主界面实时预览（实机），点击明暗卡此处会真实切换演示。</div></div>
+        <div class="gal">
+          <div class="gal-card on" data-t="dark" data-name="MTerm · 暗" onclick="pickThemeCard(this)">
+            <div class="th thm-th" style="background:#181A1D"><i style="background:#1FC8B4"></i><span class="mode">暗</span><div class="badge">✓</div></div><div class="cap">MTerm</div>
+          </div>
+          <div class="gal-card" data-t="light" data-name="MTerm · 亮" onclick="pickThemeCard(this)">
+            <div class="th thm-th" style="background:#FAF8F4"><i style="background:#1F766B"></i><span class="mode">亮</span><div class="badge">✓</div></div><div class="cap">MTerm</div>
+          </div>
+          <div class="gal-card" data-t="dark" data-name="原子 · 暗" onclick="pickThemeCard(this)">
+            <div class="th thm-th" style="background:#1B1D21"><i style="background:#7ACB4F"></i><span class="mode">暗</span><div class="badge">✓</div></div><div class="cap">原子</div>
+          </div>
+          <div class="gal-card" data-t="dark" data-name="咖啡 · 暗" onclick="pickThemeCard(this)">
+            <div class="th thm-th" style="background:#14100C"><i style="background:#E0A24C"></i><span class="mode">暗</span><div class="badge">✓</div></div><div class="cap">咖啡</div>
+          </div>
+          <div class="gal-card" data-t="light" data-name="原子 · 亮" onclick="pickThemeCard(this)">
+            <div class="th thm-th" style="background:#EFEDE8"><i style="background:#5CA83B"></i><span class="mode">亮</span><div class="badge">✓</div></div><div class="cap">原子</div>
+          </div>
+          <div class="gal-card" data-t="light" data-name="咖啡 · 亮" onclick="pickThemeCard(this)">
+            <div class="th thm-th" style="background:#F4EDE2"><i style="background:#B07A2E"></i><span class="mode">亮</span><div class="badge">✓</div></div><div class="cap">咖啡</div>
+          </div>
+          <div class="gal-card more" onclick="toast('实机：打开完整主题列表（搜索 / 常用星标·上限 6 / 明暗分组 / 反向亮↔暗），星标即加入画廊')">
+            <div class="th">＋</div><div class="cap">更多</div>
+          </div>
+        </div>
+      </div>
+      <div class="srow">
+        <div class="lb"><div class="n">强调色</div><div class="d">选中态 / 主按钮 / 链接，独立于主题；「自定义」可单独挑选。</div></div>
+        <div class="ctl" style="gap:8px">
+          <div class="seg" id="accSeg" style="width:220px">
+            <div class="thumb" style="left:3px"></div>
+            <b class="on" data-i="0">跟随主题</b><b data-i="1">自定义</b>
+          </div>
+          <div class="ac-swatch" id="accSwatch" onclick="acSwatchClick()" title="当前强调色"></div>
+        </div>
+      </div>
+      </div>
+
+      <div class="grp">
+      <!-- 壁纸库 -->
+      <div class="sh">壁纸库</div>
+      <div class="gal" id="wallLib">
+        <div class="gal-card" data-w="none">
+          <div class="th"><div class="none">▣</div><div class="badge">✓</div></div><div class="cap">无</div>
+        </div>
+        <div class="gal-card" data-w="light">
+          <div class="th"><i class="wp-in g-light"></i><div class="badge">✓</div></div><div class="cap">简约·浅</div>
+        </div>
+        <div class="gal-card" data-w="dark">
+          <div class="th"><i class="wp-in g-dark"></i><div class="badge">✓</div></div><div class="cap">简约·暗</div>
+        </div>
+        <div class="gal-card" data-w="tech">
+          <div class="th"><i class="wp-in g-tech"></i><div class="badge">✓</div></div><div class="cap">幻想3048</div>
+        </div>
+        <div class="gal-card" data-w="ms">
+          <div class="th"><i class="wp-in g-ms"></i><div class="badge">✓</div></div><div class="cap">MS</div>
+        </div>
+        <div class="gal-card" data-w="miku">
+          <div class="th"><i class="wp-in g-miku"></i><div class="badge">✓</div></div><div class="cap">Miku</div>
+        </div>
+        <div class="gal-card has-del" data-w="mine1">
+          <div class="th"><i class="wp-in g-mine1"></i><div class="badge">✓</div><span class="del" onclick="delWall(event,'mine1')" title="删除这张">✕</span></div><div class="cap">我的·山景</div>
+        </div>
+        <div class="gal-card has-del" data-w="mine2">
+          <div class="th"><i class="wp-in g-mine2"></i><div class="badge">✓</div><span class="del" onclick="delWall(event,'mine2')" title="删除这张">✕</span></div><div class="cap">我的·城市</div>
+        </div>
+        <div class="gal-card add" id="libAdd">
+          <div class="th">＋</div><div class="cap">上传图片</div>
+        </div>
+      </div>
+      <div class="divider" style="margin:10px 0"></div>
+
+      <!-- v2 新增：次要操作改为轻量文字按钮，不与主路径争视线 -->
+      <div class="lib-tools" id="libTools" hidden>
+        <button class="lnk" onclick="toast('实机：在资源管理器中打开数据目录的 wallpapers 文件夹')">在文件夹中显示</button>
+        <span class="lnk-sep"></span>
+        <button class="lnk danger" onclick="delWall(event, S.wall)">删除这张壁纸</button>
+      </div>
+
+      <div style="font-size:10.5px;color:var(--t3);line-height:1.65;margin-top:2px">上传的图片复制保存到<b>数据目录的 wallpapers 文件夹</b>（PNG / JPG / WEBP）—— 该文件夹即壁纸列表的来源：放入新图片会自动出现在这里，删除文件即从列表消失（实机删除有二次确认）。</div>
+
+      </div>
+
+      <div class="grp">
+      <!-- 显示（按设置流排序：作用域 → 填充方式 → 壁纸透明度 → 分区透明度；
+           未选壁纸（选「无」）时前三项随壁纸透明度一起禁用 data-nd） -->
+      <div class="sh">显示</div>
+      <div class="srow" data-nd>
+        <div class="lb"><div class="n">作用域<span class="tag new">新</span></div><div class="d">壁纸生效的范围：「整个界面」= 铺满全窗（现状）；「终端」= 只在终端区显示（沉浸式终端背景），侧栏 / 标签栏保持纯色主题底。弹窗 / 浮层不在壁纸范围（由「弹窗与遮罩」单独控制）。</div></div>
+        <div class="ctl">
+          <div class="seg" id="scopeSeg" style="width:250px">
+            <div class="thumb" style="left:3px"></div>
+            <b class="on" data-i="0">整个界面</b><b data-i="1">终端</b>
+          </div>
+        </div>
+      </div>
+      <div class="srow" data-nd>
+        <div class="lb"><div class="n">填充方式</div><div class="d">默认<b>「自动」</b>：按图片与<b>作用域区域</b>（整个界面 / 终端区）的比例在「填充 / 适应」里选，多数情况无需手动挑；<b>填充</b> = 铺满裁切，<b>适应</b> = 完整显示留白，<b>拉伸</b> = 铺满变形。</div>
+          <div class="d" id="fitNote" style="margin-top:4px;color:var(--ac)">自动：这张图在「整个界面」的比例按「适应」显示</div></div>
+        <div class="ctl">
+          <div class="seg" id="fitSeg" style="width:286px">
+            <div class="thumb" style="left:3px"></div>
+            <b class="on" data-i="0">自动</b><b data-i="1">填充</b><b data-i="2">适应</b><b data-i="3">拉伸</b>
+          </div>
+        </div>
+      </div>
+      <div class="prow" data-nd>
+        <div class="top"><span class="n" ondblclick="resetSlider('wpOp',0)" title="双击恢复默认">壁纸透明度</span><span class="v" id="wpV">0%（默认）</span></div>
+        <input type="range" id="wpOp" min="0" max="100" value="0" oninput="sync()" ondblclick="resetSlider('wpOp',0)">
+        <div class="d" ondblclick="resetSlider('wpOp',0)" title="双击恢复默认">壁纸图自身的透明程度，越高壁纸越淡；双击滑杆或文字恢复默认。</div>
+      </div>
+      <div class="zhead">
+        <span class="n">分区透明度<span class="tag new">新</span></span>
+        <span class="hint">直接拖 · 双击滑杆或分区名恢复默认</span>
+      </div>
+      <div class="zone-grid">
+        <div class="zcell">
+          <div class="ztop"><span class="zn" ondblclick="resetSlider('zTitlebar',15)" title="双击恢复默认">标题栏</span><span class="zv" id="zTitlebarV">15%（默认）</span></div>
+          <input type="range" id="zTitlebar" min="0" max="100" value="15" oninput="sync()" ondblclick="resetSlider('zTitlebar',15)">
+        </div>
+        <div class="zcell">
+          <div class="ztop"><span class="zn" ondblclick="resetSlider('zTabbar',15)" title="双击恢复默认">标签栏</span><span class="zv" id="zTabbarV">15%（默认）</span></div>
+          <input type="range" id="zTabbar" min="0" max="100" value="15" oninput="sync()" ondblclick="resetSlider('zTabbar',15)">
+        </div>
+        <div class="zcell">
+          <div class="ztop"><span class="zn" ondblclick="resetSlider('zSidebar',15)" title="双击恢复默认">侧栏</span><span class="zv" id="zSidebarV">15%（默认）</span></div>
+          <input type="range" id="zSidebar" min="0" max="100" value="15" oninput="sync()" ondblclick="resetSlider('zSidebar',15)">
+        </div>
+        <div class="zcell">
+          <div class="ztop"><span class="zn" ondblclick="resetSlider('zTerm',0)" title="双击恢复默认">终端区</span><span class="zv" id="zTermV">0%（默认）</span></div>
+          <input type="range" id="zTerm" min="0" max="100" value="0" oninput="sync()" ondblclick="resetSlider('zTerm',0)">
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--t3);line-height:1.55;padding:3px 0 6px">四个区域各自的面板透明程度（侧栏含左右侧栏与下方面板）；直接拖、双击恢复默认。<b>与壁纸无关，无壁纸时同样可调</b>：没有壁纸（或区域不在作用域内）时透出窗口底色——支持窗口透明时直接透出桌面。（无会话时中央为空态提示，跟随终端区、参与壁纸。）</div>
+
+      </div>
+
+      <div class="grp">
+      <!-- 弹窗与遮罩（与主题同在现有「主题」页，此处并入外观页） -->
+      <div class="sh">弹窗与遮罩</div>
+      <div class="srow" style="display:block;border-bottom:none;padding-bottom:4px">
+        <div class="prow" style="padding:4px 0;border-bottom:none">
+          <div class="top"><span class="n" ondblclick="popReset()" title="双击恢复默认">弹窗通透度</span><span class="v" id="popV">标准 · 0%</span></div>
+          <input type="range" id="popOp" min="0" max="100" value="0" oninput="popInput()" ondblclick="popReset()">
+          <div class="d" ondblclick="popReset()" title="双击恢复默认">弹窗 / 浮层（下拉、弹框、调色盘）的玻璃程度；右端按区间显示档名（标准 实心 / 通透 ≈18% / 全透 ≈45%）。系统默认 0%（实心），双击滑条或文字恢复默认。</div>
+        </div>
+      </div>
+
+      <div class="srow">
+        <div class="lb"><div class="n">遮罩样式<span class="tag new">新</span></div><div class="d">纯色黑 / 白、染色玻璃、柔光、磨砂、聚光、高光；「随机」每次打开弹窗换一种。真·背景模糊在 Slint 不可行，柔光 / 磨砂 / 高光是效果最好的玻璃近似。</div></div>
+        <div class="ctl">
+          <div class="dd" id="scrimDD">
+            <button class="dd-btn" onclick="toggleDD(event)"><span id="scrimDDLabel">自动</span><span class="caret">▼</span></button>
+            <div class="dd-pop">
+              <div class="dd-opt on" data-s="auto" onclick="pickDD(this)">自动<span class="ck">✓</span></div>
+              <div class="dd-opt" data-s="dark" onclick="pickDD(this)">深色<span class="ck">✓</span></div>
+              <div class="dd-opt" data-s="light" onclick="pickDD(this)">浅色<span class="ck">✓</span></div>
+              <div class="dd-opt" data-s="tint" onclick="pickDD(this)">染色玻璃<span class="ck">✓</span></div>
+              <div class="dd-opt" data-s="soft" onclick="pickDD(this)">柔光<span class="ck">✓</span></div>
+              <div class="dd-opt" data-s="frost" onclick="pickDD(this)">磨砂<span class="ck">✓</span></div>
+              <div class="dd-opt" data-s="spot" onclick="pickDD(this)">聚光<span class="ck">✓</span></div>
+              <div class="dd-opt" data-s="sheen" onclick="pickDD(this)">高光<span class="ck">✓</span></div>
+              <div class="dd-opt" data-s="random" onclick="pickDD(this)">随机（每次打开换）<span class="ck">✓</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="prow" id="scrimProw">
+        <div class="top"><span class="n" ondblclick="scrimReset()" title="双击恢复默认">遮罩浓度<span class="tag new">新</span></span><span class="v" id="scrimV">标准 · 32%（默认）</span></div>
+        <input type="range" id="scrimOp" min="0" max="100" value="32" oninput="scrimInput()" ondblclick="scrimReset()">
+        <div class="d" ondblclick="scrimReset()" title="双击恢复默认">弹窗背后压暗强度；右端按区间显示当前档（淡 / 标准 / 浓）。系统默认 32%，双击滑条或文字即可恢复默认。</div>
+      </div>
+
+      <div class="prev-card" style="margin-top:6px">
+        <div class="prev-scene">
+          <i class="blob b1"></i><i class="blob b2"></i><i class="blob b3"></i>
+          <i class="veil" id="veil"><i class="grain" id="grain"></i></i>
+          <div class="mini-dlg" id="miniDlg">
+            <div class="ln1"></div><div class="ln2"></div><div class="ln3"></div><div class="btn2"></div>
+          </div>
+        </div>
+        <div class="prev-text">
+          <div class="t1l" id="prevDesc">标准（实心）：弹窗不透明 —— 可读性最好，和系统原生对话框一致。</div>
+          <div class="t1l" id="randInfo" style="color:var(--ac)"></div>
+          <div class="t2l">实时预览：切换档位与遮罩样式看效果；对全部浮层（下拉 / 弹框 / 调色盘）立即生效，重启后保持。</div>
+        </div>
+      </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- 画面 B 已并入外观页（弹窗与遮罩块） -->
+
+<div class="toast" id="toast"></div>
+
+<script>
+var S = { theme:'dark', themeName:'MTerm · 暗', wall:'dark', wp:40, fit:0, scopeMode:0,
+          zone:{ titlebar:15, tabbar:15, sidebar:15, term:0 },
+          scrim:45, popOp:0, scrimStyle:'auto', acCustom:false };
+var WALLS = { none:'', light:'g-light', dark:'g-dark', tech:'g-tech', ms:'g-ms', miku:'g-miku', mine1:'g-mine1', mine2:'g-mine2' };
+var WALL_NAMES = { none:'无', light:'简约·浅', dark:'简约·暗', tech:'幻想3048', ms:'MS', miku:'Miku', mine1:'我的·山景', mine2:'我的·城市' };
+var VEIL_NAMES = {auto:'自动',dark:'深色',light:'浅色',tint:'染色玻璃',soft:'柔光',frost:'磨砂',spot:'聚光',sheen:'高光'};
+var RAND_POOL = ['auto','dark','light','tint','soft','frost','spot','sheen'];
+var deleted = {};
+
+function $(id){ return document.getElementById(id); }
+function toast(msg){ var t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._h); t._h=setTimeout(function(){ t.classList.remove('show'); },2800); }
+
+function setTheme(t){
+  S.theme = t;
+  document.documentElement.setAttribute('data-theme', t);
+  $('tDark').classList.toggle('on', t==='dark');
+  $('tLight').classList.toggle('on', t==='light');
+  paint();
+}
+
+/* 数值与强调色总刷新（无预览卡：控件即全部；强调色作用于全页演示） */
+function paint(){
+  var dark = S.theme==='dark';
+
+  /* 强调色：跟随主题（青） / 自定义（演示用紫） —— 与主题区「强调色」段联动 */
+  var acCustom = S.acCustom;
+  var acHex  = acCustom ? (dark ? '#B39DFF' : '#6D5BD0') : (dark ? '#1FC8B4' : '#1F766B');
+  var acSoft = acCustom ? (dark ? 'rgba(179,157,255,.18)' : 'rgba(109,91,208,.14)') : (dark ? 'rgba(31,200,180,.16)' : 'rgba(31,118,107,.12)');
+  var acChip = acCustom ? (dark ? 'rgba(179,157,255,.26)' : 'rgba(109,91,208,.18)') : (dark ? 'rgba(31,200,180,.22)' : 'rgba(31,118,107,.14)');
+  document.documentElement.style.setProperty('--ac', acHex);
+  document.documentElement.style.setProperty('--accent-soft', acSoft);
+  document.documentElement.style.setProperty('--chip', acChip);
+
+  $('wpV').textContent = S.wp + '%' + (S.wp === 0 ? '（默认）' : '');
+
+  var hasWp = S.wall !== 'none';
+  document.querySelectorAll('[data-nd]').forEach(function(el){ el.classList.toggle('dis', !hasWp); });
+  $('libTools').hidden = !(S.wall==='mine1' || S.wall==='mine2');
+  updateFitNote();
+  strip();
+
+  paintVeil();
+}
+
+/* 填充方式「自动」：按图片比例 vs **作用域区域**（整个界面 / 终端区）比例来选 填充 / 适应
+   （同一张图在两个作用域下面积比例不同，结论可以不一样；演示数据：每张图 × 每个作用域一个倾向） */
+var AUTO_FIT = {
+  light:{all:'适应', term:'填充'}, dark:{all:'适应', term:'填充'}, mine1:{all:'适应', term:'填充'},
+  tech:{all:'填充', term:'适应'}, ms:{all:'填充', term:'适应'}, miku:{all:'填充', term:'适应'}, mine2:{all:'填充', term:'适应'}
+};
+function updateFitNote(){
+  var note = $('fitNote'); if(!note) return;
+  if(S.wall === 'none'){ note.textContent = '未选壁纸：此项暂不可用'; return; }
+  if(S.fit !== 0){ note.textContent = '手动：始终按所选模式显示'; return; }
+  var zone = S.scopeMode === 1 ? '终端区' : '整个界面';
+  var m = AUTO_FIT[S.wall] || {all:'填充', term:'填充'};
+  note.textContent = '自动：这张图在「' + zone + '」的比例按「' + (S.scopeMode === 1 ? m.term : m.all) + '」显示';
+}
+
+/* v2：当前外观总览 —— 按当前状态合成「桌面 → 壁纸 → 各分区面板」 */
+function strip(){
+  var dark = S.theme==='dark';
+  var prgb = dark ? '24,26,29' : '250,248,244';
+  var trgb = dark ? '22,22,25' : '255,254,250';
+  var hasWp = S.wall !== 'none';
+  var wl = $('wallLayer');
+  wl.className = 'wall-layer' + (hasWp && WALLS[S.wall] ? ' ' + WALLS[S.wall] : '');
+  wl.style.opacity = hasWp ? (1 - S.wp/100).toFixed(2) : '0';
+  function frost(el, t){ el.style.background = 'rgba('+prgb+','+(1-t/100).toFixed(2)+')'; }
+  frost($('pTitlebar'), S.zone.titlebar);
+  frost($('pTabbar'),   S.zone.tabbar);
+  frost($('pSidebar'),  S.zone.sidebar);
+  $('pTerm').style.background = 'rgba('+trgb+','+(1-S.zone.term/100).toFixed(2)+')';
+  $('pTerm').firstElementChild.style.color = dark ? '#C6C9D0' : '#33302C';
+  $('pm1').textContent = S.themeName + ' · ' + (hasWp ? '壁纸：' + WALL_NAMES[S.wall] : '无壁纸（透出桌面）');
+  $('pm2').textContent = '分区透明度：标题栏 ' + S.zone.titlebar + '% · 标签栏 ' + S.zone.tabbar
+                       + '% · 侧栏 ' + S.zone.sidebar + '% · 终端区 ' + S.zone.term + '%';
+}
+function veilBgFor(st, a){
+  var dark = S.theme==='dark';
+  var base = dark ? '12,13,17' : '244,245,248';
+  var ac   = dark ? '31,200,180' : '31,118,107';
+  var ink  = dark ? '0,0,0' : '24,20,14';
+  var bg = '', grain = 0;
+  if(st==='auto'){ bg = 'rgba('+base+','+a.toFixed(2)+')'; }
+  else if(st==='dark'){ bg = 'rgba(12,13,17,'+a.toFixed(2)+')'; }
+  else if(st==='light'){ bg = 'rgba(244,245,248,'+a.toFixed(2)+')'; }
+  else if(st==='tint'){ bg = 'linear-gradient(135deg, rgba('+ac+','+(a*0.85).toFixed(2)+'), rgba('+ac+','+(a*0.40).toFixed(2)+'))'; }
+  else if(st==='soft'){ bg = 'linear-gradient(180deg, rgba('+ink+','+Math.min(a*1.15,0.8).toFixed(2)+'), rgba('+ink+','+(a*0.30).toFixed(2)+'))'; }
+  else if(st==='frost'){ bg = 'rgba('+base+','+(a*0.70).toFixed(2)+')'; grain = Math.min(a*0.9,0.6); }
+  else if(st==='spot'){ bg = 'radial-gradient(circle at 50% 45%, rgba('+ink+','+(a*0.22).toFixed(2)+') 0%, rgba('+ink+','+Math.min(a*1.10,1).toFixed(2)+') 100%)'; }
+  else if(st==='sheen'){ bg = 'linear-gradient(180deg, rgba(255,255,255,'+(a*0.38).toFixed(2)+') 0%, rgba(255,255,255,0) 30%, rgba('+ink+','+(a*0.78).toFixed(2)+') 100%)'; }
+  else { bg = 'rgba('+base+','+a.toFixed(2)+')'; }
+  return {bg:bg, grain:grain};
+}
+/* 弹窗通透度：同款滑杆（透明度越高越玻璃）；右端按区间显示档名；双击默认（0% 实心） */
+function popZoneName(v){ return v < 9 ? '标准' : (v < 31 ? '通透' : '全透'); }
+function popInput(){
+  var v = +$('popOp').value;
+  S.popOp = v;
+  $('popV').textContent = popZoneName(v) + ' · ' + v + '%' + (v === 0 ? '（默认）' : '');
+  fillRange($('popOp'));
+  paintVeil();
+}
+function popReset(){ $('popOp').value = 0; popInput(); }
+
+function paintVeil(){
+  var a = S.scrim/100, st = S.scrimStyle, shown = st;
+  if(st==='random'){ shown = RAND_POOL[Math.floor(Math.random()*RAND_POOL.length)]; }
+  var r = veilBgFor(shown, a);
+  $('veil').style.background = r.bg;
+  $('grain').style.opacity = r.grain.toFixed(2);
+  var rgb = S.theme==='dark' ? '24,26,29' : '250,248,244';
+  /* 弹窗 alpha = 1 - 透明度（与滑杆语义一致） */
+  var popAlpha = 1 - S.popOp/100;
+  $('miniDlg').style.background = 'rgba('+rgb+','+popAlpha.toFixed(2)+')';
+  var dz = popZoneName(S.popOp);
+  $('prevDesc').textContent = {
+      '标准':'标准（实心）：弹窗不透明 —— 可读性最好，和系统原生对话框一致。',
+      '通透':'通透（跟随界面）：弹窗跟随主面板透明度，壁纸隐约透出，界面更轻盈。',
+      '全透':'全透（强玻璃）：最轻盈的一档，壁纸清晰透出；配合更重的遮罩保住可读性。'
+    }[dz] + '（当前透明度 ' + S.popOp + '%）';
+  $('randInfo').textContent = (st==='random')
+      ? '（随机模式：本次演示「'+VEIL_NAMES[shown]+'」，每次打开弹窗换一种）' : '';
+}
+
+function sync(){
+  S.wp = +$('wpOp').value;
+  S.zone.titlebar = +$('zTitlebar').value;
+  S.zone.tabbar   = +$('zTabbar').value;
+  S.zone.sidebar  = +$('zSidebar').value;
+  S.zone.term     = +$('zTerm').value;
+  $('zTitlebarV').textContent = S.zone.titlebar + '%' + (S.zone.titlebar === 15 ? '（默认）' : '');
+  $('zTabbarV').textContent   = S.zone.tabbar + '%'   + (S.zone.tabbar === 15 ? '（默认）' : '');
+  $('zSidebarV').textContent  = S.zone.sidebar + '%'  + (S.zone.sidebar === 15 ? '（默认）' : '');
+  $('zTermV').textContent     = S.zone.term + '%'     + (S.zone.term === 0 ? '（默认）' : '');
+  /* 滑杆统一样式：已选段 + 圆心跟随强调色（--ac 联动） */
+  document.querySelectorAll('input[type=range]').forEach(fillRange);
+  paint();
+}
+
+/* 滑杆双击恢复默认值（分区透明度 / 壁纸透明度通用） */
+function resetSlider(id, def){ $(id).value = def; sync(); }
+
+/* 滑杆已选段着色（0→pct 用强调色，其余用轨道色） */
+function fillRange(el){
+  var lo = +el.min || 0, hi = +el.max || 100;
+  var pct = (el.value - lo) / (hi - lo) * 100;
+  el.style.background = 'linear-gradient(to right, var(--ac) 0%, var(--ac) ' + pct + '%, var(--ctrl) ' + pct + '%, var(--ctrl) 100%)';
+}
+
+/* 壁纸库：点击选中 / 悬停预览 / 删除 */
+document.querySelectorAll('#wallLib .gal-card[data-w]').forEach(function(c){
+  var w = c.dataset.w;
+  c.addEventListener('click', function(){
+    if(deleted[w]) return;
+    S.wall = w;
+    document.querySelectorAll('#wallLib .gal-card').forEach(function(o){ o.classList.remove('on'); });
+    c.classList.add('on');
+    paint();
+  });
+});
+$('libAdd').addEventListener('click', function(){
+  toast('实机：打开文件选择，图片复制保存到数据目录 wallpapers 文件夹，并出现在此列表');
+});
+/* 删除：悬停 × / 工具条「删除这张」 —— 演示稿里真正移除该格 */
+function delWall(e, w){
+  if(e) e.stopPropagation();
+  toast('已删除「'+WALL_NAMES[w]+'」（实机：二次确认后删除文件，不可恢复；列表跟随文件夹）');
+  deleted[w] = true;
+  var el = document.querySelector('#wallLib .gal-card[data-w="'+w+'"]');
+  if(el) el.style.display = 'none';
+  if(S.wall === w){ S.wall = 'none'; document.querySelector('#wallLib .gal-card[data-w="none"]').classList.add('on'); }
+  paint();
+}
+document.querySelector('#wallLib .gal-card[data-w="dark"]').classList.add('on');
+
+/* 分段控件（通用） */
+function bindSeg(id, cb){
+  var seg = $(id); if(!seg) return;
+  var opts = seg.querySelectorAll('b');
+  seg.addEventListener('click', function(e){
+    var b = e.target.closest('b'); if(!b) return;
+    opts.forEach(function(o){ o.classList.remove('on'); });
+    b.classList.add('on');
+    var i = +b.dataset.i, th = seg.querySelector('.thumb');
+    if(th){
+      var pad = 3, gap = 3;
+      var w = (seg.clientWidth - pad*2 - gap*(opts.length-1)) / opts.length;
+      th.style.left = (pad + i*(w+gap)) + 'px';
+      th.style.width = w + 'px';
+    }
+    cb && cb(i);
+  });
+}
+/* 遮罩浓度：与上面三根滑杆同款朴素样式；右端按区间显示档名（淡 / 标准 / 浓；32=标准、50=浓） */
+function zoneName(v){ return v < 25 ? '淡' : (v < 46 ? '标准' : '浓'); }
+function scrimInput(){
+  var v = +$('scrimOp').value;
+  S.scrim = v;
+  $('scrimV').textContent = zoneName(v) + ' · ' + v + '%' + (v === 32 ? '（默认）' : '');
+  fillRange($('scrimOp'));
+  paintVeil();
+}
+/* 双击恢复系统默认（32% = 现有「标准档」遮罩基线） */
+function scrimReset(){ $('scrimOp').value = 32; scrimInput(); }
+
+/* 作用域（整个界面 / 终端） */
+bindSeg('scopeSeg', function(i){ S.scopeMode = i; updateFitNote(); });
+
+bindSeg('accSeg', function(i){ S.acCustom = (i===1); paint(); });
+bindSeg('fitSeg', function(i){ S.fit = i; updateFitNote(); paint(); });
+
+/* 强调色色块（自定义 → 调色盘；跟随主题 → 提示） */
+function acSwatchClick(){
+  if(S.acCustom){ toast('实机：打开调色盘选择自定义强调色（圆盘 / 色带 / 色值）'); }
+  else { toast('当前强调色跟随主题；切到「自定义」即可单独挑选'); }
+}
+
+/* 主题画廊：点击选中（明暗卡真实切换主题演示；悬停主界面实时预览为实机行为） */
+function pickThemeCard(c){
+  document.querySelectorAll('.gal .gal-card[data-t]').forEach(function(o){ o.classList.remove('on'); });
+  c.classList.add('on');
+  S.themeName = c.dataset.name;
+  var t = c.dataset.t;
+  if(t==='dark' || t==='light'){ setTheme(t); }
+  else { paint(); }
+}
+
+/* 下拉框（遮罩样式） */
+function toggleDD(e){
+  e.stopPropagation();
+  $('scrimDD').classList.toggle('open');
+}
+function pickDD(opt){
+  var s = opt.dataset.s;
+  document.querySelectorAll('#scrimDD .dd-opt').forEach(function(o){ o.classList.remove('on'); });
+  opt.classList.add('on');
+  $('scrimDDLabel').textContent = opt.textContent.replace('✓','').trim();
+  $('scrimDD').classList.remove('open');
+  S.scrimStyle = s;
+  paintVeil();
+}
+document.addEventListener('click', function(){ document.querySelectorAll('.dd').forEach(function(d){ d.classList.remove('open'); }); });
+
+/* 初始 + URL 状态 */
+setTheme('dark');
+sync();
+if(location.search.indexOf('theme=light') >= 0) setTheme('light');
+var mW = location.search.match(/wall=(\w+)/);
+if(mW && WALLS.hasOwnProperty(mW[1])){
+  S.wall = mW[1];
+  document.querySelectorAll('#wallLib .gal-card').forEach(function(o){ o.classList.remove('on'); });
+  var el = document.querySelector('#wallLib .gal-card[data-w="'+mW[1]+'"]');
+  if(el) el.classList.add('on');
+  paint();
+}
+if(location.search.indexOf('scope=term') >= 0){
+  var tb = $('scopeSeg').querySelectorAll('b')[1]; if(tb) tb.click();   /* 演示：作用域 = 终端区 */
+}
+if(location.search.indexOf('del=1') >= 0){ document.body.classList.add('dbg-del'); }
+window.addEventListener('load', function(){
+  ['scopeSeg','accSeg','fitSeg'].forEach(function(id){
+    var seg = $(id); var b = seg.querySelector('b.on'); if(b) b.click();
+  });
+  scrimInput();   /* 初始化遮罩浓度读数与填充段 */
+  popInput();     /* 初始化弹窗通透度读数与填充段 */
+});
+</script>
+</body>
+</html>

@@ -222,6 +222,7 @@ fn dialog_scrims_unified_and_close_dialog_draggable() {
     // 关闭卡 440×255 居中，同步卡 680×480 居中，会话卡 ≤600 宽居中）。
     let sample = (W - 24, H - 24);
     let base = { let (r, g, b, _) = f.px(sample.0, sample.1); (r, g, b) };
+
     // 窗口中心背后的基线（弹框卡片正下方）：通透档玻璃期望值以它为底。
     let base_center = { let (r, g, b, _) = f.px(W / 2, H / 2); (r, g, b) };
 
@@ -314,11 +315,17 @@ fn dialog_scrims_unified_and_close_dialog_draggable() {
         center,
         ca
     );
-    // 通透档：popup-alpha = 0.82，卡片变玻璃（与背后的遮罩混色）。
-    ui.set_popup_transparency(1);
+    // 通透档：透明度 18% → popup-alpha = 0.82，卡片变玻璃（与背后的遮罩混色）。
+    // (#slider-style 2026-10-17) 弹窗通透度从三档 0/1/2 改为连续透明度 0..1。
+    let t1 = 0.18_f32;
+    ui.set_popup_transparency(t1);
     f.grab(&ui);
     let glass = { let (r, g, b, _) = f.px(W / 2, H / 2); (r, g, b) };
-    let expect_glass = mix(mix(base_center, (sr, sg, sb), scrim_alpha), card_rgb, 0.82);
+    // (#popup-glass-fix 2026-10-17) 卡片色不再是常量面板：透明档叠加了玻璃
+    // 高光（popup-bg 内部 glass() 往白里提 popup-transparency×10%），期望值
+    // 必须重新读当前令牌，而不是复用实心档的 card_rgb。
+    let (gr, gg, gb, _) = brush_solid(&theme.get_popup_bg()).expect("popup-bg 应为纯色");
+    let expect_glass = mix(mix(base_center, (sr, sg, sb), scrim_alpha), (gr, gg, gb), 1.0 - t1);
     assert!(
         close(glass, expect_glass, 4),
         "通透档卡片应为 82% 玻璃 {:?}，实得 {:?}",
@@ -331,9 +338,10 @@ fn dialog_scrims_unified_and_close_dialog_draggable() {
         glass,
         std_card
     );
-    // 遮罩在通透档也要变重（scrim-alpha +0.10），兜住弹窗之上的可读性。
+    // (#popup-transparency 语义定稿 2026-10-17) 遮罩浓度**独立**：不再随弹窗
+    // 通透度自动加重 —— 弹窗透明度 = 1−t 一条直线，遮罩就画用户设的值。
     let glass_scrim = { let (r, g, b, _) = f.px(sample.0, sample.1); (r, g, b) };
-    let expect_scrim1 = mix(base, (sr, sg, sb), (scrim_alpha + 0.10).min(0.60));
+    let expect_scrim1 = mix(base, (sr, sg, sb), scrim_alpha);
     assert!(
         close(glass_scrim, expect_scrim1, 4),
         "通透档遮罩应加深 +0.10 → {:?}，实得 {:?}",
@@ -341,8 +349,52 @@ fn dialog_scrims_unified_and_close_dialog_draggable() {
         glass_scrim
     );
     maybe_dump(&f, "close-glass-通透");
-    ui.set_popup_transparency(0);
+    ui.set_popup_transparency(0.0);
     f.grab(&ui);
+
+    // ── ②e 通透度 = 透明度（语义钉死，2026-10-17）───────────────────────
+    // 用户定稿：「通透度就是透明度，100% 就该看到背后的内容；遮罩浓度是另一
+    // 个参数」。所以这里断言两条**语义**，而不是"好看"：
+    //   ① popup-alpha 必须严格 = 1 − t（无下限、无分段、无高光偏移）；
+    //   ② 卡片像素 = 遮罩后的背景与面板色按该 alpha 的混合 —— t=1.0 时面板色
+    //      贡献必须为 0，即完全等于「遮罩后的背景」（背后内容原样透出）。
+    // 前一轮为了"看起来像玻璃"加的 0.35 下限 / 白色高光都违反了这条语义，已撤。
+    {
+        let scrimmed = mix(base_center, (sr, sg, sb), scrim_alpha);
+        let panel_rgb = card_rgb; // 实心档 = 面板色（无高光，颜色不随透明度变）
+        for (t, tag) in [(0.57f32, "57%"), (1.0f32, "100%")] {
+            ui.set_popup_transparency(t);
+            f.grab(&ui);
+            let a = theme.get_popup_alpha();
+            assert!(
+                (a - (1.0 - t)).abs() < 0.01,
+                "{} 档 popup-alpha 必须 = 1 − t（实得 {a}）—— 通透度就是透明度，\
+                 不允许下限/分段/高光等隐藏处理",
+                tag
+            );
+            let card = { let (r, g, b, _) = f.px(W / 2, H / 2); (r, g, b) };
+            let expect = mix(scrimmed, panel_rgb, a);
+            assert!(
+                close(card, expect, 3),
+                "{} 档卡片应为「背景 × (1−α) + 面板 × α」= {:?}，实得 {:?}（α={a}）",
+                tag,
+                expect,
+                card
+            );
+        }
+        // 100% 档再来一条更硬的：卡片 = 纯背景（面板色一点不剩）。
+        ui.set_popup_transparency(1.0);
+        f.grab(&ui);
+        let card = { let (r, g, b, _) = f.px(W / 2, H / 2); (r, g, b) };
+        assert!(
+            close(card, scrimmed, 2),
+            "100% 档弹窗必须完全透明：卡片应 = 遮罩后的背景 {:?}，实得 {:?}",
+            scrimmed,
+            card
+        );
+        ui.set_popup_transparency(0.0);
+        f.grab(&ui);
+    }
 
     // ── ②c 关闭方式两块内衬卡跟随通透档（#popup-inset-alpha）────────────
     // 用户截图：通透档下两块卡片没有通透性（旧 bg-root 无壁纸时不透明），
@@ -403,10 +455,10 @@ fn dialog_scrims_unified_and_close_dialog_draggable() {
     // ⚠️ 内衬背景带 120ms animate：档位/壁纸变更**不是指针事件**，动画不会
     // 自己推进 —— 每次变更后必须补一次 tick（sleep + 同坐标 PointerMoved），
     // 否则渲染停在"上次推进的值"（首版两个帧都量到实色 root，误判修复没生效）。
-    ui.set_popup_transparency(2);
+    ui.set_popup_transparency(0.45);
     f.grab(&ui);
     std::thread::sleep(std::time::Duration::from_millis(150));
-    hover(&ui, 100.0, 100.0); // tick：推进内衬动画到档 2 目标值
+    hover(&ui, 100.0, 100.0); // tick：推进内衬动画到全透档目标值
     f.grab(&ui);
     maybe_dump(&f, "inset-base-np");
     let base_np = scan(&f, EXIT_SCAN);
@@ -452,7 +504,7 @@ fn dialog_scrims_unified_and_close_dialog_draggable() {
     );
 
     ui.set_wallpaper_active(false);
-    ui.set_popup_transparency(0);
+    ui.set_popup_transparency(0.0);
     f.grab(&ui);
     std::thread::sleep(std::time::Duration::from_millis(150));
     hover(&ui, 100.0, 100.0); // tick：恢复档 0 实色后再进 ③ 段
@@ -499,7 +551,7 @@ fn dialog_scrims_unified_and_close_dialog_draggable() {
 
     // 档 2 + 棋盘：输入框表面应透出棋盘（tick 规则同 ②c：动画只在指针事件
     // 推进；field 的底虽多为直接绑定，仍按同款保险处理）。
-    ui.set_popup_transparency(2);
+    ui.set_popup_transparency(0.45);
     f.grab(&ui);
     std::thread::sleep(std::time::Duration::from_millis(150));
     hover(&ui, 100.0, 100.0); // tick
@@ -534,7 +586,7 @@ fn dialog_scrims_unified_and_close_dialog_draggable() {
     // 收尾：关会话弹框、恢复壁纸/档位，并把关闭弹框重开（③ 段的前置状态）。
     ui.set_wallpaper_active(false);
     ui.set_dialog_open(false);
-    ui.set_popup_transparency(0);
+    ui.set_popup_transparency(0.0);
     ui.set_confirm_close_open(true);
     f.grab(&ui);
     std::thread::sleep(std::time::Duration::from_millis(150));
@@ -555,8 +607,12 @@ fn dialog_scrims_unified_and_close_dialog_draggable() {
     release(&ui, px0 + dx, py0 + dy);
     f.grab(&ui);
     maybe_dump(&f, "close-dragged");
+    // 采样区必须**排除侧栏**：遮罩覆盖整窗，但侧栏卡片上的个别像素会落在
+    // popup-bg 的容差内（实测右侧资源面板 x≈322 处 (35,37,42)），旧式
+    // ±400/±300 大区域会把它的左上角当成卡片左上角（上一版因此报 -158）。
+    // 区域取「原卡片位置右下 20px 起 → 拖动目标右下」，既排除旧位置也覆盖新位置。
     let bbox1 = f
-        .bbox_of(card_rgb, 4, (W / 2 - 400, H / 2 - 300, W / 2 + 400, H / 2 + 300))
+        .bbox_of(card_rgb, 4, (W / 2 - 200, H / 2 - 130, W / 2 + 400, H / 2 + 260))
         .expect("拖动后应仍能找到卡片");
     let moved_x = bbox1.0 as f32 - bbox0.0 as f32;
     let moved_y = bbox1.1 as f32 - bbox0.1 as f32;
@@ -612,16 +668,31 @@ fn modal_dialog_scrims_come_from_the_theme_token() {
             .find(anchor)
             .unwrap_or_else(|| panic!("{} 里找不到锚点 {:?}", file, anchor));
         let after = &src[idx..];
-        let bg = after
+        let code_lines: Vec<&str> = after
             .lines()
             .map(str::trim)
             .filter(|l| !l.is_empty() && !l.starts_with("//"))
+            .collect();
+        let bg = code_lines
+            .iter()
             .find(|l| l.starts_with("background:"))
             .unwrap_or_else(|| panic!("{}（{}）锚点后找不到 background", file, what));
         assert!(
-            bg.starts_with("background: Theme.modal-scrim;"),
-            "{}（{}）的遮罩必须走 Theme.modal-scrim，实得 {:?}",
+            bg.starts_with("background: transparent;"),
+            "{}（{}）的覆盖层底必须透明（遮罩由 Scrim 组件画），实得 {:?}",
             file, what, bg
+        );
+        // (#scrim-style 2026-10-17) 遮罩统一走 Scrim（样式/浓度/随机都在组件内）。
+        assert!(
+            // 窗口按文件分档：独立组件（SettingsDialog / SessionDialog）在
+            // Scrim 之前有上百行属性与回调声明；app.slint 的内联弹框通常在
+            // 5 行内，取 40 行足以覆盖且不会串到下一个弹框。
+            code_lines
+                .iter()
+                .take(if *file == "app.slint" { 40 } else { 400 })
+                .any(|l| l.starts_with("Scrim")),
+            "{}（{}）的覆盖层必须包含 Scrim {{ }}（不得再手画 modal-scrim）",
+            file, what
         );
     }
 
@@ -679,6 +750,50 @@ fn modal_dialog_scrims_come_from_the_theme_token() {
             );
         }
     }
+}
+
+/// 弹窗**不要投影**（2026-10-17 用户定稿：「全删」）。
+///
+/// 起因：弹窗透明度 100% 时卡片仍是一块 62.7% 黑 —— 卡片本身已 alpha=0，
+/// 但 `drop-shadow-color: #000000a0` 画在它**背后**，透过透明卡片看到的就是
+/// 影子（浅色壁纸 249 → 93，边缘还有 24px 模糊渐变）。用户追问「为什么弹框
+/// 后面要加投影呢」，决定全部删除：弹窗只靠 1px 描边 + 遮罩与背景分层。
+#[test]
+fn popup_surfaces_have_no_drop_shadow() {
+    let ui_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&ui_dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("slint") {
+            continue;
+        }
+        let src = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = src.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains("background: Theme.popup-bg") {
+                continue;
+            }
+            // 背景行之后 14 行内（与实现时的启发式一致）不允许再出现可见投影。
+            for l in lines.iter().skip(i).take(14) {
+                if let Some(pos) = l.find("drop-shadow-color:") {
+                    checked += 1;
+                    let value = l[pos + "drop-shadow-color:".len()..]
+                        .split(';')
+                        .next()
+                        .unwrap_or("")
+                        .trim();
+                    assert!(
+                        value == "transparent",
+                        "{}:{} 弹窗表面不应有投影（用户定稿全删），实得 {:?}",
+                        path.file_name().unwrap().to_string_lossy(),
+                        i + 1,
+                        l.trim()
+                    );
+                }
+            }
+        }
+    }
+    assert!(checked >= 40, "应扫到 40+ 处弹窗投影位，实得 {checked}");
 }
 
 /// 弹框内容表面审计（#popup-surface-alpha 2026-10-16）：用户第二轮反馈

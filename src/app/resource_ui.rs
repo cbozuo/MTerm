@@ -557,9 +557,15 @@ macro_rules! copy_theme_slots {
         d.set_slot_dg(s.get_slot_dg());
         d.set_group_colors(s.get_group_colors());
         d.set_channel_colors(s.get_channel_colors());
-        d.set_panel_alpha(s.get_panel_alpha());
-        d.set_term_alpha(s.get_term_alpha());
-        d.set_wallpaper_visible(s.get_wallpaper_visible());
+        d.set_titlebar_transparency(s.get_titlebar_transparency());
+        d.set_tabbar_transparency(s.get_tabbar_transparency());
+        d.set_sidebar_transparency(s.get_sidebar_transparency());
+        d.set_term_transparency(s.get_term_transparency());
+        d.set_wallpaper_transparency(s.get_wallpaper_transparency());
+        d.set_wallpaper_scope(s.get_wallpaper_scope());
+        d.set_wallpaper_fit(s.get_wallpaper_fit());
+        d.set_scrim_style(s.get_scrim_style());
+        d.set_scrim_strength(s.get_scrim_strength());
         d.set_popup_transparency(s.get_popup_transparency());
         d.set_wallpaper(s.get_wallpaper());
         d.set_wallpaper_active(s.get_wallpaper_active());

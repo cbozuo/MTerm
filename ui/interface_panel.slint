@@ -9,10 +9,10 @@ import { Icon } from "icons.slint";
 // of the global UI scale; only the font-preview reflects the real terminal size.
 
 import { Theme } from "theme.slint";
-import { Slider, ScrollView } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { SegGroup } from "seg.slint";
 import { SelectField } from "widgets.slint";
-import { LabeledInput, PrimaryButton, GhostButton } from "widgets.slint";
+import { LabeledInput, PrimaryButton, GhostButton, MTermSlider, Scrim } from "widgets.slint";
 import { StorageSettings } from "storage_settings.slint";
 
 export struct OutputRuleItem {
@@ -305,7 +305,7 @@ component FontCombo inherits Rectangle {
             border-width: 1px;
             border-color: Theme.line-2;
             drop-shadow-blur: 18px;
-            drop-shadow-color: #00000066;
+            drop-shadow-color: transparent;
             pop-scroll := ScrollView {
                 width: 100%;
                 height: 100%;
@@ -393,7 +393,7 @@ component FontCombo inherits Rectangle {
                     border-width: 1px;
                     border-color: Theme.line-2;
                     drop-shadow-blur: 10px;
-                    drop-shadow-color: #00000077;
+                    drop-shadow-color: transparent;
                     tip-label := Text {
                         x: 8px;
                         y: 6px;
@@ -529,7 +529,7 @@ component CursorColorInput inherits Rectangle {
             border-width: 1px;
             border-color: Theme.border-strong;
             drop-shadow-blur: 12px;
-            drop-shadow-color: #00000060;
+            drop-shadow-color: transparent;
             VerticalLayout {
                 padding: 10px;
                 spacing: 7px;
@@ -613,6 +613,232 @@ component WallpaperSwatch inherits Rectangle {
     }
 }
 
+// ── (#theme-gallery 2026-10-17) 外观页专属组件 ─────────────────────────────
+// 主题画廊卡：主题根底色块 + 强调色圆点 + 明暗角标（82px，与壁纸卡同语言）。
+// 悬停 220ms 后主界面实时预览（不落盘）；点击才切换并落盘 ——
+// 「悬停是看，点击才是选」。
+component ThemeCard inherits Rectangle {
+    in property <ThemeEntry> entry;
+    in property <bool> selected;
+    callback clicked();
+    callback preview(string);
+    callback restore();
+    width: 82px;
+    height: 70px;
+    background: transparent;
+    VerticalLayout {
+        spacing: 4px;
+        Rectangle {
+            height: 52px;
+            border-radius: 8px;
+            border-width: root.selected ? 2px : 1px;
+            border-color: root.selected ? Theme.accent-solid
+                : (card-ta.has-hover ? Theme.border-strong : Theme.border-subtle);
+            background: root.entry.root;
+            clip: true;
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 26px;
+                height: 26px;
+                border-radius: 13px;
+                background: root.entry.ac;
+            }
+            // 明暗角标（右下）
+            Rectangle {
+                x: parent.width - self.width - 4px;
+                y: parent.height - self.height - 3px;
+                width: 26px;
+                height: 13px;
+                border-radius: 6.5px;
+                background: #5A5A5A73;
+                Text {
+                    text: root.entry.mode;
+                    color: #ffffff;
+                    font-size: 8.5px;
+                    width: 100%;
+                    height: 100%;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            // 选中 ✓（右上，accent 圆底）
+            if root.selected : Rectangle {
+                x: parent.width - self.width - 4px;
+                y: 4px;
+                width: 15px;
+                height: 15px;
+                border-radius: 7.5px;
+                background: Theme.accent-solid;
+                Icon {
+                    glyph: "check";
+                    tint: Theme.dark ? #08221E : #ffffff;
+                    size: 9px;
+                }
+            }
+        }
+        Text {
+            text: root.entry.zh;
+            color: root.selected ? Theme.accent-solid : Theme.text-secondary;
+            font-size: 10px;
+            height: 14px;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+    card-ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        changed has-hover => {
+            if (self.has-hover) {
+                hover-delay.restart();
+            } else {
+                hover-delay.running = false;
+                root.restore();
+            }
+        }
+    }
+    hover-delay := Timer {
+        interval: 220ms;
+        triggered => {
+            if (card-ta.has-hover) { root.preview(root.entry.id); }
+        }
+    }
+}
+
+// 「＋更多」卡：打开完整主题列表（浮层本体在 AppWindow 根层）。
+component ThemeMoreCard inherits Rectangle {
+    in property <bool> lang-en: false;
+    callback clicked();
+    width: 82px;
+    height: 70px;
+    background: transparent;
+    VerticalLayout {
+        spacing: 4px;
+        Rectangle {
+            height: 52px;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: more-ta.has-hover ? Theme.border-strong : Theme.border-subtle;
+            background: transparent;
+            Icon {
+                glyph: "add";
+                tint: more-ta.has-hover ? Theme.text-secondary : Theme.text-muted;
+                size: 15px;
+            }
+        }
+        Text {
+            text: root.lang-en ? "More" : "更多";
+            color: Theme.text-secondary;
+            font-size: 10px;
+            height: 14px;
+            horizontal-alignment: center;
+        }
+    }
+    more-ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// 满宽滑杆行（高保真 .prow）：标题 + 读数（含「（默认）」）+ 滑杆 + 说明。
+component PercentSliderRow inherits VerticalLayout {
+    in property <string> label;
+    in property <string> desc;
+    in property <float> percent: 0;
+    in property <float> default-percent: 0;
+    in property <bool> enabled: true;
+    in property <bool> lang-en: false;
+    callback changed(float);
+    callback released(float);
+    callback reset();
+    spacing: 2px;
+    padding-top: 7px;
+    padding-bottom: 7px;
+    HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: root.label;
+            color: Theme.text-primary;
+            font-size: 13px * Theme.panel-font;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: round(root.percent) + "%"
+                + (round(root.percent) == round(root.default-percent)
+                    ? (root.lang-en ? " (default)" : "（默认）") : "");
+            color: Theme.text-primary;
+            font-size: 12px * Theme.panel-font;
+            vertical-alignment: center;
+            opacity: root.enabled ? 1.0 : 0.45;
+        }
+    }
+    MTermSlider {
+        width: 100%;
+        minimum: 0;
+        maximum: 100;
+        value: root.percent;
+        default-value: root.default-percent;
+        enabled: root.enabled;
+        changed(v) => { root.changed(v); }
+        released(v) => { root.released(v); }
+        reset => { root.reset(); }
+    }
+    if root.desc != "" : Text {
+        text: root.desc;
+        color: Theme.text-muted;
+        font-size: 10.5px * Theme.panel-font;
+        wrap: word-wrap;
+        opacity: root.enabled ? 1.0 : 0.55;
+    }
+}
+
+// 分区透明度（四等分格）：小标题 + 读数 + 滑杆。
+component ZoneSlider inherits VerticalLayout {
+    in property <string> label;
+    in property <float> percent: 0;
+    in property <float> default-percent: 0;
+    in property <bool> lang-en: false;
+    callback changed(float);
+    callback released(float);
+    callback reset();
+    // (#zone-slider-equal 2026-10-17) 等宽由调用方按行宽给（见页面里的 4 个实例）：
+    // 用 horizontal-stretch 时 Slint 按「首选宽 + 均分余量」分配，而每列的首选宽
+    // 随数值文字变化（「0%（默认）」↔「100%」）→ 拖动时四根滑杆互相伸缩
+    //（实测 181/191/191/213）。
+    spacing: 3px;
+    HorizontalLayout {
+        spacing: 6px;
+        Text {
+            text: root.label;
+            color: Theme.text-primary;
+            font-size: 12px * Theme.panel-font;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        Text {
+            text: round(root.percent) + "%"
+                + (round(root.percent) == round(root.default-percent)
+                    ? (root.lang-en ? " (def)" : "（默认）") : "");
+            color: Theme.text-primary;
+            font-size: 11px * Theme.panel-font;
+            vertical-alignment: center;
+        }
+    }
+    MTermSlider {
+        width: 100%;
+        minimum: 0;
+        maximum: 100;
+        value: root.percent;
+        default-value: root.default-percent;
+        changed(v) => { root.changed(v); }
+        released(v) => { root.released(v); }
+        reset => { root.reset(); }
+    }
+}
+
 // The settings content (nav + pages). Embedded in AppWindow's modal overlay.
 export component InterfacePanel inherits Rectangle {
     in property <bool> lang-en;
@@ -641,7 +867,7 @@ export component InterfacePanel inherits Rectangle {
     in-out property <string> output-highlight-rule-status;
     in property <float> ui-scale;
     in-out property <bool> sftp-follow-cd;
-    in-out property <bool> collapse-sidebar-default;
+    in-out property <bool> collapse-right-sidebar-default;
     in-out property <bool> collapse-sftp-default;
     in-out property <bool> sync-upload-enabled;
     in-out property <bool> webdav-enabled;
@@ -655,7 +881,6 @@ export component InterfacePanel inherits Rectangle {
     in-out property <bool> paste-confirm-enabled: true;
     in-out property <bool> extra-paste-shortcuts-enabled: true;
     in-out property <bool> zen-mode: false;
-    in-out property <bool> welcome-as-sidebar;
     in-out property <bool> quick-commands-as-sidebar;
     // (#close-behavior) 点窗口关闭键时的行为:"ask" / "tray" / "exit"。
     // 与关闭确认卡共用同一份状态(双向绑定在 app.slint 里)。
@@ -664,9 +889,10 @@ export component InterfacePanel inherits Rectangle {
     in-out property <bool> mcp-use-saved-credentials: true;
     in-out property <bool> mcp-allow-commands: true;
     in-out property <bool> mcp-allow-file-transfers: true;
-    in-out property <float> wallpaper-overlay;   // frosted-panel opacity 0.30-1.00
     // ── (#theme-split) 主题/强调色/三滑杆/通透度 ─────────────────────
     in property <[ThemeEntry]> theme-entries;      // 38 套（Rust 从 palettes.rs 构建）
+    // 「常用主题」快捷位（≤4，config 顺序）——外观页画廊的数据源。
+    in property <[ThemeEntry]> theme-favorites;
     in-out property <string> theme-chosen;          // 当前主题 id（""=跟随系统）
     in-out property <bool> follow-system: true;
     // 只有两个态：follow / custom（preset 仅为旧配置兼容保留，UI 不再暴露）。
@@ -692,9 +918,25 @@ export component InterfacePanel inherits Rectangle {
     in-out property <length> accent-info-y: 0px;
     in-out property <bool> wallpaper-active;
     in-out property <bool> wallpaper-color-pickup;
-    in-out property <float> term-alpha: 1.0;
-    in-out property <float> wallpaper-visible: 1.0;
-    in-out property <int> popup-transparency: 0;
+    // (#zone-alpha 2026-10-17) 四分区透明度（滑杆值 = 透明程度，0 = 不透明；
+    // Rust 侧存 alpha = 1 − 值）。
+    in-out property <float> titlebar-transparency: 0.15;
+    in-out property <float> tabbar-transparency: 0.15;
+    in-out property <float> sidebar-transparency: 0.15;
+    in-out property <float> term-transparency: 0.0;
+    in-out property <float> wallpaper-transparency: 0.0;
+    in-out property <int> wallpaper-scope: 0;      // 0 整个界面 / 1 终端区
+    in-out property <string> wallpaper-fit: "cover";
+    in-out property <string> scrim-style: "auto";
+    in-out property <float> scrim-strength: 0.32;
+    // 遮罩样式下拉：浮层本体在 AppWindow 根层（theme-pick 同款桥；设置页在
+    // ScrollView 里，行内浮层会被滚出视口或裁掉）。
+    in-out property <bool> scrim-pick-open: false;
+    in-out property <length> scrim-pick-x: 0px;
+    in-out property <length> scrim-pick-y: 0px;
+    // 样式 id → 显示名：实现在 Theme.scrim-label（根层下拉也要用）。
+
+    in-out property <float> popup-transparency: 0.0;
     // (#theme-split v2) 主题下拉浮层桥（浮层本体在 AppWindow 根层，ChainPicker
     // 同款模式）：open 开关 + 按钮窗口坐标 + 悬停预览回调。当前主题名由
     // Rust apply_theme 写 theme-name（按钮显示）。
@@ -752,7 +994,7 @@ export component InterfacePanel inherits Rectangle {
     callback set-panel-font(int);   // settings-panel font scale, percent
     callback set-renderer-mode(string);
     callback set-sftp-follow-cd(bool);
-    callback set-collapse-sidebar-default(bool);
+    callback set-collapse-right-sidebar-default(bool);
     callback set-collapse-sftp-default(bool);
     callback set-sync-upload-enabled(bool);
     callback save-webdav-settings(bool, string, string, string, string, bool);
@@ -779,19 +1021,23 @@ export component InterfacePanel inherits Rectangle {
     callback pick-storage-dir();
     callback reset-storage-dir();
     callback switch-storage(bool) -> bool;
-    callback set-welcome-as-sidebar(bool);
     callback set-mcp-permissions(bool, bool, bool, bool);
-    callback persist-wallpaper-overlay(float);   // save the overlay opacity
     callback set-theme(string);                 // 选主题（theme id）
     callback set-follow-system(bool);
     callback set-accent-mode(string, string);   // mode, preset-key/hex
     // hex → color / 色块上的墨色（Rust：src/app.rs；预设弹框在根层同样用）
     pure callback accent-hex-color(string) -> color;
     pure callback accent-ink-on(string) -> color;
-    callback set-panel-alpha(float);
+    callback set-titlebar-alpha(float);
+    callback set-tabbar-alpha(float);
+    callback set-sidebar-alpha(float);
     callback set-term-alpha(float);
-    callback set-wallpaper-visible(float);
-    callback set-popup-transparency(int);
+    callback set-wallpaper-transparency(float);
+    callback set-wallpaper-scope(string);
+    callback set-wallpaper-fit(string);
+    callback set-scrim-style(string);
+    callback set-scrim-alpha(float);
+    callback set-popup-transparency(float);
     callback set-wallpaper-color-pickup(bool);
     callback set-wallpaper(string);    // none / builtin selection
     callback pick-wallpaper-file();    // open the OS file dialog (Rust)
@@ -831,7 +1077,7 @@ export component InterfacePanel inherits Rectangle {
                     spacing: 2px;
                     alignment: start;
                 NavItem {
-                    icon: "palette-grid"; label: root.lang-en ? "Theme" : "主题";
+                    icon: "appearance"; label: root.lang-en ? "Appearance" : "外观";
                     active: root.ifd-page == "theme";
                     clicked => { root.ifd-page = "theme"; }
                 }
@@ -856,11 +1102,6 @@ export component InterfacePanel inherits Rectangle {
                     clicked => { root.ifd-page = "output"; }
                 }
                 NavItem {
-                    icon: "wallpaper"; label: root.lang-en ? "Wallpaper" : "壁纸";
-                    active: root.ifd-page == "wallpaper";
-                    clicked => { root.ifd-page = "wallpaper"; }
-                }
-                NavItem {
                     icon: "folder"; label: "SFTP";
                     active: root.ifd-page == "sftp";
                     clicked => { root.ifd-page = "sftp"; }
@@ -874,11 +1115,6 @@ export component InterfacePanel inherits Rectangle {
                     icon: "chevron-left"; label: root.lang-en ? "Sidebars" : "侧栏";
                     active: root.ifd-page == "sidebar";
                     clicked => { root.ifd-page = "sidebar"; }
-                }
-                NavItem {
-                    icon: "home"; label: root.lang-en ? "Welcome page" : "欢迎页";
-                    active: root.ifd-page == "welcome";
-                    clicked => { root.ifd-page = "welcome"; }
                 }
                 NavItem {
                     icon: "link"; label: root.lang-en ? "Session sync" : "会话同步";
@@ -1343,7 +1579,10 @@ export component InterfacePanel inherits Rectangle {
                 }
             }
 
-            // --- Wallpaper page ----------------------------------------
+            // --- Appearance page（主题画廊 + 壁纸 + 弹窗遮罩）2026-10-17 --------
+            // (#theme-gallery / #zone-alpha / #scrim-style) 顺序按「皮肤流」：
+            //   主题画廊 → 强调色 → 壁纸库 → 显示（透明度/作用域/四分区）→
+            //   方式（填充）→ 弹窗与遮罩（通透度/样式/浓度/预览）。
             if root.ifd-page == "theme" : VerticalLayout {
                 padding-left: 20px;
                 padding-right: 20px;
@@ -1353,86 +1592,67 @@ export component InterfacePanel inherits Rectangle {
 
                 Text {
                     text: root.lang-en
-                        ? "Theme = the whole colour system (incl. terminal ANSI), independent of the wallpaper."
-                        : "整套配色（含终端 ANSI 调色板），与壁纸无关。下拉项悬停可在主界面实时预览。";
+                        ? "Appearance: colour system (incl. terminal ANSI) and wallpaper — independent layers."
+                        : "外观：整套配色（含终端 ANSI 调色板）与壁纸 —— 两层相互独立。";
                     color: Theme.text-muted; font-size: 11px * Theme.panel-font; wrap: word-wrap;
+                }
+                Rectangle { height: 4px; }
+                Text {
+                    // (#mode-values 2026-10-17) 明暗各一套数值，切换主题自动切换。
+                    text: root.lang-en
+                        ? "Transparency / scrim values are stored separately for light and dark themes — switching theme switches to that set (a mode you never touched starts at its defaults)."
+                        : "下面的透明度 / 遮罩数值**明暗各存一套**，切换主题即切到那一套；某个模式第一次使用就是默认值。";
+                    color: Theme.text-muted;
+                    font-size: 10.5px * Theme.panel-font;
+                    wrap: word-wrap;
                 }
                 Rectangle { height: 12px; }
 
-                // ── 主题选择：下拉（按族分组）。悬停 = 主界面实时预览（不落
-                // 盘），点击 = 确认；浮层本体在 AppWindow 根层（theme-pick-open
-                // 桥，ChainPicker 同款——popup 独立作用域定位/事件都不可靠）。
-                SettingRow {
-                    label: root.lang-en ? "Theme" : "主题";
-                    desc: root.lang-en ? "28 presets, light/dark paired" : "28 套预设 · 明暗成对";
-                    tpk-btn := Rectangle {
-                        // 绝对定位内部元素（layout 在 SettingRow 的行高拉伸下
-                        // 不可控——实测按钮被拉到 ~60px、色块顶到上缘）。
-                        width: 240px;
-                        height: 34px;
-                        vertical-stretch: 0;   // 防止被 SettingRow 行高拉伸
-                        border-radius: 9px;
-                        border-width: 1px; border-color: Theme.border-control;
-                        background: Theme.popup-field;
-                        animate background { duration: 100ms; }
-                        // 该套强调色圆点（垂直居中）
-                        // (#swatch-round 2026-10-16) 圆角方块 4px → 正圆
-                        // 7px（14px 直径的一半）：与主题下拉列表行内的 11px/5.5px
-                        // 色点同款语言（用户反馈「这里面有两种样式的色块，统一用
-                        // 圆形的」）。下拉行是 11px、本按钮是 14px——直径差是
-                        // 按钮比列表行高，形状规格必须一致。
-                        Rectangle {
-                            x: 12px;
-                            y: (parent.height - self.height) / 2;
-                            width: 14px; height: 14px; border-radius: 7px;
-                            background: Theme.accent-solid;
+                // ── 主题画廊：常用快捷位（≤4）+ ＋更多 ────────────────────
+                Text {
+                    text: root.lang-en ? "Theme" : "主题";
+                    color: Theme.text-primary;
+                    font-size: 13px * Theme.panel-font;
+                }
+                Rectangle { height: 3px; }
+                Text {
+                    text: root.lang-en
+                        ? "Quick slots for your favourite themes (max 4). “More” opens the full list — star a theme there to add it here (also capped at 4). Hover to preview live."
+                        : "常用主题快捷位（最多 4 个）。「＋更多」打开完整列表（搜索 / 星标 / 明暗分组）—— 在列表里星标即添加到此处（同样封顶 4 个）。悬停实时预览。";
+                    color: Theme.text-muted;
+                    font-size: 11px * Theme.panel-font;
+                    wrap: word-wrap;
+                }
+                Rectangle { height: 9px; }
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
+                    for fav[i] in root.theme-favorites : ThemeCard {
+                        entry: fav;
+                        selected: root.theme-chosen == fav.id;
+                        clicked => {
+                            root.theme-chosen = fav.id;
+                            root.set-theme(fav.id);
                         }
-                        // 当前主题名（Rust apply 写 theme-name）
-                        Text {
-                            x: 34px;
-                            y: (parent.height - self.height) / 2;
-                            width: parent.width - 34px - 30px;
-                            text: root.theme-name;
-                            color: Theme.text-primary; font-size: 12px * Theme.panel-font;
-                            vertical-alignment: center;
-                            overflow: elide;
-                        }
-                        Text {
-                            x: parent.width - self.width - 10px;
-                            y: (parent.height - self.height) / 2;
-                            text: "▼";
-                            color: Theme.text-muted; font-size: 9px;
-                        }
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => {
-                                // 上报按钮的窗口坐标（布局期 absolute-position 恒 0，
-                                // 必须在事件期取——ChainPicker 的 report-pos 结论）。
-                                // 打开时先清搜索词并恢复全量（上次搜索残留会让
-                                // 重开的下拉只剩匹配项——实测）。
-                                root.theme-pick-search = "";
-                                root.theme-search-filter("");
-                                root.theme-pick-open = !root.theme-pick-open;
-                                root.theme-pick-x = self.absolute-position.x;
-                                // +4px：浮层与按钮留一道缝，不贴死（与顶栏同款）
-                                root.theme-pick-y = self.absolute-position.y + self.height + 4px;
-                            }
+                        preview(id) => { root.preview-theme(id); }
+                        restore() => { root.preview-theme(root.theme-chosen); }
+                    }
+                    more-card := ThemeMoreCard {
+                        lang-en: root.lang-en;
+                        clicked => {
+                            // 与先前下拉按钮同一套桥：清搜索词 → 打开根层浮层，
+                            // 锚点取本卡事件期的窗口坐标。
+                            root.theme-pick-search = "";
+                            root.theme-search-filter("");
+                            root.theme-pick-open = !root.theme-pick-open;
+                            root.theme-pick-x = more-card.absolute-position.x;
+                            root.theme-pick-y = more-card.absolute-position.y + more-card.height + 4px;
                         }
                     }
                 }
-
-                Rectangle { height: 10px; }
-                // (#follow-ui-removed 2026-10-16) 「跟随系统」设置项按用户要求删除：
-                // 它与主题下拉框顶部的同名动作是**同一状态的两个入口**，用户判定为
-                // 冗余/冲突，两处都不留。此后「跟随与否」只由「挑了哪套主题」决定
-                // （挑任何一套即 follow_system=false）。配置字段与 Rust 通路保留，
-                // 兼容旧配置。
+                Rectangle { height: 12px; }
 
                 // ── 强调色两态（定稿高保真 #accent-pop-v2）──────────────────
-                //    只有两个态：跟随主题 / 自定义。滑块是唯一切换入口 —— 点
-                //    「自定义」打开预设弹框（居中、可拖动）；右侧色块仅展示当前
-                //    生效色（跟随态=主题 ac，自定义态=守卫后的生效色），不可点。
-                //    弹框本体在 AppWindow 根层（accent-pop-open 桥）。
                 SettingRow {
                     show-divider: false;
                     label: root.lang-en ? "Accent" : "强调色";
@@ -1442,13 +1662,7 @@ export component InterfacePanel inherits Rectangle {
                     HorizontalLayout {
                         spacing: 10px;
                         SegGroup {
-                            // (#accent-seg-ghost 2026-10-15) 选中态 = 「弹框开着」
-                            // 或「已应用自定义」。点「自定义」只开弹框、**不预置**
-                            // accent-mode —— 那是个 in-out 属性，预置后没有任何路径
-                            // 把它还原：没点应用就关掉设置卡，重开时分段仍停在
-                            // 「自定义」上（用户反馈「没有设置自定义的时候，再打开
-                            // 要默认跟随主题」）。mode 的唯一改写点 = 「应用」按钮
-                            // （app.slint 的 pop-ok-ta）与「跟随主题」段自身。
+                            // (#accent-seg-ghost) 选中态 = 「弹框开着」或「已应用自定义」。
                             active-index: (root.accent-pop-open || root.accent-mode == "custom") ? 1 : 0;
                             count: 2;
                             AccentSeg {
@@ -1465,19 +1679,11 @@ export component InterfacePanel inherits Rectangle {
                                 label: root.lang-en ? "Custom" : "自定义";
                                 active: root.accent-pop-open || root.accent-mode == "custom";
                                 clicked => {
-                                    // 只开弹框 + 重置暂存色；mode 留给「应用」落。
                                     root.accent-stage = root.accent-guard.eff;
                                     root.accent-pop-open = true;
                                 }
                             }
                         }
-                        // 当前生效色 chip：仅展示、不可点（切换只走左侧滑块）
-                        // (#accent-chip-info 2026-10-16) 悬停浮出**取色信息卡**
-                        // （ColorInfoCard，与自定义弹框 / 「最近」行同款 —— 用户
-                        // 要求两处同款）：四行 HEX / RGB / HSV / HSL，值取当前
-                        // **生效**色（跟随态 = 主题 ac；自定义态 = 3:1 守卫后的色，
-                        // 即色卡实际显示的那颗）。卡片放色卡**下方**并右对齐：该行
-                        // 靠页顶，向上会越出设置卡被 clip 裁掉。
                         chip := Rectangle {
                             width: 46px;
                             height: 32px;
@@ -1493,17 +1699,11 @@ export component InterfacePanel inherits Rectangle {
                                 border-radius: 5px;
                                 background: root.accent-hex-color(root.accent-guard.eff);
                             }
-                            // 悬停检测。chip 本是展示件，点击行为等同卡片空白：
-                            // 推进 combo-clock 清 FontCombo 聚焦戳（输入框失焦由
-                            // 卡片侧负责；本页无输入框，无实际影响）。
-                            // 悬停时上报色卡的窗口坐标，信息卡由根层绘制。
                             accent-chip-ta := TouchArea {
                                 clicked => { root.blank-clicked(); }
                                 changed has-hover => {
                                     root.accent-info-open = self.has-hover;
                                     if (self.has-hover) {
-                                        // 卡片 168 宽（ColorInfoCard 自身定宽）、
-                                        // 右对齐色卡；下沿留 8px。
                                         root.accent-info-x = self.absolute-position.x + self.width - 168px;
                                         root.accent-info-y = self.absolute-position.y + self.height + 8px;
                                     }
@@ -1513,141 +1713,17 @@ export component InterfacePanel inherits Rectangle {
                     }
                 }
                 Rectangle { height: 1px; background: Theme.border-subtle; }
-                Rectangle { height: 6px; }
+                Rectangle { height: 10px; }
 
-                // ── 弹窗通透度三档（#popup-transparency-hifi）：滑动分段 +
-                // 实时预览（壁纸彩块上的迷你弹窗，bg alpha 与全部弹窗同源）──
-                // (#popup-naming 2026-10-16) 原标签「界面通透度」易与壁纸区的
-                // 「面板不透明度」（= 主界面透明度）混淆 —— 本项实际只管弹窗/
-                // 浮层（popup-transparency），改名「弹窗通透度」与字段同词。
-                // (#popup-row-divider 2026-10-16) show-divider: false —— 本行下方
-                // 紧跟的是预览卡（不是下一行），行间分隔线夹在「行→卡」之间
-                // 是多余的（用户反馈「红框处是不是多了一条横线」）。
-                SettingRow {
-                    label: root.lang-en ? "Dialog translucency" : "弹窗通透度";
-                    desc: root.lang-en ? "Glass level of popups / floating layers — applies immediately" : "弹窗 / 浮层（下拉、弹框、调色盘）的玻璃程度，改动立即生效";
-                    show-divider: false;
-                    SegGroup {
-                        active-index: root.popup-transparency;
-                        count: 3;
-                        AccentSeg {
-                            label: root.lang-en ? "Solid" : "标准";
-                            active: root.popup-transparency == 0;
-                            clicked => {
-                                root.popup-transparency = 0;
-                                root.set-popup-transparency(0);
-                            }
-                        }
-                        AccentSeg {
-                            label: root.lang-en ? "Translucent" : "通透";
-                            active: root.popup-transparency == 1;
-                            clicked => {
-                                root.popup-transparency = 1;
-                                root.set-popup-transparency(1);
-                            }
-                        }
-                        AccentSeg {
-                            label: root.lang-en ? "Glass" : "全透";
-                            active: root.popup-transparency == 2;
-                            clicked => {
-                                root.popup-transparency = 2;
-                                root.set-popup-transparency(2);
-                            }
-                        }
-                    }
-                }
-                // 实时预览：迷你弹窗 bg = 面板色 × popup-alpha（与真实弹窗同源）
-                Rectangle {
-                    height: 118px;
-                    border-radius: 10px;
-                    background: Theme.popup-bg-active;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-                    clip: true;
-                    HorizontalLayout {
-                        padding: 12px;
-                        spacing: 16px;
-                        Rectangle {
-                            width: 224px;
-                            border-radius: 8px;
-                            clip: true;
-                            background: #1f2433;
-                            // 壁纸彩块（体现「玻璃」透出的内容）
-                            Rectangle { x: 20px; y: 10px; width: 96px; height: 96px; border-radius: 48px; background: #7a5ce0; opacity: 0.9; }
-                            Rectangle { x: 152px; y: 54px; width: 56px; height: 56px; border-radius: 28px; background: #26b89a; opacity: 0.85; }
-                            Rectangle { x: 130px; y: 8px; width: 44px; height: 44px; border-radius: 22px; background: #ffb648; opacity: 0.9; }
-                            // 迷你弹窗：bg = 面板色 × popup-alpha
-                            Rectangle {
-                                x: 36px;
-                                y: 17px;
-                                width: 128px;
-                                height: 84px;
-                                border-radius: 9px;
-                                border-width: 1px;
-                                border-color: #ffffff38;
-                                background: Theme.panel-solid.with-alpha(Theme.popup-alpha);
-                                drop-shadow-blur: 12px;
-                                drop-shadow-color: #00000066;
-                                VerticalLayout {
-                                    padding-top: 10px;
-                                    padding-bottom: 10px;
-                                    padding-left: 11px;
-                                    padding-right: 11px;
-                                    spacing: 6px;
-                                    Rectangle { width: 40px; height: 7px; border-radius: 3.5px; background: Theme.text-primary; opacity: 0.88; }
-                                    Rectangle { width: 96px; height: 5px; border-radius: 2.5px; background: Theme.text-primary; opacity: 0.45; }
-                                    Rectangle { width: 68px; height: 5px; border-radius: 2.5px; background: Theme.text-primary; opacity: 0.45; }
-                                    Rectangle { width: 48px; height: 13px; border-radius: 6px; background: Theme.accent-solid; }
-                                }
-                            }
-                        }
-                        VerticalLayout {
-                            alignment: center;
-                            spacing: 4px;
-                            horizontal-stretch: 1;
-                            Text {
-                                text: root.lang-en
-                                    ? (root.popup-transparency == 2
-                                        ? "Full (88% glass + stronger scrim): lightest — wallpaper shows through; scrim keeps text readable."
-                                        : root.popup-transparency == 1
-                                        ? "Translucent: dialogs follow the panel opacity — the lightest everyday level."
-                                        : "Solid (default): dialogs are opaque — best readability, like native dialogs.")
-                                    : (root.popup-transparency == 2
-                                        ? "全透（88% 玻璃 + 强遮罩）：最轻盈的一档，壁纸清晰透出；打开弹窗时配合更重的遮罩保住可读性。"
-                                        : root.popup-transparency == 1
-                                        ? "通透（跟随界面）：弹窗跟随主面板透明度，壁纸隐约透出，界面更轻盈。"
-                                        : "标准（实心）：弹窗不透明 —— 可读性最好，和系统原生对话框一致。");
-                                color: Theme.text-muted;
-                                font-size: 11px * Theme.panel-font;
-                                wrap: word-wrap;
-                            }
-                            Text {
-                                text: root.lang-en
-                                    ? "Applies to all floating layers (menus, dialogs, pickers) immediately."
-                                    : "对全部浮层（下拉 / 弹框 / 调色盘）立即生效，重启后保持。";
-                                color: Theme.text-muted;
-                                font-size: 10.5px * Theme.panel-font;
-                                opacity: 0.8;
-                                wrap: word-wrap;
-                            }
-                        }
-                    }
-                }
-            }
-            if root.ifd-page == "wallpaper" : VerticalLayout {
-                padding-left: 20px;
-                padding-right: 20px;
-                padding-top: 14px;
-                spacing: 0;
-                alignment: start;
-
+                // ── 壁纸库 ──────────────────────────────────────────────
+                SectionHeader { text: root.lang-en ? "WALLPAPER" : "壁纸库"; height: 22px; }
                 Text {
                     text: root.lang-en
                         ? "Wallpaper is a background only — it never changes the accent or light/dark."
-                        : "壁纸只作为背景显示,不再改变界面的强调色和深浅。";
+                        : "壁纸只作为背景显示，不再改变界面的强调色和深浅。";
                     color: Theme.text-muted; font-size: 11px * Theme.panel-font; wrap: word-wrap;
                 }
-                Rectangle { height: 12px; }
+                Rectangle { height: 8px; }
 
                 // Built-in choices: keep this row horizontally scrollable as
                 // bundled wallpapers grow.
@@ -1827,81 +1903,338 @@ export component InterfacePanel inherits Rectangle {
                     }
                 }
 
-                Rectangle { height: 16px; }
-                SectionHeader { text: root.lang-en ? "OPACITY & PICKUP" : "透明度与取色"; height: 22px; }
-                // (#theme-split §3-调整②) 三个独立滑杆取代旧「遮罩透明度」一值
-                // 多用；「跟随图片取色」默认关（唯一让壁纸反向影响界面的开关）。
+                Text {
+                    text: root.lang-en
+                        ? "Uploaded images are copied into the wallpapers folder of the data directory (PNG / JPG / WEBP)."
+                        : "上传的图片复制保存到数据目录的 wallpapers 文件夹（PNG / JPG / WEBP）。";
+                    color: Theme.text-muted; font-size: 10.5px * Theme.panel-font;
+                    wrap: word-wrap;
+                }
+                Rectangle { height: 12px; }
+                Rectangle { height: 1px; background: Theme.border-subtle; }
+                Rectangle { height: 10px; }
+
+                // ── 显示：壁纸透明度 + 作用域 + 四分区透明度 ──────────────
+                SectionHeader { text: root.lang-en ? "DISPLAY" : "显示"; height: 22px; }
+
+                PercentSliderRow {
+                    label: root.lang-en ? "Wallpaper transparency" : "壁纸透明度";
+                    desc: root.lang-en
+                        ? "How transparent the image itself is — higher = fainter. Double-click the slider to reset."
+                        : "壁纸图自身的透明程度，越高壁纸越淡；双击滑杆恢复默认。";
+                    percent: root.wallpaper-transparency * 100;
+                    default-percent: 0;
+                    enabled: root.wallpaper-active;
+                    lang-en: root.lang-en;
+                    changed(v) => { root.wallpaper-transparency = v / 100; }
+                    released(v) => { root.set-wallpaper-transparency(v / 100); }
+                    reset => { root.set-wallpaper-transparency(root.wallpaper-transparency); }
+                }
+
                 SettingRow {
-                    label: root.lang-en ? "Wallpaper visibility" : "壁纸可见度";
-                    desc: root.lang-en ? "How visible the wallpaper itself is" : "壁纸图自身的可见程度";
+                    label: root.lang-en ? "Scope" : "作用域";
+                    desc: root.lang-en
+                        ? "Whole window = fills the window (default); Terminal = only the terminal area shows it, sidebars / tab bar stay solid. Dialogs are never part of the wallpaper."
+                        : "壁纸生效的范围：「整个界面」= 铺满全窗；「终端」= 只在终端区显示（沉浸式终端背景），侧栏 / 标签栏保持纯色主题底。弹窗 / 浮层不在壁纸范围。";
                     HorizontalLayout {
-                        spacing: 8px;
-                        Slider {
-                            width: 150px;
-                            minimum: 0; maximum: 100;
-                            value: root.wallpaper-visible * 100;
-                            // 无壁纸时置灰吞事件（§3-调整②：修复『没设壁纸时值照存、
-                            // 下次开壁纸突然生效』的隐性状态）
-                            enabled: root.wallpaper-active;
-                            changed(v) => { root.wallpaper-visible = v / 100; }
-                            released(v) => { root.set-wallpaper-visible(v / 100); }
-                        }
-                        Text {
-                            text: "{round(root.wallpaper-visible * 100)}%";
-                            // (#theme-dedupe 2026-10-15) 滑块数值 = 前景色(§3.3 数值清单)
-                            color: Theme.text-primary; font-size: 12px * Theme.panel-font;
-                            vertical-alignment: center; width: 34px;
-                            opacity: root.wallpaper-active ? 1.0 : 0.45;
+                        SegGroup {
+                            width: 250px;
+                            active-index: root.wallpaper-scope;
+                            count: 2;
+                            AccentSeg {
+                                label: root.lang-en ? "Whole window" : "整个界面";
+                                active: root.wallpaper-scope == 0;
+                                clicked => {
+                                    root.wallpaper-scope = 0;
+                                    root.set-wallpaper-scope("window");
+                                }
+                            }
+                            AccentSeg {
+                                label: root.lang-en ? "Terminal" : "终端";
+                                active: root.wallpaper-scope == 1;
+                                clicked => {
+                                    root.wallpaper-scope = 1;
+                                    root.set-wallpaper-scope("terminal");
+                                }
+                            }
                         }
                     }
                 }
-                SettingRow {
-                    label: root.lang-en ? "Panel opacity" : "面板不透明度";
-                    desc: root.lang-en ? "Sidebar / tab strip / top bar frost level" : "侧栏 / 标签栏 / 顶栏的雾面程度";
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Slider {
-                            width: 150px;
-                            minimum: 30; maximum: 100;
-                            value: root.wallpaper-overlay * 100;
-                            changed(v) => { root.wallpaper-overlay = v / 100; }
-                            released(v) => { root.set-panel-alpha(v / 100); }
-                        }
-                        Text {
-                            text: "{round(root.wallpaper-overlay * 100)}%";
-                            // (#theme-dedupe 2026-10-15) 滑块数值 = 前景色(§3.3 数值清单)
-                            color: Theme.text-primary; font-size: 12px * Theme.panel-font;
-                            vertical-alignment: center; width: 34px;
-                        }
+
+                HorizontalLayout {
+                    padding-top: 8px;
+                    padding-bottom: 2px;
+                    Text {
+                        text: root.lang-en ? "Zone transparency" : "分区透明度";
+                        color: Theme.text-primary;
+                        font-size: 13px * Theme.panel-font;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: root.lang-en ? "Drag · double-click to reset" : "直接拖 · 双击恢复默认";
+                        color: Theme.text-muted;
+                        font-size: 10.5px * Theme.panel-font;
+                        vertical-alignment: center;
                     }
                 }
-                SettingRow {
-                    label: root.lang-en ? "Terminal opacity" : "终端不透明度";
-                    desc: root.lang-en ? "Terminal area only, floor 75% keeps ANSI readable" : "仅终端区，最低 75% 以保证 ANSI 输出可读";
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Slider {
-                            width: 150px;
-                            minimum: 75; maximum: 100;
-                            value: root.term-alpha * 100;
-                            changed(v) => { root.term-alpha = v / 100; }
-                            released(v) => { root.set-term-alpha(v / 100); }
-                        }
-                        Text {
-                            text: "{round(root.term-alpha * 100)}%";
-                            // (#theme-dedupe 2026-10-15) 滑块数值 = 前景色(§3.3 数值清单)
-                            color: Theme.text-primary; font-size: 12px * Theme.panel-font;
-                            vertical-alignment: center; width: 34px;
-                        }
+                Rectangle { height: 6px; }
+                HorizontalLayout {
+                    spacing: 14px;
+                    ZoneSlider {
+                        width: (parent.width - 42px) * 0.25;
+                        label: root.lang-en ? "Title bar" : "标题栏";
+                        percent: root.titlebar-transparency * 100;
+                        default-percent: 15;
+                        lang-en: root.lang-en;
+                        changed(v) => { root.titlebar-transparency = v / 100; }
+                        released(v) => { root.set-titlebar-alpha(1.0 - v / 100); }
+                        reset => { root.set-titlebar-alpha(1.0 - root.titlebar-transparency); }
+                    }
+                    ZoneSlider {
+                        width: (parent.width - 42px) * 0.25;
+                        label: root.lang-en ? "Tab bar" : "标签栏";
+                        percent: root.tabbar-transparency * 100;
+                        default-percent: 15;
+                        lang-en: root.lang-en;
+                        changed(v) => { root.tabbar-transparency = v / 100; }
+                        released(v) => { root.set-tabbar-alpha(1.0 - v / 100); }
+                        reset => { root.set-tabbar-alpha(1.0 - root.tabbar-transparency); }
+                    }
+                    ZoneSlider {
+                        width: (parent.width - 42px) * 0.25;
+                        label: root.lang-en ? "Sidebars" : "侧栏";
+                        percent: root.sidebar-transparency * 100;
+                        default-percent: 15;
+                        lang-en: root.lang-en;
+                        changed(v) => { root.sidebar-transparency = v / 100; }
+                        released(v) => { root.set-sidebar-alpha(1.0 - v / 100); }
+                        reset => { root.set-sidebar-alpha(1.0 - root.sidebar-transparency); }
+                    }
+                    ZoneSlider {
+                        width: (parent.width - 42px) * 0.25;
+                        label: root.lang-en ? "Terminal" : "终端区";
+                        percent: root.term-transparency * 100;
+                        default-percent: 0;
+                        lang-en: root.lang-en;
+                        changed(v) => { root.term-transparency = v / 100; }
+                        released(v) => { root.set-term-alpha(1.0 - v / 100); }
+                        reset => { root.set-term-alpha(1.0 - root.term-transparency); }
                     }
                 }
+                Rectangle { height: 4px; }
+                Text {
+                    text: root.lang-en
+                        ? "How frosted each zone is over the wallpaper (sidebars include both side panels and the bottom panel). When a zone has no wallpaper behind it (wallpaper = none, or outside the scope) it reveals the window base instead — the value is kept. With no session the centre shows the empty hint and follows the terminal zone."
+                        : "壁纸在四个区域的雾面程度（侧栏含左右侧栏与下方面板）。区域没有壁纸时（选「无」或未在作用域内）透出窗口底色、效果较弱，值会保留。（无会话时中央为空态提示，跟随终端区、参与壁纸。）";
+                    color: Theme.text-muted;
+                    font-size: 10.5px * Theme.panel-font;
+                    wrap: word-wrap;
+                }
+                // (#zone-alpha-hint 2026-10-17) 没壁纸时四根滑杆只能透出窗口底色，
+                // 与面板色只差 2~4 级 —— 用户实测"改了没效果"。这里给一条上下文提示，
+                // 免得把"无背景可透"误判成功能坏了。
+                if !root.wallpaper-active : Text {
+                    text: root.lang-en
+                        ? "No wallpaper is set, so these values only reveal the window base (almost the same colour as the panels) — the change is barely visible. Pick a wallpaper above to see them work."
+                        : "当前没有设置壁纸：这四个值只会透出窗口底色（与面板色几乎相同），变化很小；选一张壁纸后效果立刻可见。";
+                    color: Theme.accent;
+                    font-size: 10.5px * Theme.panel-font;
+                    wrap: word-wrap;
+                }
+                Rectangle { height: 6px; }
+
+                Rectangle { height: 1px; background: Theme.border-subtle; }
+                Rectangle { height: 10px; }
+
+                // ── 方式：填充 ──────────────────────────────────────────
+                SectionHeader { text: root.lang-en ? "FIT" : "方式"; height: 22px; }
                 SettingRow {
-                    label: root.lang-en ? "Pick colours from image" : "跟随图片取色";
-                    desc: root.lang-en ? "Use the image colour as accent (off by default)" : "用图片主色替换强调色（默认关；关闭时强调色只由主题决定）";
+                    label: root.lang-en ? "Fill mode" : "填充方式";
+                    desc: root.lang-en
+                        ? "Fill = crop to cover; Fit = show the whole image with margins; Stretch = fill and distort."
+                        : "填充 = 铺满裁切；适应 = 完整显示留白；拉伸 = 铺满变形。";
                     show-divider: false;
-                    Switch {
-                        on: root.wallpaper-color-pickup;
-                        toggled(v) => { root.wallpaper-color-pickup = v; root.set-wallpaper-color-pickup(v); }
+                    HorizontalLayout {
+                        SegGroup {
+                            width: 250px;
+                            active-index: root.wallpaper-fit == "contain" ? 1
+                                : root.wallpaper-fit == "fill" ? 2 : 0;
+                            count: 3;
+                            AccentSeg {
+                                label: root.lang-en ? "Fill" : "填充";
+                                active: root.wallpaper-fit == "cover";
+                                clicked => {
+                                    root.wallpaper-fit = "cover";
+                                    root.set-wallpaper-fit("cover");
+                                }
+                            }
+                            AccentSeg {
+                                label: root.lang-en ? "Fit" : "适应";
+                                active: root.wallpaper-fit == "contain";
+                                clicked => {
+                                    root.wallpaper-fit = "contain";
+                                    root.set-wallpaper-fit("contain");
+                                }
+                            }
+                            AccentSeg {
+                                label: root.lang-en ? "Stretch" : "拉伸";
+                                active: root.wallpaper-fit == "fill";
+                                clicked => {
+                                    root.wallpaper-fit = "fill";
+                                    root.set-wallpaper-fit("fill");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle { height: 1px; background: Theme.border-subtle; }
+                Rectangle { height: 10px; }
+
+                // ── 弹窗与遮罩 ──────────────────────────────────────────
+                SectionHeader { text: root.lang-en ? "DIALOGS & SCRIM" : "弹窗与遮罩"; height: 22px; }
+
+                // 弹窗通透度 = 弹窗自身的**透明度**（0 实心 → 100% 完全透明）。
+                // 与「遮罩浓度」是两个独立参数：一个管弹窗自己透多少，一个管
+                // 背后压多暗。100% 时看到的就是背后内容（被遮罩压暗后的样子）。
+                PercentSliderRow {
+                    label: root.lang-en ? "Dialog transparency" : "弹窗透明度";
+                    desc: root.lang-en
+                        ? "How transparent the dialog itself is: 0% = solid, 100% = fully transparent (you see straight through to the content behind). How dark that content is, is controlled by “Scrim strength” below. Double-click to reset."
+                        : "弹窗 / 浮层（下拉、弹框、调色盘）自身的透明度：0% = 实心，100% = 完全透明（直接看到背后的内容）。背后压多暗由下面的「遮罩浓度」单独决定。双击滑杆恢复默认。";
+                    percent: root.popup-transparency * 100;
+                    default-percent: 0;
+                    lang-en: root.lang-en;
+                    changed(v) => { root.popup-transparency = v / 100; }
+                    released(v) => { root.set-popup-transparency(v / 100); }
+                    reset => { root.set-popup-transparency(root.popup-transparency); }
+                }
+
+                SettingRow {
+                    label: root.lang-en ? "Scrim style" : "遮罩样式";
+                    desc: root.lang-en
+                        ? "Solid black / white, tinted glass, soft light, frost, spotlight, sheen; “Random” picks a new one each time a dialog opens. True backdrop blur is impossible in Slint — soft / frost / sheen are the best glass approximations."
+                        : "纯色黑 / 白、染色玻璃、柔光、磨砂、聚光、高光；「随机」每次打开弹窗换一种。真·背景模糊在 Slint 不可行，柔光 / 磨砂 / 高光是效果最好的玻璃近似。";
+                    scrim-dd := Rectangle {
+                        width: 170px;
+                        height: 34px;
+                        border-radius: 9px;
+                        border-width: 1px;
+                        border-color: scrim-dd-ta.has-hover || root.scrim-pick-open
+                            ? Theme.accent : Theme.border-control;
+                        background: Theme.popup-field;
+                        Text {
+                            x: 12px;
+                            width: parent.width - 40px;
+                            text: Theme.scrim-label(root.scrim-style, root.lang-en);
+                            color: Theme.text-primary;
+                            font-size: 12.5px * Theme.panel-font;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        Icon {
+                            x: parent.width - 26px;
+                            glyph: "expand-more";
+                            tint: Theme.text-muted;
+                            size: 14px;
+                        }
+                        scrim-dd-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.scrim-pick-x = self.absolute-position.x;
+                                root.scrim-pick-y = self.absolute-position.y + self.height + 4px;
+                                root.scrim-pick-open = !root.scrim-pick-open;
+                            }
+                        }
+                    }
+                }
+
+                // 遮罩浓度：与其它滑杆同款（accent 已选段 + 双击恢复）
+                PercentSliderRow {
+                    label: root.lang-en ? "Scrim strength" : "遮罩浓度";
+                    desc: root.lang-en
+                        ? "How much dialogs dim what's behind them. System default 32%. Double-click to reset."
+                        : "弹窗背后压暗强度。系统默认 32%，双击滑杆恢复默认。";
+                    percent: root.scrim-strength * 100;
+                    default-percent: 32;
+                    lang-en: root.lang-en;
+                    changed(v) => { root.scrim-strength = v / 100; }
+                    released(v) => { root.set-scrim-alpha(v / 100); }
+                    reset => { root.set-scrim-alpha(root.scrim-strength); }
+                }
+
+                // 预览卡：壁纸彩块 + 真实 Scrim + 迷你弹窗（popup-alpha 同源）
+                Rectangle {
+                    height: 118px;
+                    border-radius: 10px;
+                    background: Theme.popup-bg-active;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    clip: true;
+                    HorizontalLayout {
+                        padding: 12px;
+                        spacing: 16px;
+                        Rectangle {
+                            width: 224px;
+                            border-radius: 8px;
+                            clip: true;
+                            background: #1f2433;
+                            Rectangle { x: 20px; y: 10px; width: 96px; height: 96px; border-radius: 48px; background: #7a5ce0; opacity: 0.9; }
+                            Rectangle { x: 152px; y: 54px; width: 56px; height: 56px; border-radius: 28px; background: #26b89a; opacity: 0.85; }
+                            Rectangle { x: 130px; y: 8px; width: 44px; height: 44px; border-radius: 22px; background: #ffb648; opacity: 0.9; }
+                            // 真实遮罩层（与弹框背后同源，换档位立刻可见）
+                            Scrim { }
+                            Rectangle {
+                                x: 36px;
+                                y: 17px;
+                                width: 128px;
+                                height: 84px;
+                                border-radius: 9px;
+                                border-width: 1px;
+                                border-color: #ffffff38;
+                                background: Theme.popup-bg;
+                                drop-shadow-blur: 12px;
+                                drop-shadow-color: transparent;
+                                VerticalLayout {
+                                    padding-top: 10px;
+                                    padding-bottom: 10px;
+                                    padding-left: 11px;
+                                    padding-right: 11px;
+                                    spacing: 6px;
+                                    Rectangle { width: 40px; height: 7px; border-radius: 3.5px; background: Theme.text-primary; opacity: 0.88; }
+                                    Rectangle { width: 96px; height: 5px; border-radius: 2.5px; background: Theme.text-primary; opacity: 0.45; }
+                                    Rectangle { width: 68px; height: 5px; border-radius: 2.5px; background: Theme.text-primary; opacity: 0.45; }
+                                    Rectangle { width: 48px; height: 13px; border-radius: 6px; background: Theme.accent-solid; }
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 4px;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: root.lang-en
+                                    ? (root.popup-transparency < 0.01
+                                        ? "Solid (default): the dialog surface is fully opaque."
+                                        : "Transparent: the dialog surface is drawn at (100% − this value) opacity over whatever is behind it.")
+                                    : (root.popup-transparency < 0.01
+                                        ? "实心（默认）：弹窗表面完全不透明。"
+                                        : "透明：弹窗表面按「100% − 本值」的不透明度叠在背后内容上 —— 100% 即完全透出。");
+                                color: Theme.text-muted;
+                                font-size: 11px * Theme.panel-font;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: root.lang-en
+                                    ? "Applies to all floating layers (menus, dialogs, pickers) immediately."
+                                    : "对全部浮层（下拉 / 弹框 / 调色盘）立即生效，重启后保持。";
+                                color: Theme.text-muted;
+                                font-size: 10.5px * Theme.panel-font;
+                                opacity: 0.8;
+                                wrap: word-wrap;
+                            }
+                        }
                     }
                 }
             }
@@ -2106,8 +2439,8 @@ export component InterfacePanel inherits Rectangle {
                 SettingRow {
                     label: root.lang-en ? "Collapse the resource panel by default" : "默认收起资源视图面板";
                     Switch {
-                        on: root.collapse-sidebar-default;
-                        toggled(v) => { root.collapse-sidebar-default = v; root.set-collapse-sidebar-default(v); }
+                        on: root.collapse-right-sidebar-default;
+                        toggled(v) => { root.collapse-right-sidebar-default = v; root.set-collapse-right-sidebar-default(v); }
                     }
                 }
                 SettingRow {
@@ -2147,28 +2480,6 @@ export component InterfacePanel inherits Rectangle {
             }
 
             // --- Welcome page ------------------------------------------
-            if root.ifd-page == "welcome" : VerticalLayout {
-                padding-left: 20px;
-                padding-right: 20px;
-                padding-top: 14px;
-                spacing: 0;
-                alignment: start;
-                SettingRow {
-                    label: root.lang-en ? "Show the welcome page as a sidebar" : "欢迎页设为侧栏";
-                    desc: root.lang-en
-                        ? "Dock the session list on the left instead of a \"New tab\" tab; opened sessions fill the center."
-                        : "把会话列表停靠在左侧,不再用「新标签页」标签;打开的会话占据中央区域。";
-                    show-divider: false;
-                    Switch {
-                        on: root.welcome-as-sidebar;
-                        // Applying this binding destroys/recreates the Welcome
-                        // subtree. Rust defers that work until this Switch
-                        // callback has returned, so do not mutate it here (#323).
-                        toggled(v) => { root.set-welcome-as-sidebar(v); }
-                    }
-                }
-            }
-
             // --- Session sync page -------------------------------------
             if root.ifd-page == "sync" : VerticalLayout {
                 padding-left: 20px;

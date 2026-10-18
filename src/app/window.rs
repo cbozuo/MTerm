@@ -94,9 +94,21 @@ pub(super) fn arm_window_icon(_window: &slint::Window) {}
 /// On Windows, keep the frameless Slint surface and the native hit-test surface
 /// aligned. Some Win10 systems expose winit's undecorated-shadow compatibility
 /// frame as a real non-client strip, which shifts hit testing (#193).
+///
+/// 返回 **DWM 圆角是否真正生效**（`DWMWA_WINDOW_CORNER_PREFERENCE` 的 HRESULT
+/// == S_OK）。主窗口据此回写 `AppWindow.win-rounded`：Win10 / 属性被拒时 UI 只画
+/// 直角直边（窗口本身是直角，直边铺满即天然贴边），不画角弧。
+///
+/// (#win-edge-frame-r7 2026-10-18) 真机实测（200% DPI，系统边框染色后拟合窗口
+/// 外缘圆）：DWM 圆角半径 = **8 DIP**（200% 下 16 物理像素），不是旧注释写的
+/// "固定 8 物理像素"。自绘圆角按 8 DIP 计算（见 theme.slint `radius-win` /
+/// window_frame.slint）。
+/// 系统边框仍保持 `DWMWA_COLOR_NONE`：自绘线是 1 **设备**像素，而系统边框是
+/// 1 DIP（200% 下 2 物理像素）且盖在最外 2 个像素上，两者叠加会变成双线/粗线。
 #[cfg(windows)]
-pub(super) fn apply_window_chrome(window: &slint::Window) {
+pub(super) fn apply_window_chrome(window: &slint::Window) -> bool {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let mut rounded = false;
     window.with_winit_window(|ww| {
         let Ok(handle) = ww.window_handle() else {
             return;
@@ -117,10 +129,10 @@ pub(super) fn apply_window_chrome(window: &slint::Window) {
         const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
         const DWMWCP_ROUND: u32 = 2;
         // (#win-edge-frame-r6 2026-10-12) DWMWA_BORDER_COLOR = 34. Win11 给
-        // 圆角窗口默认画一条 1px 系统边框(深灰),与自绘的 border-strong 主线
-        // 紧贴成"双线",总墨量≈1.7px(像素实测:外缘 59~61 + 主线 82)。把系统
-        // 边框关掉(DWMWA_COLOR_NONE),只留自绘的 1 设备像素主线,观感回到
-        // 干净的单线。仅 Win11 22000+ 生效,旧系统返回 E_INVALIDARG 被忽略;
+        // 圆角窗口默认画一条 1 DIP 系统边框(深灰),与自绘主线紧贴成"双线",
+        // 总墨量≈1.7px(像素实测:外缘 59~61 + 主线 82)。把系统边框关掉
+        // (DWMWA_COLOR_NONE),只留自绘的 1 设备像素主线,观感回到干净的单线。
+        // 仅 Win11 22000+ 生效,旧系统返回 E_INVALIDARG 被忽略;
         // 不影响 DWMWCP_ROUND 圆角裁剪与阴影。
         const DWMWA_BORDER_COLOR: u32 = 34;
         const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
@@ -139,15 +151,19 @@ pub(super) fn apply_window_chrome(window: &slint::Window) {
                 &none as *const u32 as isize,
                 4,
             );
+            rounded = corner_hr == 0;
             tracing::debug!(
-                "window chrome applied: hwnd={hwnd:#x} corner_hr={corner_hr:#x} border_hr={border_hr:#x}"
+                "window chrome applied: hwnd={hwnd:#x} corner_hr={corner_hr:#x} border_hr={border_hr:#x} rounded={rounded}"
             );
         }
     });
+    rounded
 }
 
 #[cfg(not(windows))]
-pub(super) fn apply_window_chrome(_window: &slint::Window) {}
+pub(super) fn apply_window_chrome(_window: &slint::Window) -> bool {
+    false
+}
 
 #[cfg(windows)]
 pub(super) fn setup_windows_platform(renderer_mode: &str) {

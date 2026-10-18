@@ -10,6 +10,8 @@ export struct ChannelBarInfo {
 }
 
 import { Icon } from "icons.slint";
+// (#win-edge-frame-r7 2026-10-18) 主窗口最外圈描边抽成组件（便于离屏像素回归）。
+import { WindowFrame } from "window_frame.slint";
 // (#icon-svg-migration 2026-10-02) Embedded Material icon font removed: every
 // icon now renders from assets/icons/*.svg via ui/icons.slint. Text fonts are
 // system-resolved at startup (src/app.rs) — nothing is embedded anymore.
@@ -25,7 +27,7 @@ export { Theme }
 // 见 src/app.rs「PickerMath 接线」块；src/picker/mod.rs 为取色业务模块）。
 import { ColorPickerDialog, PickerMath, InfoSwatch, ColorInfoCard } from "color_picker.slint";
 export { PickerMath }
-import { Sidebar, DiskInfo } from "sidebar.slint";
+import { RightSidebar, DiskInfo } from "right_sidebar.slint";
 import { TabBar, TabInfo } from "tabs.slint";
 import { ChannelBar, ChannelMenuRequest } from "channel_bar.slint";
 // (#sync-dialog-r2) 同步输入：状态全局 + 宿主 + 对话框本体 + 数据结构，
@@ -33,10 +35,10 @@ import { ChannelBar, ChannelMenuRequest } from "channel_bar.slint";
 import { SyncInputDialog, SyncSessionInfo, SyncInputState, SyncDialogHost } from "sync_input_dialog.slint";
 // Rust 侧经 window.global::<SyncInputState>() 访问，必须再导出。
 export { SyncInputState }
-import { Welcome, SessionInfo, CtxRowHit } from "welcome.slint";
+import { LeftSidebar, SessionInfo, CtxRowHit } from "left_sidebar.slint";
 import { SessionDialog, SessionDraft, PortFwd, TriggerDraft, GroupEntry, JumpEntry } from "session_dialog.slint";
 import { ConfirmDialog } from "confirm_dialog.slint";
-import { LabeledInput, PrimaryButton, GhostButton, DockExpandButton, IconButton, ToolStrip } from "widgets.slint";
+import { LabeledInput, PrimaryButton, GhostButton, DockExpandButton, IconButton, ToolStrip, Scrim } from "widgets.slint";
 import { TerminalView, TermSpan, TermMatch, QuickCmd, QuickDockPanel } from "terminal_view.slint";
 import { RemoteDesktopView } from "remote_desktop_view.slint";
 import { SftpEntry, SftpTreeNode, TunnelInfo } from "sftp_panel.slint";
@@ -359,9 +361,10 @@ component WinBtn inherits Rectangle {
     // (#winbtn-round-corner 2026-10-10) 关闭键是标题栏最右一个按钮,悬停高亮
     // (红块)贴着窗口右上角 —— 窗口四角是 DWM 圆角 + 1px 描边
     // (#win-edge-frame),直角高亮块会在角落顶出一块方角(用户截图"悬浮背景
-    // 还是正方形")。TR 圆角取 Theme.radius-win(8 物理像素,与描边/DWM 裁剪
-    // 弧重合;逻辑常量在高 DPI 下会被裁剪弧削出尖角);实例传
-    // !window-maximized —— 最大化后系统把窗口角改直角,高亮回方形。
+    // 还是正方形")。TR 圆角取 Theme.radius-win(**8 DIP** = 200% 下 16 物理
+    // 像素,与描边/DWM 裁剪弧重合;写死逻辑常量在高 DPI 下会被裁剪弧削出
+    // 尖角);实例传 !window-maximized —— 最大化后系统把窗口角改直角,高亮
+    // 回方形。
     // 只有贴角的按钮才传;中间键的高亮保持直角(Windows 原生同理)。
     in property <bool> round-top-right: false;
     callback clicked();
@@ -651,7 +654,7 @@ component TopbarBtn inherits Rectangle {
     // 徽章（assets/icons/logo-m.svg，深浅主题同一份）平时静默展示品牌；
     // 悬浮时徽章淡出、淡入 sidebar-left-collapse/expand 收/展面板图标
     // （复用图标库现成 SVG），同时弹「收起侧边栏 / 展开侧边栏」提示气泡
-    // （文案随目标面板状态）；点击切换左侧面板（welcome-collapsed，含持久
+    // （文案随目标面板状态）；点击切换左侧面板（left-sidebar-collapsed，含持久
     // 化）并**立即取消本次悬浮提示**（suppress 规则：has-hover 回落 false
     // 才复位——鼠标停在按钮上不再弹泡，移出再进才恢复）。
     // 徽章是彩色图（黑底渐变+白 M），不走 Icon 的单色 colorize 管道，直接
@@ -666,8 +669,8 @@ component TopbarBtn inherits Rectangle {
         in property <bool> lang-en;          // 实例处从 AppWindow 传入
         // (#winbtn-round-corner 2026-10-10) 悬停高亮块贴窗口**左上角**,与右上角
         // 的关闭键同理:直角块会在 DWM 圆角处顶出方角。TL 取 Theme.radius-win
-        // (8 物理像素,与描边/DWM 裁剪弧重合),最大化回 Theme.radius-sm;
-        // 实例传 !window-maximized。
+        // (**8 DIP** = 200% 下 16 物理像素,与描边/DWM 裁剪弧重合),最大化回
+        // Theme.radius-sm;实例传 !window-maximized。
         in property <bool> round-top-left: false;
         callback clicked();
         // (#titlebar-slim 2026-10-08) 跟随标题栏高度 32px（占位矩形 1922 行
@@ -845,7 +848,8 @@ export component AppWindow inherits Window {
     // Always-opaque base; the wallpaper Image (when active) covers it and panels
     // frost over the image. Using window-base (not bg-root) keeps the window
     // itself opaque even though bg-root turns translucent in immersive mode.
-    background: Theme.window-base;
+    // (#zone-backdrop 2026-10-17) 主窗背板：比面板暗一档，供四分区透明时透出。
+    background: Theme.zone-backdrop;
     // A CJK-capable default so UI text (incl. fullwidth punctuation like ：（）)
     // never tofus on glyph fallback (#54). Rust sets Theme.ui-font-family to a
     // system CJK font on startup; empty on Linux keeps the Slint default.
@@ -936,6 +940,11 @@ export component AppWindow inherits Window {
     // traffic-light buttons + a clean drag strip (0 elsewhere). See setup_macos_platform.
     property <length> titlebar-inset: root.is-mac ? 28px : 0px;
     in-out property <bool> window-maximized: false;
+    // (#win-edge-frame-r7 2026-10-18) DWM 圆角是否真正生效：Rust 在首个 winit
+    // 事件里调 DwmSetWindowAttribute(DWMWA_WINDOW_CORNER_PREFERENCE) 后把
+    // 返回值（S_OK = true）回写。Win10 / 调用失败 = false → 只画直角直边
+    // （窗口本身是直角，天然贴边），不画角弧。
+    in-out property <bool> win-rounded: true;
     // Rust disables live model updates while the native window is unfocused,
     // minimized or occluded. Cached samples are applied when it becomes active.
     in-out property <bool> dynamic-ui-active: true;
@@ -951,7 +960,7 @@ export component AppWindow inherits Window {
     // set_position/set_size,拖动中 UI 实时跟手。
     callback win-resize-begin(int /*dir*/, length /*grab-x*/, length /*grab-y*/);
     callback win-resize-move(length /*pointer-x*/, length /*pointer-y*/);
-    in-out property <bool> sidebar-collapsed: false; // left panel hidden
+    in-out property <bool> right-sidebar-collapsed: false; // left panel hidden
     // (#drag-stale-cancel 2026-09-07) 会话/组头拖拽活跃态与外部取消:
     // Rust 侧轮询发现左键已松(被截图等全局工具吃掉 up)时调用取消。
     in-out property <bool> session-drag-active;
@@ -1002,22 +1011,22 @@ export component AppWindow inherits Window {
     // backdrop 右击时按坐标命中(Rust 遍历),一步换菜单。
     callback reg-ctx-row(CtxRowHit);
     callback open-ctx-menu-at(length, length);
-    changed sidebar-collapsed => {
-        if (!root.sidebar-collapsed) { root.refresh-sidebar(); }
+    changed right-sidebar-collapsed => {
+        if (!root.right-sidebar-collapsed) { root.refresh-sidebar(); }
     }
-    callback set-sidebar-collapsed(bool);       // apply + persist
+    callback set-right-sidebar-collapsed(bool);       // apply + persist
     // User-draggable size of the resource sidebar. width is used when docked
     // left/right, height when docked top/bottom. Seeded / persisted via the
     // persist-* callbacks (fired on drag end).
-    in-out property <length> sidebar-width: 220px;
-    in-out property <length> sidebar-height: 240px;
-    property <bool> sidebar-dragging;            // splitter being dragged
-    callback persist-sidebar-width(float /* logical px */);
+    in-out property <length> right-sidebar-width: 220px;
+    in-out property <length> right-sidebar-height: 240px;
+    property <bool> right-sidebar-dragging;            // splitter being dragged
+    callback persist-right-sidebar-width(float /* logical px */);
 
     // --- Panel docking (resource sidebar; SFTP follows in a later phase) ----
     // Which window edge the resource panel is docked to: left|right|top|bottom.
-    in-out property <string> sidebar-dock: "left";
-    property <bool> sidebar-horizontal: root.sidebar-dock == "left" || root.sidebar-dock == "right";
+    in-out property <string> right-sidebar-dock: "left";
+    property <bool> right-sidebar-horizontal: root.right-sidebar-dock == "left" || root.right-sidebar-dock == "right";
     // Drag-to-dock state: while a panel's header is dragged, a 4-edge snap
     // overlay shows and `dock-target` tracks the edge under the cursor.
     property <bool> panel-dragging;
@@ -1030,36 +1039,36 @@ export component AppWindow inherits Window {
         : root.drag-ny < 0.22 ? "top"
         : root.drag-ny > 0.78 ? "bottom"
         : "";
-    callback persist-sidebar-dock(string);
+    callback persist-right-sidebar-dock(string);
     // The top-right toolbar icons float over the tab row; when the sidebar docks
     // top/right it covers that corner, so shift the icons to stay over the tabs.
     property <length> toolbar-x-off:
-        (root.sidebar-dock == "right"
-            ? (root.sidebar-collapsed ? 36px : root.sidebar-width + 4px)
+        (root.right-sidebar-dock == "right"
+            ? (root.right-sidebar-collapsed ? 36px : root.right-sidebar-width + 4px)
             : 0px)
-        + ((root.welcome-as-sidebar && root.welcome-sidebar-dock == "right")
-            ? root.welcome-sidebar-taken
+        + ((root.left-sidebar-dock == "right")
+            ? root.left-sidebar-taken
             : 0px)
         + ((root.quick-panel-open && root.quick-panel-dock == "right")
             ? (root.quick-panel-collapsed
-                ? ((root.welcome-as-sidebar && root.welcome-collapsed
-                        && root.welcome-sidebar-dock == "right")
-                    || (root.sidebar-collapsed && root.sidebar-dock == "right")
+                ? ((root.left-sidebar-collapsed
+                        && root.left-sidebar-dock == "right")
+                    || (root.right-sidebar-collapsed && root.right-sidebar-dock == "right")
                     ? 0px : 36px)
                 : root.quick-panel-width + 4px)
             : 0px);
     property <length> toolbar-y-off:
-        (root.sidebar-dock == "top"
-            ? (root.sidebar-collapsed ? 36px : root.sidebar-height + 4px)
+        (root.right-sidebar-dock == "top"
+            ? (root.right-sidebar-collapsed ? 36px : root.right-sidebar-height + 4px)
             : 0px)
-        + ((root.welcome-as-sidebar && root.welcome-sidebar-dock == "top")
-            ? root.welcome-sidebar-taken
+        + ((root.left-sidebar-dock == "top")
+            ? root.left-sidebar-taken
             : 0px)
         + ((root.quick-panel-open && root.quick-panel-dock == "top")
             ? (root.quick-panel-collapsed
-                ? ((root.welcome-as-sidebar && root.welcome-collapsed
-                        && root.welcome-sidebar-dock == "top")
-                    || (root.sidebar-collapsed && root.sidebar-dock == "top")
+                ? ((root.left-sidebar-collapsed
+                        && root.left-sidebar-dock == "top")
+                    || (root.right-sidebar-collapsed && root.right-sidebar-dock == "top")
                     ? 0px : 36px)
                 : root.quick-panel-height + 4px)
             : 0px);
@@ -1200,9 +1209,23 @@ export component AppWindow inherits Window {
     in-out property <bool> wallpaper-active <=> Theme.wallpaper-active;
     in-out property <color> wp-accent <=> Theme.wp-accent;
     in-out property <color> wp-tint <=> Theme.wp-tint;
-    // User-adjustable wallpaper overlay opacity (0.30–1.00), persisted.
-    in-out property <float> wallpaper-overlay <=> Theme.panel-alpha;
-    callback persist-wallpaper-overlay(float);
+    // (#zone-alpha 2026-10-17) 四分区透明度（0..1，滑杆语义 = 透明程度）。
+    in-out property <float> titlebar-transparency <=> Theme.titlebar-transparency;
+    in-out property <float> tabbar-transparency <=> Theme.tabbar-transparency;
+    in-out property <float> sidebar-transparency <=> Theme.sidebar-transparency;
+    in-out property <float> term-transparency <=> Theme.term-transparency;
+    in-out property <float> wallpaper-transparency <=> Theme.wallpaper-transparency;
+    in-out property <int> wallpaper-scope <=> Theme.wallpaper-scope;
+    in-out property <string> wallpaper-fit <=> Theme.wallpaper-fit;
+    in-out property <string> scrim-style <=> Theme.scrim-style;
+    in-out property <float> scrim-strength <=> Theme.scrim-strength;
+    // 遮罩样式目录（根层下拉的行序；与 Theme.scrim-name 的抽签池同序）。
+    property <[string]> scrim-styles: ["auto", "dark", "light", "tint", "soft",
+        "frost", "spot", "sheen", "random"];
+    // 遮罩样式下拉浮层桥（本体在根层；设置页在 ScrollView 里不能行内弹）。
+    in-out property <bool> scrim-pick-open: false;
+    in-out property <length> scrim-pick-x: 0px;
+    in-out property <length> scrim-pick-y: 0px;
     // ── (#theme-split) 主题/强调色/壁纸三层解耦的设置数据 ──────────────
     // 38 套主题的清单（Rust 从 palettes.rs 构建；含分组/预览色）。
     in property <[ThemeEntry]> theme-entries;
@@ -1262,9 +1285,9 @@ export component AppWindow inherits Window {
     // 浮层开关（本体在根层，theme-pick 同款桥）
     in-out property <bool> accent-pop-open: false;
     in-out property <bool> accent-pick-open: false;
-    in-out property <float> term-alpha <=> Theme.term-alpha;
-    in-out property <float> wallpaper-visible <=> Theme.wallpaper-visible;
-    in-out property <int> popup-transparency <=> Theme.popup-transparency;
+    in-out property <float> popup-transparency <=> Theme.popup-transparency;
+    // 「常用主题」快捷位（≤4，Rust 从 config 构建；外观页主题画廊的数据源）
+    in property <[ThemeEntry]> theme-favorites;
     in property <[string]> term-fonts;             // installed monospace families
     in property <string> term-font-chosen;         // raw stored choice ("" = chain default)
     in property <string> term-font-default-name;   // resolved chain mono, labels the 默认 row
@@ -1373,11 +1396,8 @@ export component AppWindow inherits Window {
     in-out property <bool> zen-mode: false;
     callback set-zen-mode(bool);
     // Collapse-by-default settings + shared SFTP collapse state (#78).
-    in-out property <bool> collapse-sidebar-default: false;
-    callback set-collapse-sidebar-default(bool);   // apply + persist
-    // Render the welcome/session list as a left sidebar instead of a tab (v0.5).
-    in-out property <bool> welcome-as-sidebar: false;
-    callback set-welcome-as-sidebar(bool);         // apply + persist
+    in-out property <bool> collapse-right-sidebar-default: false;
+    callback set-collapse-right-sidebar-default(bool);   // apply + persist
     in-out property <bool> mcp-enabled: true;
     in-out property <bool> mcp-use-saved-credentials: true;
     in-out property <bool> mcp-allow-commands: true;
@@ -1387,17 +1407,17 @@ export component AppWindow inherits Window {
     callback remove-wsl-profile(string);
     callback pick-wsl-directory();
     // Drag-resizable width of that welcome sidebar (logical px), persisted.
-    in-out property <length> welcome-sidebar-width: 240px;
-    callback persist-welcome-sidebar-width(float);
-    in-out property <string> welcome-sidebar-dock: "left";
-    property <bool> welcome-sidebar-horizontal:
-        root.welcome-sidebar-dock == "left" || root.welcome-sidebar-dock == "right";
-    property <length> welcome-sidebar-taken:
-        root.welcome-collapsed ? 36px : root.welcome-sidebar-width;
-    callback persist-welcome-sidebar-dock(string);
+    in-out property <length> left-sidebar-width: 240px;
+    callback persist-left-sidebar-width(float);
+    in-out property <string> left-sidebar-dock: "left";
+    property <bool> left-sidebar-horizontal:
+        root.left-sidebar-dock == "left" || root.left-sidebar-dock == "right";
+    property <length> left-sidebar-taken:
+        root.left-sidebar-collapsed ? 36px : root.left-sidebar-width;
+    callback persist-left-sidebar-dock(string);
     // Welcome sidebar collapsed to the edge icon strip (IDEA-style), persisted.
-    in-out property <bool> welcome-collapsed: false;
-    callback set-welcome-collapsed(bool);          // apply + persist
+    in-out property <bool> left-sidebar-collapsed: false;
+    callback set-left-sidebar-collapsed(bool);          // apply + persist
     in-out property <bool> collapse-sftp-default: false;
     callback set-collapse-sftp-default(bool);      // apply + persist
     in-out property <bool> sftp-collapsed: false;       // (legacy global; per-tab now)
@@ -1519,10 +1539,17 @@ export component AppWindow inherits Window {
     callback accent-recent-push(string);              // 最近使用去重入列（≤20）
     callback accent-picker-open(string);              // 带 hex 打开调色盘（回填 h/s/v）
     callback sync-picker-pos();                           // 数值改动后回填取样点位置
-    callback set-panel-alpha(float);
+    // (#zone-alpha 2026-10-17) 四分区透明度 + 壁纸透明度/作用域/填充 + 遮罩。
+    callback set-titlebar-alpha(float);
+    callback set-tabbar-alpha(float);
+    callback set-sidebar-alpha(float);
     callback set-term-alpha(float);
-    callback set-wallpaper-visible(float);
-    callback set-popup-transparency(int);
+    callback set-wallpaper-transparency(float);
+    callback set-wallpaper-scope(string);
+    callback set-wallpaper-fit(string);
+    callback set-scrim-style(string);
+    callback set-scrim-alpha(float);
+    callback set-popup-transparency(float);
     callback set-follow-system(bool);
     callback set-wallpaper-color-pickup(bool);
     // Session sync / broadcast input (#78 pt.4): mirror keystrokes to every
@@ -1948,14 +1975,19 @@ export component AppWindow inherits Window {
 
     // Immersive wallpaper layer — painted behind everything, filling the window.
     // Panels/terminal frost over it (see Theme.frost). Only present when active.
+    // (#wallpaper-transparency 2026-10-17) 图 alpha = 1 − 透明度滑杆值；填充方式
+    // 由「填充 / 适应 / 拉伸」三选驱动。
+    // (#wallpaper-scope 2026-10-17) 作用域 = 终端时**不换绘制矩形**：壁纸仍按窗口
+    // 坐标铺满（裁切连续），由三区在 Theme 侧强制不透明把壁纸盖住 —— 只有终端区
+    // 透出来。这样两种作用域是同一张图、同一套坐标，切换时壁纸不"跳"。
     if Theme.wallpaper-active : Image {
         x: 0; y: 0;
         width: parent.width;
         height: parent.height;
         source: Theme.wallpaper;
-        image-fit: cover;
-        // (#theme-split) 图自身可见度由「壁纸可见度」滑杆独立控制（0–100）。
-        opacity: Theme.wallpaper-visible;
+        image-fit: Theme.wallpaper-fit == "contain" ? contain
+            : Theme.wallpaper-fit == "fill" ? fill : cover;
+        opacity: 1.0 - Theme.wallpaper-transparency;
     }
 
     // Zen (focus) mode keyboard toggle — same persist path as the Settings
@@ -2056,7 +2088,7 @@ export component AppWindow inherits Window {
             // bar keeps handling the window drag in this region.
             if root.titlebar-inset > 0px : Rectangle {
                 height: root.titlebar-inset;
-                background: Theme.bg-panel;
+                background: Theme.zone-titlebar;
             }
 
             // Immersive custom title bar (#119) — only on frameless platforms
@@ -2069,7 +2101,8 @@ export component AppWindow inherits Window {
                 // 窄一些 + 左上角 LOGO 放大更协调（Rust app_content_area 的
                 // 32.0 与此处联动，改一处必须同步另一处）。
                 height: 32px;
-                background: Theme.bg-panel;
+                // (#zone-alpha 2026-10-17) 标题栏分区透明度。
+                background: Theme.zone-titlebar;
                 tb-drag := TouchArea {
                     pointer-event(e) => {
                         if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
@@ -2196,6 +2229,30 @@ export component AppWindow inherits Window {
                         // (#winbtn-full-height) height 补齐行高(43px):与左侧
                         // TopbarBtn 同款实例绑定,hover 高亮铺满整行而非只剩
                         // 图标 preferred 高度(约 16px)。
+                        // Right-sidebar toggle: sits left of the window controls.
+                        // Icon follows state (expand when collapsed / collapse when open).
+                        rb-toggle-ta := TouchArea {
+                            width: 40px;
+                            height: parent.height;
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.right-sidebar-collapsed = !root.right-sidebar-collapsed;
+                                root.set-right-sidebar-collapsed(root.right-sidebar-collapsed);
+                            }
+                            Rectangle {
+                                width: 100%; height: 100%;
+                                background: rb-toggle-ta.has-hover ? Theme.bg-hover : transparent;
+                            }
+                            Icon {
+                                width: 16px; height: 16px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                glyph: root.right-sidebar-collapsed ? "sidebar-right-expand" : "sidebar-right-collapse";
+                                // (#winbtn-tint 同款) 标题栏图标统一前景档；此前用
+                                // text-secondary，比 −/□/✕ 暗 66 级（截图实测）。
+                                tint: Theme.text-primary;
+                            }
+                        }
                         WinBtn { height: parent.height; icon: "remove"; clicked => { root.win-minimize(); } }
                         WinBtn {
                             height: parent.height;
@@ -2231,38 +2288,40 @@ export component AppWindow inherits Window {
 
             // Dock area — fills below the title bar. The resource sidebar and the
             // central content are positioned by absolute geometry computed from
-            // `sidebar-dock`, so the sidebar can sit on any window edge (#dock).
+            // `right-sidebar-dock`, so the sidebar can sit on any window edge (#dock).
             dock-area := Rectangle {
             vertical-stretch: 1;
-            // Left-edge layout (welcome-as-sidebar mode): a thin always-on icon strip
+            // Left-edge layout: a thin always-on icon strip
             // (IDEA-style) + the welcome/session sidebar (0 when collapsed). The rest
             // (resource panel + central terminal, which never collapses) sits to their
             // right in `rest`.
             // Collapsed-only (M5): the icon strip shows only while collapsed; the
-            // panel itself (welcome-w) only while expanded — one or the other.
-            property <bool> sidebar-strip-outside:
-                !root.zen-mode && root.welcome-as-sidebar && !root.welcome-collapsed
-                && root.sidebar-collapsed && root.sidebar-dock == root.welcome-sidebar-dock;
-            property <length> sidebar-outside-strip: dock-area.sidebar-strip-outside ? 36px : 0px;
-            property <length> welcome-strip: (!root.zen-mode && root.welcome-as-sidebar && root.welcome-collapsed) ? 36px : 0px;
-            property <length> welcome-size: (!root.zen-mode && root.welcome-as-sidebar && !root.welcome-collapsed) ? root.welcome-sidebar-width : 0px;
-            property <length> welcome-taken: welcome-strip + welcome-size + sidebar-outside-strip;
-            property <bool> welcome-horizontal: root.welcome-sidebar-horizontal;
-            property <bool> welcome-sidebar-dragging;
+            // panel itself (left-sidebar-w) only while expanded — one or the other.
+            property <bool> right-sidebar-strip-outside:
+                !root.zen-mode && !root.left-sidebar-collapsed
+                && root.right-sidebar-collapsed && root.right-sidebar-dock == root.left-sidebar-dock;
+            // Collapsed panels hide completely (no 36px icon strip) — toggling
+            // happens from the title bar.
+            property <length> right-sidebar-outside-strip: 0px;
+            property <length> left-sidebar-strip: 0px;
+            property <length> left-sidebar-size: (!root.zen-mode && !root.left-sidebar-collapsed) ? root.left-sidebar-width : 0px;
+            property <length> left-sidebar-taken: left-sidebar-strip + left-sidebar-size + right-sidebar-outside-strip;
+            property <bool> left-sidebar-horizontal: root.left-sidebar-horizontal;
+            property <bool> left-sidebar-dragging;
             property <bool> combine-collapsed-tools:
-                root.welcome-as-sidebar && root.welcome-collapsed
-                && root.sidebar-collapsed && root.sidebar-dock == root.welcome-sidebar-dock;
+                root.left-sidebar-collapsed
+                && root.right-sidebar-collapsed && root.right-sidebar-dock == root.left-sidebar-dock;
             // A collapsed quick-command sidebar joins an existing collapsed strip
             // on the same edge. Only when no such strip exists does it reserve its
             // own outermost 36px slot (#215).
             property <bool> quick-merge-welcome:
                 root.quick-panel-open && root.quick-panel-collapsed
-                && root.welcome-as-sidebar && root.welcome-collapsed
-                && root.quick-panel-dock == root.welcome-sidebar-dock;
+                && root.left-sidebar-collapsed
+                && root.quick-panel-dock == root.left-sidebar-dock;
             property <bool> quick-merge-sidebar:
                 root.quick-panel-open && root.quick-panel-collapsed
-                && !dock-area.quick-merge-welcome && root.sidebar-collapsed
-                && root.quick-panel-dock == root.sidebar-dock;
+                && !dock-area.quick-merge-welcome && root.right-sidebar-collapsed
+                && root.quick-panel-dock == root.right-sidebar-dock;
             property <length> quick-outer-strip:
                 !root.zen-mode && root.quick-panel-open && root.quick-panel-collapsed
                     && !dock-area.quick-merge-welcome && !dock-area.quick-merge-sidebar
@@ -2288,105 +2347,38 @@ export component AppWindow inherits Window {
                 tooltip: @tr("Quick commands");
                 expand => {
                     root.quick-panel-collapsed = false;
-                    if (root.sidebar-dock == root.quick-panel-dock) {
-                        root.sidebar-collapsed = true;
-                        root.set-sidebar-collapsed(true);
+                    if (root.right-sidebar-dock == root.quick-panel-dock) {
+                        root.right-sidebar-collapsed = true;
+                        root.set-right-sidebar-collapsed(true);
                     }
-                    if (root.welcome-as-sidebar
-                            && root.welcome-sidebar-dock == root.quick-panel-dock) {
-                        root.welcome-collapsed = true;
-                        root.set-welcome-collapsed(true);
+                    if (root.left-sidebar-dock == root.quick-panel-dock) {
+                        root.left-sidebar-collapsed = true;
+                        root.set-left-sidebar-collapsed(true);
                     }
                 }
             }
 
-            // Collapsed welcome → a thin left icon strip (click the icon to re-open).
-            if root.welcome-as-sidebar && root.welcome-collapsed : ToolStrip {
-                x: root.welcome-sidebar-dock == "right"
-                    ? parent.width - parent.quick-right - parent.welcome-strip
-                    : root.welcome-sidebar-dock == "left" ? parent.quick-left : parent.quick-left;
-                y: root.welcome-sidebar-dock == "bottom"
-                    ? parent.height - parent.quick-bottom - parent.welcome-strip
-                    : root.welcome-sidebar-dock == "top" ? parent.quick-top : parent.quick-top;
-                width: parent.welcome-horizontal ? parent.welcome-strip
-                    : parent.width - parent.quick-left - parent.quick-right;
-                height: parent.welcome-horizontal
-                    ? parent.height - parent.quick-top - parent.quick-bottom : parent.welcome-strip;
-                dock-edge: root.welcome-sidebar-dock;
-                glyph: "home";   // session list / welcome
-                show-second: parent.combine-collapsed-tools || parent.quick-merge-welcome;
-                second-glyph: parent.combine-collapsed-tools ? "dashboard" : "bolt";
-                show-third: parent.combine-collapsed-tools && parent.quick-merge-welcome;
-                third-glyph: "bolt";
-                expand => {
-                    root.welcome-collapsed = false;
-                    root.set-welcome-collapsed(false);
-                    if (root.sidebar-dock == root.welcome-sidebar-dock) {
-                        root.sidebar-collapsed = true;
-                        root.set-sidebar-collapsed(true);
-                    }
-                    if (root.quick-panel-open
-                            && root.quick-panel-dock == root.welcome-sidebar-dock) {
-                        root.quick-panel-collapsed = true;
-                    }
-                }
-                expand-second => {
-                    if (parent.combine-collapsed-tools) {
-                        root.sidebar-collapsed = false;
-                        root.set-sidebar-collapsed(false);
-                        if (root.quick-panel-open && root.quick-panel-dock == root.sidebar-dock) {
-                            root.quick-panel-collapsed = true;
-                        }
-                    } else {
-                        root.quick-panel-collapsed = false;
-                    }
-                }
-                expand-third => { root.quick-panel-collapsed = false; }
-            }
 
-            if dock-area.sidebar-strip-outside : ToolStrip {
-                x: root.welcome-sidebar-dock == "right"
-                    ? parent.width - parent.quick-right - parent.sidebar-outside-strip
-                    : root.welcome-sidebar-dock == "left" ? parent.quick-left : parent.quick-left;
-                y: root.welcome-sidebar-dock == "bottom"
-                    ? parent.height - parent.quick-bottom - parent.sidebar-outside-strip
-                    : root.welcome-sidebar-dock == "top" ? parent.quick-top : parent.quick-top;
-                width: parent.welcome-horizontal ? parent.sidebar-outside-strip
-                    : parent.width - parent.quick-left - parent.quick-right;
-                height: parent.welcome-horizontal
-                    ? parent.height - parent.quick-top - parent.quick-bottom : parent.sidebar-outside-strip;
-                dock-edge: root.welcome-sidebar-dock;
-                glyph: "dashboard";
-                show-second: parent.quick-merge-sidebar;
-                second-glyph: "bolt";
-                expand => {
-                    root.sidebar-collapsed = false;
-                    root.set-sidebar-collapsed(false);
-                    root.welcome-collapsed = true;
-                    root.set-welcome-collapsed(true);
-                    if (root.quick-panel-open && root.quick-panel-dock == root.sidebar-dock) {
-                        root.quick-panel-collapsed = true;
-                    }
-                }
-                expand-second => { root.quick-panel-collapsed = false; }
-            }
 
             // Welcome / session list, to the right of the icon strip. Hidden when
             // collapsed — its icon stays in the strip; clicking it re-opens.
-            if root.welcome-as-sidebar && !root.welcome-collapsed : Rectangle {
-                x: root.welcome-sidebar-dock == "right" ? parent.width - parent.quick-right - parent.sidebar-outside-strip - parent.welcome-size
-                 : root.welcome-sidebar-dock == "left" ? parent.quick-left + parent.sidebar-outside-strip
+            if !root.left-sidebar-collapsed : Rectangle {
+                x: root.left-sidebar-dock == "right" ? parent.width - parent.quick-right - parent.right-sidebar-outside-strip - parent.left-sidebar-size
+                 : root.left-sidebar-dock == "left" ? parent.quick-left + parent.right-sidebar-outside-strip
                  : parent.quick-left;
-                y: root.welcome-sidebar-dock == "bottom" ? parent.height - parent.quick-bottom - parent.sidebar-outside-strip - parent.welcome-size
-                 : root.welcome-sidebar-dock == "top" ? parent.quick-top + parent.sidebar-outside-strip
+                y: root.left-sidebar-dock == "bottom" ? parent.height - parent.quick-bottom - parent.right-sidebar-outside-strip - parent.left-sidebar-size
+                 : root.left-sidebar-dock == "top" ? parent.quick-top + parent.right-sidebar-outside-strip
                  : parent.quick-top;
-                width: parent.welcome-horizontal ? parent.welcome-size
+                width: parent.left-sidebar-horizontal ? parent.left-sidebar-size
                     : parent.width - parent.quick-left - parent.quick-right;
-                height: parent.welcome-horizontal
-                    ? parent.height - parent.quick-top - parent.quick-bottom : parent.welcome-size;
-                background: Theme.bg-panel;
+                height: parent.left-sidebar-horizontal
+                    ? parent.height - parent.quick-top - parent.quick-bottom : parent.left-sidebar-size;
+                background: Theme.zone-sidebar;
                 clip: true;
-                Welcome {
+                LeftSidebar {
+                    // macOS 原生标题栏没有侧栏切换按钮 → 保留面板内箭头；
+                    // Windows/Linux 用标题栏 LOGO 按钮，面板内箭头隐藏。
+                    show-collapse: !root.custom-titlebar;
                     card-out-name <=> root.session-card-name;
                     card-out-host <=> root.session-card-host;
                     card-out-user <=> root.session-card-user;
@@ -2417,15 +2409,15 @@ export component AppWindow inherits Window {
                     width: parent.width;
                     height: parent.height;
                     compact: true;
-                    dock-edge: root.welcome-sidebar-dock;
+                    dock-edge: root.left-sidebar-dock;
                     sessions: root.sessions;
                     import-hint: root.ssh-import-hint;
                     search-query <=> root.host-search-query;
                     sessions-revision: root.sessions-revision;
                     search-changed(query) => { root.host-search-changed(query); }
                     collapse => {
-                        root.welcome-collapsed = true;
-                        root.set-welcome-collapsed(true);
+                        root.left-sidebar-collapsed = true;
+                        root.set-left-sidebar-collapsed(true);
                     }
                     dock-drag-move(ax, ay) => {
                         root.panel-dragging = true;
@@ -2434,15 +2426,15 @@ export component AppWindow inherits Window {
                     }
                     dock-drag-end() => {
                         if (root.dock-target != "") {
-                            root.welcome-sidebar-dock = root.dock-target;
-                            if (root.sidebar-dock == root.dock-target) {
-                                root.sidebar-collapsed = true;
-                                root.set-sidebar-collapsed(true);
+                            root.left-sidebar-dock = root.dock-target;
+                            if (root.right-sidebar-dock == root.dock-target) {
+                                root.right-sidebar-collapsed = true;
+                                root.set-right-sidebar-collapsed(true);
                             }
                             if (root.quick-panel-open && root.quick-panel-dock == root.dock-target) {
                                 root.quick-panel-collapsed = true;
                             }
-                            root.persist-welcome-sidebar-dock(root.welcome-sidebar-dock);
+                            root.persist-left-sidebar-dock(root.left-sidebar-dock);
                         }
                         root.panel-dragging = false;
                     }
@@ -2482,51 +2474,49 @@ export component AppWindow inherits Window {
                     delete-group(name) => { root.delete-group(name); }
                     remove-session(id) => { root.remove-session(id); }
                 }
-                Rectangle {
-                    x: root.welcome-sidebar-dock == "left" ? parent.width - 1px : 0px;
-                    y: root.welcome-sidebar-dock == "top" ? parent.height - 1px : 0px;
-                    width: root.welcome-sidebar-horizontal ? 1px : parent.width;
-                    height: root.welcome-sidebar-horizontal ? parent.height : 1px;
-                    background: Theme.border-subtle;
-                }
+                // (#line-dedup 2026-10-18) 这里原来还有一条 `1px`（逻辑）边界线：
+                // 200% 下是 **2 设备像素**，和 splitter 的 hairline 可见线、compact
+                // 卡片自己的 hairline 边框叠在同一个边界上 → 用户截图"不同区域重叠
+                // 处线条加粗"。现在边界线**只由 splitter 的可见线负责**（它同时承担
+                // hover 高亮），compact 卡片的边框也只在非 compact（欢迎页卡片）时画。
             }
 
             // Drag the welcome sidebar's right edge to resize it (v0.5 M3b).
-            if root.welcome-as-sidebar && !root.welcome-collapsed : Rectangle {
-                x: root.welcome-sidebar-dock == "left" ? parent.quick-left + parent.sidebar-outside-strip + parent.welcome-size - 2px
-                 : root.welcome-sidebar-dock == "right" ? parent.width - parent.quick-right - parent.sidebar-outside-strip - parent.welcome-size - 2px
+            if !root.left-sidebar-collapsed : Rectangle {
+                x: root.left-sidebar-dock == "left" ? parent.quick-left + parent.right-sidebar-outside-strip + parent.left-sidebar-size - 2px
+                 : root.left-sidebar-dock == "right" ? parent.width - parent.quick-right - parent.right-sidebar-outside-strip - parent.left-sidebar-size - 2px
                  : parent.quick-left;
-                y: root.welcome-sidebar-dock == "top" ? parent.quick-top + parent.sidebar-outside-strip + parent.welcome-size - 2px
-                 : root.welcome-sidebar-dock == "bottom" ? parent.height - parent.quick-bottom - parent.sidebar-outside-strip - parent.welcome-size - 2px
+                y: root.left-sidebar-dock == "top" ? parent.quick-top + parent.right-sidebar-outside-strip + parent.left-sidebar-size - 2px
+                 : root.left-sidebar-dock == "bottom" ? parent.height - parent.quick-bottom - parent.right-sidebar-outside-strip - parent.left-sidebar-size - 2px
                  : parent.quick-top;
-                width: parent.welcome-horizontal ? 4px
+                width: parent.left-sidebar-horizontal ? 4px
                     : parent.width - parent.quick-left - parent.quick-right;
-                height: parent.welcome-horizontal
+                height: parent.left-sidebar-horizontal
                     ? parent.height - parent.quick-top - parent.quick-bottom : 4px;
                 background: transparent;
                 ws-split-ta := TouchArea {
-                    mouse-cursor: dock-area.welcome-horizontal ? ew-resize : ns-resize;
+                    mouse-cursor: dock-area.left-sidebar-horizontal ? ew-resize : ns-resize;
                     pointer-event(ev) => {
                         if (ev.kind == PointerEventKind.down) {
-                            dock-area.welcome-sidebar-dragging = true;
+                            dock-area.left-sidebar-dragging = true;
                         } else if (ev.kind == PointerEventKind.up) {
-                            dock-area.welcome-sidebar-dragging = false;
-                            root.persist-welcome-sidebar-width(root.welcome-sidebar-width / 1px);
+                            dock-area.left-sidebar-dragging = false;
+                            root.persist-left-sidebar-width(root.left-sidebar-width / 1px);
                         }
                     }
                     moved => {
-                        if (dock-area.welcome-sidebar-dragging) {
-                            if (dock-area.welcome-horizontal) {
-                                root.welcome-sidebar-width = clamp(
-                                    root.welcome-sidebar-dock == "right"
+                        if (dock-area.left-sidebar-dragging) {
+                            if (dock-area.left-sidebar-horizontal) {
+                                root.left-sidebar-width = clamp(
+                                    root.left-sidebar-dock == "right"
                                         ? dock-area.absolute-position.x + dock-area.width
                                             - (self.absolute-position.x + self.mouse-x)
                                         : self.absolute-position.x + self.mouse-x
                                             - dock-area.absolute-position.x,
                                     160px, 480px);
                             } else {
-                                root.welcome-sidebar-width = clamp(
-                                    root.welcome-sidebar-dock == "bottom"
+                                root.left-sidebar-width = clamp(
+                                    root.left-sidebar-dock == "bottom"
                                         ? dock-area.absolute-position.y + dock-area.height
                                             - (self.absolute-position.y + self.mouse-y)
                                         : self.absolute-position.y + self.mouse-y
@@ -2536,49 +2526,64 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                // 1px visible line, centred inside the 4px hit-area. Lights up in
-                // the theme accent on hover / drag (Todo 3); otherwise a static
-                // `border-subtle` thin line so it matches the left edge (Todo 2).
-                // (#panel-line-hairline 2026-10-11) 线宽取 1 设备像素,与窗口描边/
-                // 面板外框统一(逻辑 1px 在 125% 下是 1.25 设备行,显粗)。
+                // (#line-dedup 2026-10-18) 边界线 = 这条 splitter 可见线，全主界面
+                // 只此一条：厚 1 设备像素、位置**贴设备网格并对齐侧栏真实边缘**
+                // （侧栏自己的边框/容器边线已一并删除，不再叠出第二条）。
+                // hover / 拖拽时整条线转 Theme.accent —— 可拖宽的边界因此有明确
+                // 强调；120ms 过渡避免悬停瞬间跳色。
                 Rectangle {
-                    x: parent.width < parent.height ? (parent.width - Theme.hairline()) / 2 : 0px;
-                    y: parent.width < parent.height ? 0px : (parent.height - Theme.hairline()) / 2;
+                    // 竖直方向（侧栏停靠 left/right）：可见线落在侧栏"内侧那条
+                    // 设备像素"上——dock=left 用边界内侧半像素（最后 1 设备列），
+                    // dock=right 用边界本身（面板第一设备列）。外层再 snap-to-device
+                    // 保证 125%/150% 这类分数缩放下也不会被摊成 2 个半透明像素。
+                    x: parent.width < parent.height
+                        ? Theme.snap-to-device(parent.x + 2px
+                            - (root.left-sidebar-dock == "left" ? Theme.hairline() : 0px)) - parent.x
+                        : 0px;
+                    y: parent.width < parent.height
+                        ? 0px
+                        : Theme.snap-to-device(parent.y + 2px
+                            - (root.left-sidebar-dock == "top" ? Theme.hairline() : 0px)) - parent.y;
                     width:  parent.width < parent.height ? Theme.hairline() : parent.width;
                     height: parent.width < parent.height ? parent.height : Theme.hairline();
-                    background: ws-split-ta.has-hover || dock-area.welcome-sidebar-dragging
+                    background: ws-split-ta.has-hover || dock-area.left-sidebar-dragging
                         ? Theme.accent : Theme.border-subtle;
+                    animate background { duration: 120ms; }
                 }
             }
 
             // Everything except the welcome strip/sidebar — the resource panel,
             // splitter and the central tab/pane content — sits to the right of them.
             rest := Rectangle {
-            x: (root.welcome-sidebar-dock == "left" ? parent.welcome-taken : 0px)
+            x: (root.left-sidebar-dock == "left" ? parent.left-sidebar-taken : 0px)
                 + parent.quick-left;
-            y: (root.welcome-sidebar-dock == "top" ? parent.welcome-taken : 0px)
+            y: (root.left-sidebar-dock == "top" ? parent.left-sidebar-taken : 0px)
                 + parent.quick-top;
             width: parent.width
-                - (parent.welcome-horizontal ? parent.welcome-taken : 0px)
+                - (parent.left-sidebar-horizontal ? parent.left-sidebar-taken : 0px)
                 - parent.quick-left - parent.quick-right;
             height: parent.height
-                - (!parent.welcome-horizontal ? parent.welcome-taken : 0px)
+                - (!parent.left-sidebar-horizontal ? parent.left-sidebar-taken : 0px)
                 - parent.quick-top - parent.quick-bottom;
             // A shared ToolStrip is already reserved outside `rest` while the
             // welcome panel is expanded, or by the merged welcome strip while both
             // panels are collapsed. Do not reserve the same 36px a second time.
-            property <length> sb-w: root.zen-mode ? 0px
-                : dock-area.sidebar-strip-outside
+            // (#sidebar-collapse-gap 2026-10-17) 收起 = **完全让出空间**。
+            // 旧值在收起时仍留 36px（当年那个图标条早已被标题栏切换按钮取代），
+            // 于是窗口右边留一条 36px 的空白竖条（截图实测：root 底色、无内容）。
+            // 与左栏 left-sidebar-size 的「收起 = 0」对齐。
+            property <length> sb-w: root.zen-mode || root.right-sidebar-collapsed ? 0px
+                : dock-area.right-sidebar-strip-outside
                     || dock-area.combine-collapsed-tools ? 0px
-                : root.sidebar-collapsed ? 36px : root.sidebar-width;
-            property <length> sb-h: root.zen-mode ? 0px
-                : dock-area.sidebar-strip-outside
+                : root.right-sidebar-width;
+            property <length> sb-h: root.zen-mode || root.right-sidebar-collapsed ? 0px
+                : dock-area.right-sidebar-strip-outside
                     || dock-area.combine-collapsed-tools ? 0px
-                : root.sidebar-collapsed ? 36px : root.sidebar-height;
+                : root.right-sidebar-height;
             // (#splitter-v2 2026-09-04) 间距归零：命中区跨立边界两侧（各压
             // 2px），面板之间不再留空档，否则会透出 dock-area 底色形成灰色
-            // 空隙带。原值：root.zen-mode || root.sidebar-collapsed ? 0px : 4px
-            property <length> sp: root.zen-mode || root.sidebar-collapsed ? 0px : 0px;
+            // 空隙带。原值：root.zen-mode || root.right-sidebar-collapsed ? 0px : 4px
+            property <length> sp: root.zen-mode || root.right-sidebar-collapsed ? 0px : 0px;
             // The collapsed bar (sb-h) already reserves the bottom strip now.
             property <length> bottom-strip-h: 0px;
 
@@ -2586,21 +2591,23 @@ export component AppWindow inherits Window {
             // Only shown while expanded; collapsing swaps it for the ToolStrip icon
             // bar below (mirrors the welcome sidebar), so no clipped widgets bleed
             // through the 36px strip (#resource-collapse).
-            if !root.sidebar-collapsed : Rectangle {
-                x: root.sidebar-dock == "right" ? parent.width - parent.sb-w
+            if !root.right-sidebar-collapsed : Rectangle {
+                x: root.right-sidebar-dock == "right" ? parent.width - parent.sb-w
                  : 0px;
-                y: root.sidebar-dock == "bottom" ? parent.height - parent.sb-h
+                y: root.right-sidebar-dock == "bottom" ? parent.height - parent.sb-h
                  : 0px;
-                width: root.sidebar-horizontal ? parent.sb-w : parent.width;
-                height: root.sidebar-horizontal ? parent.height : parent.sb-h;
+                width: root.right-sidebar-horizontal ? parent.sb-w : parent.width;
+                height: root.right-sidebar-horizontal ? parent.height : parent.sb-h;
                 clip: true;
-                Sidebar {
+                RightSidebar {
+                // 同左栏：macOS 保留箭头，Win/Linux 用标题栏切换按钮。
+                show-collapse: !root.custom-titlebar;
                 width: parent.width;
                 height: parent.height;
                 // Docked top/bottom → lay the resource widgets out in a row.
-                lay-horizontal: !root.sidebar-horizontal;
-                dock-edge: root.sidebar-dock;
-                animate width, height { duration: root.sidebar-dragging ? 0ms : 150ms; easing: ease-out; }
+                lay-horizontal: !root.right-sidebar-horizontal;
+                dock-edge: root.right-sidebar-dock;
+                animate width, height { duration: root.right-sidebar-dragging ? 0ms : 150ms; easing: ease-out; }
                 connection-state: root.connection-state;
                 conn-host: root.conn-host;
                 conn-state: root.conn-state;
@@ -2636,49 +2643,25 @@ export component AppWindow inherits Window {
                 }
                 dock-drag-end() => {
                     if (root.dock-target != "") {
-                        root.sidebar-dock = root.dock-target;
-                        if (root.welcome-as-sidebar && root.welcome-sidebar-dock == root.dock-target) {
-                            root.welcome-collapsed = true;
-                            root.set-welcome-collapsed(true);
+                        root.right-sidebar-dock = root.dock-target;
+                        if (root.left-sidebar-dock == root.dock-target) {
+                            root.left-sidebar-collapsed = true;
+                            root.set-left-sidebar-collapsed(true);
                         }
                         if (root.quick-panel-open && root.quick-panel-dock == root.dock-target) {
                             root.quick-panel-collapsed = true;
                         }
-                        root.persist-sidebar-dock(root.sidebar-dock);
+                        root.persist-right-sidebar-dock(root.right-sidebar-dock);
                     }
                     root.panel-dragging = false;
                 }
                 toggle-collapse() => {
-                    root.sidebar-collapsed = !root.sidebar-collapsed;
-                    root.set-sidebar-collapsed(root.sidebar-collapsed);
+                    root.right-sidebar-collapsed = !root.right-sidebar-collapsed;
+                    root.set-right-sidebar-collapsed(root.right-sidebar-collapsed);
                 }
                 }
             }
 
-            // Collapsed resource panel → a ToolStrip icon bar at the same docked edge
-            // (M5), in place of the old floating expand button.
-            if root.sidebar-collapsed && !dock-area.combine-collapsed-tools && !dock-area.sidebar-strip-outside : ToolStrip {
-                x: root.sidebar-dock == "right" ? parent.width - parent.sb-w : 0px;
-                y: root.sidebar-dock == "bottom" ? parent.height - parent.sb-h : 0px;
-                width: root.sidebar-horizontal ? parent.sb-w : parent.width;
-                height: root.sidebar-horizontal ? parent.height : parent.sb-h;
-                dock-edge: root.sidebar-dock;
-                glyph: "dashboard";   // dashboard — resource panel
-                show-second: dock-area.quick-merge-sidebar;
-                second-glyph: "bolt";
-                expand => {
-                    root.sidebar-collapsed = false;
-                    root.set-sidebar-collapsed(false);
-                    if (root.welcome-as-sidebar && root.welcome-sidebar-dock == root.sidebar-dock) {
-                        root.welcome-collapsed = true;
-                        root.set-welcome-collapsed(true);
-                    }
-                    if (root.quick-panel-open && root.quick-panel-dock == root.sidebar-dock) {
-                        root.quick-panel-collapsed = true;
-                    }
-                }
-                expand-second => { root.quick-panel-collapsed = false; }
-            }
 
             // Splitter — drag to resize the sidebar. Orientation + which dimension it
             // adjusts follow the dock edge. Hidden while collapsed.
@@ -2696,21 +2679,21 @@ export component AppWindow inherits Window {
             // 填充形成 #0e0f13 色带（#del-splitter 曾短暂整块禁用），透明背景
             // + 跨立布局让两侧面板各自透出，无新增色带。
             Rectangle {
-                visible: !root.sidebar-collapsed;
+                visible: !root.right-sidebar-collapsed;
                 // Horizontal docks → a vertical 4px hit-area at the sidebar's inner
                 // edge; vertical docks → a horizontal 4px hit-area (the visible 1px
                 // line is the child Rectangle below, centred inside this area).
                 // (#splitter-v2) 跨立边界：命中区中心对齐侧栏边缘（左/上侧
                 // 从 sb-w/sb-h - 2px 起，右/下侧止于边界前 2px），与 welcome 侧
                 // 的 -2px 模式一致，透明背景下两侧面板各透出 2px。
-                x: root.sidebar-dock == "left"   ? parent.sb-w - 2px
-                 : root.sidebar-dock == "right"  ? parent.width - parent.sb-w - 2px
+                x: root.right-sidebar-dock == "left"   ? parent.sb-w - 2px
+                 : root.right-sidebar-dock == "right"  ? parent.width - parent.sb-w - 2px
                  : 0px;
-                y: root.sidebar-dock == "top"    ? parent.sb-h - 2px
-                 : root.sidebar-dock == "bottom" ? parent.height - parent.sb-h - 2px
+                y: root.right-sidebar-dock == "top"    ? parent.sb-h - 2px
+                 : root.right-sidebar-dock == "bottom" ? parent.height - parent.sb-h - 2px
                  : 0px;
-                width:  root.sidebar-horizontal ? 4px : parent.width;
-                height: root.sidebar-horizontal ? parent.height : 4px;
+                width:  root.right-sidebar-horizontal ? 4px : parent.width;
+                height: root.right-sidebar-horizontal ? parent.height : 4px;
                 // (#splitter-v2) transparent like the welcome splitter: the hit
                 // area now straddles the boundary (sp=0, panes paint right up to
                 // the sidebar edge), so both sides show their own surfaces and no
@@ -2718,33 +2701,33 @@ export component AppWindow inherits Window {
                 // as the #0e0f13 band (#wip8 → #del-splitter → #splitter-v2).
                 background: transparent;
                 sb-split-ta := TouchArea {
-                    mouse-cursor: root.sidebar-horizontal ? ew-resize : ns-resize;
+                    mouse-cursor: root.right-sidebar-horizontal ? ew-resize : ns-resize;
                     pointer-event(ev) => {
                         if (ev.kind == PointerEventKind.down) {
-                            root.sidebar-dragging = true;
+                            root.right-sidebar-dragging = true;
                         } else if (ev.kind == PointerEventKind.up) {
-                            root.sidebar-dragging = false;
-                            root.persist-sidebar-width(root.sidebar-width / 1px);
+                            root.right-sidebar-dragging = false;
+                            root.persist-right-sidebar-width(root.right-sidebar-width / 1px);
                         }
                     }
                     moved => {
-                        if (root.sidebar-dragging) {
-                            if (root.sidebar-horizontal) {
+                        if (root.right-sidebar-dragging) {
+                            if (root.right-sidebar-horizontal) {
                                 // Track the cursor in stable dock-area coordinates.
                                 // The splitter moves while resizing, so adding local
                                 // mouse deltas to the current width feeds the movement
                                 // back into itself and can suddenly widen the panel
                                 // on Win10 (#244).
-                                root.sidebar-width = clamp(
-                                    root.sidebar-dock == "right"
+                                root.right-sidebar-width = clamp(
+                                    root.right-sidebar-dock == "right"
                                         ? dock-area.absolute-position.x + dock-area.width
                                             - (self.absolute-position.x + self.mouse-x)
                                         : (self.absolute-position.x + self.mouse-x)
                                             - dock-area.absolute-position.x,
                                     160px, 520px);
                             } else {
-                                root.sidebar-height = clamp(
-                                    root.sidebar-dock == "bottom"
+                                root.right-sidebar-height = clamp(
+                                    root.right-sidebar-dock == "bottom"
                                         ? dock-area.absolute-position.y + dock-area.height
                                             - (self.absolute-position.y + self.mouse-y)
                                         : (self.absolute-position.y + self.mouse-y)
@@ -2753,25 +2736,24 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                // 1px visible line at the sidebar's INNER edge — the only
-                // visible boundary between the shell and the sidebar. Sits
-                // inside the splitter's hit-area so it can light up in
-                // Theme.accent on hover / while dragging (mirrors the welcome
-                // sidebar's `ws-split-ta` behaviour so the right edge has the
-                // same affordance as the left, Todo 2). At rest it stays
-                // `Theme.border-subtle` so it reads as a clean static thin
-                // line matching the rest of the chrome (#wip6).
+                // (#line-dedup 2026-10-18) 右栏边界线 = 这条 splitter 可见线，
+                // 全主界面只此一条：厚 1 设备像素、位置贴设备网格并对齐右栏
+                // 真实边缘（右栏自己的根边框已删除，不再叠出第二条）。hover /
+                // 拖拽转 Theme.accent，两条可拖宽的边界高亮语言一致。
                 Rectangle {
-                    // (#splitter-v2) 居中于 4px 命中区（同 welcome 侧写法），
-                    // 不再贴侧栏内缘。
-                    // (#panel-line-hairline 2026-10-11) 线宽取 1 设备像素,与窗口
-                    // 描边/面板外框统一(逻辑 1px 在 125% 下是 1.25 设备行,显粗)。
-                    x: parent.width < parent.height ? (parent.width - Theme.hairline()) / 2 : 0px;
-                    y: parent.width < parent.height ? 0px : (parent.height - Theme.hairline()) / 2;
+                    x: parent.width < parent.height
+                        ? Theme.snap-to-device(parent.x + 2px
+                            - (root.right-sidebar-dock == "left" ? Theme.hairline() : 0px)) - parent.x
+                        : 0px;
+                    y: parent.width < parent.height
+                        ? 0px
+                        : Theme.snap-to-device(parent.y + 2px
+                            - (root.right-sidebar-dock == "top" ? Theme.hairline() : 0px)) - parent.y;
                     width:  parent.width < parent.height ? Theme.hairline() : parent.width;
                     height: parent.width < parent.height ? parent.height : Theme.hairline();
-                    background: sb-split-ta.has-hover || root.sidebar-dragging
+                    background: sb-split-ta.has-hover || root.right-sidebar-dragging
                         ? Theme.accent : Theme.border-subtle;
+                    animate background { duration: 120ms; }
                 }
             }
             }
@@ -2781,10 +2763,10 @@ export component AppWindow inherits Window {
             // panel can never bleed (visually or for clicks) onto a panel docked on
             // the bottom or right (#dock).
             quick-area := Rectangle {
-                x: root.sidebar-dock == "left" ? parent.sb-w + parent.sp : 0px;
-                y: root.sidebar-dock == "top"  ? parent.sb-h + parent.sp : 0px;
-                width:  root.sidebar-horizontal ? parent.width - parent.sb-w - parent.sp : parent.width;
-                height: root.sidebar-horizontal ? parent.height : parent.height - parent.sb-h - parent.sp - parent.bottom-strip-h;
+                x: root.right-sidebar-dock == "left" ? parent.sb-w + parent.sp : 0px;
+                y: root.right-sidebar-dock == "top"  ? parent.sb-h + parent.sp : 0px;
+                width:  root.right-sidebar-horizontal ? parent.width - parent.sb-w - parent.sp : parent.width;
+                height: root.right-sidebar-horizontal ? parent.height : parent.height - parent.sb-h - parent.sp - parent.bottom-strip-h;
                 clip: true;
                 property <bool> quick-horizontal:
                     root.quick-panel-dock == "left" || root.quick-panel-dock == "right";
@@ -2830,7 +2812,7 @@ export component AppWindow inherits Window {
                         // (#polish-topbar) 方案 B:工具组迁入标题栏后,frameless
                         // 无需预留,标签全宽;macOS 浮动按钮仍需预留。
                         reserve-right: root.custom-titlebar ? 0px : pane.reserve-right;
-                        show-new-tab: !root.welcome-as-sidebar;
+                        show-new-tab: false;
                         can-merge-pane: root.panes.length > 1;
                     lang-en: root.lang-en;
                     menu-channel-letter <=> root.menu-channel-letter;
@@ -2945,10 +2927,10 @@ export component AppWindow inherits Window {
                     // 以及任何开壁纸的场景)就会露出一条深浅相反的条带(用户截图)。
                     background: Theme.term-bg;
 
-                    // Empty pane outside welcome-sidebar mode: keep a small hint for
+                    // Empty pane outside left-sidebar-sidebar mode: keep a small hint for
                     // rare empty panes, but do not cover the wallpaper when the
                     // session list is already visible as a sidebar.
-                    if pane.tabs.length == 0 && !root.welcome-as-sidebar : Rectangle {
+                    if pane.tabs.length == 0 : Rectangle {
                         width: parent.width;
                         height: parent.height;
                         Text {
@@ -2964,7 +2946,7 @@ export component AppWindow inherits Window {
 
                     // Welcome tab — fill the content area explicitly (some renderers
                     // don't auto-fill, which spread the header/card apart) (#dock).
-                    if pane.active-id == "welcome" : Welcome {
+                    if pane.active-id == "welcome" : LeftSidebar {
                         width: parent.width;
                         height: parent.height;
                         sessions: root.sessions;
@@ -3092,7 +3074,7 @@ export component AppWindow inherits Window {
                         sftp-available: term.sftp-available;
                         tunnels: term.tunnels;
                         quick-commands: root.quick-commands;
-                        quick-sidebar-enabled: root.quick-commands-as-sidebar;
+                        quick-right-sidebar-enabled: root.quick-commands-as-sidebar;
                         quick-panel-docked: root.quick-panel-open;
                         cmd-bar-hidden: term.cmd-bar-hidden;   // (#polish-topbar-r4) 每会话独立
                         quick-external-command: root.quick-external-command;
@@ -3123,14 +3105,13 @@ export component AppWindow inherits Window {
                                 root.quick-panel-dock = root.dock-target;
                                 root.quick-panel-open = true;
                                 root.quick-panel-collapsed = false;
-                                if (root.sidebar-dock == root.dock-target) {
-                                    root.sidebar-collapsed = true;
-                                    root.set-sidebar-collapsed(true);
+                                if (root.right-sidebar-dock == root.dock-target) {
+                                    root.right-sidebar-collapsed = true;
+                                    root.set-right-sidebar-collapsed(true);
                                 }
-                                if (root.welcome-as-sidebar
-                                        && root.welcome-sidebar-dock == root.dock-target) {
-                                    root.welcome-collapsed = true;
-                                    root.set-welcome-collapsed(true);
+                                if (root.left-sidebar-dock == root.dock-target) {
+                                    root.left-sidebar-collapsed = true;
+                                    root.set-left-sidebar-collapsed(true);
                                 }
                             }
                             root.panel-dragging = false;
@@ -3373,14 +3354,13 @@ export component AppWindow inherits Window {
                 dock-drag-end => {
                     if (root.dock-target != "") {
                         root.quick-panel-dock = root.dock-target;
-                        if (root.sidebar-dock == root.dock-target) {
-                            root.sidebar-collapsed = true;
-                            root.set-sidebar-collapsed(true);
+                        if (root.right-sidebar-dock == root.dock-target) {
+                            root.right-sidebar-collapsed = true;
+                            root.set-right-sidebar-collapsed(true);
                         }
-                        if (root.welcome-as-sidebar
-                                && root.welcome-sidebar-dock == root.dock-target) {
-                            root.welcome-collapsed = true;
-                            root.set-welcome-collapsed(true);
+                        if (root.left-sidebar-dock == root.dock-target) {
+                            root.left-sidebar-collapsed = true;
+                            root.set-left-sidebar-collapsed(true);
                         }
                     }
                     root.panel-dragging = false;
@@ -3572,18 +3552,18 @@ export component AppWindow inherits Window {
 
     // (#logo-brand-btn) 标题栏左上角品牌 LOGO 按钮：平时静默展示品牌徽章，
     // 悬浮淡入收/展图标 +「收起/展开侧边栏」提示，点击切换左侧面板（快速
-    // 连接 welcome 侧栏，走 set-welcome-collapsed 持久化）。声明在 dock-area
+    // 连接 welcome 侧栏，走 set-left-sidebar-collapsed 持久化）。声明在 dock-area
     // 之后 → 徽章与提示气泡天然盖在下方内容之上。
     if root.custom-titlebar : BrandLogoBtn {
         x: 0;
         y: 0;
-        collapsed: root.welcome-collapsed;
+        collapsed: root.left-sidebar-collapsed;
         lang-en: root.lang-en;
         // (#winbtn-round-corner) 高亮块贴窗口左上角,圆角随最大化收放。
         round-top-left: !root.window-maximized;
         clicked => {
-            root.welcome-collapsed = !root.welcome-collapsed;
-            root.set-welcome-collapsed(root.welcome-collapsed);
+            root.left-sidebar-collapsed = !root.left-sidebar-collapsed;
+            root.set-left-sidebar-collapsed(root.left-sidebar-collapsed);
         }
     }
 
@@ -3712,7 +3692,7 @@ export component AppWindow inherits Window {
         border-width: 1px;
         border-color: Theme.border-strong;
         drop-shadow-blur: 10px;
-        drop-shadow-color: #00000050;
+        drop-shadow-color: transparent;
         // (#ctx-menu-autoclose) 垫底探测:指针在菜单内非菜单项区域(空隙/
         // padding/Move to 标签行)时由此层上报安全。菜单项 TouchArea 声明
         // 在其后 = 上层,点击不受影响。
@@ -3895,7 +3875,7 @@ export component AppWindow inherits Window {
         border-width: 1px;
         border-color: Theme.border-strong;
         drop-shadow-blur: 10px;
-        drop-shadow-color: #00000050;
+        drop-shadow-color: transparent;
         b-pad := TouchArea { width: 100%; height: 100%; }
         blank-menu-vl := VerticalLayout {
             // (#ui-refresh-v3-4 2026-09-15) 对齐设计稿 .menu:外边距 5px、行间 0。
@@ -4039,7 +4019,7 @@ export component AppWindow inherits Window {
         border-width: 1px;
         border-color: Theme.border-strong;
         drop-shadow-blur: 10px;
-        drop-shadow-color: #00000050;
+        drop-shadow-color: transparent;
         // (#ctx-menu-autoclose) 垫底探测 + 安全区聚合 + 自动关闭,
         // 同 row 菜单(组头菜单无动态项,全静态聚合)。
         // (#ctx-menu-autoclose) 垫底探测:同 row 菜单,挡住 backdrop hover。
@@ -4270,7 +4250,7 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: Theme.border-strong;
             drop-shadow-blur: 12px;
-            drop-shadow-color: #00000060;
+            drop-shadow-color: transparent;
 
             // 垫底:吃掉面板空白处的点击(与菜单的 g-pad 同责),不让它落到
             // backdrop 上把菜单关掉。
@@ -4554,7 +4534,7 @@ export component AppWindow inherits Window {
         background: Theme.popup-bg;
         border-radius: 7px;
         border-width: 1px; border-color: Theme.border-strong;
-        drop-shadow-blur: 12px; drop-shadow-color: #00000060;
+        drop-shadow-blur: 12px; drop-shadow-color: transparent;
         VerticalLayout {
             padding: 4px;
             spacing: 1px;
@@ -4820,7 +4800,7 @@ export component AppWindow inherits Window {
                 border-width: 1px;
                 border-color: Theme.border-strong;
                 drop-shadow-blur: 24px;
-                drop-shadow-color: #00000080;
+                drop-shadow-color: transparent;
                 clip: true;
 
                 VerticalLayout {
@@ -5175,7 +5155,7 @@ export component AppWindow inherits Window {
         border-width: 1px;
         border-color: Theme.border-strong;
         drop-shadow-blur: 16px;
-        drop-shadow-color: #00000070;
+        drop-shadow-color: transparent;
 
         // Swallow pointer events so right-clicks don't fall through to the
         // terminal's context menu underneath.
@@ -5468,7 +5448,7 @@ export component AppWindow inherits Window {
         border-width: 1px;
         border-color: Theme.border-strong;
         drop-shadow-blur: 14px;
-        drop-shadow-color: #00000060;
+        drop-shadow-color: transparent;
 
         TouchArea {}   // swallow events so they don't reach the terminal
 
@@ -5695,7 +5675,10 @@ export component AppWindow inherits Window {
         if root.group-dialog-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: Theme.modal-scrim;
+        background: transparent;
+        // (#scrim-style 2026-10-17) 遮罩统一走 Scrim 组件（样式 9 选 +
+        // 随机重掷都在组件内，调用点不再直接画 modal-scrim）。
+        Scrim { }
         TouchArea { clicked => { root.group-dialog-open = false; } }
 
         Rectangle {
@@ -5711,7 +5694,7 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: Theme.border-strong;
             drop-shadow-blur: 24px;
-            drop-shadow-color: #000000a0;
+            drop-shadow-color: transparent;
             TouchArea {}   // swallow inside clicks
 
             gd-body := VerticalLayout {
@@ -6051,7 +6034,10 @@ export component AppWindow inherits Window {
     if root.tab-rename-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: Theme.modal-scrim;
+        background: transparent;
+        // (#scrim-style 2026-10-17) 遮罩统一走 Scrim 组件（样式 9 选 +
+        // 随机重掷都在组件内，调用点不再直接画 modal-scrim）。
+        Scrim { }
         TouchArea { clicked => { root.tab-rename-open = false; } }
 
         Rectangle {
@@ -6064,7 +6050,7 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: Theme.border-strong;
             drop-shadow-blur: 24px;
-            drop-shadow-color: #000000a0;
+            drop-shadow-color: transparent;
             TouchArea {}   // swallow inside clicks
 
             VerticalLayout {
@@ -6128,7 +6114,10 @@ export component AppWindow inherits Window {
         if root.quick-cmd-manage-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: Theme.modal-scrim;
+        background: transparent;
+        // (#scrim-style 2026-10-17) 遮罩统一走 Scrim 组件（样式 9 选 +
+        // 随机重掷都在组件内，调用点不再直接画 modal-scrim）。
+        Scrim { }
         TouchArea { clicked => { root.quick-cmd-manage-open = false; } }
 
         qcm-card := Rectangle {
@@ -6141,7 +6130,7 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: Theme.border-strong;
             drop-shadow-blur: 24px;
-            drop-shadow-color: #000000a0;
+            drop-shadow-color: transparent;
             TouchArea {}   // swallow inside clicks
 
             VerticalLayout {
@@ -6308,7 +6297,7 @@ export component AppWindow inherits Window {
                                     Rectangle {
                                         background: Theme.popup-bg; border-radius: Theme.radius-sm;
                                         border-width: 1px; border-color: Theme.border-strong;
-                                        drop-shadow-blur: 10px; drop-shadow-color: #00000050;
+                                        drop-shadow-blur: 10px; drop-shadow-color: transparent;
                                         VerticalLayout {
                                             padding: 4px; spacing: 1px;
                                             Rectangle {
@@ -6429,7 +6418,7 @@ export component AppWindow inherits Window {
                                     Rectangle {
                                         background: Theme.popup-bg; border-radius: Theme.radius-sm;
                                         border-width: 1px; border-color: Theme.border-strong;
-                                        drop-shadow-blur: 10px; drop-shadow-color: #00000050;
+                                        drop-shadow-blur: 10px; drop-shadow-color: transparent;
                                         qctx-vl := VerticalLayout {
                                             padding: 4px; spacing: 1px;
                                             Rectangle { height: 28px; border-radius: Theme.radius-sm;
@@ -6550,7 +6539,10 @@ export component AppWindow inherits Window {
         if root.qcg-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: Theme.modal-scrim;
+        background: transparent;
+        // (#scrim-style 2026-10-17) 遮罩统一走 Scrim 组件（样式 9 选 +
+        // 随机重掷都在组件内，调用点不再直接画 modal-scrim）。
+        Scrim { }
         TouchArea { clicked => { root.qcg-open = false; } }
 
         Rectangle {
@@ -6563,7 +6555,7 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: Theme.border-strong;
             drop-shadow-blur: 24px;
-            drop-shadow-color: #000000a0;
+            drop-shadow-color: transparent;
             TouchArea {}   // swallow inside clicks
 
             VerticalLayout {
@@ -6615,7 +6607,10 @@ export component AppWindow inherits Window {
         if root.sftp-prompt-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: Theme.modal-scrim;
+        background: transparent;
+        // (#scrim-style 2026-10-17) 遮罩统一走 Scrim 组件（样式 9 选 +
+        // 随机重掷都在组件内，调用点不再直接画 modal-scrim）。
+        Scrim { }
         TouchArea { clicked => { root.sftp-prompt-open = false; } }
 
         Rectangle {
@@ -6628,7 +6623,7 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: Theme.border-strong;
             drop-shadow-blur: 24px;
-            drop-shadow-color: #000000a0;
+            drop-shadow-color: transparent;
             TouchArea {}   // swallow inside clicks
 
             VerticalLayout {
@@ -6706,7 +6701,10 @@ export component AppWindow inherits Window {
         // (#scrim-unify 2026-10-15) 遮罩统一到 Theme.modal-scrim:旧写死
         // #00000088 不跟随深浅色/通透档,与其它弹框(会话/设置/同步输入)
         // 的 modal-scrim 观感不一致(用户截图反馈"遮罩又不一样了")。
-        background: Theme.modal-scrim;
+        background: transparent;
+        // (#scrim-style 2026-10-17) 遮罩统一走 Scrim 组件（样式 9 选 +
+        // 随机重掷都在组件内，调用点不再直接画 modal-scrim）。
+        Scrim { }
         // (#close-dialog-drag 2026-10-15) 空白区拖动卡片:与 SessionDialog /
         // ConfirmDialog 同款(绝对坐标差值 + 3px 阈值区分拖/点 + 窗口内钳制)。
         // 拖动状态挂在 card 自身上(条件元素里 root 仍指 Window,拿不到);
@@ -6738,7 +6736,7 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: Theme.border-strong;
             drop-shadow-blur: 24px;
-            drop-shadow-color: #000000a0;
+            drop-shadow-color: transparent;
             // (#close-dialog-drag) 拖动中间量挂在卡片自身(root 在条件元素里
             // 仍指 Window);重开重居中靠条件元素重建时绑定复位,无需手写。
             property <bool> card-dragging: false;
@@ -7107,7 +7105,10 @@ export component AppWindow inherits Window {
     if root.chmod-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: Theme.modal-scrim;
+        background: transparent;
+        // (#scrim-style 2026-10-17) 遮罩统一走 Scrim 组件（样式 9 选 +
+        // 随机重掷都在组件内，调用点不再直接画 modal-scrim）。
+        Scrim { }
         TouchArea { clicked => { root.chmod-open = false; } }
 
         Rectangle {
@@ -7120,7 +7121,7 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: Theme.border-strong;
             drop-shadow-blur: 24px;
-            drop-shadow-color: #000000a0;
+            drop-shadow-color: transparent;
             TouchArea {}
 
             VerticalLayout {
@@ -7199,7 +7200,10 @@ export component AppWindow inherits Window {
         width: parent.width;
         height: parent.height;
         visible: root.shortcuts-open;
-        background: Theme.modal-scrim;
+        background: transparent;
+        // (#scrim-style 2026-10-17) 遮罩统一走 Scrim 组件（样式 9 选 +
+        // 随机重掷都在组件内，调用点不再直接画 modal-scrim）。
+        Scrim { }
         TouchArea { clicked => { root.shortcuts-open = false; } }
 
         Rectangle {
@@ -7212,7 +7216,7 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: Theme.border-strong;
             drop-shadow-blur: 24px;
-            drop-shadow-color: #000000a0;
+            drop-shadow-color: transparent;
             TouchArea {}
 
             VerticalLayout {
@@ -7301,7 +7305,10 @@ export component AppWindow inherits Window {
         width: parent.width;
         height: parent.height;
         visible: root.about-open;
-        background: Theme.modal-scrim;            // dim backdrop
+        background: transparent;
+        // (#scrim-style 2026-10-17) 遮罩统一走 Scrim 组件（样式 9 选 +
+        // 随机重掷都在组件内，调用点不再直接画 modal-scrim）。
+        Scrim { }
         TouchArea { clicked => { root.about-open = false; } }
 
         // Landscape card: logo on the left, a short intro + repo link on the right.
@@ -7315,7 +7322,7 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: Theme.border-strong;
             drop-shadow-blur: 24px;
-            drop-shadow-color: #000000a0;
+            drop-shadow-color: transparent;
 
             // Swallow clicks so the backdrop doesn't close when clicking inside.
             TouchArea {}
@@ -7567,7 +7574,10 @@ export component AppWindow inherits Window {
     if root.batch-import-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: Theme.modal-scrim;
+        background: transparent;
+        // (#scrim-style 2026-10-17) 遮罩统一走 Scrim 组件（样式 9 选 +
+        // 随机重掷都在组件内，调用点不再直接画 modal-scrim）。
+        Scrim { }
         TouchArea { clicked => { root.batch-import-open = false; } }   // backdrop closes
         Rectangle {
             width: 540px;
@@ -7579,7 +7589,7 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: Theme.border-strong;
             drop-shadow-blur: 24px;
-            drop-shadow-color: #00000080;
+            drop-shadow-color: transparent;
             TouchArea {}   // swallow clicks inside the card
 
             VerticalLayout {
@@ -7663,7 +7673,10 @@ export component AppWindow inherits Window {
     if root.cred-prompt-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: Theme.modal-scrim;
+        background: transparent;
+        // (#scrim-style 2026-10-17) 遮罩统一走 Scrim 组件（样式 9 选 +
+        // 随机重掷都在组件内，调用点不再直接画 modal-scrim）。
+        Scrim { }
         TouchArea { clicked => { root.cred-reject(); } }
         Rectangle {
             width: 360px;
@@ -7675,7 +7688,7 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: Theme.border-strong;
             drop-shadow-blur: 24px;
-            drop-shadow-color: #00000080;
+            drop-shadow-color: transparent;
             TouchArea {}   // swallow clicks inside the card
             cred-card := VerticalLayout {
                 padding: 20px;
@@ -7733,7 +7746,10 @@ export component AppWindow inherits Window {
     if root.mfa-prompt-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: Theme.modal-scrim;
+        background: transparent;
+        // (#scrim-style 2026-10-17) 遮罩统一走 Scrim 组件（样式 9 选 +
+        // 随机重掷都在组件内，调用点不再直接画 modal-scrim）。
+        Scrim { }
         TouchArea { clicked => { root.mfa-cancel(); } }
         Rectangle {
             width: 360px;
@@ -7745,7 +7761,7 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: Theme.border-strong;
             drop-shadow-blur: 24px;
-            drop-shadow-color: #00000080;
+            drop-shadow-color: transparent;
             TouchArea {}   // swallow clicks inside the card
             mfa-card := VerticalLayout {
                 padding: 20px;
@@ -7866,9 +7882,20 @@ export component AppWindow inherits Window {
             accent-info-x <=> root.accent-info-x;
             accent-info-y <=> root.accent-info-y;
             wallpaper-active <=> root.wallpaper-active;
-            term-alpha <=> root.term-alpha;
-            wallpaper-visible <=> root.wallpaper-visible;
+            titlebar-transparency <=> root.titlebar-transparency;
+            tabbar-transparency <=> root.tabbar-transparency;
+            sidebar-transparency <=> root.sidebar-transparency;
+            term-transparency <=> root.term-transparency;
+            wallpaper-transparency <=> root.wallpaper-transparency;
+            wallpaper-scope <=> root.wallpaper-scope;
+            wallpaper-fit <=> root.wallpaper-fit;
+            scrim-style <=> root.scrim-style;
+            scrim-strength <=> root.scrim-strength;
+            scrim-pick-open <=> root.scrim-pick-open;
+            scrim-pick-x <=> root.scrim-pick-x;
+            scrim-pick-y <=> root.scrim-pick-y;
             popup-transparency <=> root.popup-transparency;
+            theme-favorites: root.theme-favorites;
             wallpaper-color-pickup <=> root.wallpaper-color-pickup;
             ifd-page <=> root.ifd-page;
             theme-pick-open <=> root.theme-pick-open;
@@ -7883,9 +7910,15 @@ export component AppWindow inherits Window {
             set-accent-mode(m, v) => { root.set-accent-mode(m, v); }
             accent-hex-color(h) => { root.accent-hex-color(h); }
             accent-ink-on(h) => { root.accent-ink-on(h); }
-            set-panel-alpha(v) => { root.set-panel-alpha(v); }
+            set-titlebar-alpha(v) => { root.set-titlebar-alpha(v); }
+            set-tabbar-alpha(v) => { root.set-tabbar-alpha(v); }
+            set-sidebar-alpha(v) => { root.set-sidebar-alpha(v); }
             set-term-alpha(v) => { root.set-term-alpha(v); }
-            set-wallpaper-visible(v) => { root.set-wallpaper-visible(v); }
+            set-wallpaper-transparency(v) => { root.set-wallpaper-transparency(v); }
+            set-wallpaper-scope(v) => { root.set-wallpaper-scope(v); }
+            set-wallpaper-fit(v) => { root.set-wallpaper-fit(v); }
+            set-scrim-style(v) => { root.set-scrim-style(v); }
+            set-scrim-alpha(v) => { root.set-scrim-alpha(v); }
             set-popup-transparency(v) => { root.set-popup-transparency(v); }
             set-wallpaper-color-pickup(v) => { root.set-wallpaper-color-pickup(v); }
             // (#settings-divider-line) Nav switching rebuilds the right
@@ -7934,7 +7967,7 @@ export component AppWindow inherits Window {
             output-highlight-rule-status <=> root.output-highlight-rule-status;
             ui-scale: root.ui-scale;
             sftp-follow-cd <=> root.sftp-follow-cd;
-            collapse-sidebar-default <=> root.collapse-sidebar-default;
+            collapse-right-sidebar-default <=> root.collapse-right-sidebar-default;
             collapse-sftp-default <=> root.collapse-sftp-default;
             sync-upload-enabled <=> root.sync-upload-enabled;
             webdav-enabled <=> root.webdav-enabled;
@@ -7948,13 +7981,11 @@ export component AppWindow inherits Window {
             paste-confirm-enabled <=> root.paste-confirm-enabled;
             extra-paste-shortcuts-enabled <=> root.extra-paste-shortcuts-enabled;
             zen-mode <=> root.zen-mode;
-            welcome-as-sidebar <=> root.welcome-as-sidebar;
             quick-commands-as-sidebar <=> root.quick-commands-as-sidebar;
             mcp-enabled <=> root.mcp-enabled;
             mcp-use-saved-credentials <=> root.mcp-use-saved-credentials;
             mcp-allow-commands <=> root.mcp-allow-commands;
             mcp-allow-file-transfers <=> root.mcp-allow-file-transfers;
-            wallpaper-overlay <=> root.wallpaper-overlay;
             current-wallpaper: root.current-wallpaper;
             custom-wallpaper-name: root.custom-wallpaper-name;
             wsl-profiles: root.wsl-profiles;
@@ -7985,7 +8016,7 @@ export component AppWindow inherits Window {
             set-panel-font(v) => { root.set-panel-font(v); }
             set-renderer-mode(v) => { root.set-renderer-mode(v); }
             set-sftp-follow-cd(v) => { root.set-sftp-follow-cd(v); }
-            set-collapse-sidebar-default(v) => { root.set-collapse-sidebar-default(v); }
+            set-collapse-right-sidebar-default(v) => { root.set-collapse-right-sidebar-default(v); }
             set-collapse-sftp-default(v) => { root.set-collapse-sftp-default(v); }
             set-sync-upload-enabled(v) => { root.set-sync-upload-enabled(v); }
             save-webdav-settings(enabled, url, username, password, remote-path, accept-invalid-certs) => {
@@ -7997,7 +8028,6 @@ export component AppWindow inherits Window {
             set-paste-confirm-enabled(v) => { root.set-paste-confirm-enabled(v); }
             set-extra-paste-shortcuts-enabled(v) => { root.set-extra-paste-shortcuts-enabled(v); }
             set-zen-mode(v) => { root.set-zen-mode(v); }
-            set-welcome-as-sidebar(v) => { root.set-welcome-as-sidebar(v); }
             set-quick-commands-as-sidebar(v) => {
                 root.quick-commands-as-sidebar = v;
                 if (!v) {
@@ -8012,7 +8042,6 @@ export component AppWindow inherits Window {
             add-wsl-profile(name, distribution, directory) => { root.add-wsl-profile(name, distribution, directory); }
             remove-wsl-profile(id) => { root.remove-wsl-profile(id); }
             pick-wsl-directory => { root.pick-wsl-directory(); }
-            persist-wallpaper-overlay(v) => { root.persist-wallpaper-overlay(v); }
         }
     }
 
@@ -8086,7 +8115,7 @@ export component AppWindow inherits Window {
             border-radius: 11px;
             background: Theme.popup-bg;
             border-width: 1px; border-color: Theme.border-strong;
-            drop-shadow-blur: 16px; drop-shadow-color: #00000060;
+            drop-shadow-blur: 16px; drop-shadow-color: transparent;
             clip: true;
             // (#theme-dedupe §5 键盘) ↑↓ 移动 / Enter 确认 / Esc 还原 / Tab 直达强调色。
             // forward-focus 把焦点交给搜索框：开浮层即可直接输入；键事件在本域兜底。
@@ -8537,7 +8566,7 @@ export component AppWindow inherits Window {
                 background: Theme.popup-bg;
                 border-width: 1px; border-color: Theme.border-subtle;
                 Text {
-                    text: root.lang-en ? "Remove one first (max 8)" : "常用已满 8 套，先移出一套";
+                    text: root.lang-en ? "Remove one first (max 4)" : "常用已满 4 套，先移出一套";
                     color: Theme.warning; font-size: 10.5px;
                     horizontal-alignment: center; vertical-alignment: center;
                 }
@@ -8546,6 +8575,70 @@ export component AppWindow inherits Window {
                 running: root.fav-hint-tick > 0;
                 interval: 2600ms;
                 triggered => { root.fav-hint-tick = 0; }
+            }
+        }
+    }
+
+    // ── (#scrim-style 2026-10-17) 遮罩样式下拉（根层浮层）────────────────
+    // 设置页在 ScrollView 里，行内浮层会被视口裁掉/滚走 → 与 theme-pick 同款
+    // 根层浮层。行语言与全项目下拉一致：hover = bg-hover、选中 = accent 文字 +
+    // accent ✓（图标，不用 U+2713 —— 字体链缺字形）。
+    if root.scrim-pick-open : Rectangle {
+        width: parent.width;
+        height: parent.height;
+        TouchArea {
+            clicked => { root.scrim-pick-open = false; }
+        }
+        Rectangle {
+            property <length> cx0: root.interface-open ? root.ifd-x + 8px : 8px;
+            property <length> cx1: (root.interface-open
+                    ? root.ifd-x + root.ifd-w : parent.width) - self.width - 12px;
+            width: 190px;
+            height: scrim-opts.preferred-height + 10px;
+            x: min(max(cx0, root.scrim-pick-x), max(cx0, cx1));
+            y: min(root.scrim-pick-y,
+                   max(8px, (root.interface-open ? root.ifd-y + root.ifd-h : parent.height)
+                        - self.height - 8px));
+            border-radius: 10px;
+            background: Theme.popup-bg;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: transparent;
+            clip: true;
+            scrim-opts := VerticalLayout {
+                padding: 5px;
+                spacing: 1px;
+                alignment: start;
+                for st[i] in root.scrim-styles : scrim-row := Rectangle {
+                    height: 30px;
+                    border-radius: 7px;
+                    background: scrim-row-ta.has-hover ? Theme.bg-hover : transparent;
+                    Text {
+                        x: 10px;
+                        width: parent.width - 40px;
+                        text: Theme.scrim-label(st, root.lang-en);
+                        color: root.scrim-style == st ? Theme.accent-solid : Theme.text-primary;
+                        font-size: 12.5px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Icon {
+                        x: parent.width - 26px;
+                        glyph: "check";
+                        tint: Theme.accent-solid;
+                        size: 12px;
+                        opacity: root.scrim-style == st ? 1 : 0;
+                    }
+                    scrim-row-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.scrim-style = st;
+                            root.set-scrim-style(st);
+                            root.scrim-pick-open = false;
+                        }
+                    }
+                }
             }
         }
     }
@@ -8590,7 +8683,7 @@ export component AppWindow inherits Window {
             border-width: 1px;
             border-color: Theme.border-strong;
             drop-shadow-blur: 24px;
-            drop-shadow-color: #000000a0;
+            drop-shadow-color: transparent;
             // 卡片留白吞层（点 padding 不落到遮罩）；空白区也可拖动卡片
             card-ta := TouchArea {
                 clicked => {}
@@ -9056,7 +9149,10 @@ export component AppWindow inherits Window {
     if root.interface-open && root.ifd-page == "theme" && root.accent-pick-open : Rectangle {
         width: parent.width;
         height: parent.height;
-        background: Theme.modal-scrim;
+        background: transparent;
+        // (#scrim-style 2026-10-17) 遮罩统一走 Scrim 组件（样式 9 选 +
+        // 随机重掷都在组件内，调用点不再直接画 modal-scrim）。
+        Scrim { }
         TouchArea { clicked => { root.accent-pick-open = false; } }
         ColorPickerDialog {
             x: clamp(root.ifd-x + (root.ifd-w - self.width) / 2, 8px, max(8px, root.width - self.width - 12px));
@@ -9102,142 +9198,19 @@ export component AppWindow inherits Window {
         }
     }
 
-    // (#win-edge-frame 2026-10-10) 主窗口四边 1px 描边 + 圆角,与弹框卡片
-    // (border-strong + 圆角)同一套边线语言。窗口本体是无边框不透明窗口
-    // (no-frame + with_undecorated_shadow(false)),深色主题下与桌面融成
-    // 一片,四边轮廓不可辨;Rust apply_window_chrome 给的 DWMWCP_ROUND
-    // 圆角也因为没有边线而看不出来(用户反馈"四边缺少边线和圆角")。
-    // 这里在内容最上层画一圈**不接事件**的描边(Rectangle 无 TouchArea,
-    // 命中测试直接落到下面的自绘 resize 热区/内容)。
-    // 圆角取 Theme.radius-win(= 8 物理像素按 device-pixel-ratio 换算回
-    // 逻辑值):Win11 DWM 窗口圆角是固定 8 物理像素、不随 DPI 缩放,只有
-    // 按物理值对齐,描边弧才能与 DWM 裁剪弧同心(详见 theme.slint
-    // radius-win 注释)。不用 radius-lg(随 ui-scale 缩放,会跟 DWM 半径脱钩)。
-    // (#win-edge-frame-r2 2026-10-10) 整圈描边向内缩 1 设备像素(hairline),
-    // 半径同步减 1 保持与裁剪弧同心:描边外缘若正好压在 DWM 裁剪边界上,
-    // 弧线的抗锯齿外 fringe 会被硬裁掉,细线弧在对角段覆盖率跌破可见阈值
-    // —— 四个角统一断成虚点/折角(像素扫描实测:四角同在第 3、6-7 行缺
-    // 弧段)。缩进后整条弧完整参与 AA。
-    // (#win-edge-frame-r3 2026-10-10) 线宽同样取 hairline(1 **设备**像素):
-    // 逻辑 1px 在 125% 下占 1.25 设备行,内缩不被裁剪后"1 实行 + 25% 鬼影
-    // 行"整条显形,四条边看着发粗(用户截图)。整数设备行对齐的 1 设备
-    // 像素线只有一条实行,锐利不糊;弧段为 1 设备像素宽的同心环带(r∈[6,7]
-    // 物理px,裁剪弧 r=8),AA 完整、连续不断。缩进留出的缝隙填窗口底色,
-    // 与桌面同深,不可见。
-    // (#win-edge-frame-r4 2026-10-10) 四条边改画**四个"1 设备像素厚"的扁矩形**,
-    // 不再用一个带 border-radius 的矩形描一圈。原因(真机像素实测):
-    // r3 的"半像素内缩 + 亚像素线宽"在软件渲染器下确实只吃 1 个设备像素,但
-    // **真实应用走 femtovg(GPU),同一条 0.8 逻辑px 的边被渲染成 2 个物理像素**
-    // (亮度 58 + 81,合计墨量≈1.59px;四边完全一致——这就是用户看到的"边线加粗")。
-    // 半像素内缩 = 让一条**边**去凑设备网格,而描边的覆盖量由渲染器自己决定,
-    // 各后端不一致,靠不住了。
-    // 现在把线宽与位置都放进"设备网格整数"语义:每条边厚 1 设备像素 =
-    // hairline() 逻辑px,**左下角**贴设备网格,x/y 为**整数个** hairline()
-    // (0 或 -1 个),于是矩形的上下/左右边界天然落在设备像素整数坐标上,
-    // 不产生任何跨像素覆盖 —— 与后端无关。四者在四角互相重叠(同色,不可见);
-    // 圆角交给 DWM 的 DWMWCP_ROUND 裁剪弧切,不需要自绘弧线。
-    // 原 r2/r3 的注释保留在上,记录为什么走弯路:一个矩形描一圈时,弧段与直边
-    // 用的是同一条描边,想同时满足"弧段不被裁剪"和"直边不糊"在亚像素下无解。
-    // 最大化时系统把四角改直角、窗口贴满工作区,描边随 window-maximized
-    // 隐藏;macOS 走原生装饰(custom-titlebar=false),不画。
-    if root.custom-titlebar && !root.window-maximized : Rectangle {
-        background: transparent;
-
-        // ⚠️ 四条的 x/y 都取**1 个设备像素**（hairline()），不是 0：描边以路径
-        // 线为中心向两侧各铺半条，贴 0 会让外侧半条被窗口边界裁掉，剩下的
-        // 半条落在设备像素中间 → 反锯齿糊成 2 个物理像素。内移整 1 个设备
-        // 像素后，0.8 逻辑px 的线完整落在窗口内、边界对齐设备网格。
-        // (#win-edge-frame-r5 2026-10-11) 右/下两条的位置改走 snap-to-device:
-        // parent.width/height 是逻辑像素,在 125%/150% 这类分数缩放下换算回
-        // 物理像素会落在栅格中间,描边被摊到两个物理行(看着发粗)。对齐后
-        // hairline() 的 1 个设备像素才是完整的一行。
-        // (#win-edge-frame-r6 2026-10-12) 四角改**自绘弧**,不再靠 DWM 裁剪弧
-        // 切直边端点。r4/r5 只画四条直边、圆角外包给 DWMWCP_ROUND 裁剪,实测
-        // 四角弧段亮度只有直边的 37~75%(裁剪斜切 + AA 渐隐),且四角形态不一
-        // (左下角竖线在第 6~8 行先断、弧线隔 1px 才爬起,形成肉眼可见的凹口)。
-        // 现在:直边缩短到角弧切点、四角各画一段 1 设备像素宽的 90° 弧,与直边
-        // 同色同宽、无缝衔接,四角形态统一、弧段连续。
-        // 几何(逻辑像素):DWM 裁剪弧半径 8 物理、圆心在窗角内侧 8 物理处;主线
-        // 外缘内缩 1 物理(hairline)、线宽 hairline,故弧中心线半径 = 8 - 1.5 =
-        // 6.5 物理。角弧 Path 用 viewbox 8×8 表达固定坐标(1 单位 = 1 物理像素),
-        // stroke-width 独立于 viewbox、取 hairline = 1 设备像素。角弧与右/下边
-        // 共用 snap 后的 win-w/win-h,保证弧与直边端点精确重合。
-        property <length> win-w: Theme.snap-to-device(parent.width);
-        property <length> win-h: Theme.snap-to-device(parent.height);
-        property <length> cr: Theme.radius-win;
-
-        // 上边（止于角弧切点）
-        Rectangle {
-            x: parent.cr; y: Theme.hairline();
-            width: parent.win-w - 2 * parent.cr;
-            height: Theme.hairline();
-            background: Theme.border-strong;
-        }
-        // 下边
-        Rectangle {
-            x: parent.cr; y: parent.win-h - 2 * Theme.hairline();
-            width: parent.win-w - 2 * parent.cr;
-            height: Theme.hairline();
-            background: Theme.border-strong;
-        }
-        // 左边
-        Rectangle {
-            x: Theme.hairline(); y: parent.cr;
-            width: Theme.hairline();
-            height: parent.win-h - 2 * parent.cr;
-            background: Theme.border-strong;
-        }
-        // 右边
-        Rectangle {
-            x: parent.win-w - 2 * Theme.hairline(); y: parent.cr;
-            width: Theme.hairline();
-            height: parent.win-h - 2 * parent.cr;
-            background: Theme.border-strong;
-        }
-        // 左上角弧
-        Path {
-            x: 0; y: 0;
-            width: parent.cr; height: parent.cr;
-            viewbox-width: 8; viewbox-height: 8;
-            stroke: Theme.border-strong;
-            stroke-width: Theme.hairline();
-            fill: transparent;
-            clip: false;
-            commands: "M 1.5 8 A 6.5 6.5 0 0 1 8 1.5";
-        }
-        // 右上角弧
-        Path {
-            x: parent.win-w - parent.cr; y: 0;
-            width: parent.cr; height: parent.cr;
-            viewbox-width: 8; viewbox-height: 8;
-            stroke: Theme.border-strong;
-            stroke-width: Theme.hairline();
-            fill: transparent;
-            clip: false;
-            commands: "M 0 1.5 A 6.5 6.5 0 0 1 6.5 8";
-        }
-        // 右下角弧
-        Path {
-            x: parent.win-w - parent.cr; y: parent.win-h - parent.cr;
-            width: parent.cr; height: parent.cr;
-            viewbox-width: 8; viewbox-height: 8;
-            stroke: Theme.border-strong;
-            stroke-width: Theme.hairline();
-            fill: transparent;
-            clip: false;
-            commands: "M 6.5 0 A 6.5 6.5 0 0 1 0 6.5";
-        }
-        // 左下角弧
-        Path {
-            x: 0; y: parent.win-h - parent.cr;
-            width: parent.cr; height: parent.cr;
-            viewbox-width: 8; viewbox-height: 8;
-            stroke: Theme.border-strong;
-            stroke-width: Theme.hairline();
-            fill: transparent;
-            clip: false;
-            commands: "M 8 6.5 A 6.5 6.5 0 0 1 1.5 0";
-        }
+    // (#win-edge-frame 2026-10-10 / #win-edge-frame-r7 2026-10-18) 主窗口最外圈
+    // 1 设备像素描边。r7 起改成"线与边界重合"：
+    //   * 直边贴窗口真实边界（第 0 行/列、倒数第 1 行/列），不再内缩 1 像素；
+    //   * 四角描边弧的外缘压在 DWM 裁剪弧上（8 DIP，200% 下 16 物理像素）。
+    // 几何实现（含 Slint Path fit 抵消推导）全部在 ui/window_frame.slint；这里只
+    // 在无边框 + 非最大化 + 自绘标题栏平台挂载。不接事件：Rectangle + Path 都没有
+    // TouchArea，命中测试直接落到下面的自绘 resize 热区/内容。
+    // 最大化时系统把四角改直角、窗口贴满工作区，描边随 window-maximized 隐藏；
+    // macOS 走原生装饰（custom-titlebar=false），不画。
+    if root.custom-titlebar && !root.window-maximized : WindowFrame {
+        width: root.width;
+        height: root.height;
+        rounded: root.win-rounded;
     }
 
     // (#accent-chip-info 2026-10-16) 设置页强调色色卡的取色信息卡（HEX/RGB/HSV/HSL）。

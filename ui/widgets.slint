@@ -628,7 +628,7 @@ export component SelectField inherits VerticalLayout {
             border-width: 1px;
             border-color: Theme.line-2;
             drop-shadow-blur: 18px;
-            drop-shadow-color: #00000066;
+            drop-shadow-color: transparent;
             VerticalLayout {
                 padding: 5px;
                 spacing: 1px;
@@ -691,5 +691,146 @@ export component ProtocolIcon inherits Rectangle {
         tint: root.icon-color;
         // 跟随实际渲染宽高(调用方覆盖 width/height 后自动生效),而非固定 icon-size。
         size: min(root.width, root.height);
+    }
+}
+
+// --- Scrim -----------------------------------------------------------------
+// (#scrim-style 2026-10-17) 全项目唯一的弹窗遮罩渲染层。
+//   底 = Theme.modal-scrim（纯色；auto/dark/light 三档即它本身）
+//   装饰 = 染色玻璃 / 柔光 / 磨砂 / 聚光 / 高光（渐变近似；Slint 无 backdrop-blur）
+// 用法：弹框的覆盖层写 `background: transparent;` + 首个子元素 `Scrim { }`。
+// random 档：每次实例创建（= 弹框打开）都请求 Rust 重掷（"每次打开换一种"）。
+export component Scrim inherits Rectangle {
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    init => { Theme.scrim-roll(); }
+    changed visible => { if (self.visible) { Theme.scrim-roll(); } }
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: Theme.modal-scrim;
+    }
+    if Theme.scrim-eff == "tint" : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: @linear-gradient(135deg, Theme.scrim-tint-a 0%, Theme.scrim-tint-b 100%);
+    }
+    if Theme.scrim-eff == "soft" : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: @linear-gradient(180deg, Theme.scrim-soft-a 0%, Theme.scrim-soft-b 100%);
+    }
+    if Theme.scrim-eff == "frost" : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: @linear-gradient(180deg, Theme.scrim-frost-top 0%, Theme.scrim-frost-body 40%, Theme.scrim-frost-body 100%);
+    }
+    if Theme.scrim-eff == "spot" : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: @radial-gradient(circle, Theme.scrim-spot-a 0%, Theme.scrim-spot-b 100%);
+    }
+    if Theme.scrim-eff == "sheen" : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: @linear-gradient(180deg, Theme.scrim-sheen-a 0%, Theme.scrim-sheen-b 30%, Theme.scrim-sheen-c 100%);
+    }
+}
+
+// --- MTermSlider -----------------------------------------------------------
+// (#slider-style 2026-10-17) 全局统一的滑杆：accent 已选段 + accent 圆点，
+// 双击恢复默认值。替换设置页里 std-widgets 的 Slider（默认蓝滑块与主题语言
+// 不一致，且不能双击复位）。值域 = [minimum, maximum]，按整数百分比量化。
+//
+// ⚠ value 是**单向外部值**（拖动时不写它，只发 changed）：写 in-out 属性会
+// 断掉外部绑定（同 TextInput 的 set_text_internal 坑）。显示值放 shown，
+// `changed value` 跟随外部改动 —— 复位/换档都能立刻反映。
+export component MTermSlider inherits Rectangle {
+    in property <float> minimum: 0;
+    in property <float> maximum: 100;
+    in property <float> default-value: 0;
+    in property <float> value: 0;
+    in property <bool> enabled: true;
+    out property <bool> dragging: false;
+    callback changed(float);
+    callback released(float);
+    callback reset();
+
+    height: 18px;
+    property <float> shown: root.value;
+    changed value => { root.shown = root.value; }
+    out property <float> pct: max(0.0, min(1.0, (root.shown - root.minimum)
+        / max(0.0001, root.maximum - root.minimum)));
+
+    // 轨道（4px，圆角 2）
+    Rectangle {
+        x: 0;
+        y: (parent.height - self.height) / 2;
+        width: parent.width;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.border-control;
+    }
+    // 已选段（accent 实色）
+    Rectangle {
+        x: 0;
+        y: (parent.height - self.height) / 2;
+        width: max(4px, root.width * root.pct);
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.accent-solid;
+        opacity: root.enabled ? 1.0 : 0.45;
+    }
+    // 圆点（14px，2px 面板色描边 = 轨道上的缺口感）
+    Rectangle {
+        x: max(0px, min(root.width - self.width, root.width * root.pct - self.width / 2));
+        y: (parent.height - self.height) / 2;
+        width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        background: Theme.accent-solid;
+        border-width: 2px;
+        border-color: Theme.panel-solid;
+        opacity: root.enabled ? 1.0 : 0.45;
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        // ⚠ 值只在 **release（clicked）** 与拖动（moved）时写入，不在按下时写：
+        // Slint 的 double-clicked 在第二次 clicked **之后**触发（官方文档明确
+        // 顺序），若按下就把值改到指针位置，双击的第二下会把刚复位的默认值
+        // 又覆盖成指针位置 —— 双击失效（离屏实测：0.81 一直不回落）。
+        clicked => {
+            root.set-from-x(self.mouse-x);
+        }
+        moved => {
+            if (self.pressed) {
+                root.set-from-x(self.mouse-x);
+            }
+        }
+        changed pressed => {
+            root.dragging = self.pressed;
+            if (!self.pressed && root.enabled) {
+                root.released(root.shown);
+            }
+        }
+        double-clicked => {
+            root.set-shown(root.default-value);
+            root.reset();
+        }
+    }
+
+    function set-from-x(x-pos: length) {
+        if (!root.enabled) { return; }
+        let ratio = max(0.0, min(1.0, x-pos / max(1px, root.width)));
+        root.set-shown(root.minimum + ratio * (root.maximum - root.minimum));
+    }
+
+    function set-shown(v: float) {
+        let q = round(max(root.minimum, min(root.maximum, v)));
+        root.shown = q;
+        root.changed(q);
     }
 }

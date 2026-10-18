@@ -172,7 +172,7 @@ component NetGraph inherits VerticalLayout {
                     border-width: 1px;
                     border-color: Theme.border-strong;
                     drop-shadow-blur: 10px;
-                    drop-shadow-color: #00000050;
+                    drop-shadow-color: transparent;
                     VerticalLayout {
                         padding: 4px;
                         spacing: 1px;
@@ -218,6 +218,7 @@ component StatusBlock inherits Rectangle {
     in property <string> connection-state;
     in property <string> conn-host;        // clean IP/host to copy ("" = not clickable) (#192)
     in property <string> collapse-icon;   // chevron pointing toward the docked edge
+    in property <bool> show-collapse: true;
     callback dock-drag-move(length, length);
     callback dock-drag-end();
     callback collapse();
@@ -250,7 +251,7 @@ component StatusBlock inherits Rectangle {
                    vertical-alignment: center; }
             Rectangle { horizontal-stretch: 1; }
             // Collapse button — sits in front of the drag grip so it takes the click.
-            Rectangle {
+            if root.show-collapse : Rectangle {
                 width: 18px; height: 18px;
                 y: (parent.height - self.height) / 2;
                 border-radius: Theme.radius-sm;
@@ -453,7 +454,7 @@ component DiskBlock inherits Rectangle {
 // --- Sidebar ---------------------------------------------------------------
 // Left-hand panel showing local machine health, mimicking FinalShell's
 // @tr("Status") column but kept minimal for the v0.1 baseline.
-export component Sidebar inherits Rectangle {
+export component RightSidebar inherits Rectangle {
     // (#net-iface-focus 2026-10-02) 下拉聚焦代际时钟：点面板空白时由 dock-bg 推进，
     // 传给 NetBlock → 各 NetGraph 的 focus-stamp 失效 → 接口选择器高亮清除。
     // 与设置面板 combo-clock / 弹框 drop-clock 同一套机制。
@@ -491,6 +492,8 @@ export component Sidebar inherits Rectangle {
     callback dock-drag-move(length /* abs-x */, length /* abs-y */);
     callback dock-drag-end();
     callback toggle-collapse();
+    // (#sidebar-chevron 2026-10-17) 标题行收起箭头的显示开关（macOS 保留）。
+    in property <bool> show-collapse: true;
     // When docked top/bottom the panel is short and wide, so the blocks lay out
     // in a row; left/right keeps the classic vertical stack (#dock).
     in property <bool> lay-horizontal;
@@ -503,13 +506,10 @@ export component Sidebar inherits Rectangle {
       : "chevron-left";                           // left, default
 
     width: 220px;
-    // (#sidebar-bg-root 2026-09-04) Root background switches from bg-panel to
-    // bg-root so the panel sits flush with the welcome sidebar's colour
-    // (#1B1D23 in dark theme, equal to Theme.window-base). Inner 10px-gutter
-    // card retains bg-panel + 1px border-subtle so the resource sub-blocks
-    // still read as elevated cards on the darker ground — same hierarchy as
-    // Welcome's outer bg-root + inner bg-panel rows.
-    background: Theme.bg-root;
+    // Flush panel ground: the panel sits on the panel colour (not the recessed
+    // app root), so it joins the panel material chain (frost over wallpaper).
+    // (#zone-alpha 2026-10-17) 侧栏分区透明度。
+    background: Theme.zone-sidebar;
     border-width: 0;
 
     // Drag from any empty area of the panel to re-dock it (the status header is
@@ -540,16 +540,21 @@ export component Sidebar inherits Rectangle {
     // panels show identical gaps on all four sides (#panel-gap-symmetry,
     // #wip7-restore).
     if !root.lay-horizontal : Rectangle {
-        x: 12px;
-        y: 12px;
-        width: parent.width - 24px;
-        height: parent.height - 24px;
-        background: Theme.bg-panel;
-        border-radius: Theme.radius-md;
-        // (#panel-line-hairline 2026-10-11) 逻辑 1px 在 125% 下占 1.25 设备行,
-        // 比窗口描边(hairline = 1 设备像素)粗一圈 —— 主界面边框线统一取 hairline。
-        border-width: Theme.hairline();
-        border-color: Theme.border-subtle;
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        background: Theme.zone-sidebar;
+        // (#sidebar-square 2026-10-17) 直角贴边：圆角会在左上/左下露出一段弧
+        //（1px 描边随圆角弯曲），与终端不贴合（用户截图）。侧栏是"整块"，
+        // 不是浮动卡片 —— 圆角去掉、描边直角收口。
+        border-radius: 0px;
+        // (#line-dedup 2026-10-18) 这里原来有一圈 hairline 根边框：上沿与标题栏
+        // 底线叠成 2 设备像素、内侧沿与 splitter 可见线叠成 2 像素（用户截图
+        // "不同区域重叠处线条加粗"）。四条边现在都由外部既有线负责：
+        //   上=标题栏底线；内侧=splitter 可见线（同时承担 hover 高亮）；
+        //   其它外沿=窗口描边（WindowFrame，画在最上层）。
+        // 因此面板自身不再画边框 —— 主界面每条边界线全屏仅一条、恒 1 设备像素。
         clip: true;
 
         VerticalLayout {
@@ -560,6 +565,7 @@ export component Sidebar inherits Rectangle {
                 connection-state: root.connection-state;
                 conn-host: root.conn-host;
                 collapse-icon: root.collapse-icon;
+                show-collapse: root.show-collapse;
                 dock-drag-move(x, y) => { root.dock-drag-move(x, y); }
                 dock-drag-end() => { root.dock-drag-end(); }
                 collapse() => { root.toggle-collapse(); }
@@ -596,14 +602,14 @@ export component Sidebar inherits Rectangle {
     // sidebar's compact padding) so every dock orientation shows identical
     // boundary gaps (#panel-gap-symmetry, #wip7-restore).
     if root.lay-horizontal : Rectangle {
-        x: 12px;
-        y: 12px;
-        width: parent.width - 24px;
-        height: parent.height - 24px;
-        background: Theme.bg-panel;
-        border-radius: Theme.radius-md;
-        border-width: Theme.hairline();
-        border-color: Theme.border-subtle;
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        background: Theme.zone-sidebar;
+        border-radius: 0px;
+        // (#line-dedup 2026-10-18) 同上方竖向分支：面板自身不再画边框，边界线
+        // 全部由外部既有线负责（标题栏底线 / splitter 可见线 / 窗口描边）。
         clip: true;
 
         HorizontalLayout {
@@ -621,6 +627,7 @@ export component Sidebar inherits Rectangle {
                     conn-state: root.conn-state;
                     connection-state: root.connection-state;
                     collapse-icon: root.collapse-icon;
+                    show-collapse: root.show-collapse;
                     dock-drag-move(x, y) => { root.dock-drag-move(x, y); }
                     dock-drag-end() => { root.dock-drag-end(); }
                     collapse() => { root.toggle-collapse(); }

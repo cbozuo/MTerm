@@ -1,11 +1,11 @@
 use super::*;
 
-fn dynamic_sidebar_visible(active: bool, collapsed: bool) -> bool {
+fn dynamic_right_sidebar_visible(active: bool, collapsed: bool) -> bool {
     active && !collapsed
 }
 
-pub(super) fn sidebar_updates_visible(win: &AppWindow) -> bool {
-    dynamic_sidebar_visible(win.get_dynamic_ui_active(), win.get_sidebar_collapsed())
+pub(super) fn right_sidebar_updates_visible(win: &AppWindow) -> bool {
+    dynamic_right_sidebar_visible(win.get_dynamic_ui_active(), win.get_right_sidebar_collapsed())
 }
 
 pub(super) fn refresh_process_model(win: &AppWindow, statuses: &TabStatuses) {
@@ -33,14 +33,14 @@ pub(super) fn refresh_process_model(win: &AppWindow, statuses: &TabStatuses) {
 
 #[cfg(test)]
 mod activity_tests {
-    use super::dynamic_sidebar_visible;
+    use super::dynamic_right_sidebar_visible;
 
     #[test]
-    fn dynamic_sidebar_updates_only_while_active_and_expanded() {
-        assert!(dynamic_sidebar_visible(true, false));
-        assert!(!dynamic_sidebar_visible(false, false));
-        assert!(!dynamic_sidebar_visible(true, true));
-        assert!(!dynamic_sidebar_visible(false, true));
+    fn dynamic_right_sidebar_updates_only_while_active_and_expanded() {
+        assert!(dynamic_right_sidebar_visible(true, false));
+        assert!(!dynamic_right_sidebar_visible(false, false));
+        assert!(!dynamic_right_sidebar_visible(true, true));
+        assert!(!dynamic_right_sidebar_visible(false, true));
     }
 }
 

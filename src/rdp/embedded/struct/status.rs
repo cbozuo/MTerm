@@ -146,7 +146,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_tab_is_not_live_so_the_sidebar_dot_goes_out() {
+    fn a_failed_tab_is_not_live_so_the_right_sidebar_dot_goes_out() {
         assert!(RemoteState::Connected.is_live());
         assert!(RemoteState::Reconnecting.is_live());
         assert!(!RemoteState::Failed.is_live());

@@ -93,7 +93,7 @@ pub(super) fn apply_session_event_to_window(
             // (#session-status-dot) 会话列表的在线状态点跟随点亮。
             super::refresh_session_markers_win(win);
             if win.get_active_tab_id().as_str() == tab_id
-                && (sidebar_updates_visible(win) || win.get_system_info_window_open())
+                && (right_sidebar_updates_visible(win) || win.get_system_info_window_open())
             {
                 refresh_sidebar(win, statuses, local, local_net_hist);
             }
@@ -139,7 +139,7 @@ pub(super) fn apply_session_event_to_window(
             // (#session-status-dot) 会话列表的在线状态点跟随熄灭。
             super::refresh_session_markers_win(win);
             if win.get_active_tab_id().as_str() == tab_id
-                && (sidebar_updates_visible(win) || win.get_system_info_window_open())
+                && (right_sidebar_updates_visible(win) || win.get_system_info_window_open())
             {
                 refresh_sidebar(win, statuses, local, local_net_hist);
             }
@@ -176,7 +176,7 @@ pub(super) fn apply_session_event_to_window(
                 push_ring(&mut st.net_hist, (rx + tx) as f32);
             }
             if win.get_active_tab_id().as_str() == tab_id
-                && (sidebar_updates_visible(win) || win.get_system_info_window_open())
+                && (right_sidebar_updates_visible(win) || win.get_system_info_window_open())
             {
                 refresh_sidebar(win, statuses, local, local_net_hist);
             }

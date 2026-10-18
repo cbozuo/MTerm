@@ -11,6 +11,7 @@ use palettes::Palette;
 
 pub use palettes::find;
 
+use crate::config::AppearanceValues;
 use crate::ui::Theme;
 use slint::{Color, ComponentHandle, Model, ModelRc, VecModel};
 use std::rc::Rc;
@@ -32,10 +33,16 @@ fn color_model(vals: &[u32]) -> ModelRc<Color> {
 pub struct ThemeState {
     pub theme_id: String,
     pub accent_mode: AccentCfg,
-    pub panel_alpha: f32,
-    pub term_alpha: f32,
-    pub wallpaper_visible: f32,
-    pub popup_transparency: i32,
+    /// (#mode-values 2026-10-17) 外观数值**暗 / 亮各一套**；resolve() 依据
+    /// 解析出的主题明暗选槽。切换主题 = 换一套数值，互不影响。
+    pub appearance_dark: AppearanceValues,
+    pub appearance_light: AppearanceValues,
+    /// 壁纸作用域："window" | "terminal"（与明暗无关，全局）。
+    pub wallpaper_scope: String,
+    /// 壁纸填充方式："cover" | "contain" | "fill"（全局）。
+    pub wallpaper_fit: String,
+    /// 遮罩样式（9 选，全局）。
+    pub scrim_style: String,
     pub dark_pref: bool,
 }
 
@@ -77,13 +84,20 @@ impl AccentCfg {
 pub struct Resolved {
     pub palette: &'static Palette,
     pub accent: u32,
-    pub panel_alpha: f32,
+    pub titlebar_alpha: f32,
+    pub tabbar_alpha: f32,
+    pub sidebar_alpha: f32,
     pub term_alpha: f32,
-    pub wallpaper_visible: f32,
-    pub popup_transparency: i32,
+    pub wallpaper_transparency: f32,
+    pub wallpaper_scope: String,
+    pub wallpaper_fit: String,
+    pub scrim_style: String,
+    pub scrim_alpha: f32,
+    pub popup_transparency: f32,
 }
 
-/// 计算（与窗口无关）：主题套解析 + 强调色三态叠加 + 三透明度钳制。
+/// 计算（与窗口无关）：主题套解析 + 强调色三态叠加 + 各透明度钳制。
+/// (#zone-alpha 2026-10-17) 四分区全部 0–1 全范围（下限钳制已按用户要求移除）。
 pub fn resolve(st: &ThemeState) -> Resolved {
     let dark_now = match st.theme_id.is_empty() {
         true => st.dark_pref,
@@ -91,14 +105,40 @@ pub fn resolve(st: &ThemeState) -> Resolved {
     };
     let p = palette_or_default(&st.theme_id, dark_now);
     let (accent, _) = resolve_accent(p, st.accent_mode);
+    // (#mode-values) 选槽：整套外观数值按主题明暗取。
+    let av = if p.dark {
+        &st.appearance_dark
+    } else {
+        &st.appearance_light
+    };
+    let scope = match st.wallpaper_scope.as_str() {
+        "terminal" => "terminal".to_string(),
+        _ => "window".to_string(),
+    };
+    let fit = match st.wallpaper_fit.as_str() {
+        "contain" => "contain".to_string(),
+        "fill" => "fill".to_string(),
+        _ => "cover".to_string(),
+    };
+    let style = match st.scrim_style.as_str() {
+        "dark" | "light" | "tint" | "soft" | "frost" | "spot" | "sheen" | "random" => {
+            st.scrim_style.clone()
+        }
+        _ => "auto".to_string(),
+    };
     Resolved {
         palette: p,
         accent,
-        panel_alpha: st.panel_alpha.clamp(0.30, 1.0),
-        // 终端可读性下限（§1）：无论滑杆怎么拖，终端至少 75% 不透明。
-        term_alpha: st.term_alpha.clamp(0.75, 1.0),
-        wallpaper_visible: st.wallpaper_visible.clamp(0.0, 1.0),
-        popup_transparency: st.popup_transparency.clamp(0, 2),
+        titlebar_alpha: av.titlebar_alpha.clamp(0.0, 1.0),
+        tabbar_alpha: av.tabbar_alpha.clamp(0.0, 1.0),
+        sidebar_alpha: av.sidebar_alpha.clamp(0.0, 1.0),
+        term_alpha: av.term_alpha.clamp(0.0, 1.0),
+        wallpaper_transparency: av.wallpaper_transparency.clamp(0.0, 1.0),
+        wallpaper_scope: scope,
+        wallpaper_fit: fit,
+        scrim_style: style,
+        scrim_alpha: av.scrim_alpha.clamp(0.0, 1.0),
+        popup_transparency: av.popup_transparency.clamp(0.0, 1.0),
     }
 }
 
@@ -134,9 +174,15 @@ macro_rules! impl_theme_apply {
             t.set_slot_dg(color(p.dg));
             t.set_group_colors(color_model(&p.group24));
             t.set_channel_colors(color_model(&p.channel));
-            t.set_panel_alpha(r.panel_alpha);
-            t.set_term_alpha(r.term_alpha);
-            t.set_wallpaper_visible(r.wallpaper_visible);
+            t.set_titlebar_transparency(1.0 - r.titlebar_alpha);
+            t.set_tabbar_transparency(1.0 - r.tabbar_alpha);
+            t.set_sidebar_transparency(1.0 - r.sidebar_alpha);
+            t.set_term_transparency(1.0 - r.term_alpha);
+            t.set_wallpaper_transparency(r.wallpaper_transparency);
+            t.set_wallpaper_scope(if r.wallpaper_scope == "terminal" { 1 } else { 0 });
+            t.set_wallpaper_fit(r.wallpaper_fit.as_str().into());
+            t.set_scrim_style(r.scrim_style.as_str().into());
+            t.set_scrim_strength(r.scrim_alpha);
             t.set_popup_transparency(r.popup_transparency);
             p
         }
@@ -155,8 +201,9 @@ impl_theme_apply!(apply_about, crate::ui::AboutWindow);
 /// Slint 内建的窗口属性(Theme 是 global,拿不到窗口上下文)。因此 Rust 侧写
 /// `slint::Window::set_device_pixel_ratio()` 对它无效 —— 它的默认值 1.0 会一直
 /// 留着,hairline() = 1px/1.0 = 1 **逻辑**px,在 200% 屏上就是 2 个物理像素:
-/// 窗口四边框、面板外框、splitter 全比设计值粗一倍,radius-win 也从 8 物理
-/// 像素变成 16。必须显式写这个槽位。
+/// 窗口四边框、面板外框、splitter 全比设计值粗一倍。必须显式写这个槽位。
+/// （#win-edge-frame-r7 2026-10-18：`radius-win` 现为 8 DIP 的**固定逻辑值**、
+/// 不再被 DPR 除 —— 真机实测 DWM 圆角是 8 DIP，随 DPI 缩放。）
 macro_rules! impl_theme_dpr {
     ($fn_name:ident, $win_ty:ty) => {
         pub fn $fn_name(win: &$win_ty, scale: f32) {
@@ -269,8 +316,9 @@ pub fn ordered_ids() -> Vec<&'static str> {
     palettes::PALETTES.iter().map(|p| p.id).collect()
 }
 
-/// 「常用主题」上限（#theme-dedupe §5：写满 8 套时新增提示「先移出一套」）。
-pub const FAVORITE_LIMIT: usize = 8;
+/// 「常用主题」上限（#theme-gallery 2026-10-17：外观页画廊 = 常用快捷位，
+/// ≤4 + 「＋更多」，写满时提示「先移出一套」）。
+pub const FAVORITE_LIMIT: usize = 4;
 
 /// 强调色的色相名（#theme-dedupe §5 选择器搜索用）：八段中文标签
 /// 「红 / 橙 / 黄 / 绿 / 青 / 蓝 / 紫 / 粉」；无彩度返回「灰」。
@@ -536,6 +584,40 @@ mod tests {
             assert!(contrast(c, p.tab) >= 3.0, "频道色 {c:06X} on tab 不足 3.0");
             assert!(contrast(c, p.tbg) >= 3.0, "频道色 {c:06X} on tbg 不足 3.0");
         }
+    }
+
+    /// (#mode-values 2026-10-17) 外观数值按主题明暗选槽：同一份 ThemeState 里
+    /// 暗/亮两套不同值，切主题即换一套 —— 用户要的「暗亮不共用数值」。
+    #[test]
+    fn resolve_picks_values_by_theme_mode() {
+        let mut dark_av = AppearanceValues::default();
+        dark_av.titlebar_alpha = 0.55;
+        dark_av.popup_transparency = 0.20;
+        let mut light_av = AppearanceValues::default();
+        light_av.titlebar_alpha = 0.95;
+        light_av.popup_transparency = 0.60;
+        let mut st = ThemeState {
+            theme_id: "mterm-dark".into(),
+            accent_mode: AccentCfg::Follow,
+            appearance_dark: dark_av,
+            appearance_light: light_av,
+            wallpaper_scope: "window".into(),
+            wallpaper_fit: "cover".into(),
+            scrim_style: "auto".into(),
+            dark_pref: true,
+        };
+        let r = resolve(&st);
+        assert!((r.titlebar_alpha - 0.55).abs() < 1e-6);
+        assert!((r.popup_transparency - 0.20).abs() < 1e-6);
+
+        st.theme_id = "mterm-light".into();
+        let r = resolve(&st);
+        assert!((r.titlebar_alpha - 0.95).abs() < 1e-6, "亮主题应取亮槽");
+        assert!((r.popup_transparency - 0.60).abs() < 1e-6);
+
+        // 切回暗主题：暗槽原值仍在。
+        st.theme_id = "mterm-dark".into();
+        assert!((resolve(&st).titlebar_alpha - 0.55).abs() < 1e-6);
     }
 
     #[test]

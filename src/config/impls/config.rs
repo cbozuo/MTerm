@@ -54,11 +54,14 @@ fn normalize_hex_color(value: &str) -> Option<String> {
 fn fresh_config() -> ConfigFile {
     ConfigFile {
         wallpaper: String::new(),
-        welcome_as_sidebar: true,
-        sidebar_dock: "right".to_string(),
+        right_sidebar_dock: "right".to_string(),
         wallpaper_overlay: DEFAULT_WALLPAPER_OVERLAY,
-        panel_alpha: DEFAULT_PANEL_ALPHA,
-        term_alpha: DEFAULT_TERM_ALPHA,
+        wallpaper_scope: default_wallpaper_scope(),
+        wallpaper_fit: default_wallpaper_fit(),
+        scrim_style: default_scrim_style(),
+        // (#mode-values 2026-10-17) 明暗两套数值出厂都是默认值。
+        appearance_dark: AppearanceValues::default(),
+        appearance_light: AppearanceValues::default(),
         // (#follow-ui-removed 2026-10-16) 不再新装即跟随系统：主题直接落具体一套
         // （serde 默认的空串是给 rev4 迁移判定「从未挑过」用的，新装不该带它）。
         follow_system: false,
@@ -87,13 +90,9 @@ fn migrate_defaults(cfg: &mut ConfigFile) -> bool {
         if cfg.wallpaper_overlay <= 0.0 {
             cfg.wallpaper_overlay = DEFAULT_WALLPAPER_OVERLAY;
         }
-        // Never enabled the welcome sidebar → enable it.
-        if !cfg.welcome_as_sidebar {
-            cfg.welcome_as_sidebar = true;
-        }
         // Never moved the resource panel (empty = the old left default) → right.
-        if cfg.sidebar_dock.trim().is_empty() {
-            cfg.sidebar_dock = "right".to_string();
+        if cfg.right_sidebar_dock.trim().is_empty() {
+            cfg.right_sidebar_dock = "right".to_string();
         }
     }
     // rev 2: settings show wallpaper transparency, while rev 1 accidentally
@@ -129,15 +128,23 @@ fn migrate_defaults(cfg: &mut ConfigFile) -> bool {
                 _ => cfg.follow_system = true,
             }
         }
-        // 一个滑杆曾同时驱动面板+终端 → 拆成两个独立值（面板沿用旧值，
+        // 一个滑杆曾同时驱动面板+终端 → 拆成独立值（面板沿用旧值，
         // 终端回满档不透明——现状终端本来就更实，视觉不回退，§5）。
-        if cfg.panel_alpha == default_panel_alpha_value() {
-            cfg.panel_alpha = if cfg.wallpaper_overlay > 0.0 {
+        // (#mode-values 2026-10-17) 现在这些值先落到 legacy_* 里，由 rev6 统一
+        // 写进「当前模式」的槽；三区同值（用户此前只调过一个值）。
+        if cfg.legacy_titlebar_alpha.is_none()
+            && cfg.legacy_tabbar_alpha.is_none()
+            && cfg.legacy_sidebar_alpha.is_none()
+        {
+            let a = if cfg.wallpaper_overlay > 0.0 {
                 cfg.wallpaper_overlay
             } else {
                 DEFAULT_PANEL_ALPHA
             };
-            cfg.term_alpha = DEFAULT_TERM_ALPHA;
+            cfg.legacy_titlebar_alpha = Some(a);
+            cfg.legacy_tabbar_alpha = Some(a);
+            cfg.legacy_sidebar_alpha = Some(a);
+            cfg.legacy_term_alpha = Some(DEFAULT_TERM_ALPHA);
         }
         // 从未挑过壁纸的用户 → 默认无壁纸（serde 默认 builtin:tech = 未动过）。
         if cfg.wallpaper == "builtin:tech" {
@@ -154,15 +161,40 @@ fn migrate_defaults(cfg: &mut ConfigFile) -> bool {
             cfg.theme = "mterm-dark".to_string();
         }
     }
+    // rev 6 (#mode-values 2026-10-17): 外观数值从「单套」拆成「明暗各一套」。
+    // 旧值写进**当前主题所属模式**的槽，另一槽留默认 —— 切过去看到的就是
+    // 「该模式第一次使用 = 默认值」。旧字段只读（skip_serializing），迁完即弃。
+    if cfg.defaults_rev < 6 {
+        let dark = crate::theme::by_id(&cfg.theme).map(|p| p.dark).unwrap_or(true);
+        let slot = if dark {
+            &mut cfg.appearance_dark
+        } else {
+            &mut cfg.appearance_light
+        };
+        if let Some(v) = cfg.legacy_titlebar_alpha {
+            slot.titlebar_alpha = v;
+        }
+        if let Some(v) = cfg.legacy_tabbar_alpha {
+            slot.tabbar_alpha = v;
+        }
+        if let Some(v) = cfg.legacy_sidebar_alpha {
+            slot.sidebar_alpha = v;
+        }
+        if let Some(v) = cfg.legacy_term_alpha {
+            slot.term_alpha = v;
+        }
+        if let Some(v) = cfg.legacy_wallpaper_transparency {
+            slot.wallpaper_transparency = v;
+        }
+        if let Some(v) = cfg.legacy_popup_transparency {
+            slot.popup_transparency = v;
+        }
+        if let Some(v) = cfg.legacy_scrim_alpha {
+            slot.scrim_alpha = v;
+        }
+    }
     cfg.defaults_rev = DEFAULTS_REV;
     true
-}
-
-/// 与 serde 默认区分的比较基准（panel_alpha 的 serde default 就是 DEFAULT，
-/// 所以「用户没动过」与「默认值」无法靠值区分——rev4 只对 defaults_rev<4 的
-/// 配置跑一次，覆盖旧配置里 panel_alpha 尚不存在（=serde 默认 0.85）的情况）。
-fn default_panel_alpha_value() -> f32 {
-    DEFAULT_PANEL_ALPHA
 }
 
 fn normalize_highlight_color(color: &str) -> &'static str {
@@ -700,33 +732,105 @@ impl ConfigStore {
     pub fn set_accent_custom(&mut self, hex: String) {
         self.cache.accent_custom = hex;
     }
-    /// 面板不透明度（0.30–1.00）。
-    pub fn panel_alpha(&self) -> f32 {
-        self.cache.panel_alpha
+    /// (#mode-values 2026-10-17) 外观数值：**暗 / 亮各一套**。
+    /// 读当前模式用无参访问器；写入必须显式给 `dark`（= 用户此刻看到的模式），
+    /// 免得"按 A 算、按 B 存"。
+    pub fn appearance_for(&self, dark: bool) -> &AppearanceValues {
+        if dark {
+            &self.cache.appearance_dark
+        } else {
+            &self.cache.appearance_light
+        }
     }
-    pub fn set_panel_alpha(&mut self, v: f32) {
-        self.cache.panel_alpha = v.clamp(0.30, 1.0);
+    fn appearance_for_mut(&mut self, dark: bool) -> &mut AppearanceValues {
+        if dark {
+            &mut self.cache.appearance_dark
+        } else {
+            &mut self.cache.appearance_light
+        }
     }
-    /// 终端不透明度（0.75–1.00，下限保护 ANSI 可读）。
+    /// 当前主题是否暗色（与 `theme::resolve` 判据同源：直接看色表的 dark 列）。
+    pub fn is_dark_theme(&self) -> bool {
+        crate::theme::by_id(self.theme()).map(|p| p.dark).unwrap_or(true)
+    }
+    pub fn titlebar_alpha(&self) -> f32 {
+        self.appearance_for(self.is_dark_theme()).titlebar_alpha
+    }
+    pub fn set_titlebar_alpha(&mut self, v: f32, dark: bool) {
+        self.appearance_for_mut(dark).titlebar_alpha = v.clamp(0.0, 1.0);
+    }
+    pub fn tabbar_alpha(&self) -> f32 {
+        self.appearance_for(self.is_dark_theme()).tabbar_alpha
+    }
+    pub fn set_tabbar_alpha(&mut self, v: f32, dark: bool) {
+        self.appearance_for_mut(dark).tabbar_alpha = v.clamp(0.0, 1.0);
+    }
+    pub fn sidebar_alpha(&self) -> f32 {
+        self.appearance_for(self.is_dark_theme()).sidebar_alpha
+    }
+    pub fn set_sidebar_alpha(&mut self, v: f32, dark: bool) {
+        self.appearance_for_mut(dark).sidebar_alpha = v.clamp(0.0, 1.0);
+    }
     pub fn term_alpha(&self) -> f32 {
-        self.cache.term_alpha
+        self.appearance_for(self.is_dark_theme()).term_alpha
     }
-    pub fn set_term_alpha(&mut self, v: f32) {
-        self.cache.term_alpha = v.clamp(0.75, 1.0);
+    pub fn set_term_alpha(&mut self, v: f32, dark: bool) {
+        self.appearance_for_mut(dark).term_alpha = v.clamp(0.0, 1.0);
     }
-    /// 壁纸图自身可见度（0.00–1.00）。
-    pub fn wallpaper_visible(&self) -> f32 {
-        self.cache.wallpaper_visible
+    /// (#wallpaper-transparency 2026-10-17) 壁纸透明度（0 = 完全显示）。
+    pub fn wallpaper_transparency(&self) -> f32 {
+        self.appearance_for(self.is_dark_theme()).wallpaper_transparency
     }
-    pub fn set_wallpaper_visible(&mut self, v: f32) {
-        self.cache.wallpaper_visible = v.clamp(0.0, 1.0);
+    pub fn set_wallpaper_transparency(&mut self, v: f32, dark: bool) {
+        self.appearance_for_mut(dark).wallpaper_transparency = v.clamp(0.0, 1.0);
     }
-    /// 弹窗通透度三档（0/1/2）。
-    pub fn popup_transparency(&self) -> i32 {
-        self.cache.popup_transparency.clamp(0, 2)
+    /// 壁纸作用域："window" | "terminal"。
+    pub fn wallpaper_scope(&self) -> &str {
+        &self.cache.wallpaper_scope
     }
-    pub fn set_popup_transparency(&mut self, v: i32) {
-        self.cache.popup_transparency = v.clamp(0, 2);
+    pub fn set_wallpaper_scope(&mut self, v: String) {
+        self.cache.wallpaper_scope = match v.as_str() {
+            "terminal" => "terminal".to_string(),
+            _ => "window".to_string(),
+        };
+    }
+    /// 壁纸填充方式："cover" | "contain" | "fill"。
+    pub fn wallpaper_fit(&self) -> &str {
+        &self.cache.wallpaper_fit
+    }
+    pub fn set_wallpaper_fit(&mut self, v: String) {
+        self.cache.wallpaper_fit = match v.as_str() {
+            "contain" => "contain".to_string(),
+            "fill" => "fill".to_string(),
+            _ => "cover".to_string(),
+        };
+    }
+    /// 遮罩样式（9 选）。
+    pub fn scrim_style(&self) -> &str {
+        &self.cache.scrim_style
+    }
+    pub fn set_scrim_style(&mut self, v: String) {
+        self.cache.scrim_style = match v.as_str() {
+            "dark" | "light" | "tint" | "soft" | "frost" | "spot" | "sheen"
+            | "random" => v,
+            _ => "auto".to_string(),
+        };
+    }
+    /// 遮罩浓度（0.00–1.00）。
+    pub fn scrim_alpha(&self) -> f32 {
+        self.appearance_for(self.is_dark_theme()).scrim_alpha
+    }
+    pub fn set_scrim_alpha(&mut self, v: f32, dark: bool) {
+        self.appearance_for_mut(dark).scrim_alpha = v.clamp(0.0, 1.0);
+    }
+    /// 弹窗透明度（0 = 实心）。
+    pub fn popup_transparency(&self) -> f32 {
+        self.appearance_for(self.is_dark_theme())
+            .popup_transparency
+            .clamp(0.0, 1.0)
+    }
+    pub fn set_popup_transparency(&mut self, v: f32, dark: bool) {
+        self.appearance_for_mut(dark).popup_transparency = v.clamp(0.0, 1.0);
     }
     /// 「跟随图片取色」（默认关——唯一让壁纸反向影响界面的开关）。
     pub fn wallpaper_color_pickup(&self) -> bool {
@@ -1240,93 +1344,87 @@ impl ConfigStore {
     }
 
     /// Collapse the resource sidebar on startup (default false) (#78).
-    pub fn collapse_sidebar_default(&self) -> bool {
-        self.cache.collapse_sidebar_default
+    pub fn collapse_right_sidebar_default(&self) -> bool {
+        self.cache.collapse_right_sidebar_default
     }
 
-    pub fn set_collapse_sidebar_default(&mut self, v: bool) {
-        self.cache.collapse_sidebar_default = v;
+    pub fn set_collapse_right_sidebar_default(&mut self, v: bool) {
+        self.cache.collapse_right_sidebar_default = v;
     }
 
     /// Persisted sidebar width in logical px. Falls back to the default when the
     /// stored value is unset/zero (e.g. a config created via `Default`).
-    pub fn sidebar_width(&self) -> f32 {
-        let w = self.cache.sidebar_width;
+    pub fn right_sidebar_width(&self) -> f32 {
+        let w = self.cache.right_sidebar_width;
         if w <= 0.0 {
-            default_sidebar_width()
+            default_right_sidebar_width()
         } else {
             w
         }
     }
 
-    pub fn set_sidebar_width(&mut self, v: f32) {
-        self.cache.sidebar_width = v;
+    pub fn set_right_sidebar_width(&mut self, v: f32) {
+        self.cache.right_sidebar_width = v;
     }
 
     /// Resource / SFTP panel docking geometry, persisted across restarts (#dock).
     /// Sizes fall back to their defaults when unset/zero; docks fall back to a
     /// sensible edge when the stored string is empty.
-    pub fn sidebar_height(&self) -> f32 {
-        let h = self.cache.sidebar_height;
+    pub fn right_sidebar_height(&self) -> f32 {
+        let h = self.cache.right_sidebar_height;
         if h <= 0.0 {
-            default_sidebar_height()
+            default_right_sidebar_height()
         } else {
             h
         }
     }
-    pub fn set_sidebar_height(&mut self, v: f32) {
-        self.cache.sidebar_height = v;
+    pub fn set_right_sidebar_height(&mut self, v: f32) {
+        self.cache.right_sidebar_height = v;
     }
-    pub fn sidebar_dock(&self) -> String {
-        let d = self.cache.sidebar_dock.trim();
+    pub fn right_sidebar_dock(&self) -> String {
+        let d = self.cache.right_sidebar_dock.trim();
         if d.is_empty() {
             "left".into()
         } else {
             d.to_string()
         }
     }
-    pub fn set_sidebar_dock(&mut self, v: String) {
-        self.cache.sidebar_dock = v;
+    pub fn set_right_sidebar_dock(&mut self, v: String) {
+        self.cache.right_sidebar_dock = v;
     }
-    pub fn sidebar_collapsed(&self) -> Option<bool> {
-        self.cache.sidebar_collapsed
+    pub fn right_sidebar_collapsed(&self) -> Option<bool> {
+        self.cache.right_sidebar_collapsed
     }
-    pub fn set_sidebar_collapsed(&mut self, v: bool) {
-        self.cache.sidebar_collapsed = Some(v);
+    pub fn set_right_sidebar_collapsed(&mut self, v: bool) {
+        self.cache.right_sidebar_collapsed = Some(v);
     }
-    pub fn welcome_as_sidebar(&self) -> bool {
-        self.cache.welcome_as_sidebar
-    }
-    pub fn set_welcome_as_sidebar(&mut self, v: bool) {
-        self.cache.welcome_as_sidebar = v;
-    }
-    pub fn welcome_sidebar_width(&self) -> f32 {
-        let w = self.cache.welcome_sidebar_width;
+    pub fn left_sidebar_width(&self) -> f32 {
+        let w = self.cache.left_sidebar_width;
         if w <= 0.0 {
             240.0
         } else {
             w
         }
     }
-    pub fn set_welcome_sidebar_width(&mut self, v: f32) {
-        self.cache.welcome_sidebar_width = v;
+    pub fn set_left_sidebar_width(&mut self, v: f32) {
+        self.cache.left_sidebar_width = v;
     }
-    pub fn welcome_sidebar_dock(&self) -> String {
-        let d = self.cache.welcome_sidebar_dock.trim();
+    pub fn left_sidebar_dock(&self) -> String {
+        let d = self.cache.left_sidebar_dock.trim();
         if d.is_empty() {
             "left".into()
         } else {
             d.to_string()
         }
     }
-    pub fn set_welcome_sidebar_dock(&mut self, v: String) {
-        self.cache.welcome_sidebar_dock = v;
+    pub fn set_left_sidebar_dock(&mut self, v: String) {
+        self.cache.left_sidebar_dock = v;
     }
-    pub fn welcome_collapsed(&self) -> Option<bool> {
-        self.cache.welcome_collapsed
+    pub fn left_sidebar_collapsed(&self) -> Option<bool> {
+        self.cache.left_sidebar_collapsed
     }
-    pub fn set_welcome_collapsed(&mut self, v: bool) {
-        self.cache.welcome_collapsed = Some(v);
+    pub fn set_left_sidebar_collapsed(&mut self, v: bool) {
+        self.cache.left_sidebar_collapsed = Some(v);
     }
     pub fn mcp_enabled(&self) -> bool {
         self.cache.mcp_enabled
@@ -2443,8 +2541,19 @@ mod tests {
         let fresh = fresh_config();
         assert_eq!(fresh.wallpaper, "");
         assert!((fresh.wallpaper_overlay - 0.85).abs() < f32::EPSILON);
-        assert!((fresh.panel_alpha - 0.85).abs() < f32::EPSILON);
-        assert!((fresh.term_alpha - 1.0).abs() < f32::EPSILON);
+        // (#mode-values 2026-10-17) 明暗两套出厂都是默认值。
+        for av in [&fresh.appearance_dark, &fresh.appearance_light] {
+            assert!((av.titlebar_alpha - 0.85).abs() < f32::EPSILON);
+            assert!((av.tabbar_alpha - 0.85).abs() < f32::EPSILON);
+            assert!((av.sidebar_alpha - 0.85).abs() < f32::EPSILON);
+            assert!((av.term_alpha - 1.0).abs() < f32::EPSILON);
+            assert!((av.wallpaper_transparency).abs() < f32::EPSILON);
+            assert!((av.popup_transparency).abs() < f32::EPSILON);
+            assert!((av.scrim_alpha - 0.32).abs() < f32::EPSILON);
+        }
+        assert_eq!(fresh.wallpaper_scope, "window");
+        assert_eq!(fresh.wallpaper_fit, "cover");
+        assert_eq!(fresh.scrim_style, "auto");
         assert!(!fresh.follow_system);
         assert_eq!(fresh.theme, "mterm-dark");
         // User upgrading from before the feature: JSON without the key keeps the
@@ -2453,7 +2562,8 @@ mod tests {
         assert_eq!(cfg.wallpaper, "builtin:tech");
         // 空串 = 「尚未落定」（serde 默认），交给迁移链处理；不再是「跟随系统」。
         assert_eq!(cfg.theme, "");
-        assert!((cfg.panel_alpha - 0.85).abs() < f32::EPSILON);
+        assert!((cfg.appearance_dark.titlebar_alpha - 0.85).abs() < f32::EPSILON);
+        assert!((cfg.appearance_light.sidebar_alpha - 0.85).abs() < f32::EPSILON);
         // An explicit "无"/none (stored as "") is preserved, not re-defaulted.
         let cfg: ConfigFile = serde_json::from_str(r#"{"wallpaper":""}"#).unwrap();
         assert_eq!(cfg.wallpaper, "");
@@ -2484,8 +2594,13 @@ mod tests {
         assert!(migrate_defaults(&mut cfg));
         assert_eq!(cfg.theme, "mterm-dark");
         assert!(!cfg.follow_system);
-        assert!((cfg.panel_alpha - 0.85).abs() < f32::EPSILON);
-        assert!((cfg.term_alpha - 1.0).abs() < f32::EPSILON);
+        let av = &cfg.appearance_dark; // theme=mterm-dark → 旧值落暗槽
+        assert!((av.titlebar_alpha - 0.85).abs() < f32::EPSILON);
+        assert!((av.tabbar_alpha - 0.85).abs() < f32::EPSILON);
+        assert!((av.sidebar_alpha - 0.85).abs() < f32::EPSILON);
+        assert!((av.term_alpha - 1.0).abs() < f32::EPSILON);
+        // 另一套仍是默认值（"第一次使用 = 默认"）
+        assert!((cfg.appearance_light.sidebar_alpha - 0.85).abs() < f32::EPSILON);
         assert_eq!(cfg.wallpaper, "");
 
         // 亮色偏好 → mterm-light。
@@ -2502,13 +2617,17 @@ mod tests {
         assert_eq!(cfg.theme, "mterm-dark");
         assert!(!cfg.follow_system);
 
-        // 用户调过滑杆：panel 沿用旧 overlay 值，不覆盖。
+        // 用户调过滑杆：三区沿用旧 overlay 值，不覆盖。
         let mut cfg: ConfigFile = serde_json::from_str(
             r#"{"theme_pref":"dark","wallpaper_overlay":0.62,"defaults_rev":3}"#,
         )
         .unwrap();
         assert!(migrate_defaults(&mut cfg));
-        assert!((cfg.panel_alpha - 0.62).abs() < f32::EPSILON);
+        assert!((cfg.appearance_dark.titlebar_alpha - 0.62).abs() < f32::EPSILON);
+        assert!((cfg.appearance_dark.tabbar_alpha - 0.62).abs() < f32::EPSILON);
+        assert!((cfg.appearance_dark.sidebar_alpha - 0.62).abs() < f32::EPSILON);
+        // 亮槽不受影响
+        assert!((cfg.appearance_light.titlebar_alpha - 0.85).abs() < f32::EPSILON);
 
         // 用户挑过壁纸：不被清成无。
         let mut cfg: ConfigFile = serde_json::from_str(
