@@ -354,6 +354,15 @@ fn normalize_macos_renderer_mode(mode: &str) -> &'static str {
     }
 }
 
+/// `wallpaper_settings` 的键形如 `<theme>|<wallpaper>|<scope>`；判断中段是否
+/// 为 `id`。（三段的取值都不含 `|`：壁纸 id 是库内路径或 `builtin:*`。）
+fn wallpaper_key_targets(key: &str, id: &str) -> bool {
+    key.split_once('|')
+        .and_then(|(_, rest)| rest.strip_prefix(id))
+        .map(|rest| rest.starts_with('|'))
+        .unwrap_or(false)
+}
+
 impl ConfigStore {
     /// The prefix that marks an encrypted password blob in sessions.json.
     const ENC_PREFIX: &'static str = "enc:v1:";
@@ -793,13 +802,6 @@ impl ConfigStore {
             &self.cache.appearance_light
         }
     }
-    fn appearance_for_mut(&mut self, dark: bool) -> &mut AppearanceValues {
-        if dark {
-            &mut self.cache.appearance_dark
-        } else {
-            &mut self.cache.appearance_light
-        }
-    }
     /// 当前主题是否暗色（与 `theme::resolve` 判据同源：直接看色表的 dark 列）。
     pub fn is_dark_theme(&self) -> bool {
         crate::theme::by_id(self.theme()).map(|p| p.dark).unwrap_or(true)
@@ -827,6 +829,47 @@ impl ConfigStore {
             .get(&self.theme_key())
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// 当前主题有没有壁纸（决定弹框/遮罩用哪一档）。
+    fn has_wallpaper(&self) -> bool {
+        !self.theme_wallpaper().is_empty()
+    }
+
+    /// (#theme-appearance 2026-10-19) 当前主题「无壁纸」档的完整快照。
+    ///
+    /// 没有条目 → 回落旧的暗/亮槽 + 旧全局遮罩样式（老配置零迁移）。
+    fn theme_plain(&self) -> AppearanceValues {
+        match self.cache.appearance_by_theme.get(&self.theme_key()) {
+            Some(t) => t.plain.clone(),
+            None => {
+                let mut av = self.appearance_for(self.is_dark_theme()).clone();
+                av.scrim_style = self.cache.scrim_style.clone();
+                av
+            }
+        }
+    }
+
+    /// 取/建当前主题的条目。首次编辑时两档都从当前值起步，
+    /// 不会因为「刚分家」而跳回出厂默认。
+    fn theme_appearance_mut(&mut self) -> &mut ThemeAppearance {
+        let theme = self.theme_key();
+        if !self.cache.appearance_by_theme.contains_key(&theme) {
+            let plain = self.theme_plain();
+            let entry = ThemeAppearance {
+                wallpaper: PopupAppearance {
+                    popup_transparency: plain.popup_transparency,
+                    scrim_alpha: plain.scrim_alpha,
+                    scrim_style: plain.scrim_style.clone(),
+                },
+                plain,
+            };
+            self.cache.appearance_by_theme.insert(theme.clone(), entry);
+        }
+        self.cache
+            .appearance_by_theme
+            .get_mut(&theme)
+            .expect("theme appearance inserted above")
     }
 
     /// 当前 (主题, 壁纸, 作用域) 的键；没有壁纸时返回 None。
@@ -898,15 +941,25 @@ impl ConfigStore {
     }
 
     /// 当前生效的一整套外观数值：有壁纸时用 (主题, 壁纸, 作用域) 那一套，
-    /// 没有壁纸时用明暗槽（`appearance_for`）。
+    /// 没有壁纸时用该主题自己的基础值（`theme_plain`）。
     pub fn effective_appearance(&self) -> AppearanceValues {
-        let mut av = self.appearance_for(self.is_dark_theme()).clone();
+        // (#theme-appearance 2026-10-19) 基础值按**主题**取 —— 四根滑杆与
+        // 弹框/遮罩都不再跨主题共享（旧实现按明暗两槽，同模式主题互相串）。
+        let mut av = self.theme_plain();
         if let Some(p) = self.scope_settings() {
             av.titlebar_alpha = p.titlebar_alpha;
             av.tabbar_alpha = p.tabbar_alpha;
             av.sidebar_alpha = p.sidebar_alpha;
             av.term_alpha = p.term_alpha;
             av.wallpaper_transparency = p.wallpaper_transparency;
+        }
+        // 弹框/遮罩按「有无壁纸」两档；有壁纸且该主题还没分过家 → 沿用无壁纸档。
+        if self.has_wallpaper() {
+            if let Some(t) = self.cache.appearance_by_theme.get(&self.theme_key()) {
+                av.popup_transparency = t.wallpaper.popup_transparency;
+                av.scrim_alpha = t.wallpaper.scrim_alpha;
+                av.scrim_style = t.wallpaper.scrim_style.clone();
+            }
         }
         av
     }
@@ -917,8 +970,7 @@ impl ConfigStore {
     pub fn set_titlebar_alpha(&mut self, v: f32, _dark: bool) {
         let v = v.clamp(0.0, 1.0);
         if !self.with_scope_settings(|p| p.titlebar_alpha = v) {
-            let dark = self.is_dark_theme();
-            self.appearance_for_mut(dark).titlebar_alpha = v;
+            self.theme_appearance_mut().plain.titlebar_alpha = v;
         }
     }
     pub fn tabbar_alpha(&self) -> f32 {
@@ -927,8 +979,7 @@ impl ConfigStore {
     pub fn set_tabbar_alpha(&mut self, v: f32, _dark: bool) {
         let v = v.clamp(0.0, 1.0);
         if !self.with_scope_settings(|p| p.tabbar_alpha = v) {
-            let dark = self.is_dark_theme();
-            self.appearance_for_mut(dark).tabbar_alpha = v;
+            self.theme_appearance_mut().plain.tabbar_alpha = v;
         }
     }
     pub fn sidebar_alpha(&self) -> f32 {
@@ -937,8 +988,7 @@ impl ConfigStore {
     pub fn set_sidebar_alpha(&mut self, v: f32, _dark: bool) {
         let v = v.clamp(0.0, 1.0);
         if !self.with_scope_settings(|p| p.sidebar_alpha = v) {
-            let dark = self.is_dark_theme();
-            self.appearance_for_mut(dark).sidebar_alpha = v;
+            self.theme_appearance_mut().plain.sidebar_alpha = v;
         }
     }
     pub fn term_alpha(&self) -> f32 {
@@ -947,8 +997,7 @@ impl ConfigStore {
     pub fn set_term_alpha(&mut self, v: f32, _dark: bool) {
         let v = v.clamp(0.0, 1.0);
         if !self.with_scope_settings(|p| p.term_alpha = v) {
-            let dark = self.is_dark_theme();
-            self.appearance_for_mut(dark).term_alpha = v;
+            self.theme_appearance_mut().plain.term_alpha = v;
         }
     }
     /// (#wallpaper-transparency 2026-10-17) 壁纸透明度（0 = 完全显示）。
@@ -959,16 +1008,30 @@ impl ConfigStore {
     pub fn set_wallpaper_transparency(&mut self, v: f32, _dark: bool) {
         let v = v.clamp(0.0, 1.0);
         if !self.with_scope_settings(|p| p.wallpaper_transparency = v) {
-            let dark = self.is_dark_theme();
-            self.appearance_for_mut(dark).wallpaper_transparency = v;
+            self.theme_appearance_mut().plain.wallpaper_transparency = v;
         }
     }
     /// 壁纸作用域："window"（整个界面，默认）| "workspace"（主区域，标题栏以下）
     /// | "terminal"（终端列）；每个主题各记一份。
+    ///
+    /// 无壁纸期间一律报默认的 `"window"`（作用域此时没有意义，设置页也该显示
+    /// 默认档），但**不会**改写存下的值 —— 再选壁纸时用户原来的档位回来。
     pub fn wallpaper_scope(&self) -> &str {
+        let theme = self.theme_key();
+        // (#wallpaper-none-default 2026-10-19) 没有壁纸就不该报出旧作用域 ——
+        // 设置页在「无壁纸」下必须显示默认的「整个界面」。
+        if self
+            .cache
+            .wallpaper_by_theme
+            .get(&theme)
+            .map(|w| w.is_empty())
+            .unwrap_or(true)
+        {
+            return "window";
+        }
         self.cache
             .wallpaper_scope_by_theme
-            .get(&self.theme_key())
+            .get(&theme)
             .map(String::as_str)
             .unwrap_or("window")
     }
@@ -1041,32 +1104,48 @@ impl ConfigStore {
                 .or_insert_with(|| default_scope_settings(scope));
         }
     }
-    /// 遮罩样式（9 选）。
-    pub fn scrim_style(&self) -> &str {
-        &self.cache.scrim_style
+    /// 遮罩样式（9 选）。(#theme-appearance 2026-10-19) 按主题 × 有无壁纸各记一份。
+    pub fn scrim_style(&self) -> String {
+        self.effective_appearance().scrim_style
     }
     pub fn set_scrim_style(&mut self, v: String) {
-        self.cache.scrim_style = match v.as_str() {
+        let v = match v.as_str() {
             "dark" | "light" | "tint" | "soft" | "frost" | "spot" | "sheen"
             | "random" => v,
             _ => "auto".to_string(),
         };
+        // 改哪一档就只写哪一档；另一档保持自己的值。
+        if self.has_wallpaper() {
+            self.theme_appearance_mut().wallpaper.scrim_style = v;
+        } else {
+            self.theme_appearance_mut().plain.scrim_style = v;
+        }
     }
     /// 遮罩浓度（0.00–1.00）。
     pub fn scrim_alpha(&self) -> f32 {
-        self.appearance_for(self.is_dark_theme()).scrim_alpha
+        self.effective_appearance().scrim_alpha
     }
-    pub fn set_scrim_alpha(&mut self, v: f32, dark: bool) {
-        self.appearance_for_mut(dark).scrim_alpha = v.clamp(0.0, 1.0);
+    pub fn set_scrim_alpha(&mut self, v: f32, _dark: bool) {
+        let v = v.clamp(0.0, 1.0);
+        if self.has_wallpaper() {
+            self.theme_appearance_mut().wallpaper.scrim_alpha = v;
+        } else {
+            self.theme_appearance_mut().plain.scrim_alpha = v;
+        }
     }
     /// 弹窗透明度（0 = 实心）。
     pub fn popup_transparency(&self) -> f32 {
-        self.appearance_for(self.is_dark_theme())
+        self.effective_appearance()
             .popup_transparency
             .clamp(0.0, 1.0)
     }
-    pub fn set_popup_transparency(&mut self, v: f32, dark: bool) {
-        self.appearance_for_mut(dark).popup_transparency = v.clamp(0.0, 1.0);
+    pub fn set_popup_transparency(&mut self, v: f32, _dark: bool) {
+        let v = v.clamp(0.0, 1.0);
+        if self.has_wallpaper() {
+            self.theme_appearance_mut().wallpaper.popup_transparency = v;
+        } else {
+            self.theme_appearance_mut().plain.popup_transparency = v;
+        }
     }
     /// 「跟随图片取色」（默认关——唯一让壁纸反向影响界面的开关）。
     pub fn wallpaper_color_pickup(&self) -> bool {
@@ -1391,6 +1470,10 @@ impl ConfigStore {
         // 老字段留一份镜像（老版本 / 迁移只读它）。
         self.cache.wallpaper = id.clone();
         if id.is_empty() {
+            // (#wallpaper-none-default 2026-10-19) 切「无壁纸」**只影响显示**：
+            // 作用域在无壁纸期间按默认档呈现（见 `wallpaper_scope()`），但这里
+            // **不能清掉**用户存下的选择 —— 再切回这张壁纸时，作用域与那套
+            // 分区参数都要原样回来（用户调过的值必须保留）。
             return;
         }
         // (#wallpaper-first-defaults) **首次**设这张壁纸：两种作用域都先落一套
@@ -1403,6 +1486,44 @@ impl ConfigStore {
                 .entry(key)
                 .or_insert_with(|| default_scope_settings(scope));
         }
+    }
+
+    /// 删除壁纸文件后彻底清掉它在**所有主题**下的数据：
+    /// ① `<theme>|<id>|<scope>` 的全部参数条目（分区透明度 / 壁纸透明度 / 填充）；
+    /// ② 用它当壁纸的主题的选中项与作用域记录。
+    ///
+    /// 与 `set_wallpaper("")`（切到「无壁纸」）明确区分：那条路只改显示，用户
+    /// 调过的档位和数值必须保留；**只有真正删除文件**才销毁这些数据。
+    /// 返回删掉的参数条目数（调用方不关心，测试用来证明确实清过）。
+    pub fn forget_wallpaper(&mut self, id: &str) -> usize {
+        if id.is_empty() {
+            return 0;
+        }
+        let before = self.cache.wallpaper_settings.len();
+        self.cache
+            .wallpaper_settings
+            .retain(|key, _| !wallpaper_key_targets(key, id));
+        let removed = before - self.cache.wallpaper_settings.len();
+
+        let themes: Vec<String> = self
+            .cache
+            .wallpaper_by_theme
+            .iter()
+            .filter(|(_, w)| w.as_str() == id)
+            .map(|(theme, _)| theme.clone())
+            .collect();
+        self.cache
+            .wallpaper_by_theme
+            .retain(|_, w| w.as_str() != id);
+        for theme in themes {
+            self.cache.wallpaper_scope_by_theme.remove(&theme);
+        }
+        // 老字段镜像（老版本只读它）：壁纸没了，作用域也回默认。
+        if self.cache.wallpaper == id {
+            self.cache.wallpaper.clear();
+            self.cache.wallpaper_scope = "window".to_string();
+        }
+        removed
     }
 
     /// Whether the SFTP panel follows the terminal's cd (default true).
@@ -1646,7 +1767,10 @@ impl ConfigStore {
     pub fn right_sidebar_dock(&self) -> String {
         let d = self.cache.right_sidebar_dock.trim();
         if d.is_empty() {
-            "left".into()
+            // (#dock-default 2026-10-19) 字段是 2026-10-18 新增的，老配置读出来
+            // 是空串。这里必须回落成**出厂默认**（右侧），否则升级后资源面板会
+            // 被停到左边，和左侧会话栏挤在同一条边（fresh_config 里是 "right"）。
+            "right".into()
         } else {
             d.to_string()
         }
@@ -2384,6 +2508,23 @@ mod tests {
     }
 
     #[test]
+    fn right_sidebar_dock_falls_back_to_the_shipped_default() {
+        let mut store = temp_store();
+        // A config written before the dock field existed deserializes with "",
+        // which must resolve to the shipped default (right), not to "left" —
+        // otherwise upgrading stacks the resource panel on the same edge as
+        // the session sidebar (#dock-default 2026-10-19).
+        store.cache = serde_json::from_str("{}").expect("legacy config must deserialize");
+        assert_eq!(store.right_sidebar_dock(), "right");
+
+        // An explicit choice is preserved verbatim.
+        store.set_right_sidebar_dock("left".into());
+        assert_eq!(store.right_sidebar_dock(), "left");
+        store.set_right_sidebar_dock("top".into());
+        assert_eq!(store.right_sidebar_dock(), "top");
+    }
+
+    #[test]
     #[cfg(target_os = "windows")]
     fn renderer_mode_preserves_compatibility_default_and_validates() {
         let mut store = temp_store();
@@ -2965,6 +3106,187 @@ mod tests {
             .collect();
         assert!(keys.iter().any(|k| k.ends_with("|window")));
         assert!(keys.iter().any(|k| k.ends_with("|workspace")));
+    }
+
+    /// (#wallpaper-none-default 2026-10-19) 切到「无壁纸」时作用域**只改显示**：
+    /// ① 无壁纸期间一律呈现默认的「整个界面」（老配置也一样）；
+    /// ② 用户存下的档位与参数不清空 —— 再切回这张壁纸时原样恢复。
+    #[test]
+    fn clearing_the_wallpaper_shows_the_default_scope_but_keeps_the_choice() {
+        let mut cfg = ConfigStore {
+            path: PathBuf::new(),
+            cache: fresh_config(),
+            key: [0u8; 32],
+        };
+        cfg.set_theme("mterm-dark".into());
+        cfg.set_wallpaper("builtin:miku");
+        cfg.set_wallpaper_scope("terminal".into());
+        cfg.set_term_alpha(0.42, true);
+        assert_eq!(cfg.wallpaper_scope(), "terminal");
+
+        cfg.set_wallpaper("");
+        assert_eq!(cfg.wallpaper_scope(), "window", "无壁纸 → 显示默认档");
+        assert_eq!(
+            cfg.cache
+                .wallpaper_scope_by_theme
+                .get("mterm-dark")
+                .map(String::as_str),
+            Some("terminal"),
+            "只是不显示，存下的选择不能丢"
+        );
+
+        // 切回这张壁纸：作用域与调过的参数原样回来。
+        cfg.set_wallpaper("builtin:miku");
+        assert_eq!(cfg.wallpaper_scope(), "terminal");
+        assert!((cfg.term_alpha() - 0.42).abs() < 1e-6);
+
+        // 老配置（旧版本切「无」时留下的 terminal）：无壁纸期间同样按默认档
+        // 显示，重新选壁纸后用户原来的档位照样生效。
+        let legacy: ConfigFile = serde_json::from_str(
+            r#"{"theme":"mterm-dark","wallpaper":"",
+                "wallpaper_scope":"terminal",
+                "wallpaper_by_theme":{"mterm-dark":""},
+                "wallpaper_scope_by_theme":{"mterm-dark":"terminal"}}"#,
+        )
+        .expect("legacy config must deserialize");
+        let mut store = ConfigStore {
+            path: PathBuf::new(),
+            cache: legacy,
+            key: [0u8; 32],
+        };
+        assert_eq!(store.wallpaper_scope(), "window");
+        store.set_wallpaper("builtin:miku");
+        assert_eq!(store.wallpaper_scope(), "terminal");
+    }
+
+    /// (#wallpaper-delete-forget 2026-10-19) 只有**删除壁纸**才销毁数据：
+    /// 该壁纸在所有主题下的参数条目 + 作用域记录都要清掉，其它壁纸不受影响。
+    #[test]
+    fn deleting_a_wallpaper_forgets_its_scopes_and_settings() {
+        let mut cfg = ConfigStore {
+            path: PathBuf::new(),
+            cache: fresh_config(),
+            key: [0u8; 32],
+        };
+        cfg.set_theme("mterm-dark".into());
+        cfg.set_wallpaper("builtin:miku");
+        cfg.set_wallpaper_scope("terminal".into());
+        cfg.set_term_alpha(0.31, true);
+
+        // 另一主题下的另一张壁纸：必须原样保留。
+        cfg.set_theme("mterm-light".into());
+        cfg.set_wallpaper("builtin:tech");
+        cfg.set_wallpaper_scope("workspace".into());
+
+        let removed = cfg.forget_wallpaper("builtin:miku");
+        assert!(removed > 0, "应删掉至少一条参数条目");
+        assert!(
+            !cfg.cache
+                .wallpaper_settings
+                .keys()
+                .any(|k| k.contains("builtin:miku")),
+            "被删壁纸的参数条目必须清空"
+        );
+        assert!(
+            cfg.cache
+                .wallpaper_settings
+                .keys()
+                .any(|k| k.contains("builtin:tech")),
+            "其它壁纸的参数不能误删"
+        );
+        assert_eq!(
+            cfg.cache
+                .wallpaper_by_theme
+                .get("mterm-dark")
+                .map(String::as_str),
+            None,
+            "用它的主题回到「无壁纸」"
+        );
+        assert!(cfg
+            .cache
+            .wallpaper_scope_by_theme
+            .get("mterm-dark")
+            .is_none());
+        assert_eq!(
+            cfg.cache
+                .wallpaper_by_theme
+                .get("mterm-light")
+                .map(String::as_str),
+            Some("builtin:tech")
+        );
+        assert_eq!(
+            cfg.cache
+                .wallpaper_scope_by_theme
+                .get("mterm-light")
+                .map(String::as_str),
+            Some("workspace")
+        );
+    }
+
+    /// (#theme-appearance 2026-10-19) 四根滑杆不再跨主题共享：无壁纸时每个主题
+    /// 各存一套（旧实现按明暗两槽，同模式的主题会互相串）。
+    #[test]
+    fn zone_values_are_per_theme_when_no_wallpaper() {
+        let mut cfg = ConfigStore {
+            path: PathBuf::new(),
+            cache: fresh_config(),
+            key: [0u8; 32],
+        };
+        cfg.set_theme("mterm-dark".into());
+        cfg.set_term_alpha(0.42, true);
+        assert!((cfg.term_alpha() - 0.42).abs() < 1e-6);
+
+        // 同是暗色的另一主题：自己的默认值（不跟随）。
+        cfg.set_theme("nord-dark".into());
+        assert!((cfg.term_alpha() - 1.0).abs() < 1e-6);
+        // 亮色主题同样独立。
+        cfg.set_theme("mterm-light".into());
+        assert!((cfg.term_alpha() - 1.0).abs() < 1e-6);
+
+        cfg.set_theme("mterm-dark".into());
+        assert!((cfg.term_alpha() - 0.42).abs() < 1e-6);
+    }
+
+    /// (#theme-appearance 2026-10-19) 弹框/遮罩按「主题 × 有无壁纸」两套：
+    /// 改哪档存哪档，切壁纸或切主题都不会串。
+    #[test]
+    fn popup_and_scrim_have_per_theme_wallpaper_variants() {
+        let mut cfg = ConfigStore {
+            path: PathBuf::new(),
+            cache: fresh_config(),
+            key: [0u8; 32],
+        };
+        cfg.set_theme("mterm-dark".into());
+        // 无壁纸档。
+        cfg.set_popup_transparency(0.10, true);
+        cfg.set_scrim_alpha(0.22, true);
+        cfg.set_scrim_style("dark".into());
+
+        // 有壁纸档：自己的出厂值（0% / 32% / auto），不是无壁纸档的拷贝。
+        cfg.set_wallpaper("builtin:miku");
+        assert!((cfg.popup_transparency() - 0.0).abs() < 1e-6);
+        assert!((cfg.scrim_alpha() - DEFAULT_SCRIM_ALPHA).abs() < 1e-6);
+        assert_eq!(cfg.scrim_style(), "auto");
+        cfg.set_popup_transparency(0.55, true);
+        cfg.set_scrim_alpha(0.60, true);
+        cfg.set_scrim_style("frost".into());
+
+        // 切回无壁纸：原来那档还在。
+        cfg.set_wallpaper("");
+        assert!((cfg.popup_transparency() - 0.10).abs() < 1e-6);
+        assert!((cfg.scrim_alpha() - 0.22).abs() < 1e-6);
+        assert_eq!(cfg.scrim_style(), "dark");
+
+        // 再开：有壁纸档回来。
+        cfg.set_wallpaper("builtin:miku");
+        assert!((cfg.popup_transparency() - 0.55).abs() < 1e-6);
+        assert!((cfg.scrim_alpha() - 0.60).abs() < 1e-6);
+        assert_eq!(cfg.scrim_style(), "frost");
+
+        // 另一主题不受影响。
+        cfg.set_theme("mterm-light".into());
+        assert!((cfg.popup_transparency() - 0.0).abs() < 1e-6);
+        assert_eq!(cfg.scrim_style(), "auto");
     }
 
     #[test]

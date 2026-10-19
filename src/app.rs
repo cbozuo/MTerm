@@ -3486,7 +3486,15 @@ fn open_window(
             }
             let deleted = crate::wallpaper::library::delete(&file).is_ok();
             let Some(w) = weak.upgrade() else { return };
-            // 删掉的正是当前壁纸 → 回到「无」；库外的（老配置）只清选中态。
+            // (#wallpaper-delete-forget 2026-10-19) 真正删掉文件才销毁这张壁纸
+            // 的数据：所有主题下的作用域记录 + `<主题>|<壁纸>|<作用域>` 参数。
+            // 库外路径（老配置）删不动文件 → 数据保留，只清选中态。
+            if deleted {
+                let mut s = store.borrow_mut();
+                s.forget_wallpaper(&path);
+                let _ = s.save();
+            }
+            // 删掉的正是当前壁纸 → 回到「无」。
             if w.get_current_wallpaper().as_str() == path {
                 {
                     let mut s = store.borrow_mut();

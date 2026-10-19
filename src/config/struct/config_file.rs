@@ -158,6 +158,9 @@ pub struct AppearanceValues {
     /// 遮罩浓度（0–1，默认 0.32）。
     #[serde(default = "default_scrim_alpha")]
     pub scrim_alpha: f32,
+    /// 遮罩样式（auto / dark / light / tint / soft / frost / spot / sheen / random）。
+    #[serde(default = "default_scrim_style")]
+    pub scrim_style: String,
 }
 
 impl Default for AppearanceValues {
@@ -170,8 +173,52 @@ impl Default for AppearanceValues {
             wallpaper_transparency: 0.0,
             popup_transparency: 0.0,
             scrim_alpha: DEFAULT_SCRIM_ALPHA,
+            scrim_style: default_scrim_style(),
         }
     }
+}
+
+/// (#theme-appearance 2026-10-19) 「有壁纸」档的弹窗/遮罩数值。
+///
+/// 用户定稿：四根分区滑杆与弹框透明度**都不跨主题共享**，且弹框/遮罩按
+/// **有无壁纸**分两套 —— 有壁纸时用这一份，没有壁纸时用
+/// `ThemeAppearance::plain` 里的同名字段。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PopupAppearance {
+    /// 弹窗透明度（0 = 实心）。
+    #[serde(default)]
+    pub popup_transparency: f32,
+    /// 遮罩浓度（0–1）。
+    #[serde(default = "default_scrim_alpha")]
+    pub scrim_alpha: f32,
+    /// 遮罩样式。
+    #[serde(default = "default_scrim_style")]
+    pub scrim_style: String,
+}
+
+impl Default for PopupAppearance {
+    fn default() -> Self {
+        Self {
+            popup_transparency: 0.0,
+            scrim_alpha: DEFAULT_SCRIM_ALPHA,
+            scrim_style: default_scrim_style(),
+        }
+    }
+}
+
+/// (#theme-appearance 2026-10-19) 一个主题自己的两档外观数值。
+///
+/// - `plain`：**无壁纸**档 —— 四根分区滑杆 + 弹框 + 遮罩；
+/// - `wallpaper`：**有壁纸**档 —— 只有弹框/遮罩；四根滑杆此时由
+///   `wallpaper_settings`（主题 × 壁纸 × 作用域）接管。
+///
+/// 缺条目时回落到旧的暗/亮槽（老配置零迁移），第一次编辑才落一份快照。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ThemeAppearance {
+    #[serde(default)]
+    pub plain: AppearanceValues,
+    #[serde(default)]
+    pub wallpaper: PopupAppearance,
 }
 
 /// (#wallpaper-scope-params 2026-10-18) 一张壁纸在**一种作用域下**的整套显示
@@ -495,6 +542,10 @@ pub struct ConfigFile {
     pub appearance_dark: AppearanceValues,
     #[serde(default)]
     pub appearance_light: AppearanceValues,
+    /// (#theme-appearance 2026-10-19) 每个主题自己的两档数值（无壁纸 / 有壁纸）。
+    /// 缺条目 → 回落 `appearance_dark/light`（老配置零迁移）；第一次编辑才落快照。
+    #[serde(default)]
+    pub appearance_by_theme: HashMap<String, ThemeAppearance>,
     // ── rev6 迁移用的旧单套数值（只读、不再序列化）────────────────────
     #[serde(default, rename = "titlebar_alpha", skip_serializing)]
     pub legacy_titlebar_alpha: Option<f32>,
