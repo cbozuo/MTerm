@@ -6,6 +6,17 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **命令栏输入框：聚焦态与「新建会话」对话框同款，聚焦即隐藏提示语（#cmdbar-focus）。** 用户附截图：「输入框的聚焦样式需要修改下，改成和新建会话同款」「聚焦之后，输入框里面的提示信息需要自动删除掉」。
+  - 聚焦态 = `1px accent 边 + 3px accent-soft 柔光环`，与 `MiniInput` / `LabeledInput`（新建会话）、主题搜索框同一套聚焦语言（光环 x/y −3、宽高 +6、圆角 +2 逐值一致）。输入框自身 `clip: true`（多行输入滚动必须裁），所以外面包了一层不裁的容器专门画光环。
+  - 占位提示改为 `text == "" && !has-focus`：聚焦后不再压在光标 / IME 预编辑上（与对话框的 "Hide on focus" 一致）。边框色带 120ms 过渡，和主题搜索框同节奏。
+  - 历史命令按钮的图标从 `expand-less`（一个「^」，与左边「快捷」按钮撞脸）换成 `command-history`（`assets/icons/command-history.svg`：钟表 + 回转箭头）；尺寸收到 **12px**（同框的 `^` 是 13px、圆形字形更重，等尺寸会压过左右文字），常态**不再铺灰底** —— 图标按钮没有文字，一块 28×26 的实心灰块比两侧带字的胶囊更抢眼；悬停/展开时才给 `bg-hover` 当可点反馈。
+  - 新增渲染级回归 `tests/cmdbar_focus.rs`：离屏量「两侧 1px accent 边框 / 3px 光晕色值 = mix(栏底, accent, accent-soft) / 提示语像素数 200+ → 0 / 历史按钮常态像素 = 栏底色」。
+- **Command-bar input: focus state matches the New Session dialog, and the hint hides on focus (#cmdbar-focus).** Per the user's screenshots: "the input's focus style should match New Session" and "the hint inside the input should disappear once focused".
+  - Focus = `1px accent border + 3px accent-soft halo`, the same focus language as `MiniInput` / `LabeledInput` (New Session) and the theme search box (halo x/y −3, size +6, radius +2, identical values). The input itself must keep `clip: true` for multi-line scrolling, so the halo lives on a non-clipping wrapper around it.
+  - The placeholder now requires `text == "" && !has-focus`, so it no longer sits under the caret / IME preedit (the dialog's "Hide on focus" behaviour); the border colour animates over 120 ms like the search box.
+  - The history button's icon switched from `expand-less` (a "^" that read the same as the Quick button) to `command-history` (`assets/icons/command-history.svg`: clock + rewind arrow), now drawn at **12px** (the neighbouring "^" is 13px, and a round glyph carries more weight at the same size); its resting **grey background is gone** — an icon-only control in a 28×26 solid block was louder than the labelled pills beside it — with `bg-hover` kept as the hover/open feedback.
+  - New render-level regression `tests/cmdbar_focus.rs`: offscreen checks for both 1px accent borders, the halo colour equal to `mix(bar bg, accent, accent-soft)`, the hint's pixel count dropping from 200+ to 0, and the history button's resting pixel matching the bar background.
+
 - **壁纸参数分层：主题 × 壁纸 × 作用域，各自一套（#wallpaper-scope-params / #wallpaper-first-defaults）。** 用户定稿：「一个主题有多个壁纸，一个壁纸有作用域两种方式，每个方式都对应的参数，这些关系不要混乱了；切换主题，上一个主题的壁纸参数不要带入进来，都是初始化，除非设置过」。
   - 存储：`wallpaper_by_theme`（每主题选中的壁纸）、`wallpaper_scope_by_theme`（每主题的作用域）、`wallpaper_settings`（键 = `主题|壁纸|作用域`，值 = 四区不透明度 + 壁纸透明度 + 填充方式）。切主题读那个主题自己的壁纸；没配过 = 无壁纸，不会把上一套带过来。
   - **首次给某个组合设值就落一套「看得见壁纸」的默认值**（整个界面：标题栏 22% / 标签栏 30% / 侧栏 28% / 终端 40% 透；终端：终端区 28% 透、其余三区原色 —— 实机截图校准过，再透一档侧栏正文就糊了）——出厂四区全 0% 会把壁纸完全盖住，用户实测「设了壁纸满屏纯黑」。

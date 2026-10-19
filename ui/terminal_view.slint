@@ -1365,193 +1365,222 @@ export component TerminalView inherits Rectangle {
                 }
 
                 // Command input.
+                // (#cmdbar-focus-2026-10-19) 聚焦态与「新建会话」对话框的输入框
+                // 同一套语言:1px accent 边 + 3px accent-soft 柔光环。
+                // 外层**不裁**：聚焦光晕要画到框外 3px，而内层 `clip: true`(多行输入
+                // 滚动必须裁) 会把子项裁掉。光晕写法与 session_dialog 的 MiniInput 逐值一致
+                // (x/y -3、+6、圆角 +2、3px accent-soft)，即「新建会话」输入框同款。
                 Rectangle {
                     horizontal-stretch: 1;
-                    border-radius: Theme.radius-sm;
-                    border-width: 1px;
-                    border-color: cmd-input.has-focus ? Theme.accent : Theme.border-subtle;
-                    background: Theme.bg-root;
-                    // (#cmd-prompt 2026-09-04) "$" 提示符前缀:等宽字体 + accent
-                    // 色,一眼可辨"这是发给 shell 的命令";输入区(上游多行滚动
-                    // 结构)右移让位。
-                    Text {
-                        x: 8px;
-                        width: 12px;
-                        height: parent.height;
-                        text: "$";
-                        font-family: Theme.font-mono;
-                        color: Theme.accent;
-                        font-size: Theme.fs-md;
-                        vertical-alignment: center;
-                        horizontal-alignment: center;
+                    if cmd-input.has-focus : Rectangle {
+                        x: -3px;
+                        y: -3px;
+                        width: parent.width + 6px;
+                        height: parent.height + 6px;
+                        border-radius: Theme.radius-sm + 2px;
+                        border-width: 3px;
+                        border-color: Theme.accent-soft;
                     }
-                    clip: true;
-                    TouchArea {
-                        scroll-event(event) => {
-                            command-scroll.content-y = clamp(
-                                command-scroll.content-y + event.delta-y,
-                                min(0px, command-scroll.visible-height - command-scroll.content-height), 0px);
-                            accept
-                        }
-                    }
-                    // (#cmd-prompt) 输入区右移 22px,给 "$" 提示符让位。
-                    command-scroll := ScrollView {
-                        x: 22px;
-                        width: parent.width - 22px;
-                        content-width: self.visible-width;
-                        content-height: max(self.visible-height, cmd-input.preferred-height);
-                        cmd-input := TextInput {
-                            x: 2px;
-                            width: max(1px, command-scroll.visible-width - 4px);
-                            y: 0px;
-                            height: max(command-scroll.visible-height, self.preferred-height);
-                            color: Theme.text-primary;
-                            font-family: Theme.ui-font-family;
+                    cmd-box := Rectangle {
+                        width: parent.width; height: parent.height;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: cmd-input.has-focus ? Theme.accent : Theme.border-subtle;
+                        animate border-color { duration: 120ms; }
+                        background: Theme.bg-root;
+                        // (#cmd-prompt 2026-09-04) "$" 提示符前缀:等宽字体 + accent
+                        // 色,一眼可辨"这是发给 shell 的命令";输入区(上游多行滚动
+                        // 结构)右移让位。
+                        Text {
+                            x: 8px;
+                            width: 12px;
+                            height: parent.height;
+                            text: "$";
+                            font-family: Theme.font-mono;
+                            color: Theme.accent;
                             font-size: Theme.fs-md;
                             vertical-alignment: center;
-                            wrap: char-wrap;
-                            page-height: command-scroll.visible-height;
-                            cursor-position-changed(position) => {
-                                let cursor-y = position.y + command-scroll.content-y;
-                                if (cursor-y < 0px) {
-                                    command-scroll.content-y = min(0px, command-scroll.content-y - cursor-y);
-                                } else if (cursor-y > command-scroll.visible-height - self.font-size) {
-                                    command-scroll.content-y = max(
-                                        min(0px, command-scroll.visible-height - command-scroll.content-height),
-                                        command-scroll.content-y - (cursor-y - command-scroll.visible-height + self.font-size));
+                            horizontal-alignment: center;
+                        }
+                        clip: true;
+                        TouchArea {
+                            scroll-event(event) => {
+                                command-scroll.content-y = clamp(
+                                    command-scroll.content-y + event.delta-y,
+                                    min(0px, command-scroll.visible-height - command-scroll.content-height), 0px);
+                                accept
+                            }
+                        }
+                        // (#cmd-prompt) 输入区右移 22px,给 "$" 提示符让位。
+                        command-scroll := ScrollView {
+                            x: 22px;
+                            width: parent.width - 22px;
+                            content-width: self.visible-width;
+                            content-height: max(self.visible-height, cmd-input.preferred-height);
+                            cmd-input := TextInput {
+                                x: 2px;
+                                width: max(1px, command-scroll.visible-width - 4px);
+                                y: 0px;
+                                height: max(command-scroll.visible-height, self.preferred-height);
+                                color: Theme.text-primary;
+                                font-family: Theme.ui-font-family;
+                                font-size: Theme.fs-md;
+                                vertical-alignment: center;
+                                wrap: char-wrap;
+                                page-height: command-scroll.visible-height;
+                                cursor-position-changed(position) => {
+                                    let cursor-y = position.y + command-scroll.content-y;
+                                    if (cursor-y < 0px) {
+                                        command-scroll.content-y = min(0px, command-scroll.content-y - cursor-y);
+                                    } else if (cursor-y > command-scroll.visible-height - self.font-size) {
+                                        command-scroll.content-y = max(
+                                            min(0px, command-scroll.visible-height - command-scroll.content-height),
+                                            command-scroll.content-y - (cursor-y - command-scroll.visible-height + self.font-size));
+                                    }
                                 }
-                            }
-                            // Preserve pasted newlines. A single-line input rewrites
-                            // them as spaces and corrupts heredoc terminators before
-                            // run-command receives the text (#319).
-                            single-line: false;
-                            // Enter sends; ↑/↓ recall history.
-                            accepted => {
-                                root.run-command(self.text, root.send-to-all);
-                                self.text = "";
-                                root.history-open = false;
-                                root.history-cursor = -1;
-                                root.focus-pending = true;
-                            }
-                            edited => {
-                                root.history-cursor = -1;
-                                root.quick-open = false;
-                                root.history-autocomplete = self.text != "";
-                                root.search-history(self.text);
-                                root.history-open = root.history-autocomplete;
-                                // Oldest→newest list: default-select the newest match.
-                                root.history-selected = root.history-view.length > 0
-                                    ? root.history-view.length - 1 : 0;
-                            }
-                            key-pressed(e) => {
-                                if (e.text == Key.Return && !e.modifiers.shift) {
+                                // Preserve pasted newlines. A single-line input rewrites
+                                // them as spaces and corrupts heredoc terminators before
+                                // run-command receives the text (#319).
+                                single-line: false;
+                                // Enter sends; ↑/↓ recall history.
+                                accepted => {
                                     root.run-command(self.text, root.send-to-all);
                                     self.text = "";
                                     root.history-open = false;
                                     root.history-cursor = -1;
                                     root.focus-pending = true;
-                                    accept
-                                // ⌘R / Ctrl+R opens the searchable history dropdown and
-                                // focuses its search box — full keyboard history recall
-                                // (#140). Esc closes it / returns to terminal. (The
-                                // Ctrl+E/K/U line-editing below stays on Ctrl — those
-                                // are the standard readline bindings on macOS too.)
-                                } else if ((Theme.is-mac ? e.modifiers.meta : e.modifiers.control)
-                                        && (e.text == Key.Tab || e.text == Key.Backtab)) {
-                                    root.cycle-tab(e.modifiers.shift || e.text == Key.Backtab);
-                                    accept
-                                } else if ((Theme.is-mac ? e.modifiers.meta : e.modifiers.control)
-                                        && (e.text == "r" || e.text == "R" || e.text == "\u{0012}")) {
-                                    root.history-autocomplete = false;
-                                    root.history-open = true;
-                                    accept
-                                } else if (e.text == Key.Escape) {
-                                    if (root.history-open) { root.history-open = false; }
-                                    else { ime-input.focus(); }   // back to the terminal
-                                    accept
-                                } else if (e.text == Key.UpArrow) {
-                                    if (root.history-autocomplete && root.history-view.length > 0) {
-                                        root.history-selected = root.history-selected <= 0
-                                            ? root.history-view.length - 1
-                                            : root.history-selected - 1;
-                                    } else {
-                                        // Model is oldest→newest (#113): first ↑ jumps
-                                        // to newest, then steps toward older entries.
-                                        if (root.command-history.length > 0) {
-                                            root.history-cursor = root.history-cursor == -1
-                                                ? root.command-history.length - 1
-                                                : max(root.history-cursor - 1, 0);
-                                            self.text = root.command-history[root.history-cursor];
-                                        }
-                                    }
-                                    accept
-                                } else if (e.text == Key.DownArrow) {
-                                    if (root.history-autocomplete && root.history-view.length > 0) {
-                                        root.history-selected = root.history-selected >= root.history-view.length - 1
-                                            ? 0 : root.history-selected + 1;
-                                    } else {
-                                        // ↓ steps toward newer; past newest → live input.
-                                        if (root.history-cursor != -1) {
-                                            if (root.history-cursor < root.command-history.length - 1) {
-                                                root.history-cursor += 1;
+                                }
+                                edited => {
+                                    root.history-cursor = -1;
+                                    root.quick-open = false;
+                                    root.history-autocomplete = self.text != "";
+                                    root.search-history(self.text);
+                                    root.history-open = root.history-autocomplete;
+                                    // Oldest→newest list: default-select the newest match.
+                                    root.history-selected = root.history-view.length > 0
+                                        ? root.history-view.length - 1 : 0;
+                                }
+                                key-pressed(e) => {
+                                    if (e.text == Key.Return && !e.modifiers.shift) {
+                                        root.run-command(self.text, root.send-to-all);
+                                        self.text = "";
+                                        root.history-open = false;
+                                        root.history-cursor = -1;
+                                        root.focus-pending = true;
+                                        accept
+                                    // ⌘R / Ctrl+R opens the searchable history dropdown and
+                                    // focuses its search box — full keyboard history recall
+                                    // (#140). Esc closes it / returns to terminal. (The
+                                    // Ctrl+E/K/U line-editing below stays on Ctrl — those
+                                    // are the standard readline bindings on macOS too.)
+                                    } else if ((Theme.is-mac ? e.modifiers.meta : e.modifiers.control)
+                                            && (e.text == Key.Tab || e.text == Key.Backtab)) {
+                                        root.cycle-tab(e.modifiers.shift || e.text == Key.Backtab);
+                                        accept
+                                    } else if ((Theme.is-mac ? e.modifiers.meta : e.modifiers.control)
+                                            && (e.text == "r" || e.text == "R" || e.text == "\u{0012}")) {
+                                        root.history-autocomplete = false;
+                                        root.history-open = true;
+                                        accept
+                                    } else if (e.text == Key.Escape) {
+                                        if (root.history-open) { root.history-open = false; }
+                                        else { ime-input.focus(); }   // back to the terminal
+                                        accept
+                                    } else if (e.text == Key.UpArrow) {
+                                        if (root.history-autocomplete && root.history-view.length > 0) {
+                                            root.history-selected = root.history-selected <= 0
+                                                ? root.history-view.length - 1
+                                                : root.history-selected - 1;
+                                        } else {
+                                            // Model is oldest→newest (#113): first ↑ jumps
+                                            // to newest, then steps toward older entries.
+                                            if (root.command-history.length > 0) {
+                                                root.history-cursor = root.history-cursor == -1
+                                                    ? root.command-history.length - 1
+                                                    : max(root.history-cursor - 1, 0);
                                                 self.text = root.command-history[root.history-cursor];
-                                            } else {
-                                                root.history-cursor = -1;
-                                                self.text = "";
                                             }
                                         }
-                                    }
-                                    accept
-                                } else if (e.text == Key.Tab && root.history-autocomplete) {
-                                    if (root.history-view.length > 0
-                                            && root.history-selected < root.history-view.length) {
-                                        self.text = root.history-view[root.history-selected];
+                                        accept
+                                    } else if (e.text == Key.DownArrow) {
+                                        if (root.history-autocomplete && root.history-view.length > 0) {
+                                            root.history-selected = root.history-selected >= root.history-view.length - 1
+                                                ? 0 : root.history-selected + 1;
+                                        } else {
+                                            // ↓ steps toward newer; past newest → live input.
+                                            if (root.history-cursor != -1) {
+                                                if (root.history-cursor < root.command-history.length - 1) {
+                                                    root.history-cursor += 1;
+                                                    self.text = root.command-history[root.history-cursor];
+                                                } else {
+                                                    root.history-cursor = -1;
+                                                    self.text = "";
+                                                }
+                                            }
+                                        }
+                                        accept
+                                    } else if (e.text == Key.Tab && root.history-autocomplete) {
+                                        if (root.history-view.length > 0
+                                                && root.history-selected < root.history-view.length) {
+                                            self.text = root.history-view[root.history-selected];
+                                            self.set-selection-offsets(1000000, 1000000);
+                                        }
+                                        root.history-open = false;
+                                        accept
+                                    // --- readline line-editing keys (#103) ---
+                                    // Ctrl+A / Cmd+A selects all text in this GUI input.
+                                    } else if (e.modifiers.control && (e.text =="a" || e.text == "A" || e.text == "\u{0001}")) {
+                                        self.select-all();
+                                        accept
+                                    // Ctrl+E → end of line.
+                                    } else if ((Theme.is-mac ? e.modifiers.meta : e.modifiers.control) && (e.text =="e" || e.text == "E" || e.text == "\u{0005}")) {
                                         self.set-selection-offsets(1000000, 1000000);
+                                        accept
+                                    // Ctrl+K → kill from cursor to end (deletes + clipboard).
+                                    } else if ((Theme.is-mac ? e.modifiers.meta : e.modifiers.control) && (e.text =="k" || e.text == "K" || e.text == "\u{000B}")) {
+                                        self.set-selection-offsets(self.cursor-position_byte-offset, 1000000);
+                                        self.cut();
+                                        accept
+                                    // Ctrl+U → kill from start to cursor.
+                                    } else if ((Theme.is-mac ? e.modifiers.meta : e.modifiers.control) && (e.text =="u" || e.text == "U" || e.text == "\u{0015}")) {
+                                        self.set-selection-offsets(0, self.cursor-position_byte-offset);
+                                        self.cut();
+                                        accept
+                                    } else {
+                                        reject
                                     }
-                                    root.history-open = false;
-                                    accept
-                                // --- readline line-editing keys (#103) ---
-                                // Ctrl+A / Cmd+A selects all text in this GUI input.
-                                } else if (e.modifiers.control && (e.text =="a" || e.text == "A" || e.text == "\u{0001}")) {
-                                    self.select-all();
-                                    accept
-                                // Ctrl+E → end of line.
-                                } else if ((Theme.is-mac ? e.modifiers.meta : e.modifiers.control) && (e.text =="e" || e.text == "E" || e.text == "\u{0005}")) {
-                                    self.set-selection-offsets(1000000, 1000000);
-                                    accept
-                                // Ctrl+K → kill from cursor to end (deletes + clipboard).
-                                } else if ((Theme.is-mac ? e.modifiers.meta : e.modifiers.control) && (e.text =="k" || e.text == "K" || e.text == "\u{000B}")) {
-                                    self.set-selection-offsets(self.cursor-position_byte-offset, 1000000);
-                                    self.cut();
-                                    accept
-                                // Ctrl+U → kill from start to cursor.
-                                } else if ((Theme.is-mac ? e.modifiers.meta : e.modifiers.control) && (e.text =="u" || e.text == "U" || e.text == "\u{0015}")) {
-                                    self.set-selection-offsets(0, self.cursor-position_byte-offset);
-                                    self.cut();
-                                    accept
-                                } else {
-                                    reject
                                 }
                             }
                         }
-                    }
-                    if cmd-input.text == "" : Text {
-                        x: 22px;
-                        width: parent.width - 30px;
-                        height: parent.height;
-                        text: @tr("Type a command, Enter to send");
-                        color: Theme.text-muted;
-                        font-size: Theme.fs-md;
-                        horizontal-alignment: left;
-                        vertical-alignment: center;
+                        // (#cmdbar-focus-2026-10-19) 聚焦即隐藏提示语:与对话框的
+                        // "Hide on focus" 一致 —— 占位文字不再和光标/IME 预编辑叠在
+                        // 一起(用户反馈聚焦后里面还留着「输入命令，回车发送」)。
+                        if cmd-input.text == "" && !cmd-input.has-focus : Text {
+                            x: 22px;
+                            width: parent.width - 30px;
+                            height: parent.height;
+                            text: @tr("Type a command, Enter to send");
+                            color: Theme.text-muted;
+                            font-size: Theme.fs-md;
+                            horizontal-alignment: left;
+                            vertical-alignment: center;
+                        }
                     }
                 }
 
                 // History toggle.
+                // (#cmdbar-focus-2026-10-19) 图标换成真正的「历史命令」符号
+                // (assets/icons/command-history.svg:钟表 + 回转箭头),原来的
+                // expand-less 是个 "^",和左边的「快捷」按钮的箭头撞脸。
+                // (#cmdbar-history-quiet 2026-10-19) 用户要求「图标后面的灰色背景去掉、
+                // 大小协调些」:① 常态不再铺 bg-elevated(图标按钮没有文字,一块 28×26 的
+                // 实心灰块比左右带字的胶囊更抢眼),悬停/展开才给 bg-hover 当可点反馈;
+                // ② 圆形字形比同尺寸的 "^" 视觉大一圈,降到 fs-xs —— 与「快捷」的
+                // 13px 箭头、「所有会话」的 13px 文字光学配平。
                 Rectangle {
                     width: 28px;
                     border-radius: Theme.radius-sm;
-                    background: hist-ta.has-hover || root.history-open ? Theme.bg-hover : Theme.bg-elevated;
+                    background: hist-ta.has-hover || root.history-open ? Theme.bg-hover : transparent;
                     hist-ta := TouchArea {
                         mouse-cursor: pointer;
                         clicked => {
@@ -1561,9 +1590,11 @@ export component TerminalView inherits Rectangle {
                         }
                     }
                     Icon {
-    glyph: "expand-less";
+    glyph: "command-history";
     tint: Theme.text-primary;
-    size: Theme.fs-md;
+    // 12px：比 fs-xs(11) 略大、比 fs-sm(13) 的字形圈小 —— 圆的视觉重量比
+    // 同框的 "^" 大，取 13 会压过左右文字，取 11 又明显偏小。
+    size: 12px * Theme.ui-scale;
 }
                 }
 
