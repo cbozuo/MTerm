@@ -2138,6 +2138,11 @@ fn open_window(
     // otherwise they overwrite the persisted size before restoration (#278).
     let window_size_tracking_ready = Rc::new(Cell::new(false));
     let pending_window_size_restore = Rc::new(Cell::new(None::<(f32, f32)>));
+    // (#win-center 2026-10-20) 调用方已指定位置（tab 拖出贴指针 / 第 2+ 窗口级联）
+    // 时不要再居中盖掉它。
+    let window_position_pinned = Rc::new(Cell::new(
+        at.is_some() || cascade_origin.is_some(),
+    ));
 
     // Show the crate version (from Cargo.toml at compile time) in the sidebar,
     // so the footer never drifts out of sync with the actual build.
@@ -5489,6 +5494,7 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
         let ev_core = core.clone();
         let ev_window_size_tracking_ready = window_size_tracking_ready.clone();
         let ev_pending_window_size_restore = pending_window_size_restore.clone();
+        let ev_position_pinned = window_position_pinned.clone();
         // (#close-behavior) 原生关闭请求要填确认卡的会话清单,需拿到标签模型。
         let ev_tabs = tabs_model.clone();
         let mut last_cursor_logical: Option<(f32, f32)> = None;
@@ -5823,6 +5829,16 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
                                 );
                             }
                             if !ev_window_size_tracking_ready.get() {
+                                // (#win-center 2026-10-20) 首个 Resized 才意味着原生
+                                // 窗口有真实几何。30ms 那次居中赶在映射之前：那时
+                                // `size()` 只有最小尺寸 720×420、`scale_factor()` 还是
+                                // 1.0，算出的左上角留在原地，窗口长到真实尺寸后整块
+                                // 溢出到屏幕右下（用户反馈）。这里用**事件自带的物理
+                                // 尺寸**居中，带尺寸恢复时本轮会因尺寸变化再进来一次，
+                                // 最后一次即最终位置。
+                                if !ev_position_pinned.get() && !maxed {
+                                    center_window_px(&win.window(), size.width, size.height);
+                                }
                                 if let Some(preferred) = ev_pending_window_size_restore.get() {
                                     let scale = win.window().scale_factor().max(0.01);
                                     let actual =
@@ -6123,11 +6139,12 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
         });
     }
 
-    // Position once shown (size is only known after the first frame). The
-    // first window centers on the primary monitor; later windows cascade
-    // ~40 px from the newest existing window instead of stacking exactly on
-    // top of it. The origin was captured above, before this window was
-    // registered (registry.newest() would return this window itself).
+    // Position once shown for the *explicit* placements only. The first
+    // window's centering moved to the first Resized event (#win-center
+    // 2026-10-20): at 30 ms the native window may not be mapped yet, so
+    // `size()` still reports the 720×420 minimum and `scale_factor()` 1.0 —
+    // centering with those numbers parked the top-left corner and the window
+    // then grew off the bottom-right of the screen.
     {
         let weak = window.as_weak();
         let origin = cascade_origin;
@@ -6138,12 +6155,9 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
                 w.window().set_position(pos);
                 return;
             }
-            match origin {
-                Some(pos) => {
-                    w.window()
-                        .set_position(slint::PhysicalPosition::new(pos.x + 40, pos.y + 40));
-                }
-                None => center_window(w.window()),
+            if let Some(pos) = origin {
+                w.window()
+                    .set_position(slint::PhysicalPosition::new(pos.x + 40, pos.y + 40));
             }
         });
     }
@@ -6264,8 +6278,32 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
 }
 
 /// Center the window on the primary monitor's work area (Windows).
+///
+/// (#win-center 2026-10-20) 一律用**物理**像素：`Window::size()` 是逻辑尺寸，
+/// 未映射时更是只有最小尺寸且 `scale_factor()` 还是 1.0。所以优先问原生窗口，
+/// 拿不到才退回逻辑尺寸 × scale。
 #[cfg(windows)]
 fn center_window(win: &slint::Window) {
+    let native = win
+        .with_winit_window(|ww| {
+            let s = ww.inner_size();
+            (s.width, s.height)
+        })
+        .filter(|(w, h)| *w > 0 && *h > 0);
+    let (w, h) = native.unwrap_or_else(|| {
+        let scale = win.scale_factor().max(0.01);
+        let s = win.size();
+        (
+            (s.width as f32 * scale).round().max(1.0) as u32,
+            (s.height as f32 * scale).round().max(1.0) as u32,
+        )
+    });
+    center_window_px(win, w, h);
+}
+
+/// 用给定的**物理**尺寸居中。事件里的 Resized 尺寸是最权威的来源。
+#[cfg(windows)]
+fn center_window_px(win: &slint::Window, size_w: u32, size_h: u32) {
     #[repr(C)]
     struct Rect {
         left: i32,
@@ -6280,7 +6318,6 @@ fn center_window(win: &slint::Window) {
     }
     const SPI_GETWORKAREA: u32 = 0x0030;
 
-    let size = win.size(); // physical pixels
     let mut wa = Rect {
         left: 0,
         top: 0,
@@ -6293,13 +6330,16 @@ fn center_window(win: &slint::Window) {
     }
     let area_w = (wa.right - wa.left).max(0) as u32;
     let area_h = (wa.bottom - wa.top).max(0) as u32;
-    let x = wa.left + ((area_w.saturating_sub(size.width)) / 2) as i32;
-    let y = wa.top + ((area_h.saturating_sub(size.height)) / 2) as i32;
+    let x = wa.left + ((area_w.saturating_sub(size_w)) / 2) as i32;
+    let y = wa.top + ((area_h.saturating_sub(size_h)) / 2) as i32;
     win.set_position(slint::PhysicalPosition::new(x, y));
 }
 
 #[cfg(not(windows))]
 fn center_window(_win: &slint::Window) {}
+
+#[cfg(not(windows))]
+fn center_window_px(_win: &slint::Window, _size_w: u32, _size_h: u32) {}
 
 /// Bring a window to the front and give it keyboard focus: un-minimize it
 /// and ask the OS for focus. Used when an OS entry point (taskbar jump list,
@@ -6744,6 +6784,19 @@ fn gm_belongs(session: &Session, selected: &str) -> bool {
     }
 }
 
+/// (#group-manager) 已勾选的会话 id，按**模型显示顺序**返回。
+///
+/// 批量迁移/排序必须用这个顺序落盘：`picked` 是 HashSet，遍历顺序随机，
+/// 直接拿来当 ids 会让目标组内的相对次序每次都不一样。
+fn gm_picked_ids(window: &AppWindow) -> Vec<String> {
+    window
+        .get_gm_members()
+        .iter()
+        .filter(|m| m.picked)
+        .map(|m| m.id.to_string())
+        .collect()
+}
+
 /// 分组管理弹框的数据刷新：组清单 + 当前组成员 + 当前组色。
 ///
 /// 与侧栏列表同源（都读 ConfigStore），但口径不同：
@@ -6755,8 +6808,7 @@ fn refresh_group_manager(
     window: &AppWindow,
     store: &ConfigStore,
     picked: &std::collections::HashSet<String>,
-) {
-    let selected = window.get_gm_selected().to_string();
+) {    let selected = window.get_gm_selected().to_string();
     let sessions = store.sessions();
     // 搜索：组名命中，或该组里有会话的 名称/主机 命中。
     // 过滤放在 Rust —— Slint 的字符串没有 contains，模型也不能就地筛。
@@ -6788,17 +6840,27 @@ fn refresh_group_manager(
         .filter(|s| s.group.is_empty() || is_reserved_session_group(s.group.trim()))
         .count() as i32;
 
-    let mut rows: Vec<crate::ui::GroupRow> = Vec::with_capacity(store.groups().len() + 1);
+    // (#group-manager) 组清单必须与侧栏同源：显式 groups + 只存在于会话
+    // group 字段里的「隐含组」都要出现，否则这些会话在管理台里无处可寻。
+    let named = crate::config::named_display_groups(store.groups(), sessions);
+
+    let mut rows: Vec<crate::ui::GroupRow> = Vec::with_capacity(named.len() + 1);
     if hit_group(GM_UNGROUPED, true) {
-    rows.push(crate::ui::GroupRow {
-        name: GM_UNGROUPED.into(),
-        color: slint::Color::default(),
-        color_hex: SharedString::new(),
-        count: count_ungrouped,
-        reserved: true,
-    });
+        // 「未分组」同样可以设色（高保真 §RULES：set_group_color 只拒绝空名）。
+        let hex = store
+            .group_colors()
+            .get(GM_UNGROUPED)
+            .cloned()
+            .unwrap_or_default();
+        rows.push(crate::ui::GroupRow {
+            name: GM_UNGROUPED.into(),
+            color: parse_hex_color(&hex).unwrap_or_default(),
+            color_hex: hex.as_str().into(),
+            count: count_ungrouped,
+            reserved: true,
+        });
     }
-    for name in store.groups() {
+    for name in &named {
         if !hit_group(name, false) {
             continue;
         }
@@ -6825,18 +6887,27 @@ fn refresh_group_manager(
             kind: s.kind.as_str().into(),
             online: false,
             picked: picked.contains(&s.id),
+            hit: !query.is_empty() && hit_session(s),
         })
         .collect();
 
-    let cur_hex = if selected == GM_UNGROUPED {
-        String::new()
-    } else {
-        store.group_colors().get(&selected).cloned().unwrap_or_default()
-    };
+    let cur_hex = store
+        .group_colors()
+        .get(&selected)
+        .cloned()
+        .unwrap_or_default();
+    let cur_index = rows
+        .iter()
+        .position(|row| row.name == selected.as_str())
+        .unwrap_or(0) as i32;
 
     window.set_gm_groups(ModelRc::new(VecModel::from(rows)));
     window.set_gm_members(ModelRc::new(VecModel::from(members)));
     window.set_gm_picked(picked.len() as i32);
+    window.set_gm_custom_count(named.len() as i32);
+    window.set_gm_session_count(sessions.len() as i32);
+    window.set_gm_cur_reserved(selected == GM_UNGROUPED || is_reserved_session_group(selected.trim()));
+    window.set_gm_cur_index(cur_index);
     window.set_gm_cur_color_hex(cur_hex.as_str().into());
     window.set_gm_cur_color(parse_hex_color(&cur_hex).unwrap_or_default());
 }
@@ -8102,8 +8173,8 @@ fn wire_session_callbacks(
                 {
                     let st = store.borrow();
                     if w.get_gm_selected().is_empty() {
-                        let first = st
-                            .groups()
+                        let named = crate::config::named_display_groups(st.groups(), st.sessions());
+                        let first = named
                             .first()
                             .cloned()
                             .unwrap_or_else(|| GM_UNGROUPED.to_string());
@@ -8124,7 +8195,23 @@ fn wire_session_callbacks(
             let picked = picked.clone();
             move |_q: SharedString| {
                 if let Some(w) = weak.upgrade() {
-                    refresh_group_manager(&w, &store.borrow(), &picked.borrow());
+                    // 搜索会改变可见行，勾选集合必须一起清掉 —— 否则「已选 3 项」
+                    // 里有看不见的行，批量操作会漏搬。
+                    picked.borrow_mut().clear();
+                    let st = store.borrow();
+                    refresh_group_manager(&w, &st, &picked.borrow());
+                    // 搜索把当前组过滤掉时，切到第一个可见组（高保真 §搜索：
+                    // 命中即只剩这些组，右栏要能直接看到命中项）。
+                    let groups = w.get_gm_groups();
+                    let cur = w.get_gm_selected().to_string();
+                    let visible = groups.iter().any(|g| g.name == cur.as_str());
+                    if !visible && groups.row_count() > 0 {
+                        if let Some(first) = groups.row_data(0) {
+                            w.set_gm_selected(first.name.clone());
+                            picked.borrow_mut().clear();
+                            refresh_group_manager(&w, &st, &picked.borrow());
+                        }
+                    }
                 }
             }
         });
@@ -8141,6 +8228,29 @@ fn wire_session_callbacks(
             }
         });
 
+        // (#group-manager) 改名/新建的**实时**预校验：输入框每敲一下都会问一次，
+        // 返回 "" = 合法。只读 store，不落盘。校验顺序与提交时一致：
+        // ① 空 → 合法（空名在 commit_edit 里静默放弃，不该报红）；
+        // ② reserved / 未分组 → 系统保留；③ 忽略大小写撞名。
+        window.on_gm_validate_name({
+            let store = store.clone();
+            move |text: SharedString, orig: SharedString| -> SharedString {
+                let n = text.trim();
+                if n.is_empty() {
+                    return SharedString::new();
+                }
+                if is_reserved_session_group(n) || n == GM_UNGROUPED {
+                    return "该名称为系统保留，不能使用".into();
+                }
+                let st = store.borrow();
+                // 改回自己的原名（哪怕大小写不同）不算撞名
+                if !n.eq_ignore_ascii_case(orig.trim()) && st.session_group_exists(n) {
+                    return "已存在同名分组（不区分大小写）".into();
+                }
+                SharedString::new()
+            }
+        });
+
         window.on_gm_rename({
             let weak = weak.clone();
             let store = store.clone();
@@ -8149,6 +8259,9 @@ fn wire_session_callbacks(
             let picked = picked.clone();
             move |orig: SharedString, name: SharedString| -> SharedString {
                 let n = name.trim().to_string();
+                if orig.as_str() == GM_UNGROUPED || is_reserved_session_group(orig.trim()) {
+                    return "该分组不可改名".into();
+                }
                 if n.is_empty() {
                     return "名称不能为空".into();
                 }
@@ -8225,7 +8338,10 @@ fn wire_session_callbacks(
             let registry = registry.clone();
             let picked = picked.clone();
             move |name: SharedString, target: SharedString| {
-                if name.is_empty() || is_reserved_session_group(name.trim()) {
+                if name.is_empty()
+                    || name.as_str() == GM_UNGROUPED
+                    || is_reserved_session_group(name.trim())
+                {
                     return;
                 }
                 {
@@ -8356,30 +8472,36 @@ fn wire_session_callbacks(
 
         window.on_gm_paint_pick({
             let weak = weak.clone();
-            let store = store.clone();
             let picked = picked.clone();
             move |from: i32, to: i32, on: bool| {
                 let Some(w) = weak.upgrade() else { return };
                 // 刷选：把 [from, to] 区间内的行整段设成 on —— 与设计稿一致
                 // （从已选行起拖是反向刷选，on=false）。
-                let ids: Vec<String> = w.get_gm_members().iter().map(|m| m.id.to_string()).collect();
-                if ids.is_empty() {
+                //
+                // (#group-manager) 只改行数据、不重建 model：刷选途中 set_vec
+                // 会换掉整个列表，指针 grab 随之丢失（高保真 §拖拽）。
+                let model = w.get_gm_members();
+                let count = model.row_count();
+                if count == 0 {
                     return;
                 }
-                let a = from.max(0).min(ids.len() as i32 - 1) as usize;
-                let b = to.max(0).min(ids.len() as i32 - 1) as usize;
+                let a = from.max(0).min(count as i32 - 1) as usize;
+                let b = to.max(0).min(count as i32 - 1) as usize;
                 let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
-                {
-                    let mut set = picked.borrow_mut();
-                    for id in &ids[lo..=hi] {
-                        if on {
-                            set.insert(id.clone());
-                        } else {
-                            set.remove(id);
-                        }
+                let mut set = picked.borrow_mut();
+                for idx in lo..=hi {
+                    let Some(mut row) = model.row_data(idx) else { continue };
+                    if on {
+                        set.insert(row.id.to_string());
+                    } else {
+                        set.remove(row.id.as_str());
+                    }
+                    if row.picked != on {
+                        row.picked = on;
+                        model.set_row_data(idx, row);
                     }
                 }
-                refresh_group_manager(&w, &store.borrow(), &picked.borrow());
+                w.set_gm_picked(set.len() as i32);
             }
         });
 
@@ -8402,27 +8524,24 @@ fn wire_session_callbacks(
             let registry = registry.clone();
             let picked = picked.clone();
             move |id: SharedString, target: SharedString, whole: bool| {
+                let Some(w) = weak.upgrade() else { return };
+                // (#group-manager) 批量 = 按模型显示顺序（HashSet 顺序随机）。
                 let ids: Vec<String> = if whole {
-                    picked.borrow().iter().cloned().collect()
+                    gm_picked_ids(&w)
                 } else {
                     vec![id.to_string()]
                 };
                 if ids.is_empty() {
                     return;
                 }
+                let to_group = if target.is_empty() || target.as_str() == GM_UNGROUPED {
+                    String::new()
+                } else {
+                    target.to_string()
+                };
                 {
                     let mut st = store.borrow_mut();
-                    let to_group = if target.is_empty() || target.as_str() == GM_UNGROUPED {
-                        String::new()
-                    } else {
-                        target.to_string()
-                    };
-                    for one in &ids {
-                        if let Some(mut sess) = st.get(one).cloned() {
-                            sess.group = to_group.clone();
-                            st.upsert(sess);
-                        }
-                    }
+                    st.move_sessions_to_group(&ids, &to_group);
                     if let Err(err) = st.save() {
                         tracing::warn!("failed to save config: {err:#}");
                     }
@@ -8443,19 +8562,22 @@ fn wire_session_callbacks(
             let registry = registry.clone();
             let picked = picked.clone();
             move |id: SharedString, before: SharedString, after: bool, whole: bool| {
+                let Some(w) = weak.upgrade() else { return };
                 let ids: Vec<String> = if whole {
-                    picked.borrow().iter().cloned().collect()
+                    gm_picked_ids(&w)
                 } else {
                     vec![id.to_string()]
                 };
-                if ids.is_empty() || before == id {
+                if ids.is_empty()
+                    || before.is_empty()
+                    || ids.iter().any(|one| one == before.as_str())
+                {
                     return;
                 }
                 {
                     let mut st = store.borrow_mut();
-                    for one in &ids {
-                        st.move_session_relative(one, before.as_str(), after);
-                    }
+                    // 整块一次插入：逐条 move 会让块内顺序随手势路径变化。
+                    st.move_sessions_relative(&ids, before.as_str(), after);
                     if let Err(err) = st.save() {
                         tracing::warn!("failed to save config: {err:#}");
                     }
@@ -8475,8 +8597,9 @@ fn wire_session_callbacks(
             let registry = registry.clone();
             let picked = picked.clone();
             move |id: SharedString, whole: bool| {
+                let Some(w) = weak.upgrade() else { return };
                 let ids: Vec<String> = if whole {
-                    picked.borrow().iter().cloned().collect()
+                    gm_picked_ids(&w)
                 } else {
                     vec![id.to_string()]
                 };
@@ -8485,12 +8608,8 @@ fn wire_session_callbacks(
                 }
                 {
                     let mut st = store.borrow_mut();
-                    for one in &ids {
-                        if let Some(mut sess) = st.get(one).cloned() {
-                            sess.group.clear();
-                            st.upsert(sess);
-                        }
-                    }
+                    // 等价于移动到「未分组」（存储写空串）。
+                    st.move_sessions_to_group(&ids, "");
                     if let Err(err) = st.save() {
                         tracing::warn!("failed to save config: {err:#}");
                     }

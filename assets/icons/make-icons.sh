@@ -70,6 +70,15 @@ mk arrow-left '<path d="M21 12H3m0 0 8-8m-8 8 8 8"/>'
 mk upload '<path d="M12 21V7m0 0-5 5m5-5 5 5M5 3h14"/>'
 # E2C4（Material file_download）：SFTP 下载按钮（sftp_panel.slint:649）+ 设置侧栏「下载」（interface_panel.slint:746）。
 mk download '<path d="M12 3v14m0 0-5-5m5 5 5-5M5 21h14"/>'
+# 移出 / 移入（2026-10-19 新增，用户定名 + 定方向）。横版：**箭头左右 + 竖线**。
+#   竖线在箭头**尾部并与尾部相接**（T 形接头，＝来处/边界），箭头从线出发背离它：
+#     移出 = 箭头 ←　+ 右侧竖线（从右边界向左移出）；
+#     移入 = 箭头 →　+ 左侧竖线（从左边界向右移入）。
+# 比例与 upload/download **同尺寸族**（整体 18×14，只是转 90°）：
+#   竖线长 14、箭头总长 18（含 7×5 箭头）、bbox 3..21 × 5..19；
+#   线长与 upload 的横线一致，整体占位面积与 upload 相同 → 同排 16px 不会显小。
+mk move-out '<path d="M21 12H3m0 0 5-5m-5 5 5 5M21 5v14"/>'
+mk move-in '<path d="M3 12h18m0 0-5-5m5 5-5 5M3 5v14"/>'
 mk create-new-folder "$FOLDER"'<path d="M12 9.5v7M8.5 13h7"/>'
 # 数据目录设置页「恢复默认目录」按钮（2026-10-04 新增）。
 # 语义 = 目录回到默认，故**复用 $FOLDER 骨架**并在内部放复位箭头 —— 与 folder / folder-open

@@ -19,6 +19,7 @@ import { Theme } from "theme.slint";
 import { Icon } from "icons.slint";
 import { ProtocolIcon, Scrim } from "widgets.slint";
 import { GroupRow, GroupSwatch, GmMember } from "group_types.slint";
+import { ScrollView } from "std-widgets.slint";
 
 export component GroupManagerDialog inherits Rectangle {
     in property <bool> lang-en;
@@ -29,6 +30,11 @@ export component GroupManagerDialog inherits Rectangle {
     in property <[GroupSwatch]> palette: [];
     // 已选条数由 Rust 维护（Slint 1.8 的数组没有 filter / map）。
     in property <int> picked-count: 0;
+    // 标题副标题：自定义分组数 / 全部会话数（Rust 下发，搜索时也不变）。
+    in property <int> custom-count: 0;
+    in property <int> session-count: 0;
+    // 当前组是「未分组」：标题不可双击改名（高保真 §RULES）。
+    in property <bool> cur-reserved: false;
     // 当前组的高亮信息由 Rust 随 selected 一起下发（省掉在 Slint 里查表）。
     in property <color> cur-color: transparent;
     in property <string> cur-color-hex: "";
@@ -37,6 +43,8 @@ export component GroupManagerDialog inherits Rectangle {
     callback search(string /* query */);
     callback select(string /* group */);
     callback rename(string /* orig */, string /* name */) -> string;
+    // 输入时实时预校验：返回 "" = 合法，否则返回错误文案
+    callback validate-name(string /* text */, string /* orig */) -> string;
     callback create-group(string /* name */) -> string;
     callback remove-group(string /* name */, string /* target */);
     callback set-group-color(string /* name */, string /* hex */);
@@ -59,6 +67,8 @@ export component GroupManagerDialog inherits Rectangle {
     in-out property <string> color-for: "";      // 展开色板的组名
     in-out property <int> color-row: 0;
     in-out property <bool> move-menu: false;
+    // 结果提示（删除后只报结果，不提供撤销）
+    in-out property <string> toast: "";
     // 搜索：过滤交给 Rust（Slint 的字符串没有 contains）
     in-out property <string> query: "";
     // 悬浮卡：tip-row = 正在悬停的成员行号（-1 = 无），150ms 后才置
@@ -72,11 +82,30 @@ export component GroupManagerDialog inherits Rectangle {
     in-out property <bool> dragging: false;
     in-out property <string> drag-kind: "";      // "group" | "member"
     in-out property <string> drag-id: "";
+    in-out property <string> drag-label: "";      // ghost 主文案（会话名 / 组名）
     in-out property <int> drag-index: 0;
     in-out property <int> drag-to: 0;
+    in-out property <int> drag-insert: -1;       // 插入线位置（-1 = 不画）
     in-out property <length> drag-abs-x: -1000px;
     in-out property <length> drag-abs-y: -1000px;
     in-out property <bool> drop-group: false;    // 指针在左栏组行上
+    // 起拖阈值（高保真：位移 >5px 才起拖，避免手抖）
+    in-out property <length> press-x: 0px;
+    in-out property <length> press-y: 0px;
+    // 刷选：按下行的锚点与「画成什么状态」（从已选行起拖 = 反向擦除）
+    in-out property <int> pick-anchor: -1;
+    in-out property <bool> pick-on: false;
+    in-out property <bool> pick-sweeping: false;
+    // 弹框拖动（标题区 / 空白，>3px 起拖，夹在窗口内）
+    in-out property <length> win-dx: 0px;
+    in-out property <length> win-dy: 0px;
+    in-out property <bool> win-dragging: false;
+    in-out property <length> win-start-x: 0px;
+    in-out property <length> win-start-y: 0px;
+    in-out property <length> win-base-x: 0px;
+    in-out property <length> win-base-y: 0px;
+    // 当前组在左栏中的行号（键盘 ↑↓ 用；Rust 随 selected 下发）
+    in-out property <int> cur-index: 0;
 
     // 列表顶部的绝对 y（跨栏命中 / 刷选命中）
     in-out property <length> list-top: 0px;
@@ -84,9 +113,43 @@ export component GroupManagerDialog inherits Rectangle {
 
     property <length> row-h: 36px;
     property <length> mem-h: 38px;
+    // 「我的分组」小节标题（未分组与自定义组之间，高保真 §左栏）
+    property <length> cap-h: 20px;
 
     out property <int> total-count: root.members.length;
     out property <string> cur-name: root.selected;
+
+    // 有自定义组时才有小节标题；它占一行高，所以行号 ↔ 像素不能再用纯乘法。
+    function has-cap() -> bool {
+        return root.groups.length > 1 && root.groups[0].reserved;
+    }
+    // 内容内 y（已减列表 padding）→ 组行号
+    function gi-at(y: length) -> int {
+        if (root.has-cap()) {
+            if (y >= root.row-h && y < root.row-h + root.cap-h) { return 1; }
+            if (y >= root.row-h + root.cap-h) {
+                return Math.max(0, Math.min(root.groups.length - 1,
+                    Math.floor((y - root.cap-h) / root.row-h)));
+            }
+        }
+        return Math.max(0, Math.min(root.groups.length - 1,
+            Math.floor(y / root.row-h)));
+    }
+    // 组行号 → 该行顶部（与 list-top 同原点，含列表 8px padding）
+    pure function gi-top(i: int) -> length {
+        return 8px + i * root.row-h + (root.has-cap() && i >= 1 ? root.cap-h : 0px);
+    }
+    // 认证方式显示名：与 app.slint 的 auth-display-name 同一张映射
+    // （卡片在弹框组件里，跨组件拿不到根组件的函数，故本地复制三支）。
+    function auth-label(a: string) -> string {
+        if (a == "keyboard-interactive") {
+            return root.lang-en ? "Keyboard-interactive" : "键盘交互";
+        }
+        if (a == "key") {
+            return root.lang-en ? "Private key" : "私钥";
+        }
+        return root.lang-en ? "Password" : "密码";
+    }
 
     // 进入改名：预填原名（TextInput 拿焦点后全选，直接输入即覆盖）
     function start_edit(name: string) {
@@ -100,6 +163,14 @@ export component GroupManagerDialog inherits Rectangle {
     // 确认改名 / 新建：Enter、点空白、点关闭都走这里。
     function commit_edit() {
         let active = root.creating || root.editing != "";
+        // 规则①：空名不提交 —— 失焦/点空白即静默放弃（不报错、不产生空组）
+        if (active && root.editing-text == "") {
+            root.editing = "";
+            root.creating = false;
+            root.editing-text = "";
+            root.editing-error = "";
+            return;
+        }
         let err = !active
             ? ""
             : (root.creating
@@ -125,6 +196,12 @@ export component GroupManagerDialog inherits Rectangle {
     changed dragging => {
         if (root.dragging) { root.tip-row = -1; }
     }
+    // toast 停留 2.2s 自动消失
+    toast-timer := Timer {
+        interval: 2200ms;
+        running: root.toast != "";
+        triggered => { root.toast = ""; }
+    }
     // 关窗时把弹框内的临时态全部复位：下次打开是干净的一份
     changed open => {
         if (!root.open) {
@@ -139,6 +216,12 @@ export component GroupManagerDialog inherits Rectangle {
             root.drop-gi = -1;
             root.dragging = false;
             root.drag-kind = "";
+            root.drag-insert = -1;
+            root.pick-anchor = -1;
+            root.pick-sweeping = false;
+            root.win-dx = 0px;
+            root.win-dy = 0px;
+            root.win-dragging = false;
         }
     }
 
@@ -156,8 +239,8 @@ export component GroupManagerDialog inherits Rectangle {
         }
 
         gm := Rectangle {
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
+            x: (parent.width - self.width) / 2 + root.win-dx;
+            y: (parent.height - self.height) / 2 + root.win-dy;
             width: min(760px, parent.width - 32px);
             height: min(522px, parent.height - 32px);
             background: Theme.popup-bg;
@@ -168,7 +251,42 @@ export component GroupManagerDialog inherits Rectangle {
             drop-shadow-color: #00000080;
             clip: true;
 
-            TouchArea { }   // 吞掉内部点击
+            // 按住标题区 / 任意空白拖动弹框；3px 内仍算点击（点空白 = 确认改名）。
+            // 行 / 按钮 / 输入框各有自己的 TouchArea，先命中，不会触发这里。
+            bg-ta := TouchArea {
+                pointer-event(ev) => {
+                    if (ev.kind == PointerEventKind.down) {
+                        root.win-start-x = self.absolute-position.x + self.mouse-x;
+                        root.win-start-y = self.absolute-position.y + self.mouse-y;
+                        root.win-base-x = root.win-dx;
+                        root.win-base-y = root.win-dy;
+                        root.win-dragging = false;
+                    } else if (ev.kind == PointerEventKind.up) {
+                        if (!root.win-dragging) {
+                            commit_edit();
+                            root.color-for = "";
+                            root.move-menu = false;
+                        }
+                        root.win-dragging = false;
+                    }
+                }
+                moved => {
+                    let ax = self.absolute-position.x + self.mouse-x;
+                    let ay = self.absolute-position.y + self.mouse-y;
+                    let dx = ax - root.win-start-x;
+                    let dy = ay - root.win-start-y;
+                    if (!root.win-dragging
+                        && (dx > 3px || dx < -3px || dy > 3px || dy < -3px)) {
+                        root.win-dragging = true;
+                    }
+                    if (root.win-dragging) {
+                        let sx = Math.max(0px, (root.width - gm.width) / 2);
+                        let sy = Math.max(0px, (root.height - gm.height) / 2);
+                        root.win-dx = Math.max(-sx, Math.min(sx, root.win-base-x + dx));
+                        root.win-dy = Math.max(-sy, Math.min(sy, root.win-base-y + dy));
+                    }
+                }
+            }
 
             // Esc：编辑中先取消编辑，否则关窗（与稿子一致）。
             // 焦点给 FocusScope，TextInput 不处理的按键会冒泡上来。
@@ -187,6 +305,57 @@ export component GroupManagerDialog inherits Rectangle {
                         } else {
                             root.close();
                         }
+                        return accept;
+                    }
+                    // 编辑中把按键留给 TextInput（Enter 由 accepted 处理）。
+                    if (root.editing != "" || root.creating) {
+                        return reject;
+                    }
+                    // Ctrl+F：聚焦搜索（搜索框右侧的快捷键徽标就是它）
+                    if (ev.modifiers.control && (ev.text == "f" || ev.text == "F")) {
+                        q-ta.focus();
+                        return accept;
+                    }
+                    // Alt+↑↓ 组排序（高保真 §组排序：拖行的键盘替代）
+                    if (ev.text == Key.UpArrow || ev.text == Key.DownArrow)
+                        && ev.modifiers.alt {
+                        if (root.cur-index > 1 && ev.text == Key.UpArrow) {
+                            root.reorder-group(root.cur-name, root.groups[root.cur-index - 1].name);
+                        } else if (ev.text == Key.DownArrow
+                            && root.cur-index >= 1
+                            && root.cur-index < root.groups.length - 1) {
+                            let before = root.cur-index + 2 < root.groups.length
+                                ? root.groups[root.cur-index + 2].name : "";
+                            root.reorder-group(root.cur-name, before);
+                        }
+                        return accept;
+                    }
+                    // ↑↓ 切换分组（高保真 §RULES / 底部提示）
+                    if (ev.text == Key.UpArrow || ev.text == Key.DownArrow) {
+                        if (root.groups.length > 0) {
+                            let step = ev.text == Key.UpArrow ? -1 : 1;
+                            let i = Math.max(0, Math.min(root.groups.length - 1,
+                                root.cur-index + step));
+                            if (i != root.cur-index) {
+                                commit_edit();
+                                root.selected = root.groups[i].name;
+                                root.confirm-del = "";
+                                root.color-for = "";
+                                root.clear-picks();
+                                root.select(root.groups[i].name);
+                            }
+                        }
+                        return accept;
+                    }
+                    // F2 改名 / Del 删除（未分组不响应）
+                    if (ev.text == Key.F2 && !root.cur-reserved) {
+                        start_edit(root.cur-name);
+                        return accept;
+                    }
+                    if (ev.text == Key.Delete && !root.cur-reserved) {
+                        root.confirm-del = root.cur-name;
+                        root.del-target = "";
+                        root.clear-picks();
                         return accept;
                     }
                     return reject;
@@ -214,14 +383,19 @@ export component GroupManagerDialog inherits Rectangle {
                                 font-weight: Theme.fw-strong;
                             }
                             Text {
-                                text: root.groups.length + (root.lang-en ? " groups" : " 个分组");
+                                text: root.custom-count + (root.lang-en
+                                    ? (root.custom-count == 1 ? " group" : " groups")
+                                    : " 个自定义分组")
+                                    + " · " + root.session-count + (root.lang-en
+                                        ? (root.session-count == 1 ? " session" : " sessions")
+                                        : " 个会话");
                                 color: Theme.text-muted;
                                 font-size: Theme.fs-xs;
                             }
                         }
                         // 搜索（组名 / 会话名 / 主机，过滤在 Rust 侧）
                         Rectangle {
-                            width: 196px;
+                            width: 206px;
                             height: 30px;
                             border-radius: Theme.radius-md;
                             background: Theme.popup-bg-inset;
@@ -232,16 +406,50 @@ export component GroupManagerDialog inherits Rectangle {
                                 padding-right: 6px;
                                 spacing: 6px;
                                 cross-axis-alignment: center;
-                                Icon { glyph: "search"; tint: Theme.text-muted; size: 12px; }
-                                q-ta := TextInput {
+                                Icon { glyph: "search"; tint: Theme.text-muted; size: 13px; }
+                                // 输入框 + 占位提示：TextInput 没有 placeholder-text，用叠层
+                                Rectangle {
                                     horizontal-stretch: 1;
                                     height: 100%;
-                                    text <=> root.query;
-                                    font-size: Theme.fs-xs;
-                                    color: Theme.text-primary;
-                                    vertical-alignment: center;
-                                    single-line: true;
-                                    edited => { root.search(root.query); }
+                                    q-ta := TextInput {
+                                        width: 100%;
+                                        height: 100%;
+                                        text <=> root.query;
+                                        font-size: Theme.fs-xs;
+                                        color: Theme.text-primary;
+                                        vertical-alignment: center;
+                                        single-line: true;
+                                        edited => { root.search(root.query); }
+                                    }
+                                    if root.query == "" : Text {
+                                        width: 100%;
+                                        height: 100%;
+                                        text: root.lang-en ? "Search groups or sessions" : "搜索分组或会话";
+                                        color: Theme.text-muted;
+                                        font-size: Theme.fs-xs;
+                                        horizontal-alignment: left;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                }
+                                // 快捷键徽标（Ctrl F 会把焦点给输入框）
+                                Rectangle {
+                                    height: 16px;
+                                    border-radius: 3px;
+                                    border-width: 1px;
+                                    border-color: Theme.border-strong;
+                                    HorizontalLayout {
+                                        padding-left: 4px;
+                                        padding-right: 4px;
+                                        alignment: center;
+                                        Text {
+                                            text: "Ctrl F";
+                                            color: Theme.text-muted;
+                                            font-size: 9.5px;
+                                            font-family: Theme.font-mono;
+                                            vertical-alignment: center;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -279,206 +487,314 @@ export component GroupManagerDialog inherits Rectangle {
                             glist := Rectangle {
                                 vertical-stretch: 1;
                                 clip: true;
-                                changed absolute-position => {
-                                    root.list-top = self.absolute-position.y + 8px;
-                                }
-                                VerticalLayout {
+                                // 组多时滚动
+                                gsv := ScrollView {
+                                    width: 100%;
+                                    height: 100%;
+                                    // 行拖拽优先：鼠标拖动交给行，滚轮仍滚列表
+                                    mouse-drag-pan-enabled: false;
+                                glay := VerticalLayout {
                                     padding-top: 8px;
                                     padding-left: 6px;
                                     padding-right: 6px;
                                     spacing: 0px;
                                     alignment: start;
+                                    changed absolute-position => {
+                                        root.list-top = self.absolute-position.y + 8px;
+                                    }
 
-                                    for i in root.groups.length : Rectangle {
-                                        height: root.row-h;
-                                        border-radius: Theme.radius-md;
-                                        background: root.selected == root.groups[i].name
-                                            ? Theme.bg-active
-                                            : (grow-ta.has-hover ? Theme.bg-hover : transparent);
-
-                                        // 选中竖条（呼应侧栏脊线）
-                                        if root.selected == root.groups[i].name : Rectangle {
-                                            x: 0px;
-                                            y: 6px;
-                                            width: 2px;
-                                            height: parent.height - 12px;
-                                            border-radius: 1px;
-                                            background: Theme.accent-solid;
-                                        }
-                                        // 拖成员时的落点：2px accent 内描边
-                                        if root.drop-gi == i && root.drag-kind == "member" : Rectangle {
-                                            width: 100%;
-                                            height: 100%;
-                                            border-radius: Theme.radius-md;
-                                            border-width: 2px;
-                                            border-color: Theme.accent-solid;
-                                            background: transparent;
-                                        }
-                                        // 未分组之下画分隔线（行内元素，不占布局高度）
-                                        if root.groups[i].reserved : Rectangle {
-                                            y: parent.height - 1px;
-                                            width: 100%;
-                                            height: 1px;
-                                            background: Theme.border-subtle;
-                                        }
-
-                                        grow-ta := TouchArea {
-                                            mouse-cursor: pointer;
-                                            clicked => {
-                                                commit_edit();
-                                                root.color-for = "";
-                                                root.move-menu = false;
-                                                if (root.selected != root.groups[i].name) {
-                                                    root.selected = root.groups[i].name;
-                                                    root.confirm-del = "";
-                                                    root.clear-picks();
-                                                    root.select(root.groups[i].name);
-                                                }
-                                            }
-                                            double-clicked => {
-                                                if (!root.groups[i].reserved) {
-                                                    start_edit(root.groups[i].name);
-                                                }
-                                            }
-                                            moved => {
-                                                if (root.editing != "" || root.creating || root.query != "") { return; }
-                                                if (!root.dragging) {
-                                                    root.dragging = true;
-                                                    root.drag-kind = "group";
-                                                    root.drag-id = root.groups[i].name;
-                                                    root.drag-index = i;
-                                                }
-                                                if (root.drag-kind == "group") {
-                                                    let off = Math.round(self.mouse-y / root.row-h);
-                                                    root.drag-to = Math.max(0, Math.min(
-                                                        root.groups.length - 1, i + off));
-                                                }
-                                            }
-                                            pointer-event(ev) => {
-                                                if (ev.kind == PointerEventKind.up
-                                                    && root.dragging && root.drag-kind == "group") {
-                                                    // before = 目标位置当前的组（拖走自己后重取）
-                                                    let to = root.drag-to;
-                                                    let before = to > root.drag-index
-                                                        ? (to + 1 < root.groups.length ? root.groups[to + 1].name : "")
-                                                        : root.groups[to].name;
-                                                    if (to != root.drag-index) {
-                                                        root.reorder-group(root.drag-id, before);
-                                                    }
-                                                    root.dragging = false;
-                                                    root.drag-kind = "";
-                                                    root.drag-id = "";
-                                                }
-                                            }
-                                        }
-
-                                        HorizontalLayout {
-                                            padding-left: 12px;
-                                            padding-right: 4px;
-                                            spacing: 7px;
-                                            cross-axis-alignment: center;
-
-                                            // 色点
-                                            Rectangle {
-                                                width: 10px;
-                                                height: 10px;
-                                                border-radius: 5px;
-                                                background: root.groups[i].color-hex != ""
-                                                    ? root.groups[i].color : transparent;
-                                                border-width: 1px;
-                                                border-color: root.groups[i].color-hex != ""
-                                                    ? transparent : Theme.text-muted;
-                                            }
-
-                                            // 名称 / 编辑框
-                                            if root.editing == root.groups[i].name : Rectangle {
-                                                horizontal-stretch: 1;
-                                                height: 22px;
-                                                border-radius: Theme.radius-sm;
-                                                background: Theme.popup-bg;
-                                                border-width: 1px;
-                                                border-color: root.editing-error != ""
-                                                    ? Theme.danger : Theme.accent-solid;
-                                                TextInput {
-                                                    x: 4px;
-                                                    width: parent.width - 8px;
-                                                    height: parent.height;
-                                                    text <=> root.editing-text;
-                                                    font-size: Theme.fs-sm;
-                                                    color: Theme.text-primary;
+                                    for i in root.groups.length : VerticalLayout {
+                                        spacing: 0px;
+                                        // 「我的分组 N」小节标题（高保真 §左栏：只在未分组之后出现一次）
+                                        if i == 1 && root.has-cap() : Rectangle {
+                                            height: root.cap-h;
+                                            HorizontalLayout {
+                                                padding-left: 8px;
+                                                padding-right: 8px;
+                                                spacing: 6px;
+                                                cross-axis-alignment: center;
+                                                Text {
+                                                    text: root.lang-en ? "My groups" : "我的分组";
+                                                    color: Theme.text-muted;
+                                                    font-size: Theme.fs-2xs;
                                                     vertical-alignment: center;
-                                                    single-line: true;
-                                                    edited => { root.editing-error = ""; }
-                                                    accepted => { commit_edit(); }
-                                                }
-                                            }
-                                            if root.editing != root.groups[i].name : Text {
-                                                horizontal-stretch: 1;
-                                                text: root.groups[i].name;
-                                                color: root.groups[i].reserved
-                                                    ? Theme.text-muted : Theme.text-secondary;
-                                                font-size: Theme.fs-sm;
-                                                vertical-alignment: center;
-                                                overflow: elide;
-                                            }
-                                            // 计数（hover / 选中让位给操作按钮）
-                                            if !grow-ta.has-hover && root.selected != root.groups[i].name : Text {
-                                                text: root.groups[i].count;
-                                                color: Theme.text-muted;
-                                                font-size: Theme.fs-2xs;
-                                                vertical-alignment: center;
-                                            }
-                                            // 操作（未分组没有）
-                                            if !root.groups[i].reserved
-                                                && (grow-ta.has-hover || root.selected == root.groups[i].name) : HorizontalLayout {
-                                                spacing: 1px;
-                                                Rectangle {
-                                                    width: 22px;
-                                                    height: 22px;
-                                                    border-radius: Theme.radius-sm;
-                                                    background: ed-ta.has-hover ? Theme.bg-hover : transparent;
-                                                    ed-ta := TouchArea {
-                                                        mouse-cursor: pointer;
-                                                        clicked => { start_edit(root.groups[i].name); }
-                                                    }
-                                                    Icon { glyph: "edit"; tint: Theme.text-secondary; size: 12px; }
                                                 }
                                                 Rectangle {
-                                                    width: 22px;
-                                                    height: 22px;
-                                                    border-radius: Theme.radius-sm;
-                                                    background: del-ta.has-hover ? Theme.bg-hover : transparent;
-                                                    del-ta := TouchArea {
-                                                        mouse-cursor: pointer;
-                                                        clicked => {
-                                                            commit_edit();
-                                                            root.selected = root.groups[i].name;
-                                                            root.select(root.groups[i].name);
-                                                            root.confirm-del = root.groups[i].name;
-                                                            root.del-target = "";
-                                                            root.clear-picks();
-                                                        }
+                                                    width: 18px;
+                                                    height: 14px;
+                                                    border-radius: 7px;
+                                                    background: Theme.bg-active;
+                                                    Text {
+                                                        // 跟着过滤结果走（搜索时只数可见的自定义组）
+                                                        text: root.groups.length
+                                                            - (root.groups.length > 0
+                                                                && root.groups[0].reserved ? 1 : 0);
+                                                        color: Theme.text-secondary;
+                                                        font-size: 9.5px;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
                                                     }
-                                                    Icon { glyph: "delete"; tint: Theme.text-secondary; size: 12px; }
                                                 }
+                                                Rectangle { horizontal-stretch: 1; height: 1px; }
                                             }
                                         }
-
-                                        // 色点点击区（压在行 TouchArea 之上）
                                         Rectangle {
-                                            x: 8px;
-                                            y: 0px;
-                                            width: 24px;
-                                            height: parent.height;
-                                            background: transparent;
-                                            cdot-ta := TouchArea {
+                                            height: root.row-h;
+                                            border-radius: Theme.radius-md;
+                                            // 被拖的组行 40% 透明（高保真 §拖拽）
+                                            opacity: root.drag-kind == "group"
+                                                && root.drag-id == root.groups[i].name ? 0.4 : 1.0;
+                                            background: root.selected == root.groups[i].name
+                                                ? Theme.accent.with-alpha(Theme.dark ? 0.12 : 0.08)
+                                                : (grow-ta.has-hover ? Theme.bg-hover : transparent);
+
+                                            // 选中竖条（呼应侧栏脊线）
+                                            if root.selected == root.groups[i].name : Rectangle {
+                                                x: 0px;
+                                                y: 6px;
+                                                width: 2px;
+                                                height: parent.height - 12px;
+                                                border-radius: 1px;
+                                                background: Theme.accent-solid;
+                                            }
+                                            // 拖成员时的落点：2px accent 内描边
+                                            if root.drop-gi == i && root.drag-kind == "member" : Rectangle {
+                                                width: 100%;
+                                                height: 100%;
+                                                border-radius: Theme.radius-md;
+                                                border-width: 2px;
+                                                border-color: Theme.accent-solid;
+                                                background: transparent;
+                                            }
+                                            // 未分组之下画分隔线（行内元素，不占布局高度）
+                                            if root.groups[i].reserved : Rectangle {
+                                                y: parent.height - 1px;
+                                                width: 100%;
+                                                height: 1px;
+                                                background: Theme.border-subtle;
+                                            }
+
+                                            grow-ta := TouchArea {
                                                 mouse-cursor: pointer;
                                                 clicked => {
                                                     commit_edit();
-                                                    root.color-row = i;
-                                                    root.color-for = root.color-for == root.groups[i].name
-                                                        ? "" : root.groups[i].name;
+                                                    root.color-for = "";
                                                     root.move-menu = false;
+                                                    if (root.selected != root.groups[i].name) {
+                                                        root.selected = root.groups[i].name;
+                                                        root.confirm-del = "";
+                                                        root.clear-picks();
+                                                        root.select(root.groups[i].name);
+                                                    }
+                                                }
+                                                double-clicked => {
+                                                    if (!root.groups[i].reserved) {
+                                                        start_edit(root.groups[i].name);
+                                                    }
+                                                }
+                                                moved => {
+                                                    if (root.groups[i].reserved) { return; }
+                                                    if (root.editing != "" || root.creating || root.query != "") { return; }
+                                                    let ax = self.absolute-position.x + self.mouse-x;
+                                                    let ay = self.absolute-position.y + self.mouse-y;
+                                                    let dx = ax - root.press-x;
+                                                    let dy = ay - root.press-y;
+                                                    if (!root.dragging) {
+                                                        // >5px 才起拖（高保真 §拖拽）
+                                                        if (dx > -5px && dx < 5px
+                                                            && dy > -5px && dy < 5px) {
+                                                            return;
+                                                        }
+                                                        root.dragging = true;
+                                                        root.drag-kind = "group";
+                                                        root.drag-id = root.groups[i].name;
+                                                        root.drag-label = root.groups[i].name;
+                                                        root.drag-index = i;
+                                                    }
+                                                    if (root.drag-kind == "group") {
+                                                        let off = Math.round(self.mouse-y / root.row-h);
+                                                        root.drag-to = Math.max(0, Math.min(
+                                                            root.groups.length - 1, i + off));
+                                                        root.drag-insert = root.drag-to > root.drag-index
+                                                            ? root.drag-to + 1 : root.drag-to;
+                                                    }
+                                                }
+                                                pointer-event(ev) => {
+                                                    if (ev.kind == PointerEventKind.down) {
+                                                        root.press-x = self.absolute-position.x + self.mouse-x;
+                                                        root.press-y = self.absolute-position.y + self.mouse-y;
+                                                        root.dragging = false;
+                                                    } else if (ev.kind == PointerEventKind.up
+                                                        && root.dragging && root.drag-kind == "group") {
+                                                        // before = 目标位置当前的组（拖走自己后重取）
+                                                        let to = root.drag-to;
+                                                        let before = to > root.drag-index
+                                                            ? (to + 1 < root.groups.length ? root.groups[to + 1].name : "")
+                                                            : root.groups[to].name;
+                                                        if (to != root.drag-index) {
+                                                            root.reorder-group(root.drag-id, before);
+                                                        }
+                                                        root.dragging = false;
+                                                        root.drag-kind = "";
+                                                        root.drag-id = "";
+                                                        root.drag-insert = -1;
+                                                    }
+                                                }
+                                            }
+
+                                            HorizontalLayout {
+                                                // 有拖柄的行左内边距 6；未分组没有拖柄，用 12 补回同样的起点
+                                                padding-left: root.groups[i].reserved ? 12px : 6px;
+                                                padding-right: 4px;
+                                                spacing: 7px;
+                                                cross-axis-alignment: center;
+
+                                                // 拖柄（12×22，高保真 §组行：只在 hover 显形 0.55，未分组不显示）
+                                                if !root.groups[i].reserved : Icon {
+                                                    glyph: "drag-grip";
+                                                    tint: Theme.text-muted;
+                                                    size: 12px;
+                                                    width: 12px;
+                                                    height: 22px;
+                                                    opacity: grow-ta.has-hover ? 0.55 : 0;
+                                                }
+
+                                                // 色点
+                                                Rectangle {
+                                                    width: 10px;
+                                                    height: 10px;
+                                                    border-radius: 5px;
+                                                    background: root.groups[i].color-hex != ""
+                                                        ? root.groups[i].color : transparent;
+                                                    border-width: 1px;
+                                                    border-color: root.groups[i].color-hex != ""
+                                                        ? transparent : Theme.text-muted;
+                                                }
+
+                                                // 名称 / 编辑框
+                                                if root.editing == root.groups[i].name : Rectangle {
+                                                    horizontal-stretch: 1;
+                                                    height: 22px;
+                                                    border-radius: Theme.radius-sm;
+                                                    background: Theme.popup-bg;
+                                                    border-width: 1px;
+                                                    border-color: root.editing-error != ""
+                                                        ? Theme.danger : Theme.accent-solid;
+                                                    TextInput {
+                                                        x: 4px;
+                                                        width: parent.width - 8px;
+                                                        height: parent.height;
+                                                        text <=> root.editing-text;
+                                                        font-size: Theme.fs-sm;
+                                                        color: Theme.text-primary;
+                                                        vertical-alignment: center;
+                                                        single-line: true;
+                                                        edited => { root.editing-error = root.validate-name(root.editing-text, root.editing); }
+                                                        accepted => { commit_edit(); }
+                                                    }
+                                                }
+                                                if root.editing != root.groups[i].name : Text {
+                                                    horizontal-stretch: 1;
+                                                    text: root.groups[i].name;
+                                                    color: root.groups[i].reserved
+                                                        ? Theme.text-muted : Theme.text-secondary;
+                                                    font-size: Theme.fs-sm;
+                                                    vertical-alignment: center;
+                                                    overflow: elide;
+                                                }
+                                                // 计数（hover / 选中让位给操作按钮）
+                                                if !grow-ta.has-hover && root.selected != root.groups[i].name : Text {
+                                                    text: root.groups[i].count;
+                                                    color: Theme.text-muted;
+                                                    font-size: Theme.fs-2xs;
+                                                    vertical-alignment: center;
+                                                }
+                                                // 操作（未分组没有）
+                                                if !root.groups[i].reserved
+                                                    && (grow-ta.has-hover || root.selected == root.groups[i].name) : HorizontalLayout {
+                                                    spacing: 1px;
+                                                    Rectangle {
+                                                        width: 22px;
+                                                        height: 22px;
+                                                        border-radius: Theme.radius-sm;
+                                                        background: ed-ta.has-hover ? Theme.bg-hover : transparent;
+                                                        ed-ta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => { start_edit(root.groups[i].name); }
+                                                        }
+                                                        Icon { glyph: "edit"; tint: Theme.text-secondary; size: 12px; }
+                                                    }
+                                                    Rectangle {
+                                                        width: 22px;
+                                                        height: 22px;
+                                                        border-radius: Theme.radius-sm;
+                                                        background: del-ta.has-hover ? Theme.bg-hover : transparent;
+                                                        del-ta := TouchArea {
+                                                            mouse-cursor: pointer;
+                                                            clicked => {
+                                                                commit_edit();
+                                                                root.selected = root.groups[i].name;
+                                                                root.select(root.groups[i].name);
+                                                                root.confirm-del = root.groups[i].name;
+                                                                root.del-target = "";
+                                                                root.clear-picks();
+                                                            }
+                                                        }
+                                                        Icon { glyph: "delete"; tint: Theme.text-secondary; size: 12px; }
+                                                    }
+                                                }
+                                            }
+
+                                            // 色点点击区（压在行 TouchArea 之上）
+                                            Rectangle {
+                                                x: 8px;
+                                                y: 0px;
+                                                width: 24px;
+                                                height: parent.height;
+                                                background: transparent;
+                                                cdot-ta := TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        commit_edit();
+                                                        root.color-row = i;
+                                                        root.color-for = root.color-for == root.groups[i].name
+                                                            ? "" : root.groups[i].name;
+                                                        root.move-menu = false;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // 搜索无结果（高保真 §搜索）
+                                    if root.groups.length == 0 && root.query != "" : Rectangle {
+                                        height: 76px;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 5px;
+                                            Text {
+                                                text: root.lang-en
+                                                    ? "No matching groups or sessions"
+                                                    : "没有匹配的分组或会话";
+                                                color: Theme.text-secondary;
+                                                font-size: Theme.fs-xs;
+                                                horizontal-alignment: center;
+                                            }
+                                            Rectangle {
+                                                height: 20px;
+                                                clear-ta := TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        root.query = "";
+                                                        root.search("");
+                                                    }
+                                                }
+                                                Text {
+                                                    text: root.lang-en ? "Clear search" : "清空搜索";
+                                                    color: Theme.accent-solid;
+                                                    font-size: Theme.fs-2xs;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
                                                 }
                                             }
                                         }
@@ -518,11 +834,38 @@ export component GroupManagerDialog inherits Rectangle {
                                                     color: Theme.text-primary;
                                                     vertical-alignment: center;
                                                     single-line: true;
-                                                    edited => { root.editing-error = ""; }
+                                                    edited => { root.editing-error = root.validate-name(root.editing-text, root.editing); }
                                                     accepted => { commit_edit(); }
                                                 }
                                             }
                                         }
+                                    }
+                                }
+                                }
+
+                                // 组排序插入线（2px accent + 两端 6px 圆点；高保真 §插入线）
+                                if root.dragging && root.drag-kind == "group"
+                                    && root.drag-insert >= 0 : Rectangle {
+                                    y: root.gi-top(root.drag-insert) - 1px - gsv.content-y;
+                                    x: 6px;
+                                    width: parent.width - 12px;
+                                    height: 2px;
+                                    background: Theme.accent-solid;
+                                    Rectangle {
+                                        x: -2px;
+                                        y: -2px;
+                                        width: 6px;
+                                        height: 6px;
+                                        border-radius: 3px;
+                                        background: Theme.accent-solid;
+                                    }
+                                    Rectangle {
+                                        x: parent.width - 4px;
+                                        y: -2px;
+                                        width: 6px;
+                                        height: 6px;
+                                        border-radius: 3px;
+                                        background: Theme.accent-solid;
                                     }
                                 }
                             }
@@ -631,7 +974,7 @@ export component GroupManagerDialog inherits Rectangle {
                                             color: Theme.text-primary;
                                             vertical-alignment: center;
                                             single-line: true;
-                                            edited => { root.editing-error = ""; }
+                                            edited => { root.editing-error = root.validate-name(root.editing-text, root.editing); }
                                             accepted => { commit_edit(); }
                                         }
                                     }
@@ -644,7 +987,10 @@ export component GroupManagerDialog inherits Rectangle {
                                         vertical-alignment: center;
                                         overflow: elide;
                                         rtt-ta := TouchArea {
-                                            double-clicked => { start_edit(root.cur-name); }
+                                            double-clicked => {
+                                                // 「未分组」不可改名（高保真 §RULES）
+                                                if (!root.cur-reserved) { start_edit(root.cur-name); }
+                                            }
                                         }
                                     }
 
@@ -675,7 +1021,9 @@ export component GroupManagerDialog inherits Rectangle {
                                             padding-right: 8px;
                                             Text {
                                                 text: root.picked-count > 0
-                                                    ? (root.picked-count + " / " + root.total-count)
+                                                    ? (root.lang-en
+                                                        ? "Selected " + root.picked-count + " / " + root.total-count + " · Clear"
+                                                        : "已选 " + root.picked-count + " / " + root.total-count + " · 取消")
                                                     : (root.lang-en ? "Select all" : "全选");
                                                 color: root.picked-count > 0
                                                     ? Theme.accent-solid : Theme.text-secondary;
@@ -702,9 +1050,9 @@ export component GroupManagerDialog inherits Rectangle {
                                 padding-bottom: 8px;
                                 Rectangle {
                                     horizontal-stretch: 1;
-                                    background: #e25c5c18;
+                                    background: Theme.danger.with-alpha(0.09);
                                     border-width: 1px;
-                                    border-color: #e25c5c60;
+                                    border-color: Theme.danger.with-alpha(0.42);
                                     border-radius: Theme.radius-md;
                                     VerticalLayout {
                                         padding: 8px;
@@ -723,8 +1071,11 @@ export component GroupManagerDialog inherits Rectangle {
                                             }
                                             Text {
                                                 horizontal-stretch: 1;
-                                                text: root.members.length + (root.lang-en
-                                                    ? " sessions move to →" : " 个会话移到 →");
+                                                text: (root.cur-index >= 0 && root.cur-index < root.groups.length
+                                                        ? root.groups[root.cur-index].count
+                                                        : root.members.length)
+                                                    + (root.lang-en
+                                                        ? " sessions move to →" : " 个会话移到 →");
                                                 color: Theme.text-secondary;
                                                 font-size: Theme.fs-2xs;
                                                 horizontal-alignment: right;
@@ -736,6 +1087,8 @@ export component GroupManagerDialog inherits Rectangle {
                                             cross-axis-alignment: center;
                                             for g in root.groups : Rectangle {
                                                 height: 22px;
+                                                // 不能把成员迁到正要删除的组里
+                                                visible: g.name != root.confirm-del;
                                                 border-radius: Theme.radius-sm;
                                                 border-width: 1px;
                                                 border-color: root.del-target == (g.reserved ? "" : g.name)
@@ -780,10 +1133,24 @@ export component GroupManagerDialog inherits Rectangle {
                                                 width: 72px;
                                                 height: 22px;
                                                 border-radius: Theme.radius-sm;
-                                                background: dk-ta.has-hover ? #e25c5c : #cc3333;
+                                                background: dk-ta.has-hover
+                                                    ? Theme.danger-strong : Theme.danger;
                                                 dk-ta := TouchArea {
                                                     mouse-cursor: pointer;
                                                     clicked => {
+                                                        // 先把结果算好：remove 之后这一行数据就没了
+                                                        let n = (root.cur-index >= 0
+                                                                && root.cur-index < root.groups.length
+                                                            ? root.groups[root.cur-index].count
+                                                            : root.members.length);
+                                                        let target = root.del-target == ""
+                                                            ? (root.lang-en ? "Ungrouped" : "未分组")
+                                                            : root.del-target;
+                                                        root.toast = root.lang-en
+                                                            ? "Deleted " + root.confirm-del + " · "
+                                                                + n + " sessions moved to " + target
+                                                            : "已删除「" + root.confirm-del + "」· "
+                                                                + n + " 个会话移到 " + target;
                                                         root.remove-group(root.confirm-del, root.del-target);
                                                         root.confirm-del = "";
                                                         root.clear-picks();
@@ -806,22 +1173,42 @@ export component GroupManagerDialog inherits Rectangle {
                             mlist := Rectangle {
                                 vertical-stretch: 1;
                                 clip: true;
-                                changed absolute-position => {
-                                    root.mem-top = self.absolute-position.y + 6px;
-                                }
-                                VerticalLayout {
+                                // 成员多时滚动（高保真：弹框高度不变，列表滚动）
+                                msv := ScrollView {
+                                    width: 100%;
+                                    height: 100%;
+                                    mouse-drag-pan-enabled: false;
+                                    // 切组后滚回顶部（高保真 §切组）。`changed` 只认本元素自己的
+                                    // 属性，所以拿一个局部镜像盯 root.selected，变化即复位。
+                                    property <string> sel-watch: root.selected;
+                                    changed sel-watch => { self.content-y = 0px; }
+                                mem-lay := VerticalLayout {
                                     padding-top: 6px;
                                     padding-left: 8px;
                                     padding-right: 8px;
-                                    padding-bottom: 44px;   // 给批量条留位，列表不跳
+                                    padding-bottom: 48px;   // 给批量条留位（高保真 §批量条），列表不跳
                                     spacing: 0px;
-                                    alignment: start;
+                                    // 空组：整块在列表里垂直居中（有成员时仍从上排）
+                                    alignment: root.total-count == 0 ? center : start;
+                                    changed absolute-position => {
+                                        root.mem-top = self.absolute-position.y + 6px;
+                                    }
 
                                     if root.total-count == 0 : Rectangle {
                                         height: 120px;
                                         VerticalLayout {
                                             alignment: center;
-                                            spacing: 3px;
+                                            spacing: 6px;
+                                            HorizontalLayout {
+                                                alignment: center;
+                                                Icon {
+                                                    glyph: "folder";
+                                                    tint: Theme.text-muted;
+                                                    size: 22px;
+                                                    width: 22px;
+                                                    height: 22px;
+                                                }
+                                            }
                                             Text {
                                                 text: root.cur-name + (root.lang-en
                                                     ? " has no sessions" : " 还没有会话");
@@ -844,9 +1231,15 @@ export component GroupManagerDialog inherits Rectangle {
                                     for j in root.members.length : Rectangle {
                                         height: root.mem-h;
                                         border-radius: Theme.radius-md;
+                                        // 被拖的行（含整批）35% 透明（高保真 §拖拽）
+                                        opacity: root.drag-kind == "member" && root.dragging
+                                            && (root.members[j].picked
+                                                || root.drag-id == root.members[j].id) ? 0.35 : 1.0;
                                         background: root.members[j].picked
-                                            ? Theme.bg-active
-                                            : (mrow-ta.has-hover ? Theme.bg-hover : transparent);
+                                            ? Theme.accent.with-alpha(0.08)
+                                            : (root.members[j].hit
+                                                ? Theme.chip
+                                                : (mrow-ta.has-hover ? Theme.bg-hover : transparent));
 
                                         mrow-ta := TouchArea {
                                             mouse-cursor: default;
@@ -861,33 +1254,51 @@ export component GroupManagerDialog inherits Rectangle {
                                             }
                                             moved => {
                                                 if (root.editing != "" || root.creating || root.query != "") { return; }
+                                                let ax = self.absolute-position.x + self.mouse-x;
+                                                let ay = self.absolute-position.y + self.mouse-y;
+                                                let dx = ax - root.press-x;
+                                                let dy = ay - root.press-y;
                                                 if (!root.dragging) {
+                                                    // >5px 才起拖（高保真 §拖拽）
+                                                    if (dx > -5px && dx < 5px
+                                                        && dy > -5px && dy < 5px) {
+                                                        return;
+                                                    }
                                                     root.dragging = true;
                                                     root.drag-kind = "member";
                                                     root.drag-id = root.members[j].id;
+                                                    root.drag-label = root.members[j].name;
                                                     root.drag-index = j;
                                                 }
                                                 if (root.drag-kind == "member") {
-                                                    root.drag-abs-x = self.absolute-position.x + self.mouse-x;
-                                                    root.drag-abs-y = self.absolute-position.y + self.mouse-y;
+                                                    root.drag-abs-x = ax;
+                                                    root.drag-abs-y = ay;
                                                     let off = Math.round(self.mouse-y / root.mem-h);
                                                     root.drag-to = Math.max(0, Math.min(
                                                         root.members.length - 1, j + off));
                                                     root.drop-group = root.drag-abs-x
                                                         < gm.absolute-position.x + 248px;
                                                     root.drop-gi = root.drop-group
-                                                        ? Math.max(0, Math.min(root.groups.length - 1,
-                                                            Math.floor((root.drag-abs-y - root.list-top) / root.row-h)))
+                                                        ? root.gi-at(root.drag-abs-y - root.list-top)
                                                         : -1;
+                                                    root.drag-insert = root.drop-group
+                                                        ? -1
+                                                        : (root.drag-to > root.drag-index
+                                                            ? root.drag-to + 1 : root.drag-to);
                                                 }
                                             }
                                             pointer-event(ev) => {
+                                                if (ev.kind == PointerEventKind.down) {
+                                                    root.press-x = self.absolute-position.x + self.mouse-x;
+                                                    root.press-y = self.absolute-position.y + self.mouse-y;
+                                                    root.dragging = false;
+                                                    return;
+                                                }
                                                 if (ev.kind != PointerEventKind.up
                                                     || !root.dragging || root.drag-kind != "member") { return; }
                                                 if (root.drop-group) {
-                                                    // 左栏：按指针绝对 y 命中组行（行高固定、列表不滚）
-                                                    let gi = Math.max(0, Math.min(root.groups.length - 1,
-                                                        Math.floor((root.drag-abs-y - root.list-top) / root.row-h)));
+                                                    // 左栏：按指针绝对 y 命中组行（含「我的分组」小节标题的偏移）
+                                                    let gi = root.gi-at(root.drag-abs-y - root.list-top);
                                                     if (root.groups[gi].name != root.selected) {
                                                         root.move-members(root.members[j].id,
                                                             root.groups[gi].reserved ? "" : root.groups[gi].name,
@@ -895,17 +1306,21 @@ export component GroupManagerDialog inherits Rectangle {
                                                     }
                                                 } else if (root.drag-to != root.drag-index) {
                                                     let to = root.drag-to;
+                                                    let last = root.members.length - 1;
+                                                    // 向下拖插到目标行之后；落到最后一行 = after 最后一行。
                                                     let before = to > root.drag-index
-                                                        ? (to + 1 < root.members.length ? root.members[to + 1].id : "")
+                                                        ? (to >= last ? root.members[last].id : root.members[to + 1].id)
                                                         : root.members[to].id;
+                                                    let after = to > root.drag-index && to >= last;
                                                     root.reorder-members(root.members[j].id, before,
-                                                        to > root.drag-index, root.picked-count > 0);
+                                                        after, root.picked-count > 0);
                                                 }
                                                 root.dragging = false;
                                                 root.drag-kind = "";
                                                 root.drag-id = "";
                                                 root.drop-group = false;
                                                 root.drop-gi = -1;
+                                                root.drag-insert = -1;
                                             }
                                         }
 
@@ -915,34 +1330,57 @@ export component GroupManagerDialog inherits Rectangle {
                                             spacing: 9px;
                                             cross-axis-alignment: center;
 
-                                            // 复选框（16px 命中区，视觉同尺寸）
+                                            // 复选框：视觉 16px，命中区 22px（高保真 §刷选：这一列太窄按不住）
                                             Rectangle {
-                                                width: 16px;
-                                                height: 16px;
-                                                border-radius: 3px;
-                                                background: root.members[j].picked
-                                                    ? Theme.accent-solid : transparent;
-                                                border-width: 1px;
-                                                border-color: root.members[j].picked
-                                                    ? Theme.accent-solid : Theme.border-strong;
+                                                width: 22px;
+                                                height: 22px;
                                                 cb-ta := TouchArea {
                                                     mouse-cursor: pointer;
                                                     clicked => {
+                                                        // 刷选结束的同一次释放不算单击（否则会把锚点行又翻回去）
+                                                        if (root.pick-sweeping) {
+                                                            root.pick-sweeping = false;
+                                                            return;
+                                                        }
                                                         root.toggle-pick(root.members[j].id);
                                                         root.move-menu = false;
                                                     }
-                                                    // 刷选：按住这一列上下拖，经过即勾
+                                                    pointer-event(ev) => {
+                                                        if (ev.kind == PointerEventKind.down) {
+                                                            // 锚点 = 按下的这一行；取反 = 从已选行起拖是擦除
+                                                            root.pick-anchor = j;
+                                                            root.pick-on = !root.members[j].picked;
+                                                            root.pick-sweeping = false;
+                                                        } else if (ev.kind == PointerEventKind.up) {
+                                                            root.pick-anchor = -1;
+                                                        }
+                                                    }
+                                                    // 刷选：按住这一列上下拖，经过即画成锚点取反后的状态
                                                     moved => {
+                                                        if (root.pick-anchor < 0) { return; }
+                                                        root.pick-sweeping = true;
                                                         let ay = self.absolute-position.y + self.mouse-y;
                                                         let to = Math.max(0, Math.min(root.members.length - 1,
                                                             Math.floor((ay - root.mem-top) / root.mem-h)));
-                                                        root.paint-pick(0, to, !root.members[0].picked);
+                                                        root.paint-pick(root.pick-anchor, to, root.pick-on);
                                                     }
                                                 }
-                                                if root.members[j].picked : Icon {
-                                                    glyph: "check";
-                                                    tint: white;
-                                                    size: 10px;
+                                                Rectangle {
+                                                    x: 3px;
+                                                    y: 3px;
+                                                    width: 16px;
+                                                    height: 16px;
+                                                    border-radius: 3px;
+                                                    background: root.members[j].picked
+                                                        ? Theme.accent-solid : transparent;
+                                                    border-width: 1px;
+                                                    border-color: root.members[j].picked
+                                                        ? Theme.accent-solid : Theme.border-strong;
+                                                    if root.members[j].picked : Icon {
+                                                        glyph: "check";
+                                                        tint: white;
+                                                        size: 10px;
+                                                    }
                                                 }
                                             }
                                             ProtocolIcon {
@@ -959,13 +1397,15 @@ export component GroupManagerDialog inherits Rectangle {
                                                 Text {
                                                     text: root.members[j].name;
                                                     color: Theme.text-primary;
-                                                    font-size: Theme.fs-sm;
+                                                    font-size: 12.5px;
                                                     overflow: elide;
                                                 }
                                                 Text {
+                                                    // 高保真 §成员行：host 用等宽 10.5px（t3）
                                                     text: root.members[j].host;
                                                     color: Theme.text-muted;
-                                                    font-size: Theme.fs-2xs;
+                                                    font-size: 10.5px;
+                                                    font-family: Theme.font-mono;
                                                     overflow: elide;
                                                 }
                                             }
@@ -995,6 +1435,33 @@ export component GroupManagerDialog inherits Rectangle {
                                         }
                                     }
                                 }
+                                }
+
+                                // 成员排序插入线（2px accent + 两端 6px 圆点；高保真 §插入线）
+                                if root.dragging && root.drag-kind == "member"
+                                    && root.drag-insert >= 0 : Rectangle {
+                                    y: 6px + root.drag-insert * root.mem-h - 1px - msv.content-y;
+                                    x: 8px;
+                                    width: parent.width - 16px;
+                                    height: 2px;
+                                    background: Theme.accent-solid;
+                                    Rectangle {
+                                        x: -2px;
+                                        y: -2px;
+                                        width: 6px;
+                                        height: 6px;
+                                        border-radius: 3px;
+                                        background: Theme.accent-solid;
+                                    }
+                                    Rectangle {
+                                        x: parent.width - 4px;
+                                        y: -2px;
+                                        width: 6px;
+                                        height: 6px;
+                                        border-radius: 3px;
+                                        background: Theme.accent-solid;
+                                    }
+                                }
                             }
                         }
 
@@ -1005,9 +1472,9 @@ export component GroupManagerDialog inherits Rectangle {
                             width: parent.width - 16px;
                             height: 36px;
                             border-radius: Theme.radius-md;
-                            background: Theme.bg-active;
+                            background: Theme.accent.with-alpha(Theme.dark ? 0.15 : 0.10);
                             border-width: 1px;
-                            border-color: Theme.accent-solid;
+                            border-color: Theme.accent.with-alpha(0.30);
                             HorizontalLayout {
                                 padding-left: 10px;
                                 padding-right: 6px;
@@ -1096,6 +1563,8 @@ export component GroupManagerDialog inherits Rectangle {
                                 alignment: start;
                                 for g in root.groups : Rectangle {
                                     height: 28px;
+                                    // 当前组不列（移到自己没有意义）
+                                    visible: g.name != root.cur-name;
                                     border-radius: Theme.radius-sm;
                                     background: mm-ta.has-hover ? Theme.bg-hover : transparent;
                                     mm-ta := TouchArea {
@@ -1152,6 +1621,17 @@ export component GroupManagerDialog inherits Rectangle {
                             vertical-alignment: center;
                         }
                         Rectangle { horizontal-stretch: 1; height: 1px; }
+                        // 键盘提示（高保真 §底部；窄窗口靠 elide 收掉）
+                        Text {
+                            text: root.lang-en
+                                ? "↑↓ groups · F2 rename · Del delete · Esc close"
+                                : "↑↓ 切换分组 · F2 改名 · Del 删除 · Esc 关闭";
+                            color: Theme.text-muted;
+                            font-size: Theme.fs-2xs;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        Rectangle { width: 6px; height: 1px; }
                         Rectangle {
                             width: 72px;
                             height: 28px;
@@ -1174,52 +1654,92 @@ export component GroupManagerDialog inherits Rectangle {
             }
             }
 
-            // ── 成员悬浮卡：锚在成员行下方，150ms 首锚 ──
-            if root.tip-row >= 0 && root.tip-row < root.members.length && !root.dragging : Rectangle {
-                x: 250px;
-                y: Math.min(gm.height - 120px, root.tip-y);
-                width: 216px;
+            // ── 结果提示（删除后只报结果；不提供撤销）──
+            if root.toast != "" : Rectangle {
+                x: 248px + (parent.width - 248px - self.width) / 2;
+                y: parent.height - 48px - 40px;
+                width: min(340px, parent.width - 272px);
+                height: 30px;
                 border-radius: Theme.radius-md;
                 background: Theme.popup-bg-elevated;
                 border-width: 1px;
                 border-color: Theme.border-strong;
-                drop-shadow-blur: 18px;
-                drop-shadow-color: #00000080;
+                drop-shadow-blur: 14px;
+                drop-shadow-color: #00000070;
+                Text {
+                    text: root.toast;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-2xs;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            // ── 成员悬浮卡：与左侧栏成员列表的信息卡**同款**（elevated 底 / 9px 圆角 /
+            // subtle 边框 / 24px 投影 / 行距 2px / 键值单行连排 / 全部主文本色）。
+            // ⚠️ 必须显式给 height：非布局子项默认铺满父级，5 行会被 layout 摊到整个
+            // 弹框高度（2026-10-20 用户截图：主机~认证三行隔了近百像素）。
+            if root.tip-row >= 0 && root.tip-row < root.members.length && !root.dragging : Rectangle {
+                // 名称/主机/认证/分组 恒显，用户/备注 非空才显（与侧栏同口径）
+                property <int> tip-rows: 4
+                    + (root.members[root.tip-row].user != "" ? 1 : 0)
+                    + (root.members[root.tip-row].note != "" ? 1 : 0);
+                x: 250px;
+                // 下方放不下就翻到行上方（gm 有 clip，溢出会被裁）
+                y: root.tip-y + self.height > gm.height - 52px
+                    ? Math.max(56px, root.tip-y - root.mem-h - self.height - 4px)
+                    : root.tip-y;
+                width: min(340px,
+                    Math.max(tip-name.preferred-width, tip-host.preferred-width) + 76px);
+                height: 18px + self.tip-rows * 22px;
+                background: Theme.popup-bg-elevated;
+                border-radius: 9px;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                drop-shadow-blur: 24px;
+                drop-shadow-color: #00000045;
                 VerticalLayout {
                     padding: 9px;
+                    padding-left: 12px;
+                    padding-right: 12px;
                     spacing: 2px;
-                    Text {
-                        text: root.members[root.tip-row].name;
+                    tip-name := Text {
+                        text: (root.lang-en ? "Name:" : "名称：") + root.members[root.tip-row].name;
                         color: Theme.text-primary;
                         font-size: Theme.fs-xs;
-                        font-weight: Theme.fw-strong;
                         overflow: elide;
                     }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Text { width: 30px; text: root.lang-en ? "Host" : "主机"; color: Theme.text-muted; font-size: Theme.fs-2xs; }
-                        Text { horizontal-stretch: 1; text: root.members[root.tip-row].host; color: Theme.text-secondary; font-size: Theme.fs-2xs; overflow: elide; }
+                    tip-host := Text {
+                        text: (root.lang-en ? "Host:" : "主机：") + root.members[root.tip-row].host;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-xs;
+                        overflow: elide;
                     }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Text { width: 30px; text: root.lang-en ? "User" : "用户"; color: Theme.text-muted; font-size: Theme.fs-2xs; }
-                        Text { horizontal-stretch: 1; text: root.members[root.tip-row].user; color: Theme.text-secondary; font-size: Theme.fs-2xs; overflow: elide; }
+                    if root.members[root.tip-row].user != "" : Text {
+                        text: (root.lang-en ? "User:" : "用户：") + root.members[root.tip-row].user;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-xs;
+                        overflow: elide;
                     }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Text { width: 30px; text: root.lang-en ? "Auth" : "认证"; color: Theme.text-muted; font-size: Theme.fs-2xs; }
-                        Text { horizontal-stretch: 1; text: root.members[root.tip-row].auth; color: Theme.text-secondary; font-size: Theme.fs-2xs; overflow: elide; }
+                    Text {
+                        text: (root.lang-en ? "Auth:" : "认证：")
+                            + root.auth-label(root.members[root.tip-row].auth);
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-xs;
+                        overflow: elide;
                     }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Text { width: 30px; text: root.lang-en ? "Group" : "分组"; color: Theme.text-muted; font-size: Theme.fs-2xs; }
-                        Text { horizontal-stretch: 1; text: root.cur-name; color: Theme.text-secondary; font-size: Theme.fs-2xs; overflow: elide; }
+                    Text {
+                        text: (root.lang-en ? "Group:" : "分组：") + root.cur-name;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-xs;
+                        overflow: elide;
                     }
                     if root.members[root.tip-row].note != "" : Text {
-                        text: root.members[root.tip-row].note;
-                        color: Theme.text-muted;
-                        font-size: Theme.fs-2xs;
-                        wrap: word-wrap;
+                        text: (root.lang-en ? "Note:" : "备注：") + root.members[root.tip-row].note;
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-xs;
+                        overflow: elide;
                     }
                 }
             }
@@ -1227,9 +1747,9 @@ export component GroupManagerDialog inherits Rectangle {
             // ── 色板浮层（锚在被点的组行上）──
             if root.color-for != "" : Rectangle {
                 width: 194px;
-                height: 96px;
+                height: 128px;
                 x: 240px;
-                y: Math.max(60px, Math.min(gm.height - 108px,
+                y: Math.max(60px, Math.min(gm.height - 140px,
                     56px + 8px + root.color-row * root.row-h - 24px));
                 border-radius: Theme.radius-md;
                 background: Theme.popup-bg-elevated;
@@ -1244,6 +1764,27 @@ export component GroupManagerDialog inherits Rectangle {
                         text: (root.lang-en ? "Group color · " : "分组颜色 · ") + root.color-for;
                         color: Theme.text-muted;
                         font-size: Theme.fs-2xs;
+                    }
+                    // 「无颜色」= 清空该组颜色（高保真 §RULES：未分组同样可改色）
+                    Rectangle {
+                        height: 20px;
+                        border-radius: 4px;
+                        border-width: 1px;
+                        border-color: nc-ta.has-hover ? Theme.accent-solid : Theme.border-strong;
+                        nc-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.set-group-color(root.color-for, "");
+                                root.color-for = "";
+                            }
+                        }
+                        Text {
+                            text: root.lang-en ? "No color" : "无颜色";
+                            color: Theme.text-secondary;
+                            font-size: Theme.fs-2xs;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
                     }
                     GridLayout {
                         spacing: 5px;
@@ -1269,12 +1810,12 @@ export component GroupManagerDialog inherits Rectangle {
                 }
             }
 
-            // ── 拖动浮层 ──
+            // ── 拖动浮层（高保真 §拖拽浮层：高 30px、跟手 +14/+14）──
             if root.dragging : Rectangle {
-                x: min(gm.width - 190px, root.drag-abs-x - root.absolute-position.x + 12px);
-                y: root.drag-abs-y - root.absolute-position.y + 12px;
-                width: 178px;
-                height: 28px;
+                x: min(gm.width - 250px, root.drag-abs-x - root.absolute-position.x + 14px);
+                y: root.drag-abs-y - root.absolute-position.y + 14px;
+                width: 240px;
+                height: 30px;
                 border-radius: Theme.radius-md;
                 background: Theme.popup-bg-elevated;
                 border-width: 1px;
@@ -1288,15 +1829,45 @@ export component GroupManagerDialog inherits Rectangle {
                     cross-axis-alignment: center;
                     Text {
                         horizontal-stretch: 1;
-                        text: root.drag-kind == "member"
-                            ? (root.picked-count > 1
-                                ? (root.lang-en ? root.picked-count + " sessions" : root.picked-count + " 项")
-                                : "移动会话")
-                            : root.drag-id;
+                        text: root.drag-label;
                         color: Theme.text-primary;
                         font-size: Theme.fs-2xs;
                         overflow: elide;
                         vertical-alignment: center;
+                    }
+                    // 多选时**追加**「N 项」药丸（不是替换掉名称）
+                    if root.drag-kind == "member" && root.picked-count > 1 : Rectangle {
+                        height: 16px;
+                        border-radius: 8px;
+                        background: Theme.accent.with-alpha(0.22);
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            alignment: center;
+                            Text {
+                                text: root.lang-en
+                                    ? root.picked-count + " selected"
+                                    : root.picked-count + " 项";
+                                color: Theme.accent-solid;
+                                font-size: 9.5px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    // 尾注：实时显示落点语义（高保真 §拖拽浮层）
+                    Text {
+                        text: root.drop-group && root.drop-gi >= 0
+                                && root.drop-gi < root.groups.length
+                            ? (root.lang-en ? "→ " + root.groups[root.drop-gi].name
+                                            : "放到 " + root.groups[root.drop-gi].name)
+                            : (root.drag-kind == "member"
+                                ? (root.lang-en ? "#" + (root.drag-to + 1)
+                                                : "第 " + (root.drag-to + 1) + " 位")
+                                : "");
+                        color: Theme.accent-solid;
+                        font-size: Theme.fs-2xs;
+                        vertical-alignment: center;
+                        overflow: elide;
                     }
                 }
             }

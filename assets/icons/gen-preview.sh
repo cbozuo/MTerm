@@ -121,6 +121,8 @@ row "文件与 SFTP" arrow-down "E5DB" "↓ 方向标（传输列表 / 弹层 / 
 row "文件与 SFTP" arrow-up "E5D8" "↑ 方向标（同上）· 导出连接（设置菜单）· 上级目录（SFTP 路径栏）"
 row "文件与 SFTP" upload "—" "上传文件 / 文件夹（SFTP 工具栏 · 箭头→横线）"
 row "文件与 SFTP" download "E2C4" "下载选中（SFTP 工具栏 / 设置侧栏「下载」）"
+row "文件与 SFTP" move-out "—" "移出（箭头 ←、竖线在尾并相接·右侧 · 横版，2026-10-19 新增）"
+row "文件与 SFTP" move-in "—" "移入（箭头 →、竖线在尾并相接·左侧 · 横版，2026-10-19 新增）"
 row "文件与 SFTP" arrow-right "—" "→ 右向箭头（库内预留；ui 里的 → 均为句内标点，暂无图标槽）"
 row "文件与 SFTP" arrow-left "—" "← 左向箭头（库内预留 · 与 arrow-right 镜像；四向齐备）"
 row "文件与 SFTP" create-new-folder "E2CC" "新建分组（组 / 空白处右键菜单）"

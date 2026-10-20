@@ -694,6 +694,87 @@ impl ConfigStore {
         true
     }
 
+    /// (#group-manager) 批量换组：按 `ids` 给定顺序整体追加到目标组末尾。
+    ///
+    /// 调用方一次 borrow + 一次 save；`ids` 必须是**显示顺序**（调用方按
+    /// gm-members 模型过滤 picked 得到），否则目标组内的相对次序会乱。
+    /// 返回是否有会话被移动。
+    pub fn move_sessions_to_group(&mut self, ids: &[String], target: &str) -> bool {
+        if ids.is_empty() {
+            return false;
+        }
+        let target = target.trim();
+        let mut moved = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(pos) = self.cache.sessions.iter().position(|s| &s.id == id) {
+                moved.push(self.cache.sessions.remove(pos));
+            }
+        }
+        if moved.is_empty() {
+            return false;
+        }
+        for session in &mut moved {
+            session.group = target.to_string();
+        }
+        // 目标组末尾：最后一个同组成员之后；组不存在时落到全局末尾。
+        let insert_at = self
+            .cache
+            .sessions
+            .iter()
+            .rposition(|s| s.group == target)
+            .map(|i| i + 1)
+            .unwrap_or(self.cache.sessions.len());
+        self.cache.sessions.splice(insert_at..insert_at, moved);
+        true
+    }
+
+    /// (#group-manager) 批量组内排序：把 `ids` 作为一个整体插到 `target_id`
+    /// 前/后，块内保持 `ids` 的顺序，块外次序不变。
+    ///
+    /// 这是「拖多行排序」必须一次完成的操作 —— 逐条 `move_session_relative`
+    /// 会让块内顺序随手势路径变化，且每次都要重建列表。
+    pub fn move_sessions_relative(
+        &mut self,
+        ids: &[String],
+        target_id: &str,
+        after: bool,
+    ) -> bool {
+        if ids.is_empty() || ids.iter().any(|id| id == target_id) {
+            return false;
+        }
+        let Some(target_group) = self
+            .cache
+            .sessions
+            .iter()
+            .find(|s| s.id == target_id)
+            .map(|s| s.group.clone())
+        else {
+            return false;
+        };
+        let mut block = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(pos) = self.cache.sessions.iter().position(|s| &s.id == id) {
+                block.push(self.cache.sessions.remove(pos));
+            }
+        }
+        if block.is_empty() {
+            return false;
+        }
+        for session in &mut block {
+            session.group = target_group.clone();
+        }
+        // 摘出块后重找目标下标（前面的元素被移除会前移）。
+        let t_idx = self
+            .cache
+            .sessions
+            .iter()
+            .position(|s| s.id == target_id)
+            .unwrap_or(self.cache.sessions.len());
+        let insert_at = t_idx + usize::from(after);
+        self.cache.sessions.splice(insert_at..insert_at, block);
+        true
+    }
+
     pub fn upsert(&mut self, mut session: Session) {
         if is_reserved_session_group(session.group.trim()) {
             session.group.clear();
@@ -2781,6 +2862,53 @@ mod tests {
         // Self-target and unknown ids are no-ops.
         assert!(!store.move_session_relative(&id_of(&store, "b1"), &id_of(&store, "b1"), true));
         assert!(!store.move_session_relative("nope", &id_of(&store, "b1"), true));
+    }
+
+    /// (#group-manager) 批量换组：按调用方给的显示顺序追加到目标组末尾，
+    /// 不受 HashSet 遍历顺序影响。
+    #[test]
+    fn move_sessions_to_group_appends_in_display_order() {
+        let mut store = reorder_store();
+        let ids = vec![id_of(&store, "b2"), id_of(&store, "b1")];
+        assert!(store.move_sessions_to_group(&ids, "alpha"));
+
+        let alpha: Vec<&str> = store
+            .sessions()
+            .iter()
+            .filter(|s| s.group == "alpha")
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(alpha, ["a1", "b2", "b1"], "块内顺序必须按 ids 原样");
+        // 未涉及的组不受影响。
+        assert_eq!(
+            store
+                .sessions()
+                .iter()
+                .filter(|s| s.group.is_empty())
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["d1", "d2"]
+        );
+    }
+
+    /// (#group-manager) 批量组内排序：整块插到目标前/后，块内顺序不变。
+    #[test]
+    fn move_sessions_relative_keeps_block_order() {
+        let mut store = reorder_store();
+        let ids = vec![id_of(&store, "b2"), id_of(&store, "b1")];
+        assert!(store.move_sessions_relative(&ids, &id_of(&store, "a1"), false));
+
+        assert_eq!(
+            order_of(&store)[2..5],
+            [
+                ("b2".to_string(), "alpha".to_string()),
+                ("b1".to_string(), "alpha".to_string()),
+                ("a1".to_string(), "alpha".to_string()),
+            ]
+        );
+
+        // 目标本身在被拖集合里 → no-op（否则会自我参照）。
+        assert!(!store.move_sessions_relative(&ids, &ids[0], true));
     }
 
     #[test]

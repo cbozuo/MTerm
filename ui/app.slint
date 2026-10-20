@@ -1540,6 +1540,10 @@ export component AppWindow inherits Window {
     in property <[GroupRow]> gm-groups: [];
     in property <[GmMember]> gm-members: [];
     in property <int> gm-visited: 0;      // 统计口径占位（保留给后续"共 N 个会话"）
+    in property <int> gm-custom-count: 0;  // 自定义分组数（不含「未分组」）
+    in property <int> gm-session-count: 0; // 全部会话数
+    in property <bool> gm-cur-reserved: false; // 当前组是否「未分组」（不可改名）
+    in property <int> gm-cur-index: 0;    // 当前组在左栏的行号（键盘 ↑↓）
     in property <int> gm-picked: 0;       // 已勾选条数（Rust 维护）
     // 当前组的高亮信息随 selected 一起下发（Slint 侧不查表）
     in property <color> gm-cur-color: transparent;
@@ -1549,6 +1553,8 @@ export component AppWindow inherits Window {
     callback gm-search(string /* query */);
     callback gm-select(string /* group */);
     callback gm-rename(string /* orig */, string /* name */) -> string;
+    // 改名/新建的实时预校验（输入即校验，不等提交）
+    callback gm-validate-name(string /* text */, string /* orig */) -> string;
     callback gm-create(string /* name */) -> string;
     callback gm-remove(string /* name */, string /* target */);
     callback gm-set-color(string /* name */, string /* hex */);
@@ -2114,6 +2120,11 @@ export component AppWindow inherits Window {
                 accept
             } else if (e.modifiers.control && e.text == "0") {
                 root.zoom-term-font(root.active-tab-id, 0, false);
+                accept
+            } else if (e.modifiers.control && e.modifiers.shift
+                    && (e.text == "g" || e.text == "G" || e.text == "\u{0007}")) {
+                // (#group-manager) 管理分组… = Ctrl+Shift+G
+                root.gm-open-request();
                 accept
             // Zen (focus) mode: Ctrl+Alt+Z toggles, same as the terminal
             // branch below (#zen).
@@ -4293,6 +4304,12 @@ export component AppWindow inherits Window {
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                     }
+                    Text {
+                        text: "Ctrl+Shift+G";
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-2xs;
+                        vertical-alignment: center;
+                    }
                 }
             }
             // (#ctx-menu-narrow 2026-09-15) system 保留组无「删除分组」可谈
@@ -6163,6 +6180,10 @@ export component AppWindow inherits Window {
         groups: root.gm-groups;
         members: root.gm-members;
         picked-count: root.gm-picked;
+        custom-count: root.gm-custom-count;
+        session-count: root.gm-session-count;
+        cur-reserved: root.gm-cur-reserved;
+        cur-index: root.gm-cur-index;
         cur-color: root.gm-cur-color;
         cur-color-hex: root.gm-cur-color-hex;
         query <=> root.gm-query;
@@ -6172,6 +6193,7 @@ export component AppWindow inherits Window {
         search(q) => { root.gm-search(q); }
         select(g) => { root.gm-select(g); }
         rename(o, n) => { return root.gm-rename(o, n); }
+        validate-name(t, o) => { return root.gm-validate-name(t, o); }
         create-group(n) => { return root.gm-create(n); }
         remove-group(n, t) => { root.gm-remove(n, t); }
         set-group-color(n, h) => { root.gm-set-color(n, h); }

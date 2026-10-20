@@ -6,6 +6,30 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **启动窗口：默认居中，不再落到屏幕右下（#win-center）。** 用户反馈「打开软件默认位置在右下角」。
+  - 根因：居中挂在 `show()` 之后 30ms 的定时器上，此时原生窗口还没映射 —— `size()` 只有最小尺寸 `720×420`、`scale_factor()` 还是 `1.0`，按这对数算出的左上角是固定一点；窗口随后长到真实尺寸而左上角不动，右/下就溢出屏幕。与分辨率、缩放无关，任何机器都歪，只是歪多少不同。
+  - 修法：居中改到**首个 `Resized` 事件**，直接用事件自带的物理尺寸（`center_window_px`）；尺寸恢复未落定时会再进一次，以最后一次为准。`center_window` 改为优先读原生窗口 `inner_size()`，全链路统一按物理像素；30ms 定时器只保留「tab 拖出贴指针」与「第 2+ 窗口级联 +40」两条显式定位，并用 `window_position_pinned` 避免被居中覆盖。
+  - 实测（2560×1440 @125%）：连续冷启动均落物理 (283,119)，即工作区内居中；第二个窗口仍是 +40 级联。
+- **Launch window is centred instead of landing in the bottom-right corner (#win-center).** Reported as "the app opens in the bottom-right corner".
+  - Cause: centring ran on a 30 ms timer after `show()`, before the native window was mapped — `size()` reported the `720×420` minimum and `scale_factor()` still `1.0`. The top-left corner was pinned from those numbers and the window then grew to its real size, running off the right/bottom edge. Independent of resolution and DPI: every machine was off, only by different amounts.
+  - Fix: centre on the **first `Resized` event** using that event's physical size (`center_window_px`); when a saved size is still settling the handler runs again and the last pass wins. `center_window` now prefers the native `inner_size()` and works in physical pixels throughout; the 30 ms timer keeps only the two explicit placements (tab detach under the cursor, +40 cascade for 2nd+ windows) and `window_position_pinned` stops centring from overwriting them.
+  - Measured at 2560×1440 @125%: every cold start lands at physical (283,119), centred in the work area; a second window still cascades by +40.
+
+- **分组管理弹框按高保真逐条对齐（#group-manager）。** 对照 `docs/design/group-manager-hifi-2026-10-19.html` 做三轮核对。
+  - 左栏：补「我的分组 N」小节标题，行高不再统一 → 插入线与「指针 y → 组行号」改用 `gi-at` / `gi-top` 一对换算；组行补 12×22 六点拖柄（仅 hover 显形 0.55，未分组无）；选中态改 `accent 12%/8%` + 左 2px 竖条。
+  - 右栏：成员行名称 12.5px、host 等宽 10.5px；复选框视觉 16px / 命中区 22px；切组后列表滚回顶部。
+  - 搜索：加宽到 206px，补占位「搜索分组或会话」与 `Ctrl F` 徽标，并真正绑定 Ctrl+F 聚焦；无结果态带「清空搜索」。
+  - 改名/新建：**逐键实时**预校验（系统保留名 / 忽略大小写撞名），空名失焦静默放弃；新增 `gm-validate-name` 回调。
+  - 拖拽：插入线两端加 6px 圆点；浮层 30px、跟手 +14；多选时名称后**追加**「N 项」药丸而非替换；批量搬运按模型顺序整块落盘（`move_sessions_to_group` / `move_sessions_relative`）。
+  - 其他：删除改为单次 `borrow_mut` + 单次 `save`（成员迁移 + 移除 + 清理），删完给 toast；空组态补图标并垂直居中；批量条 `accent 15%/30%`、删除条 `danger 9%/42%`（不再写死色值）；新增 `move-out` / `move-in` 两枚图标与离屏回归 `tests/group_manager_smoke.rs`。
+- **Group-manager dialog aligned with the hi-fi spec, rule by rule (#group-manager).** Three review passes against `docs/design/group-manager-hifi-2026-10-19.html`.
+  - Left column: added the "My groups N" caption; row heights are no longer uniform, so insert lines and pointer→row mapping go through `gi-at` / `gi-top`; 12×22 six-dot drag grip (hover only, 0.55 alpha, never on "Ungrouped"); selection is `accent 12%/8%` plus a 2 px left bar.
+  - Right column: member name 12.5 px, host in 10.5 px mono; checkbox is 16 px with a 22 px hit area; switching groups scrolls the list back to the top.
+  - Search: 206 px wide with the "search groups or sessions" placeholder and a `Ctrl F` badge, and Ctrl+F really focuses it; empty state offers "Clear search".
+  - Rename/create: **live, per-keystroke** validation (reserved names / case-insensitive duplicates); an empty name is silently dropped on blur; new `gm-validate-name` callback.
+  - Drag: 6 px dots on both ends of the insert line; 30 px ghost following at +14; multi-select **appends** an "N items" pill instead of replacing the name; batch moves persist as one block in model order (`move_sessions_to_group` / `move_sessions_relative`).
+  - Misc: deleting a group is one `borrow_mut` + one `save` (migrate + remove + cleanup) and reports a toast; the empty state gets an icon and is vertically centred; batch bar `accent 15%/30%`, delete bar `danger 9%/42%` (no hard-coded colours); added `move-out` / `move-in` icons and the offscreen regression `tests/group_manager_smoke.rs`.
+
 - **命令栏输入框：聚焦态与「新建会话」对话框同款，聚焦即隐藏提示语（#cmdbar-focus）。** 用户附截图：「输入框的聚焦样式需要修改下，改成和新建会话同款」「聚焦之后，输入框里面的提示信息需要自动删除掉」。
   - 聚焦态 = `1px accent 边 + 3px accent-soft 柔光环`，与 `MiniInput` / `LabeledInput`（新建会话）、主题搜索框同一套聚焦语言（光环 x/y −3、宽高 +6、圆角 +2 逐值一致）。输入框自身 `clip: true`（多行输入滚动必须裁），所以外面包了一层不裁的容器专门画光环。
   - 占位提示改为 `text == "" && !has-focus`：聚焦后不再压在光标 / IME 预编辑上（与对话框的 "Hide on focus" 一致）。边框色带 120ms 过渡，和主题搜索框同节奏。
