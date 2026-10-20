@@ -257,16 +257,16 @@ use crate::ssh::{
 #[cfg(windows)]
 use crate::terminal::c0_letter_key_down;
 use crate::terminal::{
-    bare_ctrl_marker_workaround_enabled, cell_prefix, compile_output_rules,
+    bare_ctrl_marker_workaround_enabled, cell_prefix, compile_highlight_rules,
     encode_command_bar_input, encode_mouse_event, encode_pasted_text, is_terminal_interrupt,
-    key_to_pty_bytes, paste_requires_large_review, should_drop_bare_ctrl_marker,
-    terminal_uses_bracketed_paste, CsiState, OutputHighlightPreset, RenderGates, TabRenderGate,
-    TermBuffer, TermBufferHandle, TermBuffers,
+    key_to_pty_bytes, paste_requires_large_review, rainbow_parens_enabled,
+    should_drop_bare_ctrl_marker, terminal_uses_bracketed_paste, CsiState, RenderGates,
+    TabRenderGate, TermBuffer, TermBufferHandle, TermBuffers,
 };
 #[cfg(test)]
 use crate::terminal::{
-    build_row, highlight_plain_output, log_level_marker, normalize_pasted_newlines,
-    text_cell_width, vt_span_colors, CompiledOutputRule, HistSpan, Line,
+    build_row, highlight_plain_output, normalize_pasted_newlines, text_cell_width, vt_span_colors,
+    CompiledOutputRule, HistSpan, Line,
 };
 #[cfg(any(target_os = "windows", test))]
 use crate::terminal::{windows_process_ctrl_release, CtrlKeySide};
@@ -2607,8 +2607,10 @@ fn open_window(
         }
         window.set_output_highlight_enabled(s.output_highlight_enabled());
         window.set_json_format_output(s.json_format_output());
-        window.set_output_highlight_preset(s.output_highlight_preset().into());
-        window.set_output_highlight_rules(output_highlight_rule_model(&s));
+        window.set_highlight_presets(highlight_preset_model(&s));
+        window.set_highlight_customs(highlight_custom_model(&s));
+        window.set_highlight_enabled_count(highlight_enabled_count(&s));
+        window.set_highlight_rule_status("".into());
         window.set_ui_scale(s.ui_scale() as f32 / 100.0); // global UI zoom (#100)
         window.set_panel_font(s.panel_font() as f32 / 100.0); // settings-panel font scale
         window.set_renderer_mode(s.renderer_mode().into());
@@ -3060,27 +3062,66 @@ fn open_window(
             true
         });
     }
+    // ── (#hl-settings-hifi 2026-10-20) 高亮设置弹框：逐条开关的预设表 +
+    // 任意色自定义规则。全部改动都走 apply_highlight_rules 一个入口（与
+    // apply_theme 同构）：重编译规则表 → 写进每个 buffer → 全量重渲染。 ──
     {
         let weak = window.as_weak();
         let store = store.clone();
         let bufs = bufs.clone();
-        window.on_add_output_highlight_rule(
-            move |pattern: SharedString,
-                  is_regex,
-                  case_sensitive,
-                  whole_line,
-                  color: SharedString| {
+        window.on_set_highlight_enabled(move |enabled| {
+            {
+                let mut s = store.borrow_mut();
+                s.set_output_highlight_enabled(enabled);
+                let _ = s.save();
+            }
+            if let Some(w) = weak.upgrade() {
+                apply_highlight_rules(&w, &bufs, &store.borrow());
+                let s = store.borrow();
+                w.set_output_highlight_enabled(enabled);
+                w.set_highlight_presets(highlight_preset_model(&s));
+                w.set_highlight_customs(highlight_custom_model(&s));
+                w.set_highlight_enabled_count(highlight_enabled_count(&s));
+            }
+        });
+    }
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let bufs = bufs.clone();
+        window.on_set_highlight_preset_enabled(move |id: SharedString, enabled| {
+            let id = id.to_string();
+            {
+                let mut s = store.borrow_mut();
+                s.set_output_highlight_preset_enabled(&id, enabled);
+                let _ = s.save();
+            }
+            if let Some(w) = weak.upgrade() {
+                apply_highlight_rules(&w, &bufs, &store.borrow());
+                let s = store.borrow();
+                w.set_highlight_presets(highlight_preset_model(&s));
+                w.set_highlight_enabled_count(highlight_enabled_count(&s));
+            }
+        });
+    }
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let bufs = bufs.clone();
+        // 新规则：名称 + 正则 + 颜色（弹框里的取色卡/调色盘给 #RRGGBB）。
+        // 返回 false = 校验没过（弹框保留输入并显示 status）。
+        window.on_add_highlight_rule(
+            move |name: SharedString, pattern: SharedString, color: SharedString| {
                 let pattern = pattern.trim().to_string();
-                let validation = validate_output_highlight_rule(&pattern, is_regex, case_sensitive);
                 let Some(w) = weak.upgrade() else {
                     return false;
                 };
-                if let Err(message) = validation {
-                    w.set_output_highlight_rule_status(message.into());
+                if let Err(message) = validate_highlight_rule(&pattern) {
+                    w.set_highlight_rule_status(message.into());
                     return false;
                 }
                 if store.borrow().output_highlight_rules().len() >= 128 {
-                    w.set_output_highlight_rule_status(
+                    w.set_highlight_rule_status(
                         t("自定义规则最多 128 条", "Custom rules are limited to 128").into(),
                     );
                     return false;
@@ -3088,18 +3129,20 @@ fn open_window(
                 {
                     let mut s = store.borrow_mut();
                     s.add_output_highlight_rule(OutputHighlightRule {
+                        name: name.trim().to_string(),
                         pattern,
-                        regex: is_regex,
-                        case_sensitive,
-                        whole_line,
+                        regex: true,
+                        case_sensitive: false,
+                        whole_line: false,
                         color: color.to_string(),
                         enabled: true,
                     });
                     let _ = s.save();
-                    w.set_output_highlight_rules(output_highlight_rule_model(&s));
-                    apply_custom_output_rules(&w, &bufs, s.output_highlight_rules());
+                    apply_highlight_rules(&w, &bufs, &s);
+                    w.set_highlight_customs(highlight_custom_model(&s));
+                    w.set_highlight_enabled_count(highlight_enabled_count(&s));
                 }
-                w.set_output_highlight_rule_status("".into());
+                w.set_highlight_rule_status("".into());
                 true
             },
         );
@@ -3108,27 +3151,34 @@ fn open_window(
         let weak = window.as_weak();
         let store = store.clone();
         let bufs = bufs.clone();
-        window.on_remove_output_highlight_rule(move |index| {
+        window.on_remove_highlight_rule(move |index| {
             let Some(w) = weak.upgrade() else { return };
-            let mut s = store.borrow_mut();
-            s.remove_output_highlight_rule(index.max(0) as usize);
-            let _ = s.save();
-            w.set_output_highlight_rules(output_highlight_rule_model(&s));
-            apply_custom_output_rules(&w, &bufs, s.output_highlight_rules());
-            w.set_output_highlight_rule_status("".into());
+            {
+                let mut s = store.borrow_mut();
+                s.remove_output_highlight_rule(index.max(0) as usize);
+                let _ = s.save();
+                apply_highlight_rules(&w, &bufs, &s);
+                w.set_highlight_customs(highlight_custom_model(&s));
+                w.set_highlight_enabled_count(highlight_enabled_count(&s));
+            }
+            w.set_highlight_rule_status("".into());
         });
     }
     {
         let weak = window.as_weak();
         let store = store.clone();
         let bufs = bufs.clone();
-        window.on_set_output_highlight_rule_enabled(move |index, enabled| {
+        window.on_set_highlight_rule_enabled(move |index, enabled| {
             let Some(w) = weak.upgrade() else { return };
-            let mut s = store.borrow_mut();
-            s.set_output_highlight_rule_enabled(index.max(0) as usize, enabled);
-            let _ = s.save();
-            w.set_output_highlight_rules(output_highlight_rule_model(&s));
-            apply_custom_output_rules(&w, &bufs, s.output_highlight_rules());
+            {
+                let mut s = store.borrow_mut();
+                s.set_output_highlight_rule_enabled(index.max(0) as usize, enabled);
+                let _ = s.save();
+                apply_highlight_rules(&w, &bufs, &s);
+                w.set_highlight_customs(highlight_custom_model(&s));
+                w.set_highlight_enabled_count(highlight_enabled_count(&s));
+            }
+            w.set_highlight_rule_status("".into());
         });
     }
     // Interface settings: apply + persist the UI (sans) font.
@@ -3228,25 +3278,9 @@ fn open_window(
             }
         }
     });
-    // Output highlighting: persist the switch/preset and immediately rebuild
-    // every open terminal, including scrollback captured before the change.
-    {
-        let weak = window.as_weak();
-        let store = store.clone();
-        let bufs = bufs.clone();
-        window.on_set_output_highlight(move |enabled, preset: SharedString| {
-            let preset = preset.to_string();
-            {
-                let mut s = store.borrow_mut();
-                s.set_output_highlight_enabled(enabled);
-                s.set_output_highlight_preset(preset.clone());
-                let _ = s.save();
-            }
-            if let Some(w) = weak.upgrade() {
-                apply_output_highlight(&w, &bufs, enabled, &preset);
-            }
-        });
-    }
+    // Output highlighting master switch lives in `on_set_highlight_enabled`
+    // (the #hl-settings-hifi block above): per-rule toggles are in the dialog,
+    // this switch only gates everything.
     {
         let store = store.clone();
         let bufs = bufs.clone();
@@ -4963,6 +4997,61 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
                     set_picker_pos(&w, h, s, v);
                     refresh_slider_image(&w, c);
                 }
+            }
+        });
+        // (#hl-settings-hifi) 高亮设置弹框的取色盘：与强调色同一套数学/位图，
+        // 位置状态是弹框自己的 highlight-pick-*（两个盘可以同时开着，不共享）。
+        // set_hl_picker_pos 与 set_picker_pos 只差属性名，故意不合并 —— 合并
+        // 就要引入回调/闭包间接层，两处各四行直写更直白。
+        fn set_hl_picker_pos(w: &crate::ui::AppWindow, h: f32, s: f32, v: f32) {
+            let rad = h.to_radians();
+            w.set_highlight_wheel_mx((0.5 + rad.cos() * s * 0.5).clamp(0.0, 1.0));
+            w.set_highlight_wheel_my((0.5 - rad.sin() * s * 0.5).clamp(0.0, 1.0));
+            w.set_highlight_val_my(v.clamp(0.0, 1.0));
+            // 明度条的值也要回落（色轮拖动/蒙罩都读 pick-v）
+            w.set_highlight_pick_v(v.clamp(0.0, 1.0));
+        }
+        window.on_highlight_picker_open({
+            let w = window.as_weak();
+            move |hex: SharedString| {
+                let c = crate::picker::parse_hex(&hex).unwrap_or(0);
+                let (h, s, v) = crate::picker::hex_to_hsv(c);
+                if let Some(w) = w.upgrade() {
+                    w.set_highlight_pick_hex(SharedString::from(format!("#{:06X}", c)));
+                    set_hl_picker_pos(&w, h, s, v);
+                    refresh_slider_image(&w, c);
+                }
+            }
+        });
+        window.on_highlight_sync_picker_pos({
+            let w = window.as_weak();
+            move || {
+                if let Some(w) = w.upgrade() {
+                    let c = crate::picker::parse_hex(&w.get_highlight_pick_hex()).unwrap_or(0);
+                    let (h, s, v) = crate::picker::hex_to_hsv(c);
+                    set_hl_picker_pos(&w, h, s, v);
+                    refresh_slider_image(&w, c);
+                }
+            }
+        });
+        // 高亮规则取色的「随机」：与强调色同一个 xorshift（各自持种子）
+        window.on_highlight_random_hex({
+            let seed = std::cell::Cell::new(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.subsec_nanos() | 1)
+                    .unwrap_or(0x2545_F491),
+            );
+            move || {
+                let mut x = seed.get();
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                seed.set(x);
+                let h = (x % 360) as f32;
+                let s = 0.35 + ((x >> 9) % 51) as f32 / 100.0;
+                let v = 0.55 + ((x >> 17) % 36) as f32 / 100.0;
+                format!("#{:06X}", crate::picker::hsv_to_hex(h, s, v)).into()
             }
         });
         // (#zone-alpha 2026-10-17) 四分区透明度：标题栏 / 标签栏 / 侧栏 / 终端区。
@@ -9468,14 +9557,20 @@ fn wire_session_callbacks(
             // terminal-resize callback). 5000-line scrollback is stored for
             // future scroll-navigation support.
             let is_dark_now = weak.upgrade().map(|w| w.get_dark_mode()).unwrap_or(true);
-            let (output_highlight, custom_highlight_rules) = {
+            // (#hl-settings-hifi) 规则表在新建 tab 的当口编译一次：总开关关着
+            // = 空表；开着 = 自定义在前、19 条预设按表序，彩虹括号单独一个开关。
+            let (highlight_rules, rainbow_parens) = {
                 let settings = store.borrow();
                 (
-                    OutputHighlightPreset::from_settings(
+                    compile_highlight_rules(
                         settings.output_highlight_enabled(),
-                        settings.output_highlight_preset(),
+                        settings.output_highlight_disabled_presets(),
+                        settings.output_highlight_rules(),
                     ),
-                    compile_output_rules(settings.output_highlight_rules()),
+                    rainbow_parens_enabled(
+                        settings.output_highlight_enabled(),
+                        settings.output_highlight_disabled_presets(),
+                    ),
                 )
             };
             bufs.lock().unwrap().insert(
@@ -9490,8 +9585,8 @@ fn wire_session_callbacks(
                         &store.borrow().theme(),
                         is_dark_now,
                     ),
-                    output_highlight,
-                    custom_highlight_rules,
+                    highlight_rules,
+                    rainbow_parens,
                     json_format_output: store.borrow().json_format_output(),
                     vt100_drawing: session.vt100_drawing,
                     charset: crate::terminal::CharsetTracker::default(),

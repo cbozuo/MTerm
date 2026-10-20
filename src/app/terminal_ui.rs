@@ -9,35 +9,127 @@ pub(super) fn history_model(store: &ConfigStore) -> ModelRc<SharedString> {
     ModelRc::from(Rc::new(VecModel::from(rows)))
 }
 
-pub(super) fn output_highlight_rule_model(store: &ConfigStore) -> ModelRc<OutputRuleItem> {
-    let rows: Vec<OutputRuleItem> = store
+/// 预设/自定义规则模型的公共取色入口：ANSI 槽位 → 当前主题实色。
+/// (#hl-settings-hifi) 弹框里的色点必须与终端里真正染上去的颜色同源，否则
+/// 「列表里是青的、终端里是黄的」。用与 presentation 同一张主题色表。
+fn ansi_dot(idx: u8, dark: bool, pal: &crate::theme::palettes::Palette) -> slint::Color {
+    let v = pal.ansi16[idx as usize % 16];
+    let _ = dark; // ANSI16 本身即分暗/亮两套表（palette 已按明暗选好）
+    slint::Color::from_rgb_u8(((v >> 16) & 0xFF) as u8, ((v >> 8) & 0xFF) as u8, (v & 0xFF) as u8)
+}
+
+/// 自定义规则色点：`#RRGGBB` 绝对色（取色盘/48 色卡给什么就是什么）。
+fn rule_dot(color: &str) -> slint::Color {
+    match crate::picker::parse_hex(color) {
+        Some(v) => slint::Color::from_rgb_u8(
+            ((v >> 16) & 0xFF) as u8,
+            ((v >> 8) & 0xFF) as u8,
+            (v & 0xFF) as u8,
+        ),
+        // 旧配置里的语义名（red/yellow…）按原 ANSI 槽位落点
+        None => ansi_dot(
+            match crate::terminal::parse_color(color) {
+                crate::terminal::RuleColor::Idx(i) => i,
+                crate::terminal::RuleColor::Rgb(r, g, b) => {
+                    return slint::Color::from_rgb_u8(r, g, b)
+                }
+            },
+            true,
+            crate::theme::palette_or_default("", true),
+        ),
+    }
+}
+
+/// 高亮设置弹框的「预设规则」页模型：表序即列表序，`enabled` 逐条可关；
+/// 彩虹括号（paren）不是正则，单独一行 + 彩虹条 + 「非正则」角标。
+pub(super) fn highlight_preset_model(store: &ConfigStore) -> ModelRc<HighlightPresetItem> {
+    let dark = theme_pref_is_dark(store);
+    let pal = crate::theme::palette_or_default(&store.theme(), dark);
+    let enabled = store.output_highlight_enabled();
+    let rows: Vec<HighlightPresetItem> = crate::terminal::HIGHLIGHT_PRESETS
+        .iter()
+        .map(|p| HighlightPresetItem {
+            id: p.id.into(),
+            name: t(p.name_zh, p.name_en).into(),
+            group: t(p.group_zh, p.group_en).into(),
+            pattern: p.pattern.into(),
+            dot: ansi_dot(p.ansi, dark, pal),
+            rainbow: false,
+            special: "".into(),
+            enabled: crate::terminal::preset_enabled(
+                enabled,
+                store.output_highlight_disabled_presets(),
+                p.id,
+            ),
+        })
+        .chain(std::iter::once(HighlightPresetItem {
+            id: crate::terminal::RAINBOW_PRESET_ID.into(),
+            name: t("彩虹括号", "Rainbow brackets").into(),
+            group: t("特殊着色", "Special").into(),
+            pattern: t(
+                "对嵌套括号 ( ) [ ] { } 按层级循环着色",
+                "Colour nested ( ) [ ] { } by depth",
+            )
+            .into(),
+            // 彩虹行的色点用第一色，行内另画七色彩条
+            dot: slint::Color::from_rgb_u8(0xF7, 0x54, 0x64),
+            rainbow: true,
+            special: t("非正则", "Not a regex").into(),
+            enabled: crate::terminal::preset_enabled(
+                enabled,
+                store.output_highlight_disabled_presets(),
+                crate::terminal::RAINBOW_PRESET_ID,
+            ),
+        }))
+        .collect();
+    ModelRc::from(Rc::new(VecModel::from(rows)))
+}
+
+/// 「自定义」页模型：色点是绝对色（#RRGGBB 或旧语义名解析后的 RGB）。
+pub(super) fn highlight_custom_model(store: &ConfigStore) -> ModelRc<HighlightCustomItem> {
+    let rows: Vec<HighlightCustomItem> = store
         .output_highlight_rules()
         .iter()
-        .map(|rule| OutputRuleItem {
-            pattern: rule.pattern.clone().into(),
-            regex: rule.regex,
-            case_sensitive: rule.case_sensitive,
-            whole_line: rule.whole_line,
-            color: match rule.color.as_str() {
-                "yellow" | "green" | "cyan" | "magenta" | "gray" => rule.color.clone(),
-                _ => "red".to_string(),
-            }
-            .into(),
-            enabled: rule.enabled,
+        .map(|r| HighlightCustomItem {
+            name: if r.name.trim().is_empty() {
+                r.pattern.clone().into()
+            } else {
+                r.name.clone().into()
+            },
+            pattern: r.pattern.clone().into(),
+            hex: crate::config::normalize_highlight_color(&r.color).into(),
+            dot: rule_dot(&r.color),
+            enabled: r.enabled && store.output_highlight_enabled(),
         })
         .collect();
     ModelRc::from(Rc::new(VecModel::from(rows)))
 }
 
-pub(super) fn validate_output_highlight_rule(
-    pattern: &str,
-    is_regex: bool,
-    case_sensitive: bool,
-) -> std::result::Result<(), String> {
-    if pattern.is_empty() {
+/// 徽标「N 已启用」：启用的预设数（含彩虹括号）+ 启用的自定义规则数。
+pub(super) fn highlight_enabled_count(store: &ConfigStore) -> i32 {
+    if !store.output_highlight_enabled() {
+        return 0;
+    }
+    let disabled = store.output_highlight_disabled_presets();
+    let presets = crate::terminal::HIGHLIGHT_PRESETS
+        .iter()
+        .filter(|p| !disabled.iter().any(|d| d == p.id))
+        .count()
+        + usize::from(!disabled.iter().any(|d| d == crate::terminal::RAINBOW_PRESET_ID));
+    let custom = store
+        .output_highlight_rules()
+        .iter()
+        .filter(|r| r.enabled)
+        .count();
+    (presets + custom) as i32
+}
+
+/// 新规则校验：空 / 超长 / 正则编不过都拦在这里（弹框内联提示）。
+pub(super) fn validate_highlight_rule(pattern: &str) -> std::result::Result<(), String> {
+    if pattern.trim().is_empty() {
         return Err(t(
-            "请输入关键词或正则表达式",
-            "Enter a keyword or regular expression",
+            "请输入正则表达式",
+            "Enter a regular expression",
         )
         .into());
     }
@@ -48,18 +140,45 @@ pub(super) fn validate_output_highlight_rule(
         )
         .into());
     }
-    if is_regex {
-        regex::RegexBuilder::new(pattern)
-            .case_insensitive(!case_sensitive)
-            .build()
-            .map_err(|error| {
-                format!(
-                    "{}: {error}",
-                    t("无效的正则表达式", "Invalid regular expression")
-                )
-            })?;
-    }
+    regex::Regex::new(pattern).map_err(|error| {
+        format!(
+            "{}: {error}",
+            t("无效的正则表达式", "Invalid regular expression")
+        )
+    })?;
     Ok(())
+}
+
+/// 把当前配置编译成规则表并写进**每一个** terminal buffer，随后全量重渲染
+/// （滚动回看里在改动之前抓取的行也会重新着色）。总开关 / 预设开关 /
+/// 自定义规则增删改都走这一个入口 —— 与 apply_theme 同构。
+pub(super) fn apply_highlight_rules(window: &AppWindow, bufs: &TermBuffers, store: &ConfigStore) {
+    // ConfigStore 的取值方法自带内部锁，直接调即可（无 borrow()）
+    let (rules, rainbow) = {
+        (
+            compile_highlight_rules(
+                store.output_highlight_enabled(),
+                store.output_highlight_disabled_presets(),
+                store.output_highlight_rules(),
+            ),
+            rainbow_parens_enabled(
+                store.output_highlight_enabled(),
+                store.output_highlight_disabled_presets(),
+            ),
+        )
+    };
+    {
+        let handles: Vec<_> = bufs.lock().unwrap().values().cloned().collect();
+        for handle in handles {
+            let mut buf = handle.lock().unwrap();
+            buf.highlight_rules = rules.clone();
+            buf.rainbow_parens = rainbow;
+        }
+    }
+    let tab_ids: Vec<String> = bufs.lock().unwrap().keys().cloned().collect();
+    for tab_id in tab_ids {
+        rebuild_tab_display(window, bufs, &tab_id);
+    }
 }
 
 /// Build the filtered history-view rows for the dropdown, oldest first with the
@@ -301,43 +420,6 @@ pub(super) fn apply_theme_resolved(
         rebuild_tab_display(window, bufs, &tid);
     }
     p
-}
-
-pub(super) fn apply_output_highlight(
-    window: &AppWindow,
-    bufs: &TermBuffers,
-    enabled: bool,
-    preset: &str,
-) {
-    let mode = OutputHighlightPreset::from_settings(enabled, preset);
-    {
-        let handles: Vec<_> = bufs.lock().unwrap().values().cloned().collect();
-        for handle in handles {
-            handle.lock().unwrap().output_highlight = mode;
-        }
-    }
-    let tab_ids: Vec<String> = bufs.lock().unwrap().keys().cloned().collect();
-    for tab_id in tab_ids {
-        rebuild_tab_display(window, bufs, &tab_id);
-    }
-}
-
-pub(super) fn apply_custom_output_rules(
-    window: &AppWindow,
-    bufs: &TermBuffers,
-    rules: &[OutputHighlightRule],
-) {
-    let compiled = compile_output_rules(rules);
-    {
-        let handles: Vec<_> = bufs.lock().unwrap().values().cloned().collect();
-        for handle in handles {
-            handle.lock().unwrap().custom_highlight_rules = compiled.clone();
-        }
-    }
-    let tab_ids: Vec<String> = bufs.lock().unwrap().keys().cloned().collect();
-    for tab_id in tab_ids {
-        rebuild_tab_display(window, bufs, &tab_id);
-    }
 }
 
 /// Apply a wallpaper id to the window (#theme-split：壁纸只负责"背后那张

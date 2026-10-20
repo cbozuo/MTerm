@@ -19,8 +19,10 @@ pub(crate) struct TermBuffer {
     /// 当前主题的色表（#theme-split）：ANSI 16 色与默认前景/背景按它查表——
     /// 换主题时 UI 与终端同源换装（presentation.rs 的 render_term_span 读它）。
     pub(crate) palette: &'static crate::theme::palettes::Palette,
-    pub(crate) output_highlight: OutputHighlightPreset,
-    pub(crate) custom_highlight_rules: Vec<CompiledOutputRule>,
+    /// 已按优先级排好的高亮规则（自定义在前、预设在后）；空 = 关闭
+    pub(crate) highlight_rules: Vec<CompiledOutputRule>,
+    /// 彩虹括号（按嵌套层级循环着色，非正则）开关
+    pub(crate) rainbow_parens: bool,
     pub(crate) json_format_output: bool,
     /// Honor VT100 line-drawing (DEC Special Graphics) via SCS designators and
     /// SO/SI even when the session encoding is UTF-8 (#376, PuTTY's option).
@@ -63,18 +65,22 @@ pub(crate) enum CsiState {
     OscEsc,
 }
 
+/// 一条高亮规则最终落到 span 上的颜色。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum OutputHighlightPreset {
-    Off,
-    Log,
-    DevOps,
+pub(crate) enum RuleColor {
+    /// ANSI 槽位（预设规则用它，换主题时跟着主题走）
+    Idx(u8),
+    /// 绝对 RGB（自定义规则用用户选的色）
+    Rgb(u8, u8, u8),
 }
 
 #[derive(Clone)]
 pub(crate) struct CompiledOutputRule {
     pub(crate) matcher: regex::Regex,
     pub(crate) whole_line: bool,
-    pub(crate) ansi_index: u8,
+    pub(crate) color: RuleColor,
+    /// 只高亮第几个捕获组（0 = 整个匹配）；path 预设用前置组占位，取 2。
+    pub(crate) group: usize,
 }
 
 pub(crate) type TermBufferHandle = Arc<Mutex<TermBuffer>>;

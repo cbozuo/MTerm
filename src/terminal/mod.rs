@@ -45,15 +45,18 @@ pub(crate) use json_output::format_json_output;
 pub(crate) use input::windows_process_ctrl_release;
 #[cfg(any(target_os = "windows", test))]
 pub(crate) use state::CtrlKeySide;
-pub(crate) use output_highlight::compile_output_rules;
+pub(crate) use output_highlight::{
+    compile_highlight_rules, parse_color, preset_enabled, rainbow_parens_enabled,
+    HIGHLIGHT_PRESETS, HighlightPreset, RAINBOW_PRESET_ID,
+};
 pub(crate) use presentation::{highlight_plain_output, render_term_span};
 #[cfg(test)]
-pub(crate) use presentation::{log_level_marker, text_cell_width, vt_span_colors};
+pub(crate) use presentation::{text_cell_width, vt_span_colors};
 pub(crate) use render::{
     build_row, cell_prefix, char_after_cell_end, char_at_cell_start, detect_scroll, MAX_HISTORY,
     RAW_CAP,
 };
 pub(crate) use state::{
-    BuiltScreen, CompiledOutputRule, CsiState, HistSpan, Line, OutputHighlightPreset, RenderGates,
+    BuiltScreen, CompiledOutputRule, CsiState, HistSpan, Line, RenderGates, RuleColor,
     TabRenderGate, TermBuffer, TermBufferHandle, TermBuffers,
 };

@@ -1,0 +1,1064 @@
+// 高亮设置弹框（#hl-settings-hifi 2026-10-20）。
+// 定稿高保真：docs/design/highlight-settings-hifi-2026-10-20.html
+//
+// 结构照 iShellPro：一个弹框、两页签（预设规则 / 自定义），预设逐条可开关，
+// 自定义规则可命名 + 任意取色。入口两处（设置 › 终端 › 输出高亮里的
+// 「打开高亮设置…」+ 标题栏「高亮」快捷钮），打开的是**同一个**弹框 ——
+// 所以本体在 AppWindow 根层（与 SettingsDialog / theme-pick 同层），不挂在
+// 设置面板里（嵌套浮层会被设置卡的 clip 裁掉）。
+//
+// 取色复用强调色那一套：卡内「颜色」钮 → 47 预设色板卡 → 「调色盘 ›」→
+// 通用 ColorPickerDialog（ui/color_picker.slint）。色点/色块取色一律走
+// PickerMath（与 Rust picker 模块同一实现），不另抄一份颜色数学。
+// 调色盘的位置状态（hex/色轮取样点/明度）挂在 AppWindow 根上
+// （highlight-pick-*，与 accent-pick-* 同款），Rust 侧同款回填。
+import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+import { Scrim } from "widgets.slint";
+import { ScrollView } from "std-widgets.slint";
+import { ColorPickerDialog, PickerMath } from "color_picker.slint";
+
+export struct HighlightPresetItem {
+    id: string,
+    name: string,        // 已按界面语言解析
+    group: string,
+    pattern: string,     // 正则原文（彩虹括号行是说明文字）
+    dot: color,          // 该主题 ANSI 槽位实色（与终端同源）
+    rainbow: bool,       // 彩虹括号特殊行（画七色彩条，不用色点）
+    special: string,     // 「非正则」角标；空 = 普通正则规则
+    enabled: bool,
+}
+
+export struct HighlightCustomItem {
+    name: string,        // 无名称时回落显示 pattern
+    pattern: string,
+    hex: string,         // #RRGGBB
+    dot: color,
+    enabled: bool,
+}
+
+// iOS 风开关（interface_panel 的 Switch 同款观感；弹框 chrome 自含，
+// 不跨文件依赖）。
+component HlSwitch inherits Rectangle {
+    in property <bool> on;
+    callback toggled(bool);
+    width: 34px;
+    height: 19px;
+    border-radius: 10px;
+    background: root.on ? Theme.accent : Theme.popup-bg-active;
+    border-width: 1px;
+    border-color: root.on ? Theme.accent : Theme.border-strong;
+    animate background { duration: 120ms; }
+    Rectangle {
+        width: 13px;
+        height: 13px;
+        border-radius: 7px;
+        y: 2px;
+        x: root.on ? parent.width - self.width - 2px : 2px;
+        background: root.on ? #ffffff : Theme.text-muted;
+        animate x { duration: 120ms; easing: ease-out; }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(!root.on); }
+    }
+}
+
+// 自定义页的输入框（名称 / 正则两处复用）。聚焦光环 + 聚焦后提示语消失 +
+// blur-token 离焦三件事都收在这里：
+//   * changed blur-token 只能挂在**组件顶层**——嵌在 TextInput 元素里会被
+//     解析成 TextInput 自己的属性（报 "Property does not exist"），所以照
+//     color_picker.slint 的 PickerInput 包一层自含组件；
+//   * 用户打字会断开 text 绑定（Slint 语义），外部写值（Rust 侧清空 / 回填）
+//     必须经 changed text 手动回写，聚焦期间不抢光标。
+component HlField inherits Rectangle {
+    in property <string> hint;                 // 提示语（未聚焦且为空时显示）
+    in-out property <string> text;
+    in property <int> blur-token: 0;           // 点框外自增 → 已聚焦则离焦
+    in property <bool> multi: false;           // 正则框：多行 + 等宽字体
+    in property <length> field-h: 38px;
+    height: root.field-h;
+    border-radius: 7px;
+    background: Theme.popup-field;
+    border-width: 1px;
+    border-color: inp.has-focus ? Theme.accent : Theme.border-control;
+    animate border-color { duration: 120ms; }
+    // 聚焦光环（1px accent 边 + 3px accent-soft 外环，全局同款；
+    // 本层不 clip，光环可以探出框外）
+    if inp.has-focus : Rectangle {
+        x: -3px;
+        y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        border-radius: 11px;
+        border-width: 3px;
+        border-color: Theme.accent-soft;
+    }
+    // 绝对定位（父级是非布局 Rectangle）：TextInput 吃不到 padding-*，也不
+    // 该进布局求解——包布局会让 height: parent.height 与 layoutinfo 成环
+    // （实测：VL→HL 两层嵌套必报 binding loop）。留白靠 x/y/width/height 算，
+    // 与命令栏输入框（qcm-cmd-in）同款。
+    inp := TextInput {
+        x: 10px;
+        y: root.multi ? 9px : 0px;
+        width: parent.width - 20px;
+        height: parent.height - (root.multi ? 18px : 0px);
+        text: root.text;
+        color: Theme.text-primary;
+        font-size: root.multi ? 11.5px : 12.5px;
+        font-family: root.multi ? Theme.term-font-family : Theme.ui-font-family;
+        vertical-alignment: center;
+        single-line: !root.multi;
+        wrap: root.multi ? word-wrap : no-wrap;
+        edited => { root.text = self.text; }
+    }
+    if root.text == "" && !inp.has-focus : Text {
+        x: 10px;
+        y: root.multi ? 9px : 0px;
+        width: parent.width - 20px;
+        height: parent.height - (root.multi ? 18px : 0px);
+        text: root.hint;
+        color: Theme.text-muted;
+        font-size: root.multi ? 11.5px : 12.5px;
+        font-family: root.multi ? Theme.term-font-family : Theme.ui-font-family;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    changed text => {
+        if (!inp.has-focus) { inp.text = root.text; }
+    }
+    changed blur-token => {
+        if (inp.has-focus) { inp.clear-focus(); }
+    }
+}
+
+export component HighlightDialog inherits Rectangle {
+    in property <bool> lang-en: false;
+    in property <length> bounds-w;                 // 拖动/居中钳制 = 全窗
+    in property <length> bounds-h;
+    in property <bool> enabled: true;              // 总开关（设置页那份）
+    in property <[HighlightPresetItem]> presets: [];
+    in property <[HighlightCustomItem]> customs: [];
+    in property <int> enabled-count: 0;            // 徽标「N 已启用」
+    in property <string> status: "";               // 校验/错误提示（内联）
+    // 取色盘状态（hex/色轮取样点/明度）。弹框内是**本地事实源**，由 app.slint
+    // 实例处 <=> 绑到 AppWindow 根的 highlight-pick-*（与强调色 accent-pick-*
+    // 同款：Rust 侧开盘时回填位置、关时复位）。in-out：卡内「应用/随机/取消」
+    // 都要改写它。
+    in-out property <string> new-color: "#1FC8B4";
+    in-out property <string> pick-fmt: "rgb";
+    in-out property <float> wheel-mx: 0.5;          // 色轮取样点（0..1，my 向下 +）
+    in-out property <float> wheel-my: 0.5;
+    in-out property <float> val-my: 1.0;            // 明度条位置（1=最亮）
+    in-out property <float> pick-v: 1.0;            // 明度值（色轮蒙罩同源）
+    callback set-preset-enabled(string, bool);
+    callback set-rule-enabled(int, bool);
+    callback add-rule(string, string, string) -> bool;   // name, pattern, color
+    callback remove-rule(int);
+    callback close-requested();
+    callback copy-text(string);                    // HEX 复制 → 系统剪贴板
+    callback random-hex() -> string;               // 随机色（Rust xorshift）
+    callback picker-open(string);                  // 带 hex 开盘（回填位置）
+    callback sync-picker-pos();                    // 数值改动后回填取样点
+
+    // ── 页签与取色中间量（全部本地，弹框关掉即弃）────────────────────
+    property <int> tab: 0;                          // 0 预设 / 1 自定义
+    property <string> new-name: "";
+    property <string> new-pattern: "";
+    property <bool> pal-open: false;                // 47 色板卡
+    property <string> pal-base: "#1FC8B4";          // 开卡时的颜色（取消还原）
+    property <bool> pick-open: false;               // 调色盘
+    property <string> pick-base: "#1FC8B4";         // 开盘时的颜色（取消还原）
+    property <[string]> recent-slots: [root.r0, root.r1, root.r2, root.r3,
+                                        root.r4, root.r5, root.r6, root.r7];
+    // 最近取用（本次会话，≤8）：Slint 1.18 没有数组拼接 / 展开运算符，
+    // 用 8 个显式槽 + 派生数组（上面）遍历；前插去重靠整队移位实现。
+    property <string> r0: ""; property <string> r1: ""; property <string> r2: ""; property <string> r3: "";
+    property <string> r4: ""; property <string> r5: ""; property <string> r6: ""; property <string> r7: "";
+    // 「点输入框外即离焦」统一触发槽（Slint 点空白不会自动清焦点）
+    property <int> blur-token: 0;
+    // 卡片拖动
+    property <length> drag-ox;
+    property <length> drag-oy;
+    property <length> drag-cx;
+    property <length> drag-cy;
+    property <bool> dragging: false;
+
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    Scrim { }
+    // 模态：遮罩吞掉滚动（不关框 —— 只有 ✕ / 完成 / Esc 关）
+    TouchArea { scroll-event(e) => { accept } }
+    esc-scope := FocusScope {
+        init => { self.focus(); }
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                // 分层收尾：调色盘 → 色板卡 → 关弹框（与设置卡的浮层优先同款）
+                if (root.pick-open) {
+                    root.new-color = root.pick-base;
+                    root.pick-open = false;
+                } else if (root.pal-open) {
+                    root.new-color = root.pal-base;
+                    root.pal-open = false;
+                } else {
+                    root.close-requested();
+                }
+            }
+            accept
+        }
+        key-released(e) => { accept }
+    }
+
+    dlg := Rectangle {
+        width: 716px;
+        height: min(root.bounds-h - 32px, 706px);
+        x: clamp(Theme.snap-to-device((root.bounds-w - self.width) / 2),
+            8px, max(8px, root.bounds-w - self.width - 8px));
+        y: clamp(Theme.snap-to-device((root.bounds-h - self.height) / 2),
+            8px, max(8px, root.bounds-h - self.height - 8px));
+        background: Theme.popup-bg;
+        border-radius: Theme.radius-xl;
+        border-width: Theme.hairline();
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 26px;
+        drop-shadow-color: transparent;
+        clip: true;
+
+        // 卡片空白吞层：点空白 = 输入框失焦 + 卡片可拖动
+        TouchArea {
+            clicked => { root.blur-token += 1; }
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.down) {
+                    root.blur-token += 1;
+                    root.dragging = true;
+                    root.drag-ox = dlg.x;
+                    root.drag-oy = dlg.y;
+                    root.drag-cx = self.absolute-position.x + self.mouse-x;
+                    root.drag-cy = self.absolute-position.y + self.mouse-y;
+                } else if (ev.kind == PointerEventKind.up) {
+                    root.dragging = false;
+                }
+            }
+            moved => {
+                if (root.dragging) {
+                    dlg.x = clamp(
+                        Theme.snap-to-device(root.drag-ox
+                            + (self.absolute-position.x + self.mouse-x - root.drag-cx)),
+                        8px, max(8px, root.bounds-w - dlg.width - 8px));
+                    dlg.y = clamp(
+                        Theme.snap-to-device(root.drag-oy
+                            + (self.absolute-position.y + self.mouse-y - root.drag-cy)),
+                        8px, max(8px, root.bounds-h - dlg.height - 8px));
+                }
+            }
+        }
+
+        VerticalLayout {
+            // ── 标题栏：荧光笔 + 标题 + 徽标 + ✕ ──────────────────────
+            Rectangle {
+                height: 56px;
+                Rectangle {
+                    y: Theme.snap-to-device(parent.height) - Theme.hairline();
+                    height: Theme.hairline();
+                    background: Theme.border-subtle;
+                }
+                HorizontalLayout {
+                    padding-left: 18px;
+                    padding-right: 12px;
+                    spacing: 10px;
+                    // 交叉轴居中：定高子项（图标/徽标/✕）否则顶对齐
+                    cross-axis-alignment: center;
+                    Icon {
+                        glyph: "highlighter";
+                        tint: Theme.accent;
+                        size: 17px;
+                    }
+                    Text {
+                        text: root.lang-en ? "Highlight settings" : "高亮设置";
+                        color: Theme.text-primary;
+                        font-size: 13.5px;
+                        font-weight: Theme.fw-strong;
+                        vertical-alignment: center;
+                    }
+                        // 徽标：启用数（0 = 全关，弱化样式）
+                        Rectangle {
+                            height: 20px;
+                            min-width: 46px;
+                            border-radius: 5px;
+                            background: root.enabled-count > 0 ? Theme.accent-soft : Theme.popup-bg-active;
+                            Text {
+                                width: parent.width;
+                                height: parent.height;
+                                // 字符串模板：开转义写 \{，收尾是普通 }（勿写 \}，
+                                // 反斜杠会产出 Error token）；模板内只写裸标识符
+                                // （root. 前缀不吃），enabled-count 沿词法作用链
+                                // 回到根属性。
+                                text: root.lang-en
+                                    ? "\{enabled-count} on"
+                                    : "\{enabled-count} 已启用";
+                                color: root.enabled-count > 0 ? Theme.accent : Theme.text-muted;
+                                font-size: 11px;
+                                font-weight: Theme.fw-strong;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    Rectangle { horizontal-stretch: 1; }
+                    Rectangle {
+                        width: 26px;
+                        height: 26px;
+                        border-radius: 6px;
+                        background: close-ta.has-hover ? Theme.bg-hover : transparent;
+                        close-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.close-requested(); }
+                        }
+                        Icon {
+                            glyph: "close";
+                            tint: close-ta.has-hover ? Theme.text-primary : Theme.text-muted;
+                            size: 14px;
+                        }
+                    }
+                }
+            }
+
+            // ── 页签：预设规则 / 自定义 ───────────────────────────────
+            Rectangle {
+                height: 43px;
+                Rectangle {
+                    y: Theme.snap-to-device(parent.height) - Theme.hairline();
+                    height: Theme.hairline();
+                    background: Theme.border-subtle;
+                }
+                HorizontalLayout {
+                    spacing: 0;
+                    tab-preset := Rectangle {
+                        horizontal-stretch: 1;
+                        background: transparent;
+                        Text {
+                            width: 100%;
+                            height: 100%;
+                            text: (root.lang-en ? "Presets" : "预设规则")
+                                + " (" + root.presets.length + ")";
+                            color: root.tab == 0 ? Theme.text-primary : Theme.text-muted;
+                            font-size: 12.5px;
+                            font-weight: root.tab == 0 ? Theme.fw-strong : Theme.fw-regular;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        Rectangle {
+                            y: parent.height - 3px;
+                            x: parent.width * 0.14;
+                            width: parent.width * 0.72;
+                            height: 2px;
+                            border-radius: 1px;
+                            background: Theme.accent;
+                            visible: root.tab == 0;
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.tab = 0; }
+                        }
+                    }
+                    tab-custom := Rectangle {
+                        horizontal-stretch: 1;
+                        background: transparent;
+                        Text {
+                            width: 100%;
+                            height: 100%;
+                            text: (root.lang-en ? "Custom" : "自定义")
+                                + " (" + root.customs.length + ")";
+                            color: root.tab == 1 ? Theme.text-primary : Theme.text-muted;
+                            font-size: 12.5px;
+                            font-weight: root.tab == 1 ? Theme.fw-strong : Theme.fw-regular;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        Rectangle {
+                            y: parent.height - 3px;
+                            x: parent.width * 0.14;
+                            width: parent.width * 0.72;
+                            height: 2px;
+                            border-radius: 1px;
+                            background: Theme.accent;
+                            visible: root.tab == 1;
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.tab = 1; }
+                        }
+                    }
+                }
+            }
+
+            // ── 预设页：分组列表（表序即优先级） ───────────────────────
+            if root.tab == 0 : ScrollView {
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+                VerticalLayout {
+                    padding-top: 9px;
+                    padding-bottom: 16px;
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 0;
+                    for p[i] in root.presets : VerticalLayout {
+                        property <bool> is-group-head:
+                            i == 0 || root.presets[i - 1].group != p.group;
+                        if is-group-head : Text {
+                            text: p.group;
+                            color: Theme.text-secondary;
+                            font-size: 10.5px;
+                            font-weight: Theme.fw-strong;
+                        }
+                        Rectangle {
+                            height: 50px;
+                            background: row-ta.has-hover ? Theme.bg-hover : transparent;
+                            border-radius: 9px;
+                            HorizontalLayout {
+                                padding-left: 11px;
+                                padding-right: 11px;
+                                spacing: 11px;
+                                // 交叉轴居中：色点（9px）/ 彩虹条 / 开关（19px）
+                                // 都是定高，默认 stretch 下会顶对齐
+                                cross-axis-alignment: center;
+                                // 色点 / 彩虹条
+                                if !p.rainbow : Rectangle {
+                                    width: 9px;
+                                    height: 9px;
+                                    border-radius: 5px;
+                                    background: p.dot;
+                                    opacity: p.enabled ? 1 : 0.45;
+                                }
+                                if p.rainbow : HorizontalLayout {
+                                    spacing: 1.5px;
+                                    for c in ["#F75464", "#F0883E", "#F5E147", "#8CCF15",
+                                              "#1FC8B4", "#3DA5D9", "#7C6BD6"] : Rectangle {
+                                        width: 4px;
+                                        height: 14px;
+                                        border-radius: 2px;
+                                        background: PickerMath.hex-color(c);
+                                    }
+                                }
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    alignment: center;
+                                    spacing: 1px;
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        // 角标是定高（16px），Text 行高不一 → 显式居中
+                                        cross-axis-alignment: center;
+                                        Text {
+                                            text: p.name;
+                                            color: p.enabled ? Theme.text-primary : Theme.text-secondary;
+                                            font-size: 12.5px;
+                                            overflow: elide;
+                                            horizontal-stretch: 1;
+                                            vertical-alignment: center;
+                                        }
+                                        if p.special != "" : Rectangle {
+                                            height: 16px;
+                                            width: special-txt.preferred-width + 10px;
+                                            border-radius: 4px;
+                                            background: Theme.popup-bg-active;
+                                            special-txt := Text {
+                                                width: parent.width;
+                                                height: parent.height;
+                                                text: p.special;
+                                                color: Theme.text-muted;
+                                                font-size: 9.5px;
+                                                font-weight: Theme.fw-strong;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                    Text {
+                                        text: p.pattern;
+                                        color: p.enabled ? Theme.text-secondary : Theme.text-muted;
+                                        font-family: Theme.term-font-family;
+                                        font-size: 11px;
+                                        overflow: elide;
+                                    }
+                                }
+                                HlSwitch {
+                                    on: p.enabled;
+                                    toggled(v) => { root.set-preset-enabled(p.id, v); }
+                                }
+                            }
+                            row-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.set-preset-enabled(p.id, !p.enabled); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── 自定义页：添加表单 + 规则列表 ─────────────────────────
+            if root.tab == 1 : ScrollView {
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+                VerticalLayout {
+                    padding-top: 9px;
+                    padding-bottom: 16px;
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 0;
+                    // 添加新规则卡（VL 子项默认横向撑满，勿写 width: parent.width
+                    // —— 在 ScrollView 里会与 preferred-width 反向依赖成环）
+                    Rectangle {
+                        background: Theme.popup-bg-alt;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        VerticalLayout {
+                            padding-top: 13px;
+                            padding-bottom: 14px;
+                            padding-left: 14px;
+                            padding-right: 14px;
+                            spacing: 9px;
+                            Text {
+                                text: root.lang-en ? "New rule" : "添加新规则";
+                                color: Theme.text-secondary;
+                                font-size: 11.5px;
+                                font-weight: Theme.fw-strong;
+                            }
+                            // 名称（聚焦后提示语消失，与新建会话对话框同款）
+                            HlField {
+                                hint: root.lang-en
+                                    ? "Rule name (e.g. build time)"
+                                    : "规则名称（如：构建耗时）";
+                                text <=> root.new-name;
+                                blur-token: root.blur-token;
+                            }
+                            // 正则（多行）
+                            HlField {
+                                hint: root.lang-en
+                                    ? "Regular expression, e.g. error|failed|warning"
+                                    : "正则表达式，如：error|failed|warning";
+                                text <=> root.new-pattern;
+                                blur-token: root.blur-token;
+                                multi: true;
+                                field-h: 70px;
+                            }
+                            // 颜色行：色块 + HEX + 对比度提示
+                            HorizontalLayout {
+                                spacing: 9px;
+                                cross-axis-alignment: center;
+                                Text {
+                                    text: root.lang-en ? "Colour" : "颜色";
+                                    color: Theme.text-secondary;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 0;
+                                }
+                                Rectangle {
+                                    width: 96px;
+                                    height: 26px;
+                                    border-radius: 6px;
+                                    background: Theme.popup-bg-elevated;
+                                    border-width: 1px;
+                                    border-color: color-ta.has-hover ? Theme.text-muted : Theme.border-strong;
+                                    HorizontalLayout {
+                                        padding-left: 4px;
+                                        padding-right: 7px;
+                                        spacing: 6px;
+                                        cross-axis-alignment: center;
+                                        Rectangle {
+                                            width: 16px;
+                                            height: 16px;
+                                            border-radius: 4px;
+                                            background: PickerMath.hex-color(root.new-color);
+                                        }
+                                        Text {
+                                            text: root.new-color;
+                                            color: Theme.text-primary;
+                                            font-size: 10.5px;
+                                            font-weight: Theme.fw-strong;
+                                            font-family: Theme.term-font-family;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                            overflow: elide;
+                                        }
+                                        Icon {
+                                            glyph: "expand-more";
+                                            tint: Theme.text-muted;
+                                            size: 10px;
+                                        }
+                                    }
+                                    color-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.pal-base = root.new-color;
+                                            root.pal-open = true;
+                                        }
+                                    }
+                                }
+                                // 对比度提示：取色盘守卫判据（与强调色同口径）
+                                if PickerMath.fit-hex(root.new-color) != root.new-color : Text {
+                                    text: root.lang-en
+                                        ? "Too dim on the terminal — will be brightened"
+                                        : "对终端底对比度不足，将自动调亮";
+                                    color: Theme.warning;
+                                    font-size: 10.5px;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                }
+                            }
+                            // 添加钮
+                            Rectangle {
+                                height: 38px;
+                                border-radius: 8px;
+                                background: add-ta.has-hover
+                                    ? Theme.accent-solid.brighter(0.08) : Theme.accent-soft;
+                                border-width: 1px;
+                                border-color: Theme.accent-solid.with-alpha(0.55);
+                                Text {
+                                    width: 100%;
+                                    height: 100%;
+                                    text: root.lang-en ? "＋ Add" : "＋ 添加";
+                                    color: Theme.accent;
+                                    font-size: 12.5px;
+                                    font-weight: Theme.fw-strong;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                add-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        if root.add-rule(root.new-name, root.new-pattern, root.new-color) {
+                                            root.new-name = "";
+                                            root.new-pattern = "";
+                                        }
+                                    }
+                                }
+                            }
+                            if root.status != "" : Text {
+                                text: root.status;
+                                color: Theme.danger;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                    Rectangle { height: 12px; }
+                    // 空态
+                    if root.customs.length == 0 : VerticalLayout {
+                        padding-top: 40px;
+                        padding-bottom: 26px;
+                        spacing: 6px;
+                        alignment: center;
+                        cross-axis-alignment: center;
+                        Icon {
+                            glyph: "palette";
+                            tint: Theme.text-muted;
+                            size: 26px;
+                            opacity: 0.5;
+                        }
+                        Text {
+                            text: root.lang-en ? "No custom rules yet." : "暂无自定义规则。";
+                            color: Theme.text-muted;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                        }
+                    }
+                    for c[index] in root.customs : Rectangle {
+                        height: 50px;
+                        clip: true;
+                        Rectangle {
+                            y: 0px;
+                            width: 100%;
+                            height: 1px;
+                            background: Theme.border-subtle;
+                        }
+                        HorizontalLayout {
+                            spacing: 11px;
+                            padding-left: 11px;
+                            padding-right: 11px;
+                            cross-axis-alignment: center;
+                            Rectangle {
+                                width: 9px;
+                                height: 9px;
+                                border-radius: 5px;
+                                background: c.dot;
+                                opacity: c.enabled ? 1 : 0.45;
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                spacing: 1px;
+                                Text {
+                                    text: c.name;
+                                    color: c.enabled ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: 12.5px;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: c.hex;
+                                    color: c.enabled ? Theme.text-secondary : Theme.text-muted;
+                                    font-family: Theme.term-font-family;
+                                    font-size: 11px;
+                                    overflow: elide;
+                                }
+                            }
+                            HlSwitch {
+                                on: c.enabled;
+                                toggled(v) => { root.set-rule-enabled(index, v); }
+                            }
+                            Rectangle {
+                                width: 28px;
+                                height: 28px;
+                                border-radius: 5px;
+                                background: del-ta.has-hover ? Theme.bg-hover : transparent;
+                                del-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.remove-rule(index); }
+                                }
+                                Icon {
+                                    glyph: "delete";
+                                    tint: del-ta.has-hover ? Theme.danger : Theme.text-muted;
+                                    size: 15px;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── 页脚：说明 + 完成 ─────────────────────────────────────
+            Rectangle {
+                height: 52px;
+                Rectangle {
+                    y: Theme.snap-to-device(0px);
+                    height: Theme.hairline();
+                    background: Theme.border-subtle;
+                }
+                HorizontalLayout {
+                    padding-left: 18px;
+                    padding-right: 18px;
+                    spacing: 12px;
+                    cross-axis-alignment: center;
+                    Text {
+                        text: root.lang-en
+                            ? "Rules apply to plain terminal output only."
+                            : "高亮规则仅应用于程序未上色的终端输出。";
+                        color: Theme.text-muted;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    Rectangle {
+                        width: 84px;
+                        height: 30px;
+                        border-radius: 7px;
+                        background: done-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                        Text {
+                            width: 100%;
+                            height: 100%;
+                            text: root.lang-en ? "Done" : "完成";
+                            color: #ffffff;
+                            font-size: 12px;
+                            font-weight: Theme.fw-strong;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        done-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.close-requested(); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 47 预设色板卡（与强调色弹框同源同款）─────────────────────
+        if root.pal-open : Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: #00000073;
+            TouchArea {
+                clicked => {
+                    root.new-color = root.pal-base;
+                    root.pal-open = false;
+                }
+            }
+            pal-card := Rectangle {
+                width: 664px;
+                height: pal-lay.preferred-height;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: Theme.popup-bg;
+                border-radius: 12px;
+                border-width: 1px;
+                border-color: Theme.border-strong;
+                drop-shadow-blur: 24px;
+                drop-shadow-color: transparent;
+                pal-lay := VerticalLayout {
+                    padding-top: 14px;
+                    padding-bottom: 14px;
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 10px;
+                    Text {
+                        text: root.lang-en
+                            ? "Tap a swatch to select; Apply takes effect. Cancel reverts."
+                            : "点选色块仅选中；「应用」后生效，取消 / 关闭还原当前色";
+                        color: Theme.text-muted;
+                        font-size: 11px;
+                    }
+                    // 最近取用（本次会话，≤8；从未取过色时整行不占位）
+                    if root.r0 != "" : HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: root.lang-en ? "Recent" : "最近";
+                            color: Theme.text-muted;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            horizontal-stretch: 0;
+                        }
+                        for r in root.recent-slots : Rectangle {
+                            width: r != "" ? 17px : 0px;
+                            height: 17px;
+                            border-radius: 4px;
+                            background: PickerMath.hex-color(r);
+                            border-width: r-ta.has-hover ? 2px : 1px;
+                            border-color: r-ta.has-hover
+                                ? PickerMath.ink-on(r).with-alpha(0.72) : #ffffff26;
+                            r-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.new-color = r; }
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    GridLayout {
+                        spacing: 6px;
+                        for p[i] in [
+                            { n: "番茄色", h: "#F44333" }, { n: "植物红", h: "#B71C1C" }, { n: "珊瑚色", h: "#FF7F6B" }, { n: "鲑鱼色", h: "#F29E7B" },
+                            { n: "橘黄色", h: "#FFA565" }, { n: "橙色", h: "#F0862C" }, { n: "琥珀橙", h: "#FF9B0B" }, { n: "金色", h: "#FFC069" },
+                            { n: "茶色", h: "#FFC100" }, { n: "蟹青色", h: "#FFE831" }, { n: "青柠", h: "#C8FF00" }, { n: "钢色", h: "#B9B119" },
+                            { n: "苔藓色", h: "#B1C784" }, { n: "黄绿色", h: "#A5FF80" }, { n: "鲜绿色", h: "#7CB342" }, { n: "绝命毒药色", h: "#368A3F" }, { n: "GitHub 绿", h: "#2DA44E" },
+                            { n: "微信绿", h: "#07C160" }, { n: "翡翠绿", h: "#29A383" }, { n: "薄荷色", h: "#95E0C1" }, { n: "绿松石色", h: "#88CBBC" }, { n: "海蓝宝石色", h: "#64FFDD" },
+                            { n: "青绿色", h: "#089B8B" }, { n: "天空色", h: "#64FFFF" }, { n: "水蓝色", h: "#5CCFE6" }, { n: "鲜蓝色", h: "#73D8FF" },
+                            { n: "水色", h: "#42A5F5" }, { n: "品牌蓝", h: "#0969DA" }, { n: "宝蓝色", h: "#2979F5" }, { n: "霓虹色", h: "#1D49B1" },
+                            { n: "靛蓝色", h: "#2F51B5" }, { n: "Stripe 紫", h: "#635BFF" }, { n: "仿紫色", h: "#651FFF" }, { n: "夜色", h: "#676E9A" },
+                            { n: "石板色", h: "#607D8B" }, { n: "海星色", h: "#546E7A" }, { n: "淡紫色", h: "#DFBFFF" }, { n: "薰衣草色", h: "#7E57C2" }, { n: "紫水晶色", h: "#AB47BC" },
+                            { n: "深红色", h: "#E916B5" }, { n: "草绿粉", h: "#FF40CC" }, { n: "洋红", h: "#E1306C" }, { n: "玫瑰色", h: "#F279B9" },
+                            { n: "沙色", h: "#D9AE91" }, { n: "咖啡色", h: "#795548" }, { n: "灰色", h: "#9E9E9E" },
+                            { n: "铅黑色", h: "#616161" }, { n: "碳素色", h: "#424242" },
+                        ] : Rectangle {
+                            row: i / 8;
+                            col: Math.mod(i, 8);
+                            width: 72px;
+                            height: 40px;
+                            border-radius: 8px;
+                            background: PickerMath.hex-color(p.h);
+                            border-width: root.new-color == p.h ? 2px : 1px;
+                            border-color: root.new-color == p.h
+                                ? PickerMath.ink-on(p.h)
+                                : p-ta.has-hover ? PickerMath.ink-on(p.h).with-alpha(0.72) : #ffffff1a;
+                            VerticalLayout {
+                                padding-left: 7px;
+                                padding-right: 5px;
+                                alignment: center;
+                                Text {
+                                    text: p.n;
+                                    color: PickerMath.ink-on(p.h);
+                                    font-size: 10px;
+                                    font-weight: Theme.fw-strong;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: p.h;
+                                    color: PickerMath.ink-on(p.h);
+                                    opacity: 0.78;
+                                    font-size: 8.5px;
+                                    font-family: Theme.term-font-family;
+                                    overflow: elide;
+                                }
+                            }
+                            p-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.new-color = p.h; }
+                            }
+                        }
+                    }
+                    // 页脚：选定 + 调色盘 + 随机/取消/应用
+                    Rectangle { height: 1px; background: Theme.border-subtle; }
+                    HorizontalLayout {
+                        height: 36px;
+                        spacing: 8px;
+                        // 「选定色 + 调色盘 ›」合并钮（强调色弹框同款）
+                        Rectangle {
+                            width: 194px;
+                            height: 36px;
+                            border-radius: 10px;
+                            background: Theme.popup-bg-elevated;
+                            border-width: 1px;
+                            border-color: cur-ta.has-hover
+                                ? PickerMath.hex-color(root.new-color) : Theme.border-strong;
+                            clip: true;
+                            HorizontalLayout {
+                                spacing: 0px;
+                                Rectangle {
+                                    width: 103px;
+                                    height: parent.height;
+                                    background: PickerMath.hex-color(root.new-color);
+                                    VerticalLayout {
+                                        padding-left: 10px;
+                                        alignment: center;
+                                        spacing: 0px;
+                                        Text {
+                                            text: root.lang-en ? "Selected" : "选定";
+                                            color: PickerMath.ink-on(root.new-color);
+                                            font-size: 9px;
+                                            font-weight: Theme.fw-strong;
+                                            opacity: 0.85;
+                                        }
+                                        Text {
+                                            text: root.new-color;
+                                            color: PickerMath.ink-on(root.new-color);
+                                            font-size: 10px;
+                                            font-family: Theme.term-font-family;
+                                        }
+                                    }
+                                }
+                                Rectangle {
+                                    width: 1px;
+                                    height: parent.height;
+                                    background: Theme.border-strong;
+                                }
+                                Text {
+                                    width: 90px;
+                                    height: parent.height;
+                                    text: root.lang-en ? "Palette ›" : "调色盘 ›";
+                                    color: cur-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: 12px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                cur-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => {
+                                        root.pick-base = root.new-color;
+                                        root.picker-open(root.new-color);
+                                        root.pick-open = true;
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        Rectangle {
+                            width: 64px;
+                            height: 36px;
+                            border-radius: 8px;
+                            background: rnd-ta.has-hover ? Theme.bg-hover : transparent;
+                            border-width: 1px;
+                            border-color: rnd-ta.has-hover ? Theme.text-muted : Theme.border-strong;
+                            Text {
+                                width: 100%;
+                                height: 100%;
+                                text: root.lang-en ? "Random" : "随机";
+                                color: rnd-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                                font-size: 11.5px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            rnd-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.new-color = root.random-hex(); }
+                            }
+                        }
+                        Rectangle {
+                            width: 64px;
+                            height: 36px;
+                            border-radius: 8px;
+                            background: pc-cancel-ta.has-hover ? Theme.bg-hover : transparent;
+                            border-width: 1px;
+                            border-color: pc-cancel-ta.has-hover ? Theme.text-muted : Theme.border-strong;
+                            Text {
+                                width: 100%;
+                                height: 100%;
+                                text: root.lang-en ? "Cancel" : "取消";
+                                color: pc-cancel-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                                font-size: 11.5px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            pc-cancel-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.new-color = root.pal-base;
+                                    root.pal-open = false;
+                                }
+                            }
+                        }
+                        Rectangle {
+                            width: 64px;
+                            height: 36px;
+                            border-radius: 8px;
+                            background: PickerMath.hex-color(root.new-color);
+                            Text {
+                                width: 100%;
+                                height: 100%;
+                                text: root.lang-en ? "Apply" : "应用";
+                                color: PickerMath.ink-on(root.new-color);
+                                font-size: 11.5px;
+                                font-weight: Theme.fw-strong;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            pc-ok-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    // 最近取用前插（已是队首则不重复入列）：
+                                    // Slint 无数组拼接 / 展开运算符 → 8 槽整队移位，
+                                    // 队尾自然溢出丢弃。
+                                    if (root.r0 != root.new-color) {
+                                        root.r7 = root.r6;
+                                        root.r6 = root.r5;
+                                        root.r5 = root.r4;
+                                        root.r4 = root.r3;
+                                        root.r3 = root.r2;
+                                        root.r2 = root.r1;
+                                        root.r1 = root.r0;
+                                        root.r0 = root.new-color;
+                                    }
+                                    root.pal-open = false;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 调色盘（通用 ColorPickerDialog）──────────────────────────
+        if root.pick-open : ColorPickerDialog {
+            x: clamp((parent.width - self.width) / 2, 8px,
+                max(8px, parent.width - self.width - 8px));
+            y: clamp((parent.height - self.height) / 2, 8px,
+                max(8px, parent.height - self.height - 8px));
+            bounds-w: parent.width;
+            bounds-h: parent.height;
+            title: root.lang-en ? "Palette" : "调色盘";
+            en: root.lang-en;
+            hex <=> root.new-color;
+            fmt <=> root.pick-fmt;
+            wheel-mx <=> root.wheel-mx;
+            wheel-my <=> root.wheel-my;
+            val-my <=> root.val-my;
+            pick-v <=> root.pick-v;
+            sync-pos => { root.sync-picker-pos(); }
+            copy-requested(h) => { root.copy-text(h); }
+            cancelled => {
+                root.new-color = root.pick-base;
+                root.pick-open = false;
+            }
+            confirmed => { root.pick-open = false; }
+        }
+    }
+}

@@ -1,126 +1,108 @@
 
-use crate::terminal::{CompiledOutputRule, HistSpan, OutputHighlightPreset};
+use crate::terminal::{CompiledOutputRule, HistSpan, RuleColor};
 use crate::ui::TermSpan;
 
-/// Highlight the first recognisable log-level token in each otherwise unstyled
-/// terminal run. Uppercase standalone levels cover conventional text logs;
-/// lowercase values are accepted only in a structured `level=...` / JSON field
-/// to avoid colouring ordinary prose that happens to contain words like "error".
+/// 客户端侧输出高亮（#hl-settings-hifi 2026-10-20 重写）。
+///
+/// 规则表已按优先级排好（自定义在前、预设按表序），逐条**认领**：
+/// 每条规则只染还没被认领的、程序没上过色的片段；先命中先着色，后来的规则
+/// 只能染剩余部分。`whole_line` 规则（自定义整行 / 表格分隔线）是「任一
+/// run 命中即染整行」。`rainbow` 开时最后走彩虹括号通道（按括号层级循环
+/// 着色，只染剩下的括号字符）。
 pub(crate) fn highlight_plain_output(
     runs: Vec<HistSpan>,
-    preset: OutputHighlightPreset,
-    custom_rules: &[CompiledOutputRule],
+    rules: &[CompiledOutputRule],
+    rainbow: bool,
 ) -> Vec<HistSpan> {
-    if preset == OutputHighlightPreset::Off {
+    if rules.is_empty() && !rainbow {
         return runs;
     }
-    let runs = highlight_custom_output(runs, custom_rules);
-    const SEARCH_COLS: i32 = 96;
-
-    let mut out = Vec::with_capacity(runs.len() + 2);
-    for run in runs {
-        let eligible = run.col < SEARCH_COLS
-            && matches!(run.fg, vt100::Color::Default)
-            && matches!(run.bg, vt100::Color::Default)
-            && !run.bold
-            && !run.inverse;
-        let max_chars = SEARCH_COLS.saturating_sub(run.col) as usize;
-        let Some((start, end, ansi_index)) = eligible
-            .then(|| output_highlight_marker(&run.text, max_chars, preset))
-            .flatten()
-        else {
-            out.push(run);
-            continue;
-        };
-
-        let before = run.text[..start].to_string();
-        let marker = run.text[start..end].to_string();
-        let after = run.text[end..].to_string();
-        let before_cells = before.chars().count() as i32;
-        let marker_cells = marker.chars().count() as i32;
-
-        if !before.is_empty() {
-            let mut part = run.clone();
-            part.text = before;
-            part.cells = before_cells;
-            out.push(part);
-        }
-
-        let mut level = run.clone();
-        level.text = marker;
-        level.fg = vt100::Color::Idx(ansi_index);
-        level.bold = true;
-        level.col += before_cells;
-        level.cells = marker_cells;
-        out.push(level);
-
-        if !after.is_empty() {
-            let mut part = run;
-            part.text = after;
-            part.col += before_cells + marker_cells;
-            part.cells = part.cells.saturating_sub(before_cells + marker_cells);
-            out.push(part);
-        }
-    }
-    out
-}
-
-fn highlight_custom_output(mut runs: Vec<HistSpan>, rules: &[CompiledOutputRule]) -> Vec<HistSpan> {
+    let mut runs = runs;
     for rule in rules {
-        if rule.whole_line
-            && runs
-                .iter()
-                .any(|run| custom_rule_eligible(run) && rule.matcher.is_match(&run.text))
-        {
-            for run in &mut runs {
-                if custom_rule_eligible(run) {
-                    run.fg = vt100::Color::Idx(rule.ansi_index);
-                    run.bold = true;
-                }
-            }
-            continue;
-        }
-
-        let mut next = Vec::with_capacity(runs.len() + 2);
-        for run in runs {
-            if !custom_rule_eligible(&run) {
-                next.push(run);
-                continue;
-            }
-            let matches: Vec<(usize, usize)> = rule
-                .matcher
-                .find_iter(&run.text)
-                .filter(|m| !m.is_empty())
-                .map(|m| (m.start(), m.end()))
-                .collect();
-            if matches.is_empty() {
-                next.push(run);
-            } else {
-                next.extend(style_custom_matches(run, &matches, rule.ansi_index));
-            }
-        }
-        runs = next;
+        apply_rule(&mut runs, rule);
+    }
+    if rainbow {
+        apply_rainbow_parens(&mut runs);
     }
     runs
 }
 
-fn custom_rule_eligible(run: &HistSpan) -> bool {
+/// 程序自己上过色的 run 永远不碰（fg/bg 非默认、加粗、反色都算）。
+fn is_plain_run(run: &HistSpan) -> bool {
     matches!(run.fg, vt100::Color::Default)
         && matches!(run.bg, vt100::Color::Default)
         && !run.bold
         && !run.inverse
 }
 
-fn style_custom_matches(
-    run: HistSpan,
-    matches: &[(usize, usize)],
-    ansi_index: u8,
-) -> Vec<HistSpan> {
-    let mut out = Vec::with_capacity(matches.len() * 2 + 1);
+fn style_run(run: &mut HistSpan, color: RuleColor) {
+    run.fg = match color {
+        RuleColor::Idx(i) => vt100::Color::Idx(i),
+        RuleColor::Rgb(r, g, b) => vt100::Color::Rgb(r, g, b),
+    };
+    run.bold = true;
+}
+
+/// 一条规则的命中区间（字节）。`group > 0` 时只取该捕获组
+/// （path 预设用前置组占位，只染路径本身）；否则整个匹配。
+fn rule_match_spans(rule: &CompiledOutputRule, text: &str) -> Vec<(usize, usize)> {
+    if rule.group > 0 {
+        rule.matcher
+            .captures_iter(text)
+            .filter_map(|caps| caps.get(rule.group).map(|m| (m.start(), m.end())))
+            .filter(|(start, end)| start < end)
+            .collect()
+    } else {
+        rule.matcher
+            .find_iter(text)
+            .filter(|m| !m.is_empty())
+            .map(|m| (m.start(), m.end()))
+            .collect()
+    }
+}
+
+fn apply_rule(runs: &mut Vec<HistSpan>, rule: &CompiledOutputRule) {
+    if rule.whole_line {
+        let hit = runs
+            .iter()
+            .any(|run| is_plain_run(run) && rule.matcher.is_match(&run.text));
+        if hit {
+            for run in runs.iter_mut() {
+                if is_plain_run(run) {
+                    style_run(run, rule.color);
+                }
+            }
+        }
+        return;
+    }
+    let taken = std::mem::take(runs);
+    let mut next = Vec::with_capacity(taken.len() + 2);
+    for run in taken {
+        if !is_plain_run(&run) {
+            next.push(run);
+            continue;
+        }
+        let spans: Vec<(usize, usize, RuleColor)> = rule_match_spans(rule, &run.text)
+            .into_iter()
+            .map(|(start, end)| (start, end, rule.color))
+            .collect();
+        if spans.is_empty() {
+            next.push(run);
+        } else {
+            next.extend(split_run(run, &spans));
+        }
+    }
+    *runs = next;
+}
+
+/// 把 run 按给定字节区间切开：区间内按各自颜色加粗，区间外保持原样。
+/// 列号/格数按显示宽度重算（宽字符下字节数 ≠ 字符数 ≠ 格数）。
+fn split_run(run: HistSpan, spans: &[(usize, usize, RuleColor)]) -> Vec<HistSpan> {
+    let mut out = Vec::with_capacity(spans.len() * 2 + 1);
     let mut byte_pos = 0usize;
     let mut col = run.col;
-    for &(start, end) in matches {
-        if start < byte_pos || end > run.text.len() {
+    for &(start, end, color) in spans {
+        if start < byte_pos || end > run.text.len() || start >= end {
             continue;
         }
         if start > byte_pos {
@@ -138,8 +120,7 @@ fn style_custom_matches(
         let cells = text_cell_width(text);
         let mut hit = run.clone();
         hit.text = text.to_string();
-        hit.fg = vt100::Color::Idx(ansi_index);
-        hit.bold = true;
+        style_run(&mut hit, color);
         hit.col = col;
         hit.cells = cells;
         out.push(hit);
@@ -158,189 +139,66 @@ fn style_custom_matches(
     out
 }
 
+/// 彩虹括号七色（绝对色值，与高保真稿一致）。刻意**不跟随主题**：
+/// 彩虹的意义就是七色循环；跟随主题会把七档压成主题的几槽。
+const RAINBOW_COLORS: [(u8, u8, u8); 7] = [
+    (0xF7, 0x54, 0x64), // 红
+    (0xF0, 0x88, 0x3E), // 橙
+    (0xF5, 0xE1, 0x47), // 黄
+    (0x8C, 0xCF, 0x15), // 青柠
+    (0x1F, 0xC8, 0xB4), // 青
+    (0x3D, 0xA5, 0xD9), // 蓝
+    (0x7C, 0x6B, 0xD6), // 紫
+];
+
+const RAINBOW_OPENERS: [char; 3] = ['(', '[', '{'];
+const RAINBOW_CLOSERS: [char; 3] = [')', ']', '}'];
+
+/// 彩虹括号：对**还没被认领**的括号字符按嵌套层级循环着色（只染括号本身，
+/// 不染括号里的内容）。深度栈按行跨 run 延续 —— 同一行的开括号可能在
+/// 前一个 run、闭括号在后一个 run。
+fn apply_rainbow_parens(runs: &mut Vec<HistSpan>) {
+    // 栈里存 opener 的索引（0..3），只用来判空/弹栈；颜色按栈深取。
+    let mut stack: Vec<usize> = Vec::new();
+    let taken = std::mem::take(runs);
+    let mut next = Vec::with_capacity(taken.len() + 8);
+    for run in taken {
+        if !is_plain_run(&run)
+            || !run
+                .text
+                .chars()
+                .any(|c| RAINBOW_OPENERS.contains(&c) || RAINBOW_CLOSERS.contains(&c))
+        {
+            next.push(run);
+            continue;
+        }
+        let mut spans: Vec<(usize, usize, RuleColor)> = Vec::new();
+        for (idx, ch) in run.text.char_indices() {
+            if let Some(opener) = RAINBOW_OPENERS.iter().position(|o| *o == ch) {
+                let level = stack.len();
+                let (r, g, b) = RAINBOW_COLORS[level % RAINBOW_COLORS.len()];
+                spans.push((idx, idx + ch.len_utf8(), RuleColor::Rgb(r, g, b)));
+                stack.push(opener);
+            } else if RAINBOW_CLOSERS.contains(&ch) {
+                if stack.pop().is_none() {
+                    // 孤立的闭括号：按最外层色染，不炸栈
+                    let (r, g, b) = RAINBOW_COLORS[0];
+                    spans.push((idx, idx + ch.len_utf8(), RuleColor::Rgb(r, g, b)));
+                    continue;
+                }
+                let level = stack.len();
+                let (r, g, b) = RAINBOW_COLORS[level % RAINBOW_COLORS.len()];
+                spans.push((idx, idx + ch.len_utf8(), RuleColor::Rgb(r, g, b)));
+            }
+        }
+        next.extend(split_run(run, &spans));
+    }
+    *runs = next;
+}
+
 pub(crate) fn text_cell_width(text: &str) -> i32 {
     use unicode_width::UnicodeWidthChar;
     text.chars().map(|ch| ch.width().unwrap_or(0) as i32).sum()
-}
-
-/// Return `(byte_start, byte_end, xterm_256_index)` for a log severity marker.
-pub(crate) fn log_level_marker(text: &str, max_chars: usize) -> Option<(usize, usize, u8)> {
-    const LEVELS: [(&str, u8); 10] = [
-        ("CRITICAL", 9),
-        ("WARNING", 11),
-        ("ERROR", 9),
-        ("FATAL", 9),
-        ("PANIC", 9),
-        ("TRACE", 8),
-        ("DEBUG", 8),
-        ("NOTICE", 14),
-        ("INFO", 14),
-        ("WARN", 11),
-    ];
-
-    let bytes = text.as_bytes();
-    let mut best: Option<(usize, usize, u8)> = None;
-    for (word, colour) in LEVELS {
-        for (start, _) in text.match_indices(word) {
-            if text[..start].chars().count() >= max_chars
-                || !ascii_word_boundary(bytes, start, start + word.len())
-            {
-                continue;
-            }
-            let candidate = (start, start + word.len(), colour);
-            if best.map_or(true, |current| start < current.0) {
-                best = Some(candidate);
-            }
-            break;
-        }
-    }
-    if best.is_some() {
-        return best;
-    }
-
-    // Structured logging commonly emits `level=error`, `level: warn`, or
-    // `{"level":"info"}` using lowercase values. Only accept those values
-    // after a real `level` key, keeping normal lowercase prose untouched.
-    let lower = text.to_ascii_lowercase();
-    let lower_bytes = lower.as_bytes();
-    for (key_start, _) in lower.match_indices("level") {
-        if text[..key_start].chars().count() >= max_chars
-            || !ascii_word_boundary(lower_bytes, key_start, key_start + 5)
-        {
-            continue;
-        }
-        let mut pos = key_start + 5;
-        if lower_bytes.get(pos) == Some(&b'"') {
-            pos += 1;
-        }
-        while lower_bytes.get(pos).is_some_and(u8::is_ascii_whitespace) {
-            pos += 1;
-        }
-        if !matches!(lower_bytes.get(pos).copied(), Some(b'=') | Some(b':')) {
-            continue;
-        }
-        pos += 1;
-        while lower_bytes.get(pos).is_some_and(u8::is_ascii_whitespace) {
-            pos += 1;
-        }
-        if matches!(lower_bytes.get(pos).copied(), Some(b'"') | Some(b'\'')) {
-            pos += 1;
-        }
-        for (word, colour) in LEVELS {
-            let word = word.to_ascii_lowercase();
-            if lower[pos..].starts_with(&word)
-                && ascii_word_boundary(lower_bytes, pos, pos + word.len())
-            {
-                return Some((pos, pos + word.len(), colour));
-            }
-        }
-    }
-    None
-}
-
-fn output_highlight_marker(
-    text: &str,
-    max_chars: usize,
-    preset: OutputHighlightPreset,
-) -> Option<(usize, usize, u8)> {
-    let log = log_level_marker(text, max_chars);
-    if preset != OutputHighlightPreset::DevOps {
-        return log;
-    }
-    let ops = devops_marker(text, max_chars);
-    match (log, ops) {
-        (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
-        (Some(marker), None) | (None, Some(marker)) => Some(marker),
-        (None, None) => None,
-    }
-}
-
-/// Additional deployment/operations states used by the DevOps preset. The list
-/// intentionally avoids ambiguous short words such as OK/UP/DOWN.
-fn devops_marker(text: &str, max_chars: usize) -> Option<(usize, usize, u8)> {
-    const STATES: [(&str, u8); 15] = [
-        ("UNHEALTHY", 9),
-        ("SUCCEEDED", 10),
-        ("SUCCESS", 10),
-        ("FAILURE", 9),
-        ("FAILED", 9),
-        ("TIMEOUT", 9),
-        ("DENIED", 9),
-        ("DEGRADED", 11),
-        ("RETRYING", 11),
-        ("PENDING", 11),
-        ("HEALTHY", 10),
-        ("READY", 10),
-        ("PASSED", 10),
-        ("RETRY", 11),
-        ("FAIL", 9),
-    ];
-
-    let bytes = text.as_bytes();
-    let mut best: Option<(usize, usize, u8)> = None;
-    for (word, colour) in STATES {
-        for (start, _) in text.match_indices(word) {
-            if text[..start].chars().count() >= max_chars
-                || !ascii_word_boundary(bytes, start, start + word.len())
-            {
-                continue;
-            }
-            let candidate = (start, start + word.len(), colour);
-            if best.map_or(true, |current| start < current.0) {
-                best = Some(candidate);
-            }
-            break;
-        }
-    }
-    if best.is_some() {
-        return best;
-    }
-
-    let lower = text.to_ascii_lowercase();
-    let lower_bytes = lower.as_bytes();
-    for key in ["status", "state", "result"] {
-        for (key_start, _) in lower.match_indices(key) {
-            if text[..key_start].chars().count() >= max_chars
-                || !ascii_word_boundary(lower_bytes, key_start, key_start + key.len())
-            {
-                continue;
-            }
-            let mut pos = key_start + key.len();
-            if lower_bytes.get(pos) == Some(&b'"') {
-                pos += 1;
-            }
-            while lower_bytes.get(pos).is_some_and(u8::is_ascii_whitespace) {
-                pos += 1;
-            }
-            if !matches!(lower_bytes.get(pos).copied(), Some(b'=') | Some(b':')) {
-                continue;
-            }
-            pos += 1;
-            while lower_bytes.get(pos).is_some_and(u8::is_ascii_whitespace) {
-                pos += 1;
-            }
-            if matches!(lower_bytes.get(pos).copied(), Some(b'"') | Some(b'\'')) {
-                pos += 1;
-            }
-            for (word, colour) in STATES {
-                let word = word.to_ascii_lowercase();
-                if lower[pos..].starts_with(&word)
-                    && ascii_word_boundary(lower_bytes, pos, pos + word.len())
-                {
-                    return Some((pos, pos + word.len(), colour));
-                }
-            }
-        }
-    }
-    None
-}
-
-fn ascii_word_boundary(bytes: &[u8], start: usize, end: usize) -> bool {
-    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-    bytes
-        .get(start.wrapping_sub(1))
-        .map_or(true, |b| !is_word(*b))
-        && bytes.get(end).map_or(true, |b| !is_word(*b))
 }
 
 /// Split a styled terminal run into a single TermSpan for the UI grid.

@@ -16,15 +16,6 @@ import { SelectField } from "widgets.slint";
 import { LabeledInput, PrimaryButton, GhostButton, MTermSlider, Scrim } from "widgets.slint";
 import { StorageSettings } from "storage_settings.slint";
 
-export struct OutputRuleItem {
-    pattern: string,
-    regex: bool,
-    case-sensitive: bool,
-    whole-line: bool,
-    color: string,
-    enabled: bool,
-}
-
 export struct WslProfileInfo {
     id: string,
     name: string,
@@ -949,9 +940,8 @@ export component InterfacePanel inherits Rectangle {
     in property <color> term-cursor-color: #D4D4D4;
     in-out property <bool> output-highlight-enabled;
     in-out property <bool> json-format-output: true;
-    in-out property <string> output-highlight-preset;
-    in property <[OutputRuleItem]> output-highlight-rules;
-    in-out property <string> output-highlight-rule-status;
+    // (#hl-settings-hifi) 规则管理在根层「高亮设置」弹框里；这里只发开关。
+    in-out property <bool> highlight-dialog-open: false;
     in property <float> ui-scale;
     in-out property <bool> sftp-follow-cd;
     in-out property <bool> collapse-right-sidebar-default;
@@ -1066,11 +1056,6 @@ export component InterfacePanel inherits Rectangle {
         // 壁纸库以文件夹为准：每次进外观页重扫一次（在外部丢图进来也能出现）。
         if (root.ifd-page == "theme") { root.refresh-wallpapers(); }
     }
-    property <string> new-rule-pattern;
-    property <bool> new-rule-regex;
-    property <bool> new-rule-case-sensitive;
-    property <bool> new-rule-whole-line;
-    property <string> new-rule-color: "red";
     property <bool> renderer-restart-required;
     property <bool> wp-is-custom:
         root.current-wallpaper != "" && root.current-wallpaper != "builtin:light"
@@ -1097,11 +1082,8 @@ export component InterfacePanel inherits Rectangle {
     callback set-term-font-bold(bool);
     callback set-term-cursor-style(string);
     callback set-term-cursor-color(string) -> bool;
-    callback set-output-highlight(bool, string);
+    callback set-highlight-enabled(bool);      // 总开关（规则本身在弹框里管）
     callback set-json-format-output(bool);
-    callback add-output-highlight-rule(string, bool, bool, bool, string) -> bool;
-    callback remove-output-highlight-rule(int);
-    callback set-output-highlight-rule-enabled(int, bool);
     callback set-ui-scale(int);
     callback set-panel-font(int);   // settings-panel font scale, percent
     callback set-renderer-mode(string);
@@ -1451,6 +1433,9 @@ export component InterfacePanel inherits Rectangle {
             }
 
             // --- Output highlighting page -----------------------------
+            // (#hl-settings-hifi 2026-10-20) 规则管理收进根层「高亮设置」弹框
+            // （标题栏「高亮」快捷钮开的是同一个）。本页只留总开关 + 入口 +
+            // JSON 开关 + 预览；预设/自定义的增删改全在弹框里。
             if root.ifd-page == "output" : VerticalLayout {
                 padding-left: 20px;
                 padding-right: 20px;
@@ -1467,30 +1452,20 @@ export component InterfacePanel inherits Rectangle {
                         on: root.output-highlight-enabled;
                         toggled(v) => {
                             root.output-highlight-enabled = v;
-                            root.set-output-highlight(v, root.output-highlight-preset);
+                            root.set-highlight-enabled(v);
                         }
                     }
                 }
                 SettingRow {
-                    label: root.lang-en ? "Built-in rule set" : "内置规则集";
+                    label: root.lang-en ? "Highlight rules" : "高亮规则";
                     desc: root.lang-en
-                        ? "Log levels is conservative; DevOps also recognises deployment and health states."
-                        : "日志级别更保守；DevOps 还识别部署与健康状态。";
+                        ? "Preset rules can be toggled one by one; custom rules take any colour from the accent palette."
+                        : "预设规则可逐条开关；自定义规则可取强调色同款的任意颜色。";
                     show-divider: false;
-                    FontCombo {
-                        focus-clock <=> root.combo-clock;
-                        width: 190px;
-                        enabled: root.output-highlight-enabled;
-                        values: [root.lang-en ? "Log levels" : "日志级别", "DevOps"];
-                        value: root.output-highlight-preset == "devops"
-                            ? "DevOps"
-                            : (root.lang-en ? "Log levels" : "日志级别");
-                        selected(v) => {
-                            root.output-highlight-preset = v == "DevOps" ? "devops" : "log";
-                            root.set-output-highlight(
-                                root.output-highlight-enabled,
-                                root.output-highlight-preset);
-                        }
+                    PrimaryButton {
+                        text: root.lang-en ? "Open highlight settings…" : "打开高亮设置…";
+                        btn-min-width: 190px;
+                        clicked => { root.highlight-dialog-open = true; }
                     }
                 }
 
@@ -1530,166 +1505,6 @@ export component InterfacePanel inherits Rectangle {
                         Text { text: "INFO server ready"; color: root.output-highlight-enabled ? Theme.accent : Theme.term-fg; font-family: Theme.term-font-family; font-size: 12px; }
                         Text { text: "WARN disk nearly full"; color: root.output-highlight-enabled ? Theme.warning : Theme.term-fg; font-family: Theme.term-font-family; font-size: 12px; }
                         Text { text: "ERROR connection failed"; color: root.output-highlight-enabled ? Theme.danger : Theme.term-fg; font-family: Theme.term-font-family; font-size: 12px; }
-                        if root.output-highlight-preset == "devops" : Text { text: "SUCCESS deployment completed"; color: root.output-highlight-enabled ? Theme.success : Theme.term-fg; font-family: Theme.term-font-family; font-size: 12px; }
-                    }
-                }
-
-                Rectangle { height: 18px; }
-                SectionHeader { text: root.lang-en ? "CUSTOM RULES" : "自定义规则"; height: 22px; }
-                Text {
-                    text: root.lang-en
-                        ? "Custom rules run before the built-in preset and never overwrite ANSI colours."
-                        : "自定义规则优先于内置规则，且不会覆盖程序输出的 ANSI 颜色。";
-                    color: Theme.text-muted;
-                    font-size: 11px * Theme.panel-font;
-                    wrap: word-wrap;
-                }
-                Rectangle { height: 10px; }
-                LabeledInput {
-                    label: root.lang-en ? "Keyword or regular expression" : "关键词或正则表达式";
-                    placeholder: root.new-rule-regex ? "timeout|connection refused" : "connection refused";
-                    value <=> root.new-rule-pattern;
-                    accepted => {
-                        if root.add-output-highlight-rule(
-                            root.new-rule-pattern, root.new-rule-regex,
-                            root.new-rule-case-sensitive, root.new-rule-whole-line,
-                            root.new-rule-color) {
-                            root.new-rule-pattern = "";
-                        }
-                    }
-                }
-                Rectangle { height: 8px; }
-                HorizontalLayout {
-                    spacing: 8px;
-                    FontCombo {
-                        focus-clock <=> root.combo-clock;
-                        width: 130px;
-                        values: [root.lang-en ? "Keyword" : "关键词", root.lang-en ? "Regex" : "正则"];
-                        value: root.new-rule-regex
-                            ? (root.lang-en ? "Regex" : "正则")
-                            : (root.lang-en ? "Keyword" : "关键词");
-                        selected(v) => {
-                            root.new-rule-regex = v == "Regex" || v == "正则";
-                        }
-                    }
-                    FontCombo {
-                        focus-clock <=> root.combo-clock;
-                        width: 120px;
-                        values: ["Red", "Yellow", "Green", "Cyan", "Magenta", "Gray"];
-                        value: root.new-rule-color == "yellow" ? "Yellow"
-                            : root.new-rule-color == "green" ? "Green"
-                            : root.new-rule-color == "cyan" ? "Cyan"
-                            : root.new-rule-color == "magenta" ? "Magenta"
-                            : root.new-rule-color == "gray" ? "Gray" : "Red";
-                        selected(v) => {
-                            root.new-rule-color = v == "Yellow" ? "yellow"
-                                : v == "Green" ? "green"
-                                : v == "Cyan" ? "cyan"
-                                : v == "Magenta" ? "magenta"
-                                : v == "Gray" ? "gray" : "red";
-                        }
-                    }
-                    Rectangle { horizontal-stretch: 1; }
-                    PrimaryButton {
-                        text: root.lang-en ? "Add rule" : "添加规则";
-                        disabled: root.new-rule-pattern == "";
-                        clicked => {
-                            if root.add-output-highlight-rule(
-                                root.new-rule-pattern, root.new-rule-regex,
-                                root.new-rule-case-sensitive, root.new-rule-whole-line,
-                                root.new-rule-color) {
-                                root.new-rule-pattern = "";
-                            }
-                        }
-                    }
-                }
-                SettingRow {
-                    label: root.lang-en ? "Case sensitive" : "区分大小写";
-                    Switch {
-                        on: root.new-rule-case-sensitive;
-                        toggled(v) => { root.new-rule-case-sensitive = v; }
-                    }
-                }
-                SettingRow {
-                    label: root.lang-en ? "Highlight whole line" : "高亮整行";
-                    desc: root.lang-en
-                        ? "Otherwise only matching text is coloured."
-                        : "关闭时仅高亮匹配到的文字。";
-                    show-divider: false;
-                    Switch {
-                        on: root.new-rule-whole-line;
-                        toggled(v) => { root.new-rule-whole-line = v; }
-                    }
-                }
-                if root.output-highlight-rule-status != "" : Text {
-                    text: root.output-highlight-rule-status;
-                    color: Theme.danger;
-                    font-size: 11px * Theme.panel-font;
-                    wrap: word-wrap;
-                }
-
-                if root.output-highlight-rules.length == 0 : Text {
-                    text: root.lang-en ? "No custom rules yet." : "暂无自定义规则。";
-                    color: Theme.text-muted;
-                    font-size: 11px * Theme.panel-font;
-                    height: 34px;
-                    vertical-alignment: center;
-                }
-                for rule[index] in root.output-highlight-rules : Rectangle {
-                    height: 44px;
-                    Rectangle { y: 0px; width: 100%; height: 1px; background: Theme.border-subtle; }
-                    HorizontalLayout {
-                        spacing: 9px;
-                        Rectangle {
-                            width: 8px;
-                            height: 8px;
-                            border-radius: 4px;
-                            background: rule.color == "yellow" ? Theme.warning
-                                : rule.color == "green" ? Theme.success
-                                : rule.color == "cyan" ? Theme.accent
-                                : rule.color == "magenta" ? #d670d6
-                                : rule.color == "gray" ? Theme.text-muted
-                                : Theme.danger;
-                            vertical-stretch: 0;
-                        }
-                        VerticalLayout {
-                            horizontal-stretch: 1;
-                            alignment: center;
-                            spacing: 2px;
-                            Text {
-                                text: rule.pattern;
-                                color: rule.enabled ? Theme.text-primary : Theme.text-muted;
-                                font-family: Theme.term-font-family;
-                                font-size: 12px * Theme.panel-font;
-                                overflow: elide;
-                            }
-                            Text {
-                                text: (rule.regex ? "Regex" : (root.lang-en ? "Keyword" : "关键词"))
-                                    + (rule.case-sensitive ? " · Aa" : "")
-                                    + (rule.whole-line ? (root.lang-en ? " · whole line" : " · 整行") : "");
-                                color: Theme.text-muted;
-                                font-size: 10px * Theme.panel-font;
-                            }
-                        }
-                        Switch {
-                            on: rule.enabled;
-                            toggled(v) => { root.set-output-highlight-rule-enabled(index, v); }
-                        }
-                        Rectangle {
-                            width: 28px;
-                            height: 28px;
-                            border-radius: 5px;
-                            background: delete-ta.has-hover ? Theme.bg-hover : transparent;
-                            delete-ta := TouchArea {
-                                mouse-cursor: pointer;
-                                clicked => { root.remove-output-highlight-rule(index); }
-                            }
-                            Icon {
-    glyph: "delete";
-    tint: Theme.text-muted;
-    size: 15px * Theme.panel-font;
-}
-                        }
                     }
                 }
             }

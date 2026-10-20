@@ -19,6 +19,9 @@ pub struct QuickCommand {
 /// One user-defined client-side terminal highlighting rule.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputHighlightRule {
+    /// 用户给规则起的名字（可空；空 = 列表里回落显示正则本身）。
+    #[serde(default)]
+    pub name: String,
     pub pattern: String,
     #[serde(default)]
     pub regex: bool,
@@ -26,7 +29,8 @@ pub struct OutputHighlightRule {
     pub case_sensitive: bool,
     #[serde(default)]
     pub whole_line: bool,
-    /// Stable palette id: red | yellow | green | cyan | magenta | gray.
+    /// `#RRGGBB`（48 色预设卡 / 调色盘决定）。旧配置里的语义名
+    /// red/yellow/green/cyan/magenta/gray 在读入编译时按原 ANSI 槽位解析。
     #[serde(default)]
     pub color: String,
     #[serde(default = "default_true")]

@@ -53,7 +53,10 @@ import { SystemInfoWindow, SysInfoRow, SysMetricRow, SysNetRow } from "system_in
 import { EditorWindow, EditorFindResult } from "editor_window.slint";
 import { TrayMenuWindow } from "tray_menu.slint";
 import { AboutWindow } from "about_window.slint";
-import { InterfacePanel, OutputRuleItem, WslProfileInfo, AccentGuard } from "interface_panel.slint";
+import { InterfacePanel, WslProfileInfo, AccentGuard } from "interface_panel.slint";
+// (#hl-settings-hifi 2026-10-20) 高亮设置弹框（预设逐条开关 + 任意色自定义
+// 规则）。本体在根层：设置页与标题栏两个入口打开的是同一个实例。
+import { HighlightDialog, HighlightPresetItem, HighlightCustomItem } from "highlight_dialog.slint";
 import { SettingsDialog } from "settings_dialog.slint";
 // Re-export so `slint::include_modules!` generates the detached Rust window types.
 export { ProcWindow, SystemInfoWindow, EditorWindow, TrayMenuWindow, AboutWindow }
@@ -774,8 +777,6 @@ component TopbarBtn inherits Rectangle {
             border-radius: Theme.radius-sm;
             border-width: 1px;
             border-color: Theme.border-strong;
-            drop-shadow-blur: 8px;
-            drop-shadow-color: #00000070;
             logo-tip-txt := Text {
                 text: root.collapsed ? (root.lang-en ? "Expand sidebar" : "展开侧边栏")
                                      : (root.lang-en ? "Collapse sidebar" : "收起侧边栏");
@@ -1188,9 +1189,19 @@ export component AppWindow inherits Window {
     in-out property <color> term-cursor-color: Theme.term-fg;
     in-out property <bool> output-highlight-enabled: true;
     in-out property <bool> json-format-output: true;
-    in-out property <string> output-highlight-preset: "log";
-    in property <[OutputRuleItem]> output-highlight-rules;
-    in-out property <string> output-highlight-rule-status;
+    // (#hl-settings-hifi) 高亮设置弹框的数据/开关（Rust 侧每次改动回写模型）
+    in-out property <bool> highlight-dialog-open: false;
+    in property <[HighlightPresetItem]> highlight-presets;
+    in property <[HighlightCustomItem]> highlight-customs;
+    in-out property <int> highlight-enabled-count: 0;
+    in-out property <string> highlight-rule-status;
+    // 高亮取色盘状态（与 accent-pick-* 同款，Rust 侧回填取样点）
+    in-out property <string> highlight-pick-hex: "#1FC8B4";
+    in-out property <string> highlight-pick-fmt: "rgb";
+    in-out property <float> highlight-wheel-mx: 0.5;
+    in-out property <float> highlight-wheel-my: 0.5;
+    in-out property <float> highlight-val-my: 1.0;
+    in-out property <float> highlight-pick-v: 1.0;
     in-out property <float> ui-scale <=> Theme.ui-scale;   // global UI zoom (#100)
     // (#settings-divider-line) The window's real device pixel ratio (winit
     // scale-factor). Slint 1.18 has no scale-factor property in .slint, so Rust
@@ -1370,11 +1381,17 @@ export component AppWindow inherits Window {
     callback set-term-font-bold(bool);             // apply + persist bold terminal text
     callback set-term-cursor-style(string);        // apply + persist cursor shape (#275)
     callback set-term-cursor-color(string) -> bool;// validate + persist cursor colour (#275)
-    callback set-output-highlight(bool, string);   // enable + built-in preset
+    // (#hl-settings-hifi) 高亮设置：总开关 + 预设逐条开关 + 自定义规则增删改。
+    // 全部回调落库后由 Rust 重编译规则表并重渲染终端（与 set-theme 同构）。
+    callback set-highlight-enabled(bool);
+    callback set-highlight-preset-enabled(string, bool);
+    callback add-highlight-rule(string, string, string) -> bool;   // name, pattern, color
+    callback remove-highlight-rule(int);
+    callback set-highlight-rule-enabled(int, bool);
+    callback highlight-picker-open(string);          // 带 hex 开调色盘（回填取样点）
+    callback highlight-sync-picker-pos();            // 数值改动后回填取样点
+    callback highlight-random-hex() -> string;       // 随机取色
     callback set-json-format-output(bool);
-    callback add-output-highlight-rule(string, bool, bool, bool, string) -> bool;
-    callback remove-output-highlight-rule(int);
-    callback set-output-highlight-rule-enabled(int, bool);
     callback set-ui-scale(int);                    // apply + persist UI scale (percent) (#100)
     // Immersive wallpaper (set by Rust). The active id + custom file basename
     // feed the Interface → Wallpaper picker.
@@ -2228,6 +2245,21 @@ export component AppWindow inherits Window {
                             root.theme-pick-x = self.click-x - 120px;
                             root.theme-pick-y = self.btn-y + self.btn-h + 4px;
                             root.theme-pick-open = !root.theme-pick-open;
+                        }
+                    }
+                    // (#hl-settings-hifi 2026-10-20) 高亮设置快捷入口（与「主题」
+                    // 并列）：点开的就是设置 › 终端 › 输出高亮里那个弹框**本体**
+                    // （根层实例，见文件末尾 highlight-dialog-open 块）。
+                    highlight-btn := TopbarBtn { height: parent.height;
+                        icon: "highlighter";
+                        label: root.lang-en ? "Highlight" : "高亮";
+                        active: root.highlight-dialog-open;
+                        clicked => {
+                            root.highlight-dialog-open = true;
+                            // 每次打开都从一个干净的取色态起调（上次的半成品
+                            // 颜色不带进来）。
+                            root.highlight-pick-hex = "#1FC8B4";
+                            root.highlight-pick-fmt = "rgb";
                         }
                     }
                     // 传输管理 —— 呼吸灯 + 下载弹层锚点(transfer-btn)。
@@ -3642,8 +3674,6 @@ export component AppWindow inherits Window {
         border-radius: Theme.radius-sm;
         border-width: 1px;
         border-color: Theme.border-strong;
-        drop-shadow-blur: 8px;
-        drop-shadow-color: #00000070;
         topbar-tip-txt := Text {
             text: root.topbar-tip-text;
             color: Theme.text-primary;
@@ -4449,14 +4479,14 @@ export component AppWindow inherits Window {
             Math.max(sc-host.preferred-width, sc-name.preferred-width) + 76px);
         height: 18px + self.row-n * 22px;
         // (#session-card-twin 2026-10-05) 视觉参数对齐跳板机 tip 卡(#proxy-fields):
-        // elevated 底 / 9px 圆角 / subtle 边框 / 24px 大投影 / 行距 2px,
-        // 名称行主色、其余次色 —— 两处悬浮卡同款(用户要求)。
+        // elevated 底 / 9px 圆角 / subtle 边框 / 行距 2px,名称行主色、其余次色
+        // —— 两处悬浮卡同款(用户要求)。(#popup-no-shadow 2026-10-20) 24px 大投影
+        // 按 10-17「弹窗投影全删」定稿移除:只靠 1px 描边 + 遮罩分层,见
+        // tests/dialog_scrim_drag.rs::popup_surfaces_have_no_drop_shadow。
         background: Theme.popup-bg-elevated;
         border-radius: 9px;
         border-width: 1px;
         border-color: Theme.border-subtle;
-        drop-shadow-blur: 24px;
-        drop-shadow-color: #00000045;
         VerticalLayout {
             padding: 9px;
             padding-left: 12px;
@@ -4527,8 +4557,7 @@ export component AppWindow inherits Window {
         border-radius: 9px;
         border-width: 1px;
         border-color: Theme.border-subtle;
-        drop-shadow-blur: 24px;
-        drop-shadow-color: #00000045;
+        // (#popup-no-shadow 2026-10-20) 投影随 10-17 定稿删除,与会话悬停卡同款
         // 隐藏测量元素（不参与布局：直挂卡片层 + visible false）
         tc-m-title := Text {
             visible: false;
@@ -4632,8 +4661,6 @@ export component AppWindow inherits Window {
         border-radius: Theme.radius-sm;
         border-width: 1px;
         border-color: Theme.border-strong;
-        drop-shadow-blur: 8px;
-        drop-shadow-color: #00000070;
         chbar-tip-txt := Text {
             width: 100%; height: 100%;
             text: root.chbar-stat-tip;
@@ -8146,9 +8173,8 @@ export component AppWindow inherits Window {
             term-cursor-color: root.term-cursor-color;
             output-highlight-enabled <=> root.output-highlight-enabled;
             json-format-output <=> root.json-format-output;
-            output-highlight-preset <=> root.output-highlight-preset;
-            output-highlight-rules: root.output-highlight-rules;
-            output-highlight-rule-status <=> root.output-highlight-rule-status;
+            highlight-dialog-open <=> root.highlight-dialog-open;
+            set-highlight-enabled(v) => { root.set-highlight-enabled(v); }
             ui-scale: root.ui-scale;
             sftp-follow-cd <=> root.sftp-follow-cd;
             collapse-right-sidebar-default <=> root.collapse-right-sidebar-default;
@@ -8185,20 +8211,7 @@ export component AppWindow inherits Window {
             set-term-font-bold(v) => { root.set-term-font-bold(v); }
             set-term-cursor-style(v) => { root.set-term-cursor-style(v); }
             set-term-cursor-color(v) => { root.set-term-cursor-color(v) }
-            set-output-highlight(enabled, preset) => {
-                root.set-output-highlight(enabled, preset);
-            }
             set-json-format-output(enabled) => { root.set-json-format-output(enabled); }
-            add-output-highlight-rule(pattern, regex, case-sensitive, whole-line, color) => {
-                root.add-output-highlight-rule(
-                    pattern, regex, case-sensitive, whole-line, color)
-            }
-            remove-output-highlight-rule(index) => {
-                root.remove-output-highlight-rule(index);
-            }
-            set-output-highlight-rule-enabled(index, enabled) => {
-                root.set-output-highlight-rule-enabled(index, enabled);
-            }
             set-ui-scale(v) => { root.set-ui-scale(v); }
             set-panel-font(v) => { root.set-panel-font(v); }
             set-renderer-mode(v) => { root.set-renderer-mode(v); }
@@ -8229,6 +8242,44 @@ export component AppWindow inherits Window {
             add-wsl-profile(name, distribution, directory) => { root.add-wsl-profile(name, distribution, directory); }
             remove-wsl-profile(id) => { root.remove-wsl-profile(id); }
             pick-wsl-directory => { root.pick-wsl-directory(); }
+        }
+    }
+
+    // --- Highlight settings dialog (#hl-settings-hifi 2026-10-20) --------
+    // 与设置卡同层（根层 overlay 之外由 interface-open 控制的模态域之外）：
+    // 从设置页打开时设置卡留在背后（同 accent-pop 的层级关系）。
+    // 位置状态（hex/取样点/明度）在根上 —— Rust 侧 on_highlight_sync_picker_pos
+    // 与强调色那一套同款回填。
+    if root.highlight-dialog-open : HighlightDialog {
+        lang-en: root.lang-en;
+        bounds-w: root.width;
+        bounds-h: root.height;
+        enabled: root.output-highlight-enabled;
+        presets: root.highlight-presets;
+        customs: root.highlight-customs;
+        enabled-count: root.highlight-enabled-count;
+        status: root.highlight-rule-status;
+        // 取色盘状态：弹框内是本地事实源，<=> 绑回 AppWindow 根
+        // （Rust 侧开盘回填取样点、随机色、关闭复位都与 accent-pick-* 同款）
+        new-color <=> root.highlight-pick-hex;
+        pick-fmt <=> root.highlight-pick-fmt;
+        wheel-mx <=> root.highlight-wheel-mx;
+        wheel-my <=> root.highlight-wheel-my;
+        val-my <=> root.highlight-val-my;
+        pick-v <=> root.highlight-pick-v;
+        set-preset-enabled(id, v) => { root.set-highlight-preset-enabled(id, v); }
+        set-rule-enabled(index, v) => { root.set-highlight-rule-enabled(index, v); }
+        add-rule(name, pattern, color) => {
+            return root.add-highlight-rule(name, pattern, color);
+        }
+        remove-rule(index) => { root.remove-highlight-rule(index); }
+        copy-text(h) => { root.copy-text(h); }
+        random-hex => { return root.highlight-random-hex(); }
+        picker-open(h) => { root.highlight-picker-open(h); }
+        sync-picker-pos => { root.highlight-sync-picker-pos(); }
+        close-requested => {
+            root.highlight-dialog-open = false;
+            root.highlight-rule-status = "";
         }
     }
 

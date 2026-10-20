@@ -69,7 +69,11 @@ impl Frame {
         for y in y0..y1 {
             for x in x0..x1 {
                 let (r, g, b, a) = self.px(x, y);
-                if a == 0 { continue; }
+                // 只认**不透明**匹配：半透明像素（遮罩叠在窗口 chrome 上，
+                // alpha 230~250）反预乘后会漂到目标色附近 —— 实测
+                // (33..36, 36..39, 43..46) 会落进 popup-bg 的 tol 2 里，
+                // 把 bbox 从设置卡一路撑到整个窗口（卡片本体是 alpha 255 实色）。
+                if a < 250 { continue; }
                 if r.abs_diff(c.0) <= tol && g.abs_diff(c.1) <= tol && b.abs_diff(c.2) <= tol {
                     found = true;
                     minx = minx.min(x); miny = miny.min(y);
@@ -602,5 +606,89 @@ fn theme_search_row_is_an_input_not_a_flat_bar() {
 
     if std::env::var("THEME_DUMP_DIR").is_ok() {
         dump(&f, "theme-search-input-focused");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// (#theme-ansi-band 2026-10-19) 主题行八色带 = 该主题自己的 ANSI 表
+// ---------------------------------------------------------------------------
+// 用户反馈「每个主题的 ANSI 调色板，都是一样的」。数据层 28 套 `ansi16` 各不
+// 相同，但这个判断只能靠**渲染出来的像素**证伪：每行右侧那条 75×8 的八色带
+// 若被画成同一组颜色，用户看到的就是「都一样」。这里逐行采样 8 个色块：
+//   * 至少 6 行可见；
+//   * 任意两行的色带不能 8 格全等；
+//   * 8 格里必须出现多种颜色（不是一条单色条）。
+#[test]
+fn theme_rows_show_their_own_ansi_band() {
+    // 自己的夹具：直接取 8 套不同主题（不掺组头/常用区，避免同一套出现两行）。
+    let entries: Vec<ThemeEntry> = crate_free::palettes::PALETTES
+        .iter()
+        .take(8)
+        .map(|p| ThemeEntry {
+            id: p.id.into(),
+            zh: p.zh.into(),
+            mode: if p.dark { "暗".into() } else { "亮".into() },
+            kind: p.kind.into(),
+            root: crate_free::color(p.root),
+            panel: crate_free::color(p.panel),
+            tbg: crate_free::color(p.tbg),
+            tfg: crate_free::color(p.tfg),
+            ac: crate_free::color(p.ac),
+            ansi_eight: ModelRc::from(Rc::new(slint::VecModel::from(
+                [1usize, 2, 3, 4, 5, 6, 9, 14]
+                    .iter()
+                    .map(|&i| crate_free::color(p.ansi16[i]))
+                    .collect::<Vec<_>>(),
+            ))),
+            faved: false,
+            matched: true,
+        })
+        .collect();
+
+    let ui = setup();
+    let mut f = Frame::new();
+    ui.set_theme_entries(ModelRc::from(Rc::new(slint::VecModel::from(entries))));
+    ui.set_theme_total(8);
+    ui.set_theme_chosen("mterm-dark".into());
+    ui.set_theme_pick_x(120.0);
+    ui.set_theme_pick_y(80.0);
+    ui.set_theme_pick_open(true);
+    settle();
+    f.grab(&ui);
+    dump(&f, "ansi-band");
+
+    let centers = find_row_centers(&f, 90, 620);
+    assert!(centers.len() >= 4, "可见主题行太少（{}），探针区间需复核", centers.len());
+
+    let mut bands: Vec<[(u8, u8, u8); 8]> = Vec::new();
+    for y in centers {
+        let Some((left, _right)) = strip_run(&f, y) else { continue };
+        let mut swatches = [(0u8, 0u8, 0u8); 8];
+        for (k, slot) in swatches.iter_mut().enumerate() {
+            // 色块 8px + 间距 1.5px → 第 k 块中心 = left + 4 + 9.5k
+            let x = left + 4 + (k as f32 * 9.5).round() as usize;
+            *slot = f.px3(x, y);
+        }
+        bands.push(swatches);
+    }
+    assert!(bands.len() >= 4, "采到的色带行太少（{}）", bands.len());
+
+    // ① 每行 8 格不能是单色（色带确实由多色组成）
+    for (i, b) in bands.iter().enumerate() {
+        let distinct = b.iter().collect::<std::collections::BTreeSet<_>>().len();
+        assert!(distinct >= 5, "第 {} 行的八色带只有 {} 种颜色：{:?}", i, distinct, b);
+    }
+
+    // ② 任意两行不能 8 格全等 —— 这正是用户说的「都一样」
+    let mut seen: Vec<(usize, [(u8, u8, u8); 8])> = Vec::new();
+    for (i, b) in bands.iter().enumerate() {
+        if let Some((j, _)) = seen.iter().find(|(_, s)| s == b) {
+            panic!(
+                "第 {i} 行与第 {j} 行的八色带逐格相同：{:?}\n\
+                 （每一行都应来自该主题自己的 ansi16；若两行相同，说明模型/绑定串了）",
+                b
+            );
+        }
+        seen.push((i, *b));
     }
 }

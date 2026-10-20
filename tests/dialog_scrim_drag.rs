@@ -105,6 +105,14 @@ impl Frame {
         (un(p.red), un(p.green), un(p.blue), p.alpha)
     }
 
+    /// 读一个像素的**预乘** RGB（帧缓冲原值）。半透明像素的"颜色"只在
+    /// 预乘空间成立：px() 的反预乘会把 8bit 截断误差按 1/alpha 放大
+    /// （遮罩 0.32-alpha 处实测放大 ~3 倍）。与颜色混合类断言配套使用。
+    fn px_raw(&self, x: usize, y: usize) -> (u8, u8, u8) {
+        let p = self.buf[y * W + x];
+        (p.red, p.green, p.blue)
+    }
+
     /// 颜色 C（容差 tol）的像素包围盒，限定在给定区域内。
     fn bbox_of(&self, c: (u8, u8, u8), tol: u8, region: (usize, usize, usize, usize)) -> Option<(usize, usize, usize, usize)> {
         let (x0, y0, x1, y1) = region;
@@ -360,8 +368,16 @@ fn dialog_scrims_unified_and_close_dialog_draggable() {
     //      贡献必须为 0，即完全等于「遮罩后的背景」（背后内容原样透出）。
     // 前一轮为了"看起来像玻璃"加的 0.35 下限 / 白色高光都违反了这条语义，已撤。
     {
-        let scrimmed = mix(base_center, (sr, sg, sb), scrim_alpha);
         let panel_rgb = card_rgb; // 实心档 = 面板色（无高光，颜色不随透明度变）
+        // 卡片像素合成发生在 **8bit 预乘帧缓冲**里：先截断、px() 再反预乘。
+        // 直通 mix(scrimmed, panel, a) 当期望会把遮罩（scrim-alpha≈0.32）
+        // 的截断误差按 1/α 放大 ~3 倍（57% 档实测偏差 8，直接判失败）。
+        // 所以期望值在**预乘空间**算，与缓冲同构；容差 3 覆盖 8bit 截断。
+        let sp = (
+            sr as f32 * scrim_alpha,
+            sg as f32 * scrim_alpha,
+            sb as f32 * scrim_alpha,
+        );
         for (t, tag) in [(0.57f32, "57%"), (1.0f32, "100%")] {
             ui.set_popup_transparency(t);
             f.grab(&ui);
@@ -372,25 +388,39 @@ fn dialog_scrims_unified_and_close_dialog_draggable() {
                  不允许下限/分段/高光等隐藏处理",
                 tag
             );
-            let card = { let (r, g, b, _) = f.px(W / 2, H / 2); (r, g, b) };
-            let expect = mix(scrimmed, panel_rgb, a);
+            let raw = f.px_raw(W / 2, H / 2);
+            let expect = (
+                panel_rgb.0 as f32 * a + sp.0 * (1.0 - a),
+                panel_rgb.1 as f32 * a + sp.1 * (1.0 - a),
+                panel_rgb.2 as f32 * a + sp.2 * (1.0 - a),
+            );
+            let expect = (
+                expect.0.round() as u8,
+                expect.1.round() as u8,
+                expect.2.round() as u8,
+            );
             assert!(
-                close(card, expect, 3),
-                "{} 档卡片应为「背景 × (1−α) + 面板 × α」= {:?}，实得 {:?}（α={a}）",
+                close(raw, expect, 3),
+                "{} 档卡片（预乘）应为「面板 × α + 遮罩预乘 × (1−α)」= {:?}，实得 {:?}（α={a}）",
                 tag,
                 expect,
-                card
+                raw
             );
         }
-        // 100% 档再来一条更硬的：卡片 = 纯背景（面板色一点不剩）。
+        // 100% 档再来一条更硬的：卡片预乘 = 遮罩预乘（面板色一点不剩）。
         ui.set_popup_transparency(1.0);
         f.grab(&ui);
-        let card = { let (r, g, b, _) = f.px(W / 2, H / 2); (r, g, b) };
+        let raw = f.px_raw(W / 2, H / 2);
+        let expect = (
+            sp.0.round() as u8,
+            sp.1.round() as u8,
+            sp.2.round() as u8,
+        );
         assert!(
-            close(card, scrimmed, 2),
-            "100% 档弹窗必须完全透明：卡片应 = 遮罩后的背景 {:?}，实得 {:?}",
-            scrimmed,
-            card
+            close(raw, expect, 2),
+            "100% 档弹窗必须完全透明：卡片（预乘）应 = 遮罩预乘 {:?}，实得 {:?}",
+            expect,
+            raw
         );
         ui.set_popup_transparency(0.0);
         f.grab(&ui);
@@ -709,6 +739,11 @@ fn modal_dialog_scrims_come_from_the_theme_token() {
         // 内置编辑器遗留块：`if false && root.editor-open` 恒不渲染（编辑器
         // 已拆为独立 EditorWindow），块按原作者注释保留作源码兼容，不动它。
         ("app.slint", "background: #00000088;"),
+        // 高亮设置弹框里 47 色板卡的轻遮罩：卡内浮层（不是弹框级遮罩），
+        // 定稿稿 docs/design/highlight-settings-hifi-2026-10-20.html；
+        // 与强调色预设弹框的轻遮罩同款，走写死轻档而不吃 Theme.modal-scrim
+        // （后者在 tint/soft/frost/spot/sheen 样式下基座 alpha=0 会整层消失）。
+        ("highlight_dialog.slint", "background: #00000073;"),
     ];
     for entry in std::fs::read_dir(&ui_dir).unwrap() {
         let path = entry.unwrap().path();

@@ -248,15 +248,25 @@ fn migrate_defaults(cfg: &mut ConfigFile) -> bool {
     true
 }
 
-fn normalize_highlight_color(color: &str) -> &'static str {
-    match color {
-        "yellow" => "yellow",
-        "green" => "green",
-        "cyan" => "cyan",
-        "magenta" => "magenta",
-        "gray" => "gray",
-        _ => "red",
+/// 自定义规则颜色归一成 `#RRGGBB`。旧配置里的语义名
+/// （red/yellow/green/cyan/magenta/gray）在**保存时**迁成对应十六进制
+/// （编译期 `parse_color` 也认旧名，双保险）；认不出来的值回落番茄红。
+/// (#hl-settings-hifi 2026-10-20：自定义色从 6 档语义色扩到任意色)
+pub(crate) fn normalize_highlight_color(color: &str) -> String {
+    let c = color.trim();
+    if crate::picker::parse_hex(c).is_some() {
+        let v = crate::picker::parse_hex(c).unwrap_or(0);
+        return format!("#{:06X}", v);
     }
+    let legacy = match c.to_ascii_lowercase().as_str() {
+        "yellow" => "#F5E147",
+        "green" => "#73B00A",
+        "cyan" => "#1FC8B4",
+        "magenta" => "#C77DBB",
+        "gray" => "#7A7E85",
+        _ => "#F75464", // red 与一切无法识别的值
+    };
+    legacy.to_string()
 }
 
 /// Remove duplicate entries in place, keeping the *last* (most recent)
@@ -1479,20 +1489,28 @@ impl ConfigStore {
         self.cache.json_format_disabled = !enabled;
     }
 
-    /// Selected built-in rule set. Unknown values safely fall back to the
-    /// conservative log-level preset for forward/backward compatibility.
-    pub fn output_highlight_preset(&self) -> &str {
-        match self.cache.output_highlight_preset.as_str() {
-            "devops" => "devops",
-            _ => "log",
-        }
+    /// 被单独关掉的预设规则 id（其余默认全开）。
+    pub fn output_highlight_disabled_presets(&self) -> &[String] {
+        &self.cache.output_highlight_disabled_presets
     }
 
-    pub fn set_output_highlight_preset(&mut self, preset: String) {
-        self.cache.output_highlight_preset = match preset.as_str() {
-            "devops" => "devops".to_string(),
-            _ => "log".to_string(),
-        };
+    /// 逐条开关预设规则（彩虹括号 id = "paren"）。写坏的值原样存，
+    /// 编译期按表匹配，未知 id 自然无效。
+    pub fn set_output_highlight_preset_enabled(&mut self, id: &str, enabled: bool) {
+        let pos = self
+            .cache
+            .output_highlight_disabled_presets
+            .iter()
+            .position(|d| d == id);
+        if enabled {
+            if let Some(i) = pos {
+                self.cache.output_highlight_disabled_presets.remove(i);
+            }
+        } else if pos.is_none() {
+            self.cache
+                .output_highlight_disabled_presets
+                .push(id.to_string());
+        }
     }
 
     pub fn output_highlight_rules(&self) -> &[OutputHighlightRule] {
@@ -1501,7 +1519,8 @@ impl ConfigStore {
 
     pub fn add_output_highlight_rule(&mut self, mut rule: OutputHighlightRule) {
         rule.pattern = rule.pattern.trim().to_string();
-        rule.color = normalize_highlight_color(&rule.color).to_string();
+        rule.name = rule.name.trim().to_string();
+        rule.color = normalize_highlight_color(&rule.color);
         self.cache.output_highlight_rules.push(rule);
     }
 
@@ -3527,23 +3546,40 @@ mod tests {
     }
 
     #[test]
-    fn output_highlight_defaults_and_preset_validation() {
+    fn output_highlight_defaults_and_preset_switches() {
         let mut store = temp_store();
         assert!(store.output_highlight_enabled());
         assert!(store.json_format_output());
-        assert_eq!(store.output_highlight_preset(), "log");
+        // 出厂预设全开（逐条开关，没有 log/devops 两档了）
+        assert!(store.output_highlight_disabled_presets().is_empty());
 
         store.set_output_highlight_enabled(false);
-        store.set_output_highlight_preset("devops".to_string());
         assert!(!store.output_highlight_enabled());
         store.set_json_format_output(false);
         assert!(!store.json_format_output());
-        assert_eq!(store.output_highlight_preset(), "devops");
+        store.set_output_highlight_enabled(true);
 
-        store.set_output_highlight_preset("future-preset".to_string());
-        assert_eq!(store.output_highlight_preset(), "log");
+        // 单条预设开关：关 → 进禁用表；再开 → 出来；未知 id 只存不炸
+        store.set_output_highlight_preset_enabled("num", false);
+        store.set_output_highlight_preset_enabled("paren", false);
+        assert_eq!(
+            store.output_highlight_disabled_presets(),
+            &["num".to_string(), "paren".to_string()]
+        );
+        store.set_output_highlight_preset_enabled("num", true);
+        assert_eq!(
+            store.output_highlight_disabled_presets(),
+            &["paren".to_string()]
+        );
+        // 重复关同一条不产生重复项
+        store.set_output_highlight_preset_enabled("paren", false);
+        assert_eq!(
+            store.output_highlight_disabled_presets(),
+            &["paren".to_string()]
+        );
 
         store.add_output_highlight_rule(OutputHighlightRule {
+            name: "  构建耗时  ".to_string(),
             pattern: "  connection refused  ".to_string(),
             regex: false,
             case_sensitive: false,
@@ -3556,18 +3592,36 @@ mod tests {
             store.output_highlight_rules()[0].pattern,
             "connection refused"
         );
-        assert_eq!(store.output_highlight_rules()[0].color, "red");
+        assert_eq!(store.output_highlight_rules()[0].name, "构建耗时");
+        // 任意色：#RRGGBB 原样归一；认不出的值回落红
+        assert_eq!(store.output_highlight_rules()[0].color, "#F75464");
         store.set_output_highlight_rule_enabled(0, false);
         assert!(!store.output_highlight_rules()[0].enabled);
         store.remove_output_highlight_rule(0);
         assert!(store.output_highlight_rules().is_empty());
 
-        // An older settings file without either field retains the feature that
-        // shipped in the previous version: enabled with the log preset.
-        let legacy: ConfigFile = serde_json::from_str("{}").unwrap();
+        // 十六进制与旧语义名都归一成 #RRGGBB
+        store.add_output_highlight_rule(OutputHighlightRule {
+            name: String::new(),
+            pattern: "abc".to_string(),
+            regex: false,
+            case_sensitive: false,
+            whole_line: false,
+            color: "cyan".to_string(),
+            enabled: true,
+        });
+        assert_eq!(store.output_highlight_rules()[0].color, "#1FC8B4");
+
+        // An older settings file without any of the fields retains the feature
+        // that shipped in the previous version: enabled with every preset on.
+        // The legacy `output_highlight_preset` key is simply ignored by serde.
+        let legacy: ConfigFile = serde_json::from_str(
+            r#"{"output_highlight_preset":"devops","output_highlight_rules":[]}"#,
+        )
+        .unwrap();
         store.cache = legacy;
         assert!(store.output_highlight_enabled());
-        assert_eq!(store.output_highlight_preset(), "log");
+        assert!(store.output_highlight_disabled_presets().is_empty());
     }
 
     #[test]

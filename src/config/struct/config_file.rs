@@ -350,9 +350,12 @@ pub struct ConfigFile {
     /// output highlighter enabled by default.
     #[serde(default)]
     pub output_highlight_disabled: bool,
-    /// Built-in output highlight preset: "log" (default) or "devops".
+    /// 被单独关掉的预设规则 id（其余默认开）。取代旧的 log/devops 两档
+    /// `output_highlight_preset`（#hl-settings-hifi 2026-10-20）：老配置里的
+    /// `output_highlight_preset` 键被 serde 忽略，devops 用户直接获得全量
+    /// 预设（新表是旧两档的合并去重超集）。
     #[serde(default)]
-    pub output_highlight_preset: String,
+    pub output_highlight_disabled_presets: Vec<String>,
     /// User-defined rules applied before the selected built-in preset.
     #[serde(default)]
     pub output_highlight_rules: Vec<OutputHighlightRule>,
