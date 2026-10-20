@@ -6,6 +6,15 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **所有弹框的关闭键统一成同一款（#dialog-close-unify）。** 用户以「新建会话」弹框为参照物：常态 = 透明底 + 灰 ×，悬停 = 红底 + 纯白 × + 90ms 过渡。
+  - 盘点出的漂移：高亮规则 / 同步输入 / 分组管理 / 快捷键 / 关于 五个弹框的 × 悬停仍是 `bg-hover` 灰底（同步输入的图标还恒 `text-primary`，压到红底上会「显暗」）；系统信息窗缺 90ms 过渡、编辑器窗悬停图标不变白。
+  - 修法：`widgets.slint` 抽出唯一的 `DialogClose` 组件 —— 只开放 `btn-size` / `corner` / `glyph-size` 三个尺寸参数，两态颜色写死在组件内部，杜绝再次复制粘贴漂移；`theme.slint` 新增 `close-btn-hot`（`#e81123`，亮暗同值，白字对比 4.64:1）。窗口三键与标签页关闭键同步改读该 token，`ui/` 下已无 `#e81123` 字面量。
+  - 回归：`tests/dialog_scrim_drag.rs` 的锚点从「三处 tint 字符串」升级为「组件两态口径 + 调用点必须复用组件 + 禁止内联红底 + 三处窗口标题栏必须用 token 且悬停转白」。
+- **Every dialog's close button now shares one implementation (#dialog-close-unify).** The New Session dialog was the reference: transparent background with a muted ×, switching to a red fill with a pure-white × and a 90 ms transition on hover.
+  - Drift found: Highlight rules / Sync input / Group manager / Keyboard shortcuts / About still hovered to a plain `bg-hover` grey (Sync input's glyph also stayed `text-primary`, which reads dim on the red fill); the System information window lacked the 90 ms transition and the Editor window never turned its glyph white.
+  - Fix: a single `DialogClose` component in `widgets.slint` exposes only three size properties (`btn-size`, `corner`, `glyph-size`) while both state colours stay hard-coded inside it, so the copy-paste drift cannot recur; `theme.slint` gains `close-btn-hot` (`#e81123` in both themes, 4.64:1 against white). The window controls and tab close buttons now read the same token — `ui/` no longer contains a `#e81123` literal.
+  - Regression: the anchors in `tests/dialog_scrim_drag.rs` were upgraded from three `tint` strings to "component state contract + every call site must reuse the component + no inline red + the three window title bars must use the token and whiten on hover".
+
 - **侧栏透明度覆盖到面板内的实心块（#sidebar-alpha-follow）。** 用户反馈调侧栏透明度后，命令栏按钮与输入框、两条 5px 拖拽条、文件面板的页签/上传钮/路径框、两侧滚动条仍是实色斑。
   - 根因：`zone-sidebar*` 系列只替换了**面板底**，面板内仍散落 `bg-root` / `bg-elevated` / `accent` / `border-subtle` 四类实色；std `ScrollView` 的滚动条颜色写死在 Fluent 样式里，无法改成半透明。
   - 修法：新增 `zone-sidebar-accent` / `-accent-hover` / `-line` / `-scroll` / `-scroll-active` 五个侧栏档 token；`widgets.slint` 新增 `PanelScroll`（Flickable + 自绘 4px overlay 滚动条，平时隐形、靠近右缘淡入），替换文件面板的目录树 / 文件列表 / 隧道列表三处 `ScrollView`；两条 5px 拖拽条静止态改为「面板同色 + 1px 中线」，不再整条刷实色；聚焦边框与悬停高亮（分隔条、树分界条）同样走侧栏档 —— 否则静止态透、一碰就变实。

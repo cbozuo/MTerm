@@ -924,31 +924,65 @@ fn dialog_content_surfaces_use_popup_tokens() {
         );
     }
 
-    // ── 红底 × 的 hover 图标必须变白（#close-hover-white）──────────────
-    // 三处 #e81123 红底按钮的图标 tint 必须挂 has-hover —— 红底上恒
-    // text-primary 会「显暗」（用户反馈「悬浮时 X 变暗」；其中两处曾与
-    // 注释 "white glyph" 不符）。
-    let close_anchors: &[(&str, &str)] = &[
-        (
-            "settings_dialog.slint",
-            "tint: if-close-ta.has-hover ? white : Theme.text-primary;",
-        ),
-        (
-            "app.slint",
-            "tint: close-ta.has-hover ? white : Theme.text-primary;",
-        ),
-        (
-            "proc_window.slint",
-            "tint: close-ta.has-hover ? white : Theme.text-secondary;",
-        ),
-    ];
-    for (file, fragment) in close_anchors {
+    // ── 关闭键两态必须同款（#dialog-close-unify 2026-10-20）──────────────
+    // 口径（用户以「新建会话」弹框为参照物定稿）：常态 = 透明底 + text-muted
+    // 灰 ×；悬停 = Theme.close-btn-hot 红底 + 纯白 × + 90ms 过渡。
+    // 此前复制粘贴漂移出两批：① 红底上恒 text-primary → × 悬浮反变暗；
+    // ② 高亮规则 / 同步输入 / 快捷键 / 关于 / 分组管理 悬停仍是 bg-hover 灰底。
+    // 现在颜色只在 widgets.slint 的 DialogClose 里定义，调用处只许传尺寸。
+    let widgets_src = std::fs::read_to_string(ui_dir.join("widgets.slint")).unwrap();
+    for fragment in [
+        "export component DialogClose inherits Rectangle {",
+        "background: ta.has-hover ? Theme.close-btn-hot : transparent;",
+        "tint: ta.has-hover ? white : Theme.text-muted;",
+        "animate background { duration: 90ms; }",
+    ] {
+        assert!(
+            widgets_src.contains(fragment),
+            "widgets.slint 缺 DialogClose 两态锚点 {:?}（#dialog-close-unify 回归）",
+            fragment
+        );
+    }
+
+    // 所有弹框 / 卡片的关闭键必须复用组件，不得再内联手写一份。
+    for file in [
+        "session_dialog.slint",
+        "settings_dialog.slint",
+        "highlight_dialog.slint",
+        "sync_input_dialog.slint",
+        "group_manager.slint",
+        "app.slint",
+    ] {
         let src = std::fs::read_to_string(ui_dir.join(file)).unwrap();
         assert!(
-            src.contains(fragment),
-            "{} 缺红底 × 的白图标锚点 {:?}（#close-hover-white 回归）",
-            file,
-            fragment
+            src.contains("DialogClose"),
+            "{} 的关闭键必须走 widgets.slint 的 DialogClose（#dialog-close-unify 回归）",
+            file
+        );
+        assert!(
+            !src.contains("? #e81123"),
+            "{} 仍内联红底 #e81123 —— 颜色只允许来自 Theme.close-btn-hot（#dialog-close-unify 回归）",
+            file
+        );
+    }
+
+    // 窗口自绘标题栏的关闭键形状特殊（通栏 / 无圆角），仍手写，但红底与
+    // 悬停白图标必须同款。
+    for file in [
+        "proc_window.slint",
+        "system_info_window.slint",
+        "editor_window.slint",
+    ] {
+        let src = std::fs::read_to_string(ui_dir.join(file)).unwrap();
+        assert!(
+            src.contains("background: close-ta.has-hover ? Theme.close-btn-hot : transparent;"),
+            "{} 的关闭键悬停底必须是 Theme.close-btn-hot（#dialog-close-unify 回归）",
+            file
+        );
+        assert!(
+            src.contains("tint: close-ta.has-hover ? white :"),
+            "{} 的关闭键悬停图标必须转纯白（#close-hover-white 回归）",
+            file
         );
     }
 
