@@ -35,6 +35,19 @@ fn is_plain_run(run: &HistSpan) -> bool {
         && !run.inverse
 }
 
+/// 彩虹括号自己的「可染」判定：只看颜色 / 反色，**忽略 bold**。
+///
+/// 为什么单开一套：大量 shell 脚本用 `\e[1m` / `\e[1;37m` 做强调（`[INFO]`
+/// 这类前缀），那并不代表它想给括号指定配色；若沿用 `is_plain_run` 的严格
+/// 口径（bold 也算「已上色」），`[INFO]`、`[pool-8-thread-1]` 这些最常见的
+/// 行永远吃不到彩虹（用户截图反馈）。仍然不碰 fg/bg 被显式设置或反色的
+/// run —— 那才是程序在用颜色表达语法（vim / ls --color / 带 ANSI 的日志）。
+fn is_rainbow_ok(run: &HistSpan) -> bool {
+    matches!(run.fg, vt100::Color::Default)
+        && matches!(run.bg, vt100::Color::Default)
+        && !run.inverse
+}
+
 fn style_run(run: &mut HistSpan, color: RuleColor) {
     run.fg = match color {
         RuleColor::Idx(i) => vt100::Color::Idx(i),
@@ -163,7 +176,7 @@ fn apply_rainbow_parens(runs: &mut Vec<HistSpan>) {
     let taken = std::mem::take(runs);
     let mut next = Vec::with_capacity(taken.len() + 8);
     for run in taken {
-        if !is_plain_run(&run)
+        if !is_rainbow_ok(&run)
             || !run
                 .text
                 .chars()

@@ -875,3 +875,97 @@ export component MTermSlider inherits Rectangle {
         root.changed(q);
     }
 }
+
+// --- PanelScroll -----------------------------------------------------------
+// 面板内的竖向滚动容器:Flickable + 自绘 4px overlay 滚动条(平时隐形,指针
+// 靠近右缘热区才淡入)—— 与左栏会话列表 / 终端滚动条同一套语言。
+//
+// 为什么不用 std 的 ScrollView:它的滚动条是 Fluent 样式的实色深灰块,颜色
+// 由内置组件写死、无法改成半透明;面板按「侧栏透明度」变透之后,那条实色
+// 滚动条就成了面板里唯一不透的竖带(用户截图反馈)。自绘条跟随主题 token,
+// 并且可以默认隐形,不破坏面板的通透感。
+//
+// `interactive: false` 与左栏同理:interactive 的 Flickable 会延迟子元素
+// press 并按位移抢手势,面板里的"单击选中 / 双击进入目录 / 右键菜单"会被
+// 误判成滚动。关闭后滚轮与触控板滚动仍由 Flickable 自己处理。
+export component PanelScroll inherits Rectangle {
+    // 内容总高(通常是 max(内容 preferred-height, …))。
+    in property <length> content-height: 0px;
+    // 内容总宽;默认跟随容器 —— 面板内容不需要横向滚动。
+    in property <length> content-width: self.width;
+    // 内容滚动位移(≤ 0),供外部做坐标换算(如右键菜单定位)。
+    out property <length> view-y: flick.content-y;
+    // 热区 / 拇指宽度:与左栏(14px / 4px)对齐。
+    in property <length> bar-hit-width: 14px;
+    in property <length> bar-thumb-width: 4px;
+    // 拇指颜色。默认取「侧栏」档(zone-sidebar-scroll / -active):本组件服务
+    // 侧栏 / 下方面板,拇指是 hover 才淡入的,但**淡入后仍须跟 sidebar-alpha**,
+    // 否则面板调透了、一碰列表就冒出实色竖条(用户反馈「悬停时透明度不生效」)。
+    // 用在非侧栏面板(如弹框)时显式覆盖这两个属性。
+    in property <brush> thumb: Theme.zone-sidebar-scroll;
+    in property <brush> thumb-active: Theme.zone-sidebar-scroll-active;
+
+    // Slint 的 clip 只能加在 Rectangle / Path 上,Flickable 不支持。
+    clip: true;
+
+    flick := Flickable {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        interactive: false;
+        content-width: root.content-width;
+        content-height: max(self.height, root.content-height);
+        @children
+    }
+
+    if flick.content-height > flick.height : Rectangle {
+        x: parent.width - root.bar-hit-width;
+        y: 0px;
+        width: root.bar-hit-width;
+        height: parent.height;
+        background: transparent;
+        // 可视比例 = 视口高 / 内容高;拇指高按比例,设 24px 下限。
+        property <float> ratio: flick.content-height > 0px
+            ? flick.height / flick.content-height : 1.0;
+        property <length> thumb-h: max(24px, self.height * self.ratio);
+
+        sb-ta := TouchArea {
+            mouse-cursor: ns-resize;
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                    // 按下即跳:拇指中心对齐按点。
+                    flick.content-y = clamp(
+                        -(self.mouse-y - parent.thumb-h / 2)
+                            * (flick.content-height / max(1px, parent.height)),
+                        flick.height - flick.content-height, 0px);
+                }
+            }
+            moved => {
+                if (self.pressed) {
+                    flick.content-y = clamp(
+                        -(self.mouse-y - parent.thumb-h / 2)
+                            * (flick.content-height / max(1px, parent.height)),
+                        flick.height - flick.content-height, 0px);
+                }
+            }
+        }
+
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            width: root.bar-thumb-width;
+            height: parent.thumb-h;
+            // 顶部位置:内容偏移比例映射到轨道(content-y ≤ 0)。
+            y: flick.content-height > 0px
+                ? (-flick.content-y) / flick.content-height * parent.height
+                : 0px;
+            border-radius: root.bar-thumb-width / 2;
+            // 默认隐形;热区 hover / 拖动才淡入。
+            opacity: sb-ta.pressed || sb-ta.has-hover ? 1.0 : 0.0;
+            background: sb-ta.pressed || sb-ta.has-hover
+                ? root.thumb-active : root.thumb;
+            animate opacity { duration: 150ms; }
+            animate background { duration: 120ms; }
+        }
+    }
+}

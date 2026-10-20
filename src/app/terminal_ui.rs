@@ -67,8 +67,8 @@ pub(super) fn highlight_preset_model(store: &ConfigStore) -> ModelRc<HighlightPr
             name: t("彩虹括号", "Rainbow brackets").into(),
             group: t("特殊着色", "Special").into(),
             pattern: t(
-                "对嵌套括号 ( ) [ ] { } 按层级循环着色",
-                "Colour nested ( ) [ ] { } by depth",
+                "对嵌套括号 () [] {} 按层级循环着色",
+                "Colour nested () [] {} by depth",
             )
             .into(),
             // 彩虹行的色点用第一色，行内另画七色彩条

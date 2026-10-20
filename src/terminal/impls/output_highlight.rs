@@ -51,7 +51,7 @@ pub(crate) const HIGHLIGHT_PRESETS: &[HighlightPreset] = &[
         name_zh: "URL/URI",
         name_en: "URL/URI",
         pattern: r#"(?i)(https?|ftp|file):\/\/[-A-Za-z0-9+&@#/%?=~_|!:,.;]*[-A-Za-z0-9+&@#/%=~_|]"#,
-        ansi: 12,
+        ansi: 4,
         group: 0,
     },
     HighlightPreset {
@@ -61,7 +61,7 @@ pub(crate) const HIGHLIGHT_PRESETS: &[HighlightPreset] = &[
         name_zh: "IPv4",
         name_en: "IPv4",
         pattern: r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b",
-        ansi: 10,
+        ansi: 2,
         group: 0,
     },
     HighlightPreset {
@@ -90,7 +90,7 @@ pub(crate) const HIGHLIGHT_PRESETS: &[HighlightPreset] = &[
         //    整行日志时间都会被染成 IPv6 色。所以两段式都要求「有 `::` 或 ≥4 组」
         //    —— 时钟时间最多 3 组，天然排除。
         pattern: r#"(?:::|(?:[0-9A-Fa-f]{1,4}:)+:)(?:[0-9A-Fa-f]{1,4}:)*[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){3,7}[0-9A-Fa-f]{1,4}"#,
-        ansi: 14,
+        ansi: 6,
         group: 0,
     },
     HighlightPreset {
@@ -100,7 +100,7 @@ pub(crate) const HIGHLIGHT_PRESETS: &[HighlightPreset] = &[
         name_zh: "Email",
         name_en: "Email",
         pattern: r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
-        ansi: 13,
+        ansi: 5,
         group: 0,
     },
     // ── 时间与标识 ───────────────────────────────────────────────
@@ -110,8 +110,13 @@ pub(crate) const HIGHLIGHT_PRESETS: &[HighlightPreset] = &[
         group_en: "Time & ID",
         name_zh: "ISO 日期",
         name_en: "ISO date",
-        pattern: r"\b\d{4}[-/](?:0[1-9]|1[0-2])[-/](?:0[1-9]|[12]\d|3[01])\b",
-        ansi: 11,
+        // (#hl-iso-datetime 2026-10-20) 日期后面紧跟的时间一并吃掉：
+        // `2026-10-20 15:46:40.583` 原先被 iso（橙）+ time（青）切成两段
+        // （用户截图「日期被分成两个颜色」）。现在整条时间戳一个颜色；
+        // 不带日期前缀的纯时间仍归 time 规则。`Z` 收尾覆盖 `2026-10-20T15:46:40Z`
+        // —— 旧写法在这条上连日期都匹配不到（T/Z 与数字同为 \w，\b 不成立）。
+        pattern: r"\b\d{4}[-/](?:0[1-9]|1[0-2])[-/](?:0[1-9]|[12]\d|3[01])(?:[ T]\d{1,2}:\d{2}(?::\d{2})?(?:[.,]\d{1,9})?(?:Z|z)?)?\b",
+        ansi: 3,
         group: 0,
     },
     HighlightPreset {
@@ -121,7 +126,7 @@ pub(crate) const HIGHLIGHT_PRESETS: &[HighlightPreset] = &[
         name_zh: "Unix 日期",
         name_en: "Unix date",
         pattern: r"(?i)(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}",
-        ansi: 11,
+        ansi: 3,
         group: 0,
     },
     HighlightPreset {
@@ -131,7 +136,7 @@ pub(crate) const HIGHLIGHT_PRESETS: &[HighlightPreset] = &[
         name_zh: "Syslog 日期",
         name_en: "Syslog date",
         pattern: r"(?i)(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(?:[0-2]?\d|3[01])\s+(?:[01]?\d|2[0-3]):[0-5]\d:[0-5]\d",
-        ansi: 11,
+        ansi: 3,
         group: 0,
     },
     HighlightPreset {
@@ -141,7 +146,7 @@ pub(crate) const HIGHLIGHT_PRESETS: &[HighlightPreset] = &[
         name_zh: "时间 HH:MM:SS",
         name_en: "Time HH:MM:SS",
         pattern: r"\b(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?(?:\.\d+)?\b",
-        ansi: 14,
+        ansi: 6,
         group: 0,
     },
     HighlightPreset {
@@ -151,7 +156,7 @@ pub(crate) const HIGHLIGHT_PRESETS: &[HighlightPreset] = &[
         name_zh: "UUID",
         name_en: "UUID",
         pattern: r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
-        ansi: 13,
+        ansi: 9,
         group: 0,
     },
     // ── 日志级别 ─────────────────────────────────────────────────
@@ -162,7 +167,7 @@ pub(crate) const HIGHLIGHT_PRESETS: &[HighlightPreset] = &[
         name_zh: "Error / Failed",
         name_en: "Error / Failed",
         pattern: r"(?i)\b(?:error|failed|failure|exception|fatal|critical)\b",
-        ansi: 9,
+        ansi: 1,
         group: 0,
     },
     HighlightPreset {
@@ -172,7 +177,7 @@ pub(crate) const HIGHLIGHT_PRESETS: &[HighlightPreset] = &[
         name_zh: "Warning",
         name_en: "Warning",
         pattern: r"(?i)\b(?:warning|warn|caution)\b",
-        ansi: 11,
+        ansi: 3,
         group: 0,
     },
     HighlightPreset {
@@ -182,7 +187,7 @@ pub(crate) const HIGHLIGHT_PRESETS: &[HighlightPreset] = &[
         name_zh: "Info",
         name_en: "Info",
         pattern: r"(?i)\binfo(?:rmation)?\b",
-        ansi: 12,
+        ansi: 4,
         group: 0,
     },
     HighlightPreset {
@@ -202,7 +207,7 @@ pub(crate) const HIGHLIGHT_PRESETS: &[HighlightPreset] = &[
         name_zh: "Success / OK",
         name_en: "Success / OK",
         pattern: r"(?i)\b(?:success|succeeded|ok|passed|done|complete|completed)\b",
-        ansi: 10,
+        ansi: 2,
         group: 0,
     },
     // ── 数值与路径 ───────────────────────────────────────────────
@@ -212,7 +217,13 @@ pub(crate) const HIGHLIGHT_PRESETS: &[HighlightPreset] = &[
         group_en: "Values & paths",
         name_zh: "内存 / 磁盘大小",
         name_en: "Memory / disk size",
-        pattern: r"(?i)\b\d+(?:\.\d+)?\s*[KMGTPE](?:i?B)?\b",
+        // (#hl-size-units 2026-10-20) 旧写法 `(?:i?B)?\b` 在 `5.9Gi` 上 **0 命中**：
+        // `Gi`/`Mi`/`Ki` 里 `G` 与 `i` 都是单词字符，`\b` 在两者之间不成立，而
+        // `i?B` 又要求 B —— 于是 `free -h` 这种 Linux 标准输出整段吃不到，用户
+        // 反馈「内存大小规则开关没差别」。改成显式分支 `(?:iB|B|i)?` 收尾于 `\b`：
+        // `5.9Gi` / `27Mi` / `0B` 全命中，`512KB` / `100MiB` / `1.5G` 不变。
+        // （Rust regex 无 lookahead，所以不能用 `(?![A-Za-z])` 收尾。）
+        pattern: r"(?i)\b\d+(?:\.\d+)?\s*(?:[KMGTPE](?:iB|B|i)?|B)\b",
         ansi: 12,
         group: 0,
     },
@@ -226,7 +237,7 @@ pub(crate) const HIGHLIGHT_PRESETS: &[HighlightPreset] = &[
         // 捕获组占位，只高亮组 2（路径本身），前置的空白/引号/括号不染色。
         // 旧写法漏绝对路径（`/var/log/...` 0 命中）：`/?` 可挫前缀必须有。
         pattern: r#"(^|[\s"'(=])(/?[\w.@+-]+(?:/[\w.@+-]+)+)"#,
-        ansi: 13,
+        ansi: 5,
         group: 2,
     },
     // ── 结构 ─────────────────────────────────────────────────────
@@ -251,7 +262,7 @@ pub(crate) const HIGHLIGHT_PRESETS: &[HighlightPreset] = &[
         name_zh: "数字",
         name_en: "Number",
         pattern: r"\b\d+(?:\.\d+)?\b",
-        ansi: 14,
+        ansi: 6,
         group: 0,
     },
 ];
@@ -394,6 +405,33 @@ mod tests {
         // 关掉两条预售后表变短
         let rules = compile_highlight_rules(true, &["num".into(), "rule".into()], &[]);
         assert_eq!(rules.len(), 17);
+    }
+
+    /// size 预设必须吃掉 Linux `free -h` / `df -h` 的单位写法（`Gi` / `Mi` /
+    /// `Ki` / `B`）。旧写法在 `5.9Gi` 上 0 命中 —— 用户反馈「内存大小规则开
+    /// 关没差别」，因为屏幕上的数字本来就没被这条规则染过（是 `num` 垫底染的
+    /// 数字部分）。同时不能误吃日期 / 端口 / 时间戳。
+    #[test]
+    fn size_preset_matches_linux_units() {
+        let preset = HIGHLIGHT_PRESETS
+            .iter()
+            .find(|p| p.id == "size")
+            .expect("size preset");
+        let re = regex::Regex::new(preset.pattern).expect("size regex");
+
+        for (line, want) in [
+            ("Mem:           93Gi        5.9Gi        86Gi", "93Gi"),
+            ("Swap:         4.9Gi          0B         4.9Gi", "4.9Gi"),
+            ("             27Mi       2.2Gi", "27Mi"),
+            ("sum 512KB 100MiB 1.5G 4.9GB 2KiB", "512KB"),
+            ("blocks 1B", "1B"),
+        ] {
+            assert_eq!(re.find(line).map(|m| m.as_str()), Some(want), "line={line}");
+        }
+
+        for s in ["2026-10-20", "14:47:03", "8080", "B2B", "100GiBps"] {
+            assert!(re.find(s).is_none(), "{s} must not match the size preset");
+        }
     }
 
     /// path 预设只高亮捕获组 2：前置空白/引号不染色，绝对路径也命中。

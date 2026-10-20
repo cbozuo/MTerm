@@ -45,20 +45,31 @@ component HlSwitch inherits Rectangle {
     width: 34px;
     height: 19px;
     border-radius: 10px;
-    background: root.on ? Theme.accent : Theme.popup-bg-active;
+    // (#hl-switch-polish 2026-10-20) 悬停给一点反馈，别只有"啪"一下：
+    // 开态用 accent-hover，关态垫一层 bg-hover。过渡统一 160ms（hi-fi .16s）。
+    background: root.on
+        ? (sw-ta.has-hover ? Theme.accent-hover : Theme.accent)
+        : (sw-ta.has-hover ? Theme.bg-hover : Theme.popup-bg-active);
     border-width: 1px;
     border-color: root.on ? Theme.accent : Theme.border-strong;
-    animate background { duration: 120ms; }
+    animate background { duration: 160ms; }
+    animate border-color { duration: 160ms; }
     Rectangle {
         width: 13px;
         height: 13px;
-        border-radius: 7px;
-        y: 2px;
-        x: root.on ? parent.width - self.width - 2px : 2px;
-        background: root.on ? #ffffff : Theme.text-muted;
-        animate x { duration: 120ms; easing: ease-out; }
+        border-radius: 6.5px;
+        // (#hl-switch-center 2026-10-20) 圆点原来不居中：Slint 的 1px 边框
+        // 把**可视区**向内缩一圈，但子元素坐标原点仍在外沿 —— 照抄 hi-fi 的
+        // `top/left: 2px`（那是 CSS padding box 基准）就变成贴顶偏右 1px。
+        // 3px = 边框 1 + 留白 2，四边等距（19-1×2-13 = 4 → 上下各 2 + 边框 1）。
+        y: 3px;
+        x: root.on ? parent.width - self.width - 3px : 3px;
+        // 开态白点（与项目其它 accent 底上的前景一致），关态次级灰。
+        background: root.on ? #ffffff : Theme.text-secondary;
+        animate x { duration: 160ms; easing: ease-in-out; }
+        animate background { duration: 160ms; }
     }
-    TouchArea {
+    sw-ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.toggled(!root.on); }
     }
@@ -137,6 +148,10 @@ export component HighlightDialog inherits Rectangle {
     in property <length> bounds-w;                 // 拖动/居中钳制 = 全窗
     in property <length> bounds-h;
     in property <bool> enabled: true;              // 总开关（设置页那份）
+    // (#modal-titlebar-drag 2026-10-20) 顶部让位 = 主窗标题栏高度：全屏遮罩的
+    // **命中区**从标题栏下沿开始，点在标题栏上的按下事件就落到下层自绘标题栏的
+    // 拖动热区（弹框打开时也能拖主窗口）。视觉遮罩 Scrim 仍铺满全屏。
+    in property <length> top-inset: 0px;
     in property <[HighlightPresetItem]> presets: [];
     in property <[HighlightCustomItem]> customs: [];
     in property <int> enabled-count: 0;            // 徽标「N 已启用」
@@ -188,8 +203,16 @@ export component HighlightDialog inherits Rectangle {
     height: 100%;
     background: transparent;
     Scrim { }
-    // 模态：遮罩吞掉滚动（不关框 —— 只有 ✕ / 完成 / Esc 关）
-    TouchArea { scroll-event(e) => { accept } }
+    // 模态：遮罩吞掉滚动 + **点空白关闭**（与设置卡 / 新建会话弹框同款）。
+    // 取色盘、色板卡各自带全屏遮罩且声明在更上层，会先吃掉点击 —— 所以这里是
+    // "没有浮层时的最外层"：点哪儿关框。拖动弹框不受影响（按下与释放不在同一
+    // 元素内不会构成 clicked）。
+    TouchArea {
+        y: root.top-inset;
+        height: parent.height - root.top-inset;
+        scroll-event(e) => { accept }
+        clicked => { root.close-requested(); }
+    }
     esc-scope := FocusScope {
         init => { self.focus(); }
         key-pressed(e) => {
@@ -282,26 +305,34 @@ export component HighlightDialog inherits Rectangle {
                         vertical-alignment: center;
                     }
                         // 徽标：启用数（0 = 全关，弱化样式）
+                        // (#hl-badge 2026-10-20) 对齐高保真 `.badge`：高 20、
+                        // 左右 7px 内边距、11px/600、**淡强调底 + 强调字**。
+                        // 原写法是 `min-width: 46px` 的定宽块，加上底色在标题行里
+                        // 读起来像实心强调块，比标题本身还抢眼（用户反馈「样式不
+                        // 协调」）—— 现在宽度随内容，底色明确 14% 透明。
                         Rectangle {
                             height: 20px;
-                            min-width: 46px;
                             border-radius: 5px;
-                            background: root.enabled-count > 0 ? Theme.accent-soft : Theme.popup-bg-active;
-                            Text {
-                                width: parent.width;
-                                height: parent.height;
-                                // 字符串模板：开转义写 \{，收尾是普通 }（勿写 \}，
-                                // 反斜杠会产出 Error token）；模板内只写裸标识符
-                                // （root. 前缀不吃），enabled-count 沿词法作用链
-                                // 回到根属性。
-                                text: root.lang-en
-                                    ? "\{enabled-count} on"
-                                    : "\{enabled-count} 已启用";
-                                color: root.enabled-count > 0 ? Theme.accent : Theme.text-muted;
-                                font-size: 11px;
-                                font-weight: Theme.fw-strong;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
+                            background: root.enabled-count > 0
+                                ? Theme.accent-solid.with-alpha(0.14)
+                                : Theme.popup-bg-active;
+                            HorizontalLayout {
+                                padding-left: 7px;
+                                padding-right: 7px;
+                                alignment: center;
+                                Text {
+                                    // 字符串模板：开转义写 \{，收尾是普通 }（勿写
+                                    // \}，反斜杠会产出 Error token）；模板内只写裸
+                                    // 标识符（root. 前缀不吃），enabled-count 沿词法
+                                    // 作用链回到根属性。
+                                    text: root.lang-en
+                                        ? "\{enabled-count} on"
+                                        : "\{enabled-count} 已启用";
+                                    color: root.enabled-count > 0 ? Theme.accent : Theme.text-muted;
+                                    font-size: 11px;
+                                    font-weight: Theme.fw-strong;
+                                    vertical-alignment: center;
+                                }
                             }
                         }
                     Rectangle { horizontal-stretch: 1; }
@@ -423,12 +454,35 @@ export component HighlightDialog inherits Rectangle {
                                 // 都是定高，默认 stretch 下会顶对齐
                                 cross-axis-alignment: center;
                                 // 色点 / 彩虹条
+                                // (#hl-dot-halo 2026-10-20) 色点带高保真那圈
+                                // `box-shadow: 0 0 0 2.5px currentColor 15%`
+                                // 的同色光环：外层气泡 14px（9 + 2.5×2）垫 15%
+                                // 透明同色，内层 9px 实心。光环用**溢出绘制**
+                                // （x/y 取负）而不是加大布局宽度 —— 行内缩进、
+                                // 名字起点与开关位置都保持原样。
                                 if !p.rainbow : Rectangle {
                                     width: 9px;
                                     height: 9px;
-                                    border-radius: 5px;
-                                    background: p.dot;
+                                    background: transparent;
                                     opacity: p.enabled ? 1 : 0.45;
+                                    // 光环（不参与布局：向外扩 2.5px）
+                                    Rectangle {
+                                        x: -2.5px;
+                                        y: -2.5px;
+                                        width: 14px;
+                                        height: 14px;
+                                        border-radius: 7px;
+                                        background: p.dot.with-alpha(0.15);
+                                    }
+                                    // 实心点：精确半圆（9/2）
+                                    Rectangle {
+                                        x: 0px;
+                                        y: 0px;
+                                        width: 9px;
+                                        height: 9px;
+                                        border-radius: 4.5px;
+                                        background: p.dot;
+                                    }
                                 }
                                 if p.rainbow : HorizontalLayout {
                                     spacing: 1.5px;
@@ -448,12 +502,16 @@ export component HighlightDialog inherits Rectangle {
                                         spacing: 6px;
                                         // 角标是定高（16px），Text 行高不一 → 显式居中
                                         cross-axis-alignment: center;
+                                        // (#hl-special-badge 2026-10-20) 名字**不**
+                                        // 吃余量：原来 `horizontal-stretch: 1` 把
+                                        // 「非正则」角标一路推到行右端（用户要求
+                                        // "贴在彩虹括号文字后面"）。余量改由尾部
+                                        // 吸空块占，开关照旧钉在最右。
                                         Text {
                                             text: p.name;
                                             color: p.enabled ? Theme.text-primary : Theme.text-secondary;
                                             font-size: 12.5px;
                                             overflow: elide;
-                                            horizontal-stretch: 1;
                                             vertical-alignment: center;
                                         }
                                         if p.special != "" : Rectangle {
@@ -472,6 +530,7 @@ export component HighlightDialog inherits Rectangle {
                                                 vertical-alignment: center;
                                             }
                                         }
+                                        Rectangle { horizontal-stretch: 1; }
                                     }
                                     Text {
                                         text: p.pattern;
@@ -505,19 +564,26 @@ export component HighlightDialog inherits Rectangle {
                     padding-left: 10px;
                     padding-right: 10px;
                     spacing: 0;
+                    // (#hl-custom-layout 2026-10-20) `alignment: start` 必须有：
+                    // ScrollView 会把内容布局拉到「视口高」，默认 stretch 模式
+                    // 下多出来的高度会被**可生长的 Text**（"添加新规则"标题）
+                    // 吃掉 —— 表现为标题与第一个输入框之间空出近 300px
+                    // （用户截图「布局有些乱」）。
+                    alignment: start;
                     // 添加新规则卡（VL 子项默认横向撑满，勿写 width: parent.width
                     // —— 在 ScrollView 里会与 preferred-width 反向依赖成环）
                     Rectangle {
                         background: Theme.popup-bg-alt;
-                        border-radius: 10px;
+                        border-radius: 12px;
                         border-width: 1px;
-                        border-color: Theme.border-subtle;
+                        border-color: Theme.border-control;
                         VerticalLayout {
                             padding-top: 13px;
                             padding-bottom: 14px;
                             padding-left: 14px;
                             padding-right: 14px;
                             spacing: 9px;
+                            alignment: start;
                             Text {
                                 text: root.lang-en ? "New rule" : "添加新规则";
                                 color: Theme.text-secondary;
@@ -644,6 +710,19 @@ export component HighlightDialog inherits Rectangle {
                         }
                     }
                     Rectangle { height: 12px; }
+                    // 「我的规则」分组标题（hi-fi `.grp`：上 12 / 下 5 / 左 10，
+                    // 10.5px 600）。少了它，卡片与规则行之间没有层级分隔。
+                    if root.customs.length > 0 : HorizontalLayout {
+                        padding-left: 10px;
+                        padding-top: 12px;
+                        padding-bottom: 5px;
+                        Text {
+                            text: root.lang-en ? "My rules" : "我的规则";
+                            color: Theme.text-secondary;
+                            font-size: 10.5px;
+                            font-weight: Theme.fw-strong;
+                        }
+                    }
                     // 空态
                     if root.customs.length == 0 : VerticalLayout {
                         padding-top: 40px;
@@ -668,6 +747,9 @@ export component HighlightDialog inherits Rectangle {
                         height: 50px;
                         clip: true;
                         Rectangle {
+                            // 分隔线只在行之间：第一行顶上再画一条会和「我的规则」
+                            // 标题贴成双线（原来每行都画，包括第一行）。
+                            visible: index > 0;
                             y: 0px;
                             width: 100%;
                             height: 1px;
@@ -678,12 +760,26 @@ export component HighlightDialog inherits Rectangle {
                             padding-left: 11px;
                             padding-right: 11px;
                             cross-axis-alignment: center;
+                            // 色点：与预设页同款（内 9px 实心 + 外 14px 15% 光环）
                             Rectangle {
                                 width: 9px;
                                 height: 9px;
-                                border-radius: 5px;
-                                background: c.dot;
+                                background: transparent;
                                 opacity: c.enabled ? 1 : 0.45;
+                                Rectangle {
+                                    x: -2.5px;
+                                    y: -2.5px;
+                                    width: 14px;
+                                    height: 14px;
+                                    border-radius: 7px;
+                                    background: c.dot.with-alpha(0.15);
+                                }
+                                Rectangle {
+                                    width: 9px;
+                                    height: 9px;
+                                    border-radius: 4.5px;
+                                    background: c.dot;
+                                }
                             }
                             VerticalLayout {
                                 horizontal-stretch: 1;
@@ -750,20 +846,32 @@ export component HighlightDialog inherits Rectangle {
                         horizontal-stretch: 1;
                         overflow: elide;
                     }
+                    // (#hl-done-btn 2026-10-20) 按 hi-fi `.done` 打磨：
+                    // ① 宽度不再写死 84px（中英文"完成"/"Done"宽度差很多），
+                    //    改为左右 18px 内边距 + 内容自适应；
+                    // ② 补按下态（accent-pressed），背景/边框都走 120ms 过渡，
+                    //    不再只有 hover 一档；
+                    // ③ 字色按 hi-fi 的 `--ac-on`：暗色主题是深青（强调色压暗
+                    //    82%），亮色主题是白 —— 白字压在 #1FC8B4 上对比只有
+                    //    ~1.9:1，糊成一团也是"生硬"的来源之一。
                     Rectangle {
-                        width: 84px;
                         height: 30px;
                         border-radius: 7px;
-                        background: done-ta.has-hover ? Theme.accent-hover : Theme.accent;
-                        Text {
-                            width: 100%;
-                            height: 100%;
-                            text: root.lang-en ? "Done" : "完成";
-                            color: #ffffff;
-                            font-size: 12px;
-                            font-weight: Theme.fw-strong;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        background: done-ta.pressed ? Theme.accent-pressed
+                                  : done-ta.has-hover ? Theme.accent-hover
+                                  : Theme.accent;
+                        animate background { duration: 120ms; }
+                        HorizontalLayout {
+                            padding-left: 18px;
+                            padding-right: 18px;
+                            alignment: center;
+                            Text {
+                                text: root.lang-en ? "Done" : "完成";
+                                color: Theme.dark ? Theme.accent-solid.darker(0.82) : #ffffff;
+                                font-size: 12px;
+                                font-weight: Theme.fw-strong;
+                                vertical-alignment: center;
+                            }
                         }
                         done-ta := TouchArea {
                             mouse-cursor: pointer;

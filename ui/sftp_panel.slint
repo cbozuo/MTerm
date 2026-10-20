@@ -1,6 +1,8 @@
 import { Icon } from "icons.slint";
 import { Theme } from "theme.slint";
-import { ScrollView } from "std-widgets.slint";
+// (#sidebar-alpha-follow 2026-10-20) 面板内的滚动列表改用 PanelScroll：
+// std ScrollView 的滚动条是写死颜色的实色块，面板半透明后会留下不透的竖带。
+import { PanelScroll } from "widgets.slint";
 import { TabInfo } from "tabs.slint";
 
 // ---------------------------------------------------------------------------
@@ -357,7 +359,7 @@ export component SftpPanel inherits Rectangle {
                     width: root.narrow-toolbar ? 28px : 48px;
                     height: 22px;
                     border-radius: Theme.radius-sm;
-                    background: root.panel-mode == "files" ? Theme.accent : (files-tab-ta.has-hover ? Theme.bg-hover : transparent);
+                    background: root.panel-mode == "files" ? Theme.zone-sidebar-accent : (files-tab-ta.has-hover ? Theme.bg-hover : transparent);
                     // (#collapsed-grey) Fade the hover state in/out so the interaction
                     // reads even against the brighter collapsed toolbar background.
                     animate background { duration: 120ms; }
@@ -383,7 +385,7 @@ export component SftpPanel inherits Rectangle {
                     width: root.narrow-toolbar ? 28px : 58px;
                     height: 22px;
                     border-radius: Theme.radius-sm;
-                    background: root.panel-mode == "tunnels" ? Theme.accent : (tunnels-tab-ta.has-hover ? Theme.bg-hover : transparent);
+                    background: root.panel-mode == "tunnels" ? Theme.zone-sidebar-accent : (tunnels-tab-ta.has-hover ? Theme.bg-hover : transparent);
                     animate background { duration: 120ms; }
                     tunnels-tab-ta := TouchArea {
                         mouse-cursor: pointer;
@@ -436,9 +438,11 @@ export component SftpPanel inherits Rectangle {
                     horizontal-stretch: 1;
                     height: 22px;
                     border-radius: Theme.radius-sm;
-                    background: Theme.bg-root;
+                    // (#sidebar-alpha-follow 2026-10-20) 底与边框都跟侧栏 alpha，
+                    // 与命令栏输入框同一档（用户要求"和其它输入框一致"）。
+                    background: Theme.zone-sidebar-root;
                     border-width: 1px;
-                    border-color: path-input.has-focus ? Theme.accent : Theme.border-subtle;
+                    border-color: path-input.has-focus ? Theme.zone-sidebar-accent : Theme.zone-sidebar-line;
                     path-input := TextInput {
                         x: 6px;
                         width: parent.width - 12px;
@@ -520,7 +524,7 @@ export component SftpPanel inherits Rectangle {
                     visible: root.panel-mode == "files";
                     width: root.narrow-toolbar ? 24px : 52px; height: 22px;
                     border-radius: Theme.radius-sm;
-                    background: ul-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                    background: ul-ta.has-hover ? Theme.zone-sidebar-accent-hover : Theme.zone-sidebar-accent;
                     animate background { duration: 120ms; }
                     ul-ta := TouchArea {
                         mouse-cursor: pointer;
@@ -766,9 +770,9 @@ export component SftpPanel inherits Rectangle {
                         horizontal-stretch: 1;
                         height: 22px;
                         border-radius: Theme.radius-sm;
-                        background: Theme.bg-root;
+                        background: Theme.zone-sidebar-root;
                         border-width: 1px;
-                        border-color: compact-path-input.has-focus ? Theme.accent : Theme.border-subtle;
+                        border-color: compact-path-input.has-focus ? Theme.zone-sidebar-accent : Theme.zone-sidebar-line;
                         compact-path-input := TextInput {
                             x: 6px;
                             width: parent.width - 12px;
@@ -827,13 +831,16 @@ export component SftpPanel inherits Rectangle {
                         y: 20px;
                         width: parent.width;
                         height: 1px;
-                        background: Theme.bg-elevated;
+                        background: Theme.zone-sidebar-elev;
                     }
                 }
 
                 // Tree list with scrollbar
-                ScrollView {
+                // (#sidebar-alpha-follow 2026-10-20) 自绘滚动条（PanelScroll），
+                // 内建 ScrollView 的实色滚动条在透明面板上会留下不透的竖带。
+                PanelScroll {
                     vertical-stretch: 1;
+                    content-height: tree-list.preferred-height;
 
                     tree-list := VerticalLayout {
                         spacing: 0;
@@ -886,10 +893,21 @@ export component SftpPanel inherits Rectangle {
             }
 
             // Draggable directory-tree divider (#287).
+            // (#sidebar-alpha-follow 2026-10-20) 静止态不再整条 5px 刷实色
+            // border-subtle，改为与两侧列表底同档的 zone-sidebar（跟侧栏 alpha）
+            // + 一条 1px 中线。原来面板调透明度后它成了目录树与文件列表之间
+            // 那道不透的粗竖线（用户截图）。命中区仍是 5px（+左右各 3px 外扩），
+            // hover/拖拽仍整条 accent 高亮。
             if root.show-tree : Rectangle {
                 width: 5px;
                 background: tree-split.has-hover || tree-split.pressed
-                    ? Theme.accent : Theme.border-subtle;
+                    ? Theme.zone-sidebar-accent : Theme.zone-sidebar;
+                Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    width: 1px;
+                    height: parent.height;
+                    background: Theme.zone-sidebar-line;
+                }
                 tree-split := TouchArea {
                     x: -3px;
                     width: parent.width + 6px;
@@ -1097,7 +1115,7 @@ export component SftpPanel inherits Rectangle {
                         y: 20px;
                         width: parent.width;
                         height: 1px;
-                        background: Theme.bg-elevated;
+                        background: Theme.zone-sidebar-elev;
                     }
                 }
 
@@ -1107,11 +1125,11 @@ export component SftpPanel inherits Rectangle {
                 file-area := Rectangle {
                     vertical-stretch: 1;
                     clip: true;
-                    ScrollView {
+                    // (#sidebar-alpha-follow 2026-10-20) 自绘滚动条（PanelScroll）。
+                    file-scroll := PanelScroll {
                         width: parent.width;
                         height: parent.height;
-                        content-width: self.visible-width;
-                        content-height: max(self.visible-height, file-list.preferred-height);
+                        content-height: file-list.preferred-height;
 
                         file-list := VerticalLayout {
                             spacing: 0;
@@ -1157,7 +1175,7 @@ export component SftpPanel inherits Rectangle {
                                             // menu drifts downward. `file-list.y` is the ScrollView's
                                             // content translation (negative when scrolled down); adding
                                             // it maps logical→visual so the menu tracks the click.
-                                            root.menu-y = self.absolute-position.y + self.mouse-y - file-area.absolute-position.y + file-list.y;
+                                            root.menu-y = self.absolute-position.y + self.mouse-y - file-area.absolute-position.y + file-scroll.view-y;
                                             file-menu.show();
                                         }
                                     }
@@ -1255,7 +1273,7 @@ export component SftpPanel inherits Rectangle {
                                             // menu drifts downward. `file-list.y` is the ScrollView's
                                             // content translation (negative when scrolled down); adding
                                             // it maps logical→visual so the menu tracks the click.
-                                            root.menu-y = self.absolute-position.y + self.mouse-y - file-area.absolute-position.y + file-list.y;
+                                            root.menu-y = self.absolute-position.y + self.mouse-y - file-area.absolute-position.y + file-scroll.view-y;
                                             file-menu.show();
                                         }
                                     }
@@ -1405,7 +1423,7 @@ export component SftpPanel inherits Rectangle {
                                         else { root.delete(root.menu-target); }
                                     }
                                 }
-                                Rectangle { height: 1px; background: Theme.border-subtle; }
+                                Rectangle { height: 1px; background: Theme.zone-sidebar-line; }
                                 SftpMenuItem {
                                     label: @tr("New folder");
                                     clicked => { root.new-folder(root.current-path); }
@@ -1453,11 +1471,11 @@ export component SftpPanel inherits Rectangle {
             clip: true;
             background: transparent;
 
-            ScrollView {
+            // (#sidebar-alpha-follow 2026-10-20) 自绘滚动条（PanelScroll）。
+            PanelScroll {
                 width: parent.width;
                 height: parent.height;
-                content-width: self.visible-width;
-                content-height: max(self.visible-height, tunnel-body.preferred-height);
+                content-height: tunnel-body.preferred-height;
 
                 tunnel-body := VerticalLayout {
                     padding: 10px;
@@ -1467,20 +1485,20 @@ export component SftpPanel inherits Rectangle {
                         spacing: 6px;
                         Rectangle {
                             width: 54px; height: 24px; border-radius: Theme.radius-sm;
-                            background: root.tunnel-kind == "local" ? Theme.accent : (tl-ta.has-hover ? Theme.bg-hover : Theme.bg-root);
+                            background: root.tunnel-kind == "local" ? Theme.zone-sidebar-accent : (tl-ta.has-hover ? Theme.bg-hover : Theme.zone-sidebar-root);
                             tl-ta := TouchArea { mouse-cursor: pointer; clicked => { root.tunnel-kind = "local"; } }
                             Text { text: "-L"; color: root.tunnel-kind == "local" ? #ffffff : Theme.text-primary; font-size: Theme.fs-sm; horizontal-alignment: center; vertical-alignment: center; }
                         }
                         Rectangle {
                             width: 54px; height: 24px; border-radius: Theme.radius-sm;
-                            background: root.tunnel-kind == "dynamic" ? Theme.accent : (td-ta.has-hover ? Theme.bg-hover : Theme.bg-root);
+                            background: root.tunnel-kind == "dynamic" ? Theme.zone-sidebar-accent : (td-ta.has-hover ? Theme.bg-hover : Theme.zone-sidebar-root);
                             td-ta := TouchArea { mouse-cursor: pointer; clicked => { root.tunnel-kind = "dynamic"; } }
                             Text { text: "-D"; color: root.tunnel-kind == "dynamic" ? #ffffff : Theme.text-primary; font-size: Theme.fs-sm; horizontal-alignment: center; vertical-alignment: center; }
                         }
                         Rectangle { horizontal-stretch: 1; }
                         Rectangle {
                             width: 72px; height: 24px; border-radius: Theme.radius-sm;
-                            background: add-tunnel-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                            background: add-tunnel-ta.has-hover ? Theme.zone-sidebar-accent-hover : Theme.zone-sidebar-accent;
                             add-tunnel-ta := TouchArea {
                                 mouse-cursor: pointer;
                                 clicked => {
@@ -1497,17 +1515,17 @@ export component SftpPanel inherits Rectangle {
                         spacing: 8px;
                         Rectangle {
                             horizontal-stretch: 1; height: 24px; border-radius: Theme.radius-sm;
-                            background: Theme.bg-root; border-width: 1px; border-color: Theme.border-subtle;
+                            background: Theme.zone-sidebar-root; border-width: 1px; border-color: Theme.border-subtle;
                             TextInput { x: 7px; width: parent.width - 14px; height: parent.height; text <=> root.tunnel-name; color: Theme.text-primary; font-family: Theme.ui-font-family; font-size: Theme.fs-sm; single-line: true; vertical-alignment: center; }
                         }
                         Rectangle {
                             width: 128px; height: 24px; border-radius: Theme.radius-sm;
-                            background: Theme.bg-root; border-width: 1px; border-color: Theme.border-subtle;
+                            background: Theme.zone-sidebar-root; border-width: 1px; border-color: Theme.border-subtle;
                             TextInput { x: 7px; width: parent.width - 14px; height: parent.height; text <=> root.tunnel-bind; color: Theme.text-primary; font-family: Theme.ui-font-family; font-size: Theme.fs-sm; single-line: true; vertical-alignment: center; }
                         }
                         Rectangle {
                             width: 68px; height: 24px; border-radius: Theme.radius-sm;
-                            background: Theme.bg-root; border-width: 1px; border-color: Theme.border-subtle;
+                            background: Theme.zone-sidebar-root; border-width: 1px; border-color: Theme.border-subtle;
                             TextInput { x: 7px; width: parent.width - 14px; height: parent.height; text <=> root.tunnel-bind-port; color: Theme.text-primary; font-family: Theme.ui-font-family; font-size: Theme.fs-sm; single-line: true; vertical-alignment: center; }
                         }
                     }
@@ -1516,17 +1534,17 @@ export component SftpPanel inherits Rectangle {
                         spacing: 8px;
                         Rectangle {
                             horizontal-stretch: 1; height: 24px; border-radius: Theme.radius-sm;
-                            background: Theme.bg-root; border-width: 1px; border-color: Theme.border-subtle;
+                            background: Theme.zone-sidebar-root; border-width: 1px; border-color: Theme.border-subtle;
                             TextInput { x: 7px; width: parent.width - 14px; height: parent.height; text <=> root.tunnel-host; color: Theme.text-primary; font-family: Theme.ui-font-family; font-size: Theme.fs-sm; single-line: true; vertical-alignment: center; }
                         }
                         Rectangle {
                             width: 76px; height: 24px; border-radius: Theme.radius-sm;
-                            background: Theme.bg-root; border-width: 1px; border-color: Theme.border-subtle;
+                            background: Theme.zone-sidebar-root; border-width: 1px; border-color: Theme.border-subtle;
                             TextInput { x: 7px; width: parent.width - 14px; height: parent.height; text <=> root.tunnel-host-port; color: Theme.text-primary; font-family: Theme.ui-font-family; font-size: Theme.fs-sm; single-line: true; vertical-alignment: center; }
                         }
                     }
 
-                    Rectangle { height: 1px; background: Theme.border-subtle; }
+                    Rectangle { height: 1px; background: Theme.zone-sidebar-line; }
 
                     if root.tunnels.length == 0 : Rectangle {
                         height: 36px;
@@ -1536,7 +1554,7 @@ export component SftpPanel inherits Rectangle {
                     for tun in root.tunnels : Rectangle {
                         height: 34px;
                         border-radius: Theme.radius-sm;
-                        background: tunnel-row-ta.has-hover ? Theme.bg-hover : Theme.bg-root.with-alpha(0.42);
+                        background: tunnel-row-ta.has-hover ? Theme.bg-hover : Theme.zone-sidebar-root;
                         tunnel-row-ta := TouchArea {}
                         HorizontalLayout {
                             padding-left: 8px; padding-right: 8px; spacing: 8px;

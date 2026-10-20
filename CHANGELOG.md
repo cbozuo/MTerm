@@ -6,6 +6,24 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **侧栏透明度覆盖到面板内的实心块（#sidebar-alpha-follow）。** 用户反馈调侧栏透明度后，命令栏按钮与输入框、两条 5px 拖拽条、文件面板的页签/上传钮/路径框、两侧滚动条仍是实色斑。
+  - 根因：`zone-sidebar*` 系列只替换了**面板底**，面板内仍散落 `bg-root` / `bg-elevated` / `accent` / `border-subtle` 四类实色；std `ScrollView` 的滚动条颜色写死在 Fluent 样式里，无法改成半透明。
+  - 修法：新增 `zone-sidebar-accent` / `-accent-hover` / `-line` / `-scroll` / `-scroll-active` 五个侧栏档 token；`widgets.slint` 新增 `PanelScroll`（Flickable + 自绘 4px overlay 滚动条，平时隐形、靠近右缘淡入），替换文件面板的目录树 / 文件列表 / 隧道列表三处 `ScrollView`；两条 5px 拖拽条静止态改为「面板同色 + 1px 中线」，不再整条刷实色；聚焦边框与悬停高亮（分隔条、树分界条）同样走侧栏档 —— 否则静止态透、一碰就变实。
+  - 强调色块的**透光率翻倍**（α′ = 1 − (1 − α) × 2，α = 1 时结果仍为 1）：中性面板 33% 透光一眼能看出桌面纹理，饱和青块上同样 33% 却看着仍是实心。
+- **Sidebar transparency now reaches the solid blocks inside the panels (#sidebar-alpha-follow).** Reported after raising the sidebar transparency: the command-bar buttons and input, both 5 px splitters, the file panel's tabs / upload button / path field and both scrollbars stayed opaque.
+  - Cause: the `zone-sidebar*` tokens only covered the panel background; the panels still used four kinds of solid values (`bg-root`, `bg-elevated`, `accent`, `border-subtle`), and std `ScrollView` paints its scrollbar from hard-coded Fluent colours.
+  - Fix: five new sidebar-tier tokens (`zone-sidebar-accent`, `-accent-hover`, `-line`, `-scroll`, `-scroll-active`); a new `PanelScroll` component (Flickable + self-drawn 4 px overlay bar, hidden until the pointer nears the right edge) replaces the three `ScrollView`s in the file panel; both 5 px splitters draw a same-colour band plus a 1 px centre line instead of a solid 5 px line; focus borders and drag/hover highlights use the same tier, so nothing turns solid on interaction.
+  - Emphasis fills get their **transparency doubled** (α′ = 1 − (1 − α) × 2, unchanged at α = 1): 33% transparency is obvious on a neutral panel where desktop texture shows through, yet invisible on a saturated accent fill.
+
+- **高亮设置弹框按高保真收尾（#hl-hifi-r2）。** 对照 `docs/design/highlight-settings-hifi-2026-10-20.html` 逐项核对。
+  - 视觉：色点加同色 15% 光环（等效 hi-fi 的 `box-shadow`）；开关圆点改为四边等距（原坐标按 CSS padding-box 计算，在 Slint 的边框基准上偏了 1 px，看着贴顶偏右），过渡 160 ms + 悬停反馈；完成按钮宽度随内容自适应并补按下态；自定义页修掉标题与第一个输入框之间近 300 px 的空白（ScrollView 内容布局缺 `alignment: start`，余高被可生长的标题 Text 吃掉），补「我的规则」分组标题、首行不再出现双线。
+  - 交互：支持点弹框外关闭；弹框打开时点主窗标题栏仍可拖动窗口（遮罩命中区顶部让位 32 px）。
+  - 规则：19 条预设的 ANSI 槽对齐高保真（此前普遍用亮色变体，如 ERROR 用 9 号粉红而非 1 号标准红），新增 `every_preset_matches_its_sample` 逐条体检测试；`iso` 吃掉含时间的完整时间戳（原来被切成一橙一青两段），顺带修好 `2026-10-20T15:46:40Z` 完全不上色；`size` 认 `5.9Gi` / `27Mi` / `0B`（旧写法 `\b` 落在 `G` 与 `i` 之间，`free -h` 全不命中）；彩虹括号不再因 bold 被跳过。
+- **Highlight-settings dialog finished against the hi-fi spec (#hl-hifi-r2).**
+  - Visuals: colour dots gain a 15% same-colour halo (the `box-shadow` equivalent); the switch knob is now equidistant on all four sides (the old values were CSS padding-box numbers, off by 1 px against Slint's border origin height), with a 160 ms transition and hover feedback; the Done button sizes to its content and gains a pressed state; the Custom tab loses the ~300 px gap between its heading and first field (the ScrollView content layout lacked `alignment: start`, so the growable heading Text ate the slack), plus a "My rules" caption and no doubled separator above the first row.
+  - Interaction: clicking outside closes the dialog; the main window can still be dragged by its title bar while a dialog is open (the scrim's hit area yields the top 32 px).
+  - Rules: preset ANSI slots aligned with the hi-fi spec (most previously used bright variants — ERROR was slot 9 pink instead of slot 1 red), with a new per-rule `every_preset_matches_its_sample` regression; `iso` now takes a whole timestamp including the time (it used to split into orange + teal), which also fixes `2026-10-20T15:46:40Z` never matching at all; `size` recognises `5.9Gi` / `27Mi` / `0B` (the old `\b` fell between `G` and `i`, so `free -h` output never matched); rainbow brackets are no longer skipped on bold runs.
+
 - **启动窗口：默认居中，不再落到屏幕右下（#win-center）。** 用户反馈「打开软件默认位置在右下角」。
   - 根因：居中挂在 `show()` 之后 30ms 的定时器上，此时原生窗口还没映射 —— `size()` 只有最小尺寸 `720×420`、`scale_factor()` 还是 `1.0`，按这对数算出的左上角是固定一点；窗口随后长到真实尺寸而左上角不动，右/下就溢出屏幕。与分辨率、缩放无关，任何机器都歪，只是歪多少不同。
   - 修法：居中改到**首个 `Resized` 事件**，直接用事件自带的物理尺寸（`center_window_px`）；尺寸恢复未落定时会再进一次，以最后一次为准。`center_window` 改为优先读原生窗口 `inner_size()`，全链路统一按物理像素；30ms 定时器只保留「tab 拖出贴指针」与「第 2+ 窗口级联 +40」两条显式定位，并用 `window_position_pinned` 避免被居中覆盖。

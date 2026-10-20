@@ -1341,7 +1341,9 @@ export component TerminalView inherits Rectangle {
                 if !root.quick-panel-docked : Rectangle {
                     width: qc-row.preferred-width + 16px;
                     border-radius: Theme.radius-sm;
-                    background: qc-ta.has-hover || root.quick-open ? Theme.bg-hover : Theme.bg-elevated;
+                    // (#sidebar-alpha-follow 2026-10-20) 按钮底也跟侧栏 alpha：
+                    // 统一走 zone-sidebar-elev，否则调透明度后只剩这几块实心灰斑。
+                    background: qc-ta.has-hover || root.quick-open ? Theme.bg-hover : Theme.zone-sidebar-elev;
                     qc-ta := TouchArea {
                         mouse-cursor: pointer;
                         clicked => { root.history-open = false; root.quick-open = !root.quick-open; }
@@ -1385,9 +1387,14 @@ export component TerminalView inherits Rectangle {
                         width: parent.width; height: parent.height;
                         border-radius: Theme.radius-sm;
                         border-width: 1px;
-                        border-color: cmd-input.has-focus ? Theme.accent : Theme.border-subtle;
+                        // (#sidebar-alpha-follow 2026-10-20) 边框也跟侧栏 alpha，
+                        // 与 sftp 路径框同一档 —— 实色 1px 边框在透明面板上会
+                        // 把输入框「焊」成一块实心方块。
+                        border-color: cmd-input.has-focus ? Theme.zone-sidebar-accent : Theme.zone-sidebar-line;
                         animate border-color { duration: 120ms; }
-                        background: Theme.bg-root;
+                        // (#sidebar-alpha-follow 2026-10-20) 输入框内衬跟侧栏 alpha
+                        // （原 bg-root 在无壁纸时是实色，会把半透明命令栏打出一个洞）。
+                        background: Theme.zone-sidebar-root;
                         // (#cmd-prompt 2026-09-04) "$" 提示符前缀:等宽字体 + accent
                         // 色,一眼可辨"这是发给 shell 的命令";输入区(上游多行滚动
                         // 结构)右移让位。
@@ -1592,9 +1599,10 @@ export component TerminalView inherits Rectangle {
                     Icon {
     glyph: "command-history";
     tint: Theme.text-primary;
-    // 12px：比 fs-xs(11) 略大、比 fs-sm(13) 的字形圈小 —— 圆的视觉重量比
-    // 同框的 "^" 大，取 13 会压过左右文字，取 11 又明显偏小。
-    size: 12px * Theme.ui-scale;
+    // (#cmdbar-hist-icon 2026-10-20) 用户反馈「比左右文字小一圈、不够协调」：
+    // 原 12px 是按"圆的视觉重量"拍的，但 SVG 里圆只占 24 网格的 18（75%），
+    // 12px 盒里的圆实际只有 ~9px。取 16px → 字形圈 ~12px，与左右 13px 文字同高。
+    size: 16px * Theme.ui-scale;
 }
                 }
 
@@ -1602,8 +1610,8 @@ export component TerminalView inherits Rectangle {
                 Rectangle {
                     width: all-row.preferred-width + 14px;
                     border-radius: Theme.radius-sm;
-                    background: root.send-to-all ? Theme.accent
-                              : all-ta.has-hover ? Theme.bg-hover : Theme.bg-elevated;
+                    background: root.send-to-all ? Theme.zone-sidebar-accent
+                              : all-ta.has-hover ? Theme.bg-hover : Theme.zone-sidebar-elev;
                     all-ta := TouchArea {
                         mouse-cursor: pointer;
                         clicked => { root.send-to-all = !root.send-to-all; }
@@ -1621,7 +1629,7 @@ export component TerminalView inherits Rectangle {
                 Rectangle {
                     width: send-row.preferred-width + 18px;
                     border-radius: Theme.radius-sm;
-                    background: send-ta.has-hover ? Theme.accent-hover : Theme.accent;
+                    background: send-ta.has-hover ? Theme.zone-sidebar-accent-hover : Theme.zone-sidebar-accent;
                     send-ta := TouchArea {
                         mouse-cursor: pointer;
                         clicked => {
@@ -2025,7 +2033,7 @@ export component TerminalView inherits Rectangle {
                         border-radius: Theme.radius-sm;
                         background: Theme.bg-root;
                         border-width: 1px;
-                        border-color: hist-search.has-focus ? Theme.accent : Theme.border-subtle;
+                        border-color: hist-search.has-focus ? Theme.zone-sidebar-accent : Theme.zone-sidebar-line;
                         // Defer focus to the next event-loop tick (see init below).
                         history-search-focus-timer := Timer {
                             interval: 0ms;
@@ -2132,8 +2140,16 @@ export component TerminalView inherits Rectangle {
              : 0px;
             width:  root.sftp-horizontal ? parent.sp : parent.width;
             height: root.sftp-horizontal ? parent.height : parent.sp;
+            // (#sidebar-alpha-follow 2026-10-20) 静止态不再整条 5px 涂**实色**：
+            // 原写法把 5px 命中区整条刷 border-subtle（不透明），面板调透明度后
+            // 它成了命令栏与文件面板之间唯一不透的粗横线（用户截图）。现在底色
+            // 与 sftp 面板里的树分界条（tree-split）**用同一个 token**
+            // （zone-sidebar），中线同为 zone-sidebar-line —— 用户要求「横线的
+            // 透明变化和左右两条竖线保持一致」；hover / 拖拽仍整条高亮，
+            // 但高亮色跟侧栏档（原实色 accent —— 悬停时那一下比面板实得多，
+            // 用户圈出来要求"和表头线一致"）。
             background: divider-ta.has-hover || root.sftp-dragging
-                ? Theme.accent : Theme.border-subtle;
+                ? Theme.zone-sidebar-accent : Theme.zone-sidebar;
             divider-ta := TouchArea {
                 // Hit area extends 3px past each side of the 5px bar so it's
                 // easy to grab without landing on the terminal / SFTP edge
@@ -2176,6 +2192,14 @@ export component TerminalView inherits Rectangle {
                     }
                 }
             }
+            // 1px 中线：静止态唯一可见的笔画，颜色跟侧栏 alpha（见上方注释）。
+            Rectangle {
+                x: root.sftp-horizontal ? (parent.width - self.width) / 2 : 0px;
+                y: root.sftp-horizontal ? 0px : (parent.height - self.height) / 2;
+                width:  root.sftp-horizontal ? 1px : parent.width;
+                height: root.sftp-horizontal ? parent.height : 1px;
+                background: Theme.zone-sidebar-line;
+            }
             // Buffer band: 1px 子 Rectangle，贴在 splitter 靠 central（终端）
             // 那一侧的 1px 边界像素上。vertical 模式（dock=bottom|top）→ 缓冲
             // 带在 splitter 顶/底边、全宽；horizontal（dock=left|right）→ 缓冲
@@ -2195,7 +2219,7 @@ export component TerminalView inherits Rectangle {
                 height: root.sftp-horizontal ? parent.height : 1px;
                 // 与 cmd-bar 同 token：半透明时交界不能出现色差缝。
                 background: divider-ta.has-hover || root.sftp-dragging
-                    ? Theme.accent : Theme.zone-sidebar-alt;
+                    ? Theme.zone-sidebar-accent : Theme.zone-sidebar;
             }
         }
 
