@@ -41,6 +41,12 @@ export struct TabInfo {
     auth: string,
     group_name: string,
     note: string,
+    // (#tab-card-proto 2026-10-21) 协议行（信息卡**首行**）：SSH / 串口 /
+    // Telnet / 本地 / RDP / VNC。welcome tab 为空串（整行不渲染）。
+    // 由 Rust 侧按 SessionKind 直填**显示名**（本地/串口走 i18n::t），
+    // UI 只加「协议：」前缀 —— Slint 里没有 kind→中文的映射表，也不该有
+    // （否则每加一种传输要改两处）。
+    proto: string,
 }
 
 // --- SingleTab -------------------------------------------------------------
@@ -60,7 +66,9 @@ component SingleTab inherits Rectangle {
     // 首锚 + pointer-event move 跟手，移开即清。经 TabBar 中转到 AppWindow
     // 根层集中浮层渲染。
     // (#sync-dialog-v2) 补 user/auth/group 三参（三卡信息量对齐）。
-    callback card-out(string /* title */, string /* host */, string /* user */,
+    // (#tab-card-proto 2026-10-21) 首参 proto = 协议行（卡片首行）。
+    callback card-out(string /* proto */, string /* title */, string /* host */,
+                      string /* user */,
                       string /* auth */, string /* group */, string /* note */,
                       string /* channel */, bool /* paused */,
                       length /* abs-x */, length /* abs-y */);
@@ -138,7 +146,7 @@ component SingleTab inherits Rectangle {
             } else if (e.kind == PointerEventKind.move && !self.pressed && !root.dragging) {
                 // (#tab-card) 纯悬停移动跟手（welcome 同款；moved 只在按住时
                 // 触发，悬停跟随只能挂 pointer-event move）。
-                root.card-out(root.info.title, root.info.host, root.info.user,
+                root.card-out(root.info.proto, root.info.title, root.info.host, root.info.user,
                               root.info.auth, root.info.group_name, root.info.note,
                               root.info.channel_letter, root.info.channel_paused,
                               self.absolute-position.x + self.mouse-x,
@@ -198,6 +206,7 @@ component SingleTab inherits Rectangle {
         running: touch.has-hover && !root.dragging;
         triggered => {
             root.card-out(
+                root.info.proto,
                 root.info.title,
                 root.info.host,
                 root.info.user,
@@ -299,23 +308,37 @@ component SingleTab inherits Rectangle {
         // 也点不中）。absolute 脱流后 hover 显示不再改变占位（不顶开邻 tab）。
         opacity: (touch.has-hover || close-ta.has-hover) ? 1.0 : 0.0;
         animate opacity { duration: 140ms; }
-        // (#tab-32) 去掉红底：hover 只染红 × 自身（#dc4b44 = Theme.danger-strong）。
+        // (#tab-close-idea 2026-10-21) 悬停底只留透明，实心圆移进内层 —— 见下。
         background: transparent;
         close-ta := TouchArea {
             mouse-cursor: pointer;
             clicked => { root.closed(); }
         }
-        // × 的两根斜杠用 Path 画（Slint 1.18 无元素级 rotation-angle；M/L
-        // 命令精确到 px，等效稿内 9px×1.5px 双斜杠）。stroke 1.5px，hover 染红。
-        Path {
-            width: 10px; height: 10px;
+        // (#tab-close-idea 2026-10-21) 与左栏搜索框的 × 同一套（用户定稿）：
+        // 悬停 = 主题强调色**实心圆** + 面板底色 ×（镂空观感），圆径 18
+        // （命中区仍是外层 20×20）。旧实现只把 × 自身染红（#dc4b44），
+        // 在深色 tab 条上是一根孤立的红线，没有「可点的块」感。
+        // ⚠️ 强调色不能取 danger-strong：用户要的是强调色系，红色留给删除
+        // 危险操作（GhostButton danger / 关闭会话确认）。
+        Rectangle {
+            width: 18px; height: 18px;
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            viewbox-width: 10;
-            viewbox-height: 10;
-            commands: "M 1 1 L 9 9 M 9 1 L 1 9";
-            stroke: close-ta.has-hover ? Theme.danger-strong : Theme.text-secondary;
-            stroke-width: 1.5px;
+            border-radius: parent.width / 2;
+            background: close-ta.has-hover ? Theme.accent : transparent;
+            animate background { duration: 100ms; }
+            // × 的两根斜杠用 Path 画（Slint 1.18 无元素级 rotation-angle；M/L
+            // 命令精确到 px，等效稿内 9px×1.5px 双斜杠）。
+            Path {
+                width: 10px; height: 10px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                viewbox-width: 10;
+                viewbox-height: 10;
+                commands: "M 1 1 L 9 9 M 9 1 L 1 9";
+                stroke: close-ta.has-hover ? Theme.panel-solid : Theme.text-secondary;
+                stroke-width: 1.5px;
+            }
         }
     }
 
@@ -397,7 +420,8 @@ export component TabBar inherits Rectangle {
     // (#tab-card) 悬浮信息卡中转槽：SingleTab 写入，实例侧绑到 AppWindow 根
     // 集中浮层（SessionRow→Welcome→根 同一链路模式）。
     // (#sync-dialog-v2) +user/auth/group 三参。
-    callback tab-card-out(string, string, string, string, string, string, string, bool, length, length);
+    // (#tab-card-proto 2026-10-21) 首参 = proto。
+    callback tab-card-out(string, string, string, string, string, string, string, string, bool, length, length);
     callback tab-card-clear();
     in property <bool> lang-en: false;   // 频道菜单双语（app.slint 转发）
     in-out property <string> menu-channel-letter: "";
@@ -660,8 +684,8 @@ export component TabBar inherits Rectangle {
                         duplicated => { root.tab-duplicate(tab.id); }
                         // (#tab-card) 信息卡上报中转到 TabBar 级（实例侧再绑根浮层）
                         // (#sync-dialog-v2) +user/auth/group 三参
-                        card-out(t, h, u, a, g, n, c, p, ax, ay) => {
-                            root.tab-card-out(t, h, u, a, g, n, c, p, ax, ay);
+                        card-out(pr, t, h, u, a, g, n, c, p, ax, ay) => {
+                            root.tab-card-out(pr, t, h, u, a, g, n, c, p, ax, ay);
                         }
                         card-clear() => { root.tab-card-clear(); }
                         context-requested(ax, ay) => {

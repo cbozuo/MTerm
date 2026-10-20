@@ -856,6 +856,15 @@ export component LeftSidebar inherits Rectangle {
     in property <[SessionInfo]> sessions;
     in property <string> import-hint;        // result text after an import
     in-out property <string> search-query;
+    // (#search-blur 2026-10-20) 点列表空白 / 空态区 → 搜索框离焦。
+    // Slint 点空白**不会**自动清 TextInput 焦点（只有点另一个 TextInput 才转移），
+    // 必须显式令牌；与 HlField（highlight_dialog）/ PickerInput（color_picker）
+    // 的 blur-token 同款。由列表 blank-ta、空态区的 TouchArea 自增，下面的
+    // changed 处理器统一落焦 —— 加了聚焦外环之后，焦点常驻会让青环一直亮着。
+    property <int> search-blur-token: 0;
+    changed search-blur-token => {
+        if (search-input.has-focus) { search-input.clear-focus(); }
+    }
     // (#session-hover-card) 成员行 hover 信息卡片的中转槽:SessionRow 写入,
     // 实例侧绑定到 AppWindow 根的集中浮层(链路 SessionRow→Welcome→根)。
     in-out property <string> card-out-name;
@@ -1345,9 +1354,30 @@ export component LeftSidebar inherits Rectangle {
                     height: 32px;
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
-                    border-color: search-input.has-focus ? Theme.accent : Theme.border-subtle;
+                    // (#search-focus-ring 2026-10-20) 聚焦语言与命令栏 qcm-cmd-in /
+                    // HlField 逐值统一：1px accent 描边 + 3px accent-soft 外环。
+                    // 描边走 zone-sidebar-*（= 槽位色 × 侧栏 alpha），实色 accent
+                    // 在侧栏调透后会把输入框「焊」成一块实心方块（#sidebar-alpha-follow
+                    // 同款结论）。默认 alpha=1 时与 border-subtle / accent 逐像素相同。
+                    border-color: search-input.has-focus ? Theme.zone-sidebar-accent
+                                                        : Theme.zone-sidebar-line;
+                    animate border-color { duration: 120ms; }
                     // (#sidebar-surface-alpha 2026-10-18) 侧栏内的实心表面一律跟「侧栏透明度」。
                     background: Theme.zone-sidebar-root;
+
+                    // (#search-focus-ring) 聚焦柔光环：x/y -3、宽高 +6、外边界
+                    // **同心**（radius-sm + 3）、3px accent-soft。声明在内容之前 =
+                    // 先绘制，只描边不铺底，压不到文字与光标。上探 3px 到 y=47/85，
+                    // 上方按钮底 42/80、下方列表顶 90，上下各留 5px，互不重叠。
+                    if search-input.has-focus : Rectangle {
+                        x: -3px;
+                        y: -3px;
+                        width: parent.width + 6px;
+                        height: parent.height + 6px;
+                        border-radius: Theme.radius-sm + 3px;
+                        border-width: 3px;
+                        border-color: Theme.accent-soft;
+                    }
 
                     HorizontalLayout {
                         padding-left: 8px;
@@ -1375,7 +1405,13 @@ export component LeftSidebar inherits Rectangle {
                                 edited => { root.search-changed(root.search-query); }
                             }
 
-                            if root.search-query == "" : Text {
+                            // (#search-placeholder-blur 2026-10-20) 聚焦即隐藏：
+                            // 与 LabeledInput（widgets.slint:318）/ HlField
+                            // （highlight_dialog.slint:126）同一条口径 value=="" &&
+                            // !has-focus。旧条件只看空串，聚焦后提示语仍盖在
+                            // TextInput 之上（声明序在后 = 画在光标之上），与光标
+                            // 叠在一起（用户截图）。
+                            if root.search-query == "" && !search-input.has-focus : Text {
                                 width: parent.width;
                                 height: parent.height;
                                 text: @tr("Search by name or host...");
@@ -1390,51 +1426,56 @@ export component LeftSidebar inherits Rectangle {
                             width: 24px;
                             height: parent.height;
 
+                            // (#search-clear-idea 2026-10-20) 参照 IDEA 的页签关闭键：
+                            // 悬停 = 主题强调色**实心圆**，× 取面板底色做「镂空」
+                            // （深色主题=深、亮色主题=浅，任意 accent 明度下都比
+                            // white 稳 —— 白 × 在亮青/黄 accent 上会糊成一片）。
+                            // 原实现是 4px 方角底 + 8% accent 淡染，悬停几乎看不出。
+                            // (#search-clear-size 2026-10-21) 圆径 24 → **18**：
+                            // 24 占满 32px 输入框高度的 75%，实心青圆在细框里过重
+                            // （用户「太大、不协调」）。18 ≈ 图标 13 的 1.4 倍，
+                            // 接近 IDEA 比例；**命中区仍保持 24×24**（TouchArea
+                            // 外扩 3px），手感不变。
                             Rectangle {
-                                width: 24px;
-                                height: 24px;
+                                width: 18px;
+                                height: 18px;
+                                x: (parent.width - self.width) / 2;
                                 y: (parent.height - self.height) / 2;
-                                border-radius: Theme.radius-sm;
-                                background: clear-search.has-hover ? Theme.bg-hover : transparent;
+                                border-radius: parent.width / 2;
+                                background: clear-search.has-hover
+                                    ? Theme.zone-sidebar-accent : transparent;
+                                animate background { duration: 100ms; }
                                 accessible-role: button;
                                 accessible-label: @tr("Clear search");
 
                                 Icon {
-    glyph: "close";
-    tint: Theme.text-muted;
-    size: Theme.fs-sm;
-}
+                                    glyph: "close";
+                                    tint: clear-search.has-hover
+                                        ? Theme.panel-solid : Theme.text-muted;
+                                    size: Theme.fs-sm;
+                                }
                                 clear-search := TouchArea {
+                                    // 视觉 18、命中 24（四周各外扩 3px）。
+                                    x: -3px;
+                                    y: -3px;
+                                    width: 24px;
+                                    height: 24px;
                                     mouse-cursor: pointer;
                                     clicked => {
                                         root.search-query = "";
                                         root.search-changed("");
+                                        // (#search-clear-refocus 2026-10-20) 清空后保留
+                                        // 回焦（用户定稿）：焦点不跳出搜索框。注意
+                                        // placeholder 因 has-focus 而隐藏，清空后框内
+                                        // 全空 —— 这是聚焦隐藏提示语的必然结果。
                                         search-input.focus();
                                     }
                                 }
-
-                                if clear-search.has-hover : Rectangle {
-                                    x: parent.width - self.width;
-                                    y: parent.height + 4px;
-                                    width: clear-search-tip.preferred-width + 16px;
-                                    height: 22px;
-                                    background: Theme.bg-elevated;
-                                    border-radius: Theme.radius-sm;
-                                    border-width: 1px;
-                                    border-color: Theme.border-strong;
-                                    drop-shadow-blur: 8px;
-                                    drop-shadow-color: #00000070;
-
-                                    clear-search-tip := Text {
-                                        width: parent.width;
-                                        height: parent.height;
-                                        text: @tr("Clear search");
-                                        color: Theme.text-primary;
-                                        font-size: Theme.fs-xs;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
+                                // (#search-clear-tip-removed 2026-10-20) 文字气泡已删：
+                                // 它原本声明在搜索框内部，而搜索框声明在 list-host 之前
+                                // —— Slint 无 z-index，绘制序 = 声明序，列表整体后绘把
+                                // 气泡下半截盖住（用户截图只剩一条顶边）。圆形强调色
+                                // 悬停已是强反馈，可访问名由 accessible-label 保留。
                             }
                         }
                     }
@@ -1449,6 +1490,20 @@ export component LeftSidebar inherits Rectangle {
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
                     border-color: Theme.border-subtle;
+
+                    // (#search-blur) 空列表时没有 list-host/blank-ta，空白点击
+                    // 走这里 —— 否则「点空白离焦」只在有会话时成立（空态是
+                    // 新用户第一眼看到的画面，最容易去点空白）。TouchArea 不
+                    // 绘制、不遮文字，也不吞右键（空态无需右键菜单）。
+                    TouchArea {
+                        width: 100%;
+                        height: 100%;
+                        pointer-event(e) => {
+                            if (e.kind == PointerEventKind.down) {
+                                root.search-blur-token += 1;
+                            }
+                        }
+                    }
 
                     VerticalLayout {
                         alignment: center;
@@ -1479,6 +1534,13 @@ export component LeftSidebar inherits Rectangle {
                         width: 100%;
                         height: 100%;
                         pointer-event(e) => {
+                            if (e.kind == PointerEventKind.down
+                                    && e.button == PointerEventButton.left) {
+                                // (#search-blur) 点列表空白（含内容下方大片留白）
+                                // → 搜索框离焦。行/组头有各自的 TouchArea 会先
+                                // 吃掉事件，落到这里就说明指针确实在空白处。
+                                root.search-blur-token += 1;
+                            }
                             if (e.kind == PointerEventKind.down
                                     && e.button == PointerEventButton.right) {
                                 root.ctx-gen += 1;

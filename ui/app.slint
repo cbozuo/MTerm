@@ -1645,6 +1645,9 @@ export component AppWindow inherits Window {
     // (#tab-card 2026-10-11) tab 悬浮信息卡（左侧组内成员同款）的集中渲染槽：
     // SingleTab 经 TabBar 中转写入，窗口根尾部渲染。
     // (#sync-dialog-v2 2026-10-12) 补 用户/认证/组别 三行（三卡信息量对齐）。
+    // (#tab-card-proto 2026-10-21) tab-card-proto = 卡片**首行**协议
+    // （SSH / 串口 / Telnet / 本地 / RDP / VNC），空串整行不渲染。
+    in-out property <string> tab-card-proto;
     in-out property <string> tab-card-title;
     in-out property <string> tab-card-host;
     in-out property <string> tab-card-user;
@@ -2955,7 +2958,9 @@ export component AppWindow inherits Window {
                     show-channel-bar(t) => { root.show-channel-bar(t); }
                     // (#tab-card) tab 悬浮信息卡中转到根层集中浮层
                     // (#sync-dialog-v2) +user/auth/group 三参
-                    tab-card-out(t, h, u, a, g, n, c, p, ax, ay) => {
+                    // (#tab-card-proto) 首参 = 协议行
+                    tab-card-out(pr, t, h, u, a, g, n, c, p, ax, ay) => {
+                        root.tab-card-proto = pr;
                         root.tab-card-title = t;
                         root.tab-card-host = h;
                         root.tab-card-user = u;
@@ -2968,6 +2973,7 @@ export component AppWindow inherits Window {
                         root.tab-card-y = ay;
                     }
                     tab-card-clear() => {
+                        root.tab-card-proto = "";
                         root.tab-card-title = "";
                         root.tab-card-host = "";
                         root.tab-card-user = "";
@@ -4539,7 +4545,7 @@ export component AppWindow inherits Window {
     // 直挂、不在 VerticalLayout 内，不占布局，读 preferred-width 即可——if 行
     // 的 id 在外层不可见，所以走这路）。
     if tab-card-title != "" && !root.dialog-open : Rectangle {
-        property <int> row-n: 1 + (tab-card-host != "" ? 1 : 0)
+        property <int> row-n: (tab-card-proto != "" ? 1 : 0) + 1 + (tab-card-host != "" ? 1 : 0)
             + (tab-card-user != "" ? 1 : 0) + (tab-card-auth != "" ? 1 : 0)
             + (tab-card-group != "" ? 1 : 0) + (tab-card-note != "" ? 1 : 0)
             + (tab-card-channel != "" ? 1 : 0);
@@ -4548,7 +4554,8 @@ export component AppWindow inherits Window {
         y: tab-card-y - self.height - 8px < 8px
             ? tab-card-y + 20px : tab-card-y - self.height - 8px;
         width: min(parent.width - 60px,
-            Math.max(tc-m-title.preferred-width, tc-m-host.preferred-width,
+            Math.max(tc-m-proto.preferred-width,
+                     tc-m-title.preferred-width, tc-m-host.preferred-width,
                      tc-m-user.preferred-width, tc-m-auth.preferred-width,
                      tc-m-group.preferred-width,
                      tc-m-channel.preferred-width) + 76px);
@@ -4559,6 +4566,11 @@ export component AppWindow inherits Window {
         border-color: Theme.border-subtle;
         // (#popup-no-shadow 2026-10-20) 投影随 10-17 定稿删除,与会话悬停卡同款
         // 隐藏测量元素（不参与布局：直挂卡片层 + visible false）
+        tc-m-proto := Text {
+            visible: false;
+            text: (root.lang-en ? "Protocol:" : "协议：") + root.tab-card-proto;
+            font-size: Theme.fs-xs;
+        }
         tc-m-title := Text {
             visible: false;
             text: (root.lang-en ? "Name:" : "名称：") + root.tab-card-title;
@@ -4597,6 +4609,15 @@ export component AppWindow inherits Window {
             padding-left: 12px;
             padding-right: 12px;
             spacing: 2px;
+            // (#tab-card-proto 2026-10-21) 协议行固定在最前（用户定稿「首行」）：
+            // SSH / 串口 / Telnet / 本地 / RDP / VNC。welcome 卡无会话 → 空串 →
+            // 整行不渲染（`if` 而非 visible:false，后者仍占位会留一条空行）。
+            if tab-card-proto != "" : Text {
+                text: (root.lang-en ? "Protocol:" : "协议：") + root.tab-card-proto;
+                color: Theme.text-primary;
+                font-size: Theme.fs-xs;
+                overflow: elide;
+            }
             Text {
                 text: (root.lang-en ? "Name:" : "名称：") + root.tab-card-title;
                 color: Theme.text-primary;
@@ -6905,15 +6926,19 @@ export component AppWindow inherits Window {
         }
 
         card := Rectangle {
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
+            // (#close-line-hairline 2026-10-20) 对齐高亮设置弹框的线规范：卡
+            // 落点/尺寸 snap 到设备栅格 + 边框 hairline（恰 1 设备像素）。旧的
+            // 1 逻辑 px 边框在 125% 缩放下跨 1.25 设备行，AA 出一条"粗线"
+            //（用户截图）。snap 后顶/底边框都落在整数设备行，锐利不粗。
+            x: Theme.snap-to-device((parent.width - self.width) / 2);
+            y: Theme.snap-to-device((parent.height - self.height) / 2);
             width: 440px;
-            height: close-body.preferred-height;
+            height: Theme.snap-to-device(close-body.preferred-height);
             // (#popup-transparency-hifi) 与其它弹框同源:卡片底走 popup-bg
             // (标准=实心 / 通透=82% / 全透=55%),通透档下玻璃程度一致。
             background: Theme.popup-bg;
             border-radius: Theme.radius-lg;
-            border-width: 1px;
+            border-width: Theme.hairline();
             border-color: Theme.border-strong;
             drop-shadow-blur: 24px;
             drop-shadow-color: transparent;
@@ -6948,12 +6973,14 @@ export component AppWindow inherits Window {
                             || Math.abs(self.absolute-position.y + self.mouse-y - card.drag-cy) > 3px) {
                             card.drag-moved = true;
                         }
-                        card.x = Math.max(8px, Math.min(
+                        // (#close-line-hairline) 拖动落点同样 snap：拖完边框
+                        // 仍压在设备栅格上，不发糊（高亮弹框 dlg 拖动同款）。
+                        card.x = Theme.snap-to-device(Math.max(8px, Math.min(
                             card.drag-ox + (self.absolute-position.x + self.mouse-x - card.drag-cx),
-                            Math.max(8px, root.width - card.width - 8px)));
-                        card.y = Math.max(8px, Math.min(
+                            Math.max(8px, root.width - card.width - 8px))));
+                        card.y = Theme.snap-to-device(Math.max(8px, Math.min(
                             card.drag-oy + (self.absolute-position.y + self.mouse-y - card.drag-cy),
-                            Math.max(8px, root.height - card.height - 8px)));
+                            Math.max(8px, root.height - card.height - 8px))));
                     }
                 }
             }
@@ -6972,11 +6999,19 @@ export component AppWindow inherits Window {
                 // 的引子作用 —— 卡片本身已把意思表达完。压成一行后弹框更紧凑,层级
                 // 仍然清晰(标题 15px/700 vs 说明 12px text-secondary)。
                 // 文案随之换短句:完整句「请选择这次关闭的行为。」在标题旁会显得啰嗦。
-                HorizontalLayout {
+                // (#close-line-hairline 2026-10-20) 段外包一层 Rectangle，
+                // 内线挂段底（hairline + snap-to-device）—— 高亮设置弹框同款。
+                // 旧的「流内 1px 线段」在 125% 缩放下跨 1.25 设备行，AA 出一条
+                // 发糊的粗线（用户截图「边线粗了些」）。段流 y 是 4 的倍数逻辑
+                // 高（52/139/62 体系不变），snap 后线顶恒落整数设备行。
+                Rectangle {
                     height: 52px;
-                    padding-left: 18px;
-                    padding-right: 12px;
-                    spacing: 9px;
+                    HorizontalLayout {
+                        width: 100%;
+                        height: 100%;
+                        padding-left: 18px;
+                        padding-right: 12px;
+                        spacing: 9px;
                     // (#close-head-left 2026-09-20) **不要**在这里写 alignment:center。
                     // HorizontalLayout 的 alignment 是**主轴(水平)**对齐:即便说明
                     // 文本带了 horizontal-stretch:1,整组「标题+说明+×」仍会被推到
@@ -7011,24 +7046,38 @@ export component AppWindow inherits Window {
                             clicked => { root.confirm-close-open = false; }
                         }
                     }
+                    }
+                    // 头部下沿线：恰 1 设备像素 + 段底 snap（高亮弹框同款）。
+                    Rectangle {
+                        y: Theme.snap-to-device(parent.height) - Theme.hairline();
+                        height: Theme.hairline();
+                        background: Theme.border-subtle;
+                    }
                 }
-                Rectangle { height: 1px; background: Theme.border-subtle; }
 
                 // ---- ② 关闭行为:卡片即操作 ----
-                VerticalLayout {
-                    // (#close-dialog-lines) 固定段高,见头部注释。
-                    // (#close-footer-line-phase 2026-10-10) 段高 139:头部线与
-                    // 页脚线的间隔 = 段高 + 头部线 1px = 140 逻辑 px,取 4 的
-                    // 倍数 —— 1.25/1.5/2 倍 DPI 下乘出来都是整数设备像素,
-                    // 两条线永远落在同一亚像素相位,粗细观感一致。旧值 140
-                    // (间隔 141)在 125% 缩放下间隔 176.25 设备像素,页脚线
-                    // 比头部线偏 1/4 像素相位,发糊显粗(用户截图"页脚顶部
-                    // 横线粗了")。间隙 12 → 11 找出这 1px,勾选行仍 18px。
-                    // 139 = 14 + 勾选行 18 + 间隙 11 + 卡片 82 + 14
+                // (#close-line-hairline 2026-10-20) 段外包 Rectangle，页脚
+                // 上沿线挂本段底（hairline + snap-to-device）。段底绝对 y
+                // = 52 逻辑（4 的倍数，各档 DPI 都是整设备行），线顶恒在
+                // 设备栅格上；原「流内 1px 线段」在 125% 下跨 1.25 行发糊。
+                // (#close-footer-line-phase 2026-10-10) 段高 139 的相位体系
+                // 是流内 1px 线时代的解法（两条线同相位）；线改为独立 snap
+                // 的 hairline 后各自锐利，段高维持 139 不再承担相位职责。
+                // 139 = 14 + 勾选行 18 + 间隙 11 + 卡片 82 + 14
+                Rectangle {
                     height: 139px;
-                    padding-left: 18px; padding-right: 18px;
-                    padding-top: 14px; padding-bottom: 14px;
-                    spacing: 11px;
+                    // 页脚上沿线：恰 1 设备像素 + 段底 snap（高亮弹框同款）。
+                    Rectangle {
+                        y: Theme.snap-to-device(parent.height) - Theme.hairline();
+                        height: Theme.hairline();
+                        background: Theme.border-subtle;
+                    }
+                    VerticalLayout {
+                        width: 100%;
+                        height: 100%;
+                        padding-left: 18px; padding-right: 18px;
+                        padding-top: 14px; padding-bottom: 14px;
+                        spacing: 11px;
                     // 「记住我的选择」必须在卡片上方:卡片点击即执行,勾选要来得及。
                     // (#close-remember-align 2026-10-07) 复选框 14px 固定高在 HL 里
                     // **顶对齐**(文字行高更高),视觉上比文字偏上——包一层
@@ -7240,8 +7289,8 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
+                }
                 // ---- ④ 底部:只留「取消」 ----
-                Rectangle { height: 1px; background: Theme.border-subtle; }
                 HorizontalLayout {
                     // (#close-dialog-lines) 固定段高,见头部注释。
                     height: 62px;

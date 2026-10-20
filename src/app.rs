@@ -355,6 +355,9 @@ fn connect_remote_tab(
         // card shows the protocol instead, which is what distinguishes an RDP
         // session from a VNC one with the same name.
         auth: kind.into(),
+        // (#tab-card-proto 2026-10-21) 卡片首行：远程 tab 的 kind 就是协议
+        // （"rdp"/"vnc"），大写后直出（RDP / VNC 不是可翻译词）。
+        proto: kind.to_uppercase().into(),
         group_name: crate::config::display_group_of(session).into(),
         note: session.note.clone().into(),
         id: tab_id.clone().into(),
@@ -3738,6 +3741,8 @@ fn open_window(
                     host: "".into(),
                     user: "".into(),
                     auth: "".into(),
+                    // (#tab-card-proto) welcome 无会话，卡片只显示名称。
+                    proto: "".into(),
                     group_name: "".into(),
                     note: "".into(),
         id: "welcome".into(),
@@ -9482,6 +9487,18 @@ fn wire_session_callbacks(
                     host: tab_host.into(),
                     user: session.user.clone().into(),
                     auth: session.auth.as_str().into(),
+                    // (#tab-card-proto 2026-10-21) 卡片首行协议：按传输类型直出
+                    // 显示名。串口/本地是普通名词走 i18n；SSH/Telnet/RDP/VNC 是
+                    // 协议缩写，不进翻译表（英文界面也用同一串）。
+                    proto: match session.kind {
+                        SessionKind::Ssh => "SSH",
+                        SessionKind::Serial => t("串口", "Serial"),
+                        SessionKind::Telnet => "Telnet",
+                        SessionKind::Local => t("本地", "Local"),
+                        SessionKind::Rdp => "RDP",
+                        SessionKind::Vnc => "VNC",
+                    }
+                    .into(),
                     group_name: tab_group_name.into(),
                     note: session.note.clone().into(),
                 id: tab_id.clone().into(),
