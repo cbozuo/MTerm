@@ -228,41 +228,62 @@ fn light_white_slots_stay_neutral_grey() {
     }
 }
 
-/// 这次修正同样只许动亮色档 —— 暗色档的白 / 灰 / 亮白在深底上本来就够读，
-/// 压深反而会把加粗白字弄暗。快照取自 #ansi-exempt-slots 之前的 palettes.rs
-/// （git HEAD 时的暗色值；本次改动前后暗色 `ansi16` 应逐值一致）。
+/// 槽 7/15 仍只许亮色档动（#ansi-exempt-slots）；**槽 8 是本轮 #ansi-dark-grey
+/// 的目标**：暗色 14 套原本 1.00~3.66:1（solarized-dark 的 #002B36 与 tbg 同色，
+/// 终端 `ls -l` 的日期列完全不可见），现已统一提到 ≥4.5:1。
+///
+/// 两条纪律一起锁死：
+///   ① 槽 8 必须 ≥4.5:1（用户报的「日期列看不清」）；
+///   ② 槽 8 仍须**弱于槽 7**（辅助信息弱化档，提亮不等于抬成正文）。
+/// 槽 7 / 槽 15 与修正前逐值一致 —— 那两槽在深底上本来就够读。
 #[test]
-fn dark_themes_grey_slots_were_left_alone() {
-    const BEFORE: &[(&str, u32, u32, u32)] = &[
-        //  (id,                槽7,      槽8,      槽15)
-        ("mterm-dark", 0xBCBEC4, 0x6F737A, 0xD4D5D9),
-        ("onedark-dark", 0xABB2BF, 0x5C6370, 0xFFFFFF),
-        ("graphite-dark", 0xEEEEEE, 0x484848, 0xEEEEEE),
-        ("nord-dark", 0xE5E9F0, 0x4C566A, 0xECEFF4),
-        ("catppuccin-dark", 0xBAC2DE, 0x585B70, 0xA6ADC8),
-        ("dracula-dark", 0xF8F8F2, 0x6272A4, 0xFFFFFF),
-        ("rosepine-dark", 0xE0DEF4, 0x6E6A86, 0xE0DEF4),
-        ("everforest-dark", 0xD3C6AA, 0x646E73, 0xDACFB8),
-        ("kanagawa-wave", 0xC8C093, 0x727169, 0xDCD7BA),
-        ("gruvbox-material-dark", 0xD4BE98, 0x5B5856, 0xDBC8A8),
-        ("ayu-mirage", 0xFAFAFA, 0x686868, 0xFFFFFF),
-        ("flexoki-dark", 0xFFFCF0, 0x100F0F, 0xFFFCF0),
-        ("solarized-dark", 0xEEE8D5, 0x002B36, 0xFDF6E3),
-        ("darcula-dark", 0xADADAD, 0x555555, 0xEEEEEE),
+fn dark_grey_slot8_is_readable_and_other_grey_slots_untouched() {
+    const BEFORE: &[(&str, u32, u32)] = &[
+        //  (id,                槽7,      槽15)
+        ("mterm-dark", 0xBCBEC4, 0xD4D5D9),
+        ("onedark-dark", 0xABB2BF, 0xFFFFFF),
+        ("graphite-dark", 0xEEEEEE, 0xEEEEEE),
+        ("nord-dark", 0xE5E9F0, 0xECEFF4),
+        ("catppuccin-dark", 0xBAC2DE, 0xA6ADC8),
+        ("dracula-dark", 0xF8F8F2, 0xFFFFFF),
+        ("rosepine-dark", 0xE0DEF4, 0xE0DEF4),
+        ("everforest-dark", 0xD3C6AA, 0xDACFB8),
+        ("kanagawa-wave", 0xC8C093, 0xDCD7BA),
+        ("gruvbox-material-dark", 0xD4BE98, 0xDBC8A8),
+        ("ayu-mirage", 0xFAFAFA, 0xFFFFFF),
+        ("flexoki-dark", 0xFFFCF0, 0xFFFCF0),
+        ("solarized-dark", 0xEEE8D5, 0xFDF6E3),
+        ("darcula-dark", 0xADADAD, 0xEEEEEE),
     ];
     assert_eq!(BEFORE.len(), 14, "暗色套数变了，色表可能增删了套");
-    for (id, w, g, bw) in BEFORE {
+    for (id, w, bw) in BEFORE {
         let p = pal(id);
         assert!(p.dark, "{id} 应是暗色档");
         for (slot, expect, name) in [
             (SLOT_WHITE, *w, "white"),
-            (SLOT_BRIGHT_BLACK, *g, "brightBlack"),
             (SLOT_BRIGHT_WHITE, *bw, "brightWhite"),
         ] {
             assert_eq!(
                 p.ansi16[slot], expect,
-                "{id} 的暗色 {name} 被改动了 —— #ansi-exempt-slots 只许动亮色档"
+                "{id} 的暗色 {name} 被改动了 —— 只许动槽 8"
             );
         }
+        // ① 槽 8 达标（日期列就吃这一槽）
+        let c8 = contrast(p.ansi16[SLOT_BRIGHT_BLACK], p.tbg);
+        assert!(
+            c8 >= MIN,
+            "{}：ANSI brightBlack 槽8 {} 对 tbg {} 只有 {c8:.2}:1（< {MIN}）—— \
+             终端里 ls -l 的日期列读不出来",
+            p.id,
+            hex(p.ansi16[SLOT_BRIGHT_BLACK]),
+            hex(p.tbg)
+        );
+        // ② 槽 8 仍弱于槽 7（提亮不等于抬成正文档）
+        let c7 = contrast(p.ansi16[SLOT_WHITE], p.tbg);
+        assert!(
+            c8 < c7,
+            "{}：槽8 {c8:.2}:1 不应亮过槽7 {c7:.2}:1（弱化档层级被打乱）",
+            p.id
+        );
     }
 }
