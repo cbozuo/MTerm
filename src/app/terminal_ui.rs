@@ -12,20 +12,28 @@ pub(super) fn history_model(store: &ConfigStore) -> ModelRc<SharedString> {
 /// 预设/自定义规则模型的公共取色入口：ANSI 槽位 → 当前主题实色。
 /// (#hl-settings-hifi) 弹框里的色点必须与终端里真正染上去的颜色同源，否则
 /// 「列表里是青的、终端里是黄的」。用与 presentation 同一张主题色表。
+/// (#hl-preset-rev1) 预设色点改按 rendered_slot 取色：终端把 bold+基色
+/// 渲染成 bright 档，旧实现显示槽 i 原色，normal≠bright 的主题上色点
+/// 与终端渲染色有肉眼偏差。
 fn ansi_dot(idx: u8, dark: bool, pal: &crate::theme::palettes::Palette) -> slint::Color {
     let v = pal.ansi16[idx as usize % 16];
     let _ = dark; // ANSI16 本身即分暗/亮两套表（palette 已按明暗选好）
     slint::Color::from_rgb_u8(((v >> 16) & 0xFF) as u8, ((v >> 8) & 0xFF) as u8, (v & 0xFF) as u8)
 }
 
-/// 自定义规则色点：`#RRGGBB` 绝对色（取色盘/48 色卡给什么就是什么）。
-fn rule_dot(color: &str) -> slint::Color {
-    match crate::picker::parse_hex(color) {
-        Some(v) => slint::Color::from_rgb_u8(
+/// 自定义规则色点：`#RRGGBB` 绝对色。(#hl-rule-guard) 与渲染端过**同一守卫**
+/// （theme::fit_rule_fg，当前主题 tbg、3:1）—— 色点即终端实色，换主题两端
+/// 同时自适应；用户在暗底上从 47 色卡选出的隐身色，色点先行示警。
+fn rule_dot(color: &str, pal: &crate::theme::palettes::Palette) -> slint::Color {
+    let rgb = |v: u32| {
+        slint::Color::from_rgb_u8(
             ((v >> 16) & 0xFF) as u8,
             ((v >> 8) & 0xFF) as u8,
             (v & 0xFF) as u8,
-        ),
+        )
+    };
+    match crate::picker::parse_hex(color) {
+        Some(v) => rgb(crate::theme::fit_rule_fg(v, pal.tbg, 3.0)),
         // 旧配置里的语义名（red/yellow…）按原 ANSI 槽位落点
         None => ansi_dot(
             match crate::terminal::parse_color(color) {
@@ -53,7 +61,7 @@ pub(super) fn highlight_preset_model(store: &ConfigStore) -> ModelRc<HighlightPr
             name: t(p.name_zh, p.name_en).into(),
             group: t(p.group_zh, p.group_en).into(),
             pattern: p.pattern.into(),
-            dot: ansi_dot(p.ansi, dark, pal),
+            dot: ansi_dot(crate::terminal::rendered_slot(p.ansi, p.bold), dark, pal),
             rainbow: false,
             special: "".into(),
             enabled: crate::terminal::preset_enabled(
@@ -85,8 +93,11 @@ pub(super) fn highlight_preset_model(store: &ConfigStore) -> ModelRc<HighlightPr
     ModelRc::from(Rc::new(VecModel::from(rows)))
 }
 
-/// 「自定义」页模型：色点是绝对色（#RRGGBB 或旧语义名解析后的 RGB）。
+/// 「自定义」页模型：色点是绝对色（#RRGGBB 或旧语义名解析后的 RGB），
+/// 过当前主题的规则守卫（与终端渲染同源）。
 pub(super) fn highlight_custom_model(store: &ConfigStore) -> ModelRc<HighlightCustomItem> {
+    let dark = theme_pref_is_dark(store);
+    let pal = crate::theme::palette_or_default(&store.theme(), dark);
     let rows: Vec<HighlightCustomItem> = store
         .output_highlight_rules()
         .iter()
@@ -98,7 +109,7 @@ pub(super) fn highlight_custom_model(store: &ConfigStore) -> ModelRc<HighlightCu
             },
             pattern: r.pattern.clone().into(),
             hex: crate::config::normalize_highlight_color(&r.color).into(),
-            dot: rule_dot(&r.color),
+            dot: rule_dot(&r.color, pal),
             enabled: r.enabled && store.output_highlight_enabled(),
         })
         .collect();

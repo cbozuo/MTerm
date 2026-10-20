@@ -290,6 +290,86 @@ pub fn fit_contrast(fg: u32, bg: u32, target: f64) -> u32 {
     if darken { 0x100000 } else { 0xFFFFF0 }
 }
 
+/// (#hl-rule-guard 2026-10-21) 自定义高亮规则色的终端前景守卫：**保持色相/饱和**，
+/// 只沿明度轴收敛到 `target` 对比度。与 `fit_contrast`（线性插到黑白端、会洗
+/// 色相）不同，这条走 HSL 细步（1024 档），停下时即「刚好达标的最亮/最暗一档」
+/// —— 深底提亮、浅底压暗双向。渲染端（presentation::style_run）与设置弹框
+/// 色点（terminal_ui::rule_dot）共用同一函数，保证「色点 = 终端实色」且换主题
+/// 自适应；用户在暗底主题下从 47 色卡选出的隐身色（carbon #424242 对
+/// mterm-dark 只有 1.74:1）在两端同时被拉回可读。
+pub fn fit_rule_fg(fg: u32, bg: u32, target: f64) -> u32 {
+    if contrast(fg, bg) >= target {
+        return fg;
+    }
+    let (h, s, l0) = rgb_to_hsl(fg);
+    // 方向只由底色决定：底暗（亮度 <0.5）提亮、底亮压暗 —— 始终远离底色。
+    // 不能用「bg 亮于 fg」判：fg 已亮于暗底但对比不足时（#651FFF on
+    // mterm-dark 2.58:1）那个判据会把色往黑压、越压越糊。
+    let lighten = luminance(bg) < 0.5;
+    // 与 presentation::darken_light_fg 相同的细步纪律：粗步长会把饱和色一路
+    // 推到纯黑/纯白、丢掉色相（#4DC4A8 曾被渲成 #000000）。
+    const STEPS: u32 = 1024;
+    let mut best = if lighten { 0xFFFFF0 } else { 0x100F0F };
+    for i in 1..=STEPS {
+        let t = i as f32 / STEPS as f32;
+        let new_l = if lighten { l0 + (1.0 - l0) * t } else { l0 * (1.0 - t) };
+        let cand = hsl_to_rgb(h, s, new_l);
+        if contrast(cand, bg) >= target {
+            return cand;
+        }
+        best = cand;
+    }
+    best
+}
+
+fn rgb_to_hsl(hex: u32) -> (f32, f32, f32) {
+    let r = ((hex >> 16) & 0xFF) as f32 / 255.0;
+    let g = ((hex >> 8) & 0xFF) as f32 / 255.0;
+    let b = (hex & 0xFF) as f32 / 255.0;
+    let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
+    let l = (mx + mn) / 2.0;
+    if (mx - mn).abs() < 1e-6 {
+        return (0.0, 0.0, l);
+    }
+    let d = mx - mn;
+    let s = if l > 0.5 { d / (2.0 - mx - mn) } else { d / (mx + mn) };
+    let h = if (mx - r).abs() < 1e-6 {
+        (g - b) / d + if g < b { 6.0 } else { 0.0 }
+    } else if (mx - g).abs() < 1e-6 {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    } / 6.0;
+    (h, s, l)
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> u32 {
+    if s < 1e-6 {
+        let v = (l * 255.0).round() as u32;
+        return (v << 16) | (v << 8) | v;
+    }
+    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    let p = 2.0 * l - q;
+    let hue = |mut t: f32| -> f32 {
+        if t < 0.0 { t += 1.0; }
+        if t > 1.0 { t -= 1.0; }
+        if t < 1.0 / 6.0 {
+            return p + (q - p) * 6.0 * t;
+        }
+        if t < 0.5 {
+            return q;
+        }
+        if t < 2.0 / 3.0 {
+            return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+        }
+        p
+    };
+    let r = (hue(h + 1.0 / 3.0) * 255.0).round() as u32;
+    let g = (hue(h) * 255.0).round() as u32;
+    let b = (hue(h - 1.0 / 3.0) * 255.0).round() as u32;
+    (r << 16) | (g << 8) | b
+}
+
 /// 计算最终生效的强调色：跟随 → 主题自带；覆盖 → 先做 3:1 守卫
 /// （过暗提亮、过亮压暗），并把实际生效值回传给设置页提示。
 pub fn resolve_accent(p: &Palette, mode: AccentCfg) -> (u32, u32) {
@@ -516,9 +596,111 @@ mod tests {
         assert!(luminance(fitted2) < luminance(0xFFC53D));
     }
 
+    /// (#hl-rule-guard) 自定义高亮规则色的守卫契约：47 色预设卡（取色 UI 复用
+    /// 强调色那套）× 28 套主题终端底，全部拉回 ≥3:1；且只调明度、色相不失
+    /// （通道极差 >8，防「守卫把彩色字洗成黑白」）。暗色模式过去不设防，
+    /// carbon #424242 对 mterm-dark 只有 1.74:1 —— 用户一点就配出隐身高亮。
     #[test]
-    fn mterm_accent_survives_guard() {
-        // MTerm 套的强调色是**门面定档**青 #1FC8B4（#theme-dedupe 2026-10-15 起，
+    fn rule_guard_covers_every_preset_card_on_every_terminal_bg() {
+        for pal in PALETTES.iter() {
+            for &(_, _, raw) in palettes::ACCENT_PRESETS {
+                let fitted = fit_rule_fg(raw, pal.tbg, 3.0);
+                let c = contrast(fitted, pal.tbg);
+                assert!(
+                    c >= 3.0,
+                    "{}: 卡色 #{raw:06X} → #{fitted:06X} 对 tbg #{:06X} 只有 {c:.2}:1",
+                    pal.id,
+                    pal.tbg
+                );
+                let spread = |v: u32| {
+                    let r = (v >> 16) & 0xFF;
+                    let g = (v >> 8) & 0xFF;
+                    let b = v & 0xFF;
+                    r.max(g).max(b) - r.min(g).min(b)
+                };
+                // 已是灰族的卡色（carbon/lead 等）本来就没有色相，跳过色相断言
+                if spread(raw) > 8 {
+                    assert!(
+                        spread(fitted) > 8,
+                        "{}: 卡色 #{raw:06X} 守卫后 #{fitted:06X} 色相被抹掉",
+                        pal.id
+                    );
+                }
+            }
+        }
+        // 已达标色原样返回（守卫不做无谓改色）
+        assert_eq!(fit_rule_fg(0xFFFFFF, 0x181A1D, 3.0), 0xFFFFFF);
+    }
+
+    /// (#ansi-batch3 2026-10-21) 批次三验收线固化为断言，防数据回退：
+    /// * 全表彩色槽 ≥4.5（A 案压齐）；
+    /// * 亮档 0/7/8/15、暗档 8 同判；
+    /// * 暗档 0 深于 tbg（TUI 显式黑底要可见，禁与界面底同值）；
+    /// * 门面青槽与 accent 拉开 ≥15° 且对「划选背景（accent 40% on tbg）」
+    ///   合成底 ≥3:1 —— 划选一段青字（ls 的 symlink、高亮预设的 time/num）
+    ///   不能再浑成一团；
+    /// * 亮档 ansi16bg 必须存在（TUI 背景填充走浅彩表，修「亮主题 TUI 黑底
+    ///   白字 1.0~1.5:1」）；
+    /// * group24 同明暗组内不得逐位相同（26 套派生自各自 ac 色相起环）。
+    #[test]
+    fn ansi_batch3_contrast_and_decoupling_hold() {
+        let sel_bg = |p: &palettes::Palette| -> u32 {
+            // accent 40% 叠 tbg 的合成底（按通道混色）
+            let (ar, ag, ab) = ((p.ac >> 16) & 0xFF, (p.ac >> 8) & 0xFF, p.ac & 0xFF);
+            let (tr, tg, tb) = ((p.tbg >> 16) & 0xFF, (p.tbg >> 8) & 0xFF, p.tbg & 0xFF);
+            (((tr as f64 + (ar as f64 - tr as f64) * 0.4).round() as u32) << 16)
+                | (((tg as f64 + (ag as f64 - tg as f64) * 0.4).round() as u32) << 8)
+                | ((tb as f64 + (ab as f64 - tb as f64) * 0.4).round() as u32)
+        };
+        for p in PALETTES.iter() {
+            for i in [1usize, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14] {
+                let c = contrast(p.ansi16[i], p.tbg);
+                assert!(c >= 4.5, "{}: a{i}={:06X} on tbg 只有 {c:.2}", p.id, p.ansi16[i]);
+            }
+            if !p.dark {
+                for i in [0usize, 7, 8, 15] {
+                    let c = contrast(p.ansi16[i], p.tbg);
+                    assert!(c >= 4.5, "{}: 亮档 a{i} 只有 {c:.2}", p.id);
+                }
+                assert!(p.ansi16bg.is_some(), "{}: 亮档缺 ansi16bg（TUI 背景填充表）", p.id);
+            } else {
+                let c = contrast(p.ansi16[8], p.tbg);
+                assert!(c >= 4.5, "{}: 暗档 a8 只有 {c:.2}", p.id);
+                assert!(
+                    luminance(p.ansi16[0]) < luminance(p.tbg) * 0.9,
+                    "{}: a0={:06X} 不比 tbg={:06X} 深（TUI 黑底不可见）",
+                    p.id, p.ansi16[0], p.tbg
+                );
+                assert_ne!(p.ansi16[0], p.tbg, "{}: a0 与 tbg 同值", p.id);
+            }
+        }
+        // 门面解耦判据
+        for pid in ["mterm-dark", "mterm-light"] {
+            let p = find(pid).unwrap();
+            let dh = (hue_deg(p.ansi16[6]) - hue_deg(p.ac)).abs().min(360.0 - (hue_deg(p.ansi16[6]) - hue_deg(p.ac)).abs());
+            assert!(dh >= 15.0, "{pid}: a6 与 ac 色相差 {dh:.0}° <15°（划选会浑）");
+            let sel = sel_bg(p);
+            for i in [6usize, 14] {
+                let c = contrast(p.ansi16[i], sel);
+                assert!(c >= 3.0, "{pid}: a{i} 对划选合成底 #{sel:06X} 只有 {c:.2}",);
+            }
+        }
+        // group24 同明暗组唯一
+        for group in [true, false] {
+            let mut seen: Vec<&[u32; 24]> = Vec::new();
+            for p in PALETTES.iter().filter(|p| p.dark == group) {
+                assert!(
+                    !seen.iter().any(|g| *g == &p.group24),
+                    "{} 的 group24 与此前某套逐位相同（派生起相回潮）",
+                    p.id
+                );
+                seen.push(&p.group24);
+            }
+        }
+    }
+
+    #[test]
+    fn mterm_accent_survives_guard() {        // MTerm 套的强调色是**门面定档**青 #1FC8B4（#theme-dedupe 2026-10-15 起，
         // terminal.ansiCyan 同步；此前为上游青 #2AACB8）：在 panel #181A1D 上
         // 对比约 8:1 ≥ 3.0，故「跟随主题」时 fit_contrast 原样返回、不产生色相
         // 漂移。守卫若改色，说明该套的 panel/ac 被改坏了。

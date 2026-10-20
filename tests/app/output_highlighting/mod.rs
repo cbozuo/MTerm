@@ -44,6 +44,11 @@ fn custom_rule(
     }
 }
 
+/// 守卫口径与渲染端一致：固定用默认暗主题（mterm-dark 的 tbg）。
+fn test_pal() -> &'static crate::theme::palettes::Palette {
+    crate::theme::palette_or_default("", true)
+}
+
 /// 全预设开 + 无自定义
 fn all_presets() -> Vec<CompiledOutputRule> {
     compile_highlight_rules(true, &[], &[])
@@ -56,6 +61,7 @@ fn log_levels_are_colored_case_insensitively_and_bolded() {
         vec![plain_run("request ERROR failed", 0)],
         &all_presets(),
         false,
+        test_pal(),
     );
     let hits: Vec<&HistSpan> = runs
         .iter()
@@ -74,6 +80,7 @@ fn log_levels_are_colored_case_insensitively_and_bolded() {
         vec![plain_run(r#"{"level":"warn","message":"disk nearly full"}"#, 4)],
         &all_presets(),
         false,
+        test_pal(),
     );
     let level = runs
         .iter()
@@ -87,7 +94,7 @@ fn log_levels_are_colored_case_insensitively_and_bolded() {
         ("information", 4),
         ("caution", 3),
     ] {
-        let runs = highlight_plain_output(vec![plain_run(word, 0)], &all_presets(), false);
+        let runs = highlight_plain_output(vec![plain_run(word, 0)], &all_presets(), false, test_pal());
         let hit = runs
             .iter()
             .find(|r| r.text == word)
@@ -98,23 +105,25 @@ fn log_levels_are_colored_case_insensitively_and_bolded() {
 
 #[test]
 fn structured_forms_keep_their_ansi_slots() {
-    // 具体形态优先于宽泛数字：日期/IP/UUID/路径各自的槽位
+    // 具体形态优先于宽泛数字：日期/IP/UUID/路径各自的槽位。
+    // (#hl-bold-tier) 标识/形态类全部细体（normal 档原槽）—— 加粗档只留给
+    // 日志四级，同色相靠粗细+明暗区分语义。
     let cases: &[(&str, u8)] = &[
         ("http://example.com/a", 4),           // url
         ("192.168.0.1", 2),                    // ipv4
         ("fe80::1", 6),                        // ipv6
-        ("aa:bb:cc:dd:ee:ff", 12),             // mac
-        ("user@example.com", 5),               // email
+        ("aa:bb:cc:dd:ee:ff", 12),             // mac（ipv6 收紧到恰好 8 组后完整归位）
+        ("user@example.com", 13),              // email（洋红细体档）
         ("2026-07-14", 3),                     // iso 日期
         ("Jul 14 10:20:30", 3),                // syslog 日期（月份先行）
-        ("550e8400-e29b-41d4-a716-446655440000", 9), // uuid
-        ("12.5 GB", 12),                       // 大小
+        ("550e8400-e29b-41d4-a716-446655440000", 15), // uuid（(#hl-preset-rev1) 换出红色档）
+        ("12.5 GB", 4),                        // 大小（蓝细体档）
         ("/var/log/syslog", 5),                // 路径
         ("+-------+------+", 8),               // 表格分隔线
         ("port 8080 up", 6),                   // 数字垫底
     ];
     for (text, idx) in cases {
-        let runs = highlight_plain_output(vec![plain_run(text, 0)], &all_presets(), false);
+        let runs = highlight_plain_output(vec![plain_run(text, 0)], &all_presets(), false, test_pal());
         let hit = runs
             .iter()
             .find(|r| matches!(r.fg, vt100::Color::Idx(_)))
@@ -125,7 +134,7 @@ fn structured_forms_keep_their_ansi_slots() {
             hit.fg,
             hit.text
         );
-        assert!(hit.bold, "{text:?} should be bold");
+        assert!(!hit.bold, "{text:?} 标识类应为细体（加粗档留给日志四级）");
     }
 }
 
@@ -152,9 +161,14 @@ fn every_preset_matches_its_sample() {
         ("debug", "level debug here", "debug"),
         ("ok", "result success", "success"),
         ("size", "Mem: 5.9Gi free", "5.9Gi"),
+        ("duration", "took 123ms total", "123ms"),
+        ("percent", "used 72% ok", "72%"),
+        ("hex", "addr 0xDEADBEEF x", "0xDEADBEEF"),
         ("path", "see /var/log/syslog now", "/var/log/syslog"),
+        ("semver", "bump v1.2.3 now", "v1.2.3"),
         ("num", "port 8080 up", "8080"),
         ("rule", "+-------+------+", "+-------+------+"),
+        ("diff", "+++ b/src/main.rs", "+++ b/src/main.rs"),
     ];
     assert_eq!(
         cases.len(),
@@ -173,7 +187,7 @@ fn every_preset_matches_its_sample() {
             .map(|p| p.id.to_string())
             .collect();
         let rules = compile_highlight_rules(true, &disabled, &[]);
-        let runs = highlight_plain_output(vec![plain_run(line, 0)], &rules, false);
+        let runs = highlight_plain_output(vec![plain_run(line, 0)], &rules, false, test_pal());
         let hit = runs
             .iter()
             .find(|r| r.text == *want)
@@ -184,7 +198,8 @@ fn every_preset_matches_its_sample() {
             hit.fg,
             preset.ansi
         );
-        assert!(hit.bold, "{id}: 命中段应加粗");
+        // (#hl-bold-tier) 加粗分层：染出的粗细必须与表声明一致
+        assert_eq!(hit.bold, preset.bold, "{id}: 粗细与表声明不符");
     }
 }
 
@@ -196,6 +211,7 @@ fn iso_timestamp_stays_a_single_span() {
         vec![plain_run("2026-10-20 15:46:40.583 INFO x", 0)],
         &all_presets(),
         false,
+        test_pal(),
     );
     let stamps: Vec<&HistSpan> = runs
         .iter()
@@ -210,6 +226,7 @@ fn iso_timestamp_stays_a_single_span() {
         vec![plain_run("at 2026-10-20T15:46:40Z ok", 0)],
         &all_presets(),
         false,
+        test_pal(),
     );
     let hit = runs
         .iter()
@@ -218,7 +235,7 @@ fn iso_timestamp_stays_a_single_span() {
     assert!(matches!(hit.fg, vt100::Color::Idx(3)));
 
     // 纯时间（无日期前缀）仍归 time 规则
-    let runs = highlight_plain_output(vec![plain_run("at 15:46:40 ok", 0)], &all_presets(), false);
+    let runs = highlight_plain_output(vec![plain_run("at 15:46:40 ok", 0)], &all_presets(), false, test_pal());
     let hit = runs
         .iter()
         .find(|r| r.text == "15:46:40")
@@ -230,7 +247,7 @@ fn iso_timestamp_stays_a_single_span() {
 fn master_switch_off_leaves_everything_untouched() {
     assert!(compile_highlight_rules(false, &[], &[]).is_empty());
     let run = plain_run("ERROR 192.168.0.1 /var/log/x", 0);
-    let runs = highlight_plain_output(vec![run], &[], false);
+    let runs = highlight_plain_output(vec![run], &[], false, test_pal());
     assert_eq!(runs.len(), 1);
     assert!(matches!(runs[0].fg, vt100::Color::Default));
     assert!(!runs[0].bold);
@@ -239,18 +256,18 @@ fn master_switch_off_leaves_everything_untouched() {
 #[test]
 fn disabled_preset_is_skipped() {
     let rules = compile_highlight_rules(true, &["err".into()], &[]);
-    let runs = highlight_plain_output(vec![plain_run("request ERROR failed", 0)], &rules, false);
+    let runs = highlight_plain_output(vec![plain_run("request ERROR failed", 0)], &rules, false, test_pal());
     assert_eq!(runs.len(), 1);
     assert!(matches!(runs[0].fg, vt100::Color::Default));
     // 其余预设照旧
-    let runs = highlight_plain_output(vec![plain_run("192.168.0.1", 0)], &rules, false);
+    let runs = highlight_plain_output(vec![plain_run("192.168.0.1", 0)], &rules, false, test_pal());
     assert!(matches!(runs[0].fg, vt100::Color::Idx(2)));
 }
 
 #[test]
 fn custom_rule_wins_over_preset_and_is_case_insensitive() {
     let rules = compile_highlight_rules(true, &[], &[custom_rule("error", false, false, false, "green")]);
-    let runs = highlight_plain_output(vec![plain_run("ERROR then error", 0)], &rules, false);
+    let runs = highlight_plain_output(vec![plain_run("ERROR then error", 0)], &rules, false, test_pal());
     let hits: Vec<&HistSpan> = runs
         .iter()
         .filter(|run| matches!(run.fg, vt100::Color::Idx(10)))
@@ -268,7 +285,7 @@ fn custom_regex_whole_line_does_not_overwrite_ansi() {
         compile_highlight_rules(true, &[], &[custom_rule("timeout|denied", true, false, true, "magenta")]);
     let mut ansi = plain_run(" ANSI", 18);
     ansi.fg = vt100::Color::Idx(2);
-    let runs = highlight_plain_output(vec![plain_run("request timeout   ", 0), ansi], &rules, false);
+    let runs = highlight_plain_output(vec![plain_run("request timeout   ", 0), ansi], &rules, false, test_pal());
     assert!(matches!(runs[0].fg, vt100::Color::Idx(13)));
     assert!(runs[0].bold);
     // 程序自己上过色的 run 永远不碰
@@ -280,7 +297,7 @@ fn custom_regex_whole_line_does_not_overwrite_ansi() {
 fn existing_ansi_styles_are_preserved() {
     let mut coloured = plain_run("ERROR", 0);
     coloured.fg = vt100::Color::Idx(2);
-    let runs = highlight_plain_output(vec![coloured], &all_presets(), false);
+    let runs = highlight_plain_output(vec![coloured], &all_presets(), false, test_pal());
     assert_eq!(runs.len(), 1);
     assert!(matches!(runs[0].fg, vt100::Color::Idx(2)));
     assert!(!runs[0].bold);
@@ -292,7 +309,7 @@ fn custom_unicode_match_preserves_terminal_grid_columns() {
     let text = "前缀错误 done";
     let mut run = plain_run(text, 0);
     run.cells = text_cell_width(text);
-    let runs = highlight_plain_output(vec![run], &rules, false);
+    let runs = highlight_plain_output(vec![run], &rules, false, test_pal());
     let hit = runs
         .iter()
         .find(|run| run.text == "错误")
@@ -303,7 +320,7 @@ fn custom_unicode_match_preserves_terminal_grid_columns() {
 
 #[test]
 fn path_preset_colors_only_the_path_itself() {
-    let runs = highlight_plain_output(vec![plain_run("see /var/log/syslog now", 0)], &all_presets(), false);
+    let runs = highlight_plain_output(vec![plain_run("see /var/log/syslog now", 0)], &all_presets(), false, test_pal());
     let hit = runs
         .iter()
         .find(|r| matches!(r.fg, vt100::Color::Idx(5)))
@@ -313,14 +330,14 @@ fn path_preset_colors_only_the_path_itself() {
     // 前置空白不在染色区间里（拆出的前段保持默认色）
     assert!(runs.iter().any(|r| r.text == "see " && matches!(r.fg, vt100::Color::Default)));
     // 没有斜杠的单词不算路径
-    let runs = highlight_plain_output(vec![plain_run("syslog", 0)], &all_presets(), false);
+    let runs = highlight_plain_output(vec![plain_run("syslog", 0)], &all_presets(), false, test_pal());
     assert!(matches!(runs[0].fg, vt100::Color::Default));
 }
 
 #[test]
 fn rainbow_parens_cycle_by_nesting_depth() {
     // f(g(x), h(y))：外层红 / 内层橙，闭括号与对应开括号同色
-    let runs = highlight_plain_output(vec![plain_run("f(g(x), h(y))", 0)], &[], true);
+    let runs = highlight_plain_output(vec![plain_run("f(g(x), h(y))", 0)], &[], true, test_pal());
     let parens: Vec<&HistSpan> = runs
         .iter()
         .filter(|r| matches!(r.text.as_str(), "(" | ")"))
@@ -345,6 +362,7 @@ fn rainbow_colors_square_brackets_with_presets_on() {
         vec![plain_run("[INFO] 步骤1/2：停止现有服务", 0)],
         &all_presets(),
         true,
+        test_pal(),
     );
     let opens: Vec<&HistSpan> = runs.iter().filter(|r| r.text == "[").collect();
     assert!(!opens.is_empty(), "`[` should be split out by the rainbow pass");
@@ -364,13 +382,13 @@ fn rainbow_colors_square_brackets_with_presets_on() {
 fn rainbow_ignores_bold_but_still_skips_coloured_runs() {
     let mut bold = plain_run("[INFO] 步骤1/2", 0);
     bold.bold = true;
-    let runs = highlight_plain_output(vec![bold], &[], true);
+    let runs = highlight_plain_output(vec![bold], &[], true, test_pal());
     let open = runs.iter().find(|r| r.text == "[").expect("bold run should still get rainbow");
     assert!(matches!(open.fg, vt100::Color::Rgb(0xF7, 0x54, 0x64)));
 
     let mut coloured = plain_run("[INFO] 步骤1/2", 0);
     coloured.fg = vt100::Color::Idx(2);
-    let runs = highlight_plain_output(vec![coloured], &[], true);
+    let runs = highlight_plain_output(vec![coloured], &[], true, test_pal());
     assert!(
         runs.iter().all(|r| r.text != "["),
         "程序自己上过色的 run 不能被拆括号"
@@ -401,7 +419,7 @@ fn alternate_screen_does_not_add_highlight_colors() {
     assert!(matches!(level.fg, vt100::Color::Default));
     assert!(!level.bold);
     // 显式喂给引擎也不会染：alt 屏的文本由 render 分支根本不进引擎
-    let runs = highlight_plain_output(runs, &[], false);
+    let runs = highlight_plain_output(runs, &[], false, test_pal());
     assert!(matches!(runs[0].fg, vt100::Color::Default));
 }
 

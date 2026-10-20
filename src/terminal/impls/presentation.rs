@@ -9,20 +9,27 @@ use crate::ui::TermSpan;
 /// 只能染剩余部分。`whole_line` 规则（自定义整行 / 表格分隔线）是「任一
 /// run 命中即染整行」。`rainbow` 开时最后走彩虹括号通道（按括号层级循环
 /// 着色，只染剩下的括号字符）。
+///
+/// (#hl-rule-guard 2026-10-21) `pal` 参与守卫：规则的绝对 RGB（自定义规则 /
+/// 彩虹括号）在落到主题终端底之前过 `theme::fit_rule_fg`（保色相、3:1）——
+/// 只作用于**本地规则色**，远端程序发的真彩/256 色照旧直通（那是尊重远端
+/// 本意的惯例，不适用本地用户选色）。ANSI 槽位色（Idx）是主题自己的表，
+/// 已由 `_meta.ansi_check` 守过，不重复处理。
 pub(crate) fn highlight_plain_output(
     runs: Vec<HistSpan>,
     rules: &[CompiledOutputRule],
     rainbow: bool,
+    pal: &crate::theme::palettes::Palette,
 ) -> Vec<HistSpan> {
     if rules.is_empty() && !rainbow {
         return runs;
     }
     let mut runs = runs;
     for rule in rules {
-        apply_rule(&mut runs, rule);
+        apply_rule(&mut runs, rule, pal);
     }
     if rainbow {
-        apply_rainbow_parens(&mut runs);
+        apply_rainbow_parens(&mut runs, pal);
     }
     runs
 }
@@ -48,12 +55,26 @@ fn is_rainbow_ok(run: &HistSpan) -> bool {
         && !run.inverse
 }
 
-fn style_run(run: &mut HistSpan, color: RuleColor) {
+fn style_run(run: &mut HistSpan, color: RuleColor, pal: &crate::theme::palettes::Palette, bold: bool) {
     run.fg = match color {
         RuleColor::Idx(i) => vt100::Color::Idx(i),
-        RuleColor::Rgb(r, g, b) => vt100::Color::Rgb(r, g, b),
+        RuleColor::Rgb(r, g, b) => {
+            // (#hl-rule-guard) 本地规则色过守卫：暗底提亮、亮底压暗，保色相。
+            let fitted = crate::theme::fit_rule_fg(
+                ((r as u32) << 16) | ((g as u32) << 8) | b as u32,
+                pal.tbg,
+                3.0,
+            );
+            vt100::Color::Rgb(
+                ((fitted >> 16) & 0xFF) as u8,
+                ((fitted >> 8) & 0xFF) as u8,
+                (fitted & 0xFF) as u8,
+            )
+        }
     };
-    run.bold = true;
+    // (#hl-bold-tier) 日志级加粗（渲染端 bold+基色 → bright 档）；标识类细体
+    // 走 normal 槽 —— 同色相靠粗细+明暗双维度区分语义。
+    run.bold = bold;
 }
 
 /// 一条规则的命中区间（字节）。`group > 0` 时只取该捕获组
@@ -74,7 +95,7 @@ fn rule_match_spans(rule: &CompiledOutputRule, text: &str) -> Vec<(usize, usize)
     }
 }
 
-fn apply_rule(runs: &mut Vec<HistSpan>, rule: &CompiledOutputRule) {
+fn apply_rule(runs: &mut Vec<HistSpan>, rule: &CompiledOutputRule, pal: &crate::theme::palettes::Palette) {
     if rule.whole_line {
         let hit = runs
             .iter()
@@ -82,7 +103,7 @@ fn apply_rule(runs: &mut Vec<HistSpan>, rule: &CompiledOutputRule) {
         if hit {
             for run in runs.iter_mut() {
                 if is_plain_run(run) {
-                    style_run(run, rule.color);
+                    style_run(run, rule.color, pal, rule.bold);
                 }
             }
         }
@@ -102,15 +123,20 @@ fn apply_rule(runs: &mut Vec<HistSpan>, rule: &CompiledOutputRule) {
         if spans.is_empty() {
             next.push(run);
         } else {
-            next.extend(split_run(run, &spans));
+            next.extend(split_run(run, &spans, pal, rule.bold));
         }
     }
     *runs = next;
 }
 
-/// 把 run 按给定字节区间切开：区间内按各自颜色加粗，区间外保持原样。
-/// 列号/格数按显示宽度重算（宽字符下字节数 ≠ 字符数 ≠ 格数）。
-fn split_run(run: HistSpan, spans: &[(usize, usize, RuleColor)]) -> Vec<HistSpan> {
+/// 把 run 按给定字节区间切开：区间内按各自颜色着色（`emph` = 是否加粗），
+/// 区间外保持原样。列号/格数按显示宽度重算（宽字符下字节数 ≠ 字符数 ≠ 格数）。
+fn split_run(
+    run: HistSpan,
+    spans: &[(usize, usize, RuleColor)],
+    pal: &crate::theme::palettes::Palette,
+    emph: bool,
+) -> Vec<HistSpan> {
     let mut out = Vec::with_capacity(spans.len() * 2 + 1);
     let mut byte_pos = 0usize;
     let mut col = run.col;
@@ -133,7 +159,7 @@ fn split_run(run: HistSpan, spans: &[(usize, usize, RuleColor)]) -> Vec<HistSpan
         let cells = text_cell_width(text);
         let mut hit = run.clone();
         hit.text = text.to_string();
-        style_run(&mut hit, color);
+        style_run(&mut hit, color, pal, emph);
         hit.col = col;
         hit.cells = cells;
         out.push(hit);
@@ -170,7 +196,7 @@ const RAINBOW_CLOSERS: [char; 3] = [')', ']', '}'];
 /// 彩虹括号：对**还没被认领**的括号字符按嵌套层级循环着色（只染括号本身，
 /// 不染括号里的内容）。深度栈按行跨 run 延续 —— 同一行的开括号可能在
 /// 前一个 run、闭括号在后一个 run。
-fn apply_rainbow_parens(runs: &mut Vec<HistSpan>) {
+fn apply_rainbow_parens(runs: &mut Vec<HistSpan>, pal: &crate::theme::palettes::Palette) {
     // 栈里存 opener 的索引（0..3），只用来判空/弹栈；颜色按栈深取。
     let mut stack: Vec<usize> = Vec::new();
     let taken = std::mem::take(runs);
@@ -204,7 +230,7 @@ fn apply_rainbow_parens(runs: &mut Vec<HistSpan>) {
                 spans.push((idx, idx + ch.len_utf8(), RuleColor::Rgb(r, g, b)));
             }
         }
-        next.extend(split_run(run, &spans));
+        next.extend(split_run(run, &spans, pal, true));
     }
     *runs = next;
 }

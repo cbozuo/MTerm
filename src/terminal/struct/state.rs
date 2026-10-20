@@ -81,6 +81,8 @@ pub(crate) struct CompiledOutputRule {
     pub(crate) color: RuleColor,
     /// 只高亮第几个捕获组（0 = 整个匹配）；path 预设用前置组占位，取 2。
     pub(crate) group: usize,
+    /// (#hl-bold-tier) 该规则命中是否加粗（日志级加粗、标识类细体）。
+    pub(crate) bold: bool,
 }
 
 pub(crate) type TermBufferHandle = Arc<Mutex<TermBuffer>>;

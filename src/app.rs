@@ -3167,6 +3167,45 @@ fn open_window(
             w.set_highlight_rule_status("".into());
         });
     }
+    // (#hl-rule-edit) 原地改规则：与添加走同一校验（正则可编译）+ 归一化，
+    // 顺序/优先级不动 —— 之前只能删了重加，优先级会被重置到队尾。
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let bufs = bufs.clone();
+        window.on_update_highlight_rule(
+            move |index: i32, name: SharedString, pattern: SharedString, color: SharedString| {
+                let pattern = pattern.trim().to_string();
+                let Some(w) = weak.upgrade() else {
+                    return false;
+                };
+                if let Err(message) = validate_highlight_rule(&pattern) {
+                    w.set_highlight_rule_status(message.into());
+                    return false;
+                }
+                {
+                    let mut s = store.borrow_mut();
+                    s.update_output_highlight_rule(
+                        index.max(0) as usize,
+                        OutputHighlightRule {
+                            name: name.trim().to_string(),
+                            pattern,
+                            regex: true,
+                            case_sensitive: false,
+                            whole_line: false,
+                            color: color.to_string(),
+                            enabled: true,
+                        },
+                    );
+                    let _ = s.save();
+                    apply_highlight_rules(&w, &bufs, &s);
+                    w.set_highlight_customs(highlight_custom_model(&s));
+                }
+                w.set_highlight_rule_status("".into());
+                true
+            },
+        );
+    }
     {
         let weak = window.as_weak();
         let store = store.clone();

@@ -1530,6 +1530,17 @@ impl ConfigStore {
         }
     }
 
+    /// (#hl-rule-edit 2026-10-21) 原地改一条自定义规则（名称/正则/颜色）。
+    /// 之前改规则只能删了重加 —— 顺序会掉到队尾，优先级被重置。
+    pub fn update_output_highlight_rule(&mut self, index: usize, mut rule: OutputHighlightRule) {
+        if let Some(slot) = self.cache.output_highlight_rules.get_mut(index) {
+            rule.pattern = rule.pattern.trim().to_string();
+            rule.name = rule.name.trim().to_string();
+            rule.color = normalize_highlight_color(&rule.color);
+            *slot = rule;
+        }
+    }
+
     pub fn set_output_highlight_rule_enabled(&mut self, index: usize, enabled: bool) {
         if let Some(rule) = self.cache.output_highlight_rules.get_mut(index) {
             rule.enabled = enabled;

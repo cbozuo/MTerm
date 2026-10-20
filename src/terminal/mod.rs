@@ -46,7 +46,7 @@ pub(crate) use input::windows_process_ctrl_release;
 #[cfg(any(target_os = "windows", test))]
 pub(crate) use state::CtrlKeySide;
 pub(crate) use output_highlight::{
-    compile_highlight_rules, parse_color, preset_enabled, rainbow_parens_enabled,
+    compile_highlight_rules, parse_color, preset_enabled, rainbow_parens_enabled, rendered_slot,
     HIGHLIGHT_PRESETS, HighlightPreset, RAINBOW_PRESET_ID,
 };
 pub(crate) use presentation::{highlight_plain_output, render_term_span};

@@ -663,7 +663,7 @@ impl TermBuffer {
                 let runs = if is_alt {
                     runs
                 } else {
-                    highlight_plain_output(runs, &self.highlight_rules, self.rainbow_parens)
+                    highlight_plain_output(runs, &self.highlight_rules, self.rainbow_parens, self.palette)
                 };
                 if !runs.is_empty() {
                     last_content = r as i32;
@@ -720,6 +720,7 @@ impl TermBuffer {
                 line.1.clone(),
                 &self.highlight_rules,
                 self.rainbow_parens,
+                self.palette,
             );
             for hs in &runs {
                 spans.extend(render_term_span(hs, d as i32, self.is_dark, self.palette));

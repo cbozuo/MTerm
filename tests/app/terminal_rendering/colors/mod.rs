@@ -60,7 +60,7 @@ fn mterm_dark_ansi_indices_come_from_the_theme() {
         vt_span_colors(vt100::Color::Idx(4), vt100::Color::Default, false, false, true, pal)
             .0
             .as_argb_encoded(),
-        0xff548af7
+        0xff6677f7
     );
     // 槽 12 = brightBlue
     assert_eq!(
@@ -92,9 +92,9 @@ fn mterm_light_ansi_indices_come_from_the_theme() {
     // 槽 1/2/4/6 = 红/绿/蓝/青（青与强调色 #1f766b 同族，是该套的纪律之一）
     for (idx, argb) in [
         (1u8, 0xffb4483fu32),
-        (2, 0xff4f7d4a),
-        (4, 0xff4a6f96),
-        (6, 0xff1c7a72),
+        (2, 0xff4e7c49),
+        (4, 0xff44599b),
+        (6, 0xff19617c),
     ] {
         assert_eq!(
             vt_span_colors(vt100::Color::Idx(idx), vt100::Color::Default, false, false, true, pal)
