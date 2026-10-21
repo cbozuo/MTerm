@@ -126,6 +126,25 @@ pub async fn run_with_input(
 
     loop {
         if deps.closed.load(Ordering::Relaxed) {
+            // (#remote-graceful-close 2026-10-21) 关 tab 时先让远端的 RDP 会话
+            // **正常断开**，而不是靠 drop 掉 future 关 socket。
+            //
+            // 用户反馈「关掉 tab 再连，服务器说另一个会话已登录」。落在一台
+            // 单会话策略的 Windows 上时，这条提示来自**同一账号已存在的会话**：
+            // drop future 只是让 TCP 断开，服务器要等传输层发现才会把会话标成
+            // Disconnected；这个窗口内重连，新旧两个会话同时在册，于是弹「是否
+            // 强制登录」。发 `Close` 会走 ironrdp 的 graceful_shutdown（MCS
+            // DisconnectProviderUltimatum），服务器立刻把会话挂起。
+            //
+            // 最多等 400ms：服务器不答（或正在握手）也不能拖住关 tab，超时就
+            // 照旧 drop。
+            if !session_done {
+                let _ = iron_input.send(IronRdpInput::Close);
+                let deadline = tokio::time::Instant::now() + Duration::from_millis(400);
+                // 结果只看「是否在窗口内收尾」：这之后的 drop 就是兜底，
+                // 所以不用再回写 session_done（马上 break）。
+                let _ = tokio::time::timeout_at(deadline, &mut session).await;
+            }
             break;
         }
 
