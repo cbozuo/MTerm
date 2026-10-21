@@ -6,6 +6,17 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **终端格子的字面落点与图标比例（#ink-center #nerd-icon-scale）。** 用户反馈两件事：`ls` 的图标比字大一号、上下糊到邻行；拖选文字时高亮条「偏下」，说不清是字高了还是条低了。
+  - 图标：放大倍数 1.75 是按「文件夹图标 0.53em」定的，但 `ls --color` 里最常见的是文档图标（`nf-fa-file_text` 等，墨高 0.77em），放大后 1.35em —— 比 80% 行距下 1.11em 的格子还高，上下各越界 1~3 设备 px，整屏看着又大又错位。
+  - 高亮：`parley` 把行盒里剩余的行距全留在基线下方，字形墨迹整体偏上。离屏实测（13px / 125% / 行距 80%，格高 18 设备 px）：大写行墨迹上留白 2、下留白 4 —— 整行偏高 1 设备 px，拖选时下沿就空出一截。
+  - 修法：`nerd-scale` 1.75 → 1.15（最高的文档图标 0.92em、文件夹 0.60em、数字 0.73em），并新增 `ink-bias = 0.062em` 把文字与图标一起下移，上下留白补成 3/3。
+  - 回归：`TerminalView` 离屏渲染同一场景逐行量墨迹（`#ink-center` 注释里记了改前/改后数值）。
+- **Terminal cell ink placement and Nerd icon scale (#ink-center #nerd-icon-scale).** Two reports: `ls` icons were a size larger than the text and bled into the rows above/below; dragging a text selection made the highlight look "low", with no telling whether the text sat high or the band sat low.
+  - Icons: the 1.75 multiplier was calibrated on the folder glyph (0.53em), but what `ls --color` mostly emits are document glyphs (`nf-fa-file_text` and friends, 0.77em ink). At 1.75 they reach 1.35em, taller than the 1.11em cell at 80% line spacing, overflowing 1–3 device px on both sides.
+  - Highlight: `parley` leaves the line box's leftover leading below the baseline, so the glyph ink sits high. Offscreen measurement (13px / 125% DPI / 80% spacing, 18 device-px cell): a caps row showed 2 px of margin above the ink and 4 px below, i.e. the whole row sat 1 device px high.
+  - Fix: `nerd-scale` 1.75 → 1.15 (tallest document icon 0.92em, folder 0.60em, digits 0.73em) plus a new `ink-bias = 0.062em` that shifts text and icons down together, squaring the margins to 3/3.
+  - Regression: the same scene is rendered offscreen through `TerminalView` and measured row by row (before/after numbers are recorded next to the `#ink-center` comment).
+
 - **所有弹框的关闭键统一成同一款（#dialog-close-unify）。** 用户以「新建会话」弹框为参照物：常态 = 透明底 + 灰 ×，悬停 = 红底 + 纯白 × + 90ms 过渡。
   - 盘点出的漂移：高亮规则 / 同步输入 / 分组管理 / 快捷键 / 关于 五个弹框的 × 悬停仍是 `bg-hover` 灰底（同步输入的图标还恒 `text-primary`，压到红底上会「显暗」）；系统信息窗缺 90ms 过渡、编辑器窗悬停图标不变白。
   - 修法：`widgets.slint` 抽出唯一的 `DialogClose` 组件 —— 只开放 `btn-size` / `corner` / `glyph-size` 三个尺寸参数，两态颜色写死在组件内部，杜绝再次复制粘贴漂移；`theme.slint` 新增 `close-btn-hot`（`#e81123`，亮暗同值，白字对比 4.64:1）。窗口三键与标签页关闭键同步改读该 token，`ui/` 下已无 `#e81123` 字面量。
