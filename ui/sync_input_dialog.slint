@@ -290,7 +290,9 @@ export component SyncInputDialog inherits Rectangle {
     property <length> drag-cy;
     border-radius: 12px;
     background: Theme.popup-bg;
-    border-width: 1px;
+    // (#dlg-line-unify 2026-10-21) 边框对齐高亮/关闭弹框线规范：hairline
+    // （恰 1 设备像素）。宿主落点/拖拽也 snap 到设备栅格（见下）。
+    border-width: Theme.hairline();
     border-color: Theme.border-strong;
     drop-shadow-blur: 24px;
     drop-shadow-color: transparent;
@@ -326,6 +328,9 @@ export component SyncInputDialog inherits Rectangle {
         width: root.width;
         height: root.height;
         clicked => {}
+        // (#modal-wheel-swallow 2026-10-21) 卡片空白处的滚轮也吞掉，不穿到
+        // 弹框背后的终端（列表 ScrollView 在上层，先消费，不受影响）。
+        scroll-event(e) => { accept }
         pointer-event(ev) => {
             if (ev.kind == PointerEventKind.down) {
                 root.card-dragging = true;
@@ -341,12 +346,14 @@ export component SyncInputDialog inherits Rectangle {
             if (root.card-dragging) {
                 // 绝对坐标差值：与设置卡/调色盘同一实现（相对坐标会随卡片
                 // 移动自缩，事件批次新旧快照混用会抖）
-                root.x = Math.max(8px, Math.min(
+                // (#dlg-line-unify 2026-10-21) 落点 snap 到设备栅格，边框 hairline
+                // 恒落整数设备行（与高亮弹框拖拽同款）。
+                root.x = Theme.snap-to-device(Math.max(8px, Math.min(
                     root.drag-ox + (self.absolute-position.x + self.mouse-x - root.drag-cx),
-                    Math.max(8px, root.bounds-w - root.width - 8px)));
-                root.y = Math.max(8px, Math.min(
+                    Math.max(8px, root.bounds-w - root.width - 8px))));
+                root.y = Theme.snap-to-device(Math.max(8px, Math.min(
                     root.drag-oy + (self.absolute-position.y + self.mouse-y - root.drag-cy),
-                    Math.max(8px, root.bounds-h - root.height - 8px)));
+                    Math.max(8px, root.bounds-h - root.height - 8px))));
             }
         }
     }
@@ -411,9 +418,10 @@ export component SyncInputDialog inherits Rectangle {
                 clicked => { root.request-close(); }
             }
         }
-        // 分隔线
+        // 分隔线（#dlg-line-unify 2026-10-21）hairline：恰 1 设备像素；
+        // 上下区块高都是整 4 的逻辑值，卡片落点 snap 后线恒在整数设备行。
         Rectangle {
-            height: 1px;
+            height: Theme.hairline();
             background: Theme.border-subtle;
         }
 
@@ -427,7 +435,12 @@ export component SyncInputDialog inherits Rectangle {
                 padding-bottom: 8px;
                 spacing: 8px;
                 ch-seg := SegGroup {
-                    width: parent.width;
+                    // (#seg-channel-width 2026-10-21) 行布局自带左右 16px 内距，
+                    // 这里不能用 parent.width（= 整行宽）：分段会向右溢出 16px，
+                    // 被弹框 clip 裁掉 —— 频道 D 滑块顶到边线、容器右边框整段
+                    // 消失（用户截图）。扣掉两侧内距后，D 滑块右缘到边框的
+                    // 距离 = pad，与 A 滑块左缘对称。
+                    width: parent.width - 32px;
                     active-index: SyncInputState.slot;
                     count: 4;
                     thumb-tint: active-color.with-alpha(Theme.dark ? 0.16 : 0.13);
@@ -454,7 +467,9 @@ export component SyncInputDialog inherits Rectangle {
             padding-top: 10px;
             padding-bottom: 10px;
             spacing: 12px;
-            height: parent.height - 60px - 1px - 52px - 1px - 56px;
+            // (#dlg-line-unify 2026-10-21) 扣的两条分隔线改 hairline（与上方
+            // Rectangle 同值），公式同步否则差半个设备行。
+            height: parent.height - 60px - Theme.hairline() - 52px - Theme.hairline() - 56px;
             // 左：候选（排除当前频道成员；作用域只影响这一栏的可见集）
             VerticalLayout {
                 horizontal-stretch: 1;
@@ -647,9 +662,10 @@ export component SyncInputDialog inherits Rectangle {
             }
         }
 
-        // 分隔线
+        // 分隔线（#dlg-line-unify 2026-10-21）hairline：恰 1 设备像素；
+        // 上下区块高都是整 4 的逻辑值，卡片落点 snap 后线恒在整数设备行。
         Rectangle {
-            height: 1px;
+            height: Theme.hairline();
             background: Theme.border-subtle;
         }
 
@@ -875,7 +891,17 @@ export component SyncDialogHost inherits Rectangle {
             // (#modal-titlebar-drag) 让开标题栏，弹框打开时仍可拖主窗。
             y: root.top-inset;
             height: parent.height - root.top-inset;
-        }   // 模态吞层：点外部不关（走 取消/✕/确定）
+            // (#modal-wheel-swallow 2026-10-21) 吞滚轮：TouchArea 默认不消费
+            // scroll-event，不接住会穿到下面的终端/侧栏继续滚动（高亮/设置
+            // 弹框背板同款守卫）。
+            scroll-event(e) => { accept }
+            // (#backdrop-cancel 2026-10-21) 点弹框外 = 取消：与 Esc/✕/取消键
+            // 同一关框路径（丢弃未应用的编辑，焦点归还活动终端）。
+            clicked => {
+                SyncInputState.dialog-open = false;
+                root.request-terminal-focus();
+            }
+        }
         // (#sync-dialog-esc) Esc 取消当前窗口的同步输入弹框。开框即抓键盘：
         // 模态期间终端不再收键，Esc 也不会被终端透传进 PTY（终端 key-pressed
         // 对其余按键一律 accept 并转发）。落焦延到下一 tick —— init 内同步
@@ -903,8 +929,10 @@ export component SyncDialogHost inherits Rectangle {
             key-released(e) => { accept }
         }
         SyncInputDialog {
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2 - 20px;
+            // (#dlg-line-unify 2026-10-21) 落点 snap 到设备栅格：hairline 边框
+            // 恒落整数设备行（125% 缩放下居中 x 常是分数，不 snap 则边框发糊）。
+            x: Theme.snap-to-device((parent.width - self.width) / 2);
+            y: Theme.snap-to-device((parent.height - self.height) / 2 - 20px);
             bounds-w: root.bounds-w;
             bounds-h: root.bounds-h;
             request-close => {

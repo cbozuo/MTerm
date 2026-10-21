@@ -1666,6 +1666,9 @@ export component SessionDialog inherits Rectangle {
     // 空白区拖动卡片：按下时记录卡片原点与指针窗口绝对坐标（拖动期间稳定）
     in property <length> bounds-w;
     in property <length> bounds-h;
+    // (#backdrop-cancel 2026-10-21) 背板点击区让位主窗标题栏（#modal-titlebar-drag
+    // 同款惯例）：标题栏照常可拖，也不会点到背板误关弹框。
+    in property <length> top-inset: 0px;
     property <bool> card-dragging: false;
     property <length> card-ox;
     property <length> card-oy;
@@ -2154,16 +2157,20 @@ export component SessionDialog inherits Rectangle {
         }
     }
 
-    // Swallow clicks on the backdrop (dialog stays open). Clicking the
-    // backdrop also hands focus back to the container (#dialog-focus-reset):
-    // any focused field drops its blue border, and the drop-clock bump clears
-    // any lingering dropdown accent.
+    // (#backdrop-cancel 2026-10-21) 点击弹框外 = 取消（Esc/取消键同一路径）。
+    // 顶部让位主窗标题栏（#modal-titlebar-drag 惯例），标题栏照常可拖。
+    // 跳板下拉开着时其全屏背板（cp-backdrop）先吃点击、分组下拉是原生
+    // PopupWindow（点外自动收），都不会走到这里误关弹框。关框即销毁卡片
+    // 子树（#dialog-lazy），残留下拉/焦点态随子树复位，无需旧兜底。
     TouchArea {
-        width: 100%; height: 100%;
-        clicked => {
-            root.scope-focus-pending = true;
-            root.drop-clock += 1;
-        }
+        y: root.top-inset;
+        width: 100%;
+        height: parent.height - root.top-inset;
+        // (#modal-wheel-swallow 2026-10-21) 吞滚轮：TouchArea 默认不消费
+        // scroll-event，不接住会穿到下面的终端/侧栏继续滚动（高亮/设置
+        // 弹框背板同款守卫）。
+        scroll-event(e) => { accept }
+        clicked => { root.cancel(); }
     }
     dialog-focus := FocusScope {
         width: 100%;
@@ -2189,7 +2196,10 @@ export component SessionDialog inherits Rectangle {
     // 启动不再为整棵弹框元素树分配内存。焦点复位机器(changed is-open /
     // drop-clock / scope-focus-timer)都在根上,不受影响。
     if root.is-open : dlg-card := Rectangle {
-        width: min(600px, parent.width - 48px);
+        // (#dlg-line-unify 2026-10-21) 落点/尺寸 snap 到设备栅格（对齐高亮/
+        // 关闭弹框线规范）：外框 1phx 恒落整数设备行，125%/150% 缩放下不再
+        // 骑半像素相位发糊。
+        width: Theme.snap-to-device(min(600px, parent.width - 48px));
         // (#dialog-fit 2026-09-18) 高度由**内容**决定,上限才是视口 - 32px。
         // 原先取视口 78%,全屏时弹窗被撑成一整屏、内容只占上半截,下面大片留白,
         // 且内容超高时还会把首字段挤出可视区(打开就要往上滚)。
@@ -2201,9 +2211,9 @@ export component SessionDialog inherits Rectangle {
         // (#foot-border 2026-09-20) body 高度取整:文本 preferred 高常带分数,
         // 卡片总高含分数会让水平分隔线落在半像素相位、发糊显粗(用户标注④,
         // 同 #close-dialog-lines 的教训)。取整后各水平线同相位、粗细一致。
-        height: min(Math.round(body.preferred-height / 1px) * 1px + hdr.height + foot.height + 2px, parent.height * 0.78);
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
+        height: Theme.snap-to-device(min(Math.round(body.preferred-height / 1px) * 1px + hdr.height + foot.height + 2px, parent.height * 0.78));
+        x: Theme.snap-to-device((parent.width - self.width) / 2);
+        y: Theme.snap-to-device((parent.height - self.height) / 2);
         background: Theme.popup-bg;
         clip: true;
         // (#hifi-v17) 对齐高保真 .dialog:1px **line-2** 外框 + 16px 圆角。
@@ -2220,6 +2230,9 @@ export component SessionDialog inherits Rectangle {
 
         TouchArea {
             width: 100%; height: 100%;
+            // (#modal-wheel-swallow 2026-10-21) 卡片空白处的滚轮也吞掉，不穿
+            // 到弹框背后的终端（body 的 Flickable 在上层，先消费，不受影响）。
+            scroll-event(e) => { accept }
             // (#dialog-drag-click 2026-10-14) 拖动/点击判别:按下后指针位移超过
             // 3px 即记为"真拖动",松开时不再触发 clicked —— 原先拖动松手会顺带
             // 点一下(焦点复位 + drop-clock 推进,把残留蓝框/下拉一起收掉),
@@ -2253,12 +2266,13 @@ export component SessionDialog inherits Rectangle {
                         || Math.abs(self.absolute-position.y + self.mouse-y - root.card-cy) > 3px) {
                         self.drag-moved = true;
                     }
-                    dlg-card.x = Math.max(8px, Math.min(
+                    // (#dlg-line-unify 2026-10-21) 拖拽落点 snap 到设备栅格
+                    dlg-card.x = Theme.snap-to-device(Math.max(8px, Math.min(
                         root.card-ox + (self.absolute-position.x + self.mouse-x - root.card-cx),
-                        Math.max(8px, root.bounds-w - dlg-card.width - 8px)));
-                    dlg-card.y = Math.max(8px, Math.min(
+                        Math.max(8px, root.bounds-w - dlg-card.width - 8px))));
+                    dlg-card.y = Theme.snap-to-device(Math.max(8px, Math.min(
                         root.card-oy + (self.absolute-position.y + self.mouse-y - root.card-cy),
-                        Math.max(8px, root.bounds-h - dlg-card.height - 8px)));
+                        Math.max(8px, root.bounds-h - dlg-card.height - 8px))));
                 }
             }
         }
@@ -2288,12 +2302,13 @@ export component SessionDialog inherits Rectangle {
                 }
                 moved => {
                     if (root.card-dragging) {
-                        dlg-card.x = Math.max(8px, Math.min(
+                        // (#dlg-line-unify 2026-10-21) 拖拽落点 snap 到设备栅格
+                        dlg-card.x = Theme.snap-to-device(Math.max(8px, Math.min(
                             root.card-ox + (self.absolute-position.x + self.mouse-x - root.card-cx),
-                            Math.max(8px, root.bounds-w - dlg-card.width - 8px)));
-                        dlg-card.y = Math.max(8px, Math.min(
+                            Math.max(8px, root.bounds-w - dlg-card.width - 8px))));
+                        dlg-card.y = Theme.snap-to-device(Math.max(8px, Math.min(
                             root.card-oy + (self.absolute-position.y + self.mouse-y - root.card-cy),
-                            Math.max(8px, root.bounds-h - dlg-card.height - 8px)));
+                            Math.max(8px, root.bounds-h - dlg-card.height - 8px))));
                     }
                 }
             }
@@ -4169,7 +4184,9 @@ if root.draft-kind == "serial" : HorizontalLayout {
         // "中间还有一点点距离没有雾化到")。迁到卡片层后与线**同位**(y = hdr.height),
         // 声明在头部线之前 → 线后绘制压住条顶缘,紧贴无缝。
         Rectangle {
-            y: hdr.height;
+            // (#dlg-line-unify 2026-10-21) 与头部线同 snap：49px 布局高在 125%
+            // 缩放下是 61.25 设备行，不 snap 则线与雾化条都骑半像素相位。
+            y: Theme.snap-to-device(hdr.height);
             x: 20px;
             width: parent.width - 40px;
             height: 18px;
@@ -4179,7 +4196,9 @@ if root.draft-kind == "serial" : HorizontalLayout {
         }
 
         Rectangle {
-            y: hdr.height;
+            // (#dlg-line-unify 2026-10-21) y snap：hdr.height 49px 在非整数
+            // 缩放下落分数设备行；snap 后 1phx 线恒整行、锐利。
+            y: Theme.snap-to-device(hdr.height);
             width: 100%;
             height: 1phx;
             background: Theme.dark ? Theme.line-2 : #b9b9c2;
@@ -4191,7 +4210,8 @@ if root.draft-kind == "serial" : HorizontalLayout {
         // 后已愈——foot 内位置仍被 1.18 容器边界合成伪影波及,照抄被证明免疫
         // 的卡片层方案。y = 卡片高 - foot.height = foot 顶缘。
         Rectangle {
-            y: parent.height - foot.height;
+            // (#dlg-line-unify 2026-10-21) y snap：同头部线。
+            y: Theme.snap-to-device(parent.height - foot.height);
             width: 100%;
             height: 1phx;
             background: Theme.dark ? Theme.line-2 : #b9b9c2;
@@ -4213,7 +4233,8 @@ if root.draft-kind == "serial" : HorizontalLayout {
             // 惯例,且不遮挡错误文字本身)。
             x: clamp(20px + status-ta.mouse-x - 12px, 12px,
                      max(12px, parent.width - self.width - 12px));
-            y: parent.height - foot.height + 4px - self.height;
+            // (#dlg-line-unify 2026-10-21) 底边锚随页脚线 snap 值，保持贴线下 4px。
+            y: Theme.snap-to-device(parent.height - foot.height) + 4px - self.height;
             width: min(status-box.width, 360px);
             height: card-tip-txt.preferred-height + 14px;
             border-radius: Theme.radius-md;

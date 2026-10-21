@@ -19,10 +19,10 @@ export struct TermSpan {
     col: int,
     cells: int,
     cjk: bool,   // contains CJK chars → render with the CJK-capable font (#54)
-    // (#nerd-icon-scale) span is purely a Nerd Font icon (private-use-area
-    // glyph) → draw it scaled up inside its own cell. The grid, PTY addressing
-    // and click-to-select are untouched; only the glyph size changes, which is
-    // what a free-form-layout terminal effectively gets for free.
+    // (#nerd-icon-split) span 为单个 Nerd Font 图标字符（私用区字形）。Rust 侧
+    // 把图标字符从同色混合 run（eza/lsd 的「图标+文件名」同色输出）中拆成独立
+    // span，放大才会命中；Powerline 分隔符（U+E0A0–E0D4）设计为恰好填满格子
+    // 首尾相接，不拆不放。网格、PTY 寻址和点选不受影响，只改字形大小与落点。
     nerd: bool,
     // (#twemoji-removal 2026-09-05) emoji/emoji-image 字段已随 Twemoji 移除:
     // emoji 交由字体回退渲染单色轮廓,不再有图像 span。
@@ -488,6 +488,15 @@ export component TerminalView inherits Rectangle {
     // mismatched cell-w garbles the grid.  Keep them derived from one source.)
     property <length> cell-w: max(1px, cell-probe.preferred-width / 50);
     property <length> cell-h: max(1px, cell-probe.preferred-height * root.terminal-line-spacing);
+    // (#line-spacing-center) 普通文字 span 的纵向偏移：把 Text 的自然行盒
+    // （= 探针 preferred-height，未乘行距）在缩放后的格子内垂直居中。
+    // 行距 1.0 → 偏移 0；<1 → 负（上移，否则字墨贴格底、高亮显得偏上）；
+    // >1 → 正（下移，否则字墨贴格顶、高亮显得偏下）。
+    property <length> text-y-shift: (root.cell-h - cell-probe.preferred-height) / 2;
+    // (#nerd-icon-scale) 图标字形放大倍数：图标按 em 方框设计，格宽只有字号
+    // ~0.6（JetBrainsMono NFM 实测 folder 墨高 0.49–0.53em），名义字号下比
+    // 小写 x-height（0.55em）还矮；1.75 让图标墨高与大写字母相当。
+    property <float> nerd-scale: 1.75;
     // Usable text box = root.width minus the 10px left/right padding of
     // output-text; usable height = key-capture height minus the 8px top pad.
     // The old 16px bottom focus-recovery strip was redundant once body-touch
@@ -827,19 +836,27 @@ export component TerminalView inherits Rectangle {
                             // (#twemoji-removal) emoji 图像 span 已移除,统一文本渲染。
                             Text {
                                 x: 0px;
+                                // (#line-spacing-center) cell-h 随 terminal-line-spacing
+                                // 缩放，但这个 Text 仍按字体自然行盒（cell-probe 的
+                                // preferred-height，未乘 spacing）绘制。行距 <1 时文字
+                                // 整体压在格子下半（基线几乎贴格底、降部越界到下一
+                                // 行），画满整格的光标/选区视觉上就"浮"在文字上方；
+                                // 行距 >1 时反向偏下。把自然行盒在格内垂直居中即可，
+                                // 行距=1 时偏移恰为 0、行为不变。CJK span 的自然行盒
+                                // 来自 UI 字体，与探针略有出入，但同一偏移方向正确。
                                 // (#nerd-icon-scale) 图标 span 在本格内放大：Nerd Font
-                                // 的图标按 em 方框设计，而格宽只有字号的 ~0.7（实测 13px
-                                // 下格宽 8~11px、数字高 20px），按名义字号画会溢出格子
-                                // 再被压成 4×4 的小点。放大后仍锁在本格内 —— 网格、
-                                // PTY 寻址、点选全都不动，只改字形大小。
-                                // 1.75 让图标占到与同级字符相当的高度。
-                                // 纵向居中改用 `y` 偏移而不是 `height` +
-                                // `vertical-alignment`：后者要给 Text 设 height，
-                                // 与上面「不设 height 以免重入 FontContext」的
-                                // 结论冲突。字号放大后 Text 的自然高度超过 cell-h，
-                                // 按 (cell-h − 自然高)/2 居中即可。
-                                property <length> glyph-h: root.term-font-size-px * 1.75 * 1px * 1.2;
-                                y: span.nerd && root.cell-h > glyph-h ? (root.cell-h - glyph-h) / 2 : 0px;
+                                // 图标按 em 方框设计而格宽只有字号 ~0.6，名义字号下
+                                // 墨高比小写 x-height 还矮。放大后 Text 的自然行盒 ≈
+                                // nerd-scale × 探针行盒（同字体等比），同样按
+                                // (cell-h − scale×行盒)/2 在格内居中 —— 旧实现的居中
+                                // 分支 `cell-h > glyph-h` 在默认字号下永不成立（恒
+                                // y=0），基线被 1.02×放大字号 推到格外，图标沉到
+                                // 下一行。纵向仍用 `y` 偏移而不是 `height` +
+                                // `vertical-alignment`：后者要给 Text 设 height，与
+                                // 「不设 height 以免重入 FontContext」冲突。
+                                y: span.nerd
+                                    ? (root.cell-h - cell-probe.preferred-height * root.nerd-scale) / 2
+                                    : root.text-y-shift;
                                 text: span.text;
                                 color: span.fg;
                                 // CJK spans use the CJK-capable UI font: the mono
@@ -848,7 +865,7 @@ export component TerminalView inherits Rectangle {
                                 font-family: span.cjk ? Theme.ui-font-family : Theme.term-font-family;
                                 // 图标放大不改变字体度量（cell-w/h 仍来自 cell-probe），
                                 // 所以 PTY 列数/行数不会因放大而重排。
-                                font-size: (span.nerd ? root.term-font-size-px * 1.75 : root.term-font-size-px) * 1px;
+                                font-size: (span.nerd ? root.term-font-size-px * root.nerd-scale : root.term-font-size-px) * 1px;
                                 font-weight: (Theme.term-font-bold || span.bold) ? Theme.fw-strong : Theme.fw-regular;
                             }
                         }

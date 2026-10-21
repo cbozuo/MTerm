@@ -240,11 +240,20 @@ pub(crate) fn text_cell_width(text: &str) -> i32 {
     text.chars().map(|ch| ch.width().unwrap_or(0) as i32).sum()
 }
 
-/// Split a styled terminal run into a single TermSpan for the UI grid.
+/// Split a styled terminal run into UI spans for the terminal grid.
 /// (#twemoji-removal 2026-09-05) 彩色 emoji 渲染(Twemoji 图像 span)已移除:
 /// 集成测试与体积评估认定 34MB 的全集嵌入不值(占 exe 体积约九成),emoji
 /// 交由 Slint 的字体回退渲染单色轮廓。终端列数仍来自网格(span.cells),
 /// 这里只做配色解析与 CJK 标记。
+/// (#nerd-icon-split 2026-10-21) 私用区图标字符从**混合 run** 中逐字符拆出
+/// 独立 span：vt100 的 run 按 (fg,bg,bold,inverse) 合并同色格子，而 eza/lsd
+/// 把图标与文件名染成同色，一段 run 就是 `󰉋  name`。旧的「整段纯图标才
+/// 放大」判据在这类输出下永不命中，图标只能按名义字号画——
+/// JetBrainsMono NFM 的 folder 图标墨高仅 0.49~0.53em，比小写 x-height
+/// (0.55em) 还矮，这就是「图标看上去小了些」的来源。现在图标字符单独成
+/// span 交给 UI 放大居中；Powerline 原始分隔符(U+E0A0~U+E0D4)设计为恰好
+/// 填满格子、首尾相接拼提示符，不拆不放。列号/格数按显示宽度重算，网格、
+/// PTY 寻址与点选坐标都不变。
 pub(crate) fn render_term_span(
     span: &HistSpan,
     row: i32,
@@ -255,13 +264,10 @@ pub(crate) fn render_term_span(
         return Vec::new();
     }
     let (fg, bg) = vt_span_colors(span.fg, span.bg, span.bold, span.inverse, is_dark, pal);
-    let cjk = contains_cjk(&span.text);
-    // (#nerd-icon-scale) 纯图标 span 交给 UI 放大绘制（网格/协议不变）。
-    let nerd = !cjk && is_nerd_icon_span(&span.text);
-    // (#nerd-icon-diag) 诊断：用户报「图标放大没生效」，需要确认判据是否命中。
+    // (#nerd-icon-diag) 诊断：用户报「图标放大没生效」，需要确认拆分是否命中。
     // 设 MTERM_DIAG_NERD=1 后跑 `ls --color`，日志会打出每个含私用区字符的
-    // span 的码位与判定结果。**不加 cfg(debug_assertions)** —— 出问题的正是
-    // release 包，被编译掉就白加了。只在命中时打，且要求环境变量存在，不刷屏。
+    // span 的码位。**不加 cfg(debug_assertions)** —— 出问题的正是 release
+    // 包，被编译掉就白加了。只在命中时打，且要求环境变量存在，不刷屏。
     if std::env::var_os("MTERM_DIAG_NERD").is_some()
         && span.text.chars().any(is_nerd_icon_char)
     {
@@ -274,22 +280,80 @@ pub(crate) fn render_term_span(
             row,
             text = %span.text,
             codepoints = ?cp,
-            cjk,
-            nerd,
-            "nerd-diag: span 含私用区字符"
+            "nerd-diag: span 含私用区字符，将按字符拆分"
         );
     }
-    vec![TermSpan {
-        text: span.text.clone().into(),
+    // 没有图标字符就保持一 run 一 span（绝大多数行），不付拆分开销。
+    if !span.text.chars().any(is_scaled_icon_char) {
+        let cjk = contains_cjk(&span.text);
+        return vec![TermSpan {
+            text: span.text.clone().into(),
+            fg,
+            bg,
+            bold: span.bold,
+            row,
+            col: span.col,
+            cells: span.cells,
+            cjk,
+            nerd: false,
+        }];
+    }
+    let mut out: Vec<TermSpan> = Vec::new();
+    let mut col = span.col;
+    let mut plain = String::new();
+    for ch in span.text.chars() {
+        if is_scaled_icon_char(ch) {
+            push_plain_span(&mut out, &plain, fg, bg, span.bold, row, &mut col);
+            plain.clear();
+            out.push(TermSpan {
+                text: ch.to_string().into(),
+                fg,
+                bg,
+                bold: span.bold,
+                row,
+                col,
+                cells: 1,
+                cjk: false,
+                nerd: true,
+            });
+            col += 1;
+        } else {
+            plain.push(ch);
+        }
+    }
+    push_plain_span(&mut out, &plain, fg, bg, span.bold, row, &mut col);
+    out
+}
+
+/// 把图标字符之间的普通片段压成一个 span，按显示宽度推进列号。
+fn push_plain_span(
+    out: &mut Vec<TermSpan>,
+    text: &str,
+    fg: slint::Color,
+    bg: slint::Color,
+    bold: bool,
+    row: i32,
+    col: &mut i32,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let cells = text_cell_width(text);
+    if cells <= 0 {
+        return;
+    }
+    out.push(TermSpan {
+        text: text.into(),
         fg,
         bg,
-        bold: span.bold,
+        bold,
         row,
-        col: span.col,
-        cells: span.cells,
-        cjk,
-        nerd,
-    }]
+        col: *col,
+        cells,
+        cjk: contains_cjk(text),
+        nerd: false,
+    });
+    *col += cells;
 }
 
 /// True if a terminal span contains any CJK character — ideograph, kana, or
@@ -313,36 +377,25 @@ fn contains_cjk(s: &str) -> bool {
     })
 }
 
-/// True if a span is **purely** one Nerd Font icon (a private-use-area glyph),
-/// so the UI can draw it larger inside its single cell.
+/// True if this character should be drawn as a scaled-up Nerd Font icon in its
+/// own cell: a private-use-area glyph **outside the original Powerline block**.
 ///
-/// (#nerd-icon-scale) Nerd Font draws its icons on the full em box, but the
-/// terminal grid locks every character to one measured cell. Measured on a real
-/// screenshot at 13 px (JetBrainsMono Nerd Font, graphite dark): the cell
-/// advance is **8–11 px** while the digits on the same line stand **20 px**
-/// tall — an icon drawn at the nominal font size overflows its cell, and
-/// Slint's text layout shrinks/clips it down to a **4×4 px** speck. Hence
-/// "the icons look smaller than in another terminal": the glyph is *present*
-/// (a probe of the installed face finds all six common ls icons) but drawn
-/// squashed. Free-form layout is not an option — SSH/PTY addressing, vim/htop
-/// cursor addressing and click-to-select all index by (row, col) — so the fix
-/// is to scale the glyph up within its own cell instead.
+/// (#nerd-icon-split / #nerd-icon-scale) Nerd Font draws its icons on the full
+/// em box, but the terminal grid locks every character to one measured cell
+/// (advance ≈ 0.6em). At the nominal font size the common `ls` icons (folder
+/// 0.49~0.53em ink) come out *shorter than lowercase letters*, which reads as
+/// "icons look too small". Scaling the glyph up inside its own cell fixes the
+/// optics without touching SSH/PTY addressing, vim/htop cursor addressing or
+/// click-to-select, which all index by (row, col).
 ///
-/// The check is deliberately **whole-span**: mixing an icon with ordinary text
-/// would need per-character positioning, and a run like `📁backup.sql` should
-/// still read as one label. Two ranges are recognised:
-///   * U+E000..U+F8FF  — Nerd Font v2/v3 icon blocks (the `ls --color` set);
+/// Powerline's own separators (U+E0A0~U+E0D4, `` /  /  / …) are
+/// deliberately excluded: they are designed to fill the cell exactly so
+/// prompt segments butt together seamlessly — scaling them would tear the
+/// seams. Two ranges remain recognised for scaling:
+///   * U+E000..U+F8FF  — Nerd Font v2/v3 icon blocks (minus Powerline above);
 ///   * U+F0000..U+FFFFD — supplementary plane, for icon sets shipped out there.
-fn is_nerd_icon_span(s: &str) -> bool {
-    let mut chars = s.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !is_nerd_icon_char(first) {
-        return false;
-    }
-    // Surrounding whitespace is fine (`📁 `), any other content is not.
-    chars.all(|c| is_nerd_icon_char(c) || c.is_whitespace())
+fn is_scaled_icon_char(c: char) -> bool {
+    is_nerd_icon_char(c) && !matches!(c as u32, 0xE0A0..=0xE0D4)
 }
 
 fn is_nerd_icon_char(c: char) -> bool {
@@ -885,62 +938,125 @@ mod truecolor_guard_tests {
 
 #[cfg(test)]
 mod nerd_icon_tests {
-    use super::is_nerd_icon_span;
+    use super::{is_scaled_icon_char, render_term_span, HistSpan};
 
-    /// `ls --color` 的图标都是私用区（PUA）码位。这些 span 会被放大绘制，
-    /// 判错会让普通文本被误放大（或图标没被放大）。
-    #[test]
-    fn recognises_ls_icon_glyphs() {
-        for (text, what) in [
-            ("\u{e5fc}", "directory"),
-            ("\u{f15b}", "file"),
-            ("\u{f013}", "cog"),
-            ("\u{e615}", "locked"),
-            ("\u{f408}", "database"),
-        ] {
-            assert!(is_nerd_icon_span(text), "{what} {text:?} 应识别为图标");
+    fn hist_span(text: &str, col: i32) -> HistSpan {
+        HistSpan {
+            text: text.to_string(),
+            fg: vt100::Color::Default,
+            bg: vt100::Color::Default,
+            bold: false,
+            inverse: false,
+            col,
+            cells: super::text_cell_width(text),
         }
     }
 
-    /// 普通文本**绝不能**被误判 —— 否则整行会被放大 1.75 倍、错位。
+    fn pal() -> &'static crate::theme::palettes::Palette {
+        crate::theme::palettes::find("mterm-dark").unwrap()
+    }
+
+    /// `ls --color`（eza/lsd）的图标都是私用区（PUA）码位，且与文件名同色
+    /// 合并在一个 run 里 —— 拆分后每个图标字符必须独立成 nerd span。
     #[test]
-    fn plain_text_is_not_an_icon_span() {
+    fn splits_icon_out_of_mixed_run() {
+        // eza 目录行：图标 + 两个空格 + 目录名，同色一个 run。
+        let spans = render_term_span(&hist_span("\u{e5fc}  sz-smart", 0), 3, true, pal());
+        assert_eq!(spans.len(), 2, "图标 + 名字两段: {:?}", spans);
+        assert!(spans[0].nerd);
+        assert_eq!(spans[0].text.as_str(), "\u{e5fc}");
+        assert_eq!(spans[0].cells, 1);
+        assert_eq!(spans[0].col, 0);
+        assert!(!spans[1].nerd);
+        assert_eq!(spans[1].text.as_str(), "  sz-smart");
+        assert_eq!(spans[1].col, 1);
+        assert_eq!(spans[1].cells, 10);
+    }
+
+    /// 混排 run（图标在中间/结尾）同样拆出，前后普通片段各成一段。
+    #[test]
+    fn splits_icon_at_middle_and_end() {
+        let spans = render_term_span(&hist_span("a\u{e5fc}", 5), 0, true, pal());
+        assert_eq!(spans.len(), 2);
+        assert_eq!((spans[0].text.as_str(), spans[0].col), ("a", 5));
+        assert!((spans[1].nerd) && spans[1].col == 6);
+
+        let spans = render_term_span(&hist_span("\u{f15b}\u{e5fc}", 0), 0, true, pal());
+        assert_eq!(spans.len(), 2);
+        assert!(spans.iter().all(|s| s.nerd));
+        assert_eq!((spans[0].col, spans[1].col), (0, 1));
+    }
+
+    /// 前导空格 + 图标（旧判据直接放弃的形态）也能拆出图标。
+    #[test]
+    fn leading_space_then_icon() {
+        let spans = render_term_span(&hist_span(" \u{e5fc}name", 2), 0, true, pal());
+        assert_eq!(spans.len(), 3);
+        assert_eq!((spans[0].text.as_str(), spans[0].cells), (" ", 1));
+        assert!(spans[1].nerd);
+        assert_eq!(spans[2].text.as_str(), "name");
+        assert_eq!(spans[2].col, 4);
+    }
+
+    /// Powerline 分隔符（提示符里的 ``/``/``）恰好填满格子、首尾相接，
+    /// 绝不能拆出放大 —— 否则接缝被撕开。
+    #[test]
+    fn powerline_separators_stay_plain() {
+        for cp in ['\u{e0b0}', '\u{e0b1}', '\u{e0b2}', '\u{e0b3}', '\u{e0a0}', '\u{e0d4}'] {
+            assert!(!is_scaled_icon_char(cp), "U+{:04X} 是 Powerline 符号", cp as u32);
+        }
+        // 整段 prompt 片段保持单 span、不放大
+        let text = "\u{e0b0} \u{e0b0}";
+        let spans = render_term_span(&hist_span(text, 0), 0, true, pal());
+        assert_eq!(spans.len(), 1);
+        assert!(!spans[0].nerd);
+        assert_eq!(spans[0].text.as_str(), text);
+    }
+
+    /// 没有图标字符的 run 保持一 run 一 span，不付拆分开销。
+    #[test]
+    fn plain_run_stays_single_span() {
         for text in [
             "backup_t_line_dual_name_20260528110821.sql",
             "drwxr-xr-x.",
-            "root root  4.0 KB",
-            "2026",
             "[root@localhost ~]#",
-            "",
-            " ",
-            "─│",
-            // 私用区码位与普通字符混排 → 不是纯图标 span（逐字符定位未实现）
-            "\u{e5fc}backup.sql",
-            "a\u{e5fc}",
+            "中文混排、含标点",
         ] {
-            assert!(
-                !is_nerd_icon_span(text),
-                "{text:?} 不该被识别为图标 span"
-            );
+            let spans = render_term_span(&hist_span(text, 0), 0, true, pal());
+            assert_eq!(spans.len(), 1, "{text:?}");
+            assert!(!spans[0].nerd);
+            assert_eq!(spans[0].cjk, text.contains('中'));
         }
     }
 
-    /// 图标 + 尾部空白仍算图标（`ls` 会在图标后补一个空格）。
-    ///
-    /// ⚠️ **前导空白不算**：span 必须以图标字符开头。vt100 会把空白归到
-    /// 相邻 run，真实到达这里的一段纯图标 span 是以图标开头的；以空白
-    /// 开头的段说明前面还有别的字符（同一 span），那是混排、不该放大。
+    /// `ls --color` 的常用图标码位全部命中放大判定。
     #[test]
-    fn icon_with_trailing_space_counts() {
-        assert!(is_nerd_icon_span("\u{e5fc} "));
-        assert!(is_nerd_icon_span("\u{e5fc}  "));
-        // 多个图标连排（如 ls 的一个名字前有多个符号）仍算纯图标
-        assert!(is_nerd_icon_span("\u{e5fc}\u{f15b}"));
+    fn recognises_ls_icon_glyphs() {
+        for (cp, what) in [
+            ('\u{e5fc}', "directory"),
+            ('\u{f15b}', "file"),
+            ('\u{f013}', "cog"),
+            ('\u{e615}', "locked"),
+            ('\u{f408}', "database"),
+        ] {
+            assert!(is_scaled_icon_char(cp), "{what} U+{:04X} 应识别为图标", cp as u32);
+        }
     }
 
-    /// 以空白开头的段 = 前面有别的字符 → 混排，不放大。
+    /// 拆分后的总格数与原 run 一致（网格/PTY 寻址不变）。
     #[test]
-    fn leading_space_is_not_an_icon_span() {
-        assert!(!is_nerd_icon_span(" \u{e5fc}"));
+    fn split_preserves_total_cells() {
+        let text = "\u{e5fc}  两个目录名";
+        let orig = hist_span(text, 7);
+        let spans = render_term_span(&orig, 1, true, pal());
+        let total: i32 = spans.iter().map(|s| s.cells).sum();
+        assert_eq!(total, orig.cells);
+        // 首段列号 = 原 run 列号，末段列号收尾连贯
+        assert_eq!(spans.first().unwrap().col, 7);
+        let mut expect = 7;
+        for s in &spans {
+            assert_eq!(s.col, expect);
+            expect += s.cells;
+        }
     }
 }
