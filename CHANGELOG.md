@@ -6,6 +6,15 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **终端与右侧栏之间的边界线错位 1 设备像素（#sb-edge-snap）。** 用户截图：终端右侧与右栏左侧之间有一条白缝，浅色主题下尤其明显。
+  - 根因：右栏宽度来自拖拽（浮点），125% 缩放下 `窗口宽 - 宽度` 落在半个设备像素上；边界线又对 `parent.x + 2px` 做了一次 `snap-to-device` 取整，把线推到右栏内侧 1 设备像素，外侧就漏出一条面板底色。终端底色在那半像素上还多留了一列 AA 边。
+  - 修法：把**边界位置**吸到设备网格（`sb-w` / `sb-h` 按停靠边取整：右/下停靠取整 `内侧尺寸 - 面板宽`，左/上停靠取整面板宽），边界线直接取命中区中心（2px）压在边界上，不再二次 round；左/上停靠仍减一个 hairline，落在侧栏内侧那一列。
+  - 回归：`tests/sidebar_edge_line.rs` 在 125% 下渲染 220 / 420 / 520 / 519.2 / 400.4 五种宽度，断言边界处恰好 1 列线、其左为终端底色、其右为面板底色（旧实现第一条就挂）。
+- **The terminal / right-sidebar boundary line was off by one device pixel (#sb-edge-snap).** User screenshot: a bright seam between the terminal's right edge and the resource sidebar, worst in light themes.
+  - Cause: the sidebar width comes from dragging (a float), so at 125% DPI `window - width` lands on half a device pixel; the splitter's visible line also re-ran `snap-to-device` on `parent.x + 2px`, pushing the line one device pixel inside the sidebar and leaving a column of panel background outside it. The terminal background additionally anti-aliased across that half pixel.
+  - Fix: snap the **boundary position** to the device grid (`sb-w` / `sb-h` snap `inner - width` for right/bottom docks and `width` for left/top docks), then place the line at the hit-area centre (2px) so it sits exactly on the boundary with no second rounding; left/top docks still subtract one hairline so the line occupies the sidebar's inner column.
+  - Regression: `tests/sidebar_edge_line.rs` renders five widths (220 / 420 / 520 / 519.2 / 400.4) at 125% and asserts exactly one line column, terminal background to its left and panel background to its right (the old code fails on the first case).
+
 - **终端格子的字面落点与图标比例（#ink-center #nerd-icon-scale）。** 用户反馈两件事：`ls` 的图标比字大一号、上下糊到邻行；拖选文字时高亮条「偏下」，说不清是字高了还是条低了。
   - 图标：放大倍数 1.75 是按「文件夹图标 0.53em」定的，但 `ls --color` 里最常见的是文档图标（`nf-fa-file_text` 等，墨高 0.77em），放大后 1.35em —— 比 80% 行距下 1.11em 的格子还高，上下各越界 1~3 设备 px，整屏看着又大又错位。
   - 高亮：`parley` 把行盒里剩余的行距全留在基线下方，字形墨迹整体偏上。离屏实测（13px / 125% / 行距 80%，格高 18 设备 px）：大写行墨迹上留白 2、下留白 4 —— 整行偏高 1 设备 px，拖选时下沿就空出一截。

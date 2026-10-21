@@ -2688,14 +2688,28 @@ export component AppWindow inherits Window {
             // 旧值在收起时仍留 36px（当年那个图标条早已被标题栏切换按钮取代），
             // 于是窗口右边留一条 36px 的空白竖条（截图实测：root 底色、无内容）。
             // 与左栏 left-sidebar-size 的「收起 = 0」对齐。
+            // (#sb-edge-snap 2026-10-21) 右栏宽度来自拖拽（浮点），125% 缩放下
+            // 边界会落在半个设备像素上：终端底色在那里被 AA 成一条半透明边，
+            // 边界线又按 round() 被推到另一侧，中间漏出 1 设备像素的面板底色 ——
+            // 用户截图里终端与右栏之间那条白缝。修法是把**边界位置**吸到设备
+            // 网格：右/下停靠按「窗口内侧 - 宽度」取整（边界对齐设备像素），
+            // 左/上停靠直接取整宽度。终端与右栏从此共用同一条整数边界。
             property <length> sb-w: root.zen-mode || root.right-sidebar-collapsed ? 0px
                 : dock-area.right-sidebar-strip-outside
                     || dock-area.combine-collapsed-tools ? 0px
-                : root.right-sidebar-width;
+                : root.right-sidebar-horizontal
+                    ? (root.right-sidebar-dock == "right"
+                        ? self.width - Theme.snap-to-device(self.width - root.right-sidebar-width)
+                        : Theme.snap-to-device(root.right-sidebar-width))
+                    : root.right-sidebar-width;
             property <length> sb-h: root.zen-mode || root.right-sidebar-collapsed ? 0px
                 : dock-area.right-sidebar-strip-outside
                     || dock-area.combine-collapsed-tools ? 0px
-                : root.right-sidebar-height;
+                : root.right-sidebar-horizontal
+                    ? root.right-sidebar-height
+                    : (root.right-sidebar-dock == "bottom"
+                        ? self.height - Theme.snap-to-device(self.height - root.right-sidebar-height)
+                        : Theme.snap-to-device(root.right-sidebar-height));
             // (#splitter-v2 2026-09-04) 间距归零：命中区跨立边界两侧（各压
             // 2px），面板之间不再留空档，否则会透出 dock-area 底色形成灰色
             // 空隙带。原值：root.zen-mode || root.right-sidebar-collapsed ? 0px : 4px
@@ -2861,15 +2875,18 @@ export component AppWindow inherits Window {
                 // 全主界面只此一条：厚 1 设备像素、位置贴设备网格并对齐右栏
                 // 真实边缘（右栏自己的根边框已删除，不再叠出第二条）。hover /
                 // 拖拽转 Theme.accent，两条可拖宽的边界高亮语言一致。
+                // (#sb-edge-snap 2026-10-21) 边界已在 sb-w/sb-h 里对到设备网格，
+                // 这里直接取命中区的中心（2px）就是边界本身 —— 再套一次
+                // snap-to-device 会把已对齐的坐标再 round 一次，线被推到右栏
+                // 内侧 1 设备像素，外侧就留出一条底色缝。左/上停靠时线要落在
+                // 侧栏内侧那一列，故减一个 hairline。
                 Rectangle {
                     x: parent.width < parent.height
-                        ? Theme.snap-to-device(parent.x + 2px
-                            - (root.right-sidebar-dock == "left" ? Theme.hairline() : 0px)) - parent.x
+                        ? 2px - (root.right-sidebar-dock == "left" ? Theme.hairline() : 0px)
                         : 0px;
                     y: parent.width < parent.height
                         ? 0px
-                        : Theme.snap-to-device(parent.y + 2px
-                            - (root.right-sidebar-dock == "top" ? Theme.hairline() : 0px)) - parent.y;
+                        : 2px - (root.right-sidebar-dock == "top" ? Theme.hairline() : 0px);
                     width:  parent.width < parent.height ? Theme.hairline() : parent.width;
                     height: parent.width < parent.height ? parent.height : Theme.hairline();
                     background: sb-split-ta.has-hover || root.right-sidebar-dragging
