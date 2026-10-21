@@ -6,6 +6,13 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **分组右键菜单的「管理分组」：文案回中文、图标换成 group-list（#group-manager-icon）。** 截图里同一菜单其它项都是中文，只有这一行是 `Manage groups`。
+  - 文案：菜单项本来就写了 `@tr("Manage groups")`，是 `lang/zh/LC_MESSAGES/mterm.po` 漏了条目，回落到英文 msgid。补 `msgid "Manage groups" / msgstr "管理分组"`。
+  - 图标：原先是借 `settings` 齿轮，与菜单里其它齿轮语义混淆，也读不出「分组」。新增 `assets/icons/group-list.svg`（复用 `$FOLDER` 骨架 + 两条组清单线），`make-icons.sh` 补 mk 行、`ui/icons.slint` 登记、`gen-preview.sh` 补 row 并重新生成预览页。
+- **The group context menu's “Manage groups” row: Chinese label restored, new `group-list` icon (#group-manager-icon).** Every other row in that menu was Chinese; only this one fell back to English.
+  - Text: the row already carried `@tr("Manage groups")`; `lang/zh/LC_MESSAGES/mterm.po` simply lacked the entry, so the msgid leaked through. Added `msgid "Manage groups" / msgstr "管理分组"`.
+  - Icon: it borrowed the `settings` gear, which both collided with the other gears in the same menu and said nothing about groups. Added `assets/icons/group-list.svg` (the shared `$FOLDER` skeleton plus two group-list rules), with the matching `mk` line, an `ui/icons.slint` registration, and a preview row in `gen-preview.sh` before regenerating the gallery.
+
 - **终端与右侧栏之间的边界线错位 1 设备像素（#sb-edge-snap）。** 用户截图：终端右侧与右栏左侧之间有一条白缝，浅色主题下尤其明显。
   - 根因：右栏宽度来自拖拽（浮点），125% 缩放下 `窗口宽 - 宽度` 落在半个设备像素上；边界线又对 `parent.x + 2px` 做了一次 `snap-to-device` 取整，把线推到右栏内侧 1 设备像素，外侧就漏出一条面板底色。终端底色在那半像素上还多留了一列 AA 边。
   - 修法：把**边界位置**吸到设备网格（`sb-w` / `sb-h` 按停靠边取整：右/下停靠取整 `内侧尺寸 - 面板宽`，左/上停靠取整面板宽），边界线直接取命中区中心（2px）压在边界上，不再二次 round；左/上停靠仍减一个 hairline，落在侧栏内侧那一列。

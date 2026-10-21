@@ -85,6 +85,10 @@ mk create-new-folder "$FOLDER"'<path d="M12 9.5v7M8.5 13h7"/>'
 # 的区别只在内部符号。实测：与 folder 0.44，全库最高 0.515（未撞形）。
 # 箭头长度是调过的：6.5 格偏短不协调，9.5 格会让 11px 与文件夹左壁合并，定在 8 格（12–20px 全档 ok）。
 mk folder-reset "$FOLDER"'<path d="M17.5 13.5H9.5"/><path d="M13 11 9.5 13.5 13 16"/>'
+# 管理分组（组右键菜单的 GM 入口，Ctrl+Shift+G）：$FOLDER 骨架 + 两条清单线。
+# 左侧栏里分组就是文件夹，线表达「组清单 / 批量整理」；13px 下三条轮廓仍可分辨，
+# 内部只有横线，与 folder-reset（箭头）、folder-open（折页）不撞形。
+mk group-list "$FOLDER"'<path d="M7 13h10M7 17h6"/>'
 # 密码可见性 / 显示·隐藏本地终端（app.slint:3394 的 E8F4/E8F5 开关，widgets.slint 密码框也用它）。
 # 原杏仁形两端是**尖角**（`s3-8` 三次曲线的端点就是拐点），16px 下是两根硬刺；
 # 改用 Lucide eye 的圆端收尾（`a1 1 0 0 1 0-.696`）。两版互撞 0.671 → 0.582。
