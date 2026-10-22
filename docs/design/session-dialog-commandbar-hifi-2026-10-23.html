@@ -1,0 +1,1357 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MTerm · 会话弹框与命令栏 · 高保真</title>
+<style>
+/* 沿用 v5 的按钮口径（32–34 高 / 圆角 8 / 13px），但按产品真实尺寸重排：
+   字段 40 高、按钮 34 高、弹框 760 宽。 */
+
+:root{
+  --ease: cubic-bezier(.2,0,0,1);
+  --ff: "Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  --mono: "Cascadia Mono","Consolas","SF Mono",monospace;
+  --page:#0A0B0E; --stage:#0D0F13; --dlg:#15171C; --dlg2:#1A1D23;
+  --field:#101216; --field2:#191C22;
+  --line:#262A32; --line2:#2F343E; --bd:rgba(255,255,255,.16); --bd-hi:rgba(255,255,255,.28);
+  --t1:#E8EAEF; --t2:#B7BCC7; --t3:#8A8F9B; --t4:#646A76;
+  --hov:rgba(255,255,255,.06); --act:rgba(255,255,255,.10);
+  --ac:#1FC8B4; --ac-hi:#43D1C0; --ac-lo:#19A493; --ac-soft:rgba(31,200,180,.16);
+  --ac-tonal:rgba(31,200,180,.10); --ac-tonal-hi:rgba(31,200,180,.17); --ac-tonal-line:rgba(31,200,180,.24);
+  --on-ac:#FFFFFF; --dg:#D1453B; --dg-hi:#DE574C;
+  --ok:#3DD68C;
+}
+
+*,*::before,*::after{ box-sizing:border-box; }
+body{
+  margin:0; background:var(--page); color:var(--t1);
+  font-family:var(--ff); font-size:14px; line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+::selection{ background:var(--ac-soft); }
+
+.top{
+  position:sticky; top:0; z-index:40; display:flex; align-items:center; gap:12px;
+  padding:12px 36px; background:var(--page); border-bottom:1px solid var(--line);
+}
+.top .brand{ font-size:12px; letter-spacing:.16em; font-weight:700; }
+.top .brand span{ color:var(--t4); font-weight:500; letter-spacing:.05em; margin-left:6px; }
+.top .gap{ flex:1; }
+.top .hint{ font-size:11.5px; color:var(--t4); }
+
+.wrap{ max-width:1160px; margin:0 auto; padding:0 36px 90px; }
+
+header.intro{ padding:38px 0 4px; }
+header.intro h1{ font-size:27px; line-height:1.3; font-weight:700; margin:0 0 10px; letter-spacing:-.01em; }
+header.intro p{ margin:0; max-width:80ch; color:var(--t2); font-size:13.5px; }
+header.intro p b{ color:var(--t1); }
+
+/* 屏 */
+.screen{ margin-top:32px; }
+.sc-head{ display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+.sc-head .no{ font-family:var(--mono); font-size:10.5px; color:var(--ac); border:1px solid var(--line2); border-radius:5px; padding:1px 6px; }
+.sc-head h2{ font-size:16px; margin:0; font-weight:600; }
+.sc-head .src{ font-family:var(--mono); font-size:10.5px; color:var(--t4); }
+.sc-head .gap{ flex:1; }
+.sc-head .tag{ font-size:10.5px; color:var(--t3); border:1px solid var(--line2); border-radius:5px; padding:1px 7px; }
+
+.stage{ background:var(--stage); border:1px solid var(--line); border-radius:12px; padding:26px 20px; display:flex; justify-content:center; }
+
+/* ── 弹框 ─────────────────────────────────────────────── */
+.dlg{
+  position:relative; width:100%; max-width:760px;
+  background:var(--dlg); border:1px solid var(--line2); border-radius:10px;
+  display:flex; flex-direction:column;
+}
+.dlg-bar{
+  display:flex; align-items:center; gap:11px; padding:14px 18px;
+  border-bottom:1px solid var(--line);
+}
+.dlg-icon{
+  width:32px; height:32px; border-radius:8px; flex:0 0 auto;
+  background:var(--ac-tonal); border:1px solid var(--ac-tonal-line);
+  display:flex; align-items:center; justify-content:center; color:var(--ac);
+}
+.dlg-icon svg{ width:16px; height:16px; }
+.dlg-icon svg *{ fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.dlg-bar .tt{ display:flex; flex-direction:column; gap:1px; min-width:0; }
+.dlg-bar .tt b{ font-size:14px; font-weight:600; }
+.dlg-bar .tt span{ font-size:11.5px; color:var(--t3); }
+.dlg-bar .gap{ flex:1; }
+.dlg-bar .x{
+  width:28px; height:28px; border-radius:7px; display:flex; align-items:center; justify-content:center;
+  color:var(--t4); cursor:default;
+  transition:background-color 90ms var(--ease), color 90ms var(--ease);
+}
+.dlg-bar .x:hover{ background:var(--dg); color:#fff; }
+.dlg-bar .x svg{ width:13px; height:13px; }
+.dlg-bar .x svg *{ fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; }
+
+.dlg-body{ padding:18px; display:flex; flex-direction:column; gap:14px; }
+
+/* 表单 */
+.grid2{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.grid3{ display:grid; grid-template-columns:1.1fr 1.5fr .8fr; gap:12px; }
+.label{ font-size:12.5px; color:var(--t2); margin-bottom:6px; display:flex; gap:6px; align-items:baseline; }
+.label em{ font-style:normal; font-size:11px; color:var(--t4); }
+.field{
+  height:40px; display:flex; align-items:center; gap:8px; padding:0 12px;
+  border-radius:8px; border:1px solid var(--line2); background:var(--field);
+  color:var(--t1); font-size:13px;
+  transition:border-color 120ms var(--ease), background-color 120ms var(--ease);
+}
+.field:hover{ border-color:var(--bd); }
+.field.ph{ color:var(--t4); }
+.field .grow{ flex:1; }
+.field .eye{ color:var(--t4); display:flex; }
+.field .eye svg{ width:15px; height:15px; }
+.field .eye svg *{ fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
+.hint{ font-size:11.5px; color:var(--t4); margin-top:6px; }
+.hint b{ color:var(--t3); font-weight:500; }
+
+/* 分段 */
+.seg{
+  display:flex; height:40px; padding:3px; gap:2px;
+  border-radius:8px; border:1px solid var(--line2); background:var(--field);
+}
+.seg button{
+  flex:1; border:0; border-radius:6px; background:transparent; color:var(--t2);
+  font-family:var(--ff); font-size:12.5px; font-weight:500; cursor:default;
+  transition:background-color 140ms var(--ease), color 140ms var(--ease);
+}
+.seg button:hover{ background:var(--hov); color:var(--t1); }
+.seg button.on{ background:var(--ac-tonal); color:var(--ac); font-weight:600; }
+
+/* 折叠行 */
+.disclosure{
+  display:flex; align-items:center; gap:8px; height:40px; padding:0 12px;
+  border-radius:8px; border:1px solid var(--line2); color:var(--t2); font-size:12.5px; cursor:default;
+  transition:background-color 120ms var(--ease), border-color 120ms var(--ease), color 120ms var(--ease);
+}
+.disclosure:hover{ background:var(--hov); border-color:var(--bd); color:var(--t1); }
+.disclosure .gap{ flex:1; }
+.disclosure svg{ width:13px; height:13px; }
+.disclosure svg *{ fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+
+/* 页脚 */
+.dlg-foot{
+  display:flex; align-items:center; gap:9px; padding:14px 18px;
+  border-top:1px solid var(--line);
+}
+.dlg-foot .gap{ flex:1; }
+.dlg-foot .status{ font-size:11.5px; color:var(--t4); }
+
+/* ── 按钮 ─────────────────────────────────────────────── */
+.btn{
+  height:34px; padding:0 15px; border-radius:8px; min-width:68px;
+  display:inline-flex; align-items:center; justify-content:center; gap:7px;
+  font-family:var(--ff); font-size:13px; font-weight:500; line-height:1; white-space:nowrap;
+  border:1px solid transparent; background:transparent; color:var(--t1);
+  cursor:default; user-select:none; -webkit-appearance:none; appearance:none;
+  transition:background-color 120ms var(--ease), border-color 120ms var(--ease), color 120ms var(--ease);
+}
+.btn:focus{ outline:none; }
+.btn:focus-visible{ border-color:var(--ac); outline:2px solid var(--ac-soft); outline-offset:2px; }
+.btn svg{ display:block; width:15px; height:15px; flex:0 0 auto; }
+.btn svg *{ fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+
+.btn-primary{ background:var(--ac); border-color:var(--ac); color:var(--on-ac); font-weight:600; }
+.btn-primary:hover{ background:var(--ac-hi); border-color:var(--ac-hi); }
+.btn-primary:active{ background:var(--ac-lo); border-color:var(--ac-lo); }
+
+.btn-secondary{ background:transparent; border-color:var(--bd); color:var(--t2); padding:0 14px; }
+.btn-secondary:hover{ background:var(--hov); border-color:var(--bd-hi); color:var(--t1); }
+.btn-secondary:active{ background:var(--act); }
+
+.btn-tonal{ background:var(--ac-tonal); border-color:var(--ac-tonal-line); color:var(--ac); padding:0 14px; }
+.btn-tonal:hover{ background:var(--ac-tonal-hi); border-color:var(--ac); }
+.btn-tonal:active{ background:var(--ac-tonal-line); }
+
+/* 危险 */
+.btn-danger{ background:var(--dg); border-color:var(--dg); color:#fff; font-weight:600; }
+.btn-danger:hover{ background:var(--dg-hi); border-color:var(--dg-hi); }
+
+/* ── 分组选择器 ───────────────────────────────────────── */
+.picker{ position:relative; }
+.pick-box{
+  height:40px; display:flex; align-items:center; gap:8px; padding:0 10px 0 12px;
+  border-radius:8px; border:1px solid var(--line2); background:var(--field);
+  cursor:default;
+  transition:border-color 120ms var(--ease), background-color 120ms var(--ease);
+}
+.pick-box:hover{ border-color:var(--bd); }
+.pick-box.open{ border-color:var(--ac); }
+.dot{ width:8px; height:8px; border-radius:4px; flex:0 0 auto; }
+.pick-box .val{ flex:1; font-size:13px; color:var(--t1); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pick-box .val.empty{ color:var(--t4); }
+.pick-box .clear{
+  width:20px; height:20px; border-radius:5px; display:flex; align-items:center; justify-content:center;
+  color:var(--t4); opacity:0; transition:opacity 120ms var(--ease), background-color 120ms var(--ease), color 120ms var(--ease);
+}
+.pick-box:hover .clear{ opacity:1; }
+.pick-box .clear:hover{ background:var(--hov); color:var(--t1); }
+.pick-box .clear svg{ width:11px; height:11px; }
+.pick-box .clear svg *{ fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; }
+.pick-box .caret{ width:14px; height:14px; color:var(--t4); transition:transform 160ms var(--ease); }
+.pick-box.open .caret{ transform:rotate(180deg); }
+.pick-box .caret svg{ width:14px; height:14px; }
+.pick-box .caret svg *{ fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+
+.menu{
+  position:absolute; left:0; right:0; top:calc(100% + 6px); z-index:30;
+  background:var(--dlg2); border:1px solid var(--line2); border-radius:9px;
+  overflow:hidden;
+}
+.menu-search{
+  display:flex; align-items:center; gap:8px; padding:9px 11px;
+  border-bottom:1px solid var(--line); color:var(--t4); font-size:12.5px;
+}
+.menu-search svg{ width:13px; height:13px; }
+.menu-search svg *{ fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; }
+.menu-list{ padding:5px; display:flex; flex-direction:column; gap:1px; }
+.opt{
+  display:flex; align-items:center; gap:9px; height:34px; padding:0 9px;
+  border-radius:6px; font-size:12.5px; color:var(--t2); cursor:default;
+  transition:background-color 110ms var(--ease), color 110ms var(--ease);
+}
+.opt:hover{ background:var(--hov); color:var(--t1); }
+#ch-done:hover{ background:var(--ac-hi) !important; color:var(--on-ac) !important; }
+.opt .nm{ flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.opt .ct{ font-size:11px; color:var(--t4); font-variant-numeric:tabular-nums; }
+.opt .ck{ width:14px; height:14px; color:var(--ac); }
+.opt .ck svg{ width:14px; height:14px; }
+.opt .ck svg *{ fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.opt.on{ background:var(--ac-tonal); color:var(--t1); }
+.menu-foot{ border-top:1px solid var(--line); padding:5px; }
+.menu-foot .opt{ color:var(--t3); }
+
+/* ── 命令栏 ───────────────────────────────────────────── */
+.cmdbar{
+  width:100%; max-width:780px; display:flex; align-items:center; gap:10px;
+  padding:7px 10px; background:var(--dlg); border:1px solid var(--line2); border-radius:9px;
+}
+.cmd-quick{
+  display:inline-flex; align-items:center; gap:4px; height:28px; padding:0 7px;
+  border-radius:6px; color:var(--t2); font-size:12.5px; cursor:default;
+  transition:background-color 120ms var(--ease), color 120ms var(--ease);
+}
+.cmd-quick:hover{ background:var(--hov); color:var(--t1); }
+.cmd-quick svg{ width:11px; height:11px; color:var(--t4); }
+.cmd-quick svg *{ fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.cmd-sep{ width:1px; height:18px; background:var(--line2); }
+.cmd-input{
+  flex:1 1 auto; min-width:0; max-width:520px; height:34px;
+  display:flex; align-items:center; gap:0; padding:0 9px 0 10px;
+  border-radius:7px; background:var(--field); color:var(--t4);
+  font-family:var(--mono); font-size:12.5px;
+}
+.cmd-input .ph{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--t4); font-size:12.5px; }
+.in-btn{
+  width:26px; height:26px; border-radius:5px; flex:0 0 auto;
+  display:flex; align-items:center; justify-content:center;
+  color:var(--t3); cursor:default;
+  transition:background-color 120ms var(--ease), color 120ms var(--ease);
+}
+.in-btn:hover{ background:var(--hov); color:var(--t1); }
+.in-btn.on{ background:var(--ac-tonal); color:var(--ac); }
+.in-sep{ width:1px; height:14px; background:var(--line2); margin:0 3px; flex:0 0 auto; }
+.in-btn svg{ width:14px; height:14px; }
+.in-btn svg *{ fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.cmd-input .ps{ color:var(--ac); margin-right:7px; }
+.cmd-hist{
+  width:28px; height:28px; border-radius:6px; display:flex; align-items:center; justify-content:center;
+  color:var(--t3); cursor:default; transition:background-color 120ms var(--ease), color 120ms var(--ease);
+}
+.cmd-hist:hover{ background:var(--hov); color:var(--t1); }
+.cmd-hist svg{ width:15px; height:15px; }
+.cmd-hist svg *{ fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+
+/* 发送范围 */
+.scope{ position:relative; }
+.scope-btn{
+  display:inline-flex; align-items:center; gap:6px; height:28px; padding:0 8px;
+  border-radius:6px; border:1px solid transparent; background:transparent;
+  color:var(--t2); font-family:var(--ff); font-size:12.5px; font-weight:500; cursor:default;
+  transition:background-color 120ms var(--ease), border-color 120ms var(--ease), color 120ms var(--ease);
+}
+.scope-btn:hover{ background:var(--hov); color:var(--t1); }
+.scope-btn.has{ border-color:var(--line2); }
+.scope-btn .ct{ font-size:11px; color:var(--t4); font-variant-numeric:tabular-nums; }
+.scope-btn svg{ width:11px; height:11px; color:var(--t4); }
+.scope-btn svg *{ fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.scope-menu{
+  position:absolute; right:0; bottom:calc(100% + 8px); width:236px; z-index:30;
+  background:var(--dlg2); border:1px solid var(--line2); border-radius:9px; overflow:hidden;
+  padding:5px;
+}
+.scope-menu .opt{ height:38px; }
+.scope-menu .opt .sub{ font-size:11px; color:var(--t4); }
+.scope-menu .opt .ico{ width:16px; height:16px; color:var(--t3); display:flex; }
+.scope-menu .opt .ico svg{ width:16px; height:16px; }
+.scope-menu .opt .ico svg *{ fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.scope-menu .opt.on .ico{ color:var(--ac); }
+.scope-menu .sep{ height:1px; background:var(--line); margin:5px 0; }
+.scope-menu .note{ padding:6px 9px 4px; font-size:11px; color:var(--t4); line-height:1.5; }
+
+/* 多选菜单 */
+.scope-menu.wide{ width:300px; padding:6px; }
+.scope-menu .grp{ padding:9px 9px 5px; font-size:10px; letter-spacing:.09em; color:var(--t4); text-transform:uppercase; }
+.cb{
+  width:15px; height:15px; border-radius:4px; flex:0 0 auto;
+  border:1px solid var(--bd); display:flex; align-items:center; justify-content:center;
+  transition:background-color 120ms var(--ease), border-color 120ms var(--ease);
+}
+.cb svg{ width:10px; height:10px; opacity:0; }
+.cb svg *{ fill:none; stroke:var(--dlg2); stroke-width:2.4; stroke-linecap:round; stroke-linejoin:round; }
+.opt.on .cb{ background:var(--ac); border-color:var(--ac); }
+.opt.on .cb svg{ opacity:1; }
+.opt.all{ height:40px; border-bottom:1px solid var(--line); border-radius:6px 6px 0 0; }
+.opt.dis{ opacity:.55; pointer-events:none; }
+.opt.dis .ct{ color:var(--t3); }
+.opt .ct{ min-width:52px; text-align:right; }
+.sum{
+  margin-top:6px; padding:7px 9px 2px; border-top:1px solid var(--line);
+  font-size:11px; color:var(--t3);
+}
+.acts{ padding:4px 6px 3px; display:flex; justify-content:flex-end; }
+.sum > span{ min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.sum b{ color:var(--t1); font-weight:600; }
+.acts .done{
+  height:28px; min-width:64px; padding:0 15px; border-radius:7px;
+  border:1px solid var(--bd); background:transparent; color:var(--t1);
+  font-family:var(--ff); font-size:12.5px; font-weight:500; cursor:default;
+  display:inline-flex; align-items:center; justify-content:center;
+  transition:background-color 120ms var(--ease), border-color 120ms var(--ease);
+}
+.acts .done:hover{ background:var(--hov); border-color:var(--bd-hi); }
+.acts .done:active{ background:var(--act); }
+.dots{ display:flex; align-items:center; }
+.dots i{ width:7px; height:7px; border-radius:4px; border:1px solid var(--dlg2); margin-left:-3px; }
+.dots i:first-child{ margin-left:0; }
+
+.notes{ display:flex; gap:22px; margin-top:10px; }
+.notes .n{ flex:1; font-size:12.5px; color:var(--t3); line-height:1.6; }
+.notes .n b{ color:var(--t1); font-weight:600; }
+.notes .n b.ok{ color:var(--ac); }
+.notes .n code{ font-family:var(--mono); font-size:.92em; color:var(--t2); }
+
+/* ── 命令栏弹出编辑 ─────────────────────────────────── */
+.pop{
+  width:100%; max-width:620px; background:var(--dlg); border:1px solid var(--line2);
+  border-radius:10px; overflow:hidden; display:flex; flex-direction:column;
+}
+.pop-bar{
+  height:46px; display:flex; align-items:center; gap:9px; padding:0 14px;
+  border-bottom:1px solid var(--line); font-size:13px; font-weight:600;
+}
+.pop-bar .gap{ flex:1; }
+.pop-bar .x{ width:26px; height:26px; border-radius:6px; display:flex; align-items:center; justify-content:center; color:var(--t4); }
+.pop-bar .x:hover{ background:var(--dg); color:#fff; }
+.pop-bar .x svg{ width:12px; height:12px; }
+.pop-bar .x svg *{ fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; }
+.pop-body{ display:grid; grid-template-columns:176px 1fr; min-height:250px; }
+.pop-side{ border-right:1px solid var(--line); padding:7px; display:flex; flex-direction:column; }
+.pop-side .mgr{
+  margin-top:auto; padding:9px 8px 3px; border-top:1px solid var(--line);
+  font-size:11.5px; color:var(--t3); display:flex; align-items:center; gap:6px; cursor:default;
+  transition:color 120ms var(--ease);
+}
+.pop-side .mgr:hover{ color:var(--t1); }
+.pop-side .grp{ padding:8px 8px 4px; font-size:9.5px; letter-spacing:.09em; color:var(--t4); text-transform:uppercase; }
+.pop-side .it{ display:flex; flex-direction:column; gap:1px; padding:6px 8px; border-radius:6px; cursor:default; }
+.pop-side .it:hover{ background:var(--hov); }
+.pop-side .it .t{ font-size:12px; color:var(--t2); }
+.pop-side .it .c{ font-family:var(--mono); font-size:10.5px; color:var(--t4); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pop-edit{
+  padding:14px 16px; background:var(--field); font-family:var(--mono);
+  font-size:12.5px; line-height:1.85; color:var(--t1); position:relative;
+}
+.pop-edit .ln{ color:var(--t4); user-select:none; display:inline-block; width:18px; }
+.pop-edit .cm{ color:var(--t1); }
+.pop-edit .cursor{ display:inline-block; width:1px; height:14px; background:var(--ac); vertical-align:-2px; animation:blink 1.1s steps(1) infinite; }
+@keyframes blink{ 0%,50%{opacity:1} 50.01%,100%{opacity:0} }
+.pop-foot{
+  display:flex; align-items:center; gap:9px; padding:11px 14px; border-top:1px solid var(--line);
+}
+.pop-foot .gap{ flex:1; }
+.pop-foot .kbdhint{ font-size:11px; color:var(--t4); }
+.pop-foot .kbdhint b{ color:var(--t3); font-weight:500; }
+.warnbar{
+  margin:0 14px 11px; padding:8px 10px; border-radius:7px; font-size:11.5px;
+  border:1px solid rgba(209,69,59,.4); background:rgba(209,69,59,.08); color:#DE574C;
+  display:flex; align-items:center; gap:8px;
+}
+.warnbar .gap{ flex:1; }
+.warnbar .ok{ background:#DE574C; color:#fff; padding:3px 10px; border-radius:5px; font-weight:600; font-size:11px; }
+.warnbar .no{ color:var(--t3); font-size:11px; }
+
+/* ── 底部停靠：终端 + 命令栏 + SFTP ─────────────────── */
+.dock{ width:100%; max-width:900px; border:1px solid var(--line2); border-radius:10px; overflow:hidden; background:var(--stage); }
+.dock .term{
+  height:132px; padding:11px 14px; background:#080A0D;
+  font-family:var(--mono); font-size:11.5px; line-height:1.75; color:var(--t4);
+}
+.dock .term b{ color:var(--t3); font-weight:400; }
+.dock .cmdwrap{ position:relative; padding:8px 9px; background:var(--dlg); border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+.dock .cmdwrap .cmdbar{ max-width:none; }
+.dock .warn-float{
+  position:absolute; left:9px; right:9px; bottom:calc(100% + 6px); z-index:5;
+  height:30px; display:flex; align-items:center; gap:8px; padding:0 11px;
+  border-radius:7px; background:rgba(40,16,16,.96);
+  border:1px solid rgba(209,69,59,.45); color:#EE6A5E; font-size:11.5px;
+}
+.dock .warn-float .gap{ flex:1; }
+.dock .warn-float .k{ background:rgba(209,69,59,.18); color:#EE6A5E; padding:0 4px; border-radius:3px; font-family:var(--mono); font-size:10.5px; }
+.dock .sftp{ height:124px; padding:8px 10px; background:var(--dlg2); }
+.dock .sftp .hd{ font-size:11px; color:var(--t4); margin-bottom:5px; display:flex; gap:8px; }
+.dock .sftp .fr{ display:flex; align-items:center; gap:8px; padding:4px 6px; border-radius:5px; font-family:var(--mono); font-size:11px; color:var(--t2); }
+.dock .sftp .fr.on{ background:var(--hov); }
+.dock .sftp .fr .g{ flex:1; }
+
+/* 状态条 */
+.state{ display:flex; align-items:center; gap:8px; margin:0 0 8px; font-size:11.5px; color:var(--t4); }
+.state .pill{ height:20px; padding:0 7px; border-radius:5px; display:inline-flex; align-items:center;
+  border:1px solid var(--line2); color:var(--t3); font-family:var(--mono); font-size:10px; letter-spacing:.04em; }
+.state .pill.ac{ border-color:var(--ac-tonal-line); background:var(--ac-tonal); color:var(--ac); }
+
+table{ width:100%; border-collapse:collapse; font-size:12.5px; margin-top:26px; }
+th{ text-align:left; font-size:10.5px; letter-spacing:.07em; text-transform:uppercase; color:var(--t4);
+  padding:0 10px 8px; border-bottom:1px solid var(--line2); font-weight:600; }
+td{ padding:9px 10px; border-bottom:1px solid var(--line); color:var(--t2); vertical-align:top; }
+td b{ color:var(--t1); }
+code{ font-family:var(--mono); font-size:.9em; color:var(--t1); background:var(--hov); padding:1px 5px; border-radius:4px; }
+
+@media (max-width:980px){
+  .wrap{ padding:0 16px 70px; }
+  .top{ padding:12px 16px; }
+  .grid2,.grid3{ grid-template-columns:1fr; }
+  .notes{ flex-direction:column; gap:8px; }
+}
+</style>
+</head>
+<body>
+
+<div class="top">
+  <div class="brand">MTERM <span>会话弹框 · 命令栏</span></div>
+  <div class="gap"></div>
+  <span class="hint">下拉都可以点开看</span>
+</div>
+
+<div class="wrap">
+
+  <header class="intro">
+    <h1>三个页脚按钮各司其职，<br>「所有会话」变成能选范围的下拉。</h1>
+    <p>
+      页脚固定三个角色：<b>测试连接</b>（浅填充，只在连接页出现）、<b>取消</b>（描边，唯一退路）、
+      <b>创建 / 保存</b>（实心，唯一落点）。分组选择器把「颜色点」挪到左侧当前缀、清除键只在悬停时出现；
+      命令栏的发送范围从死文字变成下拉：<b>频道</b>与<b>所有</b>二选一，没有频道时不给下拉。
+    </p>
+  </header>
+
+  <!-- 01 新建会话 -->
+  <div class="screen">
+    <div class="sc-head">
+      <span class="no">01</span><h2>新建会话</h2>
+      <span class="src">session_dialog.slint</span>
+      <span class="gap"></span>
+      <span class="tag">页脚三键</span>
+    </div>
+    <div class="stage">
+      <div class="dlg">
+        <div class="dlg-bar">
+          <div class="dlg-icon"><svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M4.5 6l2 2-2 2M8.5 10h3"/></svg></div>
+          <div class="tt"><b>新建会话</b><span>新建 SSH 连接</span></div>
+          <span class="gap"></span>
+          <span class="x"><svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></span>
+        </div>
+
+        <div class="dlg-body">
+          <div class="grid2">
+            <div>
+              <div class="label">名称 <em>可选</em></div>
+              <div class="field ph">给这台机器起个名字</div>
+            </div>
+            <div>
+              <div class="label">分组 <em>可选</em></div>
+              <div class="picker">
+                <div class="pick-box">
+                  <span class="val empty">未分组</span>
+                  <span class="clear"><svg viewBox="0 0 16 16"><path d="M5 5l6 6M11 5l-6 6"/></svg></span>
+                  <span class="caret"><svg viewBox="0 0 16 16"><path d="M4 6.5L8 10.5l4-4"/></svg></span>
+                </div>
+              </div>
+              <div class="hint">不选就放进<b>默认组</b></div>
+            </div>
+          </div>
+
+          <div>
+            <div class="label">备注 <em>可选</em></div>
+            <div class="field ph">例如：仅内网可访问 · 维护窗口 周五 22:00</div>
+          </div>
+
+          <div class="grid3">
+            <div>
+              <div class="label">连接协议</div>
+              <div class="field"><span class="grow">SSH</span><span class="caret" style="color:var(--t4);display:flex"><svg viewBox="0 0 16 16" style="width:14px;height:14px"><path d="M4 6.5L8 10.5l4-4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
+            </div>
+            <div>
+              <div class="label">主机 / IP</div>
+              <div class="field">192.168.100.202</div>
+            </div>
+            <div>
+              <div class="label">端口</div>
+              <div class="field">22</div>
+            </div>
+          </div>
+
+          <div>
+            <div class="label">认证方式</div>
+            <div class="seg">
+              <button class="on">密码</button>
+              <button>键盘交互</button>
+              <button>私钥</button>
+            </div>
+          </div>
+
+          <div class="grid2">
+            <div>
+              <div class="label">用户名</div>
+              <div class="field">root</div>
+            </div>
+            <div>
+              <div class="label">密码</div>
+              <div class="field">••••••••<span class="grow"></span>
+                <span class="eye"><svg viewBox="0 0 16 16"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8s-2.5 4.5-6.5 4.5S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/><path d="M2 14L14 2"/></svg></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="disclosure">
+            显示高级选项
+            <span class="gap"></span>
+            <svg viewBox="0 0 16 16"><path d="M6.5 4L10.5 8l-4 4"/></svg>
+          </div>
+        </div>
+
+        <div class="dlg-foot">
+          <button class="btn btn-tonal">
+            <svg viewBox="0 0 16 16"><path d="M1 8h2.5l2-4.5 3.5 9 2-4.5H15"/></svg>
+            测试连接
+          </button>
+          <span class="status">未连接</span>
+          <span class="gap"></span>
+          <button class="btn btn-secondary">取消</button>
+          <button class="btn btn-primary">创建</button>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <div class="n"><b class="ok">三个按钮三种角色。</b>测试连接有青绿浅面（功能键），取消是描边（退路），创建是实心（落点）。三个都不是同一种形状，也不会互相抢。</div>
+      <div class="n"><b>分组选择器先收起。</b>没选分组时显示「未分组」的灰字，清除键不出现 —— 空值上挂一个 × 只会让人以为已经选了什么。</div>
+    </div>
+  </div>
+
+  <!-- 02 编辑会话（含下拉展开） -->
+  <div class="screen">
+    <div class="sc-head">
+      <span class="no">02</span><h2>编辑会话 · 分组下拉展开</h2>
+      <span class="src">session_dialog.slint · group picker</span>
+      <span class="gap"></span>
+      <span class="tag">你圈出来的那个框</span>
+    </div>
+    <div class="stage" style="padding-bottom:40px">
+      <div class="dlg" style="overflow:visible">
+        <div class="dlg-bar">
+          <div class="dlg-icon"><svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M4.5 6l2 2-2 2M8.5 10h3"/></svg></div>
+          <div class="tt"><b>编辑会话</b><span>编辑「SSH」连接</span></div>
+          <span class="gap"></span>
+          <span class="x"><svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></span>
+        </div>
+
+        <div class="dlg-body">
+          <div class="grid2">
+            <div>
+              <div class="label">名称 <em>可选</em></div>
+              <div class="field">202 (copy) (copy)</div>
+            </div>
+            <div>
+              <div class="label">分组 <em>可选</em></div>
+              <div class="picker">
+                <div class="pick-box open">
+                  <span class="dot" style="background:#E25C5C"></span>
+                  <span class="val">Test</span>
+                  <span class="clear" style="opacity:1"><svg viewBox="0 0 16 16"><path d="M5 5l6 6M11 5l-6 6"/></svg></span>
+                  <span class="caret"><svg viewBox="0 0 16 16"><path d="M4 6.5L8 10.5l4-4"/></svg></span>
+                </div>
+
+                <div class="menu">
+                  <div class="menu-search">
+                    <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+                    搜索分组…
+                  </div>
+                  <div class="menu-list">
+                    <div class="opt on">
+                      <span class="dot" style="background:#E25C5C"></span>
+                      <span class="nm">Test</span>
+                      <span class="ct">6 台</span>
+                      <span class="ck"><svg viewBox="0 0 16 16"><path d="M3 8.5l3 3 7-7"/></svg></span>
+                    </div>
+                    <div class="opt">
+                      <span class="dot" style="background:#4A90E2"></span>
+                      <span class="nm">生产环境</span>
+                      <span class="ct">12 台</span>
+                    </div>
+                    <div class="opt">
+                      <span class="dot" style="background:#E8A33E"></span>
+                      <span class="nm">测试机</span>
+                      <span class="ct">3 台</span>
+                    </div>
+                    <div class="opt">
+                      <span class="dot" style="background:#9196A3"></span>
+                      <span class="nm">默认组</span>
+                      <span class="ct">8 台</span>
+                    </div>
+                  </div>
+                  <div class="menu-foot">
+                    <div class="opt">
+                      <span style="display:flex;width:14px"><svg viewBox="0 0 16 16" style="width:14px;height:14px"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+                      <span class="nm">新建分组</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="hint">已有分组「Test」· 6 台</div>
+            </div>
+          </div>
+
+          <div>
+            <div class="label">备注 <em>可选</em></div>
+            <div class="field ph">例如：仅内网可访问 · 维护窗口 周五 22:00</div>
+          </div>
+
+          <div class="grid3">
+            <div>
+              <div class="label">连接协议</div>
+              <div class="field"><span class="grow">SSH</span><span class="caret" style="color:var(--t4);display:flex"><svg viewBox="0 0 16 16" style="width:14px;height:14px"><path d="M4 6.5L8 10.5l4-4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
+            </div>
+            <div>
+              <div class="label">主机 / IP</div>
+              <div class="field">192.168.100.202</div>
+            </div>
+            <div>
+              <div class="label">端口</div>
+              <div class="field">22</div>
+            </div>
+          </div>
+
+          <div>
+            <div class="label">认证方式</div>
+            <div class="seg">
+              <button class="on">密码</button>
+              <button>键盘交互</button>
+              <button>私钥</button>
+            </div>
+          </div>
+
+          <div class="grid2">
+            <div>
+              <div class="label">用户名</div>
+              <div class="field">root</div>
+            </div>
+            <div>
+              <div class="label">密码</div>
+              <div class="field">••••••••<span class="grow"></span>
+                <span class="eye"><svg viewBox="0 0 16 16"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8s-2.5 4.5-6.5 4.5S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/><path d="M2 14L14 2"/></svg></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="disclosure">
+            显示高级选项
+            <span class="gap"></span>
+            <svg viewBox="0 0 16 16"><path d="M6.5 4L10.5 8l-4 4"/></svg>
+          </div>
+        </div>
+
+        <div class="dlg-foot">
+          <button class="btn btn-tonal">
+            <svg viewBox="0 0 16 16"><path d="M1 8h2.5l2-4.5 3.5 9 2-4.5H15"/></svg>
+            测试连接
+          </button>
+          <span class="status">上次成功 · 2 天前</span>
+          <span class="gap"></span>
+          <button class="btn btn-secondary">取消</button>
+          <button class="btn btn-primary">保存</button>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <div class="n"><b>颜色点从右挪到左。</b>原来「Test × ● ⌄」三个元素挤在右侧，现在「● Test」是一个整体，右侧只留清除和展开 —— 眼睛不用在右边三个小图标之间分辨。</div>
+      <div class="n"><b>下拉里给了三样原来没有的：</b>搜索（分组多了才用得上）、每组的会话数、以及「新建分组」的入口（不用退出去建）。</div>
+    </div>
+  </div>
+
+  <!-- 03 命令栏 -->
+  <div class="screen">
+    <div class="sc-head">
+      <span class="no">03</span><h2>命令栏 · 布局与文案</h2>
+      <span class="src">interface_panel.slint</span>
+      <span class="gap"></span>
+      <span class="tag">输入框收窄 · 快捷内嵌</span>
+    </div>
+
+    <!-- 旧 -->
+    <div class="stage" style="padding:18px 20px">
+      <div style="width:100%;max-width:1000px">
+        <div class="state"><span class="pill">现在</span>快捷命令占最左、输入框拉满 —— 右半边全被输入框吃掉</div>
+        <div class="cmdbar" style="max-width:1000px">
+          <span class="cmd-quick">快捷<svg viewBox="0 0 16 16"><path d="M4 10L8 6l4 4"/></svg></span>
+          <span class="cmd-sep"></span>
+          <div class="cmd-input" style="max-width:none"><span class="ps">$</span><span class="ph">输入命令，回车发送</span></div>
+          <span class="cmd-hist"><svg viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.7-4M2.5 2v3h3"/><path d="M8 5v3.2l2.2 1.3"/></svg></span>
+          <span class="scope-btn">所有会话<span class="ct">3</span></span>
+          <button class="btn btn-primary" style="height:30px;min-width:64px">发送</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 新 -->
+    <div class="stage" style="padding:18px 20px;margin-top:12px">
+      <div style="width:100%;max-width:900px">
+        <div class="state"><span class="pill ac">改后</span>输入框收到一半左右，快捷与历史并到输入框右端</div>
+        <div class="cmdbar">
+          <div class="cmd-input">
+            <span class="ps">$</span>
+            <span class="ph">输入命令，回车发送</span>
+            <span class="in-btn" title="快捷命令"><svg viewBox="0 0 16 16"><path d="M9 1.5L4 9h3.5L7 14.5 12 7H8.5z"/></svg></span>
+            <span class="in-btn" title="历史命令"><svg viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.7-4M2.5 2v3h3"/><path d="M8 5v3.2l2.2 1.3"/></svg></span>
+          </div>
+          <span class="scope-btn has">全部标签页<span class="ct">3</span><svg viewBox="0 0 16 16"><path d="M4 6.5L8 10.5l4-4"/></svg></span>
+          <button class="btn btn-primary" style="height:30px;min-width:64px">发送</button>
+        </div>
+
+        <div style="margin-top:14px">
+          <div class="state"><span class="pill ac">选中频道后</span>范围键显示颜色点与合计台数</div>
+          <div class="cmdbar">
+            <div class="cmd-input">
+              <span class="ps">$</span>
+              <span class="ph" style="color:var(--t1);font-family:var(--mono)">docker compose ps</span>
+              <span class="in-btn" title="快捷命令"><svg viewBox="0 0 16 16"><path d="M9 1.5L4 9h3.5L7 14.5 12 7H8.5z"/></svg></span>
+              <span class="in-btn" title="历史命令"><svg viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.7-4M2.5 2v3h3"/><path d="M8 5v3.2l2.2 1.3"/></svg></span>
+            </div>
+            <span class="scope-btn has">
+              <span class="dots"><i style="background:#D1453B"></i><i style="background:#E8A33E"></i></span>
+              2 个频道<span class="ct">5</span>
+              <svg viewBox="0 0 16 16"><path d="M4 6.5L8 10.5l4-4"/></svg>
+            </span>
+            <button class="btn btn-primary" style="height:30px;min-width:64px">发送</button>
+          </div>
+        </div>
+
+        <div style="margin-top:14px">
+          <div class="state"><span class="pill">窄窗口</span>范围键退化成数字 + 箭头，优先保住输入框</div>
+          <div class="cmdbar" style="max-width:520px">
+            <div class="cmd-input">
+              <span class="ps">$</span>
+              <span class="ph">输入命令…</span>
+              <span class="in-btn" title="快捷命令"><svg viewBox="0 0 16 16"><path d="M9 1.5L4 9h3.5L7 14.5 12 7H8.5z"/></svg></span>
+            </div>
+            <span class="scope-btn has"><span class="ct" style="color:var(--t2)">5</span><svg viewBox="0 0 16 16"><path d="M4 6.5L8 10.5l4-4"/></svg></span>
+            <button class="btn btn-primary" style="height:30px;min-width:56px;padding:0 12px">发送</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes" style="margin-top:14px">
+      <div class="n"><b class="ok">输入框收窄到 620。</b>一条命令很少超过 60 字符，剩下的空间本来就是空的。收窄后右侧不再挤：范围键能写全「全部标签页」，发送键也不必压到 56 宽。</div>
+      <div class="n"><b class="ok">发送键去掉箭头图标。</b>图标和「发送」两个字说的是同一件事；去掉后按钮窄了 20px，文字更居中，也不和输入框里的 $ 抢。
+        <br><br>
+        名字保留「发送」：这个按钮可能是「发到终端」也可能「发并执行」（取决于快捷命令的开关），叫「执行」反而会把另一种情况说错。要更准就得做成两个动作。</div>
+    </div>
+  </div>
+
+  <!-- 04 文案与位置 -->
+  <div class="screen">
+    <div class="sc-head">
+      <span class="no">04</span><h2>两个决策</h2>
+      <span class="src">初始文案 / 快捷命令的位置</span>
+      <span class="gap"></span>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:6px">
+      <div style="background:var(--dlg);border:1px solid var(--line2);border-radius:10px;padding:16px 18px">
+        <h4 style="font-size:13px;margin:0 0 8px">初始文案：别再叫「所有会话」</h4>
+        <p style="font-size:12.5px;color:var(--t3);margin:0 0 12px;line-height:1.65">
+          项目里「会话」已经被<b style="color:var(--t1)">侧栏保存的连接</b>占用了。命令栏发的是<b style="color:var(--t1)">已打开的标签页</b>，
+          用同一个词会让用户以为发给了侧栏里所有连接（包括没打开的）。
+        </p>
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <span class="o-btn o-28-4 o-text" style="text-decoration:line-through">所有会话</span>
+          <span style="color:var(--t4);font-size:12px">→</span>
+          <span class="scope-btn has">全部标签页<span class="ct">3</span><svg viewBox="0 0 16 16"><path d="M4 6.5L8 10.5l4-4"/></svg></span>
+        </div>
+        <p style="font-size:11.5px;color:var(--t4);margin:10px 0 0;line-height:1.6">
+          菜单第一项也同步改为「全部标签页 · 3 个」。如果嫌四个字长，退一步用「全部」（配合菜单里的说明），但不要用「会话」。
+        </p>
+      </div>
+
+      <div style="background:var(--dlg);border:1px solid var(--line2);border-radius:10px;padding:16px 18px">
+        <h4 style="font-size:13px;margin:0 0 8px">快捷命令放在最左，不合理</h4>
+        <ul style="margin:0 0 10px;padding-left:17px;font-size:12.5px;color:var(--t3);line-height:1.7">
+          <li>它是<b style="color:var(--t1)">输入辅助</b>，不是独立动作 —— 点它是为了「往输入框里塞一条命令」，和右侧的「去哪发」不在一个层级</li>
+          <li>最左是视线起点、也是最高频位置，但它的使用频率排在「输入命令」之后</li>
+          <li>它和「历史」是同一种东西（一个来自预置、一个来自记录），却分居两端</li>
+          <li>窗口变窄时它第一个被挤掉，输入框起点跟着跳</li>
+        </ul>
+        <p style="font-size:12px;color:var(--t3);margin:0">
+          改法：并到输入框右端（⚡ / 🕘），输入框从最左开始。两者都作用于「输入」，位置和语义就对齐了。
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 05 还能往前走哪几步 -->
+  <div class="screen">
+    <div class="sc-head">
+      <span class="no">05</span><h2>还能往前走哪几步</h2>
+      <span class="src">按价值排序 · 每张卡都有示意</span>
+      <span class="gap"></span>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:6px">
+
+      <!-- 1 危险命令 -->
+      <div style="background:var(--dlg);border:1px solid var(--line2);border-radius:10px;padding:16px 18px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <span style="font-family:var(--mono);font-size:10px;color:var(--dg);letter-spacing:.08em">MUST</span>
+          <h4 style="font-size:13px;margin:0">危险命令：发送键变红，点完再确认一次</h4>
+        </div>
+        <div style="background:var(--stage);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+          <div class="cmdbar" style="max-width:none">
+            <div class="cmd-input" style="max-width:none;color:#DE574C;font-family:var(--mono)">
+              <span class="ps" style="color:#DE574C">$</span>
+              <span class="ph" style="color:#DE574C">rm -rf /var/log/*</span>
+            </div>
+            <button class="btn" style="height:30px;min-width:64px;background:transparent;border-color:#DE574C;color:#DE574C">发送</button>
+          </div>
+          <div style="margin-top:8px;padding:8px 10px;border:1px solid rgba(209,69,59,.4);border-radius:7px;background:rgba(209,69,59,.08);font-size:11.5px;color:#DE574C;display:flex;align-items:center;gap:8px">
+            <span>⚠</span>这条命令将发往 <b>5 台</b>机器
+            <span style="flex:1"></span>
+            <span style="color:var(--t3)">取消</span>
+            <span style="background:#DE574C;color:#fff;padding:3px 10px;border-radius:5px;font-weight:600">仍然发送</span>
+          </div>
+        </div>
+        <p style="font-size:12px;color:var(--t3);margin:0;line-height:1.65">
+          检测 <code>rm</code> / <code>shutdown</code> / <code>mkfs</code> / <code>dd</code> / 重定向 <code>&gt;</code> 等模式，
+          发送键转红，点它不是发送而是确认。<b style="color:var(--t1)">多目标命令最怕的就是这一条。</b>
+        </p>
+      </div>
+
+      <!-- 2 发送前预览 -->
+      <div style="background:var(--dlg);border:1px solid var(--line2);border-radius:10px;padding:16px 18px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <span style="font-family:var(--mono);font-size:10px;color:var(--ac);letter-spacing:.08em">HIGH</span>
+          <h4 style="font-size:13px;margin:0">发送前：悬停发送键，先看发给谁</h4>
+        </div>
+        <div style="background:var(--stage);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+          <div class="cmdbar" style="max-width:none">
+            <div class="cmd-input" style="max-width:none"><span class="ps">$</span><span class="ph">systemctl restart nginx</span></div>
+            <span class="scope-btn has"><span class="dots"><i style="background:#D1453B"></i><i style="background:#E8A33E"></i></span>2 个频道<span class="ct">5</span><svg viewBox="0 0 16 16"><path d="M4 6.5L8 10.5l4-4"/></svg></span>
+            <button class="btn btn-primary" style="height:30px;min-width:64px">发送</button>
+          </div>
+          <div style="margin-top:8px;padding:8px 10px;border:1px solid var(--line2);border-radius:7px;background:var(--dlg2);font-size:11.5px;color:var(--t2)">
+            <div style="font-size:10.5px;color:var(--t4);margin-bottom:4px">这条命令将发到：</div>
+            <span style="font-family:var(--mono);font-size:11px">web-01 · web-02 · db-01 · cache-01 · api-01</span>
+          </div>
+        </div>
+        <p style="font-size:12px;color:var(--t3);margin:0;line-height:1.65">
+          悬停发送键浮出目标清单（机器名，不是只写台数）。手一滑能看到这次会打到哪几台，比「5」这个数字有用。
+        </p>
+      </div>
+
+      <!-- 3 输入即补全 -->
+      <div style="background:var(--dlg);border:1px solid var(--line2);border-radius:10px;padding:16px 18px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <span style="font-family:var(--mono);font-size:10px;color:var(--ac);letter-spacing:.08em">HIGH</span>
+          <h4 style="font-size:13px;margin:0">输入即补全：不用点开快捷命令面板</h4>
+        </div>
+        <div style="background:var(--stage);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+          <div class="cmdbar" style="max-width:none;margin-bottom:6px">
+            <div class="cmd-input" style="max-width:none"><span class="ps">$</span><span class="ph" style="color:var(--t1);font-family:var(--mono)">dock</span></div>
+            <button class="btn btn-primary" style="height:30px;min-width:64px">发送</button>
+          </div>
+          <div style="padding:4px;border:1px solid var(--line2);border-radius:7px;background:var(--dlg2)">
+            <div class="opt on" style="height:32px"><span class="nm" style="font-family:var(--mono);font-size:12px">docker compose ps</span><span class="ct" style="color:var(--t4)">快捷</span></div>
+            <div class="opt" style="height:32px"><span class="nm" style="font-family:var(--mono);font-size:12px">docker compose logs -f</span><span class="ct" style="color:var(--t4)">历史 · 3 天前</span></div>
+            <div class="opt" style="height:32px"><span class="nm" style="font-family:var(--mono);font-size:12px">docker system df</span><span class="ct" style="color:var(--t4)">历史 · 上周</span></div>
+          </div>
+        </div>
+        <p style="font-size:12px;color:var(--t3);margin:0;line-height:1.65">
+          输入三个字符就开始建议：快捷命令和历史合成一个来源，<code>Tab</code> 接受、<code>↑↓</code> 选、<code>Esc</code> 关。
+          比点开面板快一个量级。
+        </p>
+      </div>
+
+      <!-- 4 发送模式 -->
+      <div style="background:var(--dlg);border:1px solid var(--line2);border-radius:10px;padding:16px 18px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <span style="font-family:var(--mono);font-size:10px;color:var(--ac);letter-spacing:.08em">MID</span>
+          <h4 style="font-size:13px;margin:0">「发送」拆成两个动作</h4>
+        </div>
+        <div style="background:var(--stage);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+          <div class="cmdbar" style="max-width:none">
+            <div class="cmd-input" style="max-width:none"><span class="ps">$</span><span class="ph" style="color:var(--t1);font-family:var(--mono)">df -h</span></div>
+            <button class="btn btn-primary" style="height:30px;min-width:64px">发送</button>
+            <button class="btn btn-secondary" style="height:30px;min-width:0;padding:0 8px;font-size:12px">⌄</button>
+          </div>
+          <div style="margin-top:6px;font-size:11px;color:var(--t4)">⌄ 展开：○ 发送到终端（不执行）　● 发送并执行</div>
+        </div>
+        <p style="font-size:12px;color:var(--t3);margin:0;line-height:1.65">
+          现在「点击即执行」藏在快捷命令的开关里，发出去才知道执行了。把模式提到发送键旁边，
+          按 <code>Ctrl+Enter</code> 直接执行、<code>Enter</code> 只发送。
+        </p>
+      </div>
+
+      <!-- 5 结果回执 -->
+      <div style="background:var(--dlg);border:1px solid var(--line2);border-radius:10px;padding:16px 18px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <span style="font-family:var(--mono);font-size:10px;color:var(--ac);letter-spacing:.08em">MID</span>
+          <h4 style="font-size:13px;margin:0">发送后：上方出结果条</h4>
+        </div>
+        <div style="background:var(--stage);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+          <div style="padding:8px 10px;border:1px solid var(--line2);border-radius:7px;background:var(--dlg2);font-size:11.5px;color:var(--t2);display:flex;align-items:center;gap:8px">
+            <span style="color:var(--ok)">✓</span>已发送 <b>4 / 5</b> 台
+            <span style="color:var(--t4)">·</span>
+            <span style="color:#DE574C">db-02 断线</span>
+            <span style="flex:1"></span>
+            <span style="color:var(--t3);border:1px solid var(--bd);border-radius:5px;padding:2px 8px">重发这台</span>
+          </div>
+        </div>
+        <p style="font-size:12px;color:var(--t3);margin:0;line-height:1.65">
+          选了 5 台、实际送到 4 台时界面必须写出来，不能让用户以为全发了。
+          失败的机器一键重发，不用重新选范围、重新输命令。
+        </p>
+      </div>
+
+      <!-- 6 不建议 -->
+      <div style="background:var(--dlg);border:1px solid var(--line2);border-radius:10px;padding:16px 18px;opacity:.75">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <span style="font-family:var(--mono);font-size:10px;color:var(--t4);letter-spacing:.08em">NO</span>
+          <h4 style="font-size:13px;margin:0">不建议做的</h4>
+        </div>
+        <ul style="margin:0;padding-left:17px;font-size:12px;color:var(--t3);line-height:1.8">
+          <li><b style="color:var(--t2)">宏录制 / 命令队列</b>：把多条命令排成序列执行。这该用快捷命令组解决，不该塞进命令栏。</li>
+          <li><b style="color:var(--t2)">分屏结果显示</b>：发送后把命令栏变成结果面板。结果应该出现在各个标签页自己的终端里，不是命令栏。</li>
+          <li><b style="color:var(--t2)">AI 补全</b>：命令预测模型。本地命令词库 + 历史已经足够，上模型是杀鸡用牛刀。</li>
+        </ul>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 06 弹出编辑 -->
+  <div class="screen">
+    <div class="sc-head">
+      <span class="no">06</span><h2>命令栏 · 弹出编辑</h2>
+      <span class="src">一条横条写不下的命令</span>
+      <span class="gap"></span>
+      <span class="tag">同一份草稿</span>
+    </div>
+
+    <div class="stage" style="padding:18px 20px">
+      <div style="width:100%;max-width:900px">
+        <div class="state"><span class="pill">入口</span>输入框右端第三个图标（⚡🕘 之后，用一条细线隔开）—— 也可以双击输入框、或 <b style="color:var(--t3)">Ctrl+Shift+E</b></div>
+        <div class="cmdbar">
+          <div class="cmd-input">
+            <span class="ps">$</span>
+            <span class="ph">输入命令，回车发送</span>
+            <span class="in-btn" title="快捷命令"><svg viewBox="0 0 16 16"><path d="M9 1.5L4 9h3.5L7 14.5 12 7H8.5z"/></svg></span>
+            <span class="in-btn" title="历史命令"><svg viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.7-4M2.5 2v3h3"/><path d="M8 5v3.2l2.2 1.3"/></svg></span>
+            <span class="in-sep"></span>
+            <span class="in-btn" title="弹出编辑（双击输入框）"><svg viewBox="0 0 16 16"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5L9 7M2.5 13.5L7 9"/></svg></span>
+          </div>
+          <span class="scope-btn has">全部标签页<span class="ct">3</span><svg viewBox="0 0 16 16"><path d="M4 6.5L8 10.5l4-4"/></svg></span>
+          <button class="btn btn-primary" style="height:30px;min-width:64px">发送</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage" style="padding:26px 20px;margin-top:12px">
+      <div class="pop">
+        <div class="pop-bar">
+          发送命令
+          <span class="gap"></span>
+          <span class="x"><svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></span>
+        </div>
+        <div class="pop-body">
+          <div class="pop-side">
+            <div class="grp">快捷命令</div>
+            <div class="it"><span class="t">查看磁盘</span><span class="c">df -h</span></div>
+            <div class="it"><span class="t">重启 nginx</span><span class="c">systemctl restart nginx</span></div>
+            <div class="it"><span class="t">容器状态</span><span class="c">docker compose ps</span></div>
+            <div class="grp">最近</div>
+            <div class="it"><span class="t">查看日志</span><span class="c">tail -f /var/log/nginx/error.log</span></div>
+            <div class="it"><span class="t">磁盘占用</span><span class="c">du -sh /var/* | sort -h</span></div>
+            <div class="mgr">管理快捷命令…</div>
+          </div>
+          <div class="pop-edit">
+            <div><span class="ln">1</span><span class="cm">for i in 1 2 3; do</span></div>
+            <div><span class="ln">2</span><span class="cm">  echo "node-$i"</span></div>
+            <div><span class="ln">3</span><span class="cm">done</span><span class="cursor"></span></div>
+            <div><span class="ln">4</span></div>
+            <div><span class="ln">5</span></div>
+          </div>
+        </div>
+        <div class="pop-foot">
+          <span class="scope-btn has">全部标签页<span class="ct">3</span><svg viewBox="0 0 16 16"><path d="M4 6.5L8 10.5l4-4"/></svg></span>
+          <span class="gap"></span>
+          <span class="kbdhint"><b>Ctrl+Enter</b> 发送 · <b>Esc</b> 收起</span>
+          <button class="btn btn-primary" style="height:30px;min-width:64px">发送</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes" style="margin-top:14px">
+      <div class="n"><b class="ok">什么时候该弹出来：</b>命令超过两行、要写 <code>for</code> / <code>while</code> / heredoc、或者需要一边看上面的输出一边改命令。一行的 <code>df -h</code> 不值得弹窗。</div>
+      <div class="n"><b class="ok">收起 = 回到条状，不是关掉命令栏。</b>Esc 或右上角 × 把内容原样带回底部那条，命令栏一直在；只有发送成功才清空。想让终端更大是另一件事（命令栏左侧的折叠键），不该靠关弹窗实现。</div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">
+      <div style="background:var(--dlg);border:1px solid var(--line2);border-radius:10px;padding:16px 18px">
+        <h4 style="font-size:13px;margin:0 0 8px">弹窗里多出来的三样东西</h4>
+        <ul style="margin:0;padding-left:17px;font-size:12px;color:var(--t3);line-height:1.8">
+          <li><b style="color:var(--t1)">左侧快捷 / 最近列表</b>：条状放不下，弹窗有空间。点一条插入到光标处，不覆盖已写的。</li>
+          <li><b style="color:var(--t1)">行号 + 光标</b>：多行脚本没有行号很难数括号。行号只是显示，不参与复制。</li>
+          <li><b style="color:var(--t1)">底部「管理快捷命令…」</b>：跳到现有的快捷命令管理界面，不在弹窗里另做一套增删改 —— 两个地方都能改，状态迟早不一致。</li>
+        </ul>
+        <p style="font-size:12px;color:var(--t3);margin:10px 0 0;line-height:1.65">
+          范围选择键也在弹窗底部 —— 否则用户在弹窗里写完命令，还得收起来才能改发给谁。
+        </p>
+      </div>
+
+      <div style="background:var(--dlg);border:1px solid var(--line2);border-radius:10px;padding:16px 18px">
+        <h4 style="font-size:13px;margin:0 0 8px">危险命令：告警只在编辑区下方、贴着发送键</h4>
+        <div style="border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:0 0 10px">
+          <div style="padding:10px 11px;background:var(--field);font-family:var(--mono);font-size:12px;color:var(--t3)">rm -rf /var/log/*</div>
+          <div style="padding:7px 11px;background:rgba(209,69,59,.10);border-top:1px solid rgba(209,69,59,.28);border-bottom:1px solid rgba(209,69,59,.28);font-size:11.5px;color:#DE574C;display:flex;align-items:center;gap:7px">
+            <span>⚠</span>检测到删除操作 <code style="background:rgba(209,69,59,.14);color:#DE574C;padding:0 4px;border-radius:3px">rm -rf</code> · 将发往 <b>5 台</b>机器
+          </div>
+          <div style="display:flex;align-items:center;gap:9px;padding:9px 11px;background:var(--dlg)">
+            <span class="scope-btn has" style="border-color:var(--line2)"><span class="dots"><i style="background:#D1453B"></i><i style="background:#E8A33E"></i></span>2 个频道<span class="ct">5</span><svg viewBox="0 0 16 16"><path d="M4 6.5L8 10.5l4-4"/></svg></span>
+            <span style="flex:1"></span>
+            <button class="btn" style="height:28px;min-width:78px;background:#D1453B;border-color:#D1453B;color:#fff;font-weight:600;font-size:12px">仍然发送</button>
+          </div>
+        </div>
+        <p style="font-size:12px;color:var(--t3);margin:0;line-height:1.65">
+          位置不是随便选的：它<b style="color:var(--t1)">夹在代码和发送键之间</b>——视线从最后一行代码落到按钮上，必经这一条。
+          放到标题下面会像「输入格式错了」，但危险命令不是格式问题。
+        </p>
+        <p style="font-size:11.5px;color:var(--t4);margin:8px 0 0;line-height:1.6">
+          这一条占的是<b>预留位置</b>（高 28），出现时不改动弹窗高度 —— 否则每敲一个字符弹窗都跳一下。
+        </p>
+        <div style="margin-top:10px;padding:9px 11px;border:1px solid var(--line2);border-radius:7px;background:var(--dlg2)">
+          <div style="font-size:11px;color:var(--t4);margin-bottom:3px">怎么让它消失</div>
+          <div style="font-size:12px;color:var(--t2);line-height:1.6">
+            把 <code style="background:var(--hov);padding:0 4px;border-radius:3px">rm -rf</code> 删掉就行 —— 检测跟着输入实时跑，
+            告警条自己消失、按钮变回绿色「发送」。
+          </div>
+        </div>
+        <p style="font-size:11.5px;color:var(--t4);margin:8px 0 0;line-height:1.6">
+          所以不需要「取消」：不点发送本来就不会发；要退出告警，改命令即可。
+        </p>
+        <p style="font-size:11.5px;color:var(--t4);margin:8px 0 0;line-height:1.6">
+          要拖到第二个屏幕长时间写脚本，把同一个弹窗升级成独立窗口即可（复用 EditorWindow 的框架，内容还是这一份）。
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 07 停靠在 SFTP 上方 -->
+  <div class="screen">
+    <div class="sc-head">
+      <span class="no">07</span><h2>命令栏在 SFTP 上方时</h2>
+      <span class="src">底部停靠 · 三条堆叠</span>
+      <span class="gap"></span>
+      <span class="tag">告警向上浮</span>
+    </div>
+
+    <div class="stage" style="padding:20px;flex-direction:column;gap:20px;align-items:center">
+
+      <div style="width:100%;max-width:900px">
+        <div class="state"><span class="pill">常态</span>终端 / 命令栏 / SFTP 三条堆叠，命令栏高 40</div>
+        <div class="dock">
+          <div class="term"><b>root@web-01:~#</b> docker compose ps<br>NAME　　SERVICE　STATUS<br>web　　　web　　　Up 3 hours<br><b>root@web-01:~#</b> <span style="color:var(--ac)">▍</span></div>
+          <div class="cmdwrap">
+            <div class="cmdbar">
+              <div class="cmd-input">
+                <span class="ps">$</span>
+                <span class="ph">输入命令，回车发送</span>
+                <span class="in-btn"><svg viewBox="0 0 16 16"><path d="M9 1.5L4 9h3.5L7 14.5 12 7H8.5z"/></svg></span>
+                <span class="in-btn"><svg viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.7-4M2.5 2v3h3"/><path d="M8 5v3.2l2.2 1.3"/></svg></span>
+                <span class="in-sep"></span>
+                <span class="in-btn"><svg viewBox="0 0 16 16"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5L9 7M2.5 13.5L7 9"/></svg></span>
+              </div>
+              <span class="scope-btn has">全部标签页<span class="ct">3</span><svg viewBox="0 0 16 16"><path d="M4 6.5L8 10.5l4-4"/></svg></span>
+              <button class="btn btn-primary" style="height:30px;min-width:64px">发送</button>
+            </div>
+          </div>
+          <div class="sftp">
+            <div class="hd"><span>/var/www</span><span>·</span><span>3 项</span></div>
+            <div class="fr on"><span>config.php</span><span class="g"></span><span>4.2 KB</span></div>
+            <div class="fr"><span>index.html</span><span class="g"></span><span>18.4 KB</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div style="width:100%;max-width:900px">
+        <div class="state"><span class="pill" style="border-color:rgba(209,69,59,.45);color:#EE6A5E">危险</span>告警从命令栏上边缘浮出，压在终端最后一行上，不推挤 SFTP</div>
+        <div class="dock">
+          <div class="term"><b>root@web-01:~#</b> df -h<br>Filesystem　Size　Used　Avail<br>/dev/sda1　　40G　28G　12G<br><b>root@web-01:~#</b> <span style="color:var(--ac)">▍</span></div>
+          <div class="cmdwrap">
+            <div class="warn-float">
+              <span>⚠</span><span>检测到删除操作</span><span class="k">rm -rf</span><span>·</span><span>将发往 <b style="color:#FF8C80">5 台</b></span>
+              <span class="gap"></span>
+              <span style="color:var(--t4);font-size:11px">改掉命令即可取消</span>
+            </div>
+            <div class="cmdbar">
+              <div class="cmd-input">
+                <span class="ps" style="color:#EE6A5E">$</span>
+                <span class="ph" style="color:#EE6A5E;font-family:var(--mono)">rm -rf /var/log/*</span>
+                <span class="in-btn"><svg viewBox="0 0 16 16"><path d="M9 1.5L4 9h3.5L7 14.5 12 7H8.5z"/></svg></span>
+                <span class="in-btn"><svg viewBox="0 0 16 16"><path d="M2.5 8a5.5 5.5 0 1 0 1.7-4M2.5 2v3h3"/><path d="M8 5v3.2l2.2 1.3"/></svg></span>
+                <span class="in-sep"></span>
+                <span class="in-btn"><svg viewBox="0 0 16 16"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5L9 7M2.5 13.5L7 9"/></svg></span>
+              </div>
+              <span class="scope-btn has">全部标签页<span class="ct">3</span><svg viewBox="0 0 16 16"><path d="M4 6.5L8 10.5l4-4"/></svg></span>
+              <button class="btn" style="height:30px;min-width:84px;background:#D1453B;border-color:#D1453B;color:#fff;font-weight:600">仍然发送</button>
+            </div>
+          </div>
+          <div class="sftp">
+            <div class="hd"><span>/var/www</span><span>·</span><span>3 项</span></div>
+            <div class="fr on"><span>config.php</span><span class="g"></span><span>4.2 KB</span></div>
+            <div class="fr"><span>index.html</span><span class="g"></span><span>18.4 KB</span></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="notes" style="margin-top:14px">
+      <div class="n"><b class="ok">向上浮，不向下长。</b>命令栏下面就是 SFTP，往下长会把它推走；往上浮只临时压住终端最后一两行，而且正好在「刚敲完命令」的视线位置。</div>
+      <div class="n"><b class="ok">横向与命令栏同宽、同圆角。</b>不挂在输入框上，因为告警说的是「这条命令 + 这个范围」，两个都要看，所以覆盖整条。</div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">
+      <div style="background:var(--dlg);border:1px solid var(--line2);border-radius:10px;padding:16px 18px">
+        <h4 style="font-size:13px;margin:0 0 8px">怎么交互</h4>
+        <ul style="margin:0;padding-left:17px;font-size:12px;color:var(--t3);line-height:1.8">
+          <li>输入命中危险模式 → 告警浮出，发送键同时变红「仍然发送」（同一帧，不分两步）</li>
+          <li>改掉命令 → 告警与红色一起消失，按钮变回绿色「发送」</li>
+          <li>点「仍然发送」→ 直接发出，不弹第二个确认</li>
+          <li>没有「取消」按钮：右侧小字「改掉命令即可取消」就是退出方式</li>
+        </ul>
+      </div>
+
+      <div style="background:var(--dlg);border:1px solid var(--line2);border-radius:10px;padding:16px 18px">
+        <h4 style="font-size:13px;margin:0 0 8px">和弹窗里有什么不同</h4>
+        <ul style="margin:0;padding-left:17px;font-size:12px;color:var(--t3);line-height:1.8">
+          <li>弹窗里空间大，告警占<b>预留槽位</b>，出现不改变高度</li>
+          <li>停靠条里高度固定，告警<b>浮在上层</b>，不占布局 —— 两者都不让周围跳动</li>
+          <li>文案一致：都是「检测到什么 · 影响几台」，切换形态不用重新理解</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+<!--SCREENS2-->
+
+  <div style="margin-top:44px;border-top:1px solid var(--line2);padding-top:22px">
+    <h2 style="font-size:17px;margin:0 0 4px">你问「还缺什么」——我补了六条</h2>
+    <p style="margin:0 0 16px;color:var(--t3);font-size:12.5px">
+      前两条是必须做，后四条是边界，不做会在真实使用里出问题。
+    </p>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line2);border:1px solid var(--line2);border-radius:10px;overflow:hidden">
+      <div style="background:var(--dlg);padding:14px 16px">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--dg);letter-spacing:.08em">MUST 01</div>
+        <h4 style="font-size:13px;margin:5px 0 4px">勾选是草稿，点「完成」才写回</h4>
+        <p style="font-size:12px;color:var(--t3);margin:0;line-height:1.6">
+          多选很容易点错：选了三个又全取消，发送范围不该跟着变。所以菜单维护一份草稿，
+          底部实时显示结果，<b>「完成」才写回按钮</b>；点外部或 <code>Esc</code> 全部回滚。
+        </p>
+      </div>
+      <div style="background:var(--dlg);padding:14px 16px">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--ac);letter-spacing:.08em">MUST 02</div>
+        <h4 style="font-size:13px;margin:5px 0 4px">多选时菜单不能关</h4>
+        <p style="font-size:12px;color:var(--t3);margin:0;line-height:1.6">
+          单选可以「点完即关」，多选不行：关掉再打开、再找回位置，选第三个频道就崩溃了。
+          勾选只更新勾与计数，关闭靠点外部或 <code>Esc</code>。
+        </p>
+      </div>
+      <div style="background:var(--dlg);padding:14px 16px">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--t4);letter-spacing:.08em">EDGE 03</div>
+        <h4 style="font-size:13px;margin:5px 0 4px">发送前要重新校验</h4>
+        <p style="font-size:12px;color:var(--t3);margin:0;line-height:1.6">
+          菜单开着时，某个频道的成员可能刚好退出/关标签。按打开菜单那一刻的成员表发送会打空。
+          发送时按 id 重新取一次并集，空的就跳过。
+        </p>
+      </div>
+      <div style="background:var(--dlg);padding:14px 16px">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--t4);letter-spacing:.08em">EDGE 04</div>
+        <h4 style="font-size:13px;margin:5px 0 4px">发送后要回执「发给了几台」</h4>
+        <p style="font-size:12px;color:var(--t3);margin:0;line-height:1.6">
+          选了 2 个频道、实际只送到 3 台（有一台刚断线），界面上必须写「已发送 3 / 4」。
+          否则用户永远不知道自己漏了哪台。
+        </p>
+      </div>
+      <div style="background:var(--dlg);padding:14px 16px">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--t4);letter-spacing:.08em">EDGE 05</div>
+        <h4 style="font-size:13px;margin:5px 0 4px">频道多了要有上限与搜索</h4>
+        <p style="font-size:12px;color:var(--t3);margin:0;line-height:1.6">
+          4 个频道一屏放得下，20 个就放不下。菜单限高 <code>≈320px</code> 内部滚动；
+          超过 8 个时顶部出搜索框（与分组选择器同一个模式，不另造一种）。
+        </p>
+      </div>
+      <div style="background:var(--dlg);padding:14px 16px">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--t4);letter-spacing:.08em">EDGE 06</div>
+        <h4 style="font-size:13px;margin:5px 0 4px">键盘也要能选</h4>
+        <p style="font-size:12px;color:var(--t3);margin:0;line-height:1.6">
+          <code>↑↓</code> 移动、<code>Space</code> 勾选（菜单不关）、<code>Esc</code> 关闭、
+          <code>Enter</code> 直接发送。开关是命令栏高频区，不能只支持鼠标。
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <table>
+    <thead><tr><th>元素</th><th>规格</th><th>交互</th></tr></thead>
+    <tbody>
+      <tr><td><b>测试连接</b></td><td>34 高 / r8 / 青 10% 底 / 青字 / 15px 图标</td><td>悬停底 17%、边转实；点击进入 loading，宽度锁死</td></tr>
+      <tr><td><b>取消</b></td><td>34 高 / r8 / 1px 白 16% 边 / 次色字</td><td>悬停底 6% + 边 28%；永远在主按钮左侧、间距 9</td></tr>
+      <tr><td><b>创建 / 保存</b></td><td>34 高 / r8 / 实心 accent / 白字 600</td><td>表单未填完时禁用（灰面灰字），不使用透明度</td></tr>
+      <tr><td><b>分组选择器</b></td><td>40 高 / r8 / 字段底</td><td>点击展开；悬停才出清除键；展开时边框转强调色、箭头翻转 160ms</td></tr>
+      <tr><td><b>发送范围</b></td><td>28 高 / r6 / 颜色点 + 文字 + 计数 + 箭头</td><td>多选、菜单不关；有成员的频道才可勾；「所有」与频道互斥；计数直接相加</td></tr>
+    </tbody>
+  </table>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* 分组选择器：点一下展开 / 收起 */
+  document.querySelectorAll(".pick-box").forEach(function (box) {
+    box.addEventListener("click", function (e) {
+      if (e.target.closest(".clear")) return;
+      var menu = box.parentElement.querySelector(".menu");
+      var willOpen = !box.classList.contains("open");
+      box.classList.toggle("open", willOpen);
+      if (menu) menu.style.display = willOpen ? "" : "none";
+    });
+  });
+
+  /* ── 发送范围：真多选 ────────────────────────────────────── */
+  var menu = document.getElementById("ch-menu");
+  var btn = document.getElementById("ch-btn");
+  if (menu && btn) {
+    var sumEl = menu.querySelector(".sum span");
+    var doneBtn = document.getElementById("ch-done");
+    var COLOR = { A: "#D1453B", B: "#4A90E2", C: "#E8A33E", D: "#646A76" };
+    var N = { A: 2, B: 1, C: 3, D: 0 };
+    var TABS = 3;
+
+    var applied = { all: false, set: new Set(["A", "C"]) };
+    var draft = { all: false, set: new Set(["A", "C"]) };
+
+    function totalOf(set) {
+      var t = 0;
+      set.forEach(function (k) { t += (N[k] || 0); });
+      return t;
+    }
+    function clone(o) { return { all: o.all, set: new Set(o.set) }; }
+
+    function renderMenu() {
+      menu.querySelectorAll("[data-ch]").forEach(function (el) {
+        var k = el.getAttribute("data-ch");
+        var on = (k === "all") ? draft.all : draft.set.has(k);
+        el.classList.toggle("on", on);
+      });
+      if (draft.all) {
+        sumEl.innerHTML = "<b>" + TABS + "</b> 个标签页";
+      } else {
+        sumEl.innerHTML = "<b>" + draft.set.size + "</b> 个频道 · <b>" + totalOf(draft.set) + "</b> 台";
+      }
+    }
+
+    function arrow() { return '<svg viewBox="0 0 16 16"><path d="M4 10L8 6l4 4"/></svg>'; }
+
+    function renderBtn() {
+      if (applied.all || applied.set.size === 0) {
+        btn.innerHTML = '所有会话<span class="ct">' + TABS + "</span>" + arrow();
+        return;
+      }
+      var order = ["A", "B", "C", "D"].filter(function (k) { return applied.set.has(k); });
+      var dots = '<span class="dots">' + order.slice(0, 3).map(function (k) {
+        return '<i style="background:' + COLOR[k] + '"></i>';
+      }).join("") + "</span>";
+      var label = order.length === 1 ? "频道 " + order[0] : order.length + " 个频道";
+      btn.innerHTML = dots + label + '<span class="ct">' + totalOf(applied.set) + "</span>" + arrow();
+    }
+
+    menu.querySelectorAll("[data-ch]").forEach(function (el) {
+      if (el.classList.contains("dis")) return;
+      el.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var k = el.getAttribute("data-ch");
+        if (k === "all") {
+          draft.all = true;
+          draft.set.clear();
+        } else {
+          draft.all = false;
+          if (draft.set.has(k)) draft.set.delete(k); else draft.set.add(k);
+          if (draft.set.size === 0) draft.all = true;   // 一个频道都不选 = 回到全部
+        }
+        renderMenu();
+      });
+    });
+
+    function close(commit) {
+      if (commit) { applied = clone(draft); renderBtn(); }
+      else { draft = clone(applied); renderMenu(); }
+      menu.style.display = "none";
+    }
+
+    if (doneBtn) doneBtn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      close(true);
+    });
+
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (menu.style.display === "none") {
+        draft = clone(applied);
+        renderMenu();
+        menu.style.display = "";
+      } else {
+        close(false);
+      }
+    });
+
+    document.addEventListener("click", function (e) {
+      if (menu.style.display === "none") return;
+      if (!menu.contains(e.target) && !btn.contains(e.target)) close(false);
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && menu.style.display !== "none") close(false);
+    });
+
+    renderMenu();
+    renderBtn();
+  }
+})();
+</script>
+</body>
+</html>

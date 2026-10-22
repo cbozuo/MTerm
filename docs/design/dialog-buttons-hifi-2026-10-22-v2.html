@@ -1,0 +1,912 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MTerm 弹框按钮重设计 v2 · 层级与交互（高保真 · 可落地）</title>
+<style>
+/* 色值全部取自 ui/theme.slint 深色主题。
+   稿子里每个按钮效果都只用「矩形 + 圆角 + 边框 + 纯色/半透明填充 + 文字/SVG」，
+   Slint 的 Rectangle / Text / Icon 可直接表达；无 box-shadow / filter / 渐变。 */
+:root{
+  --panel:#181A1D; --palt:#1B1D21; --elev:#1E2024; --field:#191B21;
+  --hov:#22262D; --act:#262B33;
+  --sub:#2E323C; --sub-hi:#3A4049; --gho-hov:#2A2E36;
+  --line:#232428; --line2:#2E323C; --ctl:#31353E;
+  --t1:#BCBEC4; --t2:#7A7E85; --t3:#6F737A; --t4:#4E5157;
+  --ac:#1FC8B4; --ac-hi:#23D7C2; --ac-lo:#1BB0A0; --ac-on:#06231F;
+  --ac-soft:rgba(31,200,180,.16);
+  --d1:#E81123; --d2:#DC4B44; --d-soft:rgba(220,75,68,.10);
+  --page:#0a0b0f; --page2:#101218; --doc-line:#242833;
+  --fg:#e7e9ee; --fg2:#98a0ae;
+  --ok:#3DD68C; --warn:#E8A33E;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--page);color:var(--fg);font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+.mono{font-family:"JetBrains Mono",Consolas,"Courier New",monospace}
+.wrap{max-width:1060px;margin:0 auto;padding:0 30px 110px}
+
+header{position:sticky;top:0;z-index:30;background:rgba(10,11,15,.92);border-bottom:1px solid var(--doc-line)}
+.hd{max-width:1060px;margin:0 auto;padding:12px 30px;display:flex;align-items:center;gap:12px}
+.hd h1{font-size:13.5px;margin:0;font-weight:600}
+.hd .tag{font:600 10px/1 Consolas,monospace;color:var(--page);background:var(--ac);padding:4px 6px;border-radius:4px;letter-spacing:.4px}
+.hd nav{display:flex;gap:2px;margin-left:14px}
+.hd nav a{font-size:12px;color:var(--fg2);text-decoration:none;padding:5px 8px;border-radius:5px}
+.hd nav a:hover{background:var(--page2);color:var(--fg)}
+
+.hero{padding:38px 0 4px}
+.hero h2{margin:0 0 10px;font-size:26px;font-weight:650;letter-spacing:-.4px}
+.hero p{margin:0 0 13px;color:var(--fg2);font-size:13.5px;line-height:1.95;max-width:84ch}
+.hero p b{color:var(--fg);font-weight:600}
+.qs{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:16px 0 0}
+.q{background:var(--page2);border:1px solid var(--doc-line);border-left:2px solid var(--ac);border-radius:9px;padding:12px 15px}
+.q b{display:block;font-size:12.5px;margin-bottom:4px}
+.q span{font-size:11.5px;color:var(--fg2);line-height:1.8}
+
+section{padding:24px 0 4px;border-top:1px solid var(--doc-line);margin-top:26px}
+.sec-hd{display:flex;align-items:baseline;gap:11px;margin:0 0 4px}
+.sec-hd h3{margin:0;font-size:17px;font-weight:650;letter-spacing:-.2px}
+.sec-hd .no{font:600 11px/1 Consolas,monospace;color:var(--ac);background:var(--ac-soft);padding:4px 6px;border-radius:4px}
+.sec-sub{margin:6px 0 16px;color:var(--fg2);font-size:12.5px;line-height:1.85;max-width:88ch}
+h4{margin:0 0 10px;font-size:12.5px;font-weight:650}
+h4 .hint{font-weight:400;color:var(--fg2);margin-left:6px;font-size:11.5px}
+
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--doc-line);vertical-align:top}
+th{color:var(--fg2);font-weight:600;font-size:11px;letter-spacing:.3px;text-transform:uppercase;white-space:nowrap}
+td.mono,th.mono{font-family:Consolas,monospace;font-size:11.5px}
+tr:last-child td{border-bottom:none}
+.bad{color:#F75464}
+.good{color:var(--ac)}
+.dim{color:var(--fg2)}
+.card{background:var(--page2);border:1px solid var(--doc-line);border-radius:11px;padding:15px 17px}
+
+.shot{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;color:var(--t1)}
+.shot .hd2{height:46px;display:flex;align-items:center;gap:9px;padding:0 16px;border-bottom:1px solid var(--line);font-size:13px;color:var(--t1)}
+.shot .body{padding:14px 16px;font-size:12px;color:var(--t3);line-height:1.7;min-height:42px}
+.shot .foot{height:58px;display:flex;align-items:center;padding:0 16px;border-top:1px solid var(--line);gap:10px}
+
+.b{display:inline-flex;align-items:center;justify-content:center;gap:7px;
+  border:1px solid transparent;background:transparent;color:var(--t2);
+  font-family:inherit;font-size:13px;line-height:1;cursor:pointer;white-space:nowrap;
+  border-radius:8px;height:34px;padding:0 18px;min-width:76px;
+  transition:background .1s linear,color .1s linear,border-color .1s linear}
+.b svg{width:15px;height:15px;flex:0 0 auto;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.b.pri{background:var(--ac);color:var(--ac-on);font-weight:600}
+.b.pri:hover{background:var(--ac-hi)}
+.b.pri:active{background:var(--ac-lo)}
+.b.sec{background:var(--sub);color:var(--t1)}
+.b.sec:hover{background:var(--sub-hi)}
+.b.sec:active{background:var(--act)}
+.b.gho{color:var(--t2)}
+.b.gho:hover{background:var(--gho-hov);color:var(--t1)}
+.b.gho:active{background:var(--sub)}
+.b.des{border-color:var(--d2);color:var(--d2)}
+.b.des:hover{background:var(--d-soft);border-color:var(--d1);color:#F75464}
+.b.pri.dis,.b.dis{background:var(--elev);color:var(--t3);border-color:transparent;cursor:default;pointer-events:none}
+.b.gho.dis{background:transparent;color:var(--t4)}
+.b.sec.dis{background:var(--elev);color:var(--t3)}
+.b.foc{position:relative}
+.b.foc::after{content:"";position:absolute;inset:-4px;border-radius:12px;border:3px solid rgba(31,200,180,.22);pointer-events:none}
+.b.sec.foc,.b.gho.foc{outline:1px solid var(--ac);outline-offset:-1px}
+.b.pri.foc{outline:1px solid var(--ac-on);outline-offset:-1px}
+
+.old{display:inline-flex;align-items:center;justify-content:center;gap:7px;
+  border:1px solid transparent;background:transparent;color:var(--t2);
+  font-family:inherit;line-height:1;cursor:pointer;white-space:nowrap;border-radius:0}
+
+.footL{margin-right:auto}
+.cap{font-size:10.5px;color:var(--fg2);letter-spacing:.4px;text-transform:uppercase;font-weight:600;margin:0 0 8px}
+.cap b{color:var(--fg);letter-spacing:0;text-transform:none;font-size:11.5px}
+.cap .ok{color:var(--ac)}
+.cap .no{color:#F75464}
+
+.props{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;font-family:Consolas,monospace;font-size:10.5px}
+.props i{font-style:normal;color:var(--fg2);background:#0d0f14;border:1px solid var(--doc-line);border-radius:4px;padding:2px 6px}
+.props i.k{color:var(--ac)}
+.props i.w{color:#F75464}
+
+.cmp{margin:0 0 14px;border:1px solid var(--doc-line);border-radius:12px;overflow:hidden;background:var(--page2)}
+.cmp-hd{display:flex;align-items:center;gap:9px;padding:10px 15px;border-bottom:1px solid var(--doc-line);background:#0d0f14}
+.cmp-hd .n{font:700 10.5px/1 Consolas,monospace;color:var(--ac);background:var(--ac-soft);padding:4px 5px;border-radius:4px}
+.cmp-hd h3{margin:0;font-size:13px;font-weight:650}
+.cmp-hd .src{margin-left:auto;font:400 10.5px/1.5 Consolas,monospace;color:var(--fg2)}
+.cmp-bd{padding:15px}
+.arrow{display:flex;align-items:center;gap:8px;margin:11px 0 9px;color:var(--fg2);font-size:11.5px}
+.arrow::before,.arrow::after{content:"";flex:1;height:1px;background:var(--doc-line)}
+.cmp-note{margin-top:10px;font-size:11.5px;color:var(--fg2);line-height:1.85}
+.cmp-note b{color:var(--fg)}
+.cmp-note code{font-family:Consolas,monospace;font-size:10.5px;background:#0d0f14;padding:1px 5px;border-radius:3px;color:var(--t1)}
+
+.demo{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+.states{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-end}
+.st{display:flex;flex-direction:column;gap:7px;align-items:flex-start}
+.st .lb{font:600 10px/1.4 Consolas,monospace;color:var(--fg2);letter-spacing:.3px}
+.st .lb em{font-style:normal;display:block;font-weight:400;color:var(--t4);font-size:9.5px;margin-top:2px}
+
+pre{margin:0;background:#0b0d12;border:1px solid var(--doc-line);border-radius:9px;padding:14px 16px;overflow:auto;
+  font-family:Consolas,"Courier New",monospace;font-size:11.5px;line-height:1.75;color:#c9d1d9}
+pre .c{color:#8b949e}
+pre .k{color:#c678dd}
+pre .t{color:#61afef}
+pre .n{color:#d19a66}
+pre .s{color:#98c379}
+
+.pill{display:inline-block;padding:1px 6px;border-radius:4px;font:600 10.5px/1.6 Consolas,monospace}
+.pill.g{background:var(--ac-soft);color:var(--ac)}
+.pill.r{background:var(--d-soft);color:#F75464}
+
+footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--doc-line);color:var(--fg2);font-size:11.5px;line-height:1.9}
+footer b{color:var(--fg)}
+@media(max-width:880px){.hd nav{display:none}.qs{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hd">
+    <h1>MTerm 弹框按钮重设计 · v2</h1>
+    <span class="tag">HIFI · 2026-10-22</span>
+    <nav>
+      <a href="#why">为什么</a>
+      <a href="#tiers">层级</a>
+      <a href="#inter">交互</a>
+      <a href="#shots">五处</a>
+      <a href="#code">代码</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <div class="hero">
+    <h2>灰按钮的问题不在参数，在没有层级</h2>
+    <p>
+      上一版我只统一了尺寸和圆角，这不够——你问的两点都成立：
+      <b>「取消」和「随机」长得一模一样</b>，可它们一个是退出、一个是功能操作；
+      而这套灰按钮本身的<b>边框对比度只有 1.42:1</b>，在深色面板上基本看不见轮廓，
+      更糟的是<b>禁用态和常态只差 0.62 档</b>，用户分不清哪个能点。
+    </p>
+    <p>
+      所以这一版改成<b>按语义分四层</b>：主操作实心、功能操作浅填充、退出类完全无底、破坏类红描边。
+      三层按钮从此各有各的形状。交互补齐 <b>悬停 / 按下 / 键盘焦点 / 禁用 / 异步进行中 / 防重复点击</b> 六项——
+      全部只用 Slint 能写的属性，末尾附实现代码。
+    </p>
+    <div class="qs">
+      <div class="q">
+        <b>「取消」「随机」要不要重新设计？</b>
+        <span>要。它们现在共用一套灰描边；分层后「取消」变成无底文字按钮（只是离开），「随机」变成浅填充按钮（会改状态），视觉上不再同级。</span>
+      </div>
+      <div class="q">
+        <b>交互要不要重新设计？</b>
+        <span>要。现状只有 hover 和 pressed，没有键盘焦点、没有异步进行中、没有防重复点击。「测试连接」是唯一会连服务器的按钮，点完必须给反馈。</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 01 ============ -->
+  <section id="why">
+    <div class="sec-hd"><span class="no">01</span><h3>先量三个数据</h3></div>
+    <p class="sec-sub">
+      WCAG 2.1 相对亮度公式，底色取弹框面 <span class="mono">#181A1D</span>（<span class="mono">Theme.popup-bg</span>）。
+      数值由 <span class="mono">output/btn-contrast.py</span> 计算，可复跑。
+    </p>
+
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:11px;margin-bottom:12px">
+      <div class="card" style="border-left:2px solid #F75464">
+        <div style="font:650 22px/1.2 Consolas,monospace;color:#F75464">1.42<span style="font-size:12px">:1</span></div>
+        <div style="font-size:11.5px;color:var(--fg2);margin-top:6px;line-height:1.75">
+          边框 <span class="mono">#31353E</span> vs 弹框面。<br>
+          要读出轮廓至少需要 <b style="color:var(--fg)">3:1</b>。
+        </div>
+      </div>
+      <div class="card" style="border-left:2px solid #F75464">
+        <div style="font:650 22px/1.2 Consolas,monospace;color:#F75464">4.28<span style="font-size:12px">:1</span></div>
+        <div style="font-size:11.5px;color:var(--fg2);margin-top:6px;line-height:1.75">
+          文字 <span class="mono">text-secondary</span> vs 弹框面。<br>
+          13px 正文 AA 要求 <b style="color:var(--fg)">4.5:1</b>，差一点。
+        </div>
+      </div>
+      <div class="card" style="border-left:2px solid #F75464">
+        <div style="font:650 22px/1.2 Consolas,monospace;color:#F75464">0.62<span style="font-size:12px"> 档</span></div>
+        <div style="font-size:11.5px;color:var(--fg2);margin-top:6px;line-height:1.75">
+          禁用（3.66:1）与常态（4.28:1）的差。<br>
+          <b style="color:var(--fg)">用户无法靠亮度区分能不能点。</b>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4>三条都指向同一件事：<span style="color:var(--ac)">这层灰按钮没有轮廓、没有层级、也没有禁用感</span></h4>
+      <p style="margin:0 0 13px;font-size:12px;color:var(--fg2);line-height:1.9">
+        继续调参救不回来——把边框提到 3:1 需要 <span class="mono">#4E5157</span> 以上，那灰框会重到抢主按钮的视线；
+        把禁用压得更暗，又会和「不可用」的语义混。解法是<b style="color:var(--fg)">让它不再是「灰框」</b>：
+        退出类彻底去掉边框（靠位置与悬停表达），功能操作改成有重量的浅填充（靠面积表达），两者从形状上就分开。
+      </p>
+      <div style="display:flex;gap:34px;align-items:flex-end;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:16px 18px">
+        <div>
+          <div class="cap">现状 · 三个按钮两种样子</div>
+          <div style="display:flex;gap:10px">
+            <div class="old" style="height:34px;padding:0 16px;border-radius:8px;border:1px solid var(--ctl);color:var(--t2);font-size:13px;gap:7px">
+              <svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2"><path d="M13 3 5 14h6l-1 7 8-11h-6z"/></svg>测试连接
+            </div>
+            <div class="old" style="height:34px;padding:0 16px;border-radius:8px;border:1px solid var(--ctl);color:var(--t2);font-size:13px">取消</div>
+            <div class="old" style="height:34px;padding:0 16px;border-radius:8px;background:var(--ac);color:#fff;font-size:13px;font-weight:600">创建</div>
+          </div>
+          <div class="props"><i class="w">淡边框 1.42:1</i><i class="w">取消与测试连接同款</i></div>
+        </div>
+        <div>
+          <div class="cap">重设计 · 三层各有各的形状</div>
+          <div style="display:flex;gap:10px">
+            <button class="b sec" type="button"><svg viewBox="0 0 24 24"><path d="M13 3 5 14h6l-1 7 8-11h-6z"/></svg>测试连接</button>
+            <button class="b gho" type="button">取消</button>
+            <button class="b pri" type="button">创建</button>
+          </div>
+          <div class="props"><i class="k">浅填充有面</i><i class="k">取消无底</i><i class="k">主操作实心</i></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 02 ============ -->
+  <section id="tiers">
+    <div class="sec-hd"><span class="no">02</span><h3>四层：谁实心、谁有色块、谁什么也没有</h3></div>
+    <p class="sec-sub">
+      分层依据是<b>点下去意味着什么</b>，不是「重要程度」。
+      同一次操作里最多一个 Primary，Secondary 可以有多个，Ghost 只留给「不做任何改变地离开」。
+    </p>
+
+    <div class="card" style="background:var(--panel);border-color:var(--line);margin-bottom:12px">
+      <div style="display:flex;flex-direction:column;gap:20px">
+
+        <div>
+          <div class="cap"><b>① Primary</b> · 唯一的主操作 · 实心强调色</div>
+          <div class="states">
+            <div class="st"><span class="lb">常态</span><button class="b pri" type="button">创建</button></div>
+            <div class="st"><span class="lb">悬停<em>accent-hover</em></span><button class="b pri" type="button" style="background:var(--ac-hi)">创建</button></div>
+            <div class="st"><span class="lb">按下<em>accent-pressed</em></span><button class="b pri" type="button" style="background:var(--ac-lo)">创建</button></div>
+            <div class="st"><span class="lb">焦点<em>外环</em></span><button class="b pri foc" type="button">创建</button></div>
+            <div class="st"><span class="lb">禁用</span><button class="b pri dis" type="button">创建</button></div>
+          </div>
+          <div class="props"><i>h34</i><i>r8</i><i>pad 0 18</i><i class="k">bg accent</i><i class="k">fg accent-on</i><i>13/600</i><i class="k">7.87:1</i></div>
+        </div>
+
+        <div style="height:1px;background:var(--line)"></div>
+
+        <div>
+          <div class="cap"><b>② Secondary</b> · 功能操作（会改变当前弹框状态）· 浅填充无边框</div>
+          <div class="states">
+            <div class="st"><span class="lb">常态<em>#2E323C</em></span><button class="b sec" type="button">随机</button></div>
+            <div class="st"><span class="lb">悬停<em>#3A4049</em></span><button class="b sec" type="button" style="background:var(--sub-hi)">随机</button></div>
+            <div class="st"><span class="lb">按下<em>#262B33</em></span><button class="b sec" type="button" style="background:var(--act)">随机</button></div>
+            <div class="st"><span class="lb">焦点</span><button class="b sec foc" type="button">随机</button></div>
+            <div class="st"><span class="lb">禁用</span><button class="b sec dis" type="button">随机</button></div>
+            <div class="st"><span class="lb">带图标<em>测试连接</em></span><button class="b sec" type="button" style="padding:0 14px"><svg viewBox="0 0 24 24"><path d="M13 3 5 14h6l-1 7 8-11h-6z"/></svg>测试连接</button></div>
+          </div>
+          <div class="props"><i>h34</i><i>r8</i><i>pad 0 18 / 图标版 0 14</i><i class="k">bg #2E323C 无边框</i><i class="k">fg text-primary</i><i>13/400</i><i class="k">6.90:1</i></div>        </div>
+
+        <div style="height:1px;background:var(--line)"></div>
+
+        <div>
+          <div class="cap"><b>③ Ghost</b> · 退出类（取消 / 关闭）· 无底无框</div>
+          <div class="states">
+            <div class="st"><span class="lb">常态<em>全透明</em></span><button class="b gho" type="button">取消</button></div>
+            <div class="st"><span class="lb">悬停<em>#2A2E36</em></span><button class="b gho" type="button" style="background:var(--gho-hov);color:var(--t1)">取消</button></div>
+            <div class="st"><span class="lb">按下<em>#2E323C</em></span><button class="b gho" type="button" style="background:var(--sub);color:var(--t1)">取消</button></div>
+            <div class="st"><span class="lb">焦点</span><button class="b gho foc" type="button">取消</button></div>
+            <div class="st"><span class="lb">禁用</span><button class="b gho dis" type="button">取消</button></div>
+          </div>
+          <div class="props"><i>h34</i><i>r8</i><i>pad 0 18</i><i class="k">bg 透明</i><i class="k">fg t2 → hover t1</i><i>13/400</i><i>4.28 → 9.38:1</i></div>
+        </div>
+
+        <div style="height:1px;background:var(--line)"></div>
+
+        <div>
+          <div class="cap"><b>④ Danger</b> · 破坏性（删除 / 清空）· 红描边，不给红底</div>
+          <div class="states">
+            <div class="st"><span class="lb">常态</span><button class="b des" type="button">删除</button></div>
+            <div class="st"><span class="lb">悬停<em>红底 10%</em></span><button class="b des" type="button" style="background:var(--d-soft);border-color:var(--d1);color:#F75464">删除</button></div>
+            <div class="st"><span class="lb">焦点</span><button class="b des foc" type="button">删除</button></div>
+          </div>
+          <div class="props"><i>h34</i><i>r8</i><i class="k">border 1px danger</i><i class="k">fg danger-strong</i><i>无实心红</i></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4>分层判定<span class="hint">拿不准时照这个问一遍</span></h4>
+      <table>
+        <tr><th>问</th><th>是 →</th><th>例子</th></tr>
+        <tr><td>点下去会提交数据 / 关闭并生效？</td><td class="mono good">Primary（一次操作只有一个）</td><td class="dim">创建、确定、应用、完成、确认</td></tr>
+        <tr><td>点下去只改变当前弹框里的东西？</td><td class="mono good">Secondary</td><td class="dim">随机、测试连接、调色盘</td></tr>
+        <tr><td>点下去什么都不改变，只是离开？</td><td class="mono good">Ghost</td><td class="dim">取消、关闭</td></tr>
+        <tr><td>会不可逆地删掉东西？</td><td class="mono" style="color:#F75464">Danger</td><td class="dim">删除壁纸、清空历史</td></tr>
+      </table>
+      <p style="margin:11px 0 0;font-size:11.5px;color:var(--fg2);line-height:1.85">
+        <span class="pill r">为什么「调色盘」不是 Ghost</span>
+        它看着像导航，但点下去会打开另一个弹框并回填颜色——状态确实变了。
+        而且它和「随机」是一对（都是改颜色的方式），放同一层才读得出关系。
+      </p>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h4>底色阶梯<span class="hint">四层共用一把尺，相邻两档差 0.1–0.3</span></h4>
+      <div style="display:flex;height:74px;border-radius:9px;overflow:hidden;border:1px solid var(--line)">
+        <div style="flex:1;background:#181A1D;display:flex;flex-direction:column;justify-content:flex-end;padding:9px 11px">
+          <div class="mono" style="font-size:10px;color:#6F737A">#181A1D</div>
+          <div class="mono" style="font-size:9.5px;color:#4E5157">弹框面 · 1.00</div>
+        </div>
+        <div style="flex:1;background:#22262D;display:flex;flex-direction:column;justify-content:flex-end;padding:9px 11px">
+          <div class="mono" style="font-size:10px;color:#8A8E95">#22262D</div>
+          <div class="mono" style="font-size:9.5px;color:#6F737A">bg-hover · 1.15</div>
+        </div>
+        <div style="flex:1;background:#2A2E36;display:flex;flex-direction:column;justify-content:flex-end;padding:9px 11px">
+          <div class="mono" style="font-size:10px;color:#9BA0A8">#2A2E36</div>
+          <div class="mono" style="font-size:9.5px;color:#7A7E85">Ghost 悬停 · 1.29</div>
+        </div>
+        <div style="flex:1;background:#2E323C;display:flex;flex-direction:column;justify-content:flex-end;padding:9px 11px">
+          <div class="mono" style="font-size:10px;color:#B4B8BF">#2E323C</div>
+          <div class="mono" style="font-size:9.5px;color:#8A8E95">Secondary 常态 · 1.36</div>
+        </div>
+        <div style="flex:1;background:#3A4049;display:flex;flex-direction:column;justify-content:flex-end;padding:9px 11px">
+          <div class="mono" style="font-size:10px;color:#CCD0D6">#3A4049</div>
+          <div class="mono" style="font-size:9.5px;color:#A0A5AC">Secondary 悬停 · 1.67</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:9px;flex-wrap:wrap">
+        <div style="flex:1;min-width:200px;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:9px 12px">
+          <div class="mono" style="font-size:10px;color:var(--t2)">按下方向相反</div>
+          <div style="font-size:11px;color:var(--fg2);margin-top:3px;line-height:1.7">
+            Secondary 按下压回 <span class="mono">#262B33</span>（1.23），比常态更暗——「按进去」。
+          </div>
+        </div>
+        <div style="flex:1;min-width:200px;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:9px 12px">
+          <div class="mono" style="font-size:10px;color:var(--warn)">为什么静态图看不出</div>
+          <div style="font-size:11px;color:var(--fg2);margin-top:3px;line-height:1.7">
+            相邻两档差 0.1–0.3，远小于文字对比度差。真实使用里由 100ms 过渡放大感知，并排截图对比不出来是正常的。
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 03 ============ -->
+  <section id="inter">
+    <div class="sec-hd"><span class="no">03</span><h3>六项交互，逐项给实现</h3></div>
+    <p class="sec-sub">
+      每项都标注 Slint 的表达方式。凡是它做不到的（比如按下/松开分别计时长），这里直说，不画一个实现不了的效果。
+    </p>
+
+    <div class="card" style="margin-bottom:12px">
+      <h4>① 悬停 / 按下<span class="hint">同一个 animate，100ms</span></h4>
+      <div class="demo" style="margin-bottom:11px">
+        <div class="states">
+          <div class="st"><span class="lb">常态</span><button class="b sec" type="button">随机</button></div>
+          <div class="st"><span class="lb">指针进入</span><button class="b sec" type="button" style="background:var(--sub-hi)">随机</button></div>
+          <div class="st"><span class="lb">按下</span><button class="b sec" type="button" style="background:var(--act)">随机</button></div>
+        </div>
+      </div>
+      <table>
+        <tr><th>事件</th><th>变化</th><th class="mono">Slint</th></tr>
+        <tr><td>进入 / 移出</td><td>背景色切换，指针变手型</td><td class="mono">TouchArea.has-hover + mouse-cursor</td></tr>
+        <tr><td>按下</td><td>背景再深一档（Secondary 压回 <span class="mono">#262B33</span>）</td><td class="mono">TouchArea.pressed</td></tr>
+        <tr><td>过渡</td><td>统一 100ms 线性</td><td class="mono">animate background { duration: 100ms; }</td></tr>
+      </table>
+      <p style="margin:10px 0 0;font-size:11.5px;color:var(--warn);line-height:1.85">
+        <b>受限于 Slint</b>：<span class="mono">animate</span> 对同一属性只有一条时长，没法「按下 60ms、松开 180ms」。
+        所以统一 100ms，靠颜色差（不是时长差）表达按下感。
+        <br><b>上图并排看不出差异是正常的</b>——三档色差 1.23 / 1.36 / 1.67，远小于文字对比度差；
+        真实使用里由过渡动画放大感知。要看阶梯关系请翻到本页末尾的「底色阶梯」。
+      </p>
+    </div>
+
+    <div class="card" style="margin-bottom:12px">
+      <h4>② 键盘焦点<span class="hint">现在完全没有</span></h4>
+      <div class="demo" style="margin-bottom:11px">
+        <div class="states">
+          <div class="st"><span class="lb">Primary 聚焦</span><button class="b pri foc" type="button">创建</button></div>
+          <div class="st"><span class="lb">Secondary 聚焦</span><button class="b sec foc" type="button">随机</button></div>
+          <div class="st"><span class="lb">Ghost 聚焦</span><button class="b gho foc" type="button">取消</button></div>
+        </div>
+      </div>
+      <p style="margin:0 0 10px;font-size:11.5px;color:var(--fg2);line-height:1.85">
+        沿用项目既有聚焦语言：<b style="color:var(--fg)">1px accent 边 + 3px accent-soft 外环</b>（输入框、搜索框、命令栏同款）。
+        外环画在 <span class="mono">x/y −3、宽高 +6、圆角 +2</span> 的兄弟层上——画在按钮自己身上会被 <span class="mono">clip:true</span> 裁掉。
+      </p>
+      <table>
+        <tr><th>能力</th><th>做法</th></tr>
+        <tr><td>Tab 走到按钮</td><td class="mono">FocusScope { key-pressed(e) => … }</td></tr>
+        <tr><td>Enter / Space 触发</td><td class="mono">e.text == "\n" or e.text == " "</td></tr>
+        <tr><td>显示焦点环</td><td class="mono">fs.has-focus ? 1.0 : 0.0（外环层 opacity）</td></tr>
+        <tr><td>打开弹框时</td><td class="mono">focus() 首个输入框，而不是按钮</td></tr>
+      </table>
+    </div>
+
+    <div class="card" style="margin-bottom:12px">
+      <h4>③ 禁用<span class="hint">换灰阶，不套整体透明度</span></h4>
+      <div class="demo" style="margin-bottom:11px">
+        <div class="states">
+          <div class="st"><span class="lb">常态</span><button class="b sec" type="button">随机</button></div>
+          <div class="st"><span class="lb">禁用</span><button class="b sec dis" type="button">随机</button></div>
+          <div class="st"><span class="lb">常态</span><button class="b pri" type="button">创建</button></div>
+          <div class="st"><span class="lb">禁用</span><button class="b pri dis" type="button">创建</button></div>
+        </div>
+      </div>
+      <p style="margin:0;font-size:11.5px;color:var(--fg2);line-height:1.85">
+        禁用后填充降到 <span class="mono">bg-elevated</span>、字降到 <span class="mono">text-muted</span>，
+        对比度从 6.90:1 掉到约 3.2:1，<b style="color:var(--fg)">一眼能分辨</b>——这就是那 0.62 档差距的修复。
+        指针保持 <span class="mono">default</span>（不用 not-allowed，与项目现有 PrimaryButton 一致）。
+      </p>
+    </div>
+
+    <div class="card" style="margin-bottom:12px">
+      <h4>④ 异步进行中<span class="hint">「测试连接」是唯一会连服务器的按钮</span></h4>
+      <div class="demo" style="margin-bottom:11px">
+        <div class="states">
+          <div class="st"><span class="lb">常态</span><button class="b sec" type="button" style="padding:0 14px"><svg viewBox="0 0 24 24"><path d="M13 3 5 14h6l-1 7 8-11h-6z"/></svg>测试连接</button></div>
+          <div class="st"><span class="lb">连接中<em>轮点 + 禁用</em></span><button class="b sec dis" type="button" style="padding:0 14px"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l2.5 2"/></svg>连接中…</button></div>
+          <div class="st"><span class="lb">成功<em>1.5s 后回落</em></span><button class="b sec" type="button" style="padding:0 14px;color:#3DD68C"><svg viewBox="0 0 24 24"><path d="m5 13 4 4L19 7"/></svg>连接成功</button></div>
+          <div class="st"><span class="lb">失败</span><button class="b sec" type="button" style="padding:0 14px;color:#F75464"><svg viewBox="0 0 24 24"><path d="M12 8v5M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg>连接失败</button></div>
+        </div>
+      </div>
+      <table>
+        <tr><th>阶段</th><th>按钮状态</th><th class="mono">实现</th></tr>
+        <tr><td>点击</td><td>立刻置灰、文字变「连接中」、图标换时钟</td><td class="mono">busy = true（同帧生效，防重复点）</td></tr>
+        <tr><td>进行中</td><td>后缀 . → .. → ... 轮转</td><td class="mono">Timer { interval: 400ms; running: busy }</td></tr>
+        <tr><td>成功</td><td>变绿 + 勾，1.5s 后回常态</td><td class="mono">busy-state = 1; Timer 回 0</td></tr>
+        <tr><td>失败</td><td>变红 + 感叹号，保持可点（重试）</td><td class="mono">busy-state = 2（不置灰）</td></tr>
+      </table>
+      <p style="margin:10px 0 0;font-size:11.5px;color:var(--warn);line-height:1.85">
+        <b>为什么不用转圈</b>：Slint 的 <span class="mono">rotation-angle</span> 循环要在 360° 处重置，会看到一次回跳；
+        三点跳动要靠不同 duration 伪装相位差，很脆。
+        用 <span class="mono">Timer</span> 驱动文字轮点最确定——只改一个 <span class="mono">int</span>。
+      </p>
+    </div>
+
+    <div class="card" style="margin-bottom:12px">
+      <h4>⑤ 防重复点击<span class="hint">提交类按钮的必修项</span></h4>
+      <table>
+        <tr><th>问题</th><th>现状</th><th>改法</th></tr>
+        <tr><td>双击「创建」</td><td class="bad">两次 <span class="mono">try-submit()</span>，取决于 Rust 侧是否幂等</td><td>点击后立即 <span class="mono">busy = true</span>，<span class="mono">enabled: !busy</span></td></tr>
+        <tr><td>连接慢时反复点</td><td class="bad">每次发一个请求</td><td>同上 + 文字反馈让用户知道「正在做」</td></tr>
+        <tr><td>Enter 连按</td><td class="bad">同样会重复触发</td><td><span class="mono">key-pressed</span> 里复查 <span class="mono">!busy</span></td></tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h4>⑥ 键盘与快捷键<span class="hint">弹框级的既有约定</span></h4>
+      <table>
+        <tr><th>键</th><th>行为</th><th>备注</th></tr>
+        <tr><td class="mono">Enter</td><td>触发 Primary</td><td class="dim">焦点在输入框时也生效（弹框级 default-action）</td></tr>
+        <tr><td class="mono">Esc</td><td>等于 Ghost「取消」</td><td class="dim">已有 sync-dialog-esc，推广到五处</td></tr>
+        <tr><td class="mono">Tab / Shift+Tab</td><td>按视觉顺序循环</td><td class="dim">左→右：测试连接 → 随机 → 调色盘 → 取消 → 创建</td></tr>
+        <tr><td class="mono">Space</td><td>等同点击焦点按钮</td><td class="dim">仅当焦点不在输入框</td></tr>
+      </table>
+      <p style="margin:11px 0 0;font-size:11.5px;color:var(--fg2);line-height:1.85">
+        现状五处弹框里只有同步输入实现了 Esc（<span class="mono">#sync-dialog-esc</span>），其余四处靠窗口级兜底，行为不一致。
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ 04 ============ -->
+  <section id="shots">
+    <div class="sec-hd"><span class="no">04</span><h3>五处重画</h3></div>
+    <p class="sec-sub">
+      上半照搬现状参数，下半按新的四层重排。留意<b>「取消」是否还有边框</b>、<b>「随机 / 测试连接」是否有色块</b>。
+    </p>
+
+    <div class="cmp">
+      <div class="cmp-hd"><span class="n">①</span><h3>新建会话 · 测试连接 / 取消 / 创建</h3><span class="src">session_dialog.slint:4149 / 4158 / 4163</span></div>
+      <div class="cmp-bd">
+        <div class="cap">修改前 · <b class="no">测试连接与取消都是灰描边，38 高 / 9 圆角 / 白字</b></div>
+        <div class="shot">
+          <div class="body" style="min-height:24px">连接信息已就绪</div>
+          <div class="foot" style="height:60px">
+            <div class="old" style="height:38px;padding:0 16px;border-radius:9px;border:1px solid var(--line2);color:var(--t2);font-size:13px;gap:7px">
+              <svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2"><path d="M13 3 5 14h6l-1 7 8-11h-6z"/></svg>测试连接
+            </div>
+            <div class="footL"></div>
+            <div class="old" style="height:38px;padding:0 16px;border-radius:9px;border:1px solid var(--line2);color:var(--t2);font-size:13px">取消</div>
+            <div class="old" style="height:38px;padding:0 16px;border-radius:9px;background:var(--ac);color:#fff;font-size:13px;font-weight:700">创建</div>
+          </div>
+        </div>
+        <div class="props"><i class="w">h 38</i><i class="w">r 9</i><i class="w">fg white</i><i class="w">两个灰描边同级</i></div>
+
+        <div class="arrow">重设计后</div>
+        <div class="cap">修改后 · <b class="ok">测试连接 = Secondary，取消 = Ghost，创建 = Primary</b></div>
+        <div class="shot">
+          <div class="body" style="min-height:24px">连接信息已就绪</div>
+          <div class="foot">
+            <button class="b sec footL" type="button" style="padding:0 14px"><svg viewBox="0 0 24 24"><path d="M13 3 5 14h6l-1 7 8-11h-6z"/></svg>测试连接</button>
+            <button class="b gho" type="button">取消</button>
+            <button class="b pri" type="button">创建</button>
+          </div>
+        </div>
+        <div class="props"><i class="k">h 34</i><i class="k">r 8</i><i class="k">fg accent-on</i><i class="k">三层不同形状</i></div>
+        <div class="cmp-note">
+          从「两个灰框 + 一个实心」变成<b>三种明确的形状</b>：有色块的（会改状态）、什么都没有的（只是离开）、实心的（提交）。
+          扫一眼就知道哪个是主操作。
+        </div>
+      </div>
+    </div>
+
+    <div class="cmp">
+      <div class="cmp-hd"><span class="n">②</span><h3>取色器 · 调色盘 / 随机 / 取消 / 应用</h3><span class="src">color_picker.slint:910 / 930 / 948 / 957</span></div>
+      <div class="cmp-bd">
+        <div class="cap">修改前 · <b class="no">随机与取消同款灰框；「选定 + 调色盘」粘成一块</b></div>
+        <div class="shot">
+          <div class="body" style="min-height:22px">草绿粉 · #FF40CC · 与面板对比度达标</div>
+          <div class="foot" style="height:60px;gap:8px">
+            <div style="display:flex;height:36px;border-radius:8px;overflow:hidden;flex:1;max-width:400px">
+              <div style="flex:1;background:var(--ac);color:var(--ac-on);display:flex;align-items:center;padding:0 12px;gap:6px;font-size:11.5px">
+                <span style="font-weight:600">选定</span><span class="mono" style="font-size:10.5px;opacity:.85">#1FC8B4</span>
+              </div>
+              <div style="width:112px;background:var(--field);border:1px solid var(--line);border-left:none;color:var(--t2);display:flex;align-items:center;justify-content:center;gap:5px;font-size:11.5px">
+                调色盘<span style="color:var(--t3)">›</span>
+              </div>
+            </div>
+            <div class="footL"></div>
+            <div class="old" style="height:36px;width:64px;border-radius:8px;border:1px solid var(--line2);color:var(--t2);font-size:12px">随机</div>
+            <div class="old" style="height:36px;width:64px;border-radius:8px;border:1px solid var(--line2);color:var(--t2);font-size:12px">取消</div>
+            <div class="old" style="height:36px;width:64px;border-radius:8px;background:var(--ac);color:var(--ac-on);font-size:12px;font-weight:600">应用</div>
+          </div>
+        </div>
+        <div class="props"><i class="w">h 36</i><i class="w">定宽 64</i><i class="w">随机 = 取消 同款</i><i class="w">预览块不可点却像按钮</i></div>
+
+        <div class="arrow">重设计后</div>
+        <div class="cap">修改后 · <b class="ok">随机 = Secondary，取消 = Ghost，预览块降为只读信息</b></div>
+        <div class="shot">
+          <div class="body" style="min-height:22px">草绿粉 · #FF40CC · 与面板对比度达标</div>
+          <div class="foot" style="gap:8px">
+            <div style="display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;border-radius:8px;border:1px dashed var(--line2);width:190px">
+              <span style="width:14px;height:14px;border-radius:4px;background:var(--ac)"></span>
+              <span class="mono" style="font-size:11px;color:var(--t2)">#1FC8B4</span>
+            </div>
+            <button class="b sec" type="button" style="padding:0 14px">调色盘<svg viewBox="0 0 24 24" style="width:13px;height:13px"><path d="m9 6 6 6-6 6"/></svg></button>
+            <div class="footL"></div>
+            <button class="b sec" type="button">随机</button>
+            <button class="b gho" type="button">取消</button>
+            <button class="b pri" type="button">应用</button>
+          </div>
+        </div>
+        <div class="props"><i class="k">h 34</i><i class="k">内容宽</i><i class="k">随机有底 / 取消无底</i><i class="k">预览块虚线降权</i></div>
+        <div class="cmp-note">
+          <b>两处结构改动：</b>
+          ① 预览块原来用实心青底，和主按钮撞色、带圆角看起来能点——改成<b>透明底 + 1px 虚线框</b>；
+          虚线在这套 UI 里从未用于可点元素，天然表达「这是信息不是按钮」。
+          ② 「调色盘」从预览块里拆出来用 Secondary（它确实会改状态），带 › 图标表明会进入下一层。
+        </div>
+      </div>
+    </div>
+
+    <div class="cmp">
+      <div class="cmp-hd"><span class="n">③</span><h3>确认弹框 · 取消 / 确认</h3><span class="src">confirm_dialog.slint:224 / 228</span></div>
+      <div class="cmp-bd">
+        <div class="cap">修改前 · <b class="no">30 高，取消 r6 有边、确认 r4 无边 —— 圆角差 2px</b></div>
+        <div class="shot">
+          <div class="body" style="min-height:22px">确定要清空该会话的历史记录吗？此操作不可撤销。</div>
+          <div class="foot" style="height:52px">
+            <div class="footL"></div>
+            <div class="old" style="height:30px;min-width:80px;padding:0 16px;border-radius:6px;border:1px solid var(--ctl);color:var(--t2);font-size:13px">取消</div>
+            <div class="old" style="height:30px;min-width:80px;padding:0 14px;border-radius:4px;background:var(--ac);color:#fff;font-size:13px;font-weight:700">确认</div>
+          </div>
+        </div>
+        <div class="props"><i class="w">h 30</i><i class="w">r 6 / r 4</i><i class="w">fg white</i><i class="w">gap 8</i></div>
+
+        <div class="arrow">重设计后</div>
+        <div class="cap">修改后 · <b class="ok">取消 = Ghost，确认 = Primary；破坏场景换 Danger</b></div>
+        <div class="shot">
+          <div class="body" style="min-height:22px">确定要清空该会话的历史记录吗？此操作不可撤销。</div>
+          <div class="foot">
+            <div class="footL"></div>
+            <button class="b gho" type="button">取消</button>
+            <button class="b pri" type="button">确认</button>
+          </div>
+        </div>
+        <div class="props"><i class="k">h 34</i><i class="k">r 8 一致</i><i class="k">gap 10</i><i class="k">Ghost + Primary</i></div>
+        <div class="cmp-note">
+          同高同圆角之后<b>取消退到无底</b>——这一栏只剩一个实心块，视线不用在两个等重按钮之间权衡。
+          若这次确认本身是删除（「删除这张壁纸」），主按钮换成 <b>Danger</b>（红描边），尺寸圆角不变。
+        </div>
+      </div>
+    </div>
+
+    <div class="cmp">
+      <div class="cmp-hd"><span class="n">④</span><h3>同步输入 · 分段 / 频道栏 / 页脚</h3><span class="src">sync_input_dialog.slint:680 / 699 · ScopeCell:112 · ChannelSegCell:53</span></div>
+      <div class="cmp-bd">
+        <div class="cap">修改前 · <b class="no">30 高定宽 88；取消带实心底；分段靠描边表示选中</b></div>
+        <div class="shot">
+          <div class="hd2" style="height:40px">
+            <span>同步输入</span>
+            <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
+              <div style="display:flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:8px;background:var(--field)">
+                <div style="height:24px;padding:0 10px;border-radius:6px;border:1px solid var(--ac);background:var(--ac-soft);color:var(--ac);font-size:11px;display:flex;align-items:center">当前窗口</div>
+                <div style="height:24px;padding:0 10px;border-radius:6px;color:var(--t2);font-size:11px;display:flex;align-items:center">全部窗口</div>
+              </div>
+              <div style="width:22px;height:22px;color:var(--t3);display:flex;align-items:center;justify-content:center">
+                <svg viewBox="0 0 24 24" style="width:11px;height:11px;fill:none;stroke:currentColor;stroke-width:2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+              </div>
+            </div>
+          </div>
+          <div class="body" style="padding:11px 14px">
+            <div style="display:flex;gap:6px;padding:2px;background:var(--field);border:1px solid var(--line);border-radius:8px">
+              <div style="flex:1;height:28px;border-radius:7px;background:rgba(84,138,247,.22);color:#A8C4F8;font-size:11px;display:flex;align-items:center;justify-content:center;gap:6px">
+                <span style="width:10px;height:10px;border-radius:3px;background:#548AF7"></span>频道 A<span style="font-size:9.5px;opacity:.8">0</span>
+              </div>
+              <div style="flex:1;height:28px;border-radius:7px;color:var(--t2);font-size:11px;display:flex;align-items:center;justify-content:center;gap:6px">
+                <span style="width:10px;height:10px;border-radius:3px;background:#1FC8B4"></span>频道 B<span style="font-size:9.5px;opacity:.8">0</span>
+              </div>
+              <div style="flex:1;height:28px;border-radius:7px;color:var(--t2);font-size:11px;display:flex;align-items:center;justify-content:center;gap:6px">
+                <span style="width:10px;height:10px;border-radius:3px;background:#E8A33E"></span>频道 C<span style="font-size:9.5px;opacity:.8">0</span>
+              </div>
+              <div style="flex:1;height:28px;border-radius:7px;color:var(--t2);font-size:11px;display:flex;align-items:center;justify-content:center;gap:6px">
+                <span style="width:10px;height:10px;border-radius:3px;background:#F9667A"></span>频道 D<span style="font-size:9.5px;opacity:.8">0</span>
+              </div>
+            </div>
+          </div>
+          <div class="foot" style="height:52px">
+            <div class="footL"></div>
+            <div class="old" style="height:30px;width:88px;border-radius:7px;background:var(--field);border:1px solid var(--ctl);color:var(--t1);font-size:12px">取消</div>
+            <div class="old" style="height:30px;width:88px;border-radius:7px;background:var(--ac);color:#fff;font-size:12px;font-weight:600">确定</div>
+          </div>
+        </div>
+        <div class="props"><i class="w">h 30</i><i class="w">定宽 88</i><i class="w">段 r6 / 频道 r7</i><i class="w">取消有底色</i></div>
+
+        <div class="arrow">重设计后</div>
+        <div class="cap">修改后 · <b class="ok">页脚 Ghost + Primary，分段去描边，色点正圆</b></div>
+        <div class="shot">
+          <div class="hd2" style="height:40px">
+            <span>同步输入</span>
+            <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
+              <div style="display:flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:8px;background:var(--field)">
+                <div style="height:24px;padding:0 10px;border-radius:6px;background:var(--ac-soft);color:var(--ac);font-size:11px;display:flex;align-items:center;font-weight:600">当前窗口</div>
+                <div style="height:24px;padding:0 10px;border-radius:6px;color:var(--t2);font-size:11px;display:flex;align-items:center">全部窗口</div>
+              </div>
+              <button class="b gho" type="button" style="width:26px;height:26px;min-width:0;padding:0;border-radius:6px"><svg viewBox="0 0 24 24" style="width:12px;height:12px"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+            </div>
+          </div>
+          <div class="body" style="padding:11px 14px">
+            <div style="display:flex;gap:2px;padding:2px;background:var(--field);border:1px solid var(--line);border-radius:8px">
+              <div style="flex:1;height:28px;border-radius:6px;background:rgba(84,138,247,.18);color:#A8C4F8;font-size:11px;display:flex;align-items:center;justify-content:center;gap:7px;font-weight:600">
+                <span style="width:8px;height:8px;border-radius:50%;background:#548AF7"></span>频道 A<span style="font-size:9.5px;padding:0 4px;border-radius:4px;background:rgba(255,255,255,.09)">0</span>
+              </div>
+              <div style="flex:1;height:28px;border-radius:6px;color:var(--t2);font-size:11px;display:flex;align-items:center;justify-content:center;gap:7px">
+                <span style="width:8px;height:8px;border-radius:50%;background:#1FC8B4"></span>频道 B<span style="font-size:9.5px;padding:0 4px;border-radius:4px;background:rgba(255,255,255,.06)">0</span>
+              </div>
+              <div style="flex:1;height:28px;border-radius:6px;color:var(--t2);font-size:11px;display:flex;align-items:center;justify-content:center;gap:7px">
+                <span style="width:8px;height:8px;border-radius:50%;background:#E8A33E"></span>频道 C<span style="font-size:9.5px;padding:0 4px;border-radius:4px;background:rgba(255,255,255,.06)">0</span>
+              </div>
+              <div style="flex:1;height:28px;border-radius:6px;color:var(--t2);font-size:11px;display:flex;align-items:center;justify-content:center;gap:7px">
+                <span style="width:8px;height:8px;border-radius:50%;background:#F9667A"></span>频道 D<span style="font-size:9.5px;padding:0 4px;border-radius:4px;background:rgba(255,255,255,.06)">0</span>
+              </div>
+            </div>
+          </div>
+          <div class="foot">
+            <div class="footL"></div>
+            <button class="b gho" type="button">取消</button>
+            <button class="b pri" type="button">确定</button>
+          </div>
+        </div>
+        <div class="props"><i class="k">h 34</i><i class="k">内容宽</i><i class="k">段 r6 / 频道 r6</i><i class="k">取消无底</i></div>
+        <div class="cmp-note">
+          这处改动最多：页脚三层归位、分段选中态去掉 accent 描边（底色 + 字色 + 600 已是三重强调）、
+          频道色点从 <code>10×10 r3</code> 小方角改成 <code>8×8 正圆</code>、右上关闭键换成标准 Ghost 26×26。
+        </div>
+      </div>
+    </div>
+
+    <div class="cmp">
+      <div class="cmp-hd"><span class="n">⑤</span><h3>输出高亮 · 完成</h3><span class="src">highlight_dialog.slint:924</span></div>
+      <div class="cmp-bd">
+        <div class="cap">修改前 · <b class="no">30/7，字色已是深青（这一处做对了）</b></div>
+        <div class="shot">
+          <div class="body" style="min-height:24px">规则将作用于当前会话的终端输出</div>
+          <div class="foot" style="height:52px">
+            <div style="font-size:11px;color:var(--t3);max-width:52ch;margin-right:auto">正则已保存，可在会话中立即生效</div>
+            <div class="old" style="height:30px;padding:0 18px;border-radius:7px;background:var(--ac);color:var(--ac-on);font-size:12px;font-weight:700">完成</div>
+          </div>
+        </div>
+        <div class="props"><i class="w">h 30</i><i class="w">r 7</i><i class="k">fg accent-on ✓</i><i>12/700</i></div>
+
+        <div class="arrow">重设计后</div>
+        <div class="cap">修改后 · <b class="ok">34/8，13px / 600</b></div>
+        <div class="shot">
+          <div class="body" style="min-height:24px">规则将作用于当前会话的终端输出</div>
+          <div class="foot">
+            <div style="font-size:11px;color:var(--t3);max-width:52ch;margin-right:auto">正则已保存，可在会话中立即生效</div>
+            <button class="b pri" type="button">完成</button>
+          </div>
+        </div>
+        <div class="props"><i class="k">h 34</i><i class="k">r 8</i><i class="k">fg accent-on</i><i>13/600</i></div>
+        <div class="cmp-note">
+          这处只对齐尺寸：<b>30→34、r7→r8、12→13、700→600</b>。单个按钮看不出差别，但五个弹框并排时页脚高度就齐了。
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 05 ============ -->
+  <section id="code">
+    <div class="sec-hd"><span class="no">05</span><h3>落成代码</h3></div>
+    <p class="sec-sub">
+      一个组件覆盖四层 + 六项交互。属性全部在 Slint 能力范围内：布局用 <span class="mono">HorizontalLayout</span>，
+      状态用 <span class="mono">TouchArea.has-hover / pressed</span> 与 <span class="mono">FocusScope.has-focus</span>，
+      过渡用 <span class="mono">animate</span>，异步用 <span class="mono">Timer</span>。
+    </p>
+
+    <div class="card" style="background:transparent;border:none;padding:0 0 12px">
+      <pre><span class="c">// widgets.slint —— 弹框页脚按钮的唯一实现（替换五处手写 + 两个旧组件）</span>
+<span class="k">export enum</span> <span class="t">FootTier</span> { primary, secondary, ghost, danger }
+
+<span class="k">export component</span> <span class="t">FootButton</span> <span class="k">inherits</span> Rectangle {
+    <span class="k">in property</span> &lt;string&gt; text;
+    <span class="k">in property</span> &lt;string&gt; glyph: <span class="s">""</span>;
+    <span class="k">in property</span> FootTier tier: FootTier.secondary;
+    <span class="k">in property</span> &lt;bool&gt; disabled: <span class="n">false</span>;
+    <span class="k">in property</span> &lt;bool&gt; busy: <span class="n">false</span>;        <span class="c">// 异步进行中（测试连接）</span>
+    <span class="k">in property</span> &lt;int&gt; busy-state: <span class="n">0</span>;       <span class="c">// 0 进行中 / 1 成功 / 2 失败</span>
+    <span class="k">in property</span> &lt;length&gt; btn-width: <span class="n">0px</span>;   <span class="c">// 0 = 按内容</span>
+    <span class="k">callback</span> clicked();
+
+    <span class="k">property</span> &lt;bool&gt; inert: disabled || busy;
+    <span class="k">property</span> &lt;bool&gt; hot: ta.has-hover && !inert;
+    <span class="k">property</span> &lt;int&gt; dots: <span class="n">0</span>;
+
+    <span class="c">// 异步时文字后缀轮点：. → .. → ... （Timer 驱动，不依赖旋转动画）</span>
+    <span class="t">Timer</span> {
+        interval: <span class="n">400ms</span>;
+        running: root.busy && root.busy-state == <span class="n">0</span>;
+        triggered => { root.dots = (root.dots + <span class="n">1</span>) % <span class="n">4</span>; }
+    }
+
+    height: <span class="n">34px</span>;
+    min-width: btn-width &gt; <span class="n">0px</span> ? btn-width : <span class="n">76px</span>;
+    border-radius: <span class="n">8px</span>;
+    border-width: tier == FootTier.danger ? <span class="n">1px</span> : <span class="n">0px</span>;
+    border-color: hot ? Theme.<span class="t">danger</span> : Theme.<span class="t">danger-strong</span>;
+
+    background: inert ? (tier == FootTier.ghost ? transparent : Theme.<span class="t">bg-elevated</span>)
+        : tier == FootTier.primary
+            ? (ta.pressed ? Theme.<span class="t">accent-pressed</span>
+               : hot       ? Theme.<span class="t">accent-hover</span>
+                           : Theme.<span class="t">accent</span>)
+        : tier == FootTier.secondary
+            ? (ta.pressed ? Theme.<span class="t">bg-active</span>
+               : hot       ? Theme.<span class="t">foot-secondary-hover</span>   <span class="c">// #3A4049</span>
+                           : Theme.<span class="t">foot-secondary</span>)        <span class="c">// #2E323C</span>
+        : tier == FootTier.ghost
+            ? (ta.pressed ? Theme.<span class="t">foot-secondary</span>         <span class="c">// #2E323C</span>
+               : hot       ? Theme.<span class="t">foot-ghost-hover</span>       <span class="c">// #2A2E36</span>
+                           : transparent)
+        : (hot ? Theme.<span class="t">danger</span>.with-alpha(<span class="n">0.10</span>) : transparent);
+    <span class="k">animate</span> background, border-color { duration: <span class="n">100ms</span>; }
+
+    <span class="c">// 焦点：FocusScope 负责键盘，环画在外层兄弟节点（见 FootButtonFocusRing）</span>
+    fs := <span class="t">FocusScope</span> {
+        <span class="k">key-pressed</span>(e) => {
+            <span class="k">if</span> !root.inert && (e.text == <span class="s">"\n"</span> || e.text == <span class="s">" "</span>) {
+                root.clicked();
+                <span class="k">return</span> accept;
+            }
+            <span class="k">return</span> reject;
+        }
+    }
+    out property &lt;bool&gt; focused: fs.has-focus;
+
+    HorizontalLayout {
+        padding-left: glyph == <span class="s">""</span> ? <span class="n">18px</span> : <span class="n">14px</span>;
+        padding-right: <span class="n">18px</span>;
+        spacing: <span class="n">7px</span>;
+        <span class="k">if</span> glyph != <span class="s">""</span> || busy : <span class="t">Icon</span> {
+            glyph: root.busy &amp;&amp; root.busy-state == <span class="n">0</span> ? <span class="s">"clock"</span>
+                 : root.busy-state == <span class="n">1</span> ? <span class="s">"check"</span>
+                 : root.busy-state == <span class="n">2</span> ? <span class="s">"alert"</span>
+                 : root.glyph;
+            size: <span class="n">15px</span>;
+            tint: root.inert ? Theme.<span class="t">text-muted</span>
+                : root.busy-state == <span class="n">1</span> ? Theme.<span class="t">ok</span>
+                : root.busy-state == <span class="n">2</span> ? Theme.<span class="t">danger-strong</span>
+                : root.tier == FootTier.primary ? Theme.<span class="t">accent-on</span>
+                : root.tier == FootTier.danger ? Theme.<span class="t">danger-strong</span>
+                : Theme.<span class="t">text-primary</span>;
+        }
+        Text {
+            text: root.busy
+                ? (root.busy-state == <span class="n">1</span> ? @tr(<span class="s">"Connected"</span>)
+                 : root.busy-state == <span class="n">2</span> ? @tr(<span class="s">"Failed"</span>)
+                 : @tr(<span class="s">"Connecting"</span>) + (root.dots == <span class="n">1</span> ? <span class="s">"."</span>
+                    : root.dots == <span class="n">2</span> ? <span class="s">".."</span> : <span class="s">"..."</span>))
+                : root.text;
+            color: root.inert ? Theme.<span class="t">text-muted</span>
+                : root.tier == FootTier.primary ? Theme.<span class="t">accent-on</span>
+                : root.tier == FootTier.danger ? Theme.<span class="t">danger-strong</span>
+                : root.tier == FootTier.secondary ? Theme.<span class="t">text-primary</span>
+                : (root.hot ? Theme.<span class="t">text-primary</span> : Theme.<span class="t">text-secondary</span>);
+            font-size: Theme.<span class="t">fs-md</span>;      <span class="c">// 13px</span>
+            font-weight: root.tier == FootTier.primary ? Theme.<span class="t">fw-strong</span> : Theme.<span class="t">fw-regular</span>;
+            vertical-alignment: center;
+        }
+    }
+
+    ta := TouchArea {
+        enabled: !root.inert;
+        mouse-cursor: root.inert ? default : pointer;
+        clicked => { fs.focus(); root.clicked(); }
+    }
+}
+
+<span class="c">// 焦点环必须单独一层：画在按钮内部会被 clip 裁掉</span>
+<span class="k">export component</span> <span class="t">FootFocusRing</span> <span class="k">inherits</span> Rectangle {
+    <span class="k">in property</span> &lt;bool&gt; on: <span class="n">false</span>;
+    x: <span class="n">-3px</span>; y: <span class="n">-3px</span>;
+    width: parent.width + <span class="n">6px</span>;
+    height: parent.height + <span class="n">6px</span>;
+    border-radius: <span class="n">10px</span>;          <span class="c">// 按钮 8 + 2</span>
+    background: transparent;
+    border-width: <span class="n">3px</span>;
+    border-color: Theme.<span class="t">accent</span>.with-alpha(<span class="n">0.22</span>);
+    visible: root.on;
+}
+
+<span class="c">// theme.slint —— 新增 4 个 token</span>
+<span class="k">out property</span> &lt;color&gt; accent-on: <span class="t">#06231F</span>;          <span class="c">// accent 上的文字（7.87:1）</span>
+<span class="k">out property</span> &lt;color&gt; foot-secondary: <span class="t">#2E323C</span>;     <span class="c">// 次按钮常态底（1.36:1）</span>
+<span class="k">out property</span> &lt;color&gt; foot-secondary-hover: <span class="t">#3A4049</span>; <span class="c">// 次按钮悬停（1.67:1）</span>
+<span class="k">out property</span> &lt;color&gt; foot-ghost-hover: <span class="t">#2A2E36</span>;     <span class="c">// Ghost 悬停（1.29:1）</span></pre>
+    </div>
+
+    <div class="card">
+      <h4>替换清单<span class="hint">8 处</span></h4>
+      <table>
+        <tr><th>文件</th><th>删掉</th><th>换成</th></tr>
+        <tr><td class="mono">session_dialog:4149</td><td class="mono dim">GhostButton + dialog-chrome</td><td class="mono good">secondary + glyph "bolt"</td></tr>
+        <tr><td class="mono">session_dialog:4158</td><td class="mono dim">GhostButton（取消）</td><td class="mono good">ghost</td></tr>
+        <tr><td class="mono">session_dialog:4163</td><td class="mono dim">PrimaryButton</td><td class="mono good">primary</td></tr>
+        <tr><td class="mono">color_picker:930 / 948 / 957</td><td class="mono dim">3 个手写 Rectangle</td><td class="mono good">secondary / ghost / primary</td></tr>
+        <tr><td class="mono">color_picker:910</td><td class="mono dim">「选定 + 调色盘」合并块</td><td class="mono good">虚线只读预览 + secondary</td></tr>
+        <tr><td class="mono">confirm_dialog:228</td><td class="mono dim">DangerButton（30/r4）</td><td class="mono good">primary 或 danger</td></tr>
+        <tr><td class="mono">sync_input_dialog:680 / 699</td><td class="mono dim">2 个 88 定宽手写块</td><td class="mono good">ghost / primary</td></tr>
+        <tr><td class="mono">highlight_dialog:924</td><td class="mono dim">手写 30/7 块</td><td class="mono good">primary</td></tr>
+      </table>
+      <p style="margin:11px 0 0;font-size:11.5px;color:var(--fg2);line-height:1.85">
+        <span class="pill g">之后</span>
+        <span class="mono">PrimaryButton</span> / <span class="mono">GhostButton</span> 还有约 20 处非页脚调用（设置页、左栏「新建会话」等）。
+        页脚验收完，把 <span class="mono">FootButton</span> 参数作为默认值回灌那两个组件，避免同一外观出现「组件版」「页脚版」两个分支。
+      </p>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h4>验收<span class="hint">可测量，不靠主观</span></h4>
+      <ul style="margin:0;padding-left:18px;font-size:11.5px;color:var(--fg2);line-height:1.95">
+        <li>五处页脚按钮同高 <b style="color:var(--fg)">34px</b>、页脚总高 <b style="color:var(--fg)">58px</b>，用离屏像素探针断言（参照 <span class="mono">tests/sidebar_edge_line.rs</span>）。</li>
+        <li>次按钮填充与弹框面 ≥ 1.3:1、文字 ≥ 6:1；Ghost 文字 ≥ 4:1（悬停后 ≥ 9:1）——由 <span class="mono">output/btn-contrast.py</span> 核算。</li>
+        <li>禁用态与常态的文字对比差 ≥ 3 档（现状 0.62，改后约 3.7）。</li>
+        <li>Tab 遍历五个按钮各一次、Enter 触发、Esc 关闭——手工过一遍，这层不走自动化。</li>
+        <li>亮色主题另算：<span class="mono">accent-on</span> 要取白，<span class="mono">foot-secondary</span> 取亮色系的次级面。</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    <b>范围</b>：五张截图对应的弹框页脚按钮及其邻近控件（分段、频道栏、预览块、关闭键）。不做全应用推广。
+    <br><b>能落地</b>：所有视觉与状态差异由 Rectangle 属性 + TouchArea 状态 + Timer 产生；未使用阴影、渐变、滤镜。
+    <br><b>局限</b>：Slint 的 <span class="mono">animate</span> 对同一属性只能设一条时长，所以没有「按下更快、松开更慢」；焦点环需要外层兄弟节点，不能画在按钮自身。
+  </footer>
+</div>
+
+<script>
+(function () {
+  var links = document.querySelectorAll('header nav a');
+  for (var i = 0; i < links.length; i++) {
+    links[i].addEventListener('click', function (e) {
+      var el = document.getElementById(this.getAttribute('href').slice(1));
+      if (!el) return;
+      e.preventDefault();
+      window.scrollTo({ top: el.offsetTop - 52, behavior: 'smooth' });
+    });
+  }
+})();
+</script>
+</body>
+</html>

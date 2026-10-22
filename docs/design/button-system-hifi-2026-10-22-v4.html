@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark" data-pair="A">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MTerm 按钮重设计 v4 · 一屏一屏看</title>
+<style>
+/* ============================================================================
+   v4 的出发点：上一版按「层级」把按钮分成五层（实心 / 青绿浅填充 / 中性面 /
+   无底 / 红），结果一屏里出现四五种形状，最刺眼的是「取消」变成裸文字 ——
+   它夹在描边按钮和实心按钮中间，看起来像少了块边框。
+
+   这一版只保留两种形状：
+     实心  = 这一屏的落点（每屏最多一个）
+     描边  = 其余所有可点的东西（取消、打开目录、随机、测试连接…）
+   位置和颜色负责区分语义，形状不再承担语义。
+   无底只在工具条这种「一整排」的地方用，因为那里每一格都有图标。
+   ========================================================================= */
+
+:root{
+  --ease: cubic-bezier(.2,0,0,1);
+  --ff: "Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  --mono: "Cascadia Mono","Consolas","SF Mono",monospace;
+}
+html[data-theme="dark"]{
+  --page:#0B0C10; --stage:#0E1014; --dlg:#16181D; --dlg2:#1B1E24;
+  --line:#282C34; --line2:#333842; --ctl:#3A404B; --ctl-hi:#525A68;
+  --t1:#E6E8EE; --t2:#B6BBC6; --t3:#8B909C; --t4:#666C77;
+  --hov:rgba(255,255,255,.06); --act:rgba(255,255,255,.10);
+  --ac:#1FC8B4; --ac-hi:#43D1C0; --ac-lo:#19A493; --ac-soft:rgba(31,200,180,.16); --ac-text:#1FC8B4;
+  --ac-tonal:rgba(31,200,180,.10); --ac-tonal-hi:rgba(31,200,180,.17);
+  --ac-tonal-ac:rgba(31,200,180,.24); --ac-tonal-line:rgba(31,200,180,.22);
+  --pair-a:rgba(255,255,255,.075); --pair-a-hi:rgba(255,255,255,.12); --pair-a-ac:rgba(255,255,255,.16);
+  --pair-b:rgba(255,255,255,.04); --pair-b-line:rgba(255,255,255,.10);
+  --ink:#06231F; --dg:#C94439; --dg-hi:#D4534A; --dg-lo:#B03A32;
+  --ok:#3DD68C;
+}
+html[data-theme="light"]{
+  --page:#EEF0F4; --stage:#F4F5F8; --dlg:#FFFFFF; --dlg2:#F8F9FB;
+  --line:#E3E5EB; --line2:#D5D8DF; --ctl:#C9CCD4; --ctl-hi:#9AA0AB;
+  --t1:#171A20; --t2:#3F444E; --t3:#666C77; --t4:#949AA4;
+  --hov:rgba(15,20,30,.05); --act:rgba(15,20,30,.09);
+  --ac:#16C0AE; --ac-hi:#0FA894; --ac-lo:#0C9484; --ac-soft:rgba(22,192,174,.22); --ac-text:#0A8175;
+  --ac-tonal:rgba(22,192,174,.11); --ac-tonal-hi:rgba(22,192,174,.17);
+  --ac-tonal-ac:rgba(22,192,174,.24); --ac-tonal-line:rgba(22,192,174,.25);
+  --pair-a:rgba(15,20,30,.06); --pair-a-hi:rgba(15,20,30,.10); --pair-a-ac:rgba(15,20,30,.14);
+  --pair-b:rgba(15,20,30,.035); --pair-b-line:rgba(15,20,30,.09);
+  --ink:#06231F; --dg:#C0392F; --dg-hi:#CE483D; --dg-lo:#A62F26;
+  --ok:#12925F;
+}
+
+*,*::before,*::after{ box-sizing:border-box; }
+body{
+  margin:0; background:var(--page); color:var(--t1);
+  font-family:var(--ff); font-size:14px; line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+  transition:background-color 200ms var(--ease), color 200ms var(--ease);
+}
+::selection{ background:var(--ac-soft); }
+
+.wrap{ max-width:1120px; margin:0 auto; padding:0 40px 100px; }
+
+/* ── 顶栏 ── */
+.top{
+  position:sticky; top:0; z-index:20; display:flex; align-items:center; gap:14px;
+  padding:12px 40px; background:var(--page); border-bottom:1px solid var(--line);
+}
+.top .brand{ font-size:12px; letter-spacing:.16em; font-weight:700; }
+.top .brand span{ color:var(--t4); font-weight:500; letter-spacing:.06em; margin-left:6px; }
+.top .gap{ flex:1; }
+.theme-btn{
+  height:30px; padding:0 12px; display:inline-flex; align-items:center; gap:7px;
+  border-radius:7px; border:1px solid var(--ctl); background:transparent;
+  color:var(--t2); font:500 12px var(--ff); cursor:default;
+  transition:background-color 140ms var(--ease), border-color 140ms var(--ease), color 140ms var(--ease);
+}
+.theme-btn:hover{ background:var(--hov); border-color:var(--ctl-hi); color:var(--t1); }
+.theme-btn i{ width:7px; height:7px; border-radius:4px; background:var(--ac); }
+
+/* ── 标题 ── */
+header.intro{ padding:44px 0 8px; }
+header.intro .eb{ font-family:var(--mono); font-size:11px; letter-spacing:.16em; color:var(--ac); margin-bottom:12px; }
+header.intro h1{ font-size:32px; line-height:1.24; font-weight:700; margin:0 0 12px; letter-spacing:-.01em; }
+header.intro p{ margin:0; max-width:76ch; color:var(--t2); font-size:14px; }
+header.intro p b{ color:var(--t1); }
+
+/* ── 分类导航 ── */
+.tabs{ display:flex; gap:6px; flex-wrap:wrap; margin:24px 0 6px; }
+.tabs a{
+  height:30px; padding:0 13px; display:inline-flex; align-items:center; gap:7px;
+  border-radius:7px; border:1px solid var(--line2); background:transparent;
+  color:var(--t2); font-size:12.5px; text-decoration:none;
+  transition:background-color 140ms var(--ease), color 140ms var(--ease), border-color 140ms var(--ease);
+}
+.tabs a:hover{ background:var(--hov); color:var(--t1); border-color:var(--ctl-hi); }
+.tabs a.on{ background:var(--dlg); color:var(--t1); border-color:var(--ctl); }
+.tabs a b{ font-family:var(--mono); font-size:10px; color:var(--t4); font-weight:500; }
+
+/* ── 方案切换条 ── */
+.picker{
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  margin:22px 0 4px; padding:12px 14px;
+  border:1px solid var(--line2); border-radius:10px; background:var(--stage);
+}
+.picker .pk-l{ font-size:12.5px; color:var(--t2); margin-right:4px; }
+.pk{
+  display:inline-flex; align-items:center; gap:8px; height:34px; padding:0 13px;
+  border-radius:8px; border:1px solid var(--line2); background:transparent; color:var(--t2);
+  font:500 12.5px var(--ff); cursor:default;
+  transition:background-color 140ms var(--ease), border-color 140ms var(--ease), color 140ms var(--ease);
+}
+.pk:hover{ background:var(--hov); border-color:var(--ctl-hi); color:var(--t1); }
+.pk.on{ background:var(--dlg); border-color:var(--ac); color:var(--t1); }
+.pk b{ font-family:var(--mono); font-size:11px; color:var(--t4); font-weight:600; }
+.pk.on b{ color:var(--ac); }
+.pk span{ font-size:11px; color:var(--t4); }
+
+/* ── 屏 ── */
+section.cat{ padding-top:34px; }
+.cat-t{ display:flex; align-items:baseline; gap:12px; padding-bottom:12px; border-bottom:1px solid var(--line); }
+.cat-t h2{ font-size:19px; font-weight:700; margin:0; }
+.cat-t span{ font-size:12px; color:var(--t3); }
+
+.screen{ margin-top:26px; }
+.sc-head{ display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+.sc-head .no{
+  font-family:var(--mono); font-size:10.5px; color:var(--ac); border:1px solid var(--line2);
+  border-radius:5px; padding:1px 6px; letter-spacing:.06em;
+}
+.sc-head h3{ font-size:15px; font-weight:600; margin:0; }
+.sc-head .src{ font-family:var(--mono); font-size:10.5px; color:var(--t4); }
+.sc-head .gap{ flex:1; }
+.sc-head .cmp{
+  height:24px; padding:0 9px; border-radius:6px; border:1px solid var(--line2);
+  background:transparent; color:var(--t3); font:400 11.5px var(--ff); cursor:default;
+  transition:background-color 140ms var(--ease), color 140ms var(--ease), border-color 140ms var(--ease);
+}
+.sc-head .cmp:hover{ background:var(--hov); color:var(--t1); border-color:var(--ctl-hi); }
+
+/* 舞台：不裁切，焦点环可以画到外面 */
+.stage{
+  background:var(--stage); border:1px solid var(--line); border-radius:12px;
+  padding:26px 24px; display:flex; justify-content:center; overflow:visible;
+}
+
+/* 弹框：真实尺寸，不缩放 */
+.dlg{
+  background:var(--dlg); border:1px solid var(--line2); border-radius:10px;
+  width:100%; max-width:760px; overflow:hidden;
+}
+.dlg.narrow{ max-width:520px; }
+.dlg.tiny{ max-width:400px; }
+.dlg-bar{
+  height:44px; display:flex; align-items:center; gap:10px; padding:0 14px;
+  border-bottom:1px solid var(--line);
+}
+.dlg-bar .name{ font-size:13px; font-weight:600; }
+.dlg-bar .gap{ flex:1; }
+.dlg-bar .x{
+  width:26px; height:26px; border-radius:6px; display:flex; align-items:center; justify-content:center;
+  color:var(--t4); transition:background-color 90ms var(--ease), color 90ms var(--ease);
+}
+.dlg-bar .x:hover{ background:var(--dg); color:#fff; }
+.dlg-body{ padding:18px 18px 16px; }
+.dlg-foot{
+  display:flex; align-items:center; gap:10px; min-height:60px; padding:11px 18px;
+  border-top:1px solid var(--line);
+}
+.dlg-foot .gap{ flex:1; }
+/* 页脚的「取消 / 落点」成对出现时互相等宽 —— 宽度不齐是最容易被一眼看出的不协调 */
+.dlg-foot .btn:not(.sm):not(.wide){ min-width:78px; }
+.dlg-foot .status{ font-size:11.5px; color:var(--t4); }
+
+/* ── 按钮：只有两种形状 ── */
+.btn{
+  height:34px; padding:0 18px; border-radius:8px;
+  display:inline-flex; align-items:center; justify-content:center; gap:7px;
+  font-family:var(--ff); font-size:13px; font-weight:600; line-height:1; white-space:nowrap;
+  border:1px solid transparent; background:transparent; color:var(--t1);
+  cursor:default; user-select:none; -webkit-appearance:none; appearance:none;
+  transition:background-color 140ms var(--ease), border-color 140ms var(--ease), color 140ms var(--ease);
+}
+.btn:hover{ transition-duration:110ms; }
+.btn:active{ transition-duration:70ms; }
+.btn:focus{ outline:none; }
+.btn:focus-visible{ border-color:var(--ac); outline:3px solid var(--ac-soft); outline-offset:3px; }
+.btn > *{ pointer-events:none; }
+.btn svg{ display:block; width:15px; height:15px; flex:0 0 auto; }
+.btn svg *{ fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+
+/* 形状 1：实心 —— 落点 */
+.btn-solid{ background:var(--ac); border-color:var(--ac); color:var(--ink); font-weight:700; }
+.btn-solid:hover{ background:var(--ac-hi); border-color:var(--ac-hi); }
+.btn-solid:active{ background:var(--ac-lo); border-color:var(--ac-lo); }
+.btn-solid[disabled]{ background:var(--hov); border-color:var(--line2); color:var(--t4); pointer-events:none; }
+
+/* 形状 2：描边 —— 其余一切 */
+.btn-line{ background:transparent; border-color:var(--ctl); color:var(--t2); }
+.btn-line:hover{ background:var(--hov); border-color:var(--ctl-hi); color:var(--t1); }
+.btn-line:active{ background:var(--act); border-color:var(--ctl-hi); color:var(--t1); }
+.btn-line[disabled]{ border-color:var(--line2); color:var(--t4); pointer-events:none; }
+
+/* 功能键（测试连接）：换回上一版的「强调浅填充」——
+   有面、边框几乎不参与，靠底色和文字色与「取消」区分 */
+.btn-line.ac{
+  background:var(--ac-tonal);
+  border-color:var(--ac-tonal-line);
+  color:var(--ac-text);
+}
+.btn-line.ac:hover{ background:var(--ac-tonal-hi); border-color:var(--ac); color:var(--ac-text); }
+.btn-line.ac:active{ background:var(--ac-tonal-ac); }
+
+/* ── 取消：三套待选方案，由 html[data-pair] 切换 ───────────────── */
+.btn-cancel{ background:transparent; border-color:var(--ctl); color:var(--t2); }
+.btn-cancel:hover{ background:var(--hov); border-color:var(--ctl-hi); color:var(--t1); }
+.btn-cancel:active{ background:var(--act); color:var(--t1); }
+
+/* A · 双填充：取消有面但无边框，重量靠「有色 vs 无色」区分 */
+html[data-pair="A"] .btn-cancel{ background:var(--pair-a); border-color:transparent; color:var(--t1); }
+html[data-pair="A"] .btn-cancel:hover{ background:var(--pair-a-hi); border-color:transparent; color:var(--t1); }
+html[data-pair="A"] .btn-cancel:active{ background:var(--pair-a-ac); border-color:transparent; }
+
+/* B · 面 + 边：比 A 更「实体」，边框给一个明确的轮廓 */
+html[data-pair="B"] .btn-cancel{ background:var(--pair-b); border-color:var(--pair-b-line); color:var(--t2); }
+html[data-pair="B"] .btn-cancel:hover{ background:var(--pair-a); border-color:var(--ctl); color:var(--t1); }
+html[data-pair="B"] .btn-cancel:active{ background:var(--pair-a-hi); }
+
+/* C · 同色系：取消也用强调色的浅面，与主按钮同一色族 */
+html[data-pair="C"] .btn-cancel{ background:var(--ac-tonal); border-color:transparent; color:var(--ac-text); }
+html[data-pair="C"] .btn-cancel:hover{ background:var(--ac-tonal-hi); border-color:transparent; color:var(--ac-text); }
+html[data-pair="C"] .btn-cancel:active{ background:var(--ac-tonal-ac); }
+
+/* 危险 */
+.btn-danger{ background:var(--dg); border-color:var(--dg); color:#fff; font-weight:700; }
+.btn-danger:hover{ background:var(--dg-hi); border-color:var(--dg-hi); }
+.btn-danger:active{ background:var(--dg-lo); border-color:var(--dg-lo); }
+
+/* 工具条专用：一整排图标才用无底 */
+.icon-btn{
+  width:28px; height:26px; padding:0; border-radius:6px; border:1px solid transparent;
+  display:inline-flex; align-items:center; justify-content:center; background:transparent;
+  color:var(--t3); cursor:default;
+  transition:background-color 140ms var(--ease), color 140ms var(--ease), border-color 140ms var(--ease);
+}
+.icon-btn:hover{ background:var(--hov); color:var(--t1); }
+.icon-btn:active{ background:var(--act); }
+.icon-btn svg{ display:block; width:14px; height:14px; }
+.icon-btn svg *{ fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.icon-btn.dg:hover{ background:var(--dg); color:#fff; }
+
+/* 尺寸 */
+.btn.sm{ height:28px; border-radius:7px; padding:0 13px; font-size:12.5px; }
+.btn.wide{ height:36px; border-radius:9px; width:100%; }
+
+/* 文字链 */
+.tlink{
+  height:22px; padding:0 4px; border:0; background:transparent; color:var(--t3);
+  font:400 12px var(--ff); cursor:default; border-radius:4px;
+  transition:color 140ms var(--ease), background-color 140ms var(--ease);
+}
+.tlink:hover{ color:var(--ac-text); }
+
+/* 段选 */
+.seg{
+  display:inline-flex; height:34px; border:1px solid var(--ctl); border-radius:8px;
+  overflow:hidden; background:transparent;
+}
+.seg button{
+  border:0; background:transparent; color:var(--t2); font:500 12px var(--ff);
+  padding:0 13px; display:flex; align-items:center; gap:6px; cursor:default;
+  transition:background-color 140ms var(--ease), color 140ms var(--ease);
+}
+.seg button:hover{ background:var(--hov); color:var(--t1); }
+.seg button.on{ background:var(--hov); color:var(--t1); }
+.seg .div{ width:1px; background:var(--line2); flex:0 0 auto; }
+
+/* 输入 */
+.field{
+  height:32px; display:flex; align-items:center; padding:0 11px; gap:8px;
+  border-radius:7px; border:1px solid var(--line2); background:var(--dlg2);
+  color:var(--t1); font-size:12.5px;
+}
+.field.ph{ color:var(--t4); }
+.field.focus{ border-color:var(--ac); outline:3px solid var(--ac-soft); outline-offset:2px; }
+.label{ font-size:12px; color:var(--t2); margin-bottom:6px; }
+
+/* 说明行 */
+.notes{ display:flex; gap:22px; margin-top:12px; padding-left:2px; }
+.notes .n{ flex:1; font-size:12.5px; color:var(--t3); }
+.notes .n b{ color:var(--t1); font-weight:600; }
+.notes .n b.bad{ color:var(--dg); }
+.notes .n b.good{ color:var(--ac); }
+
+/* 旧版对照（默认折叠） */
+.old{ display:none; margin-top:10px; }
+.old.show{ display:block; }
+.old .old-in{
+  border:1px dashed var(--line2); border-radius:9px; padding:14px 16px;
+  background:var(--stage); display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+}
+.old .cap{ width:100%; font-family:var(--mono); font-size:10px; color:var(--t4); letter-spacing:.08em; margin-bottom:2px; }
+
+/* 旧按钮的忠实还原（尺寸/圆角/无按下态） */
+.o-btn{ display:inline-flex; align-items:center; justify-content:center; font-family:var(--ff); }
+.o-28-4{ height:28px; border-radius:4px; font-size:13px; padding:0 12px; }
+.o-30-6{ height:30px; border-radius:6px; font-size:13px; padding:0 16px; }
+.o-36-8{ height:36px; border-radius:8px; font-size:12px; padding:0 16px; }
+.o-38-9{ height:38px; border-radius:9px; font-size:13px; padding:0 18px; }
+.o-26-5{ height:26px; border-radius:5px; font-size:12px; padding:0 13px; }
+.o-solid{ background:var(--ac); color:#fff; font-weight:700; }
+.o-solid-ink{ background:var(--ac); color:var(--ink); font-weight:700; }
+.o-line{ border:1px solid var(--ctl); color:var(--t2); }
+.o-fill{ background:var(--hov); color:var(--t1); }
+.o-text{ color:var(--t3); }
+.o-dg{ background:#C44A4A; color:#fff; font-weight:700; }
+
+/* 文件面板 */
+.panel{ width:100%; max-width:760px; background:var(--dlg); border:1px solid var(--line2); border-radius:10px; overflow:hidden; }
+.panel-bar{ display:flex; align-items:center; gap:6px; padding:9px 12px; border-bottom:1px solid var(--line); }
+.panel-bar .gap{ flex:1; }
+.tool{ display:inline-flex; height:26px; padding:0 9px; border-radius:6px; align-items:center; gap:6px;
+  border:1px solid var(--ctl); color:var(--t2); font-size:12px; cursor:default; background:transparent;
+  transition:background-color 140ms var(--ease), border-color 140ms var(--ease), color 140ms var(--ease); }
+.tool:hover{ background:var(--hov); border-color:var(--ctl-hi); color:var(--t1); }
+.tool svg{ width:13px; height:13px; }
+.tool svg *{ fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.tool .caret{ width:9px; height:9px; opacity:.7; }
+.row{ display:flex; align-items:center; gap:10px; padding:7px 12px; font-size:12.5px; }
+.row.sel{ background:var(--hov); }
+.row .name{ font-family:var(--mono); font-size:11.5px; color:var(--t2); }
+.row .gap{ flex:1; }
+.row .meta{ font-size:11px; color:var(--t4); }
+
+/* 侧栏 */
+.side-mock{ width:100%; max-width:300px; background:var(--dlg); border:1px solid var(--line2); border-radius:10px; overflow:hidden; }
+.side-mock .hd{ padding:10px 12px; border-bottom:1px solid var(--line); font-size:12px; color:var(--t3); }
+.side-mock .bd{ padding:10px; }
+.side-mock .srow{ display:flex; align-items:center; gap:8px; height:32px; padding:0 8px; border-radius:6px; font-size:12.5px; color:var(--t2); }
+.side-mock .srow:hover{ background:var(--hov); color:var(--t1); }
+.side-mock .srow .gap{ flex:1; }
+.side-mock .srow .dot{ width:6px; height:6px; border-radius:3px; background:var(--ok); }
+.side-mock .ft{ padding:10px; border-top:1px solid var(--line); }
+
+/* 命令栏 */
+.cmd{ width:100%; max-width:760px; }
+.cmd-box{ display:flex; align-items:center; gap:8px; padding:8px; border:1px solid var(--line2); border-radius:9px; background:var(--dlg); }
+.cmd-in{ flex:1; height:32px; display:flex; align-items:center; padding:0 10px; border-radius:6px; background:var(--dlg2); color:var(--t4); font-family:var(--mono); font-size:12px; }
+.cards{ display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px; }
+.qc{ border:1px solid var(--line2); border-radius:8px; padding:9px 11px; background:var(--dlg); }
+.qc:hover{ border-color:var(--ctl); background:var(--dlg2); }
+.qc .t{ font-size:12px; color:var(--t1); }
+.qc .c{ font-family:var(--mono); font-size:11px; color:var(--t3); margin-top:2px; }
+
+/* 附录 */
+.spec{ margin-top:56px; border-top:1px solid var(--line); padding-top:26px; }
+.spec h2{ font-size:18px; margin:0 0 6px; }
+.spec p{ color:var(--t3); font-size:12.5px; margin:0 0 16px; }
+table{ width:100%; border-collapse:collapse; font-size:12.5px; }
+th{ text-align:left; font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--t4); padding:0 10px 8px; border-bottom:1px solid var(--line2); font-weight:600; }
+td{ padding:9px 10px; border-bottom:1px solid var(--line); color:var(--t2); }
+tr:last-child td{ border-bottom:none; }
+td b{ color:var(--t1); }
+code{ font-family:var(--mono); font-size:.9em; color:var(--t1); background:var(--hov); padding:1px 5px; border-radius:4px; }
+
+/* 动态底色（取色器的「应用」）：背景由 JS 写死，悬停靠白色覆盖层提亮 */
+.btn-solid{ position:relative; overflow:hidden; }
+.btn-solid .sheen{
+  position:absolute; inset:0; background:#fff; opacity:0; pointer-events:none;
+  transition:opacity 140ms var(--ease);
+}
+.btn-solid:hover .sheen{ opacity:.12; }
+.btn-solid:active .sheen{ opacity:.20; }
+
+/* 色票 */
+.chip{
+  width:26px; height:26px; border-radius:7px; padding:0; appearance:none; -webkit-appearance:none;
+  border:1px solid rgba(0,0,0,.28); cursor:default; outline:2px solid transparent; outline-offset:2px;
+  transition:outline-color 140ms var(--ease), border-color 140ms var(--ease);
+}
+.chip:hover{ border-color:var(--t1); }
+.chip.sel{ outline-color:var(--ac); }
+
+@media (max-width:900px){
+  .wrap{ padding:0 18px 70px; }
+  .top{ padding:12px 18px; }
+  .stage{ padding:16px 12px; }
+  .notes{ flex-direction:column; gap:8px; }
+  .cards{ grid-template-columns:1fr; }
+}
+</style>
+</head>
+<body>
+
+<div class="top">
+  <div class="brand">MTERM <span>按钮重设计 v4.1</span></div>
+  <div class="gap"></div>
+  <button class="theme-btn" id="th"><i></i><span id="th-l">深色</span></button>
+</div>
+
+<div class="wrap">
+
+  <header class="intro">
+    <div class="eb">2026-10-22 · 一屏一屏看</div>
+    <h1>一屏只有一个实心按钮，<br>其余都退成「面」。</h1>
+    <p>
+      <b>「测试连接」已换回上一版的浅填充</b> —— 有面、边框退到几乎看不见，靠底色和文字色区分。
+      <b>「取消 / 确定」这一对还没定</b>：下面三个方案，点 A / B / C 切换，整页所有弹框会一起变，
+      看到的就是落地后的样子。「确定」保持实心不变，这一轮只动「取消」。
+    </p>
+  </header>
+
+  <div class="picker">
+    <span class="pk-l">取消 / 确定</span>
+    <button class="pk on" data-pair="A"><b>A</b>双填充<span>有色块、无边框</span></button>
+    <button class="pk" data-pair="B"><b>B</b>面 + 边<span>浅色块 + 细边框</span></button>
+    <button class="pk" data-pair="C"><b>C</b>同色系<span>取消也用青绿浅面</span></button>
+  </div>
+
+  <nav class="tabs" id="tabs">
+    <a href="#cat-dlg" class="on"><b>01</b>弹框</a>
+    <a href="#cat-panel"><b>02</b>面板</a>
+    <a href="#cat-side"><b>03</b>侧栏与命令栏</a>
+    <a href="#spec"><b>04</b>规格速查</a>
+  </nav>
+
+  <!-- ══ 01 弹框 ══════════════════════════════════════════════════════ -->
+  <section class="cat" id="cat-dlg">
+    <div class="cat-t"><h2>弹框</h2><span>5 个真实弹框，按代码里的尺寸还原</span></div>
+
+    <!-- A1 -->
+    <div class="screen" id="s-a1">
+      <div class="sc-head">
+        <span class="no">A1</span><h3>新建会话</h3>
+        <span class="src">session_dialog.slint:4120</span>
+        <span class="gap"></span>
+        <button class="cmp" data-old="a1">看上一版</button>
+      </div>
+      <div class="stage">
+        <div class="dlg">
+          <div class="dlg-bar"><span class="name">新建会话</span><span class="gap"></span><span class="x">×</span></div>
+          <div class="dlg-body">
+            <div style="display:grid;grid-template-columns:1fr 100px;gap:10px">
+              <div><div class="label">主机 / IP</div><div class="field">192.168.1.10</div></div>
+              <div><div class="label">端口</div><div class="field">22</div></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
+              <div><div class="label">用户名</div><div class="field">root</div></div>
+              <div><div class="label">会话名称</div><div class="field ph">可选</div></div>
+            </div>
+          </div>
+          <div class="dlg-foot">
+            <button class="btn btn-line ac">
+              <svg viewBox="0 0 16 16"><path d="M1 8h2.5l2-4.5 3.5 9 2-4.5H15"/></svg>
+              测试连接
+            </button>
+            <span class="status">未连接</span>
+            <span class="gap"></span>
+            <button class="btn btn-cancel">取消</button>
+            <button class="btn btn-solid">创建</button>
+          </div>
+        </div>
+      </div>
+      <div class="notes">
+        <div class="n"><b class="good">取消与创建成对。</b>同高 34、同圆角、等宽 78；两者都是「有面」的按钮，重量差靠颜色（灰面 vs 青面），不再靠有没有边框。</div>
+        <div class="n"><b>测试连接用强调浅面。</b>和「取消」的灰面区分开：一个有青绿色相、一个没有 —— 不用再加一层边框去区分。</div>
+      </div>
+      <div class="old" id="old-a1">
+        <div class="old-in">
+          <div class="cap">上一版 v3 —— 取消是无底文字，夹在描边与实心之间像缺了一块边</div>
+          <span class="o-btn o-38-9 o-fill" style="background:rgba(31,200,180,.10);color:var(--ac);border:1px solid rgba(31,200,180,.18)">测试连接</span>
+          <span style="font-size:11.5px;color:var(--t4)">未连接</span>
+          <span style="flex:1"></span>
+          <span class="o-btn o-38-9 o-text">取消</span>
+          <span class="o-btn o-38-9 o-solid" style="color:var(--ink)">创建</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- A2 -->
+    <div class="screen" id="s-a2">
+      <div class="sc-head">
+        <span class="no">A2</span><h3>确认删除</h3>
+        <span class="src">confirm_dialog.slint:224</span>
+        <span class="gap"></span>
+        <button class="cmp" data-old="a2">看上一版</button>
+      </div>
+      <div class="stage">
+        <div class="dlg narrow">
+          <div class="dlg-bar"><span class="name">确认删除</span><span class="gap"></span><span class="x">×</span></div>
+          <div class="dlg-body">
+            <div style="font-size:13px;color:var(--t1)">确定要删除这个文件？</div>
+            <div style="font-size:12px;color:var(--t3);margin-top:3px">此操作不可撤销。</div>
+            <div class="field" style="margin-top:11px;font-family:var(--mono);font-size:11.5px;color:var(--t2)">/var/www/app/config.php</div>
+          </div>
+          <div class="dlg-foot">
+            <span class="gap"></span>
+            <button class="btn btn-cancel">取消</button>
+            <button class="btn btn-danger">确认删除</button>
+          </div>
+        </div>
+      </div>
+      <div class="notes">
+        <div class="n"><b>红色只在落点。</b>「取消」保持中性灰面，不跟着变红 —— 一屏红两个按钮，红就不表示危险了。</div>
+        <div class="n"><b>两个按钮同尺寸。</b>旧版里「取消」是 30/6、「确认删除」是 30/4，底边差 1px，截图能看出来。</div>
+      </div>
+      <div class="old" id="old-a2">
+        <div class="old-in">
+          <div class="cap">上一版 v3</div>
+          <span class="o-btn o-30-6 o-line">取消</span>
+          <span class="o-btn o-30-6 o-dg" style="border-radius:4px">确认删除</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- A3 -->
+    <div class="screen" id="s-a3">
+      <div class="sc-head">
+        <span class="no">A3</span><h3>下载与传输</h3>
+        <span class="src">app.slint:5420</span>
+        <span class="gap"></span>
+        <button class="cmp" data-old="a3">看上一版</button>
+      </div>
+      <div class="stage">
+        <div class="dlg narrow">
+          <div class="dlg-bar"><span class="name">下载与传输</span><span class="gap"></span><span class="x">×</span></div>
+          <div class="dlg-body">
+            <div class="label">保存下载到：</div>
+            <div class="field" style="justify-content:space-between">
+              <span>D:\Downloads\MTerm</span>
+              <span style="font-size:11px;color:var(--t4)">点击打开</span>
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">
+              <button class="btn sm btn-solid">选择保存路径</button>
+              <button class="btn sm btn-line">打开目录</button>
+            </div>
+            <div style="height:1px;background:var(--line);margin:14px 0 10px"></div>
+            <div style="display:flex;align-items:center">
+              <span style="font-size:12px;color:var(--t2)">传输</span>
+              <span style="flex:1"></span>
+              <button class="tlink">清空</button>
+            </div>
+            <div class="row" style="margin-top:4px;padding-left:0;padding-right:0">
+              <span class="name">MTerm-0.7.3-win-x64.zip</span>
+              <span class="gap"></span>
+              <span class="meta">20.1 MB · 完成</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="notes">
+        <div class="n"><b>三个控件回到一条基线。</b>主键 28、次键 28、清空是文字链 —— 旧版是 28 / 28 / 20，最小的那个反而最像按钮。</div>
+        <div class="n"><b>「打开目录」不再是无边框灰块。</b>那个灰块在浅色主题下几乎看不出边界，现在与其它次按钮同一形状。</div>
+      </div>
+      <div class="old" id="old-a3">
+        <div class="old-in">
+          <div class="cap">上一版 v3 —— 主键、次键、文字链三种形状，且高度 28/28/20</div>
+          <span class="o-btn o-28-4 o-solid" style="color:var(--ink)">选择保存路径</span>
+          <span class="o-btn o-28-4 o-line" style="border-color:var(--ctl)">打开目录</span>
+          <span class="o-btn o-28-4 o-text" style="height:20px;font-size:11px">清空</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- A4 -->
+    <div class="screen" id="s-a4">
+      <div class="sc-head">
+        <span class="no">A4</span><h3>输出高亮 · 自定义规则</h3>
+        <span class="src">highlight_dialog.slint:676 / 921</span>
+        <span class="gap"></span>
+        <button class="cmp" data-old="a4">看上一版</button>
+      </div>
+      <div class="stage">
+        <div class="dlg">
+          <div class="dlg-bar"><span class="name">输出高亮 · 自定义</span><span class="gap"></span><span class="x">×</span></div>
+          <div class="dlg-body">
+            <div style="border:1px solid var(--line2);border-radius:9px;padding:12px;background:var(--dlg2)">
+              <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:8px">
+                <div class="field">规则名称</div>
+                <div class="field">正则 / 关键字</div>
+              </div>
+              <button class="btn wide btn-line" style="margin-top:10px">＋ 添加</button>
+            </div>
+            <div style="text-align:center;padding:30px 0 22px">
+              <div style="width:24px;height:24px;margin:0 auto 9px;border:2px solid var(--line2);border-radius:12px"></div>
+              <div style="font-size:12px;color:var(--t3)">暂无自定义规则。</div>
+            </div>
+          </div>
+          <div class="dlg-foot">
+            <span class="status">规则只作用于程序未上色的输出。</span>
+            <span class="gap"></span>
+            <button class="btn btn-solid">完成</button>
+          </div>
+        </div>
+      </div>
+      <div class="notes">
+        <div class="n"><b>「＋ 添加」是整行宽条，但不用色块。</b>它和下面的规则卡是同一层，用描边就够；青绿浅填充会让它比「完成」还抢。</div>
+        <div class="n"><b>「完成」是这一屏唯一的实心。</b>它负责关窗，是落点。</div>
+      </div>
+      <div class="old" id="old-a4">
+        <div class="old-in">
+          <div class="cap">上一版 v3 —— 宽条是青绿浅填充 38/r8，「完成」是 30/r7</div>
+          <span class="o-btn o-38-9" style="width:100%;max-width:300px;background:rgba(31,200,180,.14);color:var(--ac);border:1px solid rgba(31,200,180,.55);font-size:12.5px">＋ 添加</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- A5 -->
+    <div class="screen" id="s-a5">
+      <div class="sc-head">
+        <span class="no">A5</span><h3>新建分组（小弹框）</h3>
+        <span class="src">app.slint:6218（13 处 std 控件之一）</span>
+        <span class="gap"></span>
+        <button class="cmp" data-old="a5">看上一版</button>
+      </div>
+      <div class="stage">
+        <div class="dlg tiny">
+          <div class="dlg-bar"><span class="name">新建分组</span><span class="gap"></span><span class="x">×</span></div>
+          <div class="dlg-body">
+            <div class="label">分组名称</div>
+            <div class="field focus">生产环境</div>
+          </div>
+          <div class="dlg-foot" style="min-height:56px">
+            <span class="gap"></span>
+            <button class="btn btn-cancel">取消</button>
+            <button class="btn btn-solid">确定</button>
+          </div>
+        </div>
+      </div>
+      <div class="notes">
+        <div class="n"><b>这 13 处现在是 Slint 标准控件</b>，不认项目主题，永远是一副灰色小方块。替换后与其它弹框齐平：26/5 → 34/8。</div>
+        <div class="n"><b>调用方只改一行。</b><code>clicked</code> 与 <code>enabled</code> 同名同义，业务逻辑不动。</div>
+      </div>
+      <div class="old" id="old-a5">
+        <div class="old-in">
+          <div class="cap">上一版 v3 —— 仍然是 std Button（26 高 / 圆角 5 / 不跟主题）</div>
+          <span class="o-btn o-26-5 o-fill" style="background:transparent;border:1px solid var(--line2);color:var(--t2)">取消</span>
+          <span class="o-btn o-26-5 o-fill" style="color:var(--t1)">确定</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- A6 -->
+    <div class="screen" id="s-a6">
+      <div class="sc-head">
+        <span class="no">A6</span><h3>取色器</h3>
+        <span class="src">app.slint:9360 / 9400</span>
+        <span class="gap"></span>
+        <button class="cmp" data-old="a6">看上一版</button>
+      </div>
+      <div class="stage">
+        <div class="dlg narrow">
+          <div class="dlg-bar"><span class="name">强调色</span><span class="gap"></span><span class="x">×</span></div>
+          <div class="dlg-body">
+            <div style="display:flex;gap:8px;align-items:center">
+              <button class="chip" data-hex="#1FC8B4" style="background:#1FC8B4"></button>
+              <button class="chip" data-hex="#4A90E2" style="background:#4A90E2"></button>
+              <button class="chip" data-hex="#E8A33E" style="background:#E8A33E"></button>
+              <button class="chip" data-hex="#E25C5C" style="background:#E25C5C"></button>
+              <button class="chip" data-hex="#9B7BE8" style="background:#9B7BE8"></button>
+              <span style="font-size:11.5px;color:var(--t4);margin-left:2px">点色票，看「应用」跟着变色</span>
+            </div>
+          </div>
+          <div class="dlg-foot">
+            <span class="seg">
+              <button class="on">选定 <span style="font-family:var(--mono);font-size:10.5px;opacity:.7" id="cur-hex">#1FC8B4</span></button>
+              <span class="div"></span>
+              <button>调色盘 ›</button>
+            </span>
+            <span class="gap"></span>
+            <button class="btn btn-line" id="rnd">随机</button>
+            <button class="btn btn-cancel">取消</button>
+            <button class="btn btn-solid" id="apply" style="background:#1FC8B4;border-color:#1FC8B4;color:#06231F"><span class="sheen"></span>应用</button>
+          </div>
+        </div>
+      </div>
+      <div class="notes">
+        <div class="n"><b>「随机」描边、「取消」有面。</b>功能和退出从形状上就分开，不用再看位置猜；也不给「随机」单独造一种青色块。</div>
+        <div class="n"><b>「应用」的底色就是待应用的颜色。</b>悬停叠一层白色 12%，不用 brighter —— 纯黑、纯白都提不亮。</div>
+      </div>
+      <div class="old" id="old-a6">
+        <div class="old-in">
+          <div class="cap">上一版 v3 —— 随机是青绿浅填充、取消是无底、应用是动态底，36/r8</div>
+          <span class="o-btn o-36-8" style="background:rgba(31,200,180,.10);color:var(--ac);border:1px solid rgba(31,200,180,.18)">随机</span>
+          <span class="o-btn o-36-8 o-text">取消</span>
+          <span class="o-btn o-36-8 o-solid" style="color:var(--ink)">应用</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 02 面板 ══════════════════════════════════════════════════════ -->
+  <section class="cat" id="cat-panel">
+    <div class="cat-t"><h2>面板</h2><span>工具条是唯一允许「无底」的地方 —— 因为一整排都有图标</span></div>
+
+    <div class="screen" id="s-b1">
+      <div class="sc-head">
+        <span class="no">B1</span><h3>文件面板 · 工具条与行</h3>
+        <span class="src">sftp_panel.slint:521–737</span>
+        <span class="gap"></span>
+        <button class="cmp" data-old="b1">看上一版</button>
+      </div>
+      <div class="stage">
+        <div class="panel">
+          <div class="panel-bar">
+            <button class="icon-btn"><svg viewBox="0 0 16 16"><path d="M9 3L4 8l5 5M4 8h8"/></svg></button>
+            <span style="width:1px;height:16px;background:var(--line2);margin:0 2px"></span>
+            <button class="icon-btn"><svg viewBox="0 0 16 16"><path d="M1.5 4.5h4l1.5 2h7.5v6.5h-13zM8 8v4M6 10h4"/></svg></button>
+            <button class="icon-btn"><svg viewBox="0 0 16 16"><path d="M3.5 1.5h6l3 3v10h-9zM9.5 1.5v3h3M8 7.5v4M6 9.5h4"/></svg></button>
+            <span class="gap"></span>
+            <button class="tool">
+              <svg viewBox="0 0 16 16"><path d="M8 12V3M4.5 6.5L8 3l3.5 3.5M2.5 13.5h11"/></svg>上传
+              <svg class="caret" viewBox="0 0 16 16"><path d="M4 6.5L8 10.5l4-4"/></svg>
+            </button>
+            <button class="tool">
+              <svg viewBox="0 0 16 16"><path d="M8 3v9M4.5 8.5L8 12l3.5-3.5M2.5 13.5h11"/></svg>下载
+              <svg class="caret" viewBox="0 0 16 16"><path d="M4 6.5L8 10.5l4-4"/></svg>
+            </button>
+            <button class="icon-btn"><svg viewBox="0 0 16 16"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2v3.2h-3.2"/></svg></button>
+            <button class="icon-btn dg"><svg viewBox="0 0 16 16"><path d="M2 4h12M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4"/></svg></button>
+          </div>
+          <div class="row sel"><span class="name">config.php</span><span class="gap"></span><span class="meta">4.2 KB</span></div>
+          <div class="row"><span class="name">index.html</span><span class="gap"></span><span class="meta">18.4 KB</span></div>
+          <div class="row"><span class="name">assets/</span><span class="gap"></span><span class="meta">—</span></div>
+        </div>
+      </div>
+      <div class="notes">
+        <div class="n"><b>带字的两个用描边，纯图标用无底。</b>整条只有「上传」「下载」有边界，其余靠悬停浮现 —— 200 行目录不会变成 200 个按钮。</div>
+        <div class="n"><b>删除键只在悬停时转红底。</b>常态就是普通灰图标，列表里不会出现一排红色。</div>
+      </div>
+      <div class="old" id="old-b1">
+        <div class="old-in">
+          <div class="cap">上一版 v3 —— 上传是青绿实心 52×22/r4，其余是裸图标</div>
+          <span class="o-btn" style="height:22px;border-radius:4px;padding:0 12px;font-size:13px;background:var(--ac);color:var(--ink);font-weight:700">上传</span>
+          <span style="font-size:13px;color:var(--t3)">↓ 下载</span>
+          <span style="font-size:13px;color:var(--t4)">↻</span>
+          <span style="font-size:13px;color:var(--t4)">🗑</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 03 侧栏与命令栏 ══════════════════════════════════════════════ -->
+  <section class="cat" id="cat-side">
+    <div class="cat-t"><h2>侧栏与命令栏</h2><span>同样是「一个落点 + 其余描边」</span></div>
+
+    <div style="display:grid;grid-template-columns:300px 1fr;gap:24px;margin-top:26px;align-items:start">
+      <div class="screen" id="s-c1" style="margin-top:0">
+        <div class="sc-head">
+          <span class="no">C1</span><h3>侧栏</h3>
+          <span class="src">left_sidebar.slint:1332</span>
+        </div>
+        <div class="stage" style="padding:18px">
+          <div class="side-mock">
+            <div class="hd">会话 · 3</div>
+            <div class="bd">
+              <div class="srow"><span class="dot"></span>生产机 · 阿里云<span class="gap"></span><span style="color:var(--t4);font-size:11px">⋯</span></div>
+              <div class="srow"><span class="dot" style="background:var(--t4)"></span>测试机<span class="gap"></span><span style="color:var(--t4);font-size:11px">⋯</span></div>
+              <div class="srow"><span class="dot" style="background:var(--t4)"></span>本地容器<span class="gap"></span><span style="color:var(--t4);font-size:11px">⋯</span></div>
+            </div>
+            <div class="ft">
+              <button class="btn wide btn-solid" style="height:34px">＋ 新建会话</button>
+            </div>
+          </div>
+        </div>
+        <div class="notes" style="flex-direction:column;gap:8px">
+          <div class="n"><b>跨栏实心。</b>侧栏只有这一个主行动，所以它实心；会话行的「⋯」是无底图标，只在行悬停时出现。</div>
+        </div>
+      </div>
+
+      <div class="screen" id="s-c2" style="margin-top:0">
+        <div class="sc-head">
+          <span class="no">C2</span><h3>命令栏</h3>
+          <span class="src">interface_panel.slint · app.slint:6458</span>
+          <span class="gap"></span>
+          <button class="cmp" data-old="c2">看上一版</button>
+        </div>
+        <div class="stage" style="padding:18px">
+          <div class="cmd">
+            <div class="cmd-box">
+              <span class="cmd-in">docker compose ps</span>
+              <button class="btn sm btn-solid" style="padding:0 13px">
+                <svg viewBox="0 0 16 16"><path d="M2 8h11M9 3.5L13.5 8 9 12.5"/></svg>
+                发送
+              </button>
+            </div>
+            <div class="cards">
+              <div class="qc"><div class="t">查看磁盘</div><div class="c">df -h</div></div>
+              <div class="qc"><div class="t">重启 nginx</div><div class="c">systemctl restart nginx</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="notes">
+          <div class="n"><b>发送是实心，因为它在这一块里是唯一的落点。</b>输入框里的「清空」用无底图标，跟发送拉开。</div>
+          <div class="n"><b>快捷命令卡整卡可点</b>，不做「卡 + 卡内按钮」，避免一张小卡里塞两个可点区域。</div>
+        </div>
+        <div class="old" id="old-c2">
+          <div class="old-in">
+            <div class="cap">上一版 v3 —— 命令栏的「添加 / 保存」还是 std Button</div>
+            <span class="o-btn o-26-5 o-fill" style="color:var(--t1)">添加</span>
+            <span class="o-btn o-26-5 o-fill" style="color:var(--t1)">保存</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 04 规格速查 ══════════════════════════════════════════════════ -->
+  <section class="spec" id="spec">
+    <h2>规格速查</h2>
+    <p>改代码时只看这一张表。其余细节都在上面的界面里。</p>
+
+    <table>
+      <thead><tr><th>档</th><th>高</th><th>圆角</th><th>左右内衬</th><th>字号</th><th>用在哪</th></tr></thead>
+      <tbody>
+        <tr><td><b>sm</b></td><td>28</td><td>7</td><td>13</td><td>12.5</td><td>弹框里的次级行、路径选择、命令栏发送</td></tr>
+        <tr><td><b>md</b></td><td>34</td><td>8</td><td>18</td><td>13</td><td>默认：所有弹框页脚、表单</td></tr>
+        <tr><td><b>wide</b></td><td>36</td><td>9</td><td>16</td><td>13</td><td>跨栏宽条：＋ 添加、侧栏新建会话</td></tr>
+        <tr><td><b>tool</b></td><td>26</td><td>6</td><td>9</td><td>12</td><td>工具条带字按钮（上传 / 下载）</td></tr>
+        <tr><td><b>icon</b></td><td>26</td><td>6</td><td>—</td><td>—</td><td>工具条 / 行尾图标（28 宽见方）</td></tr>
+      </tbody>
+    </table>
+
+    <table style="margin-top:22px">
+      <thead><tr><th>形状</th><th>用在哪</th><th>底 / 边</th></tr></thead>
+      <tbody>
+        <tr><td><b>实心</b></td><td>落点：创建 / 保存 / 确定 / 完成 / 应用 / 确认删除</td><td>accent（或 danger）+ 墨字（或白字）</td></tr>
+        <tr><td><b>中性面</b></td><td><b>取消</b>（每处都是它）</td><td><code>white 7.5%</code> 面 · 无边框 · 主色字</td></tr>
+        <tr><td><b>强调面</b></td><td>功能键：测试连接</td><td><code>accent 10%</code> 面 · 淡青边 · 强调色字</td></tr>
+        <tr><td><b>描边</b></td><td>次要操作：打开目录 / 随机 / 新建分组</td><td>透明底 · 1px <code>#3A404B</code> · 次色字</td></tr>
+        <tr><td><b>无底</b></td><td>工具条图标、行尾「⋯」、文字链</td><td>透明 · 悬停才出面</td></tr>
+      </tbody>
+    </table>
+
+    <table style="margin-top:22px">
+      <thead><tr><th>状态</th><th>实心</th><th>面 / 描边</th><th>时长</th></tr></thead>
+      <tbody>
+        <tr><td><b>常态</b></td><td>accent 底 + 墨字</td><td>取消：中性 <code>7.5%</code> 面、无边框<br>功能键：青 <code>10%</code> 面 + 淡青边<br>描边：透明 + 1px <code>#3A404B</code></td><td>—</td></tr>
+        <tr><td><b>悬停</b></td><td>accent 提亮 16%</td><td>取消：<code>12%</code> 面 · 功能键：<code>17%</code> 面<br>描边：底 6% + 边 <code>#525A68</code></td><td>110ms</td></tr>
+        <tr><td><b>按下</b></td><td>accent 压暗 18%</td><td>取消：<code>16%</code> 面 · 功能键：<code>24%</code> 面<br>描边：底 10%</td><td>70ms</td></tr>
+        <tr><td><b>焦点</b></td><td colspan="2">1px accent 边 + 3px <code>accent-soft</code> 外环（与输入框同款）</td><td>—</td></tr>
+        <tr><td><b>禁用</b></td><td colspan="2">实心转 <code>rgba(255,255,255,.06)</code> 面 + 灰字；描边转弱边 + 灰字</td><td>—</td></tr>
+        <tr><td><b>进行中</b></td><td colspan="2">文字转透明、宽度锁死、三点脉冲（3×4px，间隔 5px）</td><td>—</td></tr>
+      </tbody>
+    </table>
+
+    <p style="margin-top:18px">
+      光标用系统箭头（项目定稿 <code>#native-cursor</code>）；不做位移、不做缩放、不加阴影 ——
+      层次只靠 1px 边和底色透明度，全部能被 Slint 的 <code>Rectangle</code> 直接画出来。
+      Slint 的 <code>animate</code> 只有单一 <code>duration</code>，实现时统一取 <b>120ms</b>，
+      上面给的 110/70 是设计意图，差值肉眼不可辨。
+    </p>
+  </section>
+
+<!--SCREENS2-->
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var root = document.documentElement;
+  var $ = function (s) { return document.querySelector(s); };
+  var $$ = function (s) { return Array.prototype.slice.call(document.querySelectorAll(s)); };
+
+  /* 主题 */
+  $("#th").addEventListener("click", function () {
+    var dark = root.getAttribute("data-theme") === "dark";
+    root.setAttribute("data-theme", dark ? "light" : "dark");
+    $("#th-l").textContent = dark ? "浅色" : "深色";
+  });
+
+  /* 取消方案切换 */
+  $$(".pk").forEach(function (b) {
+    b.addEventListener("click", function () {
+      $$(".pk").forEach(function (x) { x.classList.remove("on"); });
+      b.classList.add("on");
+      root.setAttribute("data-pair", b.getAttribute("data-pair"));
+    });
+  });
+
+  /* 逐屏：看上一版 */
+  $$(".cmp").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var el = $("#old-" + b.getAttribute("data-old"));
+      if (!el) return;
+      var on = el.classList.toggle("show");
+      b.textContent = on ? "收起" : "看上一版";
+    });
+  });
+
+  /* 取色器：色票 / 随机 / 应用（动态底色） */
+  function relLum(hex) {
+    var h = hex.replace("#", "");
+    var c = [0, 2, 4].map(function (i) {
+      var v = parseInt(h.substr(i, 2), 16) / 255;
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  }
+  var apply = $("#apply"), cur = $("#cur-hex");
+  function setAccent(hex) {
+    if (!apply) return;
+    var ink = relLum(hex) > 0.30 ? "#06231F" : "#FFFFFF";
+    apply.style.background = hex;
+    apply.style.borderColor = hex;
+    apply.style.color = ink;
+    if (cur) cur.textContent = hex.toUpperCase();
+  }
+  $$(".chip").forEach(function (c) {
+    c.addEventListener("click", function () {
+      $$(".chip").forEach(function (x) { x.classList.remove("sel"); });
+      c.classList.add("sel");
+      setAccent(c.getAttribute("data-hex"));
+    });
+  });
+  if ($$(".chip").length) {
+    $$(".chip")[0].classList.add("sel");
+    setAccent($$(".chip")[0].getAttribute("data-hex"));
+  }
+  var rnd = $("#rnd");
+  if (rnd) rnd.addEventListener("click", function () {
+    var h = "#";
+    for (var i = 0; i < 3; i++) h += ("0" + Math.floor(Math.random() * 256).toString(16)).slice(-2);
+    $$(".chip").forEach(function (x) { x.classList.remove("sel"); });
+    setAccent(h);
+  });
+
+  /* 分类高亮 */
+  var tabs = $$("#tabs a");
+  var secs = $$("section.cat, section.spec");
+  function sync() {
+    var best = null, bd = 1e9;
+    secs.forEach(function (s) {
+      var d = Math.abs(s.getBoundingClientRect().top - 84);
+      if (d < bd) { bd = d; best = s; }
+    });
+    if (!best) return;
+    tabs.forEach(function (a) {
+      a.classList.toggle("on", a.getAttribute("href") === "#" + best.id);
+    });
+  }
+  window.addEventListener("scroll", sync, { passive: true });
+  sync();
+})();
+</script>
+</body>
+</html>

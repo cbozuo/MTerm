@@ -1,0 +1,1823 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark" data-ink="ink">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MTerm 按钮系统 v3 · 全应用统一（高保真 · 可交互 · Slint 可落地）</title>
+<style>
+/* ============================================================================
+   MTerm · Button System v3
+   约束（2026-10-22 用户定稿）：稿内所有效果必须能由 Slint 1.18 实现 ——
+   只用 Rectangle 的 border-width / border-color / border-radius / background
+   + Text + Icon + animate（含 easing）。禁止 box-shadow / filter /
+   backdrop-filter / 背景渐变。层次一律靠「1px 边 + 底色透明度 + 色阶」。
+   ========================================================================= */
+
+:root{
+  --ease: cubic-bezier(.2,0,0,1);          /* Slint: cubic-bezier(0.2,0,0,1) */
+  --ease-out: cubic-bezier(.16,1,.3,1);    /* 回弹/离场 */
+  --t-in: 100ms;      /* 悬停入场 */
+  --t-out: 140ms;     /* 悬停离场，慢于入场才不"闪" */
+  --t-press: 60ms;    /* 按下要跟手，比入场更快 */
+  --t-release: 180ms; /* 松开回弹，慢于按下 */
+  --t-focus: 120ms;
+  --slow: 1;
+  --radius-card: 12px;
+  --ff: "Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  --mono: "Cascadia Mono","Consolas","SF Mono",monospace;
+}
+
+html[data-theme="dark"]{
+  --page:#0A0B0F; --page2:#0E1014; --card:#14161A; --card2:#181A1D;
+  --field:#191B21; --inset:#0C0E11;
+  --line:#20232A; --line2:#2A2E36;
+  --ctl:#31353E; --ctl-hi:#4A4E59;
+  --t1:#E6E8EE; --t2:#B4B9C4; --t3:#9196A3; --t4:#6B7078;
+  --hov:rgba(255,255,255,.07); --act:rgba(255,255,255,.12);
+  --sec:rgba(255,255,255,.055); --sec-hi:rgba(255,255,255,.095); --sec-ac:rgba(255,255,255,.14);
+  --ac:#1FC8B4; --ac-hi:#43D1C0; --ac-lo:#19A493; --ac-deep:#0F7C6F;
+  --ac-on:#06231F; --ac-soft:rgba(31,200,180,.16); --ac-tonal:rgba(31,200,180,.10);
+  --ac-tonal-hi:rgba(31,200,180,.18); --ac-tonal-ac:rgba(31,200,180,.26);
+  --dg:#C94439; --dg-hi:#D4534A; --dg-lo:#B03A32;
+  --dg-soft:rgba(201,68,57,.10); --dg-tonal:rgba(201,68,57,.12);
+  --ok:#3DD68C; --warn:#E8A33E;
+  --doc-code:#8FA0B5;
+}
+html[data-theme="light"]{
+  --page:#EEF0F4; --page2:#F6F7F9; --card:#FFFFFF; --card2:#FBFCFD;
+  --field:#F4F5F8; --inset:#F7F8FA;
+  --line:#E4E6EC; --line2:#DCDCE3;
+  --ctl:#D8DAE1; --ctl-hi:#B4B7C0;
+  --t1:#171A20; --t2:#3F444E; --t3:#666C77; --t4:#949AA4;
+  --hov:rgba(15,20,30,.05); --act:rgba(15,20,30,.09);
+  --sec:rgba(15,20,30,.05); --sec-hi:rgba(15,20,30,.085); --sec-ac:rgba(15,20,30,.12);
+  --ac:#16C0AE; --ac-hi:#0FA894; --ac-lo:#0C9484; --ac-deep:#0A7A6B;
+  --ac-on:#06231F; --ac-soft:rgba(22,192,174,.22); --ac-tonal:rgba(22,192,174,.11);
+  --ac-tonal-hi:rgba(22,192,174,.18); --ac-tonal-ac:rgba(22,192,174,.28);
+  --dg:#C0392F; --dg-hi:#CE483D; --dg-lo:#A62F26;
+  --dg-soft:rgba(192,57,47,.08); --dg-tonal:rgba(192,57,47,.10);
+  --ok:#12925F; --warn:#A8730E;
+  --doc-code:#5A6675;
+}
+/* 主按钮文字口径开关：墨色（默认，7.87:1）/ 白色（2.10:1，仅作对照） */
+html[data-ink="white"]{ --ac-on:#FFFFFF; }
+
+*,*::before,*::after{ box-sizing:border-box; }
+html{ scroll-behavior:smooth; }
+body{
+  margin:0; background:var(--page); color:var(--t1);
+  font-family:var(--ff); font-size:14px; line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+  transition: background-color 240ms var(--ease), color 240ms var(--ease);
+}
+::selection{ background:var(--ac-soft); }
+
+/* ── 布局 ───────────────────────────────────────────────────────────────── */
+.shell{ display:flex; min-height:100vh; }
+.side{
+  position:sticky; top:0; align-self:flex-start; height:100vh; width:212px; flex:0 0 212px;
+  border-right:1px solid var(--line);
+  display:flex; flex-direction:column; padding:22px 0 18px;
+  background:var(--page);
+}
+.side-brand{ padding:0 20px 18px; }
+.side-brand b{ font-size:13px; letter-spacing:.14em; font-weight:700; }
+.side-brand span{ display:block; margin-top:3px; font-size:11px; color:var(--t3); letter-spacing:.06em; }
+.side nav{ display:flex; flex-direction:column; gap:1px; padding:0 10px; }
+.side nav a{
+  display:flex; gap:9px; align-items:baseline;
+  padding:7px 10px; border-radius:7px; text-decoration:none;
+  color:var(--t2); font-size:12.5px; border:1px solid transparent;
+  transition: background-color var(--t-out) var(--ease), color var(--t-out) var(--ease);
+}
+.side nav a:hover{ background:var(--hov); color:var(--t1); }
+.side nav a.on{ background:var(--sec); color:var(--t1); border-color:var(--line2); }
+.side nav a i{ font-style:normal; font-family:var(--mono); font-size:10px; color:var(--t4); width:16px; }
+.side nav a.on i{ color:var(--ac); }
+.side-foot{ margin-top:auto; padding:14px 20px 0; border-top:1px solid var(--line); font-size:11px; color:var(--t4); line-height:1.7; }
+
+.doc{ flex:1; min-width:0; }
+.wrap{ max-width:1060px; margin:0 auto; padding:40px 44px 120px; }
+
+/* ── 顶栏 ───────────────────────────────────────────────────────────────── */
+.topbar{
+  position:sticky; top:0; z-index:30;
+  display:flex; align-items:center; gap:10px;
+  padding:10px 44px; border-bottom:1px solid var(--line);
+  background:var(--page); /* 不透明：禁用 backdrop-filter */
+}
+.topbar .grow{ flex:1; }
+.topbar .hint{ font-size:11px; color:var(--t4); letter-spacing:.03em; }
+.tgl{
+  display:inline-flex; align-items:center; gap:6px;
+  height:28px; padding:0 10px; border-radius:7px;
+  border:1px solid var(--ctl); background:transparent; color:var(--t2);
+  font:500 12px var(--ff); cursor:default;
+  transition: background-color var(--t-out) var(--ease), border-color var(--t-out) var(--ease), color var(--t-out) var(--ease);
+}
+.tgl:hover{ background:var(--hov); border-color:var(--ctl-hi); color:var(--t1); }
+.tgl.on{ background:var(--ac-tonal); border-color:var(--ac); color:var(--ac); }
+.tgl .dot{ width:6px; height:6px; border-radius:3px; background:var(--t4); }
+.tgl.on .dot{ background:var(--ac); }
+
+/* ── 排版 ───────────────────────────────────────────────────────────────── */
+h1{ font-size:38px; line-height:1.18; font-weight:700; letter-spacing:-.02em; margin:0 0 14px; }
+h2{ font-size:23px; line-height:1.3; font-weight:700; letter-spacing:-.01em; margin:0 0 8px; }
+h3{ font-size:15px; font-weight:700; margin:0 0 6px; }
+h4{ font-size:13px; font-weight:700; margin:0 0 4px; color:var(--t1); }
+p{ margin:0 0 12px; color:var(--t2); }
+p.lead{ font-size:15px; color:var(--t2); max-width:74ch; }
+small{ font-size:11.5px; color:var(--t3); }
+code{ font-family:var(--mono); font-size:.92em; color:var(--t1); background:var(--sec); padding:1px 5px; border-radius:4px; }
+.dim{ color:var(--t3); }
+.ac{ color:var(--ac); }
+.mono{ font-family:var(--mono); }
+.tnum{ font-variant-numeric:tabular-nums; }
+
+section{ padding-top:56px; scroll-margin-top:64px; }
+.sec-head{ display:flex; gap:14px; align-items:flex-start; margin-bottom:22px; }
+.sec-no{
+  flex:0 0 auto; font-family:var(--mono); font-size:11px; color:var(--ac);
+  border:1px solid var(--line2); border-radius:6px; padding:2px 7px; margin-top:5px;
+  letter-spacing:.08em;
+}
+.sec-head .txt{ flex:1; }
+.sec-head p{ margin:2px 0 0; }
+
+.card{ background:var(--card); border:1px solid var(--line2); border-radius:var(--radius-card); padding:22px; }
+.card + .card{ margin-top:14px; }
+.card-h{ display:flex; align-items:baseline; gap:10px; margin-bottom:14px; }
+.card-h h3{ margin:0; }
+.card-h .tag{ margin-left:auto; }
+
+.grid2{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.grid3{ display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+.grid4{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+
+/* ── Hero ───────────────────────────────────────────────────────────────── */
+.hero{ padding-top:18px; }
+.hero .eyebrow{ font-family:var(--mono); font-size:11px; letter-spacing:.16em; color:var(--ac); margin-bottom:14px; }
+.hero .sub{ font-size:15px; color:var(--t2); max-width:70ch; margin-bottom:26px; }
+.hero .sub b{ color:var(--t1); }
+.stats{ display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--line2); border:1px solid var(--line2); border-radius:10px; overflow:hidden; }
+.stat{ background:var(--card); padding:14px 16px; }
+.stat .n{ font-family:var(--mono); font-size:26px; font-weight:600; color:var(--t1); letter-spacing:-.02em; line-height:1.2; }
+.stat .n em{ font-style:normal; font-size:13px; color:var(--t3); margin-left:3px; }
+.stat .k{ font-size:11.5px; color:var(--t3); margin-top:3px; }
+.stat.bad .n{ color:var(--dg); }
+.stat.good .n{ color:var(--ac); }
+
+/* ── 按钮基座 ───────────────────────────────────────────────────────────── */
+/* 光标策略：桌面应用定稿 #native-cursor，用系统箭头，不用手型。 */
+.btn{
+  --h:34px; --r:8px; --px:18px; --fs:13px; --fw:600; --gap:7px;
+  --b-rest:transparent; --b-hover:transparent; --b-act:transparent;
+  --bd-rest:transparent; --bd-hover:transparent; --bd-act:transparent;
+  --fg:var(--t1); --fg-hover:var(--fg); --fg-act:var(--fg-hover);
+  position:relative;
+  display:inline-flex; align-items:center; justify-content:center; gap:var(--gap);
+  height:var(--h); padding:0 var(--px); border-radius:var(--r);
+  border:1px solid var(--bd-rest); background-color:var(--b-rest); color:var(--fg);
+  font-family:var(--ff); font-size:var(--fs); font-weight:var(--fw); line-height:1;
+  letter-spacing:0; white-space:nowrap; cursor:default; user-select:none;
+  -webkit-appearance:none; appearance:none;
+  transition:
+    background-color var(--t-out) var(--ease),
+    border-color var(--t-out) var(--ease),
+    color var(--t-out) var(--ease);
+}
+.btn:hover{
+  background-color:var(--b-hover); border-color:var(--bd-hover); color:var(--fg-hover);
+  transition-duration:var(--t-in),var(--t-in),var(--t-in);
+}
+.btn:active{
+  background-color:var(--b-act); border-color:var(--bd-act); color:var(--fg-act);
+  transition-duration:var(--t-press),var(--t-press),var(--t-press);
+}
+.btn > *{ pointer-events:none; }
+.btn .ico{ display:block; width:16px; height:16px; flex:0 0 auto; }
+.btn .ico svg{ display:block; width:100%; height:100%; }
+.btn .ico svg *{ fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.btn[disabled]{ pointer-events:none; }
+.btn:focus{ outline:none; }
+/* 键盘焦点环：1px accent 边 + 3px accent-soft 外环（与项目输入框聚焦语言同款） */
+.btn:focus-visible{ border-color:var(--ac); }
+.btn:focus-visible::after,
+.btn.f-focus::after{
+  content:""; position:absolute; inset:-3px; border-radius:calc(var(--r) + 2px);
+  border:3px solid var(--ac-soft); pointer-events:none;
+}
+
+/* 层级 ① 主操作 · 实心强调色 */
+.btn-primary{
+  --b-rest:var(--ac); --b-hover:var(--ac-hi); --b-act:var(--ac-lo);
+  --bd-rest:var(--ac); --bd-hover:var(--ac-hi); --bd-act:var(--ac-deep);
+  --fg:var(--ac-on); --fg-hover:var(--ac-on); --fg-act:var(--ac-on);
+  --fw:700;
+}
+/* 层级 ② 功能操作 · 浅填充（中性面，不抢主按钮） */
+.btn-secondary{
+  --b-rest:var(--sec); --b-hover:var(--sec-hi); --b-act:var(--sec-ac);
+  --bd-rest:var(--line2); --bd-hover:var(--ctl-hi); --bd-act:var(--ctl-hi);
+  --fg:var(--t1);
+}
+/* 层级 ②b 强调浅填充（会改变状态的功能键：测试连接 / 随机 / 验证） */
+.btn-tonal{
+  --b-rest:var(--ac-tonal); --b-hover:var(--ac-tonal-hi); --b-act:var(--ac-tonal-ac);
+  --bd-rest:var(--ac-tonal-hi); --bd-hover:var(--ac); --bd-act:var(--ac-lo);
+  --fg:var(--ac); --fg-hover:var(--ac); --fg-act:var(--ac);
+}
+/* 层级 ③ 退出 · 无底（取消 / 完成旁的离开 / 关闭） */
+.btn-ghost{
+  --b-rest:transparent; --b-hover:var(--hov); --b-act:var(--act);
+  --bd-rest:transparent; --bd-hover:transparent; --bd-act:transparent;
+  --fg:var(--t2); --fg-hover:var(--t1); --fg-act:var(--t1);
+}
+/* 层级 ④ 破坏 · 实心（只用于二次确认的落点） */
+.btn-danger{
+  --b-rest:var(--dg); --b-hover:var(--dg-hi); --b-act:var(--dg-lo);
+  --bd-rest:var(--dg); --bd-hover:var(--dg-hi); --bd-act:var(--dg-lo);
+  --fg:#fff; --fg-hover:#fff; --fg-act:#fff;
+  --fw:700;
+}
+/* 层级 ④b 破坏 · 描边（删除入口，hover 才转红） */
+.btn-danger-ghost{
+  --b-rest:transparent; --b-hover:var(--dg-soft); --b-act:var(--dg-tonal);
+  --bd-rest:var(--line2); --bd-hover:var(--dg); --bd-act:var(--dg);
+  --fg:var(--t2); --fg-hover:var(--dg); --fg-act:var(--dg);
+}
+/* 链接 */
+.btn-link{
+  --b-rest:transparent; --b-hover:transparent; --b-act:transparent;
+  --bd-rest:transparent; --bd-hover:transparent; --bd-act:transparent;
+  --fg:var(--t3); --fg-hover:var(--ac); --fg-act:var(--ac);
+  --px:6px; --h:22px; --r:5px; --fs:12px; --fw:400;
+}
+.btn-link:hover{ background-color:transparent; }
+
+/* 禁用：换灰阶，不套 opacity（半透明会透出底下的轨道/图案） */
+.btn.is-disabled{
+  --b-rest:transparent; --b-hover:transparent; --b-act:transparent;
+  --bd-rest:var(--line2); --bd-hover:var(--line2); --bd-act:var(--line2);
+  --fg:var(--t4); --fg-hover:var(--t4); --fg-act:var(--t4);
+  pointer-events:none;
+}
+.btn-primary.is-disabled{
+  --b-rest:var(--sec); --bd-rest:var(--line2); --fg:var(--t4);
+}
+.btn-tonal.is-disabled{ --b-rest:transparent; --bd-rest:var(--line2); }
+
+/* 尺寸档 */
+.btn.xs{ --h:24px; --r:6px; --px:10px; --fs:11.5px; --gap:5px; }
+.btn.sm{ --h:28px; --r:7px; --px:13px; --fs:12.5px; }
+.btn.md{ --h:34px; --r:8px; --px:18px; --fs:13px; }
+.btn.lg{ --h:38px; --r:9px; --px:20px; --fs:13px; }
+.btn.icon{ --px:0; width:var(--h); }
+.btn.wide{ --h:44px; --r:10px; --px:16px; --fs:13px; }
+
+/* loading：三点脉冲。三个 4×4 圆角矩形错峰改 opacity —— Slint 里就是
+   Timer 推进下标 + animate opacity，不用任何渐变或滤镜。 */
+.btn.loading{ pointer-events:none; position:relative; color:transparent; }
+.btn.loading > .ico{ opacity:0; }
+.btn .dots{ display:none; position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); gap:5px; }
+.btn.loading .dots{ display:flex; }
+.btn .dots i{ width:4px; height:4px; border-radius:2px; background:var(--dot,var(--ac-on)); opacity:.3; }
+.btn.loading .dots i{ animation:dotpulse 900ms var(--ease) infinite; }
+.btn .dots i:nth-child(2){ animation-delay:120ms; }
+.btn .dots i:nth-child(3){ animation-delay:240ms; }
+@keyframes dotpulse{ 0%,100%{opacity:.3} 35%{opacity:1} }
+
+/* ── 状态网格 ───────────────────────────────────────────────────────────── */
+.states{
+  display:grid; grid-template-columns:repeat(5,1fr); gap:1px;
+  background:var(--line2); border:1px solid var(--line2); border-radius:10px; overflow:hidden;
+}
+.st{
+  background:var(--card); padding:20px 10px 11px; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:12px; min-height:86px;
+}
+.st .slot{ display:flex; align-items:center; justify-content:center; min-height:38px; }
+.st .cap{ font-family:var(--mono); font-size:10px; letter-spacing:.08em; color:var(--t4); text-transform:uppercase; }
+.st .cap b{ color:var(--t2); font-weight:500; }
+
+/* ── 场景（窗口碎片） ───────────────────────────────────────────────────── */
+.scene{
+  background:var(--card2); border:1px solid var(--line2); border-radius:10px;
+  padding:16px 18px;
+}
+.scene.dlg{ padding:0; overflow:hidden; }
+.scene .scene-bar{
+  display:flex; align-items:center; gap:8px; padding:11px 16px;
+  border-bottom:1px solid var(--line2); font-size:12px; color:var(--t3);
+}
+.scene .scene-bar .name{ color:var(--t1); font-weight:600; font-size:12.5px; }
+.scene .scene-bar .src{ margin-left:auto; font-family:var(--mono); font-size:10.5px; color:var(--t4); }
+.scene .body{ padding:16px; }
+.scene .foot{
+  display:flex; align-items:center; gap:10px; padding:12px 16px;
+  border-top:1px solid var(--line2); background:var(--card);
+}
+.scene .foot .grow{ flex:1; }
+.scene .foot-r{ display:flex; gap:10px; }
+.fieldbox{
+  height:30px; display:flex; align-items:center; padding:0 10px; border-radius:7px;
+  background:var(--field); border:1px solid var(--line2); color:var(--t3); font-size:12.5px;
+}
+.kbd{
+  display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:18px;
+  padding:0 5px; border-radius:4px; border:1px solid var(--line2); background:var(--sec);
+  font-family:var(--mono); font-size:10px; color:var(--t3);
+}
+
+/* ── 表格 ───────────────────────────────────────────────────────────────── */
+table{ width:100%; border-collapse:collapse; font-size:12.5px; }
+th{
+  text-align:left; font-weight:600; font-size:11px; letter-spacing:.06em; text-transform:uppercase;
+  color:var(--t4); padding:0 10px 8px; border-bottom:1px solid var(--line2);
+}
+td{ padding:9px 10px; border-bottom:1px solid var(--line); color:var(--t2); vertical-align:top; }
+tr:last-child td{ border-bottom:none; }
+td b{ color:var(--t1); font-weight:600; }
+td .swatch{ display:inline-block; width:11px; height:11px; border-radius:3px; vertical-align:-1px; margin-right:6px; border:1px solid rgba(0,0,0,.25); }
+
+/* ── 代码 ───────────────────────────────────────────────────────────────── */
+pre{
+  margin:0; background:var(--inset); border:1px solid var(--line2); border-radius:9px;
+  padding:16px 18px; overflow:auto; font-family:var(--mono); font-size:12px; line-height:1.72;
+  color:var(--doc-code);
+}
+pre .k{ color:var(--ac); }
+pre .c{ color:var(--t4); }
+pre .s{ color:#C3A46A; }
+pre .n{ color:var(--t1); }
+html[data-theme="light"] pre .s{ color:#8A6A2A; }
+
+/* ── 杂项 ───────────────────────────────────────────────────────────────── */
+.tag{
+  display:inline-flex; align-items:center; gap:5px; height:20px; padding:0 7px;
+  border-radius:5px; border:1px solid var(--line2); background:var(--sec);
+  font-family:var(--mono); font-size:10px; letter-spacing:.05em; color:var(--t3);
+  text-transform:uppercase;
+}
+.tag.ac{ border-color:var(--ac-tonal-hi); background:var(--ac-tonal); color:var(--ac); }
+.tag.dg{ border-color:var(--dg-tonal); background:var(--dg-soft); color:var(--dg); }
+.note{
+  border-left:2px solid var(--ac); padding:2px 0 2px 12px; margin:14px 0;
+  font-size:12.5px; color:var(--t2);
+}
+.note.warn{ border-color:var(--warn); }
+.note.dg{ border-color:var(--dg); }
+ul.clean{ margin:0 0 12px; padding-left:18px; color:var(--t2); font-size:13px; }
+ul.clean li{ margin:3px 0; }
+ul.clean li b{ color:var(--t1); }
+.row{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.row.center{ justify-content:center; }
+.sep{ height:1px; background:var(--line2); margin:18px 0; }
+.kv{ display:grid; grid-template-columns:88px 1fr; gap:6px 12px; font-size:12.5px; }
+.kv dt{ color:var(--t4); font-family:var(--mono); font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; padding-top:2px; }
+.kv dd{ margin:0; color:var(--t2); }
+
+/* toast */
+.toast{
+  position:fixed; right:22px; bottom:22px; z-index:60;
+  display:flex; align-items:center; gap:9px; height:34px; padding:0 14px;
+  border-radius:8px; border:1px solid var(--line2); background:var(--card);
+  font-size:12.5px; color:var(--t2);
+  opacity:0; transform:translateY(4px); pointer-events:none;
+  transition: opacity 160ms var(--ease), transform 160ms var(--ease);
+}
+.toast.show{ opacity:1; transform:translateY(0); }
+.toast .d{ width:6px; height:6px; border-radius:3px; background:var(--ac); }
+
+/* 慢放：把动效时长统一放大，肉眼可逐帧看 */
+body.slow{ --t-in:800ms; --t-out:1120ms; --t-press:480ms; --t-release:1440ms; --t-focus:960ms; }
+
+/* 强制状态（用于并排展示，不依赖鼠标） */
+.btn.f-hover{ background-color:var(--b-hover); border-color:var(--bd-hover); color:var(--fg-hover); }
+.btn.f-act{ background-color:var(--b-act); border-color:var(--bd-act); color:var(--fg-act); }
+.btn.f-focus{ border-color:var(--ac); }
+
+/* 时间轴 */
+.tl{ display:flex; flex-direction:column; gap:8px; }
+.tl-row{ display:grid; grid-template-columns:58px 1fr; gap:14px; align-items:center; }
+.tl-k{ font-size:11.5px; color:var(--t3); text-align:right; }
+.tl-bar{ display:flex; align-items:center; gap:10px; }
+.tl-bar i{ display:block; height:6px; border-radius:3px; flex:0 0 auto; }
+.tl-bar span{ font-size:11.5px; color:var(--t4); }
+
+/* 段选 */
+.seg{ display:inline-flex; align-items:stretch; height:34px; border:1px solid var(--ctl); border-radius:8px; background:var(--sec); overflow:hidden; }
+.seg > button{
+  appearance:none; -webkit-appearance:none; border:0; background:transparent; color:var(--t2);
+  font-family:var(--ff); font-size:12px; font-weight:500; padding:0 14px; cursor:default;
+  display:flex; align-items:center; gap:6px;
+  transition: background-color var(--t-out) var(--ease), color var(--t-out) var(--ease);
+}
+.seg > button:hover{ background:var(--sec-hi); color:var(--t1); }
+.seg > button.on{ background:var(--ac-tonal); color:var(--t1); }
+.seg .div{ width:1px; background:var(--line2); flex:0 0 auto; }
+
+/* 分裂按钮 */
+.split{ display:inline-flex; }
+.split > .btn{ flex:0 0 auto; }
+
+/* 提示气泡：延迟 400ms 出，移出立即消（Slint: Timer + popup 矩形） */
+.tip{ position:relative; }
+.tip::before{
+  content:attr(data-tip); position:absolute; bottom:calc(100% + 7px); left:50%; transform:translateX(-50%);
+  white-space:nowrap; background:var(--card); border:1px solid var(--line2); border-radius:6px;
+  padding:4px 9px; font-size:11px; color:var(--t2); opacity:0; pointer-events:none;
+  transition: opacity 120ms var(--ease) 0ms;
+}
+.tip:hover::before{ opacity:1; transition-delay:400ms; }
+
+/* 色板表：五列挤在窄栏里，收紧内衬与字号 */
+.palette td,.palette th{ padding:7px 5px; }
+.palette td:first-child{ font-size:10.5px; white-space:nowrap; padding-left:0; }
+.palette td:nth-child(2),.palette td:nth-child(3){ font-family:var(--mono); font-size:10px; white-space:nowrap; }
+.palette td:last-child{ font-size:11px; line-height:1.45; }
+.palette .swatch{ width:9px; height:9px; margin-right:4px; border-radius:2px; }
+.palette th:nth-child(2),.palette th:nth-child(3){ padding-left:5px; }
+
+/* 色票 */
+.chip{
+  width:26px; height:26px; border-radius:7px; padding:0; appearance:none; -webkit-appearance:none;
+  border:1px solid rgba(0,0,0,.28); cursor:default; outline:2px solid transparent; outline-offset:2px;
+  transition: outline-color var(--t-out) var(--ease), border-color var(--t-out) var(--ease);
+}
+.chip:hover{ border-color:var(--t1); }
+.chip.sel{ outline-color:var(--ac); }
+
+@media (max-width:1080px){
+  .side{ display:none; }
+  .wrap{ padding:28px 22px 90px; }
+  .topbar{ padding:10px 22px; }
+  .stats,.states{ grid-template-columns:repeat(2,1fr); }
+  .grid2,.grid3,.grid4{ grid-template-columns:1fr; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <aside class="side">
+    <div class="side-brand"><b>MTERM</b><span>BUTTON SYSTEM · v3</span></div>
+    <nav id="nav">
+      <a href="#audit"><i>01</i>现状审计</a>
+      <a href="#token"><i>02</i>设计令牌</a>
+      <a href="#matrix"><i>03</i>组件矩阵</a>
+      <a href="#motion"><i>04</i>交互时序</a>
+      <a href="#scenes"><i>05</i>真实场景</a>
+      <a href="#code"><i>06</i>Slint 落地</a>
+      <a href="#migrate"><i>07</i>迁移清单</a>
+    </nav>
+    <div class="side-foot">
+      1:1 逻辑像素<br>
+      125% 缩放下整体 ×1.25<br>
+      <span class="mono">no shadow / no gradient</span>
+    </div>
+  </aside>
+
+  <main class="doc">
+    <div class="topbar">
+      <span class="hint">效果全部可交互 · 按 <span class="kbd">Tab</span> 走一遍焦点</span>
+      <span class="grow"></span>
+      <button class="tgl on" id="t-theme"><span class="dot"></span><span id="t-theme-l">深色</span></button>
+      <button class="tgl" id="t-slow">慢放 ×8</button>
+      <button class="tgl on" id="t-ink">主按钮墨字</button>
+    </div>
+
+    <div class="wrap">
+
+      <header class="hero">
+        <div class="eyebrow">HIFI · 2026-10-22 · 全应用按钮统一</div>
+        <h1>一套按钮，六种状态，<br>三种血统合成一种。</h1>
+        <p class="sub">
+          项目里现在同时跑着 <b>3 套</b>互不相干的按钮：共享组件（Primary / Ghost / Icon）、
+          各文件手写的矩形按钮、以及 13 处 Slint 标准控件 <code>Button</code>。
+          高度 6 档、圆角 5 档、悬停 3 种语义、键盘焦点 0 处、异步进行中 0 处。
+          这份稿子把它们收敛成 <b>一条尺寸梯度 + 四层语义 + 六个状态</b>，并且只使用
+          Slint 能画出来的属性。
+        </p>
+        <div class="stats">
+          <div class="stat bad"><div class="n tnum">6<em>档</em></div><div class="k">按钮高度 20 / 22 / 28 / 30 / 36 / 38</div></div>
+          <div class="stat bad"><div class="n tnum">5<em>档</em></div><div class="k">圆角 4 / 6 / 8 / 9 / 10</div></div>
+          <div class="stat bad"><div class="n tnum">3<em>套</em></div><div class="k">视觉血统（组件 / 手写 / std）</div></div>
+          <div class="stat good"><div class="n tnum">6<em>态</em></div><div class="k">本稿统一：静 / 悬 / 按 / 焦 / 禁 / 等</div></div>
+        </div>
+      </header>
+
+      <!-- ══ 01 审计 ══════════════════════════════════════════════════════ -->
+      <section id="audit">
+        <div class="sec-head">
+          <span class="sec-no">01</span>
+          <div class="txt">
+            <h2>现状：不是一个按钮，是三个物种</h2>
+            <p>下面三块是项目里真实存在的三种按钮，按代码原样还原（同尺寸、同配色），并排看才能看出它们从哪来、差在哪。</p>
+          </div>
+        </div>
+
+        <div class="grid3">
+          <div class="card">
+            <div class="card-h"><h3>A · 共享组件</h3><span class="tag">widgets.slint</span></div>
+            <div class="row center" style="padding:6px 0 14px">
+              <button class="btn md btn-primary">创建</button>
+              <button class="btn md btn-ghost" style="border-color:var(--ctl)">取消</button>
+            </div>
+            <p style="margin:0;font-size:12.5px">
+              30px / 圆角 6 / 13px。主按钮白字压在亮青上，<b>2.10:1</b>，糊；
+              灰按钮边框 <b>1.42:1</b>，在面板上几乎看不见轮廓。
+            </p>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><h3>B · 手写矩形</h3><span class="tag">app.slint:5421</span></div>
+            <div class="row center" style="padding:6px 0 14px">
+              <span style="display:inline-flex;align-items:center;justify-content:center;width:110px;height:28px;border-radius:4px;background:var(--ac);color:#fff;font-size:13px;font-weight:600">选择保存路径</span>
+              <span style="display:inline-flex;align-items:center;justify-content:center;width:76px;height:28px;border-radius:4px;background:var(--sec-ac);color:var(--t1);font-size:13px">打开目录</span>
+            </div>
+            <p style="margin:0;font-size:12.5px">
+              28px / 圆角 4 / 无按下态。旁边那个灰块<b>没有边框</b>，
+              靠一块实色面表示可点 —— 与弹框里的描边按钮完全不同形状。
+            </p>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><h3>C · 标准控件</h3><span class="tag">std-widgets</span></div>
+            <div class="row center" style="padding:6px 0 14px">
+              <span style="display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 13px;border-radius:5px;border:1px solid var(--line2);background:var(--sec);color:var(--t2);font-size:12px">取消</span>
+              <span style="display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 13px;border-radius:5px;border:1px solid var(--line2);background:var(--sec-hi);color:var(--t1);font-size:12px;font-weight:600">确定</span>
+            </div>
+            <p style="margin:0;font-size:12.5px">
+              13 处在用（新建分组 / 重命名 / chmod / SFTP 新建 / 快捷命令）。
+              它跟 <code>Palette</code> 走，不认项目的 <code>Theme</code>，
+              所以永远长成这样 —— 与旁边任何按钮都不是一个体系。
+            </p>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:14px">
+          <div class="card-h"><h3>逐处体检</h3><span class="tag">按代码实测</span></div>
+          <table class="tnum">
+            <thead>
+              <tr><th>按钮</th><th>出处</th><th>高</th><th>圆角</th><th>字</th><th>悬停</th><th>按下</th><th>焦点</th><th>禁用</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><b>创建 / 保存</b></td><td class="mono">widgets:74</td><td>30</td><td>6</td><td>13/700</td><td>accent +12%</td><td>accent −12%</td><td class="dim">—</td><td>灰底灰字</td></tr>
+              <tr><td><b>页面页脚创建</b></td><td class="mono">session:4163</td><td>38</td><td>9</td><td>13/700</td><td>同上</td><td>同上</td><td class="dim">—</td><td class="dim">—</td></tr>
+              <tr><td><b>取消 / 测试连接</b></td><td class="mono">widgets:134</td><td>30</td><td>6</td><td>13/400</td><td>底 8% + 边转亮</td><td>底 12%</td><td class="dim">—</td><td class="dim">—</td></tr>
+              <tr><td><b>选择保存路径</b></td><td class="mono">app:5421</td><td>28</td><td>4</td><td>13/400</td><td>accent +12%</td><td class="dim">—</td><td class="dim">—</td><td class="dim">—</td></tr>
+              <tr><td><b>打开目录</b></td><td class="mono">app:5437</td><td>28</td><td>4</td><td>13/400</td><td>底 8%</td><td class="dim">—</td><td class="dim">—</td><td class="dim">—</td></tr>
+              <tr><td><b>清空</b></td><td class="mono">app:5464</td><td>20</td><td>4</td><td>11/400</td><td>底 8%</td><td class="dim">—</td><td class="dim">—</td><td class="dim">—</td></tr>
+              <tr><td><b>随机 / 取消</b></td><td class="mono">app:9360</td><td>36</td><td>8</td><td>12/400</td><td>底 8% + 边转灰</td><td class="dim">—</td><td class="dim">—</td><td class="dim">—</td></tr>
+              <tr><td><b>应用</b></td><td class="mono">app:9400</td><td>36</td><td>8</td><td>12/700</td><td>白 12% 覆盖</td><td>白 22%</td><td class="dim">—</td><td class="dim">—</td></tr>
+              <tr><td><b>＋ 添加</b></td><td class="mono">highlight:676</td><td>38</td><td>8</td><td>12.5/700</td><td>accent +8%</td><td class="dim">—</td><td class="dim">—</td><td class="dim">—</td></tr>
+              <tr><td><b>完成</b></td><td class="mono">highlight:921</td><td>30</td><td>7</td><td>12/700</td><td>accent +12%</td><td>accent −12%</td><td class="dim">—</td><td class="dim">—</td></tr>
+              <tr><td><b>上传</b></td><td class="mono">sftp:521</td><td>22</td><td>4</td><td>13/400</td><td>accent +12%</td><td class="dim">—</td><td class="dim">—</td><td class="dim">—</td></tr>
+              <tr><td><b>确认删除</b></td><td class="mono">confirm:7</td><td>30</td><td>4</td><td>13/700</td><td>#EC6A6A</td><td>#C44A4A</td><td class="dim">—</td><td class="dim">—</td></tr>
+              <tr><td><b>确定（小弹框）</b></td><td class="mono">app:6222 等 13 处</td><td>26</td><td>5</td><td>12/400</td><td colspan="4" class="dim">由 std 控件决定，不随 Theme 变化</td></tr>
+            </tbody>
+          </table>
+          <div class="note dg" style="margin-bottom:0">
+            最刺眼的一条：<b>「创建」白字 2.10:1、「完成」墨字 7.87:1</b> —— 同一块
+            <code>#1FC8B4</code> 底，两个弹框两种字色。<code>highlight:921</code> 的注释里
+            已经写明「白字压在上面糊成一团」，说明这笔账早就该在全项目统一结算。
+          </div>
+        </div>
+
+        <div class="grid3" style="margin-top:14px">
+          <div class="card"><h4>形状没有梯度</h4><p style="margin:0;font-size:12.5px">20 / 22 / 26 / 28 / 30 / 36 / 38 七种高度混用，圆角 4 / 5 / 6 / 7 / 8 / 9 六种，且与高度没有对应关系 —— 相邻两个按钮高度差 2px 时，视觉上像没对齐的失误。</p></div>
+          <div class="card"><h4>悬停三套语义</h4><p style="margin:0;font-size:12.5px">实心键变亮、描边键「变亮 + 描边转灰」、手写块只变底。同一个「鼠标移上去」，三种反馈语言，用户读到的是三种「重要性」。</p></div>
+          <div class="card"><h4>状态只做了两个</h4><p style="margin:0;font-size:12.5px">405 个 <code>TouchArea</code>、473 处 <code>has-hover</code>，明确写了按下态的不到十分之一，键盘焦点 <b>0</b> 处，异步进行中 <b>0</b> 处（「测试连接」只把文字改成 Testing…）。</p></div>
+        </div>
+      </section>
+
+      <!-- ══ 02 令牌 ══════════════════════════════════════════════════════ -->
+      <section id="token">
+        <div class="sec-head">
+          <span class="sec-no">02</span>
+          <div class="txt">
+            <h2>令牌：一条梯度，四层语义</h2>
+            <p>先把「尺寸」和「语义」拆开。尺寸只回答多大，语义只回答点下去意味着什么，互不干扰。</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-h"><h3>尺寸梯度 · 圆角随高度联动</h3><span class="tag">r = h × 0.24</span></div>
+          <div class="row" style="gap:18px;align-items:flex-end;padding:4px 0 16px">
+            <div style="display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:92px;gap:7px"><button class="btn xs btn-secondary" style="width:58px">24</button><div style="font-size:10px;color:var(--t4);font-family:var(--mono)">xs · r6</div></div>
+            <div style="display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:92px;gap:7px"><button class="btn sm btn-secondary" style="width:58px">28</button><div style="font-size:10px;color:var(--t4);font-family:var(--mono)">sm · r7</div></div>
+            <div style="display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:92px;gap:7px"><button class="btn md btn-secondary" style="width:58px">34</button><div style="font-size:10px;color:var(--t4);font-family:var(--mono)">md · r8</div></div>
+            <div style="display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:92px;gap:7px"><button class="btn lg btn-secondary" style="width:58px">38</button><div style="font-size:10px;color:var(--t4);font-family:var(--mono)">lg · r9</div></div>
+            <div style="display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:92px;gap:7px"><button class="btn wide btn-secondary">44 宽条</button><div style="font-size:10px;color:var(--t4);font-family:var(--mono)">wide · r10</div></div>
+          </div>
+          <table>
+            <thead><tr><th>档</th><th>高度</th><th>圆角</th><th>左右内衬</th><th>字号</th><th>用在哪</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">xs</td><td>24</td><td>6</td><td>10</td><td>11.5</td><td>表格行内、清空、标签旁的微型动作</td></tr>
+              <tr><td class="mono">sm</td><td>28</td><td>7</td><td>13</td><td>12.5</td><td>图标方钮、路径选择、卡片工具条</td></tr>
+              <tr><td class="mono">md</td><td><b>34</b></td><td><b>8</b></td><td><b>18</b></td><td><b>13</b></td><td><b>默认档：弹框页脚、表单、工具面板</b></td></tr>
+              <tr><td class="mono">lg</td><td>38</td><td>9</td><td>20</td><td>13</td><td>会话弹框页脚（现有 38/9 保留，不改布局）</td></tr>
+              <tr><td class="mono">wide</td><td>44</td><td>10</td><td>16</td><td>13</td><td>跨栏主行动：＋ 添加规则、新建会话</td></tr>
+            </tbody>
+          </table>
+          <div class="note" style="margin-bottom:0">
+            <b>为什么 34 而不是 30 或 38：</b>30 与 13px 字配起来上下只剩 8.5px，按下去像「薄片」；
+            38 是页脚专用的大键。34 在 100% 与 125% 缩放下都能被 2 整除，
+            且 <code>34 + 3×2</code> 的焦点环正好占 40px 网格，不会与相邻元素抢 1px。
+          </div>
+        </div>
+
+        <div class="grid2" style="margin-top:14px">
+          <div class="card">
+            <div class="card-h"><h3>四层语义</h3><span class="tag">按「点下去意味着什么」分层</span></div>
+            <div style="display:flex;flex-direction:column;gap:10px">
+              <div class="row" style="gap:12px">
+                <button class="btn md btn-primary" style="width:104px">创建</button>
+                <div style="font-size:12px;color:var(--t2);flex:1"><b style="color:var(--t1)">① 主操作</b> · 唯一落点。一屏最多一个，实心强调色。</div>
+              </div>
+              <div class="row" style="gap:12px">
+                <button class="btn md btn-tonal" style="width:104px">测试连接</button>
+                <div style="font-size:12px;color:var(--t2);flex:1"><b style="color:var(--t1)">② 功能操作</b> · 会改状态但不落盘。强调浅填充（青绿 10%）。</div>
+              </div>
+              <div class="row" style="gap:12px">
+                <button class="btn md btn-secondary" style="width:104px">打开目录</button>
+                <div style="font-size:12px;color:var(--t2);flex:1"><b style="color:var(--t1)">②b 中性操作</b> · 打开 / 浏览 / 新建。中性浅填充 + 1px 边。</div>
+              </div>
+              <div class="row" style="gap:12px">
+                <button class="btn md btn-ghost" style="width:104px">取消</button>
+                <div style="font-size:12px;color:var(--t2);flex:1"><b style="color:var(--t1)">③ 退出</b> · 什么都不做地离开。无底无框，只有悬停才有面。</div>
+              </div>
+              <div class="row" style="gap:12px">
+                <button class="btn md btn-danger" style="width:104px">确认删除</button>
+                <div style="font-size:12px;color:var(--t2);flex:1"><b style="color:var(--t1)">④ 破坏</b> · 只在二次确认里实心；入口用描边红（hover 才转红）。</div>
+              </div>
+            </div>
+            <div class="sep"></div>
+            <p style="margin:0;font-size:12px;color:var(--t3)">
+              规则：同一次操作里 ① 只能有一个；② 可以有多个；③ 永远放在 ① 的左边或最右的关闭位；
+              ④ 必须与 ③「取消」成对出现。
+            </p>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><h3>色板</h3><span class="tag">随主题切换</span></div>
+            <table class="palette">
+              <thead><tr><th>令牌</th><th>深色</th><th>浅色</th><th>用途</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">accent</td><td><span class="swatch" style="background:#1FC8B4"></span>#1FC8B4</td><td><span class="swatch" style="background:#16C0AE"></span>#16C0AE</td><td>主按钮底 / 强调文字</td></tr>
+                <tr><td class="mono">accent-hi</td><td><span class="swatch" style="background:#43D1C0"></span>#43D1C0</td><td><span class="swatch" style="background:#0FA28F"></span>#0FA28F</td><td>悬停（深色变亮 / 浅色变沉）</td></tr>
+                <tr><td class="mono">accent-lo</td><td><span class="swatch" style="background:#19A493"></span>#19A493</td><td><span class="swatch" style="background:#0C8E7D"></span>#0C8E7D</td><td>按下</td></tr>
+                <tr><td class="mono">accent-on</td><td><span class="swatch" style="background:#06231F"></span>#06231F</td><td><span class="swatch" style="background:#06231F"></span>#06231F</td><td>主按钮字色</td></tr>
+                <tr><td class="mono">accent-tonal</td><td><span class="swatch" style="background:rgba(31,200,180,.10)"></span>10%</td><td><span class="swatch" style="background:rgba(18,181,162,.10)"></span>10%</td><td>功能操作底</td></tr>
+                <tr><td class="mono">control</td><td><span class="swatch" style="background:#31353E"></span>#31353E</td><td><span class="swatch" style="background:#D8DAE1"></span>#D8DAE1</td><td>中性按钮描边</td></tr>
+                <tr><td class="mono">danger</td><td><span class="swatch" style="background:#C94439"></span>#C94439</td><td><span class="swatch" style="background:#C0392F"></span>#C0392F</td><td>破坏性操作</td></tr>
+              </tbody>
+            </table>
+            <div class="sep"></div>
+            <div class="kv">
+              <dt>主按钮</dt><dd><b>墨字 7.87:1</b>（深色）/ <b>7.25:1</b>（浅色）—— 两套都过 AA</dd>
+              <dt>禁用</dt><dd>换具体灰阶，<b>不套 opacity</b>（半透明会透出底下的图案，看着像还能点）</dd>
+              <dt>动态底</dt><dd>「应用」键底色 = 待应用的颜色本身，悬停用<b>白/黑覆盖层</b>而非 brighter（纯黑无法提亮）</dd>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:14px">
+          <div class="card-h"><h3>动效令牌</h3><span class="tag">只动 color / background / border / opacity</span></div>
+          <div class="grid4">
+            <div>
+              <div class="mono" style="font-size:11px;color:var(--t4)">HOVER IN</div>
+              <div style="font-size:19px;font-weight:600" class="tnum">100ms</div>
+              <div style="font-size:11.5px;color:var(--t3)">ease-out · 入场要快，鼠标一停就到位</div>
+            </div>
+            <div>
+              <div class="mono" style="font-size:11px;color:var(--t4)">HOVER OUT</div>
+              <div style="font-size:19px;font-weight:600" class="tnum">140ms</div>
+              <div style="font-size:11.5px;color:var(--t3)">ease-out · 离场慢于入场，才不「闪」</div>
+            </div>
+            <div>
+              <div class="mono" style="font-size:11px;color:var(--t4)">PRESS</div>
+              <div style="font-size:19px;font-weight:600" class="tnum">60ms</div>
+              <div style="font-size:11.5px;color:var(--t3)">ease-out · 比悬停更快 = 跟手</div>
+            </div>
+            <div>
+              <div class="mono" style="font-size:11px;color:var(--t4)">RELEASE</div>
+              <div style="font-size:19px;font-weight:600" class="tnum">180ms</div>
+              <div style="font-size:11.5px;color:var(--t3)">ease-out · 回弹慢于按下 = 有余量</div>
+            </div>
+          </div>
+          <div class="note" style="margin-bottom:0">
+            四条曲线的形状都是 <code>cubic-bezier(0.2, 0, 0, 1)</code> —— Slint 的
+            <code>animate … { easing: cubic-bezier(0.2, 0, 0, 1); }</code> 可直接写。
+            <b>不做位移、不做缩放</b>：Slint 里布局项不能设 y，为 1px 下沉改整棵结构不划算，
+            而色阶变化在 60ms 内已经足够「按下感」。打开右上角「慢放 ×8」可以逐帧看。
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ 03 组件矩阵 ══════════════════════════════════════════════════ -->
+      <section id="matrix">
+        <div class="sec-head">
+          <span class="sec-no">03</span>
+          <div class="txt">
+            <h2>组件矩阵：每一层只长一个样子</h2>
+            <p>五格从左到右是同一颗按钮的五个状态，鼠标移上去可以验证静态格与真实态是否一致。</p>
+          </div>
+        </div>
+
+        <!-- ① Primary -->
+        <div class="card">
+          <div class="card-h">
+            <h3>① Primary · 主操作</h3>
+            <span class="tag ac">md 34 · r8 · pad 18</span>
+            <span class="tag">一屏一个</span>
+          </div>
+          <div class="states" data-states>
+            <div class="st"><div class="slot"><button class="btn md btn-primary">创建</button></div><div class="cap"><b>rest</b> 常态</div></div>
+          </div>
+          <div class="grid2" style="margin-top:16px">
+            <div>
+              <h4>规格</h4>
+              <ul class="clean">
+                <li>底 <code>accent</code> · 字 <code>accent-on</code> · <b>700</b> 字重</li>
+                <li>悬停 <code>accent.brighter(0.16)</code>；按下 <code>accent.darker(0.18)</code></li>
+                <li>禁用：底转 <code>rgba(255,255,255,0.045)</code> + <code>text-muted</code>，<b>不加透明度</b></li>
+                <li>宽度按内容，不拉伸；两个主按钮并排即视为设计错误</li>
+              </ul>
+            </div>
+            <div>
+              <h4>异步进行中（新）</h4>
+              <div class="row" style="margin-bottom:8px">
+                <button class="btn md btn-primary" id="load-demo" style="width:112px">创建<span class="dots"><i></i><i></i><i></i></span></button>
+                <small>点一下 → 1.6s 后恢复；宽度全程锁定，不跳动。</small>
+              </div>
+              <p style="margin:0;font-size:12px;color:var(--t3)">
+                三点脉冲用 3 个 4×4 圆角矩形做 opacity 错峰（0/120/240ms），
+                Slint 用三个 <code>Timer</code> + <code>animate opacity</code> 即可，不依赖任何滤镜。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- ② Tonal -->
+        <div class="card">
+          <div class="card-h">
+            <h3>② 功能操作 · 强调浅填充</h3>
+            <span class="tag ac">accent 10% 底 · accent 字</span>
+            <span class="tag">会改状态，但不落盘</span>
+          </div>
+          <div class="states" data-states>
+            <div class="st"><div class="slot"><button class="btn md btn-tonal"><span class="ico"><svg viewBox="0 0 16 16"><path d="M1 8h3l2-5 3 10 2-5h4"/></svg></span>测试连接</button></div><div class="cap"><b>rest</b> 常态</div></div>
+          </div>
+          <p style="margin:14px 0 0;font-size:12.5px">
+            这一层是新增的。v2 把「测试连接 / 随机」和「取消」都归进灰描边，结果一个是功能、一个是退出，
+            长得一样。<b>功能操作</b>现在有面（青绿 10%）、有青绿字、悬停时描边转实 —— 它明显比「取消」重，
+            又明显比「创建」轻。同层成员：测试连接 / 随机 / 验证 / 导入 / 刷新高亮规则。
+          </p>
+        </div>
+
+        <!-- ③ Secondary -->
+        <div class="card">
+          <div class="card-h">
+            <h3>②b 中性操作 · 浅填充</h3>
+            <span class="tag">1px control 边 · 中性面</span>
+            <span class="tag">打开 / 浏览 / 新建</span>
+          </div>
+          <div class="states" data-states>
+            <div class="st"><div class="slot"><button class="btn md btn-secondary">打开目录</button></div><div class="cap"><b>rest</b> 常态</div></div>
+          </div>
+          <p style="margin:14px 0 0;font-size:12.5px">
+            与 ② 的区别只在「是否染色」：中性面用于不改变状态的辅助动作，避免一屏出现三块青绿。
+            描边用 <code>border-control</code> 而不是更亮的 <code>border-strong</code> ——
+            后者在深色面板上像一条发光的框，会跟主按钮抢注意力。
+          </p>
+        </div>
+
+        <!-- ④ Ghost -->
+        <div class="card">
+          <div class="card-h">
+            <h3>③ 退出 · 无底文字</h3>
+            <span class="tag">无底 · 无框 · 悬停才浮现</span>
+            <span class="tag">取消 / 关闭 / 清空</span>
+          </div>
+          <div class="states" data-states>
+            <div class="st"><div class="slot"><button class="btn md btn-ghost">取消</button></div><div class="cap"><b>rest</b> 常态</div></div>
+          </div>
+          <p style="margin:14px 0 0;font-size:12.5px">
+            上一版最大的问题是「取消」有边框 —— 有边框就代表有形状，有形状就会被读成「一个可以做点什么的东西」。
+            退出类现在彻底没有形状，只有当鼠标落在上面时才浮出一层 6% 的面，告诉你「这里能点，但点了只是离开」。
+          </p>
+        </div>
+
+        <!-- ⑤ Danger -->
+        <div class="card">
+          <div class="card-h">
+            <h3>④ 破坏 · 实心 / 描边</h3>
+            <span class="tag dg">仅二次确认用实心</span>
+          </div>
+          <div class="grid2">
+            <div>
+              <h4 style="color:var(--dg)">实心（确认弹框的落点）</h4>
+              <div class="states" data-states style="grid-template-columns:repeat(3,1fr)">
+                <div class="st"><div class="slot"><button class="btn md btn-danger">确认删除</button></div><div class="cap"><b>rest</b> 常态</div></div>
+              </div>
+            </div>
+            <div>
+              <h4 style="color:var(--dg)">描边（删除入口，悬停才转红）</h4>
+              <div class="states" data-states style="grid-template-columns:repeat(3,1fr)">
+                <div class="st"><div class="slot"><button class="btn md btn-danger-ghost"><span class="ico"><svg viewBox="0 0 16 16"><path d="M2 4h12M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.5 7v4M9.5 7v4"/></svg></span>删除</button></div><div class="cap"><b>rest</b> 常态</div></div>
+              </div>
+            </div>
+          </div>
+          <div class="note dg" style="margin-bottom:0">
+            原 <code>confirm_dialog.slint:7</code> 的 <code>DangerButton</code> 是私有组件（30px / r4 / #C44A4A），
+            与周围的「取消」不同高度、不同圆角。本稿把它提成共享组件的第 ④ 层，
+            尺寸跟同一个页脚里其它按钮完全一致 —— 破坏性不等于尺寸特殊。
+          </div>
+        </div>
+
+        <!-- ⑥ 图标按钮 -->
+        <div class="card">
+          <div class="card-h">
+            <h3>图标按钮 · 三种尺寸</h3>
+            <span class="tag">28 方钮 / 24 微钮 / 22 关闭</span>
+          </div>
+          <div class="grid3">
+            <div>
+              <h4>28 方钮</h4>
+              <div class="states" data-states style="grid-template-columns:repeat(3,1fr)">
+                <div class="st"><div class="slot"><button class="btn sm icon btn-ghost" title="刷新"><span class="ico" style="width:15px;height:15px"><svg viewBox="0 0 16 16"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2v3.2h-3.2"/></svg></span></button></div><div class="cap"><b>rest</b> 常态</div></div>
+              </div>
+              <p style="font-size:12px;color:var(--t3);margin:10px 0 0">图标 15px，居中；悬停 6% 面；无框。</p>
+            </div>
+            <div>
+              <h4>24 微钮</h4>
+              <div class="states" data-states style="grid-template-columns:repeat(3,1fr)">
+                <div class="st"><div class="slot"><button class="btn xs icon btn-ghost" title="更多"><span class="ico" style="width:14px;height:14px"><svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="1.1" fill="currentColor" stroke="none"/><circle cx="8" cy="8" r="1.1" fill="currentColor" stroke="none"/><circle cx="12.5" cy="8" r="1.1" fill="currentColor" stroke="none"/></svg></span></button></div><div class="cap"><b>rest</b> 常态</div></div>
+              </div>
+              <p style="font-size:12px;color:var(--t3);margin:10px 0 0">行尾「⋯」，只在行悬停时出现。</p>
+            </div>
+            <div>
+              <h4>关闭键（定稿保留红悬停）</h4>
+              <div class="states" data-states style="grid-template-columns:repeat(3,1fr)">
+                <div class="st"><div class="slot"><button class="btn sm icon btn-ghost" title="关闭" style="--b-hover:#E81123;--bd-hover:#E81123;--fg-hover:#fff;--fg:var(--t3)"><span class="ico" style="width:12px;height:12px"><svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></span></button></div><div class="cap"><b>rest</b> 常态</div></div>
+              </div>
+              <p style="font-size:12px;color:var(--t3);margin:10px 0 0">90ms 转红，其它按钮 100ms —— 关闭动作要更快。</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- ⑦ 工具条 / 分裂 / 段选 / 链接 -->
+        <div class="card">
+          <div class="card-h"><h3>工具条 · 分裂 · 段选 · 链接</h3><span class="tag">同一个体系里的四种变体</span></div>
+
+          <div class="grid2">
+            <div>
+              <h4>工具条按钮（24 高，图标 + 12px 字）</h4>
+              <div class="row" style="padding:8px 0 4px;gap:6px">
+                <button class="btn xs btn-tonal" style="--px:9px;--gap:5px"><span class="ico" style="width:13px;height:13px"><svg viewBox="0 0 16 16"><path d="M8 12V3M4.5 6.5L8 3l3.5 3.5M2.5 13.5h11"/></svg></span>上传</button>
+                <button class="btn xs btn-ghost" style="--px:9px;--gap:5px"><span class="ico" style="width:13px;height:13px"><svg viewBox="0 0 16 16"><path d="M8 3v9M4.5 8.5L8 12l3.5-3.5M2.5 13.5h11"/></svg></span>下载</button>
+                <button class="btn xs btn-ghost icon"><span class="ico" style="width:13px;height:13px"><svg viewBox="0 0 16 16"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2v3.2h-3.2"/></svg></span></button>
+                <button class="btn xs btn-danger-ghost icon"><span class="ico" style="width:13px;height:13px"><svg viewBox="0 0 16 16"><path d="M2 4h12M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4"/></svg></span></button>
+              </div>
+              <p style="font-size:12px;color:var(--t3);margin:8px 0 0">
+                现状 52×22 / r4；统一后跟 xs 档（24 / r6）。<b>唯一一块实心青绿留给「上传」</b>，
+                其余降为无底，工具条不再满排色块。
+              </p>
+            </div>
+
+            <div>
+              <h4>分裂按钮（执行 + 菜单）</h4>
+              <div class="row" style="padding:8px 0 4px">
+                <span class="split">
+                  <button class="btn md btn-tonal" style="border-top-right-radius:0;border-bottom-right-radius:0">上传</button>
+                  <button class="btn md btn-tonal" style="border-top-left-radius:0;border-bottom-left-radius:0;border-left:0;--px:0;width:30px"><span class="ico" style="width:12px;height:12px"><svg viewBox="0 0 16 16"><path d="M4 6.5L8 10.5l4-4"/></svg></span></button>
+                </span>
+                <small style="color:var(--t3)">两段共享同一底色，中间 1px 分隔</small>
+              </div>
+              <p style="font-size:12px;color:var(--t3);margin:8px 0 0">
+                悬停时整块一起亮（不是只有指针下那段），否则看起来像两个按钮拼错了。
+              </p>
+            </div>
+          </div>
+
+          <div class="sep"></div>
+
+          <div class="grid2">
+            <div>
+              <h4>段选（选定｜调色盘）</h4>
+              <div class="row" style="padding:8px 0 4px">
+                <span class="seg">
+                  <button class="on">选定 <span class="mono" style="font-size:10px;opacity:.75">#1FC8B4</span></button>
+                  <span class="div"></span>
+                  <button>调色盘 ›</button>
+                </span>
+              </div>
+              <p style="font-size:12px;color:var(--t3);margin:8px 0 0">
+                两段都开同一个面板，所以做成一个卡、两段按钮；段间 1px 线。悬停整卡描边转强调色。
+              </p>
+            </div>
+            <div>
+              <h4>文字链</h4>
+              <div class="row" style="padding:8px 0 4px">
+                <button class="btn-link">清空记录</button>
+                <span style="color:var(--t4)">·</span>
+                <button class="btn-link">查看全部</button>
+                <span style="color:var(--t4)">·</span>
+                <button class="btn-link">管理…</button>
+              </div>
+              <p style="font-size:12px;color:var(--t3);margin:8px 0 0">
+                11–12px，<code>text-muted</code> 起，悬停转强调色。不用于任何会丢数据的动作。
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ 04 交互 ══════════════════════════════════════════════════════ -->
+      <section id="motion">
+        <div class="sec-head">
+          <span class="sec-no">04</span>
+          <div class="txt">
+            <h2>交互：六条规则，全部可写进 Slint</h2>
+            <p>每一条都对应一个真实缺陷，不是审美偏好。右上角「慢放 ×8」可以把这些时长放大到肉眼可分解。</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-h"><h3>状态机</h3><span class="tag">rest → hover → active → release</span></div>
+          <div class="tl">
+            <div class="tl-row">
+              <div class="tl-k">悬停入场</div>
+              <div class="tl-bar"><i style="width:100px;background:var(--ac)"></i><span>100ms · 色阶上移一档</span></div>
+            </div>
+            <div class="tl-row">
+              <div class="tl-k">按下</div>
+              <div class="tl-bar"><i style="width:60px;background:var(--ac-deep)"></i><span>60ms · 色阶下移两档 + 描边加深</span></div>
+            </div>
+            <div class="tl-row">
+              <div class="tl-k">松开</div>
+              <div class="tl-bar"><i style="width:180px;background:var(--ac-lo)"></i><span>180ms · 回到悬停档</span></div>
+            </div>
+            <div class="tl-row">
+              <div class="tl-k">移出</div>
+              <div class="tl-bar"><i style="width:140px;background:var(--line2)"></i><span>140ms · 回到常态</span></div>
+            </div>
+            <div class="tl-row">
+              <div class="tl-k">焦点</div>
+              <div class="tl-bar"><i style="width:120px;background:var(--ac-soft)"></i><span>120ms · 1px 强调边 + 3px 柔光外环</span></div>
+            </div>
+          </div>
+          <p style="margin:14px 0 0;font-size:12.5px;color:var(--t3)">
+            按下比悬停快（60 &lt; 100），松开比按下慢（180 &gt; 60），移出比移入慢（140 &gt; 100）——
+            这三组不等式就是「跟手」和「丝滑」的全部来源，不需要任何位移或缩放。
+          </p>
+        </div>
+
+        <div class="grid2" style="margin-top:14px">
+          <div class="card">
+            <h4>1 · 焦点只在键盘上出现</h4>
+            <p style="font-size:12.5px;margin:0">鼠标点按钮不该留一个环（会像没点干净），但 <span class="kbd">Tab</span> 必须看见自己在哪。用 <code>focus-visible</code> 语义，Slint 侧对应 <code>TouchArea.has-focus</code> + 键盘导航标志。</p>
+            <div class="row" style="margin-top:12px">
+              <button class="btn md btn-secondary">先点我</button>
+              <button class="btn md btn-secondary">再按 Tab</button>
+              <button class="btn md btn-secondary">焦点留在这</button>
+            </div>
+          </div>
+          <div class="card">
+            <h4>2 · 禁用换灰阶，不套 opacity</h4>
+            <p style="font-size:12.5px;margin:0 0 10px">半透明按钮会透出底下的分区颜色，在浅色主题里尤其像「可以点只是没生效」。改成明确的 <code>--sec</code> 面 + <code>--t4</code> 字。</p>
+            <div class="row">
+              <button class="btn md btn-primary" disabled style="pointer-events:none;background:var(--sec);border-color:var(--line2);color:var(--t4)">创建</button>
+              <button class="btn md btn-secondary" disabled style="pointer-events:none;color:var(--t4);border-color:var(--line2);background:transparent">打开目录</button>
+              <button class="btn md btn-tonal" disabled style="pointer-events:none;background:transparent;border-color:var(--line2);color:var(--t4)">测试连接</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h4>3 · 异步：锁宽 + 最短 400ms</h4>
+            <p style="font-size:12.5px;margin:0 0 10px">「测试连接」是唯一会连服务器的按钮。点完立刻进 loading，宽度不变（否则邻居会跳），最短展示 400ms（否则一闪而过像没反应），期间禁止再次点击。</p>
+            <div class="row">
+              <button class="btn md btn-tonal" id="test-demo" style="width:132px;--dot:var(--ac)">测试连接<span class="dots"><i></i><i></i><i></i></span></button>
+              <small>点一下看宽度是否跳动</small>
+            </div>
+          </div>
+          <div class="card">
+            <h4>4 · 防重复：300ms 内的第二次点击丢弃</h4>
+            <p style="font-size:12.5px;margin:0 0 10px">项目里双击有 500ms 窗口（双击标题栏最大化等）。破坏性按钮复用同一套节流：第一次点击后 300ms 内的点击不派发，避免「创建」被点两次建出两条会话。</p>
+            <div class="row">
+              <button class="btn md btn-danger" id="dbl-demo">连点我</button>
+              <small id="dbl-count">已触发 0 次</small>
+            </div>
+          </div>
+
+          <div class="card">
+            <h4>5 · 悬停 400ms 才出提示</h4>
+            <p style="font-size:12.5px;margin:0 0 10px">图标按钮没有文字，必须有 tooltip。但立刻弹出会糊住整屏，延迟 400ms、移出立即消失，用 0ms 的离场。</p>
+            <div class="row">
+              <button class="btn sm icon btn-ghost tip" data-tip="刷新（F5）"><span class="ico" style="width:15px;height:15px"><svg viewBox="0 0 16 16"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2v3.2h-3.2"/></svg></span></button>
+              <button class="btn sm icon btn-ghost tip" data-tip="下载选中项（3）"><span class="ico" style="width:15px;height:15px"><svg viewBox="0 0 16 16"><path d="M8 3v9M4.5 8.5L8 12l3.5-3.5M2.5 13.5h11"/></svg></span></button>
+              <button class="btn sm icon btn-danger-ghost tip" data-tip="删除选中项（3）"><span class="ico" style="width:15px;height:15px"><svg viewBox="0 0 16 16"><path d="M2 4h12M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4"/></svg></span></button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h4>6 · 键盘可达</h4>
+            <p style="font-size:12.5px;margin:0"><span class="kbd">Tab</span> 顺序 = 视觉顺序；<span class="kbd">Space</span> / <span class="kbd">Enter</span> 触发；<span class="kbd">Esc</span> 等价于「取消」。焦点环永不裁切（按钮外面包一层不裁的外壳，环画在外壳上）。</p>
+            <div class="row" style="margin-top:12px;font-size:11.5px;color:var(--t4)">
+              <span class="kbd">Tab</span> 下一个 &nbsp;<span class="kbd">⇧Tab</span> 上一个 &nbsp;<span class="kbd">Enter</span> 确认 &nbsp;<span class="kbd">Esc</span> 取消
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ 05 场景 ══════════════════════════════════════════════════════ -->
+      <section id="scenes">
+        <div class="sec-head">
+          <span class="sec-no">05</span>
+          <div class="txt">
+            <h2>真实场景：照代码里的位置重画</h2>
+            <p>每一块都对应一个真实文件位置，文案是项目里的中文原文。鼠标移上去、按下去都是真的。</p>
+          </div>
+        </div>
+
+        <!-- ① 新建会话页脚 -->
+        <div class="card">
+          <div class="card-h">
+            <h3>新建会话 · 页脚</h3>
+            <span class="tag ac">你截图里的那一行</span>
+            <span class="tag mono" style="margin-left:auto">session_dialog.slint:4120</span>
+          </div>
+          <div class="scene dlg">
+            <div class="scene-bar"><span class="name">新建会话</span><span class="src">760 × 620</span></div>
+            <div class="body" style="padding:16px 18px">
+              <div class="row" style="gap:10px">
+                <span class="fieldbox" style="flex:1">主机 / IP</span>
+                <span class="fieldbox" style="width:88px">22</span>
+              </div>
+            </div>
+            <div class="foot">
+              <button class="btn lg btn-tonal">
+                <span class="ico" style="width:15px;height:15px"><svg viewBox="0 0 16 16"><path d="M1 8h2.5l2-4.5 3.5 9 2-4.5H15"/></svg></span>
+                测试连接
+              </button>
+              <span style="font-size:11.5px;color:var(--t4)">连接成功 · 42ms</span>
+              <span class="grow"></span>
+              <div class="foot-r">
+                <button class="btn lg btn-ghost">取消</button>
+                <button class="btn lg btn-primary">创建</button>
+              </div>
+            </div>
+          </div>
+          <div class="grid2" style="margin-top:14px">
+            <div>
+              <h4>改了什么</h4>
+              <ul class="clean">
+                <li>「测试连接」从灰描边升为<b>强调浅填充</b> —— 它是这一屏唯一会跟服务器说话的动作，应该比「取消」重。</li>
+                <li>「取消」彻底去掉边框，变成无底文字：在页脚里靠位置就能识别，框只会增加噪音。</li>
+                <li>「创建」保留 38/9（不动布局），字色由白改墨，<b>2.10 → 7.87:1</b>。</li>
+                <li>状态文字（连接成功 / 失败）用 11.5px，与按钮基线对齐，不再挤在按钮中间。</li>
+              </ul>
+            </div>
+            <div>
+              <h4>编辑态</h4>
+              <div class="row" style="padding:4px 0 12px">
+                <button class="btn lg btn-ghost">取消</button>
+                <button class="btn lg btn-primary">保存</button>
+              </div>
+              <p style="font-size:12px;color:var(--t3);margin:0">
+                同一个位置、同一个尺寸，只换文案 —— 用户不会因为「创建」变「保存」而重新学一遍。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- ② 下载路径 -->
+        <div class="card">
+          <div class="card-h">
+            <h3>下载与传输 · 路径行</h3>
+            <span class="tag ac">你截图里的那一行</span>
+            <span class="tag mono" style="margin-left:auto">app.slint:5420</span>
+          </div>
+          <div class="scene dlg">
+            <div class="scene-bar"><span class="name">下载与传输</span><span class="src">app.slint · 手写三键</span></div>
+            <div class="body" style="padding:16px 18px">
+              <div style="font-size:12px;color:var(--t2);margin-bottom:6px">保存下载到：</div>
+              <div class="fieldbox" style="width:100%;justify-content:space-between">
+                <span style="color:var(--t1)">D:\Downloads\MTerm</span>
+                <span style="font-size:11px;color:var(--t4)">点击打开</span>
+              </div>
+              <div class="row" style="justify-content:flex-end;gap:8px;margin-top:10px">
+                <button class="btn sm btn-primary" style="--px:14px">选择保存路径</button>
+                <button class="btn sm btn-secondary">打开目录</button>
+              </div>
+              <div class="sep" style="margin:14px 0"></div>
+              <div class="row">
+                <span style="font-size:12px;color:var(--t2)">传输</span>
+                <span class="grow"></span>
+                <button class="btn-link">清空</button>
+              </div>
+            </div>
+          </div>
+          <div class="grid3" style="margin-top:14px">
+            <div>
+              <h4>原来：一行三种形状</h4>
+              <p style="font-size:12px;color:var(--t3);margin:0">
+                实心青绿块（28/r4）+ 无边框灰块（28/r4）+ 纯文字（20/r4）。
+                三个都在同一行，却看不出它们属于同一族。
+              </p>
+            </div>
+            <div>
+              <h4>现在：主 / 次 / 链</h4>
+              <p style="font-size:12px;color:var(--t3);margin:0">
+                主键带青绿、次键有边框、清空是文字链。三者尺寸 28 / 28 / 22，
+                高度一致到能被一条基线串起来。
+              </p>
+            </div>
+            <div>
+              <h4>为什么「清空」不做成按钮</h4>
+              <p style="font-size:12px;color:var(--t3);margin:0">
+                它清的是<b>记录</b>，不是这台机器的配置；做成按钮会与「打开目录」抢同一条视觉重量。
+                文字链 + 悬停转红足够表达「有点危险但可撤销」。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- ③ 取色器 -->
+        <div class="card">
+          <div class="card-h">
+            <h3>取色器 · 页脚</h3>
+            <span class="tag ac">随机 / 取消 / 应用</span>
+            <span class="tag mono" style="margin-left:auto">app.slint:9360</span>
+          </div>
+          <div class="scene dlg">
+            <div class="scene-bar"><span class="name">强调色</span><span class="src">点色票看「应用」的底色跟着变</span></div>
+            <div class="body" style="padding:16px 18px 8px">
+              <div class="row" style="gap:8px">
+                <button class="chip" data-hex="#1FC8B4" style="background:#1FC8B4"></button>
+                <button class="chip" data-hex="#4A90E2" style="background:#4A90E2"></button>
+                <button class="chip" data-hex="#E8A33E" style="background:#E8A33E"></button>
+                <button class="chip" data-hex="#E25C5C" style="background:#E25C5C"></button>
+                <button class="chip" data-hex="#9B7BE8" style="background:#9B7BE8"></button>
+                <span style="font-size:11.5px;color:var(--t4);margin-left:4px">← 色票（演示用）</span>
+              </div>
+            </div>
+            <div class="foot" style="gap:10px">
+              <span class="seg" style="height:30px">
+                <button class="on" style="padding:0 12px">选定 <span class="mono" style="font-size:10px;opacity:.75" id="cur-hex">#1FC8B4</span></button>
+                <span class="div"></span>
+                <button style="padding:0 12px">调色盘 ›</button>
+              </span>
+              <span class="grow"></span>
+              <button class="btn sm btn-tonal" id="rnd-btn">随机</button>
+              <button class="btn sm btn-ghost">取消</button>
+              <button class="btn sm btn-primary" id="apply-btn" style="--b-rest:#1FC8B4;--b-hover:#1FC8B4;--b-act:#1FC8B4;--bd-rest:#1FC8B4;--bd-hover:#1FC8B4;--bd-act:#1FC8B4;color:#06231F">应用</button>
+            </div>
+          </div>
+          <div class="note" style="margin-bottom:0">
+            「应用」的底色<b>就是待应用的那个颜色</b>（原实现如此，是个好设计，保留）。
+            但它的悬停不能再用 <code>brighter()</code> —— 纯黑或纯白都无法提亮。
+            统一改法：在按钮上叠一层白/黑矩形，悬停 <code>opacity 0.10</code>、按下 <code>0.18</code>，
+            Slint 里就是一个圆角 <code>Rectangle</code> 加 <code>animate opacity</code>。
+          </div>
+        </div>
+
+        <!-- ④ 高亮规则 -->
+        <div class="card">
+          <div class="card-h">
+            <h3>输出高亮 · 自定义规则</h3>
+            <span class="tag ac">＋ 添加 / 完成</span>
+            <span class="tag mono" style="margin-left:auto">highlight_dialog.slint:676 / 921</span>
+          </div>
+          <div class="scene dlg">
+            <div class="scene-bar"><span class="name">输出高亮 · 自定义</span><span class="src">760 × 560</span></div>
+            <div class="body" style="padding:16px 18px 10px">
+              <div style="border:1px solid var(--line2);border-radius:9px;padding:12px;background:var(--card)">
+                <div class="row" style="gap:8px;margin-bottom:10px">
+                  <span class="fieldbox" style="flex:1;height:28px;font-size:12px">规则名称</span>
+                  <span class="fieldbox" style="flex:1.4;height:28px;font-size:12px">正则 / 关键字</span>
+                </div>
+                <button class="btn wide btn-tonal" style="width:100%">＋ 添加</button>
+              </div>
+              <div style="text-align:center;padding:34px 0 26px">
+                <div style="width:26px;height:26px;margin:0 auto 10px;border:2px solid var(--line2);border-radius:13px"></div>
+                <div style="font-size:12px;color:var(--t3)">暂无自定义规则。</div>
+              </div>
+            </div>
+            <div class="foot">
+              <span style="font-size:11.5px;color:var(--t4)">高亮规则仅应用于程序未上色的终端输出。</span>
+              <span class="grow"></span>
+              <button class="btn md btn-primary">完成</button>
+            </div>
+          </div>
+          <p style="margin:14px 0 0;font-size:12.5px">
+            「＋ 添加」是<b>跨栏宽条</b>（wide 44 / r10），不是小按钮 —— 它要吸满整行、成为这一屏的主动作。
+            「完成」在页脚右侧，是唯一的落点。编辑态时宽条变「保存修改」（primary 语义），旁边再挂一个
+            ghost「取消」，而不是把宽条做成第三种状态。
+          </p>
+        </div>
+
+        <!-- ⑤ 确认删除 -->
+        <div class="card">
+          <div class="card-h">
+            <h3>确认删除 · 破坏性弹框</h3>
+            <span class="tag dg">red 只出现在落点</span>
+            <span class="tag mono" style="margin-left:auto">confirm_dialog.slint:224</span>
+          </div>
+          <div class="grid2">
+            <div class="scene dlg">
+              <div class="scene-bar"><span class="name">确认删除</span><span class="src">危险操作</span></div>
+              <div class="body" style="padding:18px">
+                <div style="font-size:13px;color:var(--t1);margin-bottom:6px">确定要删除这个文件？</div>
+                <div style="font-size:12px;color:var(--t3)">此操作不可撤销。</div>
+                <div class="fieldbox" style="margin-top:12px;font-family:var(--mono);font-size:11.5px;color:var(--t2)">/var/www/app/config.php</div>
+              </div>
+              <div class="foot">
+                <span class="grow"></span>
+                <button class="btn md btn-ghost">取消</button>
+                <button class="btn md btn-danger">确认删除</button>
+              </div>
+            </div>
+            <div>
+              <h4>三条硬规则</h4>
+              <ul class="clean">
+                <li><b>红色只出现在最终落点。</b>标题、图标、路径都不染色 —— 否则一屏红，用户就对红免疫了。</li>
+                <li><b>破坏键与取消同尺寸。</b>原来 30/r4 对 30/r6，两个按钮底边差 1px，截图里能看出来。</li>
+                <li><b>确认文案带宾语。</b>「确认删除」比「确认」清楚；标签由调用方传，不写死。</li>
+              </ul>
+              <p style="font-size:12px;color:var(--t3);margin:6px 0 0">
+                入口（右键菜单 / 工具条）用描边红：常态就是普通灰描边，悬停才转红 ——
+                避免列表里每一个删除图标都是红的。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- ⑥ 文件面板工具条 -->
+        <div class="card">
+          <div class="card-h">
+            <h3>文件面板 · 工具条 + 行内操作</h3>
+            <span class="tag">密度最高的一屏</span>
+            <span class="tag mono" style="margin-left:auto">sftp_panel.slint:521–737</span>
+          </div>
+          <div class="scene">
+            <div class="row" style="gap:6px;padding-bottom:12px;border-bottom:1px solid var(--line2)">
+              <button class="btn xs btn-ghost icon tip" data-tip="返回上级"><span class="ico" style="width:13px;height:13px"><svg viewBox="0 0 16 16"><path d="M9 3L4 8l5 5M4 8h8"/></svg></span></button>
+              <span style="width:1px;height:18px;background:var(--line2);margin:0 3px"></span>
+              <button class="btn xs btn-ghost tip" data-tip="新建文件夹"><span class="ico" style="width:13px;height:13px"><svg viewBox="0 0 16 16"><path d="M1.5 4.5h4l1.5 2h7.5v6.5h-13zM8 8v4M6 10h4"/></svg></span></button>
+              <button class="btn xs btn-ghost tip" data-tip="新建文件"><span class="ico" style="width:13px;height:13px"><svg viewBox="0 0 16 16"><path d="M3.5 1.5h6l3 3v10h-9zM9.5 1.5v3h3M8 7.5v4M6 9.5h4"/></svg></span></button>
+              <span class="grow"></span>
+              <button class="btn xs btn-tonal" style="--px:8px;--gap:5px">
+                <span class="ico" style="width:13px;height:13px"><svg viewBox="0 0 16 16"><path d="M8 12V3M4.5 6.5L8 3l3.5 3.5M2.5 13.5h11"/></svg></span>上传
+              </button>
+              <button class="btn xs btn-ghost" style="--px:8px;--gap:5px">
+                <span class="ico" style="width:13px;height:13px"><svg viewBox="0 0 16 16"><path d="M8 3v9M4.5 8.5L8 12l3.5-3.5M2.5 13.5h11"/></svg></span>下载
+              </button>
+              <button class="btn xs btn-ghost icon tip" data-tip="刷新"><span class="ico" style="width:13px;height:13px"><svg viewBox="0 0 16 16"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2v3.2h-3.2"/></svg></span></button>
+              <button class="btn xs btn-danger-ghost icon tip" data-tip="删除选中项（2）"><span class="ico" style="width:13px;height:13px"><svg viewBox="0 0 16 16"><path d="M2 4h12M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4"/></svg></span></button>
+            </div>
+            <div style="margin-top:10px;font-size:12px">
+              <div class="row" style="padding:6px 4px;border-radius:6px;background:var(--sec)">
+                <span style="font-family:var(--mono);font-size:11.5px;color:var(--t2)">config.php</span>
+                <span class="grow"></span>
+                <span style="font-size:11px;color:var(--t4)">4.2 KB</span>
+                <button class="btn xs btn-ghost icon" style="--h:20px;width:20px"><span class="ico" style="width:12px;height:12px"><svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="1.1" fill="currentColor" stroke="none"/><circle cx="8" cy="8" r="1.1" fill="currentColor" stroke="none"/><circle cx="12.5" cy="8" r="1.1" fill="currentColor" stroke="none"/></svg></span></button>
+              </div>
+              <div class="row" style="padding:6px 4px;border-radius:6px">
+                <span style="font-family:var(--mono);font-size:11.5px;color:var(--t2)">index.html</span>
+                <span class="grow"></span>
+                <span style="font-size:11px;color:var(--t4)">18.4 KB</span>
+              </div>
+            </div>
+          </div>
+          <div class="grid2" style="margin-top:14px">
+            <div>
+              <h4>工具条只留一个色块</h4>
+              <p style="font-size:12px;color:var(--t3);margin:0">
+                现状「上传」是实心青绿 52×22，其余全是灰色图标 —— 高度 22、圆角 4，与页面其它按钮没有关系。
+                统一后整条跟 xs 档（24/r6），「上传」降为 tonal，其余 ghost，删除入口描边红。
+              </p>
+            </div>
+            <div>
+              <h4>行内操作不常驻</h4>
+              <p style="font-size:12px;color:var(--t3);margin:0">
+                行尾「⋯」只在行悬停/选中时出现，20×20；与 24 方钮同族但不占位。
+                这样 200 行的目录不会变成 200 个按钮。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- ⑦ std 对照 -->
+        <div class="card">
+          <div class="card-h">
+            <h3>小弹框 · 标准控件替换前后</h3>
+            <span class="tag ac">13 处，收益最直接</span>
+            <span class="tag mono" style="margin-left:auto">app.slint:6218 / 6348 / 6827 / 6908 / 7441</span>
+          </div>
+          <div class="grid2">
+            <div>
+              <div class="card-h"><h4 style="margin:0;color:var(--t3)">替换前 · std Button</h4></div>
+              <div class="scene dlg" style="opacity:.92">
+                <div class="scene-bar"><span class="name">新建分组</span><span class="src">std-widgets</span></div>
+                <div class="body" style="padding:14px 16px"><span class="fieldbox" style="width:100%">分组名称</span></div>
+                <div class="foot" style="justify-content:flex-end;gap:8px">
+                  <span style="display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 13px;border-radius:5px;border:1px solid var(--line2);background:var(--sec);color:var(--t2);font-size:12px">取消</span>
+                  <span style="display:inline-flex;align-items:center;justify-content:center;height:26px;padding:0 13px;border-radius:5px;border:1px solid var(--line2);background:var(--sec-hi);color:var(--t1);font-size:12px;font-weight:600">确定</span>
+                </div>
+              </div>
+            </div>
+            <div>
+              <div class="card-h"><h4 style="margin:0;color:var(--ac)">替换后 · 同一体系</h4></div>
+              <div class="scene dlg">
+                <div class="scene-bar"><span class="name">新建分组</span><span class="src">Button md</span></div>
+                <div class="body" style="padding:14px 16px"><span class="fieldbox" style="width:100%;border-color:var(--ac);color:var(--t1)">分组名称</span></div>
+                <div class="foot" style="justify-content:flex-end;gap:10px">
+                  <button class="btn md btn-ghost">取消</button>
+                  <button class="btn md btn-primary">确定</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p style="margin:14px 0 0;font-size:12.5px">
+            这 13 处是「看起来不像同一个软件」的最大来源：它们不认主题、不认强调色、圆角字号都不同，
+            而且弹框里其余控件全是自绘的。换掉它们不需要改业务逻辑 —— std <code>Button</code> 的
+            <code>clicked</code> / <code>enabled</code> 与本稿组件同名同义，是一次纯替换。
+          </p>
+        </div>
+      </section>
+
+      <!-- ══ 06 落地 ══════════════════════════════════════════════════════ -->
+      <section id="code">
+        <div class="sec-head">
+          <span class="sec-no">06</span>
+          <div class="txt">
+            <h2>Slint 落地：一个组件，三种函数</h2>
+            <p>下面是可以直接粘进项目的骨架。所有视觉只由 <code>background</code> / <code>border-*</code> / <code>border-radius</code> / <code>opacity</code> 四个属性驱动。</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-h"><h3>① 令牌（追加到 <code>ui/theme.slint</code>）</h3><span class="tag">24 行</span></div>
+<pre>// 尺寸：r = h × 0.24，全部乘 ui-scale 保持 125% 一致
+out property &lt;length&gt; btn-h-xs:   24px * root.ui-scale;
+out property &lt;length&gt; btn-h-sm:   28px * root.ui-scale;
+out property &lt;length&gt; btn-h-md:   34px * root.ui-scale;
+out property &lt;length&gt; btn-h-lg:   38px * root.ui-scale;
+out property &lt;length&gt; btn-h-wide: 44px * root.ui-scale;
+
+// 中性填充面（深色加白 / 浅色加黑，不能用同一个 alpha）
+out property &lt;brush&gt; btn-sec:    root.dark ? #ffffff0e : #0f141e0d;
+out property &lt;brush&gt; btn-sec-hi: root.dark ? #ffffff18 : #0f141e16;
+out property &lt;brush&gt; btn-sec-ac: root.dark ? #ffffff24 : #0f141e1f;
+
+// 强调浅填充（功能操作层）
+out property &lt;brush&gt; btn-tonal:    root.accent-solid.with-alpha(0.10);
+out property &lt;brush&gt; btn-tonal-hi: root.accent-solid.with-alpha(0.18);
+out property &lt;brush&gt; btn-tonal-ac: root.accent-solid.with-alpha(0.26);
+
+// 主按钮字色：深色主题压暗 86%（7.87:1），浅色主题纯白
+// 这条已经在 highlight_dialog.slint:921 用过，此处只是收编成令牌
+out property &lt;brush&gt; btn-ink: root.dark ? root.accent-solid.darker(0.86) : #ffffff;</pre>
+          <div class="note" style="margin-bottom:0">
+            <code>#ffffff0e</code> 是 8 位 hex（末两位 alpha）。浅色主题必须换成加黑，
+            否则「浅填充」在白底上等于没填 —— 这是项目里 <code>hover-tint</code> 早就踩过的坑。
+            <br><br>
+            另一条边界：<b>按钮三态在组件内直算，不要改全局 <code>accent-hover</code></b>。
+            那个 token 同时被列表行悬停、侧栏选中、标签页染色复用，
+            把 0.12 提到 0.16 会让整屏的悬停都变重。按钮的 0.16/0.18 只活在按钮里。
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-h"><h3>② 组件（新建 <code>ui/button.slint</code>）</h3><span class="tag">约 70 行，替换 3 个旧组件</span></div>
+<pre>import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+
+export enum BtnTone { primary, tonal, secondary, ghost, danger, danger-ghost, link }
+export enum BtnSize { xs, sm, md, lg, wide }
+
+export component Button inherits Rectangle {
+    in property &lt;string&gt; text;
+    in property &lt;BtnTone&gt; tone: BtnTone.secondary;
+    in property &lt;BtnSize&gt; size: BtnSize.md;
+    in property &lt;string&gt; glyph: "";
+    in property &lt;bool&gt; disabled: false;
+    in property &lt;bool&gt; busy: false;
+    in property &lt;color&gt; tint: transparent;   // 「应用」键：底色 = 待应用的颜色
+    in property &lt;float&gt; surface-alpha: 1.0;  // 侧栏半透明面板（#sidebar-surface-alpha）
+    in property &lt;int&gt; dot-tick: 0;           // busy 三点用
+    callback clicked();
+
+    property &lt;length&gt; bh: size == BtnSize.xs ? 24px
+        : size == BtnSize.sm ? 28px
+        : size == BtnSize.lg ? 38px
+        : size == BtnSize.wide ? 44px : 34px;
+    property &lt;length&gt; br: bh * 0.24;
+    property &lt;length&gt; bpad: size == BtnSize.xs ? 10px
+        : size == BtnSize.sm ? 13px
+        : size == BtnSize.lg ? 20px
+        : size == BtnSize.wide ? 16px : 18px;
+    property &lt;bool&gt; framed: tone != BtnTone.ghost &amp;&amp; tone != BtnTone.link;
+
+    // 三态色：tone 决定色相，disabled 优先
+    pure function fill(hov: bool, act: bool) -&gt; brush {
+        return disabled
+            ? (tone == BtnTone.primary ? Theme.bg-elevated : transparent)
+            : tint != transparent ? tint
+            : tone == BtnTone.primary ? (act ? Theme.accent-solid.darker(0.18)
+                                       : hov ? Theme.accent-solid.brighter(0.16) : Theme.accent-solid)
+            : tone == BtnTone.tonal   ? Theme.accent-solid.with-alpha(act ? 0.26 : hov ? 0.18 : 0.10)
+            : tone == BtnTone.danger  ? (act ? Theme.danger.darker(0.12) : hov ? Theme.danger.brighter(0.08) : Theme.danger)
+            : tone == BtnTone.danger-ghost ? (act ? Theme.danger.with-alpha(0.18) : hov ? Theme.danger.with-alpha(0.10) : transparent)
+            : (act ? Theme.bg-active : hov ? Theme.bg-hover : transparent);
+    }
+    pure function edge(hov: bool, act: bool) -&gt; brush {
+        return !framed ? transparent
+            : tone == BtnTone.primary ? (act ? Theme.accent-solid.darker(0.30)
+                                       : hov ? Theme.accent-solid.brighter(0.30) : Theme.accent-solid)
+            : tone == BtnTone.tonal ? (hov ? Theme.accent-solid : Theme.accent-solid.with-alpha(0.55))
+            : tone == BtnTone.danger ? (hov ? Theme.danger.brighter(0.08) : Theme.danger)
+            : tone == BtnTone.danger-ghost ? (hov ? Theme.danger : Theme.border-control)
+            : (hov ? Theme.border-strong : Theme.border-control);
+    }
+    pure function ink(hov: bool) -&gt; brush {
+        return disabled ? Theme.text-muted
+            : (tone == BtnTone.primary || tone == BtnTone.danger) ? Theme.btn-ink
+            : (tone == BtnTone.tonal || tone == BtnTone.link) ? Theme.accent
+            : tone == BtnTone.danger-ghost ? (hov ? Theme.danger : Theme.text-secondary)
+            : (hov ? Theme.text-primary : Theme.text-secondary);
+    }
+
+    height: bh;
+    border-radius: br;
+    border-width: framed ? 1px : 0px;
+    border-color: edge(touch.has-hover, touch.pressed);
+    background: fill(touch.has-hover, touch.pressed).with-alpha(surface-alpha);
+    // 单一 duration：Slint 的 animate 不支持按方向给不同时长（见下方说明）
+    animate background, border-color {
+        duration: 120ms;
+        easing: cubic-bezier(0.2, 0, 0, 1);
+    }
+
+    HorizontalLayout {
+        padding-left: bpad;
+        padding-right: bpad;
+        spacing: glyph == "" ? 0px : 7px;
+        if glyph != "" : Icon {
+            glyph: root.glyph;
+            tint: ink(touch.has-hover);
+            size: size == BtnSize.xs ? 13px : 15px;
+        }
+        Text {
+            text: root.text;
+            color: ink(touch.has-hover);
+            font-size: size == BtnSize.xs ? 11.5px : (size == BtnSize.sm ? 12.5px : 13px);
+            font-weight: (tone == BtnTone.primary || tone == BtnTone.danger) ? Theme.fw-strong : 400;
+            horizontal-stretch: 1;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            // 关键：busy 时用 opacity 隐藏而不是 visible:false
+            // visible:false 会让 preferred-width 归零 → 按钮宽度当场塌陷
+            opacity: busy ? 0.0 : 1.0;
+            animate opacity { duration: 90ms; }
+        }
+    }
+
+    // busy：三点脉冲。Timer 推进下标，opacity 动画错峰
+    Timer {
+        interval: 120ms;
+        running: root.busy;
+        repeated: true;
+        triggered =&gt; { root.dot-tick = (root.dot-tick + 1) % 3; }
+    }
+    if busy : Rectangle {
+        x: (parent.width - 26px) / 2;
+        y: (parent.height - 4px) / 2;
+        width: 26px;
+        height: 4px;
+        HorizontalLayout {
+            spacing: 5px;
+            for i in 3 : Rectangle {
+                width: 4px; height: 4px; border-radius: 2px;
+                background: ink(false);
+                opacity: root.dot-tick == i ? 1.0 : 0.32;
+                animate opacity { duration: 120ms; }
+            }
+        }
+    }
+
+    // 焦点环：画在按钮自己身上，外侧 3px（父级不能 clip）
+    if touch.has-focus : Rectangle {
+        x: -3px; y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        border-radius: br + 2px;
+        border-width: 3px;
+        border-color: Theme.accent-solid.with-alpha(0.16);
+    }
+
+    touch := TouchArea {
+        enabled: !disabled &amp;&amp; !busy;
+        mouse-cursor: default;
+        clicked =&gt; { root.clicked(); }
+    }
+}</pre>
+        </div>
+
+        <div class="grid2">
+          <div class="card">
+            <h4>③ 焦点环：必须画在会裁的那一层外面</h4>
+            <p style="font-size:12.5px;margin:0">
+              <code>clip: true</code> 会把子元素的 3px 外环切掉。项目的弹框卡片、命令栏多行输入都带 clip，
+              而输入框的聚焦语言已经踩过这个坑（外层再包一层不裁的）。按钮同款处理：
+              要么给 <code>Button</code> 加一层外壳，要么确保祖先不裁。
+            </p>
+          </div>
+          <div class="card">
+            <h4>④ 一条必须说清的限制</h4>
+            <p style="font-size:12.5px;margin:0">
+              Slint 的 <code>animate</code> 只有<b>一个</b> <code>duration</code>，写不出 CSS 那种
+              「入场 100ms / 离场 140ms / 按下 60ms」。实现统一取 <b>120ms</b>（与项目现有
+              <code>PrimaryButton</code> 一致）。三者的差值都在 20–60ms，肉眼无法分辨；
+              真要分离只能上 <code>Timer</code> 手写补间，不值得。
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══ 07 迁移 ══════════════════════════════════════════════════════ -->
+      <section id="migrate">
+        <div class="sec-head">
+          <span class="sec-no">07</span>
+          <div class="txt">
+            <h2>迁移：改哪几行，动什么，不动什么</h2>
+            <p>按风险从低到高排。前两批是纯替换，不碰业务；第三批涉及布局尺寸，需要过一遍回归测试。</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-h"><h3>第一批 · std 控件（13 处，零风险）</h3><span class="tag ac">建议先做</span></div>
+          <table>
+            <thead><tr><th>位置</th><th>现状</th><th>替换为</th><th>注意</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">app.slint:6218 / 6222</td><td>取消 / 确定（新建分组）</td><td><code>Button md ghost</code> / <code>md primary</code></td><td>clicked 同名</td></tr>
+              <tr><td class="mono">app.slint:6348 / 6352</td><td>取消 / 确定（tab 重命名）</td><td>同上</td><td>确定无 enabled，保持原样</td></tr>
+              <tr><td class="mono">app.slint:6827 / 6831</td><td>取消 / 确定（快捷命令分组）</td><td>同上</td><td>enabled 绑定不变</td></tr>
+              <tr><td class="mono">app.slint:6908 / 6912</td><td>取消 / 确定（SFTP 新建）</td><td>同上</td><td>—</td></tr>
+              <tr><td class="mono">app.slint:7441 / 7445</td><td>取消 / 确定（chmod）</td><td>同上</td><td>—</td></tr>
+              <tr><td class="mono">app.slint:6487</td><td>+ 新建分组</td><td><code>Button sm secondary</code></td><td>它是列表头按钮，别升 primary</td></tr>
+              <tr><td class="mono">app.slint:6458</td><td>添加 / 保存（快捷命令）</td><td><code>Button md primary</code></td><td>enabled 条件保留</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <div class="card-h"><h3>第二批 · 手写按钮收编</h3><span class="tag">纯视觉，尺寸不变</span></div>
+          <table>
+            <thead><tr><th>位置</th><th>现状</th><th>替换为</th><th>尺寸变化</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">confirm_dialog.slint:7</td><td>私有 DangerButton 30/r4</td><td>删组件，<code>Button md danger</code></td><td>30→34</td></tr>
+              <tr><td class="mono">app.slint:5421</td><td>选择保存路径 110×28/r4</td><td><code>Button sm primary</code></td><td>28→28（r4→r7）</td></tr>
+              <tr><td class="mono">app.slint:5437</td><td>打开目录 76×28/r4</td><td><code>Button sm secondary</code></td><td>—</td></tr>
+              <tr><td class="mono">app.slint:5464</td><td>清空 44×20/r4</td><td><code>Button xs link</code></td><td>20→24</td></tr>
+              <tr><td class="mono">app.slint:9360</td><td>随机 64×36/r8</td><td><code>Button sm tonal</code></td><td>36→28</td></tr>
+              <tr><td class="mono">app.slint:9370</td><td>取消 64×36/r8</td><td><code>Button sm ghost</code></td><td>36→28</td></tr>
+              <tr><td class="mono">app.slint:9400</td><td>应用 64×36/r8（动态底）</td><td><code>Button sm primary tint=…</code></td><td>36→28</td></tr>
+              <tr><td class="mono">highlight_dialog.slint:676</td><td>＋ 添加 38/r8</td><td><code>Button wide tonal</code></td><td>38→44</td></tr>
+              <tr><td class="mono">highlight_dialog.slint:921</td><td>完成 30/r7（已用墨字）</td><td><code>Button md primary</code></td><td>30→34</td></tr>
+              <tr><td class="mono">sftp_panel.slint:521</td><td>上传 52×22/r4</td><td><code>Button xs tonal</code></td><td>22→24</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <div class="card-h"><h3>第三批 · 组件层</h3><span class="tag dg">需要回归</span></div>
+          <table>
+            <thead><tr><th>文件</th><th>动作</th><th>回归重点</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">widgets.slint:74</td><td><code>PrimaryButton</code> → 薄壳转发到 <code>Button tone=primary</code>（保留 <code>btn-height</code> / <code>hug-width</code> / <code>surface-alpha</code> 三个参数）</td><td>侧栏半透明、页脚 38px、hug-width 三处</td></tr>
+              <tr><td class="mono">widgets.slint:134</td><td><code>GhostButton</code> → 拆成 <code>tonal</code> / <code>ghost</code> / <code>danger-ghost</code> 三种调用</td><td>「测试连接」升 tonal 后是否抢主按钮视线</td></tr>
+              <tr><td class="mono">widgets.slint:7</td><td><code>IconButton</code> 保留（28/r4），只把圆角跟到 <code>radius-sm→7</code></td><td>工具条布局不要因 1px 变化错位</td></tr>
+              <tr><td class="mono">widgets.slint:49</td><td><code>DialogClose</code> 不动（红悬停是定稿），仅确认与 <code>Button sm icon</code> 的 12px 图标一致</td><td>十余处关闭键</td></tr>
+              <tr><td class="mono">session_dialog.slint:4163</td><td>改用 <code>Button lg</code>，高度 38/9 不变</td><td>页脚三键基线与状态文字</td></tr>
+              <tr><td class="mono">left_sidebar.slint:1332</td><td>＋ 新建会话 → <code>Button wide primary</code>（compact 版用 <code>sm icon</code>）</td><td>侧栏宽度变化时的文字裁切</td></tr>
+            </tbody>
+          </table>
+          <div class="note warn" style="margin-bottom:0">
+            <b>不要动的东西：</b>① 页脚 38px 高度（改了就动布局）；② <code>hug-width</code> 那套按 <code>Text.preferred-width</code> 直算宽度的逻辑（解决过「取消」二字偏心）；
+            ③ <code>DialogClose</code> 的 90ms / 红悬停（10-20 已定稿）；④ 桌面应用用系统箭头，不加 <code>pointer</code>。
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-h"><h3>验证清单</h3><span class="tag">可直接当 PR 描述</span></div>
+          <div class="grid2">
+            <ul class="clean">
+              <li><b>对比度</b>：主按钮墨字 7.87:1、次按钮文字 4.28:1、禁用 2.1:1（允许低于 AA，因为不可用）</li>
+              <li><b>125% 缩放</b>：34px 高 + 1px 边 + 3px 环 = 40 设备像素，落点整数，不糊</li>
+              <li><b>键盘</b>：<code>Tab</code> 顺序 = 视觉顺序，<code>Space</code>/<code>Enter</code> 触发，<code>Esc</code> 取消</li>
+            </ul>
+            <ul class="clean">
+              <li><b>布局</b>：换按钮后页脚总宽不跳（宽度按内容，不写死）</li>
+              <li><b>主题</b>：深色 / 浅色都过一遍；浅色重点看「灰色描边」是否太淡</li>
+              <li><b>测试</b>：现有 <code>tests/group_manager_smoke.rs</code> 的坐标校准会受按钮尺寸影响，需重跑</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+<!--SECTIONS2-->
+
+    </div>
+  </main>
+</div>
+
+<div class="toast" id="toast"><span class="d"></span><span id="toast-t">已触发</span></div>
+
+<script>
+(function () {
+  "use strict";
+  var root = document.documentElement;
+  var $ = function (s) { return document.querySelector(s); };
+  var $$ = function (s) { return Array.prototype.slice.call(document.querySelectorAll(s)); };
+
+  /* ── 1. 五态网格：以 rest 那格为模板克隆出 hover / active / focus / disabled ── */
+  $$(".states[data-states]").forEach(function (box) {
+    var first = box.querySelector(".st");
+    if (!first) return;
+    var slotHTML = first.querySelector(".slot").innerHTML;
+    [["hover", "悬停"], ["active", "按下"], ["focus", "焦点"], ["disabled", "禁用"]]
+      .forEach(function (pair) {
+        var st = document.createElement("div");
+        st.className = "st";
+        st.innerHTML = '<div class="slot">' + slotHTML + '</div><div class="cap"><b>' +
+          pair[0] + "</b> " + pair[1] + "</div>";
+        var b = st.querySelector(".btn");
+        if (!b) return;
+        if (pair[0] === "hover") b.classList.add("f-hover");
+        if (pair[0] === "active") b.classList.add("f-act");
+        if (pair[0] === "focus") b.classList.add("f-focus");
+        if (pair[0] === "disabled") b.classList.add("is-disabled");
+        b.setAttribute("tabindex", "-1");
+        box.appendChild(st);
+      });
+  });
+
+  /* ── 2. toast ── */
+  var toast = $("#toast"), toastT = $("#toast-t"), tid = 0;
+  function say(msg) {
+    toastT.textContent = msg;
+    toast.classList.add("show");
+    clearTimeout(tid);
+    tid = setTimeout(function () { toast.classList.remove("show"); }, 1800);
+  }
+
+  /* ── 3. 顶栏：主题 / 慢放 / 墨字 ── */
+  var themeBtn = $("#t-theme"), themeL = $("#t-theme-l");
+  themeBtn.addEventListener("click", function () {
+    var dark = root.getAttribute("data-theme") === "dark";
+    root.setAttribute("data-theme", dark ? "light" : "dark");
+    themeL.textContent = dark ? "浅色" : "深色";
+    themeBtn.classList.toggle("on", dark);
+    say(dark ? "浅色主题：中性填充改加黑，悬停转沉" : "深色主题：中性填充改加白，悬停提亮");
+  });
+
+  var slowBtn = $("#t-slow");
+  slowBtn.addEventListener("click", function () {
+    var on = document.body.classList.toggle("slow");
+    slowBtn.classList.toggle("on", on);
+    say(on ? "慢放 ×8：悬停 800ms / 按下 480ms / 回弹 1440ms" : "恢复常规速度");
+  });
+
+  var inkBtn = $("#t-ink");
+  inkBtn.addEventListener("click", function () {
+    var white = root.getAttribute("data-ink") === "white";
+    root.setAttribute("data-ink", white ? "ink" : "white");
+    inkBtn.classList.toggle("on", !white);
+    inkBtn.textContent = white ? "主按钮墨字" : "主按钮白字";
+    say(white ? "墨字：7.87:1（推荐，与「完成」键口径一致）" : "白字：2.10:1，仅作对照 —— 这就是现在「创建」的样子");
+  });
+
+  /* ── 4. loading：锁宽 + 最短展示 ── */
+  function runBusy(btn, ms, msg) {
+    if (!btn || btn.classList.contains("loading")) return;
+    btn.style.width = btn.offsetWidth + "px";
+    btn.classList.add("loading");
+    setTimeout(function () {
+      btn.classList.remove("loading");
+      btn.style.width = "";
+      if (msg) say(msg);
+    }, ms);
+  }
+  var loadDemo = $("#load-demo");
+  if (loadDemo) loadDemo.addEventListener("click", function () {
+    runBusy(loadDemo, 1600, "创建完成 · 宽度全程 112px 未变");
+  });
+  var testDemo = $("#test-demo");
+  if (testDemo) testDemo.addEventListener("click", function () {
+    runBusy(testDemo, 1600, "连接成功 · 42ms");
+  });
+
+  /* ── 5. 防重复点击（300ms 节流） ── */
+  var dbl = $("#dbl-demo"), dblCount = $("#dbl-count"), n = 0, lock = 0;
+  if (dbl) dbl.addEventListener("click", function () {
+    var now = Date.now();
+    if (now - lock < 300) { say("300ms 内的第二次点击已丢弃"); return; }
+    lock = now;
+    n += 1;
+    dblCount.textContent = "已触发 " + n + " 次";
+    say("第 " + n + " 次触发（间隔小于 300ms 的不计数）");
+  });
+
+  /* ── 6. 取色器：色票 / 随机 / 应用（动态底色） ── */
+  var applyBtn = $("#apply-btn"), curHex = $("#cur-hex");
+
+  function relLum(hex) {
+    var h = hex.replace("#", "");
+    var rgb = [0, 2, 4].map(function (i) {
+      var c = parseInt(h.substr(i, 2), 16) / 255;
+      return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+  }
+
+  function setAccent(hex) {
+    if (!applyBtn) return;
+    // 与项目 accent-ink-on() 同口径：浅色块配深墨，深色块配白
+    var ink = relLum(hex) > 0.30 ? "#06231F" : "#FFFFFF";
+    ["--b-rest", "--b-hover", "--b-act", "--bd-rest", "--bd-hover", "--bd-act"].forEach(function (p) {
+      applyBtn.style.setProperty(p, hex);
+    });
+    ["--fg", "--fg-hover", "--fg-act"].forEach(function (p) {
+      applyBtn.style.setProperty(p, ink);
+    });
+    applyBtn.style.color = ink;
+    if (curHex) curHex.textContent = hex.toUpperCase();
+  }
+
+  $$(".chip").forEach(function (c) {
+    c.addEventListener("click", function () {
+      $$(".chip").forEach(function (x) { x.classList.remove("sel"); });
+      c.classList.add("sel");
+      var hex = c.getAttribute("data-hex");
+      setAccent(hex);
+      say("应用键底色 = " + hex.toUpperCase() + "（点「应用」才落盘）");
+    });
+  });
+
+  var rnd = $("#rnd-btn");
+  if (rnd) rnd.addEventListener("click", function () {
+    var hex = "#";
+    for (var i = 0; i < 3; i++) {
+      hex += ("0" + Math.floor(Math.random() * 256).toString(16)).slice(-2);
+    }
+    $$(".chip").forEach(function (x) { x.classList.remove("sel"); });
+    setAccent(hex);
+    say("随机到 " + hex.toUpperCase() + " · 悬停叠白 10%，不用 brighter（纯白无法提亮）");
+  });
+
+  if (applyBtn) applyBtn.addEventListener("click", function () {
+    say("已应用 " + (curHex ? curHex.textContent : "") + "（演示）");
+  });
+
+  var chips = $$(".chip");
+  if (chips.length) {
+    chips[0].classList.add("sel");
+    setAccent(chips[0].getAttribute("data-hex"));
+  }
+
+  /* ── 7. 其余按钮：给一句点击反馈 ── */
+  var solo = { "load-demo": 1, "test-demo": 1, "dbl-demo": 1, "rnd-btn": 1, "apply-btn": 1 };
+  $$(".btn").forEach(function (b) {
+    b.addEventListener("click", function () {
+      if (solo[b.id]) return;
+      if (b.classList.contains("is-disabled") || b.classList.contains("f-hover") ||
+          b.classList.contains("f-act") || b.classList.contains("f-focus")) return;
+      var t = (b.textContent || "").replace(/\s+/g, " ").trim();
+      if (t) say("已触发「" + t + "」");
+    });
+  });
+
+  /* ── 8. 导航高亮 ── */
+  var links = $$("#nav a");
+  var sections = $$("section[id]");
+  function syncNav() {
+    var best = null, bestD = 1e9;
+    sections.forEach(function (s) {
+      var d = Math.abs(s.getBoundingClientRect().top - 96);
+      if (d < bestD) { bestD = d; best = s; }
+    });
+    if (!best) return;
+    links.forEach(function (a) {
+      a.classList.toggle("on", a.getAttribute("href") === "#" + best.id);
+    });
+  }
+  window.addEventListener("scroll", syncNav, { passive: true });
+  syncNav();
+})();
+</script>
+</body>
+</html>
