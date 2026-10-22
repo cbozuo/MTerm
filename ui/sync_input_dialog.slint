@@ -102,7 +102,7 @@ component ChannelSegCell inherits Rectangle {
         }
     }
     ta := TouchArea {
-        mouse-cursor: pointer;
+        mouse-cursor: default;
         clicked => { root.picked(slot); }
     }
 }
@@ -140,7 +140,7 @@ component ScopeCell inherits Rectangle {
         }
     }
     ta := TouchArea {
-        mouse-cursor: pointer;
+        mouse-cursor: default;
         clicked => { root.picked(); }
     }
 }
@@ -246,7 +246,7 @@ component SyncRow inherits Rectangle {
         }
     }
     ta := TouchArea {
-        mouse-cursor: pointer;
+        mouse-cursor: default;
         clicked => {
             if (member) { SyncInputState.remove-row(entry.tab-id); }
             else { SyncInputState.add-row(entry.tab-id); }
@@ -518,7 +518,7 @@ export component SyncInputDialog inherits Rectangle {
                             }
                         }
                         add-all-ta := TouchArea {
-                            mouse-cursor: pointer;
+                            mouse-cursor: default;
                             clicked => { SyncInputState.add-all(); }
                         }
                     }
@@ -553,15 +553,20 @@ export component SyncInputDialog inherits Rectangle {
                             }
                         }
                     }
-                    // 空态
+                    // 空态：分两种语义 —— ① 压根没有 SSH 会话；② 有，但都已在当前频道
                     if SyncInputState.left-count == 0 : Text {
                         width: parent.width;
                         y: (parent.height - self.height) / 2;
-                        text: SyncInputState.lang-en
-                            ? "All sessions are already in this channel"
-                            : "所有会话均已加入当前频道";
+                        text: SyncInputState.ssh-total == 0
+                            ? (SyncInputState.lang-en
+                                ? "No SSH session is open\nInput sync only supports SSH sessions"
+                                : "当前没有打开的 SSH 会话\n同步输入只支持 SSH 连接")
+                            : (SyncInputState.lang-en
+                                ? "All sessions are already in this channel"
+                                : "所有会话均已加入当前频道");
                         color: Theme.text-muted; font-size: 11px;
                         horizontal-alignment: center;
+                        wrap: word-wrap;
                     }
                 }
             }
@@ -613,7 +618,7 @@ export component SyncInputDialog inherits Rectangle {
                             }
                         }
                         remove-all-ta := TouchArea {
-                            mouse-cursor: pointer;
+                            mouse-cursor: default;
                             clicked => { SyncInputState.remove-all(); }
                         }
                     }
@@ -652,9 +657,13 @@ export component SyncInputDialog inherits Rectangle {
                     if active-count == 0 : Text {
                         width: parent.width;
                         y: (parent.height - self.height) / 2;
-                        text: SyncInputState.lang-en
-                            ? "No members — add sessions from the left"
-                            : "暂无成员，点击左侧会话加入";
+                        text: SyncInputState.ssh-total == 0
+                            ? (SyncInputState.lang-en
+                                ? "No SSH session to add yet"
+                                : "还没有可加入的 SSH 会话")
+                            : (SyncInputState.lang-en
+                                ? "No members — add sessions from the left"
+                                : "暂无成员，点击左侧会话加入");
                         color: Theme.text-muted; font-size: 11px;
                         horizontal-alignment: center;
                     }
@@ -689,7 +698,7 @@ export component SyncInputDialog inherits Rectangle {
                         horizontal-alignment: center; vertical-alignment: center;
                     }
                     cancel-ta := TouchArea {
-                        mouse-cursor: pointer;
+                        mouse-cursor: default;
                         clicked => { root.request-close(); }
                     }
                 }
@@ -705,7 +714,7 @@ export component SyncInputDialog inherits Rectangle {
                         horizontal-alignment: center; vertical-alignment: center;
                     }
                     apply-ta := TouchArea {
-                        mouse-cursor: pointer;
+                        mouse-cursor: default;
                         clicked => { SyncInputState.apply(); }
                     }
                 }
@@ -849,6 +858,10 @@ export global SyncInputState {
     in-out property <[SyncSessionInfo]> right-rows;
     in-out property <[int]> slot-counts: [0, 0, 0, 0];   // 每频道成员数（Rust 维护）
     in-out property <int> left-count: 0;         // 左栏候选数（Rust 维护）
+    // (#sync-ssh-only 2026-10-22) 作用域内可参与同步的 SSH 会话总数
+    //（= 左栏候选 + 右栏成员）。为 0 时说明「根本没有 SSH 会话」，
+    // 空态文案要和「都加进来了」区分开 —— 旧文案在没开会话时是错的（用户截图）。
+    in-out property <int> ssh-total: 0;
     in-out property <int> win-id: 1;             // 打开弹框的窗口位次（1 起，与标题同源）
     in-out property <int> scope: 0;              // 0=当前窗口 1=全部窗口
     in-out property <bool> lang-en: false;

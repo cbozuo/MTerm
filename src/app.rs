@@ -345,6 +345,7 @@ fn connect_remote_tab(
         channel_color: slint::Color::default(),
         channel_paused: false,
         channel_bar_hidden: false,
+        sync_ok: false,   // 内置远程桌面（RDP/VNC）：整幅画面，没有可同步的输入通道
         host: if session.port > 0 {
             format!("{}:{}", session.host, session.port).into()
         } else {
@@ -3776,6 +3777,7 @@ fn open_window(
                     channel_color: slint::Color::default(),
                     channel_paused: false,
                     channel_bar_hidden: false,
+                    sync_ok: false,   // welcome：没有会话，谈不上同步输入
                     // (#tab-card) welcome tab 无会话信息，卡片只显示名称
                     host: "".into(),
                     user: "".into(),
@@ -4273,10 +4275,21 @@ fn open_window(
     ) {
         let sid = tab_session_id(window, tab_id);
         let letters = ["A", "B", "C", "D"];
-        let slot_idx = store
-            .channel_members()
-            .iter()
-            .position(|members| members.iter().any(|m| m == &sid));
+        // (#sync-ssh-only 2026-10-22) 频道只服务 SSH 会话：非 SSH tab 即使配置里
+        // 残留旧成员关系也不挂字母（否则 tab 上出现一个永远不会生效的频道徽标）。
+        let ssh_only = !sid.is_empty()
+            && store
+                .get(&sid)
+                .map(|s| s.kind == SessionKind::Ssh)
+                .unwrap_or(false);
+        let slot_idx = if ssh_only {
+            store
+                .channel_members()
+                .iter()
+                .position(|members| members.iter().any(|m| m == &sid))
+        } else {
+            None
+        };
         // 频道色从 Theme 的 channel-colors（按主题查表）取该槽。
         let theme = window.global::<crate::ui::Theme<'_>>();
         let (letter, color) = match slot_idx {
@@ -6904,10 +6917,10 @@ fn refresh_session_markers(window: &slint::Weak<AppWindow>) {
     }
 }
 
-/// 分组管理里「未分组」这一行的显示名。
+/// 分组管理里「默认组」这一行的显示名（2026-10-22 由「未分组」改名）。
 /// ConfigStore 里它的存储值是空串；UI 需要一个可显示、可比较的名字，
 /// 也是删除分组时的默认去向。它不是 system，不可改名 / 删除。
-pub(crate) const GM_UNGROUPED: &str = "未分组";
+pub(crate) const GM_UNGROUPED: &str = "默认组";
 
 fn gm_belongs(session: &Session, selected: &str) -> bool {
     if selected == GM_UNGROUPED {
@@ -6928,6 +6941,23 @@ fn gm_picked_ids(window: &AppWindow) -> Vec<String> {
         .filter(|m| m.picked)
         .map(|m| m.id.to_string())
         .collect()
+}
+
+/// 新建分组的默认色（高保真 10-22）：当前主题色板里第一个没被占用的颜色。
+/// 新建行的色点直接显示它，落盘时用的也是同一条规则 —— 建之前就能看到会得到什么色。
+fn next_group_color(store: &ConfigStore, dark: bool) -> String {
+    let pal = crate::theme::palette_or_default(&store.theme(), dark);
+    let used: std::collections::HashSet<String> = store
+        .group_colors()
+        .values()
+        .map(|v| v.to_uppercase())
+        .collect();
+    pal.group24
+        .iter()
+        .map(|v| format!("#{:06X}", v))
+        .find(|h| !used.contains(h))
+        .or_else(|| pal.group24.first().map(|v| format!("#{:06X}", v)))
+        .unwrap_or_else(|| "#1FC8B4".to_string())
 }
 
 /// 分组管理弹框的数据刷新：组清单 + 当前组成员 + 当前组色。
@@ -6951,21 +6981,29 @@ fn refresh_group_manager(
             || s.name.to_lowercase().contains(&query)
             || s.host.to_lowercase().contains(&query)
     };
-    let hit_group = |name: &str, ungrouped: bool| -> bool {
-        if query.is_empty() {
-            return true;
+    // 组名本身命中 = 整组都算命中（与高保真 `matches()` 同口径）：
+    // 搜「生产」时右栏要能看到这个组的全部成员，而不是「组名匹配、列表却空」。
+    let hit_group_name = |name: &str| -> bool {
+        !query.is_empty() && name.to_lowercase().contains(&query)
+    };
+    // (#gm-search-count) 一组内的命中条数。0 命中的组**不隐藏**（高保真 10-22）：
+    // 左栏行数恒定 → 「我的分组」小节的 y 映射不用跟着搜索变，用户也不会
+    // 以为组被删了；只把行压暗 + 计数显示成 命中/总数。
+    let hits_in = |ungrouped: bool, name: &str| -> i32 {
+        let all: Vec<&Session> = sessions
+            .iter()
+            .filter(|s| {
+                if ungrouped {
+                    s.group.is_empty() || is_reserved_session_group(s.group.trim())
+                } else {
+                    s.group == name
+                }
+            })
+            .collect();
+        if query.is_empty() || hit_group_name(name) {
+            return all.len() as i32;
         }
-        if name.to_lowercase().contains(&query) {
-            return true;
-        }
-        sessions.iter().any(|s| {
-            let in_this = if ungrouped {
-                s.group.is_empty() || is_reserved_session_group(s.group.trim())
-            } else {
-                s.group == name
-            };
-            in_this && hit_session(s)
-        })
+        all.iter().filter(|s| hit_session(s)).count() as i32
     };
 
     let count_ungrouped = sessions
@@ -6978,8 +7016,11 @@ fn refresh_group_manager(
     let named = crate::config::named_display_groups(store.groups(), sessions);
 
     let mut rows: Vec<crate::ui::GroupRow> = Vec::with_capacity(named.len() + 1);
-    if hit_group(GM_UNGROUPED, true) {
-        // 「未分组」同样可以设色（高保真 §RULES：set_group_color 只拒绝空名）。
+    // 「默认组」空着就不占一行（用户要求）：它没有成员时唯一作用是「移出分组」的落点，
+    // 而那个落点在批量条/删除条的菜单里仍然提供（见 Slint 侧 has-default-row 分支）。
+    // 例外：一个自定义组都没有时保留它，否则整个左栏会空掉。
+    if count_ungrouped > 0 || named.is_empty() {
+        // 默认组同样可以设色（set_group_color 只拒绝空名）。
         let hex = store
             .group_colors()
             .get(GM_UNGROUPED)
@@ -6990,26 +7031,49 @@ fn refresh_group_manager(
             color: parse_hex_color(&hex).unwrap_or_default(),
             color_hex: hex.as_str().into(),
             count: count_ungrouped,
+            hit: if query.is_empty() { count_ungrouped } else { hits_in(true, GM_UNGROUPED) },
             reserved: true,
         });
     }
     for name in &named {
-        if !hit_group(name, false) {
-            continue;
-        }
         let hex = store.group_colors().get(name).cloned().unwrap_or_default();
+        let count = sessions.iter().filter(|s| &s.group == name).count() as i32;
         rows.push(crate::ui::GroupRow {
             name: name.as_str().into(),
             color: parse_hex_color(&hex).unwrap_or_default(),
             color_hex: hex.as_str().into(),
-            count: sessions.iter().filter(|s| &s.group == name).count() as i32,
+            count,
+            hit: if query.is_empty() { count } else { hits_in(false, name) },
             reserved: false,
         });
     }
 
+    // 选中的是「默认组」而它刚被隐藏（最后一条成员被搬走）：选中位置必须跟着落到
+    // 第一个存在的组，否则右栏会指向左栏里根本不存在的组。
+    if !rows.iter().any(|r| r.name == selected.as_str()) {
+        if let Some(first) = rows.first() {
+            window.set_gm_selected(first.name.clone());
+        }
+    }
+    let selected = window.get_gm_selected().to_string();
+
+    // 搜索空态的两种语义（高保真 10-22）：
+    //  ① 全局 0 命中 → 「所有分组里都没有匹配」；
+    //  ② 本组 0 命中但别处有 → 「本组没有匹配 · 其他分组还有 N 个」+ 跳过去。
+    let search_hits: i32 = rows.iter().map(|r| r.hit).sum();
+    let search_jump = rows
+        .iter()
+        .find(|r| r.name != selected.as_str() && r.hit > 0)
+        .map(|r| r.name.to_string())
+        .unwrap_or_default();
+
+    // 组名命中时整组保留（见 hit_group_name），否则只留命中行。
+    let keep_member = |s: &Session| -> bool {
+        query.is_empty() || hit_group_name(&selected) || hit_session(s)
+    };
     let members: Vec<crate::ui::GmMember> = sessions
         .iter()
-        .filter(|s| gm_belongs(s, &selected) && hit_session(s))
+        .filter(|s| gm_belongs(s, &selected) && keep_member(s))
         .map(|s| crate::ui::GmMember {
             id: s.id.as_str().into(),
             name: s.name.as_str().into(),
@@ -7039,6 +7103,11 @@ fn refresh_group_manager(
     window.set_gm_picked(picked.len() as i32);
     window.set_gm_custom_count(named.len() as i32);
     window.set_gm_session_count(sessions.len() as i32);
+    window.set_gm_search_hits(search_hits);
+    window.set_gm_search_jump(search_jump.as_str().into());
+    window.set_gm_next_color(
+        parse_hex_color(&next_group_color(store, window.get_dark_mode())).unwrap_or_default(),
+    );
     window.set_gm_cur_reserved(selected == GM_UNGROUPED || is_reserved_session_group(selected.trim()));
     window.set_gm_cur_index(cur_index);
     window.set_gm_cur_color_hex(cur_hex.as_str().into());
@@ -8326,20 +8395,29 @@ fn wire_session_callbacks(
             let weak = weak.clone();
             let store = store.clone();
             let picked = picked.clone();
-            move |_q: SharedString| {
+            move |q: SharedString| {
                 if let Some(w) = weak.upgrade() {
                     // 搜索会改变可见行，勾选集合必须一起清掉 —— 否则「已选 3 项」
                     // 里有看不见的行，批量操作会漏搬。
                     picked.borrow_mut().clear();
                     let st = store.borrow();
                     refresh_group_manager(&w, &st, &picked.borrow());
-                    // 搜索把当前组过滤掉时，切到第一个可见组（高保真 §搜索：
-                    // 命中即只剩这些组，右栏要能直接看到命中项）。
+                    // 搜索把当前组过滤干净时，切到第一个还有命中的组（高保真 §搜索：
+                    // 「当前组 0 命中而别处有时自动跳过去」）。组行本身不再隐藏，
+                    // 所以判据是 hit 而不是「还在不在清单里」。
+                    // ⚠️ 清空搜索时不要跳：空组本来就是合法的停留点。
+                    if q.trim().is_empty() {
+                        return;
+                    }
                     let groups = w.get_gm_groups();
                     let cur = w.get_gm_selected().to_string();
-                    let visible = groups.iter().any(|g| g.name == cur.as_str());
-                    if !visible && groups.row_count() > 0 {
-                        if let Some(first) = groups.row_data(0) {
+                    let cur_hit = groups
+                        .iter()
+                        .find(|g| g.name == cur.as_str())
+                        .map(|g| g.hit)
+                        .unwrap_or(0);
+                    if cur_hit == 0 {
+                        if let Some(first) = groups.iter().find(|g| g.hit > 0) {
                             w.set_gm_selected(first.name.clone());
                             picked.borrow_mut().clear();
                             refresh_group_manager(&w, &st, &picked.borrow());
@@ -8433,7 +8511,7 @@ fn wire_session_callbacks(
             let sessions_model = sessions_model.clone();
             let registry = registry.clone();
             let picked = picked.clone();
-            move |name: SharedString| -> SharedString {
+            move |name: SharedString, hex: SharedString| -> SharedString {
                 let n = name.trim().to_string();
                 if n.is_empty() {
                     return "名称不能为空".into();
@@ -8441,12 +8519,22 @@ fn wire_session_callbacks(
                 if is_reserved_session_group(&n) || n == GM_UNGROUPED {
                     return "该名称为系统保留，不能使用".into();
                 }
+                // 新建行的色点可以先挑色（高保真 10-22 §新建行）；没挑就自动
+                // 取当前主题色板里第一个没被占用的颜色 —— 连续新建不会撞色。
+                let color = if !hex.trim().is_empty() {
+                    hex.trim().to_string()
+                } else {
+                    let st = store.borrow();
+                    let dark = weak.upgrade().map(|w| w.get_dark_mode()).unwrap_or(true);
+                    next_group_color(&st, dark)
+                };
                 {
                     let mut st = store.borrow_mut();
                     if st.session_group_exists(&n) {
                         return "已存在同名分组（不区分大小写）".into();
                     }
                     st.add_group(n.clone());
+                    st.set_group_color(&n, &color);
                     if let Err(err) = st.save() {
                         tracing::warn!("failed to save config: {err:#}");
                     }
@@ -8711,6 +8799,67 @@ fn wire_session_callbacks(
                     let mut st = store.borrow_mut();
                     // 整块一次插入：逐条 move 会让块内顺序随手势路径变化。
                     st.move_sessions_relative(&ids, before.as_str(), after);
+                    if let Err(err) = st.save() {
+                        tracing::warn!("failed to save config: {err:#}");
+                    }
+                }
+                sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
+                registry.broadcast_config_changed();
+                if let Some(w) = weak.upgrade() {
+                    refresh_group_manager(&w, &store.borrow(), &picked.borrow());
+                }
+            }
+        });
+
+        // (#gm-step-block) 行尾 ↑↓ 点到「已勾选的一条、且勾了多条」= 整块移动一格。
+        // 落点必须按**组内真实顺序**算：Slint 侧只看得见过滤后的行，
+        // 而且不能用 for 循环（Slint 函数里局部变量不可二次赋值、没有 break）。
+        window.on_gm_step_members({
+            let weak = weak.clone();
+            let store = store.clone();
+            let sessions_model = sessions_model.clone();
+            let registry = registry.clone();
+            let picked = picked.clone();
+            move |dir: i32| {
+                let Some(w) = weak.upgrade() else { return };
+                let ids = gm_picked_ids(&w);
+                if ids.is_empty() || dir == 0 {
+                    return;
+                }
+                let group = w.get_gm_selected().to_string();
+                // 组内顺序（全局顺序里属于这个组的那些，保持原序）
+                let order: Vec<String> = store
+                    .borrow()
+                    .sessions()
+                    .iter()
+                    .filter(|s| gm_belongs(s, &group))
+                    .map(|s| s.id.clone())
+                    .collect();
+                let picked_set: std::collections::HashSet<&str> =
+                    ids.iter().map(|s| s.as_str()).collect();
+                let first = order.iter().position(|id| picked_set.contains(id.as_str()));
+                let last = order.iter().rposition(|id| picked_set.contains(id.as_str()));
+                let (Some(first), Some(last)) = (first, last) else {
+                    return;
+                };
+                // 往上：块首之前最近的一条未选中项；往下：块尾之后最近的一条
+                let target: Option<(String, bool)> = if dir < 0 {
+                    order[..first]
+                        .iter()
+                        .rposition(|id| !picked_set.contains(id.as_str()))
+                        .map(|k| (order[k].clone(), false))
+                } else {
+                    order[last + 1..]
+                        .iter()
+                        .position(|id| !picked_set.contains(id.as_str()))
+                        .map(|k| (order[last + 1 + k].clone(), true))
+                };
+                let Some((before, after)) = target else {
+                    return;
+                };
+                {
+                    let mut st = store.borrow_mut();
+                    st.move_sessions_relative(&ids, &before, after);
                     if let Err(err) = st.save() {
                         tracing::warn!("failed to save config: {err:#}");
                     }
@@ -9523,6 +9672,8 @@ fn wire_session_callbacks(
                     channel_color: slint::Color::default(),
                     channel_paused: false,
                     channel_bar_hidden: false,
+                    // (#sync-ssh-only 2026-10-22) 同步输入只支持 SSH
+                    sync_ok: session.kind == SessionKind::Ssh,
                     host: tab_host.into(),
                     user: session.user.clone().into(),
                     auth: session.auth.as_str().into(),
@@ -10880,6 +11031,18 @@ fn wire_key_input(
                             // ④ 目标暂停 → 它既不收（投递跳过）；它的发送由它
                             // 自己的 send_key 路径判暂停拦下。离线 → 跳过但保留。
                             if store.borrow().channel_is_paused(member) {
+                                continue;
+                            }
+                            // (#sync-ssh-only 2026-10-22) 同步输入只支持 SSH：
+                            // RDP/VNC 是整幅画面、SFTP 是本机面板、本机 shell 没有
+                            // 远端通道 —— 往它们身上 send_raw 只会静默丢字节。
+                            // 配置里残留的非 SSH 成员在这里被兜住。
+                            let ssh_member = store
+                                .borrow()
+                                .get(member)
+                                .map(|s| s.kind == SessionKind::Ssh)
+                                .unwrap_or(false);
+                            if !ssh_member {
                                 continue;
                             }
                             // ⚠️ 成员的 tab 与 SSH 句柄可能属于**任意窗口**（每

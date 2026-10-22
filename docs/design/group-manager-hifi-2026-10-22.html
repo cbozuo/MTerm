@@ -1,0 +1,1841 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MTerm 分组管理 · 交互重设计（高保真 2026-10-22）</title>
+<style>
+:root{
+  /* 产品实机色（2026-10-22 从 965×683 @125% 截图取样，除以 1.25 得逻辑尺寸） */
+  --pop:#181a1d; --bg:#16161a; --bg2:#141418; --bg3:#1e2126;
+  --line:#2a2d33; --line2:#34373e; --line-soft:rgba(255,255,255,.055);
+  --fg:#e6e7ea; --fg2:#a0a1a6; --fg3:#6f7176; --fg4:#55575c;
+  --ac:#1fc8b4; --ac-ink:#06201d;
+  --ac-t:rgba(31,200,180,.10); --ac-t2:rgba(31,200,180,.18); --ac-line:rgba(31,200,180,.42);
+  /* = Theme.accent-soft（暗色 dark ? 0.16 : 0.12）—— 计数胶囊与「新建会话」左上角
+     那个 28×28 图标块共用同一个底，换主题 accent 时会一起走。 */
+  --ac-soft:rgba(31,200,180,.16);
+  --dg:#f85149; --dg-t:rgba(248,81,73,.10); --dg-line:rgba(248,81,73,.34);
+  --violet:#8b5cf6;
+  --mono:"JetBrains Mono","Cascadia Code",Consolas,"Sarasa Mono SC",monospace;
+  --sans:"Inter","Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  --r-lg:12px; --r-md:8px; --r-sm:6px; --r-xs:4px;
+}
+*{box-sizing:border-box}
+/* 自绘图标按钮统一清掉 UA 默认 padding —— <button> 自带 padding:1px 6px，
+   16×16 的方块里这 12px 会把 9px 图标挤得不在中心。 */
+button{padding:0;font:inherit;color:inherit}
+body{margin:0;background:#0b0c0e;color:var(--fg);font-family:var(--sans);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1120px;margin:0 auto;padding:0 32px 110px}
+code{font-family:var(--mono);font-size:11.5px;background:#1b1d22;padding:1.5px 5px;border-radius:4px;color:#c3ccdb;border:1px solid rgba(255,255,255,.05)}
+b{font-weight:600}
+
+/* ── 页头 ── */
+header{position:sticky;top:0;z-index:80;background:rgba(11,12,14,.86);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
+.hd{max-width:1120px;margin:0 auto;padding:13px 32px;display:flex;align-items:center;gap:18px}
+.hd h1{font-size:14.5px;margin:0;font-weight:650;letter-spacing:.2px}
+.hd .tag{font:600 9.5px/1 var(--mono);color:var(--ac-ink);background:var(--ac);padding:4px 7px;border-radius:4px;letter-spacing:.4px}
+.hd .date{font:500 11px/1 var(--mono);color:var(--fg4)}
+nav{margin-left:auto;display:flex;gap:2px}
+nav a{color:var(--fg2);text-decoration:none;font-size:12.5px;padding:6px 10px;border-radius:6px;transition:.15s}
+nav a:hover{background:#1b1d22;color:var(--fg)}
+
+/* ── hero ── */
+.hero{padding:52px 0 0}
+.hero .kicker{font:600 10.5px/1 var(--mono);color:var(--ac);letter-spacing:1.4px;text-transform:uppercase;margin-bottom:14px}
+.hero h2{font-size:32px;margin:0 0 14px;letter-spacing:-.7px;line-height:1.26;font-weight:680}
+.hero .lead{font-size:14px;line-height:1.95;color:var(--fg2);max-width:84ch;margin:0 0 26px}
+.hero .lead b{color:var(--fg)}
+.claims{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:0 0 10px}
+.claim{background:linear-gradient(180deg,rgba(31,200,180,.055),rgba(31,200,180,.012));border:1px solid rgba(31,200,180,.20);border-radius:11px;padding:13px 15px}
+.claim em{font:700 9.5px/1 var(--mono);color:var(--ac);font-style:normal;background:rgba(31,200,180,.14);padding:3px 5px;border-radius:4px;letter-spacing:.5px}
+.claim b{display:block;font-size:13px;margin:9px 0 4px}
+.claim span{font-size:11.5px;color:var(--fg2);line-height:1.75;display:block}
+
+h3.sec{font-size:12px;color:var(--fg3);letter-spacing:1.5px;text-transform:uppercase;font-weight:650;margin:56px 0 12px;display:flex;align-items:center;gap:10px}
+h3.sec::after{content:"";flex:1;height:1px;background:var(--line)}
+h2.big{font-size:22px;margin:0 0 8px;font-weight:660;letter-spacing:-.3px}
+p.sub{color:var(--fg2);font-size:13px;line-height:1.9;margin:0 0 20px;max-width:92ch}
+
+/* ── 舞台 ── */
+.stage{position:relative;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:radial-gradient(900px 420px at 30% -10%,#181d24 0%,#0e1013 60%,#0a0b0d 100%);padding:38px 0 30px;display:flex;flex-direction:column;align-items:center;gap:0}
+.stage-cap{position:absolute;top:10px;left:14px;font:600 9.5px/1 var(--mono);color:var(--fg4);letter-spacing:1px}
+.hint{display:flex;justify-content:center;gap:18px;flex-wrap:wrap;color:var(--fg3);font-size:11.5px;margin:14px 0 0}
+.hint b{color:var(--fg2);font-weight:600}
+
+/* ══════════ 弹框本体（逻辑像素 1:1，无缩放） ══════════ */
+.gm{
+  position:relative;width:760px;height:560px;display:flex;flex-direction:column;
+  background:var(--pop);border:1px solid #34373e;border-radius:var(--r-lg);
+  overflow:hidden;box-shadow:0 24px 64px -12px rgba(0,0,0,.72);
+  font-size:13px;color:var(--fg);
+}
+/* 头部（52px 单行）：标题 + 计数胶囊同排；搜索框吃掉中间余量。
+   框内不放 Ctrl F 之类的按键提示（收进底部 ? 气泡）——提示键会挤掉输入区和清除键的位置。 */
+.gm-head{flex:0 0 auto;height:52px;padding:0 12px 0 16px;display:flex;align-items:center;gap:16px;border-bottom:1px solid var(--line-soft)}
+.gm-head .ttl{flex:0 0 auto;display:flex;align-items:baseline;gap:9px;min-width:0}
+.gm-head h4{margin:0;font-size:14px;font-weight:650;letter-spacing:.1px;line-height:1.2;white-space:nowrap}
+/* 计数胶囊：跟「新建会话」左上角图标块同一套（accent-soft 底 + accent 前景 + 8px 圆角），
+   不再是写死的灰底灰字 —— 换主题 accent 时它会跟着变。 */
+.gm-head .cnt{font:500 10.5px/1 var(--mono);color:var(--ac);background:var(--ac-soft);border-radius:8px;padding:5px 8px;white-space:nowrap}
+.gm-head .tools{margin-left:auto;display:flex;align-items:center;gap:10px;flex:1;justify-content:flex-end;min-width:0}
+.search{position:relative;display:flex;align-items:center;gap:7px;height:28px;padding:0 26px 0 9px;
+  background:#131417;border:1px solid var(--line);border-radius:var(--r-md);
+  flex:1 1 180px;max-width:280px;min-width:148px;transition:.15s;cursor:text}
+.search:focus-within{border-color:var(--ac-line);box-shadow:0 0 0 3px rgba(31,200,180,.10)}
+.search > svg{flex:0 0 auto;opacity:.5}
+.search input{flex:1;min-width:0;background:none;border:0;outline:0;color:var(--fg);font-family:inherit;font-size:12px}
+.search input::placeholder{color:var(--fg4)}
+.iBtn{width:28px;height:28px;display:grid;place-items:center;background:none;border:0;border-radius:6px;color:var(--fg3);cursor:pointer;transition:.13s;flex:0 0 auto}
+.iBtn:hover{background:#24272d;color:var(--fg)}
+.iBtn svg{display:block}
+/* 危险区与常用区分开一条 1px 线：删除是唯一不可逆动作，别和「全选」贴在一起 */
+.act-sep{width:1px;height:16px;background:var(--line);margin:0 2px;flex:0 0 auto}
+.iBtn.danger:hover{background:rgba(248,81,73,.14);color:#ff8b84}
+/* 弹框关闭键 = DialogClose 同款（ui/widgets.slint #dialog-close-unify 2026-10-20，
+   以「新建会话」弹框为参照定稿）：常态透明底 + text-muted 灰 ×；
+   悬停 = 语义红 Theme.close-btn-hot(#e81123) + 纯白 ×，90ms 过渡。
+   别用上面 .iBtn 的通用灰底 hover —— 那正是当初被点名的"漂移版"。 */
+.iBtn.close{transition:background .09s,color .09s}
+.iBtn.close:hover{background:#e81123;color:#fff}
+
+/* 主体 */
+.gm-body{flex:1;display:flex;min-height:0;--left-w:320px}
+.gm-left{flex:0 0 var(--left-w);min-width:0;display:flex;flex-direction:column;padding:8px 8px 10px}
+/* 两栏之间 5px 命中区、1px 静默线（hover/拖动转 accent）。
+   与主界面侧栏边界同语言：命中区居中压在线上，不是额外占一条缝。 */
+.splitter{flex:0 0 5px;margin:0 -3px 0 -2px;position:relative;z-index:5;cursor:col-resize}
+.splitter::after{content:"";position:absolute;left:2px;top:0;bottom:0;width:1px;background:var(--line);transition:background .12s,width .12s}
+.splitter:hover::after,.splitter.on::after{background:var(--ac);width:2px;left:1.5px}
+.gm-right{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}
+
+/* 左栏：组列表 */
+/* 左右各留 3px：聚焦光环是 box-shadow 外扩 3px，而 .g-list 必须 overflow-x:hidden，
+   贴边时光环会被裁掉半圈（用户截图「聚焦样式不完整」）。 */
+.g-list{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;position:relative;padding:3px}
+.g-list::-webkit-scrollbar{width:8px}
+.g-list::-webkit-scrollbar-thumb{background:#2c2f36;border-radius:4px;border:2px solid var(--pop)}
+/* 小节标题：原来是 10.5px + letter-spacing .5px + fg3 —— 中文加字距会显松散，
+   而且比下面的组名（12.5px）小一级、比右侧 accent 徽标暗很多，一暗一亮看着割裂。
+   现在改为 11.5px、去掉字距、颜色提到 fg2：层级靠"更小更重"而不是"压暗"。 */
+.g-cap{height:28px;display:flex;align-items:center;gap:7px;padding:0 8px;margin-top:8px;
+  color:var(--fg2);font-size:11.5px;font-weight:600;letter-spacing:0}
+/* 计数徽标（含左栏「我的分组 N」）统一：accent-soft 底 + accent 字 + 8px 圆角，
+   与「新建会话」左上角图标块、两处头部胶囊同语言。 */
+.g-cap .n{font:600 10px/1 var(--mono);color:var(--ac);background:var(--ac-soft);border-radius:8px;padding:3px 6px}
+.g-row{position:relative;display:flex;align-items:center;gap:8px;height:36px;padding:0 6px 0 8px;border-radius:var(--r-md);cursor:default;transition:background .12s;user-select:none}
+.g-row:hover{background:rgba(255,255,255,.042)}
+.g-row.on{background:var(--ac-t)}
+.g-row.on::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:2px;border-radius:2px;background:var(--ac)}
+.g-row.drop{background:var(--ac-t2);box-shadow:inset 0 0 0 1px var(--ac-line)}
+.g-dot{flex:0 0 auto;width:9px;height:9px;border-radius:50%;background:var(--c,#8b5cf6);box-shadow:0 0 0 3px color-mix(in srgb,var(--c,#8b5cf6) 18%,transparent);cursor:pointer;transition:transform .12s}
+.g-dot:hover{transform:scale(1.22)}
+.g-dot.hollow{background:transparent;box-shadow:inset 0 0 0 1.5px var(--fg3)}
+.g-main{flex:1;min-width:0;display:flex;align-items:center}
+.g-nm{font-size:12.5px;line-height:1.4;color:var(--fg2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 左栏行内改名：24px 高塞进 36px 行，上下各留 6px —— 正好容下 3px 聚焦光环不压到相邻行 */
+.g-row-edit{flex:1;min-width:0;height:24px;background:#131417;border:1px solid var(--ac-line);border-radius:5px;padding:0 7px;color:var(--fg);font-family:inherit;font-size:12.5px;outline:0;box-shadow:0 0 0 3px rgba(31,200,180,.10)}
+.g-row-edit.err{border-color:var(--dg-line);box-shadow:0 0 0 3px rgba(248,81,73,.10)}
+.g-row.on .g-nm,.g-row:hover .g-nm{color:var(--fg)}
+.g-cnt{flex:0 0 auto;font:600 10.5px/1 var(--mono);color:var(--fg3);padding:0 2px;margin-left:4px}
+/* 新建分组：重名时整行转红 + 下方出文案（与 rErr 同一套语义） */
+.g-new-edit.err{border-color:var(--dg-line);box-shadow:0 0 0 3px rgba(248,81,73,.10)}
+.g-new-err{display:none;margin:4px 2px 0;font-size:10.5px;line-height:1.5;color:var(--dg)}
+
+/* 行内上移/下移：**常占位、悬停才显形**（opacity 而非 display/none），
+   否则鼠标划过时行内元素会左右跳一格。命中区 16×16，箭头 9px。 */
+.mv{flex:0 0 auto;display:flex;gap:1px;opacity:0;pointer-events:none;transition:opacity .12s}
+.g-row:hover .mv,.m-row:hover .mv{opacity:1;pointer-events:auto}
+.mv button{width:16px;height:16px;display:grid;place-items:center;background:none;border:0;border-radius:4px;
+  color:var(--fg3);cursor:pointer;transition:background .1s,color .1s}
+.mv button:hover{background:#2b2f36;color:var(--fg)}
+.mv button:disabled{opacity:.3;cursor:default;background:none;color:var(--fg3)}
+.g-row.on .g-cnt{color:var(--ac)}
+.g-new{flex:0 0 auto;height:32px;margin-top:6px;display:flex;align-items:center;justify-content:center;gap:6px;background:none;border:1px dashed #3a3e46;border-radius:var(--r-md);color:var(--fg3);font-family:inherit;font-size:12px;cursor:pointer;transition:.14s}
+.g-new:hover{border-color:var(--ac-line);color:var(--ac);background:var(--ac-t)}
+/* 输入框清除键（搜索框 / 新建分组框共用）—— 页签关闭键同款：
+   20×20 命中区 + 内层 14px 圆；常态只有次级色 ×，悬停才出 accent 实心圆并转镂空。
+   显隐由外层容器的 .has-clear 控制（有内容才出）。 */
+.mini-clear{position:absolute;right:3px;top:50%;transform:translateY(-50%);
+  width:20px;height:20px;display:grid;place-items:center;background:none;border:0;
+  cursor:pointer;opacity:0;pointer-events:none;transition:opacity .12s}
+.has-clear .mini-clear{opacity:1;pointer-events:auto}
+.mini-clear .disc{width:14px;height:14px;border-radius:50%;display:grid;place-items:center;
+  background:transparent;transition:background .1s}
+.mini-clear:hover .disc{background:var(--ac)}
+.mini-clear svg{display:block;color:var(--fg2);transition:color .1s}
+.mini-clear:hover svg{color:#131417}
+
+.g-new-edit{position:relative;height:28px;margin-top:6px;display:flex;align-items:center;gap:7px;padding:0 26px 0 9px;background:#131417;border:1px solid var(--ac-line);border-radius:var(--r-md);box-shadow:0 0 0 3px rgba(31,200,180,.10)}
+.g-new-edit input{flex:1;min-width:0;background:none;border:0;outline:0;color:var(--fg);font-family:inherit;font-size:12.5px}
+.g-new-edit input::placeholder{color:var(--fg4)}
+/* 组排序：拖组行时在组之间画插入线（默认组固定第一位，不接收落点） */
+.g-row.gdragging{opacity:.4}
+.g-drop-line{position:absolute;left:11px;right:11px;height:2px;border-radius:2px;background:var(--ac);z-index:4;pointer-events:none;box-shadow:0 0 0 3px rgba(31,200,180,.16)}
+.g-drop-line::before{content:"";position:absolute;left:-4px;top:-2px;width:6px;height:6px;border-radius:50%;background:var(--ac)}
+
+/* 右栏：组头 */
+.r-head{flex:0 0 auto;height:52px;padding:0 14px 0 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line-soft);position:relative}
+.r-head .dot{width:12px;height:12px;border-radius:50%;background:var(--c,#8b5cf6);box-shadow:0 0 0 4px color-mix(in srgb,var(--c,#8b5cf6) 16%,transparent);cursor:pointer;flex:0 0 auto;transition:transform .12s}
+.r-head .dot:hover{transform:scale(1.18)}
+.r-head .dot.free{background:transparent;box-shadow:inset 0 0 0 2px var(--fg3)}
+.r-name{font-size:15px;font-weight:600;letter-spacing:.1px;padding:3px 5px;margin-left:-5px;border-radius:5px;cursor:text;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.r-name:hover{background:rgba(255,255,255,.06)}
+.r-name .pen{opacity:0;margin-left:6px;color:var(--fg4);font-size:11px}
+.r-name:hover .pen{opacity:1}
+/* 左栏默认 320、右栏约 435：编辑态若给输入框固定 180px，仍会把「全选」挤到换行。
+   输入框改成可伸缩（80–180），右侧动作组不参与压缩。 */
+.r-edit{font-size:14.5px;font-weight:600;background:#131417;border:1px solid var(--ac-line);border-radius:5px;padding:2px 6px;color:var(--fg);outline:0;font-family:inherit;flex:1 1 120px;min-width:80px;max-width:180px;box-shadow:0 0 0 3px rgba(31,200,180,.10)}
+.r-edit.err{border-color:var(--dg-line);box-shadow:0 0 0 3px rgba(248,81,73,.10)}
+.r-err{position:absolute;top:46px;left:52px;font-size:10.5px;color:var(--dg)}
+.r-cnt{flex:0 0 auto;font:500 11px/1 var(--mono);color:var(--ac);background:var(--ac-soft);border-radius:8px;padding:5px 8px;white-space:nowrap}
+.r-acts{margin-left:auto;display:flex;align-items:center;gap:4px;flex:0 0 auto}
+.tBtn{height:26px;padding:0 9px;background:none;border:0;border-radius:6px;color:var(--fg2);font-family:inherit;font-size:11.5px;cursor:pointer;transition:.12s;display:flex;align-items:center;gap:5px;white-space:nowrap}
+.tBtn:hover{background:#24272d;color:var(--fg)}
+.tBtn.on{color:var(--ac)}
+
+/* 右栏：删除条 */
+.r-del{flex:0 0 auto;height:52px;padding:0 12px 0 16px;display:flex;align-items:center;gap:10px;background:var(--dg-t);border-bottom:1px solid var(--dg-line)}
+.r-del .warn{color:var(--dg);font-size:14px;line-height:1;flex:0 0 auto}
+.r-del .txt{flex:0 1 auto;min-width:0;font-size:12px;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.r-del .txt i{font-style:normal;color:var(--fg2)}
+.r-del select{flex:0 0 auto;height:26px;background:#1c1f24;border:1px solid var(--line2);border-radius:6px;color:var(--fg);font-family:inherit;font-size:11.5px;padding:0 4px;outline:0;max-width:110px}
+.r-del .sp{flex:1;min-width:4px}
+.btn-sm{flex:0 0 auto;height:26px;padding:0 10px;border-radius:6px;border:1px solid var(--line2);background:#1c1f24;color:var(--fg2);font-family:inherit;font-size:11.5px;cursor:pointer;transition:.12s;white-space:nowrap}
+/* 删除条里的两个按钮统一最小宽度：中文两字在 11.5px 下只有 23px，
+   不加下限会被 flex 挤成贴边的窄块（2026-10-22 截图复核发现）。 */
+.r-del .btn-sm{min-width:54px;padding:0 12px;text-align:center}
+.btn-sm:hover{background:#282c33;color:var(--fg)}
+.btn-sm.danger{background:rgba(248,81,73,.14);border-color:var(--dg-line);color:#ff8b84}
+.btn-sm.danger:hover{background:rgba(248,81,73,.22)}
+
+/* 右栏：会话列表 */
+.m-list{flex:1;min-height:0;overflow-y:auto;padding:6px 0 8px;position:relative}
+.m-list::-webkit-scrollbar{width:8px}
+.m-list::-webkit-scrollbar-thumb{background:#2c2f36;border-radius:4px;border:2px solid var(--pop)}
+/* 会话行（单行）：名称 + user@host 并排。名称可缩，地址优先保完整。 */
+.m-row{position:relative;display:flex;align-items:center;gap:10px;height:36px;padding:0 12px 0 16px;cursor:default;transition:background .1s;user-select:none}
+.m-row:hover{background:rgba(255,255,255,.038)}
+.m-row.picked{background:var(--ac-t)}
+/* 整行可点 → 悬停时复选框也一起提亮，别让人以为只有那个小方块能点 */
+.m-row:hover .m-ck{border-color:#565b66}
+.m-row.picked .m-ck{border-color:var(--ac)}
+.m-ck{flex:0 0 auto;width:15px;height:15px;appearance:none;background:#15171b;border:1.5px solid #3d414a;border-radius:4px;cursor:pointer;position:relative;transition:.12s;margin:0}
+.m-ck:hover{border-color:#565b66}
+.m-ck:checked{background:var(--ac);border-color:var(--ac)}
+.m-ck:checked::after{content:"";position:absolute;left:4px;top:1px;width:4px;height:8px;border:solid var(--ac-ink);border-width:0 2px 2px 0;transform:rotate(42deg)}
+.m-ico{flex:0 0 auto;width:17px;height:17px;color:var(--fg3);display:grid;place-items:center}
+.m-main{flex:1;min-width:0;display:flex;align-items:baseline;gap:8px}
+.m-nm{flex:1 1 auto;min-width:40px;font-size:12.5px;line-height:1.4;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-ad{flex:0 0 auto;max-width:58%;font:400 10.5px/1.4 var(--mono);color:var(--fg3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-tag{flex:0 0 auto;display:none;align-items:center;gap:5px;font:500 10px/1 var(--mono);color:var(--fg3);background:#22252b;border-radius:20px;padding:3px 7px 3px 5px}
+/* 成员悬浮卡：与实机 group_manager.slint 同口径 ——
+   底色取 Theme.popup-bg-elevated（暗色 mterm-dark 的 elev 槽 = #1E2024，不是随手调的灰）、
+   9px 圆角、subtle 边、**无投影**（10-17「弹窗投影全删」仍生效）/ 键值单行连排 / 主文本色。
+   位置：贴鼠标右下角并跟随；位移走 translate3d（left/top 每帧触发布局，跟手时会有拖影）。 */
+.m-tip{position:absolute;left:0;top:0;z-index:45;display:none;will-change:transform;
+  background:#1E2024;border:1px solid #3a3f47;border-radius:9px;padding:9px 12px;
+  pointer-events:none;max-width:340px;
+  /* 底色与列表底只差 6 个色阶，靠投影分开会违反「弹窗投影全删」；
+     用 1px 深色描边（不是投影）在卡片和内容之间挤出一道缝，浮起感就够。 */
+  box-shadow:0 0 0 1px rgba(0,0,0,.55)}
+.m-tip.on{display:block}
+/* 行规格对齐 tab 悬停卡：fs-xs(11px)、行距紧凑、键名与值同为主文本色（不再用次级色） */
+.m-tip .r{font-size:11px;line-height:18px;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-tag i{width:6px;height:6px;border-radius:50%;background:var(--c);display:block}
+.m-row.dragging{opacity:.35}
+/* 组内排序插入线：2px accent，压在行间，不占布局高度 */
+.drop-line{position:absolute;left:16px;right:12px;height:2px;border-radius:2px;background:var(--ac);z-index:4;pointer-events:none;box-shadow:0 0 0 3px rgba(31,200,180,.16)}
+.drop-line::before{content:"";position:absolute;left:-4px;top:-2px;width:6px;height:6px;border-radius:50%;background:var(--ac)}
+/* 搜索态 */
+.gm.searching .m-tag{display:flex}
+.gm.searching .g-cnt{color:var(--ac)}
+
+/* 空态 */
+.m-empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:0 40px;text-align:center}
+.m-empty .box{width:100%;border:1px dashed #353941;border-radius:10px;padding:26px 18px;display:flex;flex-direction:column;align-items:center;gap:9px;transition:.15s}
+.m-empty .box.drop{border-color:var(--ac-line);background:var(--ac-t)}
+.m-empty .box b{font-size:12.5px;color:var(--fg2);font-weight:500}
+.m-empty .box span{font-size:11px;color:var(--fg4);line-height:1.7}
+.m-empty .ic{width:34px;height:34px;border-radius:9px;background:#22252b;display:grid;place-items:center;color:var(--fg3)}
+
+/* 批量条 */
+.batch{position:absolute;left:10px;right:10px;bottom:10px;height:46px;display:none;align-items:center;gap:8px;padding:0 10px 0 14px;background:#17322f;border:1px solid var(--ac-line);border-radius:9px;box-shadow:0 12px 30px -8px rgba(0,0,0,.6);z-index:6}
+.batch.on{display:flex}
+.batch .n{font-size:12px;color:var(--fg)}
+.batch .n b{color:var(--ac);font-weight:650}
+.batch .sp{flex:1}
+
+/* 底部 */
+.gm-foot{flex:0 0 auto;height:48px;padding:0 14px 0 16px;display:flex;align-items:center;gap:10px;border-top:1px solid var(--line-soft);background:#17191c}
+.gm-foot .saved{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--fg3)}
+.gm-foot .saved svg{color:var(--ac);opacity:.9}
+.gm-foot .sp{flex:1}
+.primary{height:30px;padding:0 16px;background:var(--ac);border:0;border-radius:7px;color:var(--ac-ink);font-family:inherit;font-size:12.5px;font-weight:650;cursor:pointer;transition:.13s}
+.primary:hover{filter:brightness(1.08)}
+.qBtn{width:24px;height:24px;border-radius:50%;background:none;border:1px solid var(--line2);color:var(--fg3);font-family:inherit;font-size:11px;cursor:pointer;display:grid;place-items:center;transition:.12s}
+.qBtn:hover{border-color:var(--ac-line);color:var(--ac)}
+
+/* 浮层：色板 / ⋯ 菜单 / 快捷键气泡 */
+.pop{position:absolute;z-index:40;background:#212429;border:1px solid #454a54;border-radius:10px;
+  box-shadow:0 0 0 1px rgba(0,0,0,.55),0 18px 44px -6px rgba(0,0,0,.86);padding:6px;display:none}
+.pop.on{display:block}
+/* ── 强调色同款选色弹框（复刻「设置 · 强调色」两段式：选中→应用） ── */
+.accent{width:432px;padding:10px 12px 12px}
+.ac-tip{font-size:10.5px;color:var(--fg3);margin-bottom:8px}
+.ac-tip b{color:var(--fg2);font-weight:600}
+.ac-tip i{display:inline-block;width:10px;height:10px;border-radius:3px;vertical-align:-1px;background:var(--ac)}
+.ac-recent{display:flex;align-items:center;gap:6px;margin-bottom:8px}
+.ac-recent>span{font-size:10.5px;color:var(--fg4)}
+.ac-recent .rc{width:16px;height:16px;border-radius:4px;border:1px solid rgba(255,255,255,.18);cursor:pointer;transition:transform .1s}
+.ac-recent .rc:hover{transform:scale(1.15)}
+.ac-grid{display:grid;grid-template-columns:repeat(8,1fr);gap:5px;margin-bottom:10px}
+.ac-sw{height:44px;border:0;border-radius:7px;cursor:pointer;padding:4px 0 0;text-align:center;
+  display:flex;flex-direction:column;align-items:center;justify-content:flex-start;position:relative;transition:transform .1s}
+.ac-sw:hover{transform:scale(1.06)}
+.ac-sw b{font-size:10px;font-weight:600;line-height:1.3;display:block}
+.ac-sw span{font:500 8.5px/1.3 var(--mono);opacity:.82;display:block}
+.ac-sw.on::after{content:"";position:absolute;inset:2px;border:1.6px solid #fff;border-radius:5px;
+  box-shadow:0 0 0 1.4px rgba(0,0,0,.55)}
+.ac-foot{display:flex;align-items:center;gap:6px}
+.ac-sel{display:flex;align-items:center;gap:7px;padding:5px 9px 5px 5px;border-radius:7px;background:#15171b;border:1px solid var(--line2)}
+.ac-sel i{width:22px;height:22px;border-radius:5px;display:block}
+.ac-sel em{display:block;font-style:normal;font-size:9.5px;color:var(--fg4);line-height:1.3}
+.ac-sel b{display:block;font:600 10.5px/1.3 var(--mono);color:var(--fg)}
+.ac-btn{height:30px;padding:0 12px;background:#1c1f24;border:1px solid var(--line2);border-radius:7px;
+  color:var(--fg2);font-family:inherit;font-size:11.5px;cursor:pointer;transition:.12s;white-space:nowrap}
+.ac-btn:hover{background:#24272d;color:var(--fg)}
+.ac-btn.primary{background:var(--ac);border-color:var(--ac);color:var(--ac-ink);font-weight:600}
+.ac-btn.primary:hover{filter:brightness(1.08)}
+.ac-flex{flex:1}
+
+/* ── 调色盘子弹框（色轮 + 明度 + RGB/HSV/HSL + HEX） ── */
+.palette{width:560px;padding:14px 16px 12px;z-index:50}
+.pl-main{display:flex;gap:14px;margin-bottom:12px}
+.pl-wheel-wrap{position:relative;width:176px;height:176px;flex:0 0 auto}
+.pl-wheel{width:176px;height:176px;border-radius:50%;display:block;cursor:crosshair}
+.pl-cursor{position:absolute;width:12px;height:12px;border:2px solid #fff;border-radius:50%;
+  box-shadow:0 0 0 1.4px rgba(0,0,0,.6);pointer-events:none;transform:translate(-6px,-6px)}
+.pl-val{width:16px;height:176px;border-radius:8px;flex:0 0 auto;position:relative;cursor:pointer}
+.pl-val i{position:absolute;left:-3px;width:22px;height:8px;border-radius:4px;border:2px solid #fff;
+  box-shadow:0 0 0 1.4px rgba(0,0,0,.6);transform:translateY(-4px);pointer-events:none}
+.pl-side{flex:1;display:flex;flex-direction:column}
+.pl-tabs{display:flex;gap:4px;margin-bottom:10px}
+.pl-tabs button{flex:1;height:28px;background:#15171b;border:1px solid var(--line2);border-radius:7px;
+  color:var(--fg3);font-family:inherit;font-size:11.5px;cursor:pointer;transition:.12s}
+.pl-tabs button.on{background:var(--ac);border-color:var(--ac);color:var(--ac-ink);font-weight:600}
+.pl-rows{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
+.pl-row{display:flex;align-items:center;gap:8px}
+.pl-row em{width:12px;font-style:normal;font-size:11px;color:var(--fg3)}
+.pl-row input[type=range]{flex:1;height:14px;appearance:none;-webkit-appearance:none;background:none;cursor:pointer}
+.pl-row input[type=range]::-webkit-slider-runnable-track{height:8px;border-radius:4px}
+.pl-row input[type=range]::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:13px;height:13px;
+  border-radius:50%;background:#fff;border:0;margin-top:-2.5px;box-shadow:0 1px 3px rgba(0,0,0,.5)}
+.pl-row b{width:38px;text-align:right;font:600 11px/1 var(--mono);color:var(--fg2)}
+.pl-hex{display:flex;align-items:center;gap:8px;background:#15171b;border:1px solid var(--line2);border-radius:7px;padding:7px 10px}
+.pl-hex span{font-size:10.5px;color:var(--fg4)}
+.pl-hex input{flex:1;background:none;border:0;outline:0;color:var(--fg);font:600 12px/1 var(--mono);letter-spacing:.5px}
+.pl-foot{display:flex;align-items:center;gap:6px;margin-top:2px}
+.pl-ok{font-size:10.5px;color:#4ade80}
+.pl-ok.bad{color:#ff8b84}
+.pl-flex{flex:1}
+.menu{min-width:150px;padding:4px}
+.menu button{display:flex;align-items:center;gap:8px;width:100%;height:28px;padding:0 9px;background:none;border:0;border-radius:6px;color:var(--fg2);font-family:inherit;font-size:12px;cursor:pointer;text-align:left;transition:.1s}
+.menu button:hover{background:#282c33;color:var(--fg)}
+.menu button.danger{color:#ff8b84}
+.menu button.danger:hover{background:rgba(248,81,73,.16)}
+.menu button:disabled{color:var(--fg4);cursor:default;background:none}
+.menu .sep{height:1px;background:#33373e;margin:4px 2px}
+.keys{width:236px;padding:10px 12px}
+.keys h6{margin:0 0 8px;font-size:11px;color:var(--fg3);font-weight:600;letter-spacing:.4px}
+.keys div{display:flex;align-items:center;gap:8px;height:24px;font-size:11.5px;color:var(--fg2)}
+.keys div span{margin-left:auto;color:var(--fg3)}
+/* 副说明：贴在对应快捷键下面的一行小字，比塞进 label 更清楚 */
+.keys .note{height:auto;margin:-2px 0 4px;padding-left:2px;font-size:10.5px;line-height:1.5;color:var(--fg3)}
+/* 分组小标：让 7 个快捷键按"浏览 / 编辑 / 窗口"归堆，扫读时先找类目再找键 */
+.keys .cap{height:auto;margin:7px 0 1px;font-size:9.5px;letter-spacing:.6px;color:var(--fg4)}
+.keys .cap:first-of-type{margin-top:3px}
+.keys kbd{font:600 9.5px/1 var(--mono);background:#282c33;border:1px solid var(--line2);border-radius:4px;padding:3px 5px;color:var(--fg2)}
+.keys .sp{height:6px}
+
+/* ══════════ 文档区 ══════════ */
+.tbl{background:#101215;border:1px solid var(--line);border-radius:11px;overflow:hidden;margin-bottom:14px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;font-weight:600;color:var(--fg3);font-size:10.5px;letter-spacing:.7px;padding:9px 12px;border-bottom:1px solid var(--line);text-transform:uppercase}
+td{padding:9px 12px;border-bottom:1px solid rgba(42,45,51,.55);vertical-align:top;color:var(--fg2);line-height:1.75}
+tr:last-child td{border-bottom:0}
+td b{color:var(--fg)}
+td code{font-size:10.5px;white-space:nowrap}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.card{background:#101215;border:1px solid var(--line);border-radius:11px;padding:14px 16px}
+.card h5{margin:0 0 8px;font-size:12px;color:var(--fg);font-weight:640;display:flex;align-items:center;gap:7px}
+.card h5 em{font:700 9.5px/1 var(--mono);font-style:normal;padding:3px 5px;border-radius:4px}
+.card h5 em.ok{color:var(--ac);background:rgba(31,200,180,.12)}
+.card h5 em.no{color:var(--dg);background:rgba(248,81,73,.12)}
+.card ul{margin:0;padding-left:16px}
+.card li{font-size:11.5px;color:var(--fg2);line-height:1.85}
+.card li b{color:var(--fg)}
+.openq{list-style:none;margin:0;padding:0;display:grid;gap:9px}
+.openq li{position:relative;padding-left:20px;font-size:12.5px;color:var(--fg2);line-height:1.8}
+.openq li::before{content:"?";position:absolute;left:0;top:0;color:#d29922;font-weight:700}
+.openq b{color:var(--fg)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hd">
+    <span class="tag">HIFI</span>
+    <h1>分组管理 · 交互重设计</h1>
+    <span class="date">2026-10-22</span>
+    <nav>
+      <a href="#demo">主稿</a>
+      <a href="#matrix">交互矩阵</a>
+      <a href="#states">状态</a>
+      <a href="#diff">改动</a>
+      <a href="#open">待确认</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <section class="hero">
+    <div class="kicker">Group Manager / Interaction Redesign</div>
+    <h2>把「组」当对象管，而不是当过滤器用</h2>
+    <p class="lead">
+      现有弹框的功能已经齐了（双栏、拖拽、刷选、批量移动、删除条），问题在<b>入口重复</b>与<b>组本身信息不足</b>：
+      改名/删除在左栏悬停图标、右键菜单、右栏标题三处并存，删除裸图标紧贴改名，误点代价高；
+      而左栏一行只有「色点 + 名字 + 数字」，组名叫 <code>2</code> 时根本读不出里面装了什么。
+      本稿先把<strong>组级动作收敛成一条路径</strong>，再把<strong>组行升级成两行（名字 + 成员预览）</strong>，最后把<strong>批量动作从菜单里提到列表底部</strong>。
+    </p>
+    <div class="claims">
+      <div class="claim"><em>01</em><b>组属性只在头部一处</b><span>双击组名改名（左右两处都认这个手势）、点色点改色、点垃圾桶删除——全部平铺在右栏头部，<b>不再有 ⋯ 菜单</b>。左栏只做导航与拖排序。</span></div>
+      <div class="claim"><em>02</em><b>两侧都是单行</b><span>组行 36px：色点 + 组名 + 计数；会话行 36px：名称 + <code>user@host</code> 并排。一屏多看两三行，细节交给悬浮卡。</span></div>
+      <div class="claim"><em>03</em><b>选中即出现批量条</b><span>勾选 ≥1 项，列表底部浮出「已选 N 项 / 移动到 / 移出分组 / 取消」，不用再去 ⋯ 里找移动入口。</span></div>
+      <div class="claim"><em>04</em><b>拖拽给足落点预期</b><span>拖会话到左栏组行：整行转 accent 底、右端出现 <code>+3</code> 预览徽标；拖组行：组之间画插入线。</span></div>
+      <div class="claim"><em>05</em><b>右栏标题升级为组头部</b><span>色点（点击即改色）+ 组名（单击即改名）+ 会话数胶囊左对齐成组；右端只留「全选 / ⋯」，不再让计数孤零零漂在右边。</span></div>
+      <div class="claim"><em>06</em><b>快捷键收进 ? 气泡</b><span>底栏原本常驻四条按键提示，占掉将近一半横向空间。改为一个 <code>?</code> 圆钮 + 首次打开自动展开一次。</span></div>
+      <div class="claim"><em>07</em><b>默认左窄右宽</b><span>开箱左 320 / 右约 435（左栏只装色点+组名+计数，不需要那么宽）；中间 5px 分隔条可拖 <b>220–480</b>，双击回 320。</span></div>
+      <div class="claim"><em>08</em><b>顺序只靠看得见的操作</b><span>整行可拖（行间浮出 2px 插入线）；悬停行尾出 <code>↑↓</code> 点一格，<b>点的那条若已被勾选且勾了多条就整块移动</b>。不做隐式键盘规则，也不设「排序方式」选择器。</span></div>
+      <div class="claim"><em>09</em><b>悬停看全貌</b><span>名字被截断时，停 150ms 在<b>鼠标右下角</b>浮出信息卡并跟随移动：名称 / 主机 / 用户 / 认证 / 分组 / 备注，空字段不占行，贴近屏幕边缘时自动翻到另一侧。</span></div>
+      <div class="claim"><em>10</em><b>头尾各收一格</b><span>标题与计数并成一行（58→52px）；搜索框吃掉中间余量、右端常备清除键（有内容才渐显）；<code>Ctrl F</code> 这类按键提示收进底部 <code>?</code> 气泡，不在框里占位；操作结果写进底栏那行。</span></div>
+    </div>
+  </section>
+
+  <h3 class="sec" id="demo">主稿 · 可交互</h3>
+  <p class="sub">
+    下面是逻辑像素 1:1 的弹框（<b>760×560</b>，左栏默认 320、右栏约 435，中间可拖 220–480）。这是真交互稿，不是静态图：
+    <b>点组切栏</b>、<b>勾选</b>、<b>点色点改色</b>、<b>单击组名改名</b>、<b>点垃圾桶删除</b>、<b>搜索</b>、
+    <b>把右侧会话拖到左栏组上</b>（试试多选后再拖，看 <code>+N</code> 徽标）、<b>删除组</b>、<b>新建分组</b> 都能跑。
+  </p>
+
+  <div class="stage">
+    <div class="stage-cap">760 × 560 · DPR 1.0</div>
+
+    <div class="gm" id="gm">
+      <!-- 头部 -->
+      <div class="gm-head">
+        <div class="ttl">
+          <h4>分组管理</h4>
+          <span class="cnt" id="subtitle">3 组 · 13 会话</span>
+        </div>
+        <div class="tools">
+          <div class="search" id="searchBox">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/></svg>
+            <input id="q" placeholder="搜索分组或会话" autocomplete="off" spellcheck="false">
+            <button class="mini-clear" id="btnClearSearch" type="button" title="清除搜索">
+              <span class="disc">
+                <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1 1L9 9M9 1L1 9"/></svg>
+              </span>
+            </button>
+          </div>
+          <button class="iBtn close" id="btnClose" title="关闭 (Esc)">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- 主体 -->
+      <div class="gm-body">
+        <aside class="gm-left">
+          <div class="g-list" id="gList"></div>
+          <button class="g-new" id="btnNew">＋ 新建分组</button>
+        </aside>
+        <div class="splitter" id="splitter" title="拖动调整左栏宽度 · 双击复位"></div>
+        <section class="gm-right" id="rSide">
+          <div id="headSlot"></div>
+          <div class="m-list" id="mList"></div>
+          <div class="m-tip" id="mTip"></div>
+          <div class="batch" id="batchBar">
+            <span class="n">已选 <b id="pickN">0</b> 项</span>
+            <span class="sp"></span>
+            <button class="btn-sm" id="btnMove">移动到 ▾</button>
+            <button class="btn-sm" id="btnUnGroup">移出分组</button>
+            <button class="btn-sm" id="btnClearPick">取消选择</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- 底部 -->
+      <div class="gm-foot">
+        <span class="saved">
+          <svg id="savedIcon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+          <span id="savedMsg">改动已自动保存</span>
+        </span>
+        <span class="sp"></span>
+        <button class="qBtn" id="btnKeys" title="快捷键">?</button>
+        <button class="primary" id="btnDone">完成</button>
+      </div>
+
+      <!-- 浮层 -->
+      <!-- 强调色同款选色弹框：选中→应用 两段式；调色盘是它的子弹框 -->
+      <div class="pop accent" id="popAccent">
+        <div class="ac-tip">点选色块仅选中：<b>「应用」后生效</b>，取消 / 关闭还原当前色 <i id="acCur"></i></div>
+        <div class="ac-recent" id="acRecent" style="display:none"><span>最近</span></div>
+        <div class="ac-grid" id="acGrid"></div>
+        <div class="ac-foot">
+          <div class="ac-sel"><i id="acSelDot"></i><div><em>选定</em><b id="acSelHex">#000000</b></div></div>
+          <button class="ac-btn" id="btnPalette">调色盘 ›</button>
+          <span class="ac-flex"></span>
+          <button class="ac-btn" id="btnAcRand">随机</button>
+          <button class="ac-btn" id="btnAcCancel">取消</button>
+          <button class="ac-btn primary" id="btnAcApply">应用</button>
+        </div>
+      </div>
+      <div class="pop palette" id="popPalette">
+        <div class="pl-main">
+          <div class="pl-wheel-wrap">
+            <canvas class="pl-wheel" id="plWheel" width="176" height="176"></canvas>
+            <i class="pl-cursor" id="plCursor"></i>
+          </div>
+          <div class="pl-val" id="plVal"><i id="plValCur"></i></div>
+          <div class="pl-side">
+            <div class="pl-tabs" id="plTabs">
+              <button class="on" data-m="rgb">RGB</button><button data-m="hsv">HSV</button><button data-m="hsl">HSL</button>
+            </div>
+            <div class="pl-rows" id="plRows"></div>
+            <div class="pl-hex"><span>HEX</span><input id="plHex" maxlength="7" spellcheck="false"></div>
+          </div>
+        </div>
+        <div class="pl-foot">
+          <span class="pl-ok" id="plOk">✓ 对面板对比度达标</span>
+          <span class="pl-flex"></span>
+          <button class="ac-btn" id="btnPlCancel">取消</button>
+          <button class="ac-btn primary" id="btnPlOk">确认</button>
+        </div>
+      </div>
+      <div class="pop menu" id="popMenu"></div>
+      <div class="pop keys" id="popKeys">
+        <h6>键盘快捷键</h6>
+        <div class="cap">浏览与选择</div>
+        <div>切换分组<span><kbd>↑</kbd><kbd>↓</kbd></span></div>
+        <div>勾选 / 取消勾选<span><kbd>Space</kbd></span></div>
+        <div>搜索<span><kbd>Ctrl</kbd>+<kbd>F</kbd></span></div>
+        <div class="cap">改名与删除</div>
+        <div>改名（当前组）<span><kbd>F2</kbd></span></div>
+        <div>确认改名 / 新建<span><kbd>Enter</kbd></span></div>
+        <div>删除分组<span><kbd>Del</kbd></span></div>
+        <div class="cap">弹框</div>
+        <div>关闭 / 逐级取消<span><kbd>Esc</kbd></span></div>
+      </div>
+    </div>
+
+    <div class="hint">
+      <span><b>试试</b>：勾两个会话再拖到左栏「组 3」</span>
+      <span><b>试试</b>：拖左栏分组行换顺序</span>
+      <span><b>试试</b>：拖中间那条细分隔线</span>
+      <span><b>试试</b>：拖会话行在列内换位置</span>
+      <span><b>试试</b>：鼠标停在会话行上看信息卡</span>
+    </div>
+  </div>
+
+  <h3 class="sec" id="matrix">交互矩阵 · 触发与反馈</h3>
+  <p class="sub">每一行都是「一个动作只有一条入口」，右列是键盘等价物 —— 键盘路径不与鼠标路径分叉。</p>
+  <div class="tbl">
+    <table>
+      <thead><tr><th style="width:15%">动作</th><th style="width:26%">触发</th><th style="width:44%">反馈 / 结果</th><th style="width:15%">键盘</th></tr></thead>
+      <tbody>
+        <tr><td><b>切换组</b></td><td>单击左栏组行</td><td>右栏整栏切换（头部 + 列表 + 批量条清空）；左行 accent 淡底 + 左缘 2px 竖条；计数转 accent 色</td><td><code>↑</code> <code>↓</code></td></tr>
+        <tr><td><b>改名</b></td><td><b>双击左栏组名</b> → 行内就地改名；双击右栏组名 → 也在右栏就地改</td><td>所在那一行整体换成输入框并全选原名；<code>Enter</code> 或点空白提交，<code>Esc</code> 撤销；重名红框（左栏）/ 红框 + 文案（右栏）。<b>默认组不可改名</b>（它是兜底桶）。<b>单击组名不进入编辑</b>——避免"只想点标题却开了编辑框"</td><td><code>F2</code></td></tr>
+        <tr><td><b>悬停看详情</b></td><td>鼠标停在会话行上 150ms</td><td><b>鼠标右下角</b>（+16/+14）浮出信息卡并跟随移动：名称 / 主机 / 用户（非空）/ 认证 / 分组 / 备注（非空），键值单行连排；贴右/下边缘时翻到左侧或上方；划走、拖动、滚动、切组立即收起</td><td>—</td></tr>
+        <tr><td><b>改色</b></td><td>点左栏组行的色点 / 点右栏头部色点</td><td>就地弹 8 色板（4×2），当前色带外环；选色即时落盘，色点、竖条、右栏头部色点同步变；点外部关闭</td><td><code>⋯</code>→改色</td></tr>
+        <tr><td><b>新建组</b></td><td>左栏底部 <code>＋ 新建分组</code></td><td>列表末尾插入输入行并自动聚焦；<code>Enter</code> 建组并选中，<code>Esc</code> 撤销；空名不允许</td><td>—</td></tr>
+        <tr><td><b>删除组</b></td><td>头部右侧垃圾桶（唯一入口，与「全选」用 1px 竖线隔开）</td><td>右栏头部整条换成删除条：<code>3 个会话 → [默认组 ▾]</code>；默认目标=默认组，可改选其他组；确认才执行，结果写进底栏</td><td><code>Del</code></td></tr>
+        <tr><td><b>组排序</b></td><td>拖左栏组行（整行可拖）／悬停时行尾出现 <code>↑↓</code> 各点一格；默认组固定第一位</td><td>被拖行淡化 40%，组之间画 2px accent 插入线（落点在行上半 = 插到它前面）；<code>↑↓</code> 到顶/到底时按钮置灰。默认组不接受落点，也不会被越过</td><td>—</td></tr>
+        <tr><td><b>勾选</b></td><td>点<b>行的任意位置</b>，或点行首复选框</td><td>行转 accent 淡底 + 复选框打勾；≥1 项时列表底部浮出批量条并显示计数。<b>拖动仍按位移区分</b>（HTML5 drag 约 5px 才起手），纯点击不会误拖；双击只算一次</td><td><code>Space</code></td></tr>
+        <tr><td><b>范围勾选</b></td><td><code>Shift</code> + 点复选框</td><td>从上次点击行到当前行整段置为「当前行目标态」，反向也成立</td><td><code>Shift</code>+<code>Space</code></td></tr>
+        <tr><td><b>刷选</b></td><td>按住列表空白上下拖</td><td>经过的行按起手行的反态整段切换；拖到边缘自动滚动</td><td>—</td></tr>
+        <tr><td><b>移动到组</b></td><td>批量条 → <code>移动到 ▾</code></td><td>下拉列出「默认组 + 全部自定义组」（当前组置灰）；选中即把已选会话整批移走，批量条自动收起</td><td>—</td></tr>
+        <tr><td><b>移出分组</b></td><td>批量条 → <code>移出分组</code></td><td>已选会话全部回到默认组；在默认组视图下该按钮隐藏（无意义动作不出现）</td><td>—</td></tr>
+        <tr><td><b>拖拽换组</b></td><td>把 1 个或多个会话拖到左栏组行</td><td>目标组整行转 accent 底 + 右端浮出 <code>+N</code>（N=实际拖拽条数）；松手即移；拖拽时源行淡化 40%</td><td>—</td></tr>
+        <tr><td><b>组内排序</b></td><td>拖会话行／悬停时行尾 <code>↑↓</code></td><td>拖拽时行间浮出 2px accent 插入线；<code>↑↓</code> 单条移一格。<b>点的那条若已被勾选、且勾了多条，则整块移动</b>——判据是看得见的勾选态，不猜当前栏</td><td>—</td></tr>
+        <tr><td><b>调整两栏宽度</b></td><td>拖两栏之间的细分隔条</td><td>默认<b>左窄右宽</b>（320 / 约 435）；拖动范围 <b>220–480</b>（可拖到等宽）；拖动时分隔线转 accent 2px；双击回默认 320</td><td>—</td></tr>
+        <tr><td><b>清除搜索</b></td><td>搜索框右端的 <code>×</code>（有内容才出现）</td><td>清空查询并把焦点留在框里；左栏计数回常规、行尾组 chip 收起。<b>与页签关闭键同款</b>：20×20 命中 + 内层 14px 圆，常态只有次级色 ×，悬停才出 accent 实心圆并转成镂空</td><td><code>Esc</code></td></tr>
+        <tr><td><b>操作反馈</b></td><td>任何落盘动作后</td><td>底栏左侧那行从「改动已自动保存」切成结果（如「3 个会话 → 组 3」），2.6s 后回落；<b>不再弹居中 toast</b></td><td>—</td></tr>
+        <tr><td><b>搜索</b></td><td>点搜索框 / <code>Ctrl F</code></td><td>同时匹配<b>组名</b>与<b>会话名·地址</b>：左栏组行计数变 <code>命中/总数</code>（仅命中组上强调色）；<b>当前组 0 命中而别处有时自动跳过去</b>；行尾出现所属组色点 chip；全局都无命中才显示空态</td><td><code>Ctrl</code>+<code>F</code></td></tr>
+        <tr><td><b>关闭</b></td><td><code>完成</code> / <code>✕</code> / <code>Esc</code> / 点遮罩</td><td>关闭前先提交正在进行的改名；删除条未确认时 <code>Esc</code> 只收删除条，不关弹框</td><td><code>Esc</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="sec" id="states">状态与边界</h3>
+  <div class="two">
+    <div class="card"><h5><em class="ok">STATE</em>必须存在且好看的态</h5><ul>
+      <li><b>空组</b>：右栏换虚线投递区「把会话拖到这里，或用批量条从其他组移入」，不让整栏空白。</li>
+      <li><b>搜索无结果</b>：两种语义分开 —— 全局都无命中时才说「所有分组里都没有匹配」+「清除搜索」；仅仅本组没有时给「本组没有匹配 · 其他分组还有 N 个」+「跳到「组 X」」。</li>
+      <li><b>批量态</b>：≥1 勾选 → 底部批量条；勾满当前列表时「全选」变「取消全选」。</li>
+      <li><b>删除条</b>：组内有会话 / 空组两种文案；空组时隐藏目标组下拉，只问「删除这个空分组？」。</li>
+      <li><b>新建 / 改名输入</b>：空名禁用确认，重名红框即时提示，长度>24 截断提示。</li>
+      <li><b>组很多</b>：左栏滚动，<code>＋ 新建分组</code> 吸底不随内容滚走。</li>
+      <li><b>会话很多</b>：右栏滚动；批量条浮在列表之上，不推挤列表高度。</li>
+    </ul></div>
+    <div class="card"><h5><em class="no">GUARD</em>刻意不做的事</h5><ul>
+      <li><b>不做撤销栈</b>：每次改动即时落盘，删除靠删除条这道唯一闸门，不做「撤销」假承诺（与现状一致）。</li>
+      <li><b>不做「点击行打开详情」</b>：行点击已经用于勾选，再叠一个"打开"会互相抢手势；看详情是悬浮卡的职责。</li>
+      <li><b>删除不做确认弹框</b>：删除条内联在右栏头部，就地选去向就地删，比再叠一层模态快一步。</li>
+      <li><b>不在左栏做内联展开成员</b>：会和右栏内容重复，违反「同一信息只出现一次」。</li>
+      <li><b>默认组不可改名、不可删除、不参与排序</b>：它是兜底桶而不是普通组，名字由程序固定（当前叫「默认组」），只有颜色可调。</li>
+      <li><b>不做组嵌套</b>：组是单层的，层级需求交给「来源」（本地/远程）与搜索。</li>
+    </ul></div>
+  </div>
+
+  <h3 class="sec" id="diff">与现状的差异</h3>
+  <div class="tbl">
+    <table>
+      <thead><tr><th style="width:16%">维度</th><th style="width:38%">现状</th><th style="width:46%">本稿</th></tr></thead>
+      <tbody>
+        <tr><td><b>组级操作入口</b></td><td>左栏悬停 <code>✎</code> <code>🗑</code> 两个裸图标 + 右键菜单 + 右栏标题，三处并存</td><td>全部平铺到右栏头部：色点（改色）/ 组名（改名）/ 垃圾桶（删除，前置 1px 分隔线）；<b>左栏零图标</b>，只做导航</td></tr>
+        <tr><td><b>悬浮提示</b></td><td>已有信息卡，但固定 <code>x=250</code> 会压住名字列；不跟鼠标</td><td>字段与 150ms 延迟不变（名称/主机/用户/认证/分组/备注），位置改为<b>跟随鼠标右下角</b>，出界自动翻转</td></tr>
+        <tr><td><b>会话行内容</b></td><td>两行：名称 / <code>user</code>——同组 5 台里有 4 台都显示 <code>root</code>，看不出是哪一台</td><td><b>单行</b>：名称 + <code>user@host</code> 并排（名称可缩、地址优先保完整）；行高 44 → 36</td></tr>
+        <tr><td><b>右栏头部</b></td><td>组名靠左、会话数靠右、全选更靠右，中间大片空白；组名要双击才可改</td><td>色点 + 组名 + <code>n 个会话</code> 胶囊左对齐成组，右端只留「全选 / ⋯」；<b>单击组名即改名</b></td></tr>
+        <tr><td><b>改色</b></td><td>仅左栏组行右键/悬停可及</td><td>左右两处色点都可点，就地 8 色板</td></tr>
+        <tr><td><b>批量移动</b></td><td>勾选后要进 <code>⋯</code>（move-menu），入口深且不可发现</td><td>勾选即浮出批量条，三个动作直接平铺</td></tr>
+        <tr><td><b>拖拽反馈</b></td><td>仅落点行高亮，批量拖拽不知道自己带了几条</td><td>目标组 accent 底 + <code>+N</code> 徽标，拖拽前就能确认影响范围</td></tr>
+        <tr><td><b>搜索</b></td><td>只过滤会话，左栏计数不动；全局位置但只管一半</td><td>组名 + 会话名/地址双搜；组行计数变 <code>命中/总数</code>，命中会话标注所属组</td></tr>
+        <tr><td><b>底栏</b></td><td>保存提示 + 四条快捷键常驻 + 完成按钮</td><td>保存提示 + <code>?</code> 气泡 + 完成按钮（首次打开自动展开一次）</td></tr>
+        <tr><td><b>组内顺序</b></td><td>靠行尾 <code>⋮⋮</code> 手柄提示可拖</td><td>去掉手柄（整行可拖，光标为箭头）+ 行间 2px 插入线 + 悬停 <code>↑↓</code>；<b>不引入「排序方式」选择器</b></td></tr>
+        <tr><td><b>两栏宽度</b></td><td>固定 256 / 504，组名一长就被截、地址一宽就挤</td><td><b>默认左窄右宽</b>（320 / 约 435），分隔条可拖 220–480，双击回默认</td></tr>
+        <tr><td><b>勾选方式</b></td><td>只有复选框能勾，点行本身没反应</td><td>整行可点；<code>Shift</code> + 点行 = 范围勾选；悬停时复选框同步提亮，暗示"这一整行都能点"</td></tr>
+        <tr><td><b>组排序</b></td><td>只有 <code>Alt+↑↓</code>，鼠标用户没有入口</td><td>整行可拖 + 悬停 <code>↑↓</code> 点按；<b>不再保留键盘快捷键</b>（曾用 Alt+↑↓ 兼职排成员，规则隐式，已废弃）</td></tr>
+        <tr><td><b>头部布局</b></td><td>58px 两行：标题在上一行、副标题在下；右上角搜索框 212px 常驻挂着 <code>Ctrl F</code> 徽标，加关闭键挤成一团</td><td>52px 单行：标题 + <b>计数胶囊</b>同排；搜索框吃中间余量（上限 280）、<b>框内不再放按键提示</b>（收进 <code>?</code> 气泡），右端交给清除键；清除键与<b>页签关闭键同款</b>（20×20 命中 + 14px 圆，悬停才出 accent）；关闭键 <code>✕</code> 用 <b>DialogClose 同款</b>（透明底、悬停语义红 <code>#e81123</code> + 白 ×）</td></tr>
+        <tr><td><b>操作反馈</b></td><td>居中浮层 toast，盖住列表 1.9s</td><td>结果写进底栏那行常驻文案（切色 + 2.6s 回落），不产生新浮层</td></tr>
+        <tr><td><b>尺寸</b></td><td>760×522；组行 36 / 会话行 38</td><td>760×560；<b>组行与会话行统一 36（两侧单行）</b>，多出来的高度留给右栏地址列与底部批量条</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="sec" id="open">待确认</h3>
+  <div class="card"><ul class="openq">
+    <li>组行和会话行都单行了，行内只剩最关键的一行信息。<b>组名如果是 <code>1</code> <code>2</code> <code>3</code> 这种随手起的名字，左栏就没有任何提示能看出组里是什么</b>——要不要在组行 hover 时给一个小气泡列前几个成员？（右栏有悬浮卡，左栏目前没有。）</li>
+    <li>删除组的默认去向是<b>默认组</b>（少一步操作），还是坚持现状「必须先手动选一个目标组」？我倾向默认组，因为删组时多数情况就是「这批先散着」。</li>
+    <li>「默认组」现在可改色（品牌色兜底）。如果去掉颜色、只留空心圈，语义上更像「桶」而不是「组」，但会失去「给它也上色」这个可能被用到的能力。</li>
+    <li>搜索要不要把<b>地址</b>（<code>192.168.100.202</code>）也纳入匹配？纳入后搜 IP 段能一把捞出整个网段的所有组。</li>
+    <li>会话行第二行现在是 <code>user || host</code>（与实机同口径），结果一个组里 5 台有 4 台都显示 <code>root</code>，反而认不出是哪一台——本稿为此加了悬浮卡兜底。要不要干脆把第二行改成 <code>user@host</code> 或 host 优先？</li>
+  </ul></div>
+
+</div>
+
+<script>
+/* 数据：与实机截图一致（默认组 2 + 组2 5 + 组3 3 + 组1 3 = 13） */
+const PALETTE = ["#8b5cf6","#4f8ef7","#1fc8b4","#e0a23c","#f85149","#d97757","#8ea0b5","#c05fd6"];
+
+/* 新建分组的默认色：挑第一个"还没被占用"的预设色，连续新建不会撞色。
+   全被占完了就按组数轮转（PALETTE 只有 8 个，超了必然复用，这是可接受的）。 */
+function autoColor(){
+  const used = new Set(groups.map(g => g.color).filter(Boolean));
+  return PALETTE.find(c => !used.has(c)) || PALETTE[groups.length % PALETTE.length];
+}
+
+let groups = [
+  // 默认组：占 id `system`，固定第一位、不可删除，但**可改名**
+  // （不同用户对"没归组的那些"叫法不一样：未分组 / 默认组 / 散机…）
+  { id:"system", name:"默认组", color:"", reserved:true },
+  { id:"g2", name:"2", color:"#8b5cf6" },
+  { id:"g3", name:"3", color:"#1fc8b4" },
+  { id:"g1", name:"1", color:"#4f8ef7" },
+];
+
+let members = [
+  { id:"m1", name:"1", proto:"SSH",             host:"192.168.100.188", user:"root",   auth:"key",      note:"",              group:"g2" },
+  { id:"m2", name:"202-2 (copy)", proto:"SSH",  host:"192.168.100.202", user:"root",   auth:"password", note:"",              group:"g2" },
+  { id:"m3", name:"202-2", proto:"SSH",         host:"192.168.100.202", user:"deploy", auth:"key",      note:"发布机 · 只读",  group:"g2" },
+  { id:"m4", name:"188 (1)", proto:"SSH",       host:"192.168.100.188", user:"root",   auth:"password", note:"",              group:"g2" },
+  { id:"m5", name:"202-2 (copy)2", proto:"SSH", host:"192.168.100.202", user:"",       auth:"password", note:"",              group:"g2" },
+  { id:"m6", name:"ops-prod", proto:"SSH",      host:"192.168.100.11",  user:"ops",    auth:"key",      note:"生产 · 变更需审批", group:"g3" },
+  { id:"m7", name:"ops-stage", proto:"SSH",     host:"192.168.100.12",  user:"ops",    auth:"key",      note:"",              group:"g3" },
+  { id:"m8", name:"build-01", proto:"SFTP",      host:"192.168.100.13",  user:"builder",auth:"key",      note:"",              group:"g3" },
+  { id:"m9", name:"db-master", proto:"SSH",     host:"192.168.100.21",  user:"dba",    auth:"password", note:"主库 · 勿重启",  group:"g1" },
+  { id:"m10",name:"db-replica", proto:"SSH",    host:"192.168.100.22",  user:"dba",    auth:"password", note:"",              group:"g1" },
+  { id:"m11",name:"cache", proto:"SSH",         host:"192.168.100.23",  user:"",       auth:"key",      note:"",              group:"g1" },
+  { id:"m12",name:"192.168.0.69", proto:"RDP",  host:"192.168.0.69",    user:"Administrator", auth:"password", note:"测试机 · VNC 也在这台", group:"system" },
+  { id:"m13",name:"gw", proto:"SSH",            host:"192.168.0.1",     user:"",       auth:"key",      note:"",              group:"system" },
+];
+
+const state = {
+  sel: "g2",
+  query: "",
+  picked: new Set(),
+  editing: null,      // 正在改名的组 id
+  editWhere: "",      // "left" = 左栏行内编辑，"right" = 右栏头部编辑
+  creating: false,
+  newColor: "",       // 新建分组时手选的色；空 = 用 autoColor() 自动分配
+  delFor: null,       // 展开删除条的组 id
+  delTarget: "system",
+  colorFor: null,     // 色板锚定的组 id
+  anchor: null,       // Shift 范围勾选锚点（同时充当"最后点过的那一行"）
+  keysOpen: false,
+};
+
+const $ = (s) => document.querySelector(s);
+// 行内 ↑↓ 箭头（9px，1.5px 描边，与页签关闭键同一套细线口径）
+const MV_UP = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8.5V1.5M2 4.5L5 1.5L8 4.5"/></svg>`;
+const MV_DOWN = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 1.5V8.5M2 5.5L5 8.5L8 5.5"/></svg>`;
+const gm = $("#gm");
+const gList = $("#gList");
+const headSlot = $("#headSlot");
+const mList = $("#mList");
+
+const esc = (s) => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const byGroup = (gid) => members.filter(m => m.group === gid);
+const gName = (gid) => (groups.find(g => g.id === gid) || {name:"默认组"}).name;
+const gColor = (gid) => (groups.find(g => g.id === gid) || {}).color || "";
+
+/* 搜索：组名 or 会话名/主机 —— 与实机同口径（GmMember 有 host 无 addr） */
+function matches(m, q){
+  if (!q) return true;
+  const gname = gName(m.group);
+  return (m.name + " " + m.host + " " + (m.user || "") + " " + gname).toLowerCase().includes(q);
+}
+function hitCount(gid, q){
+  if (!q) return null;
+  return byGroup(gid).filter(m => matches(m, q)).length;
+}
+
+/* ── 左栏 ── */
+function renderGroups(){
+  const q = state.query.trim().toLowerCase();
+  // 小节标题只算一次：它挂在默认组那一行之后；默认组隐藏时上移到列表顶部
+  const capHtml = groups.length > 1
+    ? `<div class="g-cap">我的分组<span class="n">${groups.length - 1}</span></div>` : "";
+  let html = "";
+  groups.forEach((g) => {
+    const list = byGroup(g.id);
+    // 默认组是兜底桶 —— 成员清空后整行不显示（它就是"没归组的东西"，空了没内容可代表）。
+    // 但分类标题要跟着它的位置画出来，不能连标题一起消失。
+    if (g.reserved && list.length === 0) { html += capHtml; return; }
+    const hit = hitCount(g.id, q);
+    // 左栏行内改名：这一行整体换成输入框（不是跳到右栏头部）
+    const isEdit = state.editing === g.id && state.editWhere === "left";
+    // 组的上/下边界：不能越过默认组（永远第 0 位），最后一条不能再下移
+    const giG = groups.indexOf(g);
+    const cnt = q ? (hit + "/" + list.length) : String(list.length);
+    // 搜索时只给"有命中"的组上强调色；0/N 保持弱色，避免满屏 accent。
+    const hot = q && hit > 0;
+    // 搜索态完全由内联色决定，否则 .g-row.on 的 accent 会把 0/5 也点亮。
+    const cntStyle = q ? (hot ? "color:var(--ac)" : "color:var(--fg3)") : "";
+    const dot = g.reserved
+      ? `<span class="g-dot hollow" data-dot="${g.id}" title="改色"></span>`
+      : `<span class="g-dot" data-dot="${g.id}" style="--c:${g.color}" title="改色"></span>`;
+    const dim = (q && hit === 0) ? ' style="opacity:.45"' : "";
+    html += `<div class="g-row ${state.sel === g.id ? "on" : ""}" data-g="${g.id}"${dim}
+      draggable="${g.reserved || isEdit ? "false" : "true"}">
+      ${dot}
+      <span class="g-main">
+        ${isEdit
+          ? `<input class="g-row-edit" id="gRowEdit" value="${esc(g.name)}" maxlength="24" autocomplete="off" spellcheck="false">`
+          : `<span class="g-nm">${esc(g.name)}</span>`}
+      </span>
+      <span class="g-cnt" style="${cntStyle}">${cnt}</span>
+      ${g.reserved ? "" : `<span class="mv">
+        <button data-mv="g:${g.id}:-1" title="${giG > 1 ? "上移" : "已在默认组之后"}"${giG > 1 ? "" : " disabled"}>${MV_UP}</button>
+        <button data-mv="g:${g.id}:1" title="${giG < groups.length - 1 ? "下移" : "已在末位"}"${giG < groups.length - 1 ? "" : " disabled"}>${MV_DOWN}</button>
+      </span>`}
+    </div>`;
+    // 小节标题画在「默认组」这一行**之后**：它是自定义组的分类眉，
+    // 不是整个列表的标题（放前面会让默认组看起来被排除在外）。
+    if (g.reserved) html += capHtml;
+  });
+  if (state.creating) {
+    // 新建行自带色点：颜色在**建之前**就能定，不用建完再去头部改。
+    // 默认色 = PALETTE 里第一个还没被占用的（见 autoColor），所以多数情况可以直接回车。
+    const nc = state.newColor || autoColor();
+    html += `<div class="g-new-edit" id="gNewBox">
+      <span class="g-dot" id="newColorDot" data-dot="__new" style="--c:${nc}" title="选颜色"></span>
+      <input id="newName" placeholder="新分组名" maxlength="24" autocomplete="off">
+      <button class="mini-clear" id="btnClearNew" type="button" title="清空">
+        <span class="disc">
+          <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1 1L9 9M9 1L1 9"/></svg>
+        </span>
+      </button>
+    </div>
+    <div class="g-new-err" id="gNewErr">已有同名分组</div>`;
+  }
+  gList.innerHTML = html;
+  if (state.creating) { const el = $("#newName"); el.focus(); }
+  if (state.editing && state.editWhere === "left") {
+    const el = $("#gRowEdit");
+    if (el) { el.focus(); el.select(); }
+  }
+  gm.classList.toggle("searching", !!q);
+  $("#subtitle").textContent = `${groups.length - 1} 组 · ${members.length} 会话`;
+}
+
+/* ── 右栏头部 ── */
+function renderHead(){
+  const g = groups.find(x => x.id === state.sel);
+  const list = byGroup(g.id);
+
+  if (state.delFor === g.id) {
+    const empty = list.length === 0;
+    const opts = groups.filter(x => x.id !== g.id)
+      .map(x => `<option value="${x.id}" ${state.delTarget === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("");
+    headSlot.innerHTML = `<div class="r-del">
+      <span class="warn">⚠</span>
+      <span class="txt">删除「<b>${esc(g.name)}</b>」？${empty ? "该分组为空。" : `<i>${list.length} 个会话 →</i>`}</span>
+      ${empty ? "" : `<select id="delTarget">${opts}</select>`}
+      <span class="sp"></span>
+      <button class="btn-sm" id="delCancel">取消</button>
+      <button class="btn-sm danger" id="delOk">删除</button>
+    </div>`;
+    return;
+  }
+
+  // 只有"在右栏改名"时才把组名换成输入框；左栏改名时右栏保持正常显示
+  const editing = state.editing === g.id && state.editWhere === "right";
+  const dot = g.reserved
+    ? `<span class="dot free" data-dot="${g.id}" title="改色"></span>`
+    : `<span class="dot" data-dot="${g.id}" style="--c:${g.color}" title="改色"></span>`;
+  const nameHtml = editing
+    ? `<input class="r-edit" id="rEdit" value="${esc(g.name)}" maxlength="24" autocomplete="off">`
+    : `<span class="r-name" data-name="${g.id}" title="${g.reserved ? "默认组不可改名" : "双击改名"}">${esc(g.name)}${g.reserved ? "" : '<span class="pen">✎</span>'}</span>`;
+
+  headSlot.innerHTML = `<div class="r-head">
+    ${dot}
+    ${nameHtml}
+    <span class="r-cnt">${list.length} 个会话</span>
+    <span class="r-acts">
+      <button class="tBtn" id="btnAll">${list.length && list.every(m => state.picked.has(m.id)) ? "取消全选" : "全选"}</button>
+      ${g.reserved ? "" : `<span class="act-sep"></span>
+      <button class="iBtn danger" id="btnDelGroup" title="删除分组">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg>
+      </button>`}
+    </span>
+    <span class="r-err" id="rErr" style="display:none">已有同名分组</span>
+  </div>`;
+
+  if (editing) { const el = $("#rEdit"); el.focus(); el.select(); }
+}
+
+/* ── 右栏列表 ── */
+function renderMembers(){
+  const g = groups.find(x => x.id === state.sel);
+  const q = state.query.trim().toLowerCase();
+  const list = byGroup(g.id).filter(m => matches(m, q));
+
+  if (!list.length) {
+    const IC_MAG = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/></svg>`;
+    const IC_PLUS = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>`;
+    let body;
+    if (q) {
+      // 全局命中数决定空态语义：本组没有但别处有时给"跳过去"，全都不到才说"没有匹配"。
+      const globalHit = members.filter(m => matches(m, q)).length;
+      const other = groups.find(g => g.id !== state.sel && hitCount(g.id, q) > 0);
+      body = globalHit === 0
+        ? `<div class="box"><div class="ic">${IC_MAG}</div>
+             <b>所有分组里都没有匹配</b>
+             <span>“${esc(state.query)}” 没有命中任何分组名、会话名或地址</span>
+           </div><button class="btn-sm" id="btnClearQ">清除搜索</button>`
+        : `<div class="box"><div class="ic">${IC_MAG}</div>
+             <b>本组没有匹配</b>
+             <span>其他分组里还有 ${globalHit} 个结果</span>
+           </div>${other ? `<button class="btn-sm" data-jump="${other.id}">跳到「${esc(other.name)}」</button>` : ""}`;
+    } else {
+      body = `<div class="box" id="emptyDrop">
+          <div class="ic">${IC_PLUS}</div>
+          <b>把会话拖到这里</b>
+          <span>或用底部批量条的「移动到」从其他组移入</span>
+        </div>`;
+    }
+    mList.innerHTML = `<div class="m-empty">${body}</div>`;
+    return;
+  }
+
+  mList.innerHTML = list.map(m => {
+    const picked = state.picked.has(m.id);
+    // 组名是纯数字时补个「组」字，否则行尾 chip 只剩一个孤零零的数字。
+    const gn = gName(m.group);
+    const tagLabel = /^\d+$/.test(gn) ? "组 " + gn : gn;
+    // 边界按**全组顺序**算（不是过滤后的）：过滤态下"上移一格"可能落到看不见的位置，
+    // 所以搜索时直接禁用整组排序按钮，避免"点了没反应 / 效果看不见"。
+    const full = byGroup(m.group);
+    const gi = full.findIndex(x => x.id === m.id);
+    const canUp = !q && gi > 0;
+    const canDown = !q && gi >= 0 && gi < full.length - 1;
+    return `<div class="m-row ${picked ? "picked" : ""}" data-m="${m.id}" draggable="true">
+      <input class="m-ck" type="checkbox" ${picked ? "checked" : ""} data-ck="${m.id}">
+      <span class="m-ico">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="16" rx="2.5"/><path d="M6.5 9l2.6 3-2.6 3M12.5 15h5"/></svg>
+      </span>
+      <span class="m-main">
+        <span class="m-nm">${esc(m.name)}</span>
+        <span class="m-ad">${esc(m.user ? m.user + "@" + m.host : m.host)}</span>
+      </span>
+      <span class="m-tag" style="--c:${gColor(m.group) || "#6f7176"}"><i></i>${esc(tagLabel)}</span>
+      <span class="mv">
+        <button data-mv="m:${m.id}:-1" title="${canUp ? "上移" : "已在首位"}"${canUp ? "" : " disabled"}>${MV_UP}</button>
+        <button data-mv="m:${m.id}:1" title="${canDown ? "下移" : "已在末位"}"${canDown ? "" : " disabled"}>${MV_DOWN}</button>
+      </span>
+    </div>`;
+  }).join("");
+}
+
+/* ── 上移 / 下移 ──
+   两条路径共用同一套数组操作：行内 ↑↓（单条，勾选多条时整块）、拖拽。
+   渲染顺序就是 members / groups 的数组顺序，所以"移动"等于改数组里的位置。 */
+function moveGroup(gid, dir){
+  const i = groups.findIndex(g => g.id === gid);
+  const j = i + dir;
+  if (i < 1 || j < 1 || j >= groups.length) return;   // 默认组固定第一位，不能移
+  [groups[i], groups[j]] = [groups[j], groups[i]];
+  render();
+}
+function moveMember(id, dir){
+  const i = members.findIndex(m => m.id === id);
+  if (i < 0) return;
+  // 只在同组内相邻位置间换 —— 跨越别的组没有意义（那属于"移动分组"）
+  const gid = members[i].group;
+  const sib = members.map((m, k) => ({ m, k })).filter(x => x.m.group === gid);
+  const pos = sib.findIndex(x => x.m.id === id);
+  const tgt = sib[pos + dir];
+  if (!tgt) return;
+  [members[i], members[tgt.k]] = [members[tgt.k], members[i]];
+  render();
+}
+function movePickedBy(dir){
+  const gid = state.sel;
+  const ids = byGroup(gid).map(m => m.id);
+  const sel = ids.filter(id => state.picked.has(id));
+  if (!sel.length) return;
+  const rest = ids.filter(id => !state.picked.has(id));
+  // 锚点 = 第一条选中项之前还有多少条未选中（即整块在 rest 里的落点）
+  const firstIdx = ids.indexOf(sel[0]);
+  const before = ids.slice(0, firstIdx).filter(id => !state.picked.has(id)).length;
+  const target = Math.max(0, Math.min(rest.length, before + dir));
+  if (target === before) return;                      // 已经贴边
+  rest.splice(target, 0, ...sel);
+  // 写回：同组成员仍占它们在 members 里的原槽位，只是换人
+  const slots = [];
+  members.forEach((m, k) => { if (m.group === gid) slots.push(k); });
+  const byId = new Map(members.map(m => [m.id, m]));
+  const next = members.slice();
+  slots.forEach((slot, k) => { next[slot] = byId.get(rest[k]); });
+  members = next;
+  render();
+}
+
+/* 点行尾 ↑↓ 时先看勾选：那条在勾选集合里、且勾了 ≥2 条 → 整块移动（批量语义）；
+   否则只移这一条。判据是**屏幕上看得见的勾选态**，不依赖"你刚才点过哪一栏"——
+   之前那版 Alt+↑↓ 按最近交互的栏决定排组还是排成员，规则隐式到无法预期，已废弃。 */
+function moveByButton(kind, id, dir){
+  if (kind === "g") { moveGroup(id, dir); return; }
+  if (state.picked.size > 1 && state.picked.has(id)) { movePickedBy(dir); return; }
+  moveMember(id, dir);
+}
+
+/* ── 勾选 ──
+   复选框和整行都能改勾选：行本身就是最大的点按目标（用户直觉），
+   拖拽排序不会误触 —— HTML5 drag 要位移约 5px 才起手，纯点击不触发 dragstart；
+   范围勾选必须按**显示顺序**取区间：排序模式下列表顺序与数据顺序不同。 */
+function togglePick(id, shift){
+  const list = byGroup(state.sel).filter(m => matches(m, state.query.trim().toLowerCase()));
+  if (shift && state.anchor) {
+    const a = list.findIndex(m => m.id === state.anchor);
+    const b = list.findIndex(m => m.id === id);
+    if (a >= 0 && b >= 0) {
+      const [lo, hi] = a < b ? [a, b] : [b, a];
+      const on = !state.picked.has(id);
+      for (let i = lo; i <= hi; i++) on ? state.picked.add(list[i].id) : state.picked.delete(list[i].id);
+      renderMembers(); renderBatch(); renderHead();
+      return;
+    }
+  }
+  state.picked.has(id) ? state.picked.delete(id) : state.picked.add(id);
+  state.anchor = id;
+  renderMembers(); renderBatch(); renderHead();
+}
+
+/* ── 批量条 ── */
+function renderBatch(){
+  const g = groups.find(x => x.id === state.sel);
+  const ids = byGroup(g.id).map(m => m.id);
+  for (const id of [...state.picked]) if (!members.find(m => m.id === id)) state.picked.delete(id);
+  const n = state.picked.size;
+  $("#batchBar").classList.toggle("on", n > 0);
+  $("#pickN").textContent = n;
+  $("#btnUnGroup").style.display = g.reserved ? "none" : "";
+}
+
+function render(){
+  // 默认组是兜底桶：成员清空后不占位置。若此刻正停在它上面，
+  // 自动落到第一个还有成员的组（否则右栏头部会指向一个左栏不存在的组）。
+  if (state.sel === "system" && byGroup("system").length === 0) {
+    const next = groups.find(x => x.id !== "system" && byGroup(x.id).length > 0)
+              || groups.find(x => x.id !== "system");
+    if (next) state.sel = next.id;
+  }
+  renderGroups(); renderHead(); renderMembers(); renderBatch(); closePops(); hideTip();
+  // 输入框右端清除键：有内容才渐显（搜索框 / 新建分组框同一套）
+  $("#searchBox").classList.toggle("has-clear", !!state.query.trim());
+  // 新建态隐藏底部「＋ 新建分组」：输入框已在列表末尾占位，同一动作不留两个入口
+  $("#btnNew").style.display = state.creating ? "none" : ""; }
+
+/* ── 浮层定位 ── */
+function placePop(pop, anchorRect){
+  const r = gm.getBoundingClientRect();
+  pop.classList.add("on");
+  const pw = pop.offsetWidth, ph = pop.offsetHeight;
+  let x = anchorRect.left - r.left;
+  let y = anchorRect.bottom - r.top + 6;
+  x = Math.max(8, Math.min(x, r.width - pw - 8));
+  if (y + ph > r.height - 8) y = anchorRect.top - r.top - ph - 6;
+  pop.style.left = x + "px"; pop.style.top = Math.max(8, y) + "px";
+}
+
+function closePops(){
+  $("#popAccent").classList.remove("on");
+  $("#popPalette").classList.remove("on");
+  $("#popMenu").classList.remove("on");
+  if (state.keysOpen) { state.keysOpen = false; $("#popKeys").classList.remove("on"); }
+  state.colorFor = null;
+}
+
+/* ── 色板 ── */
+/* ── 强调色同款选色弹框 ──
+   数据与主程序 ACCENT_PRESETS 同源（src/theme/palettes.rs，47 项）。
+   交互为两段式：点色块只改 pending，「应用」才落盘；取消 / 关闭还原。 */
+const ACCENTS = [
+  ["MTerm 青","#1FC8B4"],["青柠","#C8FF00"],["茶色","#FFC100"],["紫水晶色","#AB47BC"],
+  ["水蓝色","#5CCFE6"],["海蓝宝石色","#64FFDD"],["仿紫色","#651FFF"],["绝命毒药色","#368A3F"],
+  ["洋红","#E1306C"],["碳素色","#424242"],["咖啡色","#795548"],["珊瑚色","#FF7F6B"],
+  ["橙色","#F0862C"],["蟹青色","#FFE831"],["宝蓝色","#2979F5"],["鲜蓝色","#73D8FF"],
+  ["深红色","#E916B5"],["金色","#FFC069"],["铅黑色","#616161"],["靛蓝色","#2F51B5"],
+  ["薰衣草色","#7E57C2"],["白光色","#FAFAFA"],["鲜绿色","#7CB342"],["橘黄色","#FFA565"],
+  ["淡紫色","#DFBFFF"],["薄荷色","#95E0C1"],["霓虹色","#1D49B1"],["海星色","#546E7A"],
+  ["琥珀橙","#FF9B0B"],["夜色","#676E9A"],["苔藓色","#B1C784"],["植物红","#B71C1C"],
+  ["玫瑰色","#F279B9"],["鲑鱼色","#F29E7B"],["沙色","#D9AE91"],["灰色","#9E9E9E"],
+  ["天空色","#64FFFF"],["石板色","#607D8B"],["钢色","#B9B119"],["草绿粉","#FF40CC"],
+  ["青绿色","#089B8B"],["番茄色","#F44333"],["绿松石色","#88CBBC"],["水色","#42A5F5"],
+  ["黄绿色","#A5FF80"],["品牌蓝","#0969DA"],["翡翠绿","#29A383"]
+];
+
+function isDarkHex(hex){
+  const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+  return (0.299*r + 0.587*g + 0.114*b) < 140;
+}
+const acState = { pending: "", recent: [] };
+
+function openAccent(gid, anchor){
+  state.colorFor = gid;
+  acState.pending = gid === "__new" ? (state.newColor || autoColor()) : gColor(gid);
+  renderAccent();
+  $("#popAccent").classList.add("on");
+  placePop($("#popAccent"), anchor.getBoundingClientRect());
+}
+
+function renderAccent(){
+  const cur = state.colorFor === "__new" ? (state.newColor || autoColor()) : gColor(state.colorFor);
+  $("#acGrid").innerHTML = ACCENTS.map(a => {
+    const hex = a[1];
+    const on = hex.toLowerCase() === String(acState.pending).toLowerCase();
+    return '<button class="ac-sw' + (on ? " on" : "") + '" data-hex="' + hex + '" style="background:' + hex + ';color:' + (isDarkHex(hex) ? "#fff" : "#101314") + '"><b>' + a[0] + '</b><span>' + hex + '</span></button>';
+  }).join("");
+  const rc = $("#acRecent");
+  rc.style.display = acState.recent.length ? "flex" : "none";
+  rc.innerHTML = "<span>最近</span>" + acState.recent.map(h =>
+    '<i class="rc" data-hex="' + h + '" style="background:' + h + '"></i>').join("");
+  $("#acSelDot").style.background = acState.pending;
+  $("#acSelHex").textContent = acState.pending;
+  const curDot = $("#acCur"); if (curDot) curDot.style.background = cur;
+}
+
+function applyAccent(){
+  const hex = acState.pending;
+  acState.recent = [hex].concat(acState.recent.filter(x => x.toLowerCase() !== hex.toLowerCase())).slice(0, 8);
+  setColor(state.colorFor, hex);
+}
+
+/* ── 调色盘子弹框（色轮 + 明度 + RGB/HSV/HSL + HEX） ── */
+const pl = { mode:"rgb", h:0, s:0, v:1, dragging:false };
+function plHsv2rgb(h,s,v){ const f=(n)=>{const k=(n+h/60)%6;return v-v*s*Math.max(0,Math.min(k,4-k,1));};return [Math.round(f(5)*255),Math.round(f(3)*255),Math.round(f(1)*255)]; }
+function plRgb2hsv(r,g,b){ r/=255;g/=255;b/=255;const mx=Math.max(r,g,b),mn=Math.min(r,g,b),d=mx-mn;let h=0;if(d){if(mx===r)h=((g-b)/d)%6;else if(mx===g)h=(b-r)/d+2;else h=(r-g)/d+4;h=Math.round(h*60);if(h<0)h+=360;}return [h,mx?Math.round(d/mx*100):0,Math.round(mx*100)]; }
+function plRgb2hex(r,g,b){ return "#"+[r,g,b].map(x=>x.toString(16).padStart(2,"0")).join("").toUpperCase(); }
+function plHex2rgb(hex){ const n2=parseInt(hex.slice(1),16);return [(n2>>16)&255,(n2>>8)&255,n2&255]; }
+function plRgb2hsl(r,g,b){ r/=255;g/=255;b/=255;const mx=Math.max(r,g,b),mn=Math.min(r,g,b),d=mx-mn,l=(mx+mn)/2;let h=0,s2=0;if(d){s2=d/(1-Math.abs(2*l-1));if(mx===r)h=((g-b)/d)%6;else if(mx===g)h=(b-r)/d+2;else h=(r-g)/d+4;h=Math.round(h*60);if(h<0)h+=360;}return [h,Math.round(s2*100),Math.round(l*100)]; }
+function plHsl2rgb(h,s2,l){ s2/=100;l/=100;const f=(n)=>{const k=(n+h/30)%12;const a=s2*Math.min(l,1-l);return l-a*Math.max(-1,Math.min(k-3,9-k,1));};return [Math.round(f(0)*255),Math.round(f(8)*255),Math.round(f(4)*255)]; }
+function plHex(){ return plRgb2hex.apply(null, plHsv2rgb(pl.h, pl.s/100, pl.v)); }
+function plSet(hex){ const rgb = plHex2rgb(hex); const hsv = plRgb2hsv(rgb[0],rgb[1],rgb[2]); pl.h=hsv[0]; pl.s=hsv[1]; pl.v=hsv[2]/100; }
+
+function drawWheel(){
+  const c = document.getElementById("plWheel"); if (!c || !c.getContext) return;
+  const ctx = c.getContext("2d");
+  const img = ctx.createImageData(176,176);
+  for (let y=0;y<176;y++) for (let x=0;x<176;x++){
+    const dx=x-88, dy=y-88, r=Math.sqrt(dx*dx+dy*dy);
+    const i=(y*176+x)*4;
+    if (r>88){ img.data[i+3]=0; continue; }
+    let ang=Math.atan2(dy,dx)*180/Math.PI; if(ang<0)ang+=360;
+    const rgb=plHsv2rgb(ang, Math.min(1,r/88), 1);
+    img.data[i]=rgb[0]; img.data[i+1]=rgb[1]; img.data[i+2]=rgb[2]; img.data[i+3]=255;
+  }
+  ctx.putImageData(img,0,0);
+}
+
+function plContrast(hex){
+  const f=(x)=>{x/=255;return x<=0.03928?x/12.92:Math.pow((x+0.055)/1.055,2.4);};
+  const c1=plHex2rgb(hex), c2=plHex2rgb("#212429");
+  const l1=0.2126*f(c1[0])+0.7152*f(c1[1])+0.0722*f(c1[2]);
+  const l2=0.2126*f(c2[0])+0.7152*f(c2[1])+0.0722*f(c2[2]);
+  return (Math.max(l1,l2)+0.05)/(Math.min(l1,l2)+0.05);
+}
+
+function renderPl(){
+  const hex = plHex();
+  const rad = pl.s/100 * 84, ang = pl.h * Math.PI/180;
+  const cx = 88 + Math.cos(ang)*rad, cy = 88 + Math.sin(ang)*rad;
+  const cur = document.getElementById("plCursor");
+  if (cur){ cur.style.left = cx+"px"; cur.style.top = cy+"px"; cur.style.background = hex; }
+  const vb = document.getElementById("plVal");
+  if (vb) vb.style.background = "linear-gradient(" + plRgb2hex.apply(null, plHsv2rgb(pl.h,pl.s/100,1)) + ", #000)";
+  const vc = document.getElementById("plValCur");
+  if (vc){ vc.style.top = ((1-pl.v)*168) + "px"; vc.style.background = hex; }
+  const rgb = plHex2rgb(hex);
+  const mk = (label, val, max, bg) => '<div class="pl-row"><em>'+label+'</em><input type="range" min="0" max="'+max+'" value="'+val+'" data-k="'+label+'" style="background:linear-gradient(90deg,'+bg+')"><b>'+val+'</b></div>';
+  let rows = "";
+  if (pl.mode === "rgb"){
+    rows = mk("R",rgb[0],255,"#000,#f00,#fff")+mk("G",rgb[1],255,"#000,#0f0,#fff")+mk("B",rgb[2],255,"#000,#00f,#fff");
+  } else if (pl.mode === "hsv"){
+    rows = mk("H",pl.h,360,"#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00")
+         + mk("S",pl.s,100,"#808080," + plRgb2hex.apply(null, plHsv2rgb(pl.h,100,pl.v)))
+         + mk("V",Math.round(pl.v*100),100,"#000," + hex);
+  } else {
+    const hsl = plRgb2hsl(rgb[0],rgb[1],rgb[2]);
+    rows = mk("H",hsl[0],360,"#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00")
+         + mk("S",hsl[1],100,"#808080," + plRgb2hex.apply(null, plHsl2rgb(pl.h,100,50)))
+         + mk("L",hsl[2],100,"#000," + hex + ",#fff");
+  }
+  const pr = document.getElementById("plRows"); if (pr) pr.innerHTML = rows;
+  const ph = document.getElementById("plHex");
+  if (ph && document.activeElement !== ph) ph.value = hex;
+  const ok = document.getElementById("plOk");
+  if (ok){
+    const c = plContrast(hex);
+    const good = c >= 3;
+    ok.textContent = (good ? "✓" : "✗") + " 对面板对比度" + (good ? "达标" : "不足") + "（" + c.toFixed(1) + ":1）";
+    ok.className = good ? "pl-ok" : "pl-ok bad";
+  }
+}
+
+function openPalette(){
+  plSet(acState.pending);
+  renderPl();
+  $("#popPalette").classList.add("on");
+}
+
+function bindColorUI(){
+  drawWheel();
+  document.getElementById("acGrid").addEventListener("click", (e) => {
+    const sw = e.target.closest(".ac-sw"); if (!sw) return;
+    acState.pending = sw.dataset.hex; renderAccent();
+  });
+  document.getElementById("acRecent").addEventListener("click", (e) => {
+    const rc = e.target.closest(".rc"); if (!rc) return;
+    acState.pending = rc.dataset.hex; renderAccent();
+  });
+  document.getElementById("btnAcRand").addEventListener("click", () => {
+    acState.pending = ACCENTS[Math.floor(Math.random()*ACCENTS.length)][1]; renderAccent();
+  });
+  document.getElementById("btnAcCancel").addEventListener("click", () => { closePops(); });
+  document.getElementById("btnAcApply").addEventListener("click", () => { applyAccent(); });
+  document.getElementById("btnPalette").addEventListener("click", () => { openPalette(); });
+  document.getElementById("plTabs").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    pl.mode = b.dataset.m;
+    const bs = document.querySelectorAll("#plTabs button");
+    for (const x of bs) x.classList.toggle("on", x === b);
+    renderPl();
+  });
+  document.getElementById("plRows").addEventListener("input", (e) => {
+    const inp = e.target; if (inp.tagName !== "INPUT") return;
+    const v = +inp.value, k = inp.dataset.k;
+    const rgb = plHex2rgb(plHex());
+    let nh = pl.h, ns = pl.s, nv = pl.v;
+    if (pl.mode === "rgb"){
+      const R = k==="R"?v:rgb[0], G = k==="G"?v:rgb[1], B = k==="B"?v:rgb[2];
+      const hs = plRgb2hsv(R,G,B); nh = hs[0]; ns = hs[1]; nv = hs[2]/100;
+    } else if (pl.mode === "hsv"){
+      if (k==="H") nh = v; if (k==="S") ns = v; if (k==="V") nv = v/100;
+    } else {
+      const hsl = plRgb2hsl(rgb[0],rgb[1],rgb[2]);
+      const H = k==="H"?v:hsl[0], S = k==="S"?v:hsl[1], L = k==="L"?v:hsl[2];
+      const hs = plRgb2hsv.apply(null, plHsl2rgb(H,S,L)); nh = hs[0]; ns = hs[1]; nv = hs[2]/100;
+    }
+    pl.h = ((nh%360)+360)%360; pl.s = Math.max(0,Math.min(100,ns)); pl.v = Math.max(0,Math.min(1,nv));
+    renderPl();
+  });
+  document.getElementById("plHex").addEventListener("input", (e) => {
+    const v = e.target.value.trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(v)){ plSet(v); renderPl(); }
+  });
+  const wheel = document.getElementById("plWheel");
+  const pickWheel = (e) => {
+    const rect = wheel.getBoundingClientRect();
+    const x = e.clientX - rect.left - 88, y = e.clientY - rect.top - 88;
+    const r = Math.min(88, Math.sqrt(x*x+y*y));
+    let ang = Math.atan2(y,x)*180/Math.PI; if (ang<0) ang+=360;
+    pl.h = ang; pl.s = Math.round(r/88*100);
+    renderPl();
+  };
+  wheel.addEventListener("mousedown", (e) => { pl.dragging = "wheel"; pickWheel(e); });
+  const val = document.getElementById("plVal");
+  const pickVal = (e) => {
+    const rect = val.getBoundingClientRect();
+    pl.v = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+    renderPl();
+  };
+  val.addEventListener("mousedown", (e) => { pl.dragging = "val"; pickVal(e); });
+  document.addEventListener("mousemove", (e) => {
+    if (!pl.dragging) return;
+    if (pl.dragging === "wheel") pickWheel(e); else pickVal(e);
+  });
+  document.addEventListener("mouseup", () => { pl.dragging = false; });
+  document.getElementById("btnPlCancel").addEventListener("click", () => { document.getElementById("popPalette").classList.remove("on"); });
+  document.getElementById("btnPlOk").addEventListener("click", () => {
+    acState.pending = plHex(); renderAccent();
+    document.getElementById("popPalette").classList.remove("on");
+  });
+}
+bindColorUI();
+
+
+/* ── 事件 ── */
+document.addEventListener("click", (e) => {
+  const t = e.target;
+
+  // 清除搜索（放在最前：别被后面的 closePops / 组行分支截走）
+  if (t.closest("#btnClearSearch")) {
+    e.preventDefault();
+    $("#q").value = "";
+    state.query = "";
+    state.picked.clear();
+    render();
+    $("#q").focus();
+    return;
+  }
+  // 清空「新建分组」输入框：留下输入框、把焦点放回，不退出新建态
+  if (t.closest("#btnClearNew")) {
+    e.preventDefault();
+    const inp = $("#newName");
+    if (inp) { inp.value = ""; inp.focus(); }
+    const box = $("#gNewBox");
+    if (box) box.classList.remove("has-clear");
+    return;
+  }
+  // 点搜索框任意位置都聚焦输入（.search 从 label 换成了 div，不再靠浏览器默认行为）
+  if (t.closest("#searchBox")) $("#q").focus();
+
+  // 行内上移/下移（悬停出现）：必须排在"点行勾选 / 切组"之前，否则会被吞掉
+  const mvBtn = t.closest("[data-mv]");
+  if (mvBtn) {
+    const parts = mvBtn.dataset.mv.split(":");
+    moveByButton(parts[0], parts[1], +parts[2]);
+    return;
+  }
+
+  // 关闭浮层（点浮层自己不算）
+  if (!t.closest(".pop")) {
+    if (!t.closest("[data-dot]") && !t.closest("#btnKeys")) closePops();
+  }
+
+  // 组行：选中（左栏只做导航与拖排序，组属性改在右栏头部）
+  const row = t.closest(".g-row");
+  if (row && !t.closest("[data-dot]")) {
+    if (t.closest("input")) return;   // 正在行内改名：点输入框不该切组
+    if (state.sel !== row.dataset.g) {
+      commitEdit();
+      state.sel = row.dataset.g;
+      state.picked.clear(); state.delFor = null; state.anchor = null;
+      render();
+    }
+    return;
+  }
+
+  // 组属性：删除（唯一入口，仍在删除条上二次确认）
+  const delGroup = t.closest("#btnDelGroup");
+  if (delGroup) {
+    commitEdit();
+    state.delFor = state.sel;
+    state.delTarget = "system";
+    render();
+    return;
+  }
+
+
+  // 色点
+  const dot = t.closest("[data-dot]");
+  if (dot) { e.stopPropagation(); openAccent(dot.dataset.dot, dot); return; }
+
+  // 组名走双击（见下方 dblclick），单击不做任何事 —— 避免"想点标题却进了编辑框"
+
+  // 勾选：复选框 或 整行。双击只算一次，否则连点两下会勾了又取消。
+  const ck = t.closest("[data-ck]");
+  if (ck) { togglePick(ck.dataset.ck, e.shiftKey); return; }
+  const mrow = t.closest(".m-row");
+  if (mrow && e.detail <= 1) {
+    togglePick(mrow.dataset.m, e.shiftKey);
+    return;
+  }
+
+  // 全选
+  if (t.closest("#btnAll")) {
+    const list = byGroup(state.sel).filter(m => matches(m, state.query.trim().toLowerCase()));
+    const all = list.every(m => state.picked.has(m.id));
+    list.forEach(m => all ? state.picked.delete(m.id) : state.picked.add(m.id));
+    renderMembers(); renderBatch(); renderHead();
+    return;
+  }
+
+  // 批量动作
+  if (t.closest("#btnClearPick")) { state.picked.clear(); renderMembers(); renderBatch(); renderHead(); return; }
+  if (t.closest("#btnUnGroup")) { movePicked("system"); return; }
+  if (t.closest("#btnMove")) { openMoveMenu(t.closest("#btnMove")); return; }
+  const mv = t.closest("[data-move]");
+  if (mv) { movePicked(mv.dataset.move); return; }
+
+  // 删除条
+  if (t.closest("#delCancel")) { state.delFor = null; renderHead(); return; }
+  if (t.closest("#delOk")) { doDelete(); return; }
+
+  // 空态里「跳到别的组」
+  const jump = t.closest("[data-jump]");
+  if (jump) { state.sel = jump.dataset.jump; render(); return; }
+
+  // 新建
+  if (t.closest("#btnNew")) { state.creating = true; state.newColor = ""; renderGroups(); return; }
+  if (t.closest("#btnClearQ")) { $("#q").value = ""; state.query = ""; render(); return; }
+
+  // 快捷键气泡
+  const kb = t.closest("#btnKeys");
+  if (kb) {
+    state.keysOpen = !state.keysOpen;
+    const pop = $("#popKeys");
+    if (state.keysOpen) placePop(pop, kb.getBoundingClientRect()); else pop.classList.remove("on");
+    return;
+  }
+  if (t.closest("#btnClose") || t.closest("#btnDone")) { commitEdit(); flash("已保存并关闭（演示稿仅提示）"); return; }
+
+  // 点空白 = 确认改名（与 Enter 等价）。点到输入框自己不提交，否则没法继续打字。
+  if ((state.editing || state.creating) && !t.closest("input")) commitEdit();
+});
+
+/* 移动菜单：借用 popMenu 容器 */
+function openMoveMenu(anchor){
+  const g = groups.find(x => x.id === state.sel);
+  const pop = $("#popMenu");
+  pop.innerHTML = groups.filter(x => x.id !== g.id).map(x =>
+    `<button data-move="${x.id}">
+       <span style="flex:0 0 auto;align-self:center;width:9px;height:9px;border-radius:50%;display:block;${x.reserved ? "box-shadow:inset 0 0 0 1.5px #6f7176;background:transparent" : `background:${x.color || "#3a3e46"}`}"></span>
+       ${esc(x.name)}
+     </button>`).join("") + `<div class="sep"></div><div style="padding:4px 9px;font-size:10.5px;color:#6f7176">已选 ${state.picked.size} 项</div>`;
+  placePop(pop, anchor.getBoundingClientRect());
+}
+
+function movePicked(target){
+  const n = state.picked.size;
+  members.forEach(m => { if (state.picked.has(m.id)) m.group = target; });
+  state.picked.clear();
+  closePops();
+  render();
+  flash(`${n} 个会话 → ${gName(target)}`);
+}
+
+function setColor(gid, hex){
+  if (gid === "__new") {
+    // 只改新建行里那个色点，**不重建列表** —— 重建会把已输入的名字和焦点一起冲掉
+    state.newColor = hex;
+    const dot = $("#newColorDot");
+    if (dot) dot.style.setProperty("--c", hex);
+    closePops();
+    return;
+  }
+  const g = groups.find(x => x.id === gid);
+  if (g) g.color = hex;
+  closePops(); render();
+}
+
+function doDelete(){
+  const gid = state.delFor;
+  const target = state.delTarget || "system";
+  const n = byGroup(gid).length;
+  members.forEach(m => { if (m.group === gid) m.group = target; });
+  groups = groups.filter(g => g.id !== gid);
+  state.delFor = null;
+  state.sel = target;
+  state.picked.clear();
+  render();
+  flash(`分组已删除${n ? `，${n} 个会话移到「${gName(target)}」` : ""}`);
+}
+
+/* 改名提交 */
+function commitEdit(){
+  if (state.editing) {
+    // 两个入口：左栏行内（gRowEdit）与右栏头部（rEdit），读对应的那个输入框
+    const el = state.editWhere === "left" ? $("#gRowEdit") : $("#rEdit");
+    if (el) {
+      const v = el.value.trim();
+      const g = groups.find(x => x.id === state.editing);
+      const dup = groups.some(x => x.id !== state.editing && x.name === v);
+      if (!v) { /* 空名 → 放弃 */ }
+      else if (dup) {
+        el.classList.add("err");
+        // 左栏行内改名没有位置放文案，用底栏提示；右栏有常驻的 rErr
+        if (state.editWhere === "right") { const e2 = $("#rErr"); if (e2) e2.style.display = "block"; }
+        else flash("已有同名分组");
+        return;
+      }
+      else if (g) g.name = v;
+    }
+    state.editing = null;
+    state.editWhere = "";
+  }
+  if (state.creating) {
+    const el = $("#newName");
+    const v = el ? el.value.trim() : "";
+    // 重名：**留在新建态并提示**，不静默关掉（上一版就是直接关，用户以为建成了）
+    if (v && groups.some(g => g.name === v)) {
+      const box = $("#gNewBox");
+      if (box) box.classList.add("err");
+      const er = $("#gNewErr"); if (er) er.style.display = "block";
+      if (el) el.focus();
+      return;
+    }
+    if (v) {
+      const id = "g" + Math.random().toString(36).slice(2, 7);
+      // 颜色：手选优先，否则自动挑一个没被占用的
+      groups.push({ id, name: v, color: state.newColor || autoColor() });
+      state.sel = id;
+    }
+    state.creating = false;
+    state.newColor = "";
+  }
+  render();
+}
+
+/* 输入事件 */
+document.addEventListener("input", (e) => {
+  if (e.target.id === "q") {
+    state.query = e.target.value;
+    state.picked.clear();
+    const q = state.query.trim().toLowerCase();
+    // 搜索是全局入口：当前组 0 命中、别处有命中时自动跳过去。
+    // 否则用户得挨个点左栏组去试，搜索就退化成"只能搜当前组"。
+    if (q && !hitCount(state.sel, q)) {
+      const first = groups.find(g => hitCount(g.id, q) > 0);
+      if (first) { state.sel = first.id; state.delFor = null; state.editing = null; }
+    }
+    render();
+    return;
+  }
+  if (e.target.id === "newName") {
+    // 新建态用的是原生 input 事件，不走 render（否则每敲一个字都会重建列表、丢焦点）
+    const v = e.target.value.trim();
+    const dup = !!v && groups.some(g => g.name === v);
+    const box = $("#gNewBox");
+    if (box) {
+      box.classList.toggle("err", dup);
+      box.classList.toggle("has-clear", !!e.target.value);
+    }
+    const er = $("#gNewErr"); if (er) er.style.display = dup ? "block" : "none";
+    return;
+  }
+  if (e.target.id === "rEdit" || e.target.id === "gRowEdit") {
+    const v = e.target.value.trim();
+    const dup = groups.some(x => x.id !== state.editing && x.name === v);
+    e.target.classList.toggle("err", dup);
+    if (e.target.id === "rEdit") {
+      const err = $("#rErr"); if (err) err.style.display = dup ? "block" : "none";
+    }
+  }
+});
+
+/* 双击改名：左右两处组名统一这个手势；单击不进入编辑（避免"想点标题却开了编辑框"）。
+   ⚠️ 落 Slint 时要自己判定：TouchArea 没有原生 double-click，
+   用上次点击时间在 350ms 内 + 同一目标再按下视为双击。 */
+document.addEventListener("dblclick", (e) => {
+  const t = e.target;
+
+  // 右栏组名
+  const nm = t.closest("[data-name]");
+  if (nm) {
+    const g = groups.find(x => x.id === nm.dataset.name);
+    if (g && !g.reserved) { state.editing = g.id; state.editWhere = "right"; renderHead(); }
+    return;
+  }
+
+  // 左栏组名：**就地行内改名**（不跳到右栏）。色点 / 拖拽手柄除外
+  const row = t.closest(".g-row");
+  if (row && t.closest(".g-main")) {
+    const g = groups.find(x => x.id === row.dataset.g);
+    if (!g || g.reserved) return;
+    commitEdit();
+    state.sel = g.id;
+    state.picked.clear();
+    state.delFor = null;
+    state.editing = g.id;
+    state.editWhere = "left";
+    render();
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  const inInput = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+  if (e.target.id === "rEdit" || e.target.id === "gRowEdit" || e.target.id === "newName") {
+    if (e.key === "Enter") { e.preventDefault(); commitEdit(); return; }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      state.editing = null; state.editWhere = ""; state.creating = false; render(); return;
+    }
+  }
+  if (inInput) return;
+
+  // 焦点不在输入框时按 Enter 也提交（例如点开编辑后焦点被别处抢走）
+  if (e.key === "Enter" && (state.editing || state.creating)) { e.preventDefault(); commitEdit(); return; }
+  if (e.key === "Escape") {
+    if (state.delFor) { state.delFor = null; renderHead(); return; }
+    if (state.editing || state.creating) { state.editing = null; state.editWhere = ""; state.creating = false; render(); return; }
+    // 搜索有内容时 Esc 先清搜索，再按一次才关窗（与删除条/改名的优先级同一条链）
+    if (state.query) { $("#q").value = ""; state.query = ""; render(); $("#q").focus(); return; }
+    flash("已保存并关闭（演示稿仅提示）"); return;
+  }
+  if (e.key === "F2") {
+    const g = groups.find(x => x.id === state.sel);
+    // F2 在列表语境下 = 就地改名（与双击左栏同一个落点）
+    if (g && !g.reserved) { e.preventDefault(); state.editing = g.id; state.editWhere = "left"; render(); }
+    return;
+  }
+  if (e.key === "Delete") {
+    const g = groups.find(x => x.id === state.sel);
+    if (g && !g.reserved) { state.delFor = g.id; state.delTarget = "system"; render(); }
+    return;
+  }
+  if (e.ctrlKey && (e.key === "f" || e.key === "F")) { e.preventDefault(); $("#q").focus(); $("#q").select(); return; }
+  if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+    const i = groups.findIndex(x => x.id === state.sel);
+    const j = Math.max(0, Math.min(groups.length - 1, i + (e.key === "ArrowUp" ? -1 : 1)));
+    if (j !== i) { e.preventDefault(); commitEdit(); state.sel = groups[j].id; state.picked.clear(); state.delFor = null; render(); }
+    return;
+  }
+  if (e.key === " " && state.sel) {
+    // 优先切"最后点过的那一行"（anchor）；没有 anchor 时退化为勾第一条未选的。
+    // 原来是"永远勾第一条未选的"，和空格键"作用于当前项"的直觉不符。
+    e.preventDefault();
+    const list = byGroup(state.sel).filter(m => matches(m, state.query.trim().toLowerCase()));
+    if (!list.length) return;
+    const hasAnchor = state.anchor && list.some(m => m.id === state.anchor);
+    const target = hasAnchor ? state.anchor : (list.find(m => !state.picked.has(m.id)) || list[0]).id;
+    togglePick(target, false);
+  }
+});
+
+/* ── 拖拽 ── */
+let dragIds = [];
+mList.addEventListener("dragstart", (e) => {
+  const row = e.target.closest(".m-row");
+  if (!row) return;
+  const id = row.dataset.m;
+  hideTip();   // 起拖立刻收起悬浮卡，别跟着 ghost 一起飘
+  dragGid = "";                                 // 成员拖拽不碰组顺序
+  dragIds = state.picked.has(id) && state.picked.size > 1 ? [...state.picked] : [id];
+  row.classList.add("dragging");
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", dragIds.join(","));
+});
+mList.addEventListener("dragend", () => {
+  document.querySelectorAll(".m-row.dragging").forEach(el => el.classList.remove("dragging"));
+  document.querySelectorAll(".g-row.drop").forEach(el => {
+    el.classList.remove("drop");
+    const b = el.querySelector(".drop-badge"); if (b) b.remove();
+  });
+  clearDropLine();
+  dragIds = [];
+});
+
+/* ── 组内排序：拖到同一列表的行间 ──
+   与"拖到左栏组行 = 换组"共用一套 dragIds；落在哪个区域由事件源决定，
+   所以两边 dragover 都要清掉对方的高亮，避免两个落点同时亮。 */
+let dropAt = null;
+function clearDropLine(){
+  const l = mList.querySelector(".drop-line");
+  if (l) l.remove();
+  dropAt = null;
+}
+function showDropLine(row, clientY){
+  const r = row.getBoundingClientRect();
+  const after = clientY > r.top + r.height / 2;
+  const mr = mList.getBoundingClientRect();
+  const y = r.top - mr.top + mList.scrollTop + (after ? r.height : 0);
+  let line = mList.querySelector(".drop-line");
+  if (!line) { line = document.createElement("div"); line.className = "drop-line"; mList.appendChild(line); }
+  line.style.top = Math.max(0, y - 1) + "px";
+  dropAt = { id: row.dataset.m, after };
+}
+mList.addEventListener("dragover", (e) => {
+  const row = e.target.closest(".m-row");
+  if (!row || !dragIds.length) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+  showDropLine(row, e.clientY);
+  document.querySelectorAll(".g-row.drop").forEach(el => {
+    el.classList.remove("drop");
+    const b = el.querySelector(".drop-badge"); if (b) b.remove();
+  });
+});
+mList.addEventListener("dragleave", (e) => {
+  if (!mList.contains(e.relatedTarget)) clearDropLine();
+});
+mList.addEventListener("drop", (e) => {
+  if (!dragIds.length || !dropAt) return;
+  e.preventDefault();
+  const moving = dragIds.map(id => members.find(m => m.id === id)).filter(Boolean);
+  const keep = members.filter(m => !dragIds.includes(m.id));
+  let idx = keep.findIndex(m => m.id === dropAt.id);
+  if (idx < 0) idx = keep.length;
+  if (dropAt.after) idx += 1;
+  keep.splice(idx, 0, ...moving);
+  members = keep;
+  clearDropLine();
+  state.picked.clear();
+  dragIds = [];
+  render();
+});
+
+/* ── 左栏：两种拖拽共用一条通道 ──
+   拖组行 = 改组顺序（组间插入线）；拖会话 = 换组（整行高亮 + +N 徽标）。
+   用 dragGid 是否为空分流：两边互斥，否则一次 dragover 会同时画两种落点。 */
+let dragGid = "", gDrop = null;
+function clearGDrop(){
+  const l = gList.querySelector(".g-drop-line");
+  if (l) l.remove();
+  gDrop = null;
+}
+function clearMemberHl(){
+  document.querySelectorAll(".g-row.drop").forEach(el => {
+    el.classList.remove("drop");
+    const b = el.querySelector(".drop-badge"); if (b) b.remove();
+  });
+}
+function showGDrop(row, clientY){
+  if (row.dataset.g === "system") { clearGDrop(); return; }   // 默认组固定第一位
+  const r = row.getBoundingClientRect();
+  const after = clientY > r.top + r.height / 2;
+  const lr = gList.getBoundingClientRect();
+  const y = r.top - lr.top + gList.scrollTop + (after ? r.height : 0);
+  let line = gList.querySelector(".g-drop-line");
+  if (!line) { line = document.createElement("div"); line.className = "g-drop-line"; gList.appendChild(line); }
+  line.style.top = Math.max(0, y - 1) + "px";
+  gDrop = { id: row.dataset.g, after };
+}
+function doGroupDrop(){
+  if (!dragGid || !gDrop) { clearGDrop(); dragGid = ""; return; }
+  const from = groups.findIndex(g => g.id === dragGid);
+  if (from < 1) { clearGDrop(); dragGid = ""; return; }       // 默认组不参与排序
+  const before = groups.map(g => g.id).join(",");
+  const moving = groups.splice(from, 1)[0];
+  let to = groups.findIndex(g => g.id === gDrop.id);
+  if (to < 0) to = groups.length;
+  if (gDrop.after) to += 1;
+  to = Math.max(1, to);                                        // 永远不能越过「默认组」
+  groups.splice(to, 0, moving);
+  const moved = groups.map(g => g.id).join(",") !== before;
+  clearGDrop(); dragGid = "";
+  render();
+  if (moved) flash("分组顺序已更新");
+}
+
+gList.addEventListener("dragstart", (e) => {
+  const row = e.target.closest(".g-row");
+  if (!row) return;
+  if (row.dataset.g === "system") { e.preventDefault(); return; }
+  dragGid = row.dataset.g;
+  dragIds = [];                                                // 与成员拖拽互斥
+  row.classList.add("gdragging");
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", "group:" + dragGid);
+});
+gList.addEventListener("dragend", () => {
+  document.querySelectorAll(".g-row.gdragging").forEach(el => el.classList.remove("gdragging"));
+  clearGDrop();
+  dragGid = "";
+});
+
+gList.addEventListener("dragover", (e) => {
+  const row = e.target.closest(".g-row");
+  if (!row) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+  if (dragGid) { showGDrop(row, e.clientY); clearMemberHl(); return; }
+  clearGDrop();
+  if (!row.classList.contains("drop")) {
+    clearMemberHl();
+    row.classList.add("drop");
+    const badge = document.createElement("span");
+    badge.className = "drop-badge";
+    badge.textContent = "+" + dragIds.length;
+    badge.style.cssText = "flex:0 0 auto;font:700 10px/1 var(--mono);color:var(--ac-ink);background:var(--ac);border-radius:20px;padding:3px 6px";
+    row.appendChild(badge);
+  }
+});
+gList.addEventListener("dragleave", (e) => {
+  const row = e.target.closest(".g-row");
+  if (!row || row.contains(e.relatedTarget)) return;
+  row.classList.remove("drop");
+  const b = row.querySelector(".drop-badge"); if (b) b.remove();
+  if (dragGid && gDrop && gDrop.id === row.dataset.g) clearGDrop();
+});
+gList.addEventListener("drop", (e) => {
+  const row = e.target.closest(".g-row");
+  if (!row) return;
+  e.preventDefault();
+  if (dragGid) { doGroupDrop(); return; }
+  const target = row.dataset.g;
+  const ids = dragIds.length ? dragIds : e.dataTransfer.getData("text/plain").split(",").filter(Boolean);
+  const moving = ids.filter(id => { const m = members.find(x => x.id === id); return m && m.group !== target; });
+  moving.forEach(id => { const m = members.find(x => x.id === id); if (m) m.group = target; });
+  state.picked.clear();
+  dragIds = [];
+  clearMemberHl();
+  render();
+  if (moving.length) flash(`${moving.length} 个会话 → ${gName(target)}`);
+});
+
+/* 组内顺序只有一条路：手动拖拽（行间插入线）。原来那套「按名称/按地址」的
+   选择器已按用户要求移除 —— 组内成员通常就几条，拖一下比先选排序方式更快。 */
+
+/* ── 成员悬浮卡 ──
+   150ms 后才出（与实机 tip-timer 同值）：只是划过列表时不会一路弹卡。
+   键值单行连排、全部主文本色；用户/备注为空就不占行（与侧栏信息卡同口径）。
+   位置：贴鼠标右下角（+16/+14），出界则翻到左侧/上方 —— 卡片 pointer-events:none，
+   所以跟随鼠标时不会打断下面的 hover / 拖拽命中。 */
+let tipTimer = null, tipFor = "", tipOn = false, mouseX = 0, mouseY = 0;
+function tipPlace(){
+  if (!tipOn) return;
+  const tip = $("#mTip");
+  const pr = $("#rSide").getBoundingClientRect();
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  let x = mouseX - pr.left + 16;
+  let y = mouseY - pr.top + 14;
+  if (x + tw > pr.width - 8) x = mouseX - pr.left - tw - 12;   // 右边界不够 → 翻到左侧
+  if (y + th > pr.height - 8) y = mouseY - pr.top - th - 12;    // 下边界不够 → 翻到上方
+  // 用 transform 位移而不是 left/top：跟随鼠标时每帧改 left/top 会触发布局，
+  // 快速移动能看到卡片"慢半拍"；translate3d 走合成层，跟手稳。
+  tip.style.transform = `translate3d(${Math.round(Math.max(6, x))}px, ${Math.round(Math.max(6, y))}px, 0)`;
+}
+function hideTip(){
+  clearTimeout(tipTimer);
+  tipFor = "";
+  tipOn = false;
+  $("#mTip").classList.remove("on");
+}
+function showTip(id){
+  if (dragIds.length) return;
+  clearTimeout(tipTimer);
+  tipTimer = setTimeout(() => {
+    const m = members.find(x => x.id === id);
+    if (!m) return;
+    // 与「tab 悬停卡」同款（ui/app.slint #tab-card-proto 2026-10-21 用户定稿）：
+    // 协议固定首行、全部主文本色、不带分组成员行。
+    const rows = [];
+    if (m.proto) rows.push(["协议", m.proto]);
+    rows.push(["名称", m.name]);
+    if (m.host) rows.push(["主机", m.host]);
+    if (m.user) rows.push(["用户", m.user]);
+    rows.push(["认证", m.auth === "key" ? "密钥" : "密码"]);
+    if (m.note) rows.push(["备注", m.note]);
+    const tip = $("#mTip");
+    tip.innerHTML = rows.map((r) =>
+      `<div class="r"><span class="k">${r[0]}：</span>${esc(r[1])}</div>`).join("");
+    tip.classList.add("on");
+    tipOn = true;
+    tipPlace();
+  }, 150);
+}
+mList.addEventListener("mouseover", (e) => {
+  const row = e.target.closest(".m-row");
+  if (!row || dragIds.length) return;
+  mouseX = e.clientX; mouseY = e.clientY;
+  if (tipFor === row.dataset.m) return;   // 行内子元素间移动不重置计时
+  tipFor = row.dataset.m;
+  showTip(row.dataset.m);
+});
+mList.addEventListener("mousemove", (e) => {
+  mouseX = e.clientX; mouseY = e.clientY;
+  if (tipOn) tipPlace();                  // 跟随鼠标（同一行内也跟）
+});
+mList.addEventListener("mouseout", (e) => {
+  const row = e.target.closest(".m-row");
+  if (row && !row.contains(e.relatedTarget)) hideTip();
+});
+mList.addEventListener("scroll", hideTip);
+
+/* ── 两栏分隔条 ──
+   默认左窄右宽（320 / 约 435）：左栏只装色点+组名+计数，320 足够，
+   多出来的都留给右栏的 user@host 列。220–480 之间拖，双击回 320。 */
+const LEFT_W_DEFAULT = 320;
+const LEFT_W_MIN = 220;
+const LEFT_W_MAX = 480;
+const splitterEl = $("#splitter");
+const gmBody = document.querySelector(".gm-body");
+function setLeftW(px){
+  const w = Math.max(LEFT_W_MIN, Math.min(LEFT_W_MAX, px));
+  gmBody.style.setProperty("--left-w", w + "px");
+}
+let spOn = false, spX = 0, spW = 0;
+splitterEl.addEventListener("pointerdown", (e) => {
+  spOn = true;
+  spX = e.clientX;
+  spW = parseFloat(getComputedStyle(gmBody).getPropertyValue("--left-w")) || LEFT_W_DEFAULT;
+  splitterEl.classList.add("on");
+  try { splitterEl.setPointerCapture(e.pointerId); } catch (_) {}
+  e.preventDefault();
+});
+splitterEl.addEventListener("pointermove", (e) => {
+  if (!spOn) return;
+  setLeftW(spW + (e.clientX - spX));
+});
+const spEnd = () => { spOn = false; splitterEl.classList.remove("on"); };
+splitterEl.addEventListener("pointerup", spEnd);
+splitterEl.addEventListener("pointercancel", spEnd);
+splitterEl.addEventListener("dblclick", () => setLeftW(LEFT_W_DEFAULT));
+
+/* 操作反馈写在底部状态栏，不再弹浮层 toast。
+   理由：toast 会盖住列表中部约 1.5s，而底部那行本来就常驻一句
+   「改动已自动保存」——同一块空间，把结果写进去信息量更高，也少一个浮层。 */
+let toastTimer = null;
+function flash(msg){
+  const txt = $("#savedMsg"), ic = $("#savedIcon");
+  txt.textContent = msg;
+  txt.style.color = "var(--fg)";
+  ic.style.color = "var(--ac)";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    txt.textContent = "改动已自动保存";
+    txt.style.color = "";
+    ic.style.color = "";
+  }, 2600);
+}
+
+/* 初始化 */
+render();
+</script>
+</body>
+</html>

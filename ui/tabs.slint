@@ -32,6 +32,10 @@ export struct TabInfo {
     // (#chbar-per-tab 2026-10-11) 「隐藏状态条」跟随 tab 走，不是全局：每个
     // tab 各自记一份。右键菜单与状态条显隐都读它。
     channel_bar_hidden: bool,
+    // (#sync-ssh-only 2026-10-22) 同步输入只支持 SSH：右键菜单的「加入频道」整块
+    // 与状态条恢复项据此显隐。RDP/VNC（整幅画面）、SFTP/本机 shell 都不是
+    // SSH 会话，Channels 对它们没有意义。
+    sync_ok: bool,
     // (#tab-card 2026-10-11) 悬浮信息卡数据（左侧组内成员同款）：主机行与
     // 备注行。welcome tab 为空串（不显示对应行）。
     // (#sync-dialog-v2 2026-10-12) 补 用户/认证/组别：与左侧成员卡、跳板机卡、
@@ -133,7 +137,7 @@ component SingleTab inherits Rectangle {
     touch := TouchArea {
         // A ghost never takes input: the real tab keeps the grab until the drop.
         enabled: !root.ghost;
-        mouse-cursor: root.dragging ? move : pointer;
+        mouse-cursor: root.dragging ? move : default;
         pointer-event(e) => {
             if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
                 root.grab-offset = self.mouse-x;
@@ -311,7 +315,7 @@ component SingleTab inherits Rectangle {
         // (#tab-close-idea 2026-10-21) 悬停底只留透明，实心圆移进内层 —— 见下。
         background: transparent;
         close-ta := TouchArea {
-            mouse-cursor: pointer;
+            mouse-cursor: default;
             clicked => { root.closed(); }
         }
         // (#tab-close-idea 2026-10-21) 与左栏搜索框的 × 同一套（用户定稿）：
@@ -388,7 +392,7 @@ component TabMenuItem inherits Rectangle {
     }
     ta := TouchArea {
         enabled: root.enabled;
-        mouse-cursor: pointer;
+        mouse-cursor: default;
         clicked => { root.clicked(); }
     }
 }
@@ -430,6 +434,8 @@ export component TabBar inherits Rectangle {
     callback tab-card-clear();
     in property <bool> lang-en: false;   // 频道菜单双语（app.slint 转发）
     in-out property <string> menu-channel-letter: "";
+    // 被右击的 tab 能不能进频道（= 是否 SSH 会话）；false 时整个频道组不渲染
+    in-out property <bool> menu-sync-ok: false;
     in-out property <bool> menu-channel-paused: false;
     callback new-tab();
     // Drag-to-reorder (#408), committed exactly once on drop: move the tab at
@@ -704,6 +710,7 @@ export component TabBar inherits Rectangle {
                             root.menu-channel-letter = tab.channel-letter;
                             root.menu-channel-paused = tab.channel-paused;
                             root.menu-channel-bar-hidden = tab.channel-bar-hidden;
+                            root.menu-sync-ok = tab.sync_ok;
                             root.menu-x = ax - root.absolute-position.x;
                             root.menu-y = ay - root.absolute-position.y;
                             tab-menu.show();
@@ -795,7 +802,7 @@ export component TabBar inherits Rectangle {
             drop-shadow-blur: 8px;
             drop-shadow-color: #00000045;
             more-ta := TouchArea {
-                mouse-cursor: pointer;
+                mouse-cursor: default;
                 clicked => { tab-list-menu.show(); }
             }
             for d in [0, 1, 2] : Rectangle {
@@ -880,7 +887,7 @@ export component TabBar inherits Rectangle {
                                 background: transparent;
                                 opacity: row-ta.has-hover || close-ta.has-hover ? 1.0 : 0.0;
                                 close-ta := TouchArea {
-                                    mouse-cursor: pointer;
+                                    mouse-cursor: default;
                                     clicked => {
                                         root.tab-closed(t.id);
                                         tab-list-menu.close();
@@ -901,7 +908,7 @@ export component TabBar inherits Rectangle {
                                 }
                             }
                             row-ta := TouchArea {
-                                mouse-cursor: pointer;
+                                mouse-cursor: default;
                                 clicked => {
                                     root.tab-selected(t.id);
                                     tab-list-menu.close();
@@ -932,14 +939,14 @@ export component TabBar inherits Rectangle {
         // 58 = padding8 + 标题20 + 色块30；57 = sep1+暂停28+离开28；
         // 57 = sep+复制+重命名；85 = sep+右拆+下拆+合并；29 = sep+关闭；
         // spacing = 项数-1 = 10 + 2(letter) + 1(bar-hidden)。
-        height: 58px
-            + (root.menu-channel-letter != "" ? 57px : 0px)
-            + (root.menu-channel-bar-hidden ? 28px : 0px)
-            + 57px
-            + 85px
-            + 29px
-            + (10px + (root.menu-channel-letter != "" ? 2px : 0px)
-                + (root.menu-channel-bar-hidden ? 1px : 0px));
+        // 逐行算：padding 8 + 行高和 + 行间距 1px×(行数-1)。
+        // SSH 基线（标题 20 + 色块 30 + 分隔/项）= 239；+字母（分隔+pause+leave）= +60；
+        // +状态条项 = +29；非 SSH 只剩「复制/重命名/拆分/合并/关闭」= 187。
+        height: root.menu-sync-ok
+            ? 239px
+                + (root.menu-channel-letter != "" ? 60px : 0px)
+                + (root.menu-channel-bar-hidden ? 29px : 0px)
+            : 187px;
         Rectangle {
             background: Theme.popup-bg;
             border-radius: Theme.radius-sm;
@@ -952,14 +959,14 @@ export component TabBar inherits Rectangle {
                 spacing: 1px;
                 // ── 频道组（#tab-32）：加入频道 4 色块 + 暂停/离开/显示状态条。
                 // **原有菜单项全部保留**（Duplicate/Rename/Split/Merge/Close）。
-                Text {
+                if root.menu-sync-ok : Text {
                     text: root.lang-en ? "Join channel" : "加入频道";
                     // (#theme-dedupe 2026-10-15) 菜单分区标题 muted → 次级档(§3.5 小节标题口径)
                     color: Theme.text-secondary; font-size: 10px;
                     height: 20px;
                     HorizontalLayout { padding-left: 8px; padding-top: 6px; }
                 }
-                Rectangle {
+                if root.menu-sync-ok : Rectangle {
                     height: 30px;
                     HorizontalLayout {
                         // (#tab-menu-fit-r2 2026-10-11) 色块行**居中**排（原贴左
@@ -988,7 +995,7 @@ export component TabBar inherits Rectangle {
                                 horizontal-alignment: center; vertical-alignment: center;
                             }
                             TouchArea {
-                                mouse-cursor: pointer;
+                                mouse-cursor: default;
                                 clicked => {
                                     root.menu-channel-letter = cs.letter;
                                     root.tab-join-channel(root.menu-target, cs.slot);
@@ -998,20 +1005,20 @@ export component TabBar inherits Rectangle {
                         Rectangle { horizontal-stretch: 1; }
                     }
                 }
-                if root.menu-channel-letter != "" : Rectangle { height: 1px; background: Theme.border-subtle; }
-                if root.menu-channel-letter != "" : TabMenuItem {
+                if root.menu-sync-ok && root.menu-channel-letter != "" : Rectangle { height: 1px; background: Theme.border-subtle; }
+                if root.menu-sync-ok && root.menu-channel-letter != "" : TabMenuItem {
                     label: root.menu-channel-paused ? (root.lang-en ? "Resume channel" : "继续参与频道") : (root.lang-en ? "Pause channel" : "暂停参与频道");
                     clicked => { root.tab-pause-channel(root.menu-target); }
                 }
-                if root.menu-channel-letter != "" : TabMenuItem {
+                if root.menu-sync-ok && root.menu-channel-letter != "" : TabMenuItem {
                     label: root.lang-en ? "Leave channel" : "离开频道";
                     clicked => { root.tab-leave-channel(root.menu-target); }
                 }
-                if root.menu-channel-bar-hidden : TabMenuItem {
+                if root.menu-sync-ok && root.menu-channel-bar-hidden : TabMenuItem {
                     label: root.lang-en ? "Show channel bar" : "显示状态条";
                     clicked => { root.show-channel-bar(root.menu-target); }
                 }
-                Rectangle { height: 1px; background: Theme.border-subtle; }
+                if root.menu-sync-ok : Rectangle { height: 1px; background: Theme.border-subtle; }
                 TabMenuItem {
                     label: @tr("Duplicate connection");
                     enabled: root.menu-target != "welcome";

@@ -6,6 +6,121 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **同步输入限定为 SSH，并修掉「没有会话」时的空态文案（#sync-ssh-only）。**
+  - **候选与成员只列 SSH**：`fill_sync_rows` 按会话 `kind` 过滤（RDP/VNC 是整幅画面、SFTP 是本机文件面板、本机 shell 没有远端通道），离线持久成员同样过滤。广播侧（`send_key` 的频道投递）也加了同口径判断，配置里残留的非 SSH 成员不会被 `send_raw` 静默丢字节。
+  - **tab 频道徽标只给 SSH**：`refresh_tab_channel_row` 对非 SSH tab 不再挂 A/B/C/D（否则 tab 上会出现一个永远不会生效的徽标）。
+  - **tab 右键菜单**：`TabInfo` 新增 `sync_ok`（= 该 tab 的会话是 SSH），菜单的「加入频道」整组（标题 + 4 个色块 + 暂停/离开/显示状态条 + 前导分隔线）全部按它显隐；菜单高度改成逐行精确计算（SSH 239 / 有字母 +60 / 有状态条项 +29；非 SSH 187）。
+  - **空态文案**：左栏原来说「所有会话均已加入当前频道」——一个会话都没开时这是错的（用户截图）。现在按作用域内 SSH 会话总数分两种：没有 SSH 会话 → 「当前没有打开的 SSH 会话 / 同步输入只支持 SSH 连接」；有但都加进去了 → 原文案。右栏同理（「还没有可加入的 SSH 会话」）。
+- **Input sync is SSH-only now, and the empty-state copy no longer lies when nothing is open (#sync-ssh-only).**
+  - **Candidates and members list SSH sessions only**: `fill_sync_rows` filters by session `kind` (RDP/VNC are a whole picture, SFTP is a local file panel, a local shell has no remote channel), and offline persisted members are filtered the same way. The broadcast path (`send_key`'s channel fan-out) got the same guard, so stale non-SSH members can no longer swallow `send_raw` bytes silently.
+  - **Tab channel badges only for SSH**: `refresh_tab_channel_row` no longer stamps A/B/C/D on non-SSH tabs (it used to show a badge that could never take effect).
+  - **Tab context menu**: `TabInfo` gained `sync_ok` (the tab's session is SSH); the whole "Join channel" group (caption + 4 swatches + pause/leave/show-bar + its leading separator) is gated on it, and the menu height is now computed row by row (SSH 239 / +60 with a letter / +29 with the bar item; 187 without the group).
+  - **Empty-state copy**: the left pane claimed "All sessions are already in this channel" even with nothing open (the user's screenshot). It now branches on the number of SSH sessions in scope: none → 「当前没有打开的 SSH 会话 / 同步输入只支持 SSH 连接」; some but all joined → the old line. The right pane got the matching variant (「还没有可加入的 SSH 会话」).
+
+- **删除条：展开期间不再能勾选，确认键改「删除分组」（#gm-delete-bar）。**
+  - 点垃圾桶本来就会调 `clear-picks`（实测确实调了），但**删除条展开后仍可继续勾选**——勾一条，批量条又冒出来和删除条并排，看起来像「选中状态没清掉」（用户截图）。现在删除条展开期间整行点击、复选框、`Space` 三处都不再改勾选，批量条也加了一道 `confirm-del == ""` 的守卫。
+  - 确认键文案 `删除` → `删除分组`（改成内容宽，中英「Delete group」都放得下）。
+- **Delete strip: picking is disabled while it is open, and the confirm button says "删除分组" (#gm-delete-bar).**
+  - Clicking the trash already calls `clear-picks` (verified), but **picking stayed possible while the strip was open** — pick one row and the batch bar returns next to the delete strip, which reads as "the selection was never cleared" (the user's screenshot). Row clicks, the checkbox and `Space` are now all gated on `confirm-del == ""`, and the batch bar carries the same guard.
+  - The confirm button reads `删除分组` (content width, so `Delete group` fits too).
+
+- **两个下拉（移动到 / 删除去向）与删除条文案重做（#gm-menus）。**
+  - **位置**：原来硬编码贴面板右缘（`parent.width - 178px` / `y: 104px`），跟触发按钮看不出关系。现在打开时记录按钮的**中心 x**（`move-menu-x` / `del-menu-x`），菜单以该点为轴**左右居中**、出界再夹回面板内 —— 「移动到」的下拉正对按钮上方，删除条的「去向」下拉正对「去向」按钮下方，和原生 select 一致。
+  - **高度**：按实际行数算（`menu_rows()` = 可见组 + 默认组被隐藏时补的一行），不再固定 240/30 一排导致底部留一条空白；行高与行内容对齐 28px，计数用等宽字体右对齐。
+  - **加标题与回执**：「移动到」下拉顶部补 `移动到` 小标题、底部补 `已选 N 项`（分隔线隔开）；「去向」下拉顶部补 `会话移到`。当前去向那一行用 accent 文字标出来。
+  - **删除条文案**：`删除「X」？ n 个会话移到 →` 末尾那个箭头指向空气，读起来像还有下文；改成 `删除「X」？ n 个会话将移到 [去向]`，让下拉成为句子的一部分（空组仍是「该分组为空。」）。
+- **Both dropdowns (Move to / delete target) and the delete-strip wording redone (#gm-menus).**
+  - **Position**: they used to be pinned to the pane's right edge (`parent.width - 178px`, `y: 104px`) with no visible relation to the button that opened them. They now record the trigger button's **centre x** (`move-menu-x` / `del-menu-x`) and centre themselves on it, clamped inside the pane — the Move-to menu sits above its button, the delete-target menu below its button, like a native select.
+  - **Height**: computed from the real row count (`menu_rows()` = visible groups plus the synthetic Default row when it is hidden) instead of a fixed 240/30 multiplication that left a blank strip; rows are 28 px and the counts are mono, right-aligned.
+  - **Titles and footer**: the Move-to menu gained a `Move to` caption and a `已选 N 项` footer behind a hairline; the target menu gained `Move sessions to`. The current target row is tinted with accent text.
+  - **Delete-strip copy**: `Delete "X"? n sessions move to →` ended in an arrow pointing at nothing; it now reads `删除「X」？ n 个会话将移到 [去向]` so the dropdown completes the sentence (an empty group still says 「该分组为空。」).
+
+- **快捷键气泡：不再自动弹出，文案逐条核对补齐（#gm-shortcuts）。** 用户要求「打开弹框时不要自己弹出来」，并核对里面的文案。
+  - 去掉首次打开的自动展开（`keys-seen` 一并删除）：现在只有点底栏 `?` 才弹。
+  - 逐条实测了气泡里列的按键（`Space` 勾选、`↑↓` 切组、`F2 + Enter` 改名），三条都真的能触发，原文案没有说错的地方；**缺的是实现里有、气泡没写的入口**，补齐为四组：`范围勾选 Shift+点`、`勾选/取消勾选 点行`、`改名 双击组名`、`换组 / 组内排序 拖动`、`改分组颜色 点色点`。标题从「键盘快捷键」改成「快捷键」，因为最后一组是鼠标操作。
+- **Shortcut popover: no longer auto-opens, and every line is now verified (#gm-shortcuts).**
+  - The first-open auto-expand is gone (the `keys-seen` flag with it): it only appears when you press `?` in the footer.
+  - Each keyboard line was exercised (`Space` toggles a pick, `↑↓` switches groups, `F2 + Enter` renames) — all three really fire, so nothing was wrong; what was **missing** were the entry points the implementation already had: `Shift+click` range pick, click-a-row to pick, double-click a name to rename, drag to move/reorder, click the colour dot to recolour. The title dropped "keyboard" since the last group is mouse.
+
+- **「未分组」改名「默认组」，空着就不占行；空组空态文案改成真的做得到的动作（#gm-default-group）。**
+  - 显示名统一为「默认组 / Default」（`GM_UNGROUPED`），删除去向、拖拽回执、批量条文案一起改。
+  - **没成员时不显示这一行**：Rust 侧只在 `count > 0`（或一个自定义组都没有，避免整栏空掉）时下发该行；左栏像素映射改成两套 —— `has-cap()` 现在看「有没有自定义组」，新增 `has-default-row()`，`gi-at` / `gi-top` 与「我的分组」小节标题都按有没有默认组行来计算（默认组隐藏时标题顶到列表最上面）。
+  - 隐藏行的**副作用一起补掉**：它仍然是合法去向，所以「移动到」和删除条的「去向」下拉在默认组行缺席时补一条「默认组」选项（与侧栏右键菜单「第一位永远是默认组」的既有规则对齐）；当前选中的正是默认组而它被搬空时，选中位置自动落到第一个存在的组。
+  - **空组文案修正**：原来写「把会话拖到这里 / 或用底部批量条的「移动到」」，两句都做不到（右栏只列当前组，任何拖拽都落不到这块画布；空组也没有成员可勾选，批量条根本不会出现）。去掉那个假投放虚线框，改成「这个分组还没有会话 / 把会话拖到左侧的分组名上，或在其他分组里用「移动到」移进来」。
+- **"Ungrouped" renamed to "Default", the row hides when empty, and the empty-group copy now describes something actually possible (#gm-default-group).**
+  - Display name is now 「默认组 / Default」 everywhere (`GM_UNGROUPED`), including delete targets, drag toasts and the batch bar.
+  - **The row is not shown when it has no members**: Rust only emits it when `count > 0` (or when there are no custom groups at all, so the column never goes blank). The left-pane pixel mapping got two variants — `has-cap()` now means "there are custom groups", a new `has-default-row()` drives `gi-at` / `gi-top` and the "My groups" caption position (the caption moves to the very top when the default row is gone).
+  - **The side effects of hiding are covered**: the hidden row is still a valid destination, so both the "Move to" and the delete-target dropdowns append a "Default" entry when the row is absent (matching the sidebar menu's existing "default is always first" rule); if the selected group *was* the default and it just became empty, the selection falls back to the first group that still exists.
+  - **Empty-group copy fixed**: it claimed "drop sessions here" and "use Move to in the batch bar" — neither is possible (the right pane only lists the current group, so nothing can be dropped on it; an empty group has nothing to pick, so the batch bar never appears). The fake drop-zone frame is gone; the text now reads 「这个分组还没有会话 / 把会话拖到左侧的分组名上，或在其他分组里用「移动到」移进来」.
+
+- **全局去掉手型光标，统一用系统箭头（#native-cursor）。** 用户截图三处（右下角侧栏开合键、侧栏「＋ 新建会话」、分组行）都出现手型光标。桌面应用的惯例是箭头（VSCode / Explorer 同理），手型是 Web 语言。做法：`ui/` 下 22 个文件里 **262 处 `mouse-cursor: pointer` 全部改为 `default`**（含 `? pointer : default` 这类三元，折叠成常量），4 处 `grab` / `grabbing`（面板拖拽把手、拖拽中状态）也一并改掉。
+  - 保留：`text`（终端/输入框的 I 形）、`ew-resize` / `ns-resize` / `nesw-resize` / `nwse-resize`（分隔条、窗口边）、`move`（拖动中的四向移动）—— 这些是原生语义，不是「手势图标」。
+- **No more hand cursors anywhere — the native arrow is used throughout (#native-cursor).** Three screenshots (right-sidebar toggle, "New session" button, a group row) all showed the pointing hand. Desktop apps use the arrow (VSCode / Explorer do); the hand is a web idiom. All **262 occurrences of `mouse-cursor: pointer` across 22 files under `ui/` are now `default`** (ternaries like `? pointer : default` collapse to a constant), plus the four `grab` / `grabbing` sites (dock drag handles and drag-in-progress states).
+  - Kept: `text` (I-beam over terminals/inputs), `ew/ns/nesw/nwse-resize` (splitters and window edges) and `move` (during a drag) — those are native semantics, not "hand icons".
+
+- **分组改名重名：报错语义与交互重做（#gm-dup-guard）。** 用户截图两点：左栏行内改名把错误写进底栏却顶着一个**绿勾**（看着像成功），右栏头部那条错误被挤成「已存…」三个字。
+  - 底栏反馈区分语义：新增 `toast-error`，错误用 ⚠ + danger 文字，且**不被 2.6s 定时器吞掉**（名字改回合法或结束编辑时自动收起）；成功/结果类消息仍走原样式。
+  - 右栏错误改成头部下方**独立 22px 一行**（danger 10% 底 + 底部 danger 细线 + 完整文案），不再塞进 52px 头部被 elide。
+  - **提交失败不再被静默丢弃**：`commit_edit()` 改成返回 bool，`完成`／窗口 ×／点遮罩／↑↓ 切组／点另一个组／点「新建分组」都先问它 —— 重名时按「完成」不再关窗（旧版关掉后回来发现根本没改）。
+  - 顺带修掉改名入口的一个死路：**改名输入框是随编辑态新建的，Slint 不会自动给焦点**，F2 / 双击改名后直接打字没有任何反应（要再点一下输入框才行）。三个输入框（左栏改名 / 右栏改名 / 新建行）都补了 `init => { self.focus(); }`。
+  - 回归：`tests/group_manager_smoke.rs` 新增 `duplicate_rename_keeps_dialog_open`（先验证「完成」坐标真能关窗，再验证重名时关不掉）。
+- **Group rename duplicates: error semantics and interaction redone (#gm-dup-guard).** Two things from the screenshots: a left-pane rename failure wrote into the footer while wearing a **green check** (reads as success), and the right-pane error was squeezed into "已存…" inside the 52 px header.
+  - The footer now distinguishes semantics: new `toast-error` renders ⚠ + danger text and is **not swallowed by the 2.6 s timer** (it clears when the name becomes valid or editing ends).
+  - The right-pane error moved into its own **22 px row** under the header (danger 10 % fill, danger hairline, full text) instead of being elided inside the header.
+  - **A failed commit is no longer silently dropped**: `commit_edit()` now returns bool and every close/switch entry point asks it first (`完成`, window ×, scrim click, ↑↓ group switch, clicking another group, opening the new-group row). Pressing "Done" on a duplicate keeps the dialog open (it used to close and throw the rename away).
+  - Also fixed a dead end in the rename flow: the rename input is created together with the edit state and **Slint does not focus it automatically**, so typing right after F2 / double-click did nothing until you clicked into it. All three inputs now carry `init => { self.focus(); }`.
+  - Regression: new `duplicate_rename_keeps_dialog_open` in `tests/group_manager_smoke.rs` (first proves the Done coordinate really closes the dialog, then that a duplicate keeps it open).
+
+- **分组管理：拖动浮层（ghost）终于跟手（#gm-drag-ghost）。** 用户反馈「拖成员到别的组 / 组内排序时 ghost 不跟手」。
+  - 根因：`drag-abs-*` 存的是**窗口**坐标，浮层却挂在 `gm`（居中的弹框）里，减的却是 `root.absolute-position`（弹框根 = 0,0）——于是整块 ghost 比指针偏出 `(gm.x, gm.y)`，窗口越大偏得越多；右缘还写死 `gm.width - 250`（浮层实际 240 宽）再压一次。
+  - 修法：改成减 `gm.absolute-position`，左右/上下都用 `self.width/height` 夹在弹框内（4px 边距），指针落在角上也不会把 ghost 拖出可视区。
+  - 顺带：**组行的 ghost 从来没跟过手**——组拖拽只在 `TouchArea.moved` 里算落点，从没写过 `drag-abs-*`（成员拖拽是在 `pointer-event` 里写的），所以拖组时浮层一直停在初始 -1000 或被裁掉。现在 `moved` 里同步指针绝对坐标。
+- **Group manager: the drag ghost actually follows the pointer now (#gm-drag-ghost).**
+  - Cause: `drag-abs-*` holds **window** coordinates while the ghost lives inside `gm` (the centred dialog), and the offset subtracted `root.absolute-position` (0,0) instead of the dialog's own origin — every ghost sat `(gm.x, gm.y)` away from the cursor, worse as the window grew. The right edge also clamped with a hard-coded `gm.width - 250` for a 240 px box.
+  - Fix: subtract `gm.absolute-position` and clamp with the element's own `self.width/height` inside the dialog (4 px margin), so the ghost never leaves the visible area.
+  - Also: **the group-row ghost never followed at all** — group drags only computed the insert index in `TouchArea.moved` and never wrote `drag-abs-*` (member drags do it in `pointer-event`), so the ghost stayed at its -1000 initial position. `moved` now syncs the absolute pointer position too.
+
+- **标题栏新增「管理分组」入口（#group-manager-topbar）。** 用户要求把分组管理的快捷入口放到标题栏。在「传输」和「更多」之间加一个 `TopbarBtn`（图标 `group-list`，文案「管理分组 / Groups」），点击与侧栏右键菜单、`Ctrl+Shift+G` 走同一个 `gm-open-request`，弹框打开期间按钮保持选中（active = `gm-open`）；点击时顺带收起「更多 / 传输」弹层，避免关掉分组弹框后菜单还挂在下面。1100 / 900 两种窗宽下顶栏仍不挤。
+- **Group manager entry added to the title bar (#group-manager-topbar).** A `TopbarBtn` (icon `group-list`, label "管理分组 / Groups") now sits between "Transfers" and "More" and goes through the same `gm-open-request` as the sidebar context menu and `Ctrl+Shift+G`; it stays active while the dialog is open (`active: gm-open`) and closes the More/Transfers popovers first so no menu is left hanging underneath. The bar still fits at 1100 px and 900 px.
+
+- **分组管理弹框：实机反馈四处修复（#gm-hover-fix #gm-focus #gm-foot）。** 用户装包实测提出四点，逐条对到根因：
+  - **行尾 ↑↓ 一移过去就消失。** 淡显的 `opacity` 只判了整行 TouchArea 的 `has-hover`；指针压到按钮上时整行已经失去 hover，按钮当场隐掉（悬浮卡又正好盖在那一列，加重了错觉）。现在 `opacity`、行底色、组名颜色都把按钮自己的 hover 一起算进去；组行的 ↑↓ 原包在 `if !reserved` 里、id 在外层不可见，改成常声明 + `visible`（Slint 的不可见元素不占位）。悬浮卡翻转阈值也从「容器右缘」提前 48px，卡片不再压按钮。
+  - **搜索态行尾的灰色胶囊（所属组 chip）删除。** 右栏本来就只列当前组，chip 是冗余信息，还跟 user@host 抢宽度（组名短的行会被拉成一条长条）。整块删掉，地址列恢复直读。
+  - **输入框聚焦样式统一。** 原来搜索框只有 accent 描边、改名/新建框是「常亮 accent」（分不清有没有焦点）。四个输入框（搜索 / 左栏行内改名 / 新建行 / 右栏改名）统一成 app 既有语言（同 session_dialog 的 LabeledInput）：聚焦 = accent 描边 + `popup-field-2` 提底 + 外扩 3px accent-soft 光环；错误态仍走 danger，不再与聚焦抢边框。
+  - **页脚。** 1px 分隔线没写 `y`，默认落在竖直中心、横穿「改动已自动保存」（第一批就带进来了）；补 `y: 0px`。顺带：说明文字 11 → 11.5px、间距 6 → 8，完成按钮改内容宽（中英都合适）并在暗色主题改用稿子的 ink 字（teal 上白字只有 1.8:1）。
+- **Group manager: four fixes from the shipped build (#gm-hover-fix #gm-focus #gm-foot).**
+  - **Row-end ↑↓ vanished as soon as you moved onto them.** Their fade was bound to the row TouchArea's `has-hover`, which the row loses the moment the pointer lands on the buttons (the tooltip covering that column made it worse). The fade, the row tint and the group-name colour now include the buttons' own hover; the group row's ↑↓ used to sit inside `if !reserved`, so their ids were out of scope for the row — they are now always declared and hidden with `visible` (invisible elements take no space in Slint). The member tooltip also flips 48 px earlier so it never covers the button column.
+  - **Dropped the grey pill at the end of rows while searching.** It repeated the group you are already looking at and fought `user@host` for width (rows with a short group name stretched it into a long bar).
+  - **Unified input focus styling.** The search box only changed its border while the rename/new-group fields were "always accent" (no way to tell focus). All four inputs now use the app's existing language (same as session_dialog's LabeledInput): accent border + `popup-field-2` fill + a 3 px accent-soft halo; error state still owns the border in danger.
+  - **Footer.** The 1 px separator had no `y`, so it defaulted to the vertical centre and ran straight through "Changes save immediately" (present since the first pass). Added `y: 0px`, bumped the note to 11.5 px with 8 px gaps, made the Done button content-width, and switched its label to the design's ink on dark accent (white on teal is only 1.8:1).
+
+- **分组管理弹框对齐 10-22 高保真（#group-manager-hifi）。** 用户按新稿（`docs/design/group-manager-hifi-2026-10-22.html`）逐项核对，改动集中在「组级动作收敛到一处 + 两侧都单行 + 搜索/拖拽/批量给出可见反馈」。
+  - 尺寸与两栏：760×522 → **760×560**；左栏 248 → **320**（可拖 220–480，双击回 320），中间 5px 命中区压一条 1px 线（hover/拖动转 accent）；左栏不再用 inset 深色板 —— 稿子里两栏同底色，只靠那条线分隔。
+  - 头尾：头部维持 52px 单行，搜索框吃满余量（上限 280）；底栏的四条常驻快捷键提示收进 **`?` 气泡**（首次打开自动展开一次，Esc 逐级收起），任何落盘动作的结果写进底栏那行并 2.6s 回落，**取消居中 toast**。
+  - 左栏：组行 36px = 9px 色点 + 3px 同色光晕 + 组名 + 计数（搜索态显示 `命中/总数`）；「我的分组」小节 11.5px/600 + accent 计数徽标（原 10px 灰底灰字）；未分组下的分隔线删除；新建行带色点（建组前就能选色）与清空 ×，重名提示贴在输入行下方。
+  - 右栏头部 52px：`[色点][组名][n 个会话]` 左对齐成组（组名不再 `horizontal-stretch`，否则计数被推到大片空白右侧），右端只剩「全选 / 1px 竖线 / 垃圾桶」；勾满时文案变「取消全选」。
+  - 删除条 68px 卡片 → **52px 单行**：`⚠ 删除「X」？ n 个会话 → [去向▾] [取消] [删除]`；空组只问「该分组为空。」不摆没用的去向控件；去向改成下拉菜单（Slint 没有原生 select）。
+  - 勾选：**整行可点**（按下/松开同一行才算，>5px 起拖，互不误触）+ `Shift` 点复选框范围勾选 + `Space` 勾当前行；行尾 ↑↓ 点到「已勾选的一条且勾了多条」= **整块移动**（新回调 `step-members`，Rust 按组内真实顺序算落点，Slint 函数里没法写 break/累加）。
+  - 搜索：组行**不再隐藏**（计数 `命中/总数`、0 命中压暗 45%），组名命中 = 整组命中；当前组 0 命中而别处有时自动跳过去；空态分「所有分组里都没有匹配」（+清除搜索）与「本组没有匹配 · 其他分组还有 N 个」（+跳到「X」）；命中行尾浮出所属组色点 chip。
+  - 拖拽：目标组行转 accent 淡底 + 1px accent 描边 + 行尾 `+N` 徽标；成员悬浮卡改为**贴鼠标右下角**（+16/+14，出界翻边），不再是固定 `x=250` 压住名字列。
+  - 色板：锚在被点的那个色点下方；打环改用**被编辑组**的颜色（原来读「当前组」的色，给非当前组改色时会打错环）。
+  - Esc 逐级：改名 → `?` 气泡 → 去向下拉 → 删除条 → 搜索词 → 关窗（原来只有「改名 → 关窗」两级）。
+  - 顺带修掉一个可见 bug：左栏行内改名与右栏标题改名共用 `editing`，改当前组时会**同时出现两个输入框**；新增 `edit-where`（left / right）区分入口。
+  - 回归：`tests/group_manager_smoke.rs` 跟着改成「首次 Esc 只收快捷键气泡、第二次才关窗」；`GroupRow` 增 `hit` 字段（左栏 `命中/总数`）。
+- **Group manager dialog brought in line with the 10-22 hifi (#group-manager-hifi).** The user diffed the built dialog against `docs/design/group-manager-hifi-2026-10-22.html`; the work is "collapse group-level actions into one place, keep both panes single-line, give search/drag/batch visible feedback".
+  - Geometry: 760×522 → **760×560**; left pane 248 → **320** (drag 220–480, double-click resets), with a 5 px hit strip carrying a 1 px line (accent on hover/drag). The left pane no longer paints an inset panel background — the design keeps both panes on the same surface and lets that line do the separating.
+  - Chrome: the 52 px single-line header stays, with the search box taking the slack (capped at 280 px); the four permanent shortcut hints in the footer collapse into a **`?` bubble** (auto-opens once on first use, Esc steps through it), and every persisted action now reports into the footer line for 2.6 s instead of raising a centred toast.
+  - Left pane: 36 px group rows = 9 px dot + 3 px same-colour halo + name + count (`hits/total` while searching); the “My groups” caption is 11.5 px/600 with an accent pill (was 10 px grey-on-grey); the divider under the ungrouped row is gone; the creation row carries its own colour dot (pick the colour before the group exists) and a clear button, with the duplicate-name error right under the input.
+  - Right header, 52 px: `[dot][name][n sessions]` grouped left (the name no longer stretches, which used to shove the count against the far edge), leaving only “Select all / 1 px rule / trash” on the right; the label flips to “Clear” once everything is picked.
+  - Delete strip: 68 px card → **52 px single line** `⚠ Delete “X”? n sessions → [target ▾] [Cancel] [Delete]`; an empty group only asks “This group is empty.” without a pointless target control. The target is a dropdown menu since Slint has no native select.
+  - Picking: **the whole row toggles** (press and release on the same row; drag starts past 5 px, so the two never collide), `Shift`+checkbox selects a range, `Space` toggles the current row. The row-end ↑↓, when pressed on an already-picked row with several picked, moves **the whole block** (new `step-members` callback; Rust computes the landing spot from the real in-group order because Slint functions cannot break or accumulate).
+  - Search: group rows are **no longer hidden** (`hits/total` plus 45 % dimming at zero hits), and a group-name hit keeps the whole group; if the current group has no hits but another does, the dialog jumps there; the empty state now distinguishes “No match in any group” (+clear) from “No match in this group · N elsewhere” (+go to “X”); matched rows grow a group chip at the end.
+  - Drag: the target group row turns into an accent tint plus a 1 px accent outline and a `+N` badge; the member tooltip now **follows the mouse** (+16/+14 bottom-right, flipping at the edges) instead of sitting at a fixed `x=250` over the name column.
+  - Colour board: anchored under the clicked dot, and the ring now marks the **edited** group's colour (it used to read the current group's colour, so recolouring another group rang the wrong swatch).
+  - Esc steps back through: rename → `?` bubble → target dropdown → delete strip → search query → close (previously only rename → close).
+  - Also fixes a visible bug: left-row rename and right-title rename shared `editing`, so renaming the current group showed **two inputs at once**; a new `edit-where` (left/right) keeps them apart.
+  - Regression: `tests/group_manager_smoke.rs` now expects Esc to collapse the shortcut bubble first and close on the second press; `GroupRow` gained a `hit` field.
+
 - **关闭 RDP 标签页时先发一条 Graceful Disconnect（#remote-graceful-close）。** 用户猜测「关 tab 没退干净导致服务器说另一个会话已登录」。原来的收尾是把协议 future 直接 drop：socket 关了，但服务器要等传输层发现才把会话标成 Disconnected，这段时间内重连会让新旧两个会话同时在册。现在关 tab 时先发 `RdpInputEvent::Close`，走 ironrdp 的 MCS graceful shutdown，最多等 400ms（服务器不答就照旧 drop，不拖住关 tab）。注意：如果那台机器上本来就有一个**活动的控制台会话**（自动登录），「另一个会话被阻止」的提示仍会出现，那是 Windows 单会话策略，客户端无法代答。
 - **Closing an RDP tab now sends a graceful disconnect first (#remote-graceful-close).** The user suspected an unclean teardown behind the server's “another session is logged on” screen. Teardown used to drop the protocol future outright: the socket closed, but the server only marks the session Disconnected once the transport notices, and a reconnect inside that window leaves two sessions on record. Closing a tab now sends `RdpInputEvent::Close`, which runs ironrdp's MCS graceful shutdown, and waits at most 400 ms (falling back to the old drop so closing never stalls). Note: if the host already has an **active console session** (auto-logon), the “another session is blocked” prompt still appears. That is Windows' single-session policy and the client cannot answer it on the user's behalf.
 

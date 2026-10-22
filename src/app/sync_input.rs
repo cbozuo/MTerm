@@ -91,6 +91,8 @@ fn sync_list_models(w: &AppWindow) {
     }
     g.set_slot_counts(ModelRc::from(Rc::new(VecModel::from(counts.to_vec()))));
     g.set_left_count(left.len() as i32);
+    // 作用域内的 SSH 会话总数：0 = 「根本没有 SSH 会话」，>0 且 left=0 = 「都加进来了」
+    g.set_ssh_total((left.len() + right.len()) as i32);
     g.set_left_rows(ModelRc::from(Rc::new(VecModel::from(left))));
     g.set_right_rows(ModelRc::from(Rc::new(VecModel::from(right))));
 }
@@ -162,13 +164,22 @@ fn fill_sync_rows(
     let members = store.channel_members();
     let ranks = super::window_ranks(registry);
     let mut rows: Vec<crate::ui::SyncSessionInfo> = Vec::new();
+    // (#sync-ssh-only 2026-10-22) 同步输入只支持 SSH（用户明确）：RDP/VNC 是整幅
+    // 画面、SFTP 是本机文件面板、本机 shell 没有远端通道 —— 这些会话既不进候选，
+    // 也不该被写进频道。广播侧（app.rs 的 send_key 路径）与 tab 频道徽标同口径。
+    let is_ssh = |sid: &str| -> bool {
+        store
+            .get(sid)
+            .map(|s| s.kind == SessionKind::Ssh)
+            .unwrap_or(false)
+    };
     // 打开的 tab：每个窗口各遍历一遍；welcome tab（空 session_id）跳过。
     registry.for_each_id(|win_id, win| {
         // 位次缺失（理论上不会——rank 表覆盖全部存活窗口）时退回原 id。
         let rank = ranks.get(&win_id).copied().unwrap_or(win_id) as i32;
         for t in win.get_tabs().iter() {
             let sid = t.session_id.to_string();
-            if sid.is_empty() {
+            if sid.is_empty() || !is_ssh(&sid) {
                 continue;
             }
             let slot = members
@@ -202,7 +213,7 @@ fn fill_sync_rows(
     let self_rank = ranks.get(&self_win_id).copied().unwrap_or(self_win_id) as i32;
     for (slot, members) in members.iter().enumerate() {
         for m in members.iter().filter(|m| !m.is_empty()) {
-            if rows.iter().any(|r| r.session_id.as_str() == m.as_str()) {
+            if rows.iter().any(|r| r.session_id.as_str() == m.as_str()) || !is_ssh(m) {
                 continue;
             }
             let title = store

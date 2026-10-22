@@ -269,7 +269,7 @@ component GroupColorField inherits VerticalLayout {
     size: 17px;
 }
             sw-ta := TouchArea {
-                mouse-cursor: pointer;
+                mouse-cursor: default;
                 clicked => { root.picked(root.palette[i].hex); }
             }
         }
@@ -287,7 +287,7 @@ component GroupColorField inherits VerticalLayout {
             border-color: Theme.border-strong;
             background: none-ta.has-hover ? Theme.bg-hover : transparent;
             none-ta := TouchArea {
-                mouse-cursor: pointer;
+                mouse-cursor: default;
                 clicked => { root.picked(""); }
             }
             HorizontalLayout {
@@ -1560,6 +1560,12 @@ export component AppWindow inherits Window {
     in property <int> gm-visited: 0;      // 统计口径占位（保留给后续"共 N 个会话"）
     in property <int> gm-custom-count: 0;  // 自定义分组数（不含「未分组」）
     in property <int> gm-session-count: 0; // 全部会话数
+    // (#gm-search-count 2026-10-22) 搜索态：全局命中数 + 第一个「别处有命中」的组名。
+    // 右栏空态用它区分「所有分组都没有」和「本组没有 · 别处还有 N 个」。
+    in property <int> gm-search-hits: 0;
+    in property <string> gm-search-jump: "";
+    // 新建分组的自动色（当前主题色板里第一个没被占用的）——新建行色点先显示它。
+    in property <color> gm-next-color: transparent;
     in property <bool> gm-cur-reserved: false; // 当前组是否「未分组」（不可改名）
     in property <int> gm-cur-index: 0;    // 当前组在左栏的行号（键盘 ↑↓）
     in property <int> gm-picked: 0;       // 已勾选条数（Rust 维护）
@@ -1573,8 +1579,9 @@ export component AppWindow inherits Window {
     callback gm-rename(string /* orig */, string /* name */) -> string;
     // 改名/新建的实时预校验（输入即校验，不等提交）
     callback gm-validate-name(string /* text */, string /* orig */) -> string;
-    callback gm-create(string /* name */) -> string;
+    callback gm-create(string /* name */, string /* hex */) -> string;
     callback gm-remove(string /* name */, string /* target */);
+    callback gm-step-members(int /* dir */);
     callback gm-set-color(string /* name */, string /* hex */);
     callback gm-reorder-group(string /* group */, string /* before */);
     callback gm-toggle-pick(string /* id */);
@@ -2285,6 +2292,20 @@ export component AppWindow inherits Window {
                             root.download-open = true; root.settings-open = false;
                         }
                     }
+                    // 管理分组 —— 与侧栏右键菜单 / Ctrl+Shift+G 同一个入口
+                    // （#group-manager-topbar 2026-10-22）。放在「更多」前面：
+                    // 它是会话管理动作，不属于外观组；弹框打开期间保持选中。
+                    TopbarBtn { height: parent.height;
+                        icon: "group-list";
+                        label: root.lang-en ? "Groups" : "管理分组";
+                        active: root.gm-open;
+                        clicked => {
+                            // 顶栏的其它弹层先收起，避免关掉分组弹框后菜单还挂着
+                            root.settings-open = false;
+                            root.download-open = false;
+                            root.gm-open-request();
+                        }
+                    }
                     // 更多 —— 设置菜单弹层锚点(菜单内第一项才是真正的设置)。
                     // 激活态:菜单开着,或从菜单进入的界面设置弹窗开着——
                     // "更多"在整条链路中保持选中(#polish-topbar-r5)。
@@ -2329,7 +2350,7 @@ export component AppWindow inherits Window {
                         rb-toggle-ta := TouchArea {
                             width: 40px;
                             height: parent.height;
-                            mouse-cursor: pointer;
+                            mouse-cursor: default;
                             clicked => {
                                 root.right-sidebar-collapsed = !root.right-sidebar-collapsed;
                                 root.set-right-sidebar-collapsed(root.right-sidebar-collapsed);
@@ -3869,7 +3890,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: m-edit-ta.has-hover ? Theme.bg-hover : transparent;
                 m-edit-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => {
                         // 先取 key 执行动作再清:清空后 key 读不到 id。
                         root.edit-session(root.ctx-open-key);
@@ -3892,7 +3913,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: m-dup-ta.has-hover ? Theme.bg-hover : transparent;
                 m-dup-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => { root.duplicate-session(root.ctx-open-key); root.ctx-open-key = ""; }
                 }
                 HorizontalLayout {
@@ -3911,7 +3932,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: m-del-ta.has-hover ? #cc333320 : transparent;
                 m-del-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => { root.remove-session(root.ctx-open-key); root.ctx-open-key = ""; }
                 }
                 HorizontalLayout {
@@ -3980,7 +4001,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: m-mv-ta.has-hover ? Theme.bg-hover : transparent;
                 m-mv-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => { root.move-session(root.ctx-open-key, g); root.ctx-open-key = ""; }
                 }
                 HorizontalLayout {
@@ -4048,7 +4069,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: b-new-sess-ta.has-hover ? Theme.bg-hover : transparent;
                 b-new-sess-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => { root.ctx-open-key = ""; root.ctx-menu-kind = ""; root.new-session-clicked(); }
                 }
                 HorizontalLayout {
@@ -4067,7 +4088,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: b-new-grp-ta.has-hover ? Theme.bg-hover : transparent;
                 b-new-grp-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => {
                         root.ctx-open-key = "";
                         root.ctx-menu-kind = "";
@@ -4099,7 +4120,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: b-exp-ta.has-hover ? Theme.bg-hover : transparent;
                 b-exp-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => { root.ctx-open-key = ""; root.set-all-groups-collapsed(false); }
                 }
                 HorizontalLayout {
@@ -4118,7 +4139,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: b-col-ta.has-hover ? Theme.bg-hover : transparent;
                 b-col-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => { root.ctx-open-key = ""; root.set-all-groups-collapsed(true); }
                 }
                 HorizontalLayout {
@@ -4142,7 +4163,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: b-sys-ta.has-hover ? Theme.bg-hover : transparent;
                 b-sys-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => { root.ctx-open-key = ""; root.set-system-group-hidden(!root.system-hidden); }
                 }
                 HorizontalLayout {
@@ -4199,7 +4220,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: g-edit-ta.has-hover ? Theme.bg-hover : transparent;
                 g-edit-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => {
                         root.ctx-open-key = "";
                         root.group-dialog-orig = root.ctx-menu-group;
@@ -4237,7 +4258,7 @@ export component AppWindow inherits Window {
                 // 面板展开时保持高亮,提示"正在调这一组的色"。
                 background: g-color-ta.has-hover || root.group-color-picker-open ? Theme.bg-hover : transparent;
                 g-color-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => { root.group-color-picker-open = !root.group-color-picker-open; }
                 }
                 HorizontalLayout {
@@ -4306,7 +4327,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: g-new-ta.has-hover ? Theme.bg-hover : transparent;
                 g-new-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => {
                         root.ctx-open-key = "";
                         root.group-dialog-orig = "";
@@ -4337,7 +4358,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: gm-ta.has-hover ? Theme.bg-hover : transparent;
                 gm-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => {
                         root.ctx-open-key = "";
                         root.gm-open-request();
@@ -4360,12 +4381,9 @@ export component AppWindow inherits Window {
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                     }
-                    Text {
-                        text: "Ctrl+Shift+G";
-                        color: Theme.text-muted;
-                        font-size: Theme.fs-2xs;
-                        vertical-alignment: center;
-                    }
+                    // 右键菜单不再显示 Ctrl+Shift+G 提示：菜单里其余项都没挂快捷键，
+                    // 单这一行带一串按键会让人以为整张菜单都支持键盘直达。
+                    // 快捷键本身仍然有效（见本文件 Ctrl+Shift+G 的键盘分支）。
                 }
             }
             // (#ctx-menu-narrow 2026-09-15) system 保留组无「删除分组」可谈
@@ -4375,7 +4393,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: g-del-ta.has-hover ? #cc333320 : transparent;
                 g-del-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => { root.ctx-open-key = ""; root.delete-group(root.ctx-menu-group); }
                 }
                 HorizontalLayout {
@@ -4404,7 +4422,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: g-sys-ta.has-hover ? Theme.bg-hover : transparent;
                 g-sys-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => { root.ctx-open-key = ""; root.set-system-group-hidden(!root.system-hidden); }
                 }
                 HorizontalLayout {
@@ -4763,7 +4781,7 @@ export component AppWindow inherits Window {
                     vertical-alignment: center;
                 }
                 cmi-pause-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => {
                         root.chbar-menu-open = false;
                         root.tab-pause-channel(root.chbar-menu.tab-id);
@@ -4794,7 +4812,7 @@ export component AppWindow inherits Window {
                     vertical-alignment: center;
                 }
                 cmi-leave-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => {
                         root.chbar-menu-open = false;
                         root.tab-leave-channel(root.chbar-menu.tab-id);
@@ -4812,7 +4830,7 @@ export component AppWindow inherits Window {
                     vertical-alignment: center;
                 }
                 cmi-close-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => {
                         root.chbar-menu-open = false;
                         root.pane-close-channel(root.chbar-menu.slot);
@@ -4832,7 +4850,7 @@ export component AppWindow inherits Window {
                     vertical-alignment: center;
                 }
                 cmi-hide-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => {
                         root.chbar-menu-open = false;
                         root.tab-hide-channel-bar(root.chbar-menu.tab-id);
@@ -5065,7 +5083,7 @@ export component AppWindow inherits Window {
                                 border-radius: Theme.radius-sm;
                                 background: ed-save-ta.has-hover ? Theme.accent-hover : Theme.accent;
                                 ed-save-ta := TouchArea {
-                                    mouse-cursor: pointer;
+                                    mouse-cursor: default;
                                     clicked => { root.save-file(); }
                                 }
                                 Text { text: @tr("Save"); color: #ffffff; font-size: Theme.fs-sm;
@@ -5418,7 +5436,7 @@ export component AppWindow inherits Window {
                         border-radius: Theme.radius-sm;
                         background: pick-ta.has-hover ? Theme.accent-hover : Theme.accent;
                         pick-ta := TouchArea {
-                            mouse-cursor: pointer;
+                            mouse-cursor: default;
                             clicked => { root.pick-download-dir(); }
                         }
                         Text { text: @tr("Choose save path"); color: #ffffff; font-size: Theme.fs-sm;
@@ -5429,7 +5447,7 @@ export component AppWindow inherits Window {
                         border-radius: Theme.radius-sm;
                         background: open-ta.has-hover ? Theme.bg-hover : Theme.popup-bg-elevated;
                         open-ta := TouchArea {
-                            mouse-cursor: pointer;
+                            mouse-cursor: default;
                             clicked => { root.open-download-dir(); }
                         }
                         Text { text: @tr("Open folder"); color: Theme.text-primary; font-size: Theme.fs-sm;
@@ -5453,7 +5471,7 @@ export component AppWindow inherits Window {
                         border-radius: Theme.radius-sm;
                         background: clr-ta.has-hover ? Theme.bg-hover : transparent;
                         clr-ta := TouchArea {
-                            mouse-cursor: pointer;
+                            mouse-cursor: default;
                             clicked => { root.clear-transfers(); }
                         }
                         Text { text: @tr("Clear"); color: Theme.text-muted; font-size: Theme.fs-xs;
@@ -5513,7 +5531,7 @@ export component AppWindow inherits Window {
                                         border-radius: Theme.radius-sm;
                                         background: cancel-ta.has-hover ? Theme.danger.with-alpha(0.18) : transparent;
                                         cancel-ta := TouchArea {
-                                            mouse-cursor: pointer;
+                                            mouse-cursor: default;
                                             clicked => { root.cancel-transfer(t.id); }
                                         }
                                         Icon {
@@ -5659,7 +5677,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: iface-ta.has-hover ? Theme.bg-hover : transparent;
                 iface-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => {
                         root.settings-open = false;
                         // (#ifd-page-reset 2026-10-15) 每次打开都回到默认页
@@ -5689,7 +5707,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: export-ta.has-hover ? Theme.bg-hover : transparent;
                 export-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => {
                         root.settings-open = false;
                         root.export-sessions();
@@ -5713,7 +5731,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: impconn-ta.has-hover ? Theme.bg-hover : transparent;
                 impconn-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => {
                         root.settings-open = false;
                         root.import-sessions();
@@ -5737,7 +5755,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: batchimp-ta.has-hover ? Theme.bg-hover : transparent;
                 batchimp-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => {
                         root.settings-open = false;
                         root.batch-import-text = "";
@@ -5765,7 +5783,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: import-ta.has-hover ? Theme.bg-hover : transparent;
                 import-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => { root.import-ssh-config(); }
                 }
                 HorizontalLayout {
@@ -5794,7 +5812,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: lang-ta.has-hover ? Theme.bg-hover : transparent;
                 lang-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => {
                         root.settings-open = false;
                         root.set-language(root.lang-en ? "zh" : "en");
@@ -5818,7 +5836,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: keys-ta.has-hover ? Theme.bg-hover : transparent;
                 keys-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => {
                         root.settings-open = false;
                         root.shortcuts-open = true;
@@ -5841,7 +5859,7 @@ export component AppWindow inherits Window {
                 border-radius: Theme.radius-sm;
                 background: about-ta.has-hover ? Theme.bg-hover : transparent;
                 about-ta := TouchArea {
-                    mouse-cursor: pointer;
+                    mouse-cursor: default;
                     clicked => {
                         root.settings-open = false;
                         root.about-open = true;
@@ -6076,7 +6094,7 @@ export component AppWindow inherits Window {
                                     size: 8px;
                                 }
                                 pv-t0 := TouchArea {
-                                    mouse-cursor: pointer;
+                                    mouse-cursor: default;
                                     clicked => { gd-body.pv-active = 0; }
                                 }
                             }
@@ -6106,7 +6124,7 @@ export component AppWindow inherits Window {
                                     overflow: elide;
                                 }
                                 pv-t1 := TouchArea {
-                                    mouse-cursor: pointer;
+                                    mouse-cursor: default;
                                     clicked => { gd-body.pv-active = 1; }
                                 }
                             }
@@ -6233,6 +6251,9 @@ export component AppWindow inherits Window {
         picked-count: root.gm-picked;
         custom-count: root.gm-custom-count;
         session-count: root.gm-session-count;
+        search-hits: root.gm-search-hits;
+        search-jump: root.gm-search-jump;
+        next-color: root.gm-next-color;
         cur-reserved: root.gm-cur-reserved;
         cur-index: root.gm-cur-index;
         cur-color: root.gm-cur-color;
@@ -6245,7 +6266,7 @@ export component AppWindow inherits Window {
         select(g) => { root.gm-select(g); }
         rename(o, n) => { return root.gm-rename(o, n); }
         validate-name(t, o) => { return root.gm-validate-name(t, o); }
-        create-group(n) => { return root.gm-create(n); }
+        create-group(n, h) => { return root.gm-create(n, h); }
         remove-group(n, t) => { root.gm-remove(n, t); }
         set-group-color(n, h) => { root.gm-set-color(n, h); }
         reorder-group(g, b) => { root.gm-reorder-group(g, b); }
@@ -6254,6 +6275,7 @@ export component AppWindow inherits Window {
         clear-picks() => { root.gm-clear-picks(); }
         move-members(id, t, w) => { root.gm-move-members(id, t, w); }
         reorder-members(id, b, a, w) => { root.gm-reorder-members(id, b, a, w); }
+        step-members(dir) => { root.gm-step-members(dir); }
         move-out(id, w) => { root.gm-move-out(id, w); }
     }
 
@@ -6520,7 +6542,7 @@ export component AppWindow inherits Window {
                                             Rectangle {
                                                 height: 30px; border-radius: Theme.radius-sm;
                                                 background: qeg-ta.has-hover ? Theme.bg-hover : transparent;
-                                                qeg-ta := TouchArea { mouse-cursor: pointer;
+                                                qeg-ta := TouchArea { mouse-cursor: default;
                                                     clicked => { root.qcg-orig = q.group; root.qcg-name = q.group; root.qcg-open = true; } }
                                                 HorizontalLayout { padding-left: 10px; spacing: 8px;
                                                     Icon {
@@ -6533,7 +6555,7 @@ export component AppWindow inherits Window {
                                             if q.orig-index == -1 : Rectangle {
                                                 height: 30px; border-radius: Theme.radius-sm;
                                                 background: qdg-ta.has-hover ? #cc333320 : transparent;
-                                                qdg-ta := TouchArea { mouse-cursor: pointer; clicked => { root.delete-quick-group(q.group); } }
+                                                qdg-ta := TouchArea { mouse-cursor: default; clicked => { root.delete-quick-group(q.group); } }
                                                 HorizontalLayout { padding-left: 10px; spacing: 8px;
                                                     Icon {
     glyph: "delete";
@@ -6545,7 +6567,7 @@ export component AppWindow inherits Window {
                                             Rectangle {
                                                 height: 30px; border-radius: Theme.radius-sm;
                                                 background: qng-ta.has-hover ? Theme.bg-hover : transparent;
-                                                qng-ta := TouchArea { mouse-cursor: pointer; clicked => { root.qcg-orig = ""; root.qcg-name = ""; root.qcg-open = true; } }
+                                                qng-ta := TouchArea { mouse-cursor: default; clicked => { root.qcg-orig = ""; root.qcg-name = ""; root.qcg-open = true; } }
                                                 HorizontalLayout { padding-left: 10px; spacing: 8px;
                                                     Icon {
     glyph: "create-new-folder";
@@ -6589,7 +6611,7 @@ export component AppWindow inherits Window {
                                         border-radius: Theme.radius-sm;
                                         background: up-ta.has-hover ? Theme.bg-hover : transparent;
                                         up-ta := TouchArea {
-                                            mouse-cursor: pointer;
+                                            mouse-cursor: default;
                                             clicked => { root.reorder-quick-command(q.orig-index, true); }
                                         }
                                         Icon {
@@ -6603,7 +6625,7 @@ export component AppWindow inherits Window {
                                         border-radius: Theme.radius-sm;
                                         background: down-ta.has-hover ? Theme.bg-hover : transparent;
                                         down-ta := TouchArea {
-                                            mouse-cursor: pointer;
+                                            mouse-cursor: default;
                                             clicked => { root.reorder-quick-command(q.orig-index, false); }
                                         }
                                         Icon {
@@ -6619,7 +6641,7 @@ export component AppWindow inherits Window {
                                         border-radius: Theme.radius-sm;
                                         background: del-ta.has-hover ? Theme.danger.with-alpha(0.18) : transparent;
                                         del-ta := TouchArea {
-                                            mouse-cursor: pointer;
+                                            mouse-cursor: default;
                                             clicked => { root.delete-quick-command(q.orig-index); }
                                         }
                                         Icon {
@@ -6640,7 +6662,7 @@ export component AppWindow inherits Window {
                                             padding: 4px; spacing: 1px;
                                             Rectangle { height: 28px; border-radius: Theme.radius-sm;
                                                 background: qe-ta.has-hover ? Theme.bg-hover : transparent;
-                                                qe-ta := TouchArea { mouse-cursor: pointer; clicked => { root.edit-quick-command(q.orig-index); } }
+                                                qe-ta := TouchArea { mouse-cursor: default; clicked => { root.edit-quick-command(q.orig-index); } }
                                                 HorizontalLayout { padding-left: 10px; spacing: 8px;
                                                     Icon {
     glyph: "edit";
@@ -6650,7 +6672,7 @@ export component AppWindow inherits Window {
                                                     Text { text: @tr("Edit"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; } } }
                                             Rectangle { height: 28px; border-radius: Theme.radius-sm;
                                                 background: qd-ta.has-hover ? Theme.bg-hover : transparent;
-                                                qd-ta := TouchArea { mouse-cursor: pointer; clicked => { root.duplicate-quick-command(q.orig-index); } }
+                                                qd-ta := TouchArea { mouse-cursor: default; clicked => { root.duplicate-quick-command(q.orig-index); } }
                                                 HorizontalLayout { padding-left: 10px; spacing: 8px;
                                                     Icon {
     glyph: "copy";
@@ -6660,7 +6682,7 @@ export component AppWindow inherits Window {
                                                     Text { text: @tr("Duplicate"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; } } }
                                             Rectangle { height: 28px; border-radius: Theme.radius-sm;
                                                 background: qx-ta.has-hover ? #cc333320 : transparent;
-                                                qx-ta := TouchArea { mouse-cursor: pointer; clicked => { root.delete-quick-command(q.orig-index); } }
+                                                qx-ta := TouchArea { mouse-cursor: default; clicked => { root.delete-quick-command(q.orig-index); } }
                                                 HorizontalLayout { padding-left: 10px; spacing: 8px;
                                                     Icon {
     glyph: "delete";
@@ -6680,7 +6702,7 @@ export component AppWindow inherits Window {
                                                 Text { text: @tr("Move to"); color: Theme.text-secondary; font-size: Theme.fs-xs; vertical-alignment: center; horizontal-stretch: 1; } }
                                             if q.group != "default" : Rectangle { height: 28px; border-radius: Theme.radius-sm;
                                                 background: qmd-ta.has-hover ? Theme.bg-hover : transparent;
-                                                qmd-ta := TouchArea { mouse-cursor: pointer; clicked => { root.move-quick-command(q.orig-index, "default"); } }
+                                                qmd-ta := TouchArea { mouse-cursor: default; clicked => { root.move-quick-command(q.orig-index, "default"); } }
                                                 HorizontalLayout { padding-left: 10px; spacing: 8px;
                                                     Icon {
     glyph: "folder";
@@ -6693,7 +6715,7 @@ export component AppWindow inherits Window {
                                                 height: self.visible ? 28px : 0px;
                                                 border-radius: Theme.radius-sm;
                                                 background: qm-ta.has-hover ? Theme.bg-hover : transparent;
-                                                qm-ta := TouchArea { mouse-cursor: pointer; clicked => { root.move-quick-command(q.orig-index, s.group); } }
+                                                qm-ta := TouchArea { mouse-cursor: default; clicked => { root.move-quick-command(q.orig-index, s.group); } }
                                                 HorizontalLayout { padding-left: 10px; spacing: 8px;
                                                     Icon {
     glyph: "folder";
@@ -7112,7 +7134,7 @@ export component AppWindow inherits Window {
                                 border-color: root.close-remember ? Theme.accent : Theme.border-strong;
                                 background: root.close-remember ? Theme.accent : transparent;
                                 ta := TouchArea {
-                                    mouse-cursor: pointer;
+                                    mouse-cursor: default;
                                     clicked => { root.close-remember = !root.close-remember; }
                                 }
                                 Icon {
@@ -7129,7 +7151,7 @@ export component AppWindow inherits Window {
                         }
                         remember-ta := TouchArea {
                             horizontal-stretch: 1;
-                            mouse-cursor: pointer;
+                            mouse-cursor: default;
                             clicked => { root.close-remember = !root.close-remember; }
                             Text {
                                 text: root.lang-en
@@ -7165,7 +7187,7 @@ export component AppWindow inherits Window {
                             background: tray-ta.has-hover ? Theme.chip : Theme.popup-bg-inset;
                             animate background, border-color { duration: 120ms; }
                             tray-ta := TouchArea {
-                                mouse-cursor: pointer;
+                                mouse-cursor: default;
                                 clicked => {
                                     root.close-confirmed(
                                         root.close-remember ? "tray,remember" : "tray");
@@ -7242,7 +7264,7 @@ export component AppWindow inherits Window {
                                 ? Theme.close-red.with-alpha(0.14) : Theme.popup-bg-inset;
                             animate background, border-color { duration: 120ms; }
                             exit-ta := TouchArea {
-                                mouse-cursor: pointer;
+                                mouse-cursor: default;
                                 clicked => {
                                     root.close-confirmed(
                                         root.close-remember ? "exit,remember" : "exit");
@@ -7626,7 +7648,7 @@ export component AppWindow inherits Window {
                                 }
                             }
                             repo-ta := TouchArea {
-                                mouse-cursor: pointer;
+                                mouse-cursor: default;
                                 clicked => { root.open-repo(); }
                             }
                         }
@@ -8494,7 +8516,7 @@ export component AppWindow inherits Window {
                             height: 20px;
                             background: transparent;
                             clear-ta := TouchArea {
-                                mouse-cursor: pointer;
+                                mouse-cursor: default;
                                 clicked => {
                                     root.theme-pick-search = "";
                                     root.theme-search-filter("");
@@ -8546,7 +8568,7 @@ export component AppWindow inherits Window {
                                 vertical-alignment: center;
                             }
                             TouchArea {
-                                mouse-cursor: pointer;
+                                mouse-cursor: default;
                                 changed has-hover => { hot = self.has-hover; }
                                 clicked => {
                                     root.invert-theme();
@@ -8741,7 +8763,7 @@ export component AppWindow inherits Window {
                                 }
                             }
                             if e.kind != "header" : row-hit := TouchArea {
-                                mouse-cursor: pointer;
+                                mouse-cursor: default;
                                 clicked => {
                                     // (#theme-dedupe §5) 行右端星标 chip 点击 =
                                     // 收藏增删（判定宽 96px = chip 区 84 + 间距 9
@@ -8902,7 +8924,7 @@ export component AppWindow inherits Window {
                         opacity: root.scrim-style == st ? 1 : 0;
                     }
                     scrim-row-ta := TouchArea {
-                        mouse-cursor: pointer;
+                        mouse-cursor: default;
                         clicked => {
                             root.scrim-style = st;
                             root.set-scrim-style(st);
@@ -9131,7 +9153,7 @@ export component AppWindow inherits Window {
                             visible: r-ta.has-hover;
                         }
                         r-ta := TouchArea {
-                            mouse-cursor: pointer;
+                            mouse-cursor: default;
                             clicked => { root.accent-stage = r; }
                         }
                     }
@@ -9208,7 +9230,7 @@ export component AppWindow inherits Window {
                             }
                         }
                         p-ta := TouchArea {
-                            mouse-cursor: pointer;
+                            mouse-cursor: default;
                             clicked => { root.accent-stage = p.h; }
                         }
                     }
@@ -9315,7 +9337,7 @@ export component AppWindow inherits Window {
                             vertical-alignment: center;
                         }
                         cur-ta := TouchArea {
-                            mouse-cursor: pointer;
+                            mouse-cursor: default;
                             clicked => {
                                 root.accent-pick-fmt = "rgb";
                                 root.accent-picker-open(root.accent-stage);
@@ -9342,7 +9364,7 @@ export component AppWindow inherits Window {
                             vertical-alignment: center;
                         }
                         rnd-ta := TouchArea {
-                            mouse-cursor: pointer;
+                            mouse-cursor: default;
                             clicked => { root.accent-stage = root.accent-random-hex(); }
                         }
                     }
@@ -9364,7 +9386,7 @@ export component AppWindow inherits Window {
                             vertical-alignment: center;
                         }
                         pop-cancel-ta := TouchArea {
-                            mouse-cursor: pointer;
+                            mouse-cursor: default;
                             clicked => {
                                 root.accent-stage = root.accent-guard.eff;
                                 root.accent-pop-open = false;
@@ -9395,7 +9417,7 @@ export component AppWindow inherits Window {
                             vertical-alignment: center;
                         }
                         pop-ok-ta := TouchArea {
-                            mouse-cursor: pointer;
+                            mouse-cursor: default;
                             clicked => {
                                 // (#accent-seg-ghost 2026-10-15) 「应用」是唯一把
                                 // mode 落成 custom 的点（与「自定义」分段不再预置
