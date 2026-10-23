@@ -241,6 +241,9 @@ pub(super) fn wire_tab_callbacks(
                     &panes_model,
                     &splitters_model,
                 );
+                // (#cmdbar-scope 2026-10-23) 关掉一个 tab 会改变命令栏「发送范围」
+                // 的台数（全部标签页 / 各同步频道），与新建 tab 同源刷新。
+                crate::app::refresh_channel_bars_for_win(&w, &core_cx.store.borrow());
             }
             // 全应用（所有窗口）都没有该会话的活 tab 了 → 自动退出频道。
             // 成员表是内存态，无需 save；该会话的 tab 行已随关闭移除，唯一

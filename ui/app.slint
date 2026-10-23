@@ -45,7 +45,7 @@ import { LeftSidebar, SessionInfo, CtxRowHit } from "left_sidebar.slint";
 import { SessionDialog, SessionDraft, PortFwd, TriggerDraft, GroupEntry, JumpEntry } from "session_dialog.slint";
 import { ConfirmDialog } from "confirm_dialog.slint";
 import { LabeledInput, PrimaryButton, GhostButton, DockExpandButton, IconButton, ToolStrip, Scrim, DialogClose } from "widgets.slint";
-import { TerminalView, TermSpan, TermMatch, QuickCmd, QuickDockPanel } from "terminal_view.slint";
+import { TerminalView, TermSpan, TermMatch, QuickCmd, QuickDockPanel, SendScope } from "terminal_view.slint";
 import { RemoteDesktopView } from "remote_desktop_view.slint";
 import { SftpEntry, SftpTreeNode, TunnelInfo } from "sftp_panel.slint";
 import { ProcWindow, ProcRow } from "proc_window.slint";
@@ -1137,7 +1137,16 @@ export component AppWindow inherits Window {
     property <int> quick-external-sequence;
     in property <[string]> command-history;          // oldest first (newest last, #113)
     in property <[string]> history-view;             // filtered dropdown, oldest first (newest last, #101)
-    callback run-command(string /* tab-id */, string /* cmd */, bool /* to-all */);
+    // (#cmdbar-scope 2026-10-23) 命令栏发送范围：可送达的同步频道 + 打开的
+    // 标签页总数（Rust 按本窗口统计，「全部标签页」的台数用它）。
+    // (#cmdbar-scope-count 2026-10-23) 名字从 open-tab-count 改成 sendable-tabs：
+    // 旧绑定是 root.tabs.length，把看不见的 welcome 标签也算进去（用户开 2 个
+    // 会话却看到 3）。能收命令的只有 kind == "terminal"，由 Rust 统一算。
+    in property <[SendScope]> send-scopes;
+    in property <int> sendable-tabs: 0;
+    // 第三参数从 bool(to-all) 换成范围串："" = 当前标签页 / "*" = 全部标签页 /
+    // "A".."D" = 某个同步频道（见 terminal_view 的 scope-sel）。
+    callback run-command(string /* tab-id */, string /* cmd */, string /* scope */);
     callback copy-text(string);                 // copy a history command (#96)
     callback delete-history(int /* index */);   // remove a history entry (#96)
     callback delete-history-cmd(string /* cmd */);   // remove a history entry by command (#101)
@@ -3264,7 +3273,9 @@ export component AppWindow inherits Window {
                         focus-sequence: root.terminal-focus-sequence;
                         command-history: root.command-history;
                         history-view: root.history-view;
-                        run-command(cmd, all) => { root.run-command(term.id, cmd, all); }
+                        send-scopes: root.send-scopes;
+                        open-tab-count: root.sendable-tabs;
+                        run-command(cmd, scope) => { root.run-command(term.id, cmd, scope); }
                         copy-text(t) => { root.copy-text(t); }
                         delete-history(i) => { root.delete-history(i); }
                         delete-history-cmd(c) => { root.delete-history-cmd(c); }

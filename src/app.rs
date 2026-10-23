@@ -146,6 +146,45 @@ pub(crate) fn refresh_channel_bars(
         }
     }
     window.set_pane_channel_bars(ModelRc::from(Rc::new(VecModel::from(bars))));
+    // (#cmdbar-scope 2026-10-23) 命令栏的发送范围与频道条同一触发点刷新：
+    // 两边读的是同一份「本窗口已打开的标签页 × 频道成员」快照。
+    refresh_send_scopes(window, store);
+}
+
+/// (#cmdbar-scope 2026-10-23) 命令栏「发送范围」下拉的数据源。
+/// 只列**有过成员关系**的频道（成员表为空 = 这频道根本没用过，不该占一行）；
+/// 台数按本窗口已打开的标签页算 —— 频道成员可能没开在这台机器/这个窗口，
+/// 列成员总数会让用户以为能发到。
+fn refresh_send_scopes(window: &AppWindow, store: &ConfigStore) {
+    let tabs = window.get_tabs();
+    let letters = ["A", "B", "C", "D"];
+    let theme = window.global::<crate::ui::Theme<'_>>();
+    let mut scopes: Vec<crate::ui::SendScope> = Vec::new();
+    // (#cmdbar-scope-count 2026-10-23) 只有 kind == "terminal" 的标签页能收命令：
+    // welcome 标签（"新标签页"欢迎页）没有 PTY handle，`*` 分支按它发只会打空。
+    // 旧口径直接取 tabs.row_count()，用户开了两个会话却看到「全部标签页 3」——
+    // 多出来的就是那张看不见的 welcome。台数一律走这个判据，按钮上的数字与
+    // run_command 实际投递的标签页集合才是同一个。
+    let is_sendable = |t: &crate::ui::TabInfo| t.kind.as_str() == "terminal";
+    for (slot, letter) in letters.iter().enumerate() {
+        if store.channel_members()[slot].is_empty() {
+            continue;
+        }
+        let count = tabs
+            .iter()
+            .filter(|t| is_sendable(t) && t.channel_letter.as_str() == *letter)
+            .count();
+        scopes.push(crate::ui::SendScope {
+            letter: (*letter).into(),
+            color: theme
+                .get_channel_colors()
+                .row_data(slot)
+                .unwrap_or_default(),
+            count: count as i32,
+        });
+    }
+    window.set_sendable_tabs(tabs.iter().filter(|t| is_sendable(t)).count() as i32);
+    window.set_send_scopes(ModelRc::from(Rc::new(VecModel::from(scopes))));
 }
 
 /// (#sync-dialog-v2) 逐窗口刷新频道状态条（跨窗口成员变更后，每个窗口的
@@ -9831,6 +9870,10 @@ fn wire_session_callbacks(
                     &panes_model,
                     &splitters_model,
                 );
+                // (#cmdbar-scope 2026-10-23) 新 tab 会改变「全部标签页」与各频道
+                // 的可送达台数（命令栏范围键的数据源）。频道条本来就在 tab 开关
+                // 时重算，这里一并复用。
+                refresh_channel_bars_for_win(&w, &store.borrow());
             }
 
             // Spawn the shell (+ SFTP) workers and their event-pump threads.
@@ -10313,16 +10356,45 @@ fn wire_key_input(
         let store_rc = store.clone();
         let weak = window.as_weak();
         window.on_run_command(
-            move |tab_id: SharedString, cmd: SharedString, to_all: bool| {
+            move |tab_id: SharedString, cmd: SharedString, scope: SharedString| {
                 let (history_line, bytes) = encode_command_bar_input(&cmd);
                 {
                     let h = handles_rc.borrow();
-                    if to_all {
-                        for handle in h.values() {
+                    // (#cmdbar-scope-multi 2026-10-23) 第二参数由 bool(to-all) 改成范围串：
+                    //   ""      = 当前标签页（默认，与旧的 to_all=false 等价）
+                    //   "*"     = 全部标签页
+                    //   "A,C"   = 勾选的一个或多个同步频道（CSV，A→D 顺序）
+                    // 目标一律按 **当前打开的标签页** 反查（不按成员表、不按 handles
+                    // 全量）：菜单打开期间可能有标签页关掉，按旧快照发会打空；handles
+                    // 里也可能残留正在拆除的 tab。kind == "terminal" 是与按钮台数
+                    // 同一个判据（welcome 没有 PTY，发不到）。
+                    let scope = scope.as_str();
+                    let ids: Vec<String> = if scope.is_empty() {
+                        vec![tab_id.to_string()]
+                    } else {
+                        weak.upgrade()
+                            .map(|w| {
+                                w.get_tabs()
+                                    .iter()
+                                    .filter(|t| t.kind.as_str() == "terminal")
+                                    .filter(|t| {
+                                        if scope == "*" {
+                                            return true;
+                                        }
+                                        // 每个 tab 只挂一个频道，按字母展开不会重复发送。
+                                        scope
+                                            .split(',')
+                                            .any(|l| !l.is_empty() && t.channel_letter.as_str() == l)
+                                    })
+                                    .map(|t| t.id.to_string())
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    };
+                    for id in ids {
+                        if let Some(handle) = h.get(id.as_str()) {
                             handle.send_raw(bytes.clone());
                         }
-                    } else if let Some(handle) = h.get(tab_id.as_str()) {
-                        handle.send_raw(bytes);
                     }
                 }
                 if let Some(line) = history_line {
