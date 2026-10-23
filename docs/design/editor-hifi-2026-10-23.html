@@ -1,0 +1,1075 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MTerm · 内置编辑器 · 界面与交互高保真</title>
+<style>
+/* ══════════════════════════════════════════════════════════════
+   MTerm 内置编辑器 · 高保真评审稿  2026-10-23
+   文档外壳沿用 docs/design/session-dialog-commandbar-hifi-2026-10-23.html 的令牌；
+   窗口内部用默认主题「石墨·暗」的**真实色值**（src/theme/palettes.rs:148-159）。
+   ══════════════════════════════════════════════════════════════ */
+
+:root{
+  --ease: cubic-bezier(.2,0,0,1);
+  --ff: "Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  --mono: "Cascadia Mono","Consolas","SF Mono","Sarasa Mono SC","Noto Sans Mono CJK SC",monospace;
+  --page:#0A0B0E; --stage:#0D0F13; --dlg:#15171C; --dlg2:#1A1D23;
+  --field:#101216; --field2:#191C22;
+  --line:#262A32; --line2:#2F343E; --bd:rgba(255,255,255,.16); --bd-hi:rgba(255,255,255,.28);
+  --t1:#E8EAEF; --t2:#B7BCC7; --t3:#8A8F9B; --t4:#646A76;
+  --hov:rgba(255,255,255,.06); --act:rgba(255,255,255,.10);
+  --ac:#1FC8B4; --ac-hi:#43D1C0; --ac-lo:#19A493; --ac-soft:rgba(31,200,180,.16);
+  --on-ac:#FFFFFF; --dg:#D1453B; --dg-hi:#DE574C; --ok:#3DD68C; --warn:#E5B84C;
+}
+:root[data-theme="light"]{
+  --page:#F4F3F0; --stage:#ECEAE5; --dlg:#FBFAF8; --dlg2:#F3F1ED;
+  --field:#FFFFFF; --field2:#F1EFEA;
+  --line:#DFDCD4; --line2:#C9C5BB; --bd:rgba(0,0,0,.14); --bd-hi:rgba(0,0,0,.26);
+  --t1:#22201D; --t2:#57534C; --t3:#7C766C; --t4:#A9A298;
+  --hov:rgba(0,0,0,.05); --act:rgba(0,0,0,.09);
+  --ac:#17786C; --ac-hi:#0F5F56; --ac-lo:#1A8D7F; --ac-soft:rgba(23,120,108,.14);
+  --on-ac:#FFFFFF; --dg:#B4403A; --dg-hi:#C24B44; --ok:#1E7A4B; --warn:#8A6218;
+}
+*,*::before,*::after{ box-sizing:border-box; }
+body{
+  margin:0; background:var(--page); color:var(--t1);
+  font-family:var(--ff); font-size:14px; line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+::selection{ background:var(--ac-soft); }
+
+.top{
+  position:sticky; top:0; z-index:60; display:flex; align-items:center; gap:12px;
+  padding:11px 34px; background:color-mix(in srgb,var(--page) 88%,transparent);
+  backdrop-filter:blur(14px); border-bottom:1px solid var(--line);
+}
+.top{ flex-wrap:wrap; }
+.top .brand{ font-size:12px; letter-spacing:.16em; font-weight:700; white-space:nowrap; }
+.top .brand span{ color:var(--t4); font-weight:500; letter-spacing:.05em; margin-left:6px; }
+.top nav{ display:flex; gap:2px; margin-left:18px; flex-wrap:wrap; }
+.top nav a{ font-size:12px; color:var(--t3); text-decoration:none; padding:5px 9px; border-radius:6px; white-space:nowrap; }
+.top nav a:hover{ color:var(--t1); background:var(--hov); }
+.top .gap{ flex:1; }
+.top .hint{ font-size:11.5px; color:var(--t4); white-space:nowrap; }
+.tbtn{
+  background:none; border:1px solid var(--line2); color:var(--t2); font:inherit; font-size:12px;
+  padding:5px 11px; border-radius:7px; cursor:pointer;
+}
+.tbtn:hover{ color:var(--t1); border-color:var(--t3); }
+
+.wrap{ max-width:1240px; margin:0 auto; padding:0 34px 96px; }
+
+header.intro{ padding:38px 0 6px; }
+header.intro h1{ font-size:27px; line-height:1.3; font-weight:700; margin:0 0 10px; letter-spacing:-.01em; }
+header.intro p{ margin:0 0 8px; max-width:86ch; color:var(--t2); font-size:13.5px; }
+header.intro p b{ color:var(--t1); }
+.reqs{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:22px 0 0; }
+.req{ background:var(--dlg); border:1px solid var(--line); border-radius:10px; padding:12px 13px; }
+.req h5{ margin:0 0 5px; font-size:12px; font-weight:650; color:var(--t1); display:flex; align-items:center; gap:6px; }
+.req h5 i{ width:5px; height:5px; border-radius:50%; background:var(--ac); font-style:normal; }
+.req p{ margin:0; font-size:11.5px; color:var(--t3); line-height:1.7; }
+.req code{ font-family:var(--mono); font-size:10.5px; color:var(--t2); }
+
+/* ── 屏 ───────────────────────────────────────────────── */
+.screen{ margin-top:38px; }
+.sc-head{ display:flex; align-items:center; gap:10px; margin-bottom:11px; }
+.sc-head .no{ font-family:var(--mono); font-size:10.5px; color:var(--ac); border:1px solid var(--line2); border-radius:5px; padding:1px 6px; }
+.sc-head h2{ font-size:16px; margin:0; font-weight:650; }
+.sc-head .src{ font-family:var(--mono); font-size:10.5px; color:var(--t4); }
+.sc-head .gap{ flex:1; }
+.sc-head .tag{ font-size:10.5px; color:var(--t3); border:1px solid var(--line2); border-radius:5px; padding:1px 7px; }
+.stage{
+  background:var(--stage); border:1px solid var(--line); border-radius:13px; padding:28px 22px;
+  display:flex; justify-content:center; align-items:flex-start; overflow:hidden;
+}
+.stage.narrow{ padding:28px 12px; }
+.cap{ font-size:11.5px; color:var(--t3); margin:11px 4px 0; line-height:1.8; max-width:100ch; }
+.cap b{ color:var(--t2); font-weight:600; }
+
+/* ══════════════════════════════════════════════════════════════
+   编辑器窗口本体 —— 以下色值 = 主题「石墨·暗」真实值
+   ══════════════════════════════════════════════════════════════ */
+.ed{
+  --e-root:#111111; --e-panel:#191919; --e-palt:#222222; --e-elev:#2A2A2A;
+  --e-hov:#313131; --e-act:#3A3A3A; --e-line:#3A3A3A; --e-lstr:#313131;
+  --e-t1:#B4B4B4; --e-t2:#818181; --e-t3:#666666;
+  --e-ac:#0090FF; --e-ac2:#2870BD; --e-ok:#46A758; --e-wr:#A18072; --e-dg:#E93D82;
+  /* 语法色：直接借用该主题的 ANSI 16 色（ansi16[1..6]），让编辑器与终端同源 */
+  --s-cm:#666666; --s-st:#3DD68C; --s-kw:#D19DFF; --s-ty:#4CCCE6;
+  --s-nu:#F5E147; --s-fn:#70B8FF; --s-at:#FF9592; --s-pu:#B4B4B4;
+  --e-hit:rgba(245,197,79,.30); --e-hit-cur:rgba(232,120,40,.62);
+  --e-sel:rgba(0,144,255,.26); --e-cur-line:rgba(255,255,255,.035);
+  position:relative; width:100%; max-width:1000px; height:620px;
+  background:var(--e-root); border:1px solid var(--e-line); border-radius:10px;
+  display:flex; flex-direction:column; overflow:hidden;
+  color:var(--e-t1); font-family:var(--mono);
+  box-shadow:0 26px 70px rgba(0,0,0,.55);
+}
+.ed.narrow{ max-width:420px; height:520px; }
+.ed.narrow .ed-find{ left:8px; right:8px; width:auto; }
+.ed.narrow .ed-status [data-f="fmt"]{ display:none; }
+.ed.narrow .ed-gutter{ width:38px; min-width:38px; }
+.ed.light{
+  --e-root:#FCFCFC; --e-panel:#F9F9F9; --e-palt:#F0F0F0; --e-elev:#E8E8E8;
+  --e-hov:#E0E0E0; --e-act:#D9D9D9; --e-line:#CECECE; --e-lstr:#BBBBBB;
+  --e-t1:#202020; --e-t2:#646464; --e-t3:#737373;
+  --e-ac:#0090FF; --e-ac2:#0588F0; --e-ok:#29A383; --e-wr:#FFC53D; --e-dg:#E93D82;
+  --s-cm:#737373; --s-st:#257F53; --s-kw:#8138C2; --s-ty:#267382;
+  --s-nu:#4F4917; --s-fn:#316EAA; --s-at:#C23C38; --s-pu:#202020;
+  --e-hit:rgba(245,197,79,.42); --e-hit-cur:rgba(232,120,40,.55);
+  --e-sel:rgba(0,144,255,.20); --e-cur-line:rgba(0,0,0,.035);
+}
+
+/* 标题栏 */
+.ed-bar{
+  height:36px; flex:0 0 auto; display:flex; align-items:center; gap:9px; padding:0 10px 0 12px;
+  background:var(--e-panel); border-bottom:1px solid var(--e-line);
+}
+.ed-bar .fic{ width:15px; height:15px; flex:0 0 auto; color:var(--e-t3); }
+.ed-bar .fname{ font-size:12.5px; color:var(--e-t1); font-weight:600; font-family:var(--ff); }
+.ed-bar .fpath{ font-size:11.5px; color:var(--e-t3); font-family:var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ed-bar .fpath b{ color:var(--e-t2); font-weight:400; }
+.ed-bar .dot{ color:var(--e-ac); font-size:13px; line-height:1; }
+.ed-bar .ro{
+  font-family:var(--ff); font-size:10.5px; color:var(--e-wr); border:1px solid color-mix(in srgb,var(--e-wr) 45%,transparent);
+  padding:1px 6px; border-radius:4px; white-space:nowrap;
+}
+.ed-bar .sp{ flex:1; }
+.ed-bar .btn{
+  height:26px; padding:0 12px; border-radius:6px; border:1px solid transparent; background:var(--e-ac);
+  color:#fff; font-family:var(--ff); font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;
+}
+.ed-bar .btn:hover{ filter:brightness(1.1); }
+.ed-bar .btn.ghost{ background:var(--e-elev); color:var(--e-t1); border-color:var(--e-line); }
+.ed-bar .btn.ghost:hover{ background:var(--e-hov); }
+.ed-bar .x{
+  width:30px; height:26px; border-radius:6px; display:grid; place-items:center; color:var(--e-t1); cursor:pointer;
+}
+.ed-bar .x:hover{ background:var(--e-dg); color:#fff; }
+.ed-bar .x svg{ width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; }
+
+/* 降级横幅 */
+.ed-banner{
+  flex:0 0 auto; display:flex; align-items:center; gap:8px; height:30px; padding:0 12px;
+  background:color-mix(in srgb,var(--e-wr) 13%,var(--e-root));
+  border-bottom:1px solid color-mix(in srgb,var(--e-wr) 30%,transparent);
+  color:var(--e-wr); font-family:var(--ff); font-size:11.5px;
+}
+.ed-banner svg{ width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:2; }
+.ed-banner .sp{ flex:1; }
+.ed-banner a{ color:var(--e-ac); cursor:pointer; text-decoration:none; border-bottom:1px dashed currentColor; }
+
+/* 主体 */
+.ed-body{ flex:1 1 auto; position:relative; display:flex; min-height:0; }
+.ed-scroll{
+  flex:1 1 auto; display:flex; align-items:flex-start; overflow:auto; min-height:0; position:relative;
+  background:var(--e-root); scrollbar-width:thin; scrollbar-color:var(--e-lstr) transparent;
+}
+.ed-scroll::-webkit-scrollbar{ width:11px; height:11px; }
+.ed-scroll::-webkit-scrollbar-thumb{ background:var(--e-lstr); border:3px solid var(--e-root); border-radius:6px; }
+.ed-scroll::-webkit-scrollbar-thumb:hover{ background:var(--e-act); }
+
+.ed-gutter{
+  flex:0 0 auto; position:sticky; left:0; z-index:2; width:52px; min-width:52px;
+  background:var(--e-panel); border-right:1px solid var(--e-line);
+  font-size:12.5px; line-height:20px; color:var(--e-t3); text-align:right; user-select:none;
+}
+.ed-gutter .g{ position:relative; padding-right:11px; height:20px; }
+.ed-gutter .g.cur{ color:var(--e-ac); }
+.ed-gutter .g .mk{
+  position:absolute; left:0; top:5px; width:3px; height:10px; border-radius:0 2px 2px 0; background:var(--e-ac);
+}
+
+.ed-code{ flex:1 1 auto; min-width:0; padding:8px 0 40px; outline:none; }
+.ed-code .row{ height:20px; display:flex; align-items:center; white-space:pre; font-size:12.5px; line-height:20px; }
+.ed-code .row.cur{ background:var(--e-cur-line); }
+.ed-code .row .txt{ padding:0 16px 0 12px; }
+.ed-code .cm{ color:var(--s-cm); font-style:italic; }
+.ed-code .st{ color:var(--s-st); }
+.ed-code .kw{ color:var(--s-kw); }
+.ed-code .ty{ color:var(--s-ty); }
+.ed-code .nu{ color:var(--s-nu); }
+.ed-code .fn{ color:var(--s-fn); }
+.ed-code .at{ color:var(--s-at); }
+.ed-code .pu{ color:var(--s-pu); }
+.ed-code .sel{ background:var(--e-sel); }
+.ed-code .hit{ background:var(--e-hit); border-radius:2px; }
+.ed-code .hit-cur{ background:var(--e-hit-cur); border-radius:2px; color:#fff; }
+.ed-code .caret{
+  display:inline-block; width:0; border-left:2px solid var(--e-ac); height:14px;
+  vertical-align:-3px; margin:0 -1px;
+}
+.ed-code .caret.blk{ background:var(--e-ac); border-left-color:transparent; width:7px; }
+.ed-code .mc{ display:inline-block; width:0; border-left:2px solid var(--e-ac); height:14px; vertical-align:-3px; opacity:.75; }
+
+/* 查找面板 */
+.ed-find{
+  position:absolute; top:10px; right:22px; z-index:6; width:392px; padding:9px;
+  background:var(--e-palt); border:1px solid var(--e-line); border-radius:9px;
+  box-shadow:0 16px 40px rgba(0,0,0,.5); display:none;
+}
+.ed-find.on{ display:block; }
+.ed-find .frow{ display:flex; align-items:center; gap:6px; }
+.ed-find .frow + .frow{ margin-top:6px; }
+.ed-find .fgrp{ display:flex; align-items:center; gap:0; flex:1 1 auto; min-width:0; }
+.ed-find input{
+  flex:1 1 auto; min-width:0; height:28px; background:var(--e-root); border:1px solid var(--e-line);
+  border-radius:6px 0 0 6px; color:var(--e-t1); font-family:var(--mono); font-size:12px; padding:0 9px; outline:none;
+}
+.ed-find input:focus{ border-color:var(--e-ac); }
+.ed-find input.replace{ border-radius:6px; }
+.ed-find .cnt{
+  height:28px; min-width:58px; display:grid; place-items:center; padding:0 8px;
+  background:var(--e-root); border:1px solid var(--e-line); border-left:0; border-radius:0 6px 6px 0;
+  color:var(--e-t3); font-size:11.5px; white-space:nowrap;
+}
+.ed-find .toggle{
+  height:28px; width:28px; display:grid; place-items:center; border-radius:6px; cursor:pointer;
+  background:var(--e-elev); border:1px solid var(--e-line); color:var(--e-t3); font-size:11px; font-weight:700;
+}
+.ed-find .toggle:hover{ color:var(--e-t1); background:var(--e-hov); }
+.ed-find .toggle.on{ background:var(--e-ac); border-color:var(--e-ac); color:#fff; }
+.ed-find .tgl{ display:flex; gap:4px; }
+.ed-find .nav{
+  height:28px; width:28px; display:grid; place-items:center; border-radius:6px; cursor:pointer;
+  background:var(--e-elev); border:1px solid var(--e-line); color:var(--e-t1);
+}
+.ed-find .nav:hover{ background:var(--e-hov); }
+.ed-find .nav svg{ width:13px; height:13px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.ed-find .rall{
+  height:28px; padding:0 10px; border-radius:6px; cursor:pointer; white-space:nowrap;
+  background:var(--e-elev); border:1px solid var(--e-line); color:var(--e-t1); font-family:var(--ff); font-size:11.5px;
+}
+.ed-find .rall:hover{ background:var(--e-hov); }
+.ed-find .rall.primary{ background:var(--e-ac); border-color:var(--e-ac); color:#fff; }
+
+/* 命令面板 */
+.ed-pal{
+  position:absolute; top:0; left:0; right:0; z-index:8; display:none;
+  background:var(--e-palt); border-bottom:1px solid var(--e-line); box-shadow:0 12px 32px rgba(0,0,0,.45);
+}
+.ed-pal.on{ display:block; }
+.ed-pal .prow{ display:flex; align-items:center; gap:9px; height:42px; padding:0 14px; border-bottom:1px solid var(--e-line); }
+.ed-pal .psig{ color:var(--e-ac); font-size:14px; font-weight:700; width:12px; }
+.ed-pal input{
+  flex:1; background:none; border:0; outline:none; color:var(--e-t1); font-family:var(--mono); font-size:13px;
+}
+.ed-pal input::placeholder{ color:var(--e-t3); }
+.ed-pal .plist{ max-height:236px; overflow:auto; padding:4px 0; }
+.ed-pal .pitem{
+  display:flex; align-items:center; gap:10px; height:30px; padding:0 14px; cursor:pointer; font-size:12.5px; color:var(--e-t2);
+}
+.ed-pal .pitem:hover{ background:var(--e-hov); }
+.ed-pal .pitem.on{ background:var(--e-sel); color:var(--e-t1); }
+.ed-pal .pitem .k{ margin-left:auto; font-size:10.5px; color:var(--e-t3); font-family:var(--mono); }
+.ed-pal .pitem .g{ color:var(--e-ac); }
+
+/* 状态栏 */
+.ed-status{
+  flex:0 0 auto; height:26px; display:flex; align-items:center; gap:12px; padding:0 10px;
+  background:var(--e-panel); border-top:1px solid var(--e-line);
+  font-size:11px; color:var(--e-t2); font-family:var(--ff); user-select:none;
+}
+.ed-status .st{ display:flex; align-items:center; gap:5px; }
+.ed-status .sp{ flex:1; }
+.ed-status .sbtn{
+  height:20px; padding:0 7px; display:flex; align-items:center; gap:4px; border-radius:5px; cursor:pointer;
+  color:var(--e-t3);
+}
+.ed-status .sbtn:hover{ background:var(--e-hov); color:var(--e-t1); }
+.ed-status .sbtn svg{ width:13px; height:13px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.ed-status .warn{ color:var(--e-wr); }
+
+/* 标注角标 */
+.pin{
+  position:absolute; z-index:20; width:17px; height:17px; border-radius:50%;
+  background:var(--ac); color:#04120F; font-family:var(--mono); font-size:10.5px; font-weight:700;
+  display:grid; place-items:center; box-shadow:0 2px 8px rgba(0,0,0,.4); pointer-events:none;
+}
+
+/* ── 表格 ─────────────────────────────────────────────── */
+.tbl{ width:100%; border-collapse:collapse; margin-top:12px; font-size:12.5px; }
+.tscroll{ overflow-x:auto; margin-top:12px; }
+.tscroll .tbl{ margin-top:0; min-width:760px; }
+.tbl th{
+  text-align:left; font-weight:600; color:var(--t3); font-size:11px; letter-spacing:.04em; text-transform:uppercase;
+  padding:8px 11px; border-bottom:1px solid var(--line2); white-space:nowrap;
+}
+.tbl td{ padding:9px 11px; border-bottom:1px solid var(--line); color:var(--t2); vertical-align:top; line-height:1.7; }
+.tbl tr:hover td{ background:var(--dlg); }
+.tbl td b{ color:var(--t1); font-weight:600; }
+.tbl code, .cap code, .req code{ font-family:var(--mono); font-size:11.5px; color:var(--t1); background:var(--dlg2); padding:1px 5px; border-radius:4px; }
+.tbl td .k{ font-family:var(--mono); font-size:11.5px; color:var(--ac); white-space:nowrap; }
+.tbl td .no{ color:var(--dg); }
+.tbl td .yes{ color:var(--ok); }
+
+h2.sec{ font-size:19px; font-weight:650; margin:46px 0 4px; padding-top:18px; border-top:1px solid var(--line); }
+p.lead{ color:var(--t3); font-size:12.5px; margin:0 0 6px; }
+
+.two{ display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:14px; }
+.box{ background:var(--dlg); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+.box h4{ margin:0 0 9px; font-size:12.5px; font-weight:650; }
+.box ul{ margin:0; padding-left:17px; color:var(--t2); font-size:12px; line-height:1.95; }
+.box ul b{ color:var(--t1); }
+.box.warn{ border-color:color-mix(in srgb,var(--warn) 40%,var(--line)); }
+.box.warn h4{ color:var(--warn); }
+.box.ok{ border-color:color-mix(in srgb,var(--ok) 35%,var(--line)); }
+.box.ok h4{ color:var(--ok); }
+
+.toast{
+  position:absolute; left:50%; bottom:44px; transform:translateX(-50%) translateY(8px); z-index:30;
+  background:var(--e-elev); border:1px solid var(--e-line); color:var(--e-t1); font-family:var(--ff); font-size:12px;
+  padding:7px 14px; border-radius:7px; opacity:0; transition:.18s var(--ease); pointer-events:none;
+  box-shadow:0 10px 26px rgba(0,0,0,.45);
+}
+.toast.on{ opacity:1; transform:translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+
+<div class="top">
+  <div class="brand">MTerm<span>EDITOR · HIFI</span></div>
+  <nav>
+    <a href="#s1">主界面</a><a href="#s2">查找替换</a><a href="#s3">命令面板</a>
+    <a href="#s4">只读态</a><a href="#s5">大文件</a><a href="#s6">窄窗</a>
+    <a href="#spec">交互规格</a><a href="#impl">实现对照</a><a href="#perf">性能预算</a>
+  </nav>
+  <div class="gap"></div>
+  <div class="hint">窗口内色值 = 主题「石墨·暗」真实值</div>
+  <button class="tbtn" id="themeBtn">切换明暗</button>
+</div>
+
+<div class="wrap">
+
+<header class="intro">
+  <h1>MTerm 内置编辑器 · 界面与交互高保真</h1>
+  <p>面向 <b>远程文件编辑</b> 场景（SFTP 打开 → 编辑 → 回写）的编辑器重做稿。目标不是做一个通用 IDE，而是把
+  「<b>打开远程文件 → 看清 → 改准 → 安全存回</b>」这一条主路径做到位，同时把上一轮定位到的三个性能瓶颈
+  （<code>ui/editor_window.slint:252</code> 行号槽全量遍历、<code>:254</code> 每行一个隐藏测量器、<code>:319-324</code> 每次按键全量重建行模型）
+  在结构上消掉。</p>
+  <p>交互可直接点：<b>点代码区移动光标 · 拖拽选区 · 打字产生脏标记 · Ctrl+F 开查找 · 「:」开命令面板 · Ctrl+S 存盘</b>。</p>
+  <div class="reqs">
+    <div class="req"><h5><i></i>场景约束</h5><p>远程文件，SFTP 读写；单文件、浅层使用；<code>Ctrl+S</code> 直存，无本地副本。</p></div>
+    <div class="req"><h5><i></i>规模约束</h5><p>目标 1 MB / 5 万行内流畅；超 <code>2 MB</code> 自动降级（关高亮、关软换行）。</p></div>
+    <div class="req"><h5><i></i>平台约束</h5><p>Windows / macOS / Linux / Android 四端；等宽字体族与 <code>CJK</code> 回退已就绪。</p></div>
+    <div class="req"><h5><i></i>实现约束</h5><p>Slint 1.18 <code>TextInput</code> 不支持按 span 着色 → 编辑态彩色必须自绘。</p></div>
+  </div>
+</header>
+
+<!-- ═════════════ 01 主界面 ═════════════ -->
+<section class="screen" id="s1">
+  <div class="sc-head"><span class="no">01</span><h2>主界面 · 默认态</h2>
+    <span class="src">ui/editor_window.slint</span><div class="gap"></div><span class="tag">可交互</span></div>
+  <div class="stage"><div id="ed-main"></div></div>
+  <p class="cap">
+    <b>改动要点：</b>① 查找/替换从「常驻 38px 横条」改为<b>浮动面板</b>（默认不占版面，Ctrl+F 才出现）——
+    这是直接对应 <code>editor_window.slint:149-236</code> 那条常驻栏的取消；② 新增底部 <b>26px 状态栏</b>，承载
+    行列号 / 选区 / 编码 / 换行符 / 语言，行列号改为<b>增量更新</b>（不再每次按键全量重建行模型）；
+    ③ 行号槽宽度 48 → 52px，为 5 位行号留位，并新增<b>修改行标记</b>（左侧 3px accent 竖条）；
+    ④ 语法高亮直接复用主题的 <b>ANSI 16 色</b>，与终端区同源，视觉上不割裂；
+    ⑤ 标题栏文件名加粗、路径降为次级色、脏标记用 accent 圆点（原来是拼接文本 “· Modified”）。
+  </p>
+</section>
+
+<!-- ═════════════ 02 查找替换 ═════════════ -->
+<section class="screen" id="s2">
+  <div class="sc-head"><span class="no">02</span><h2>查找与替换 · 浮动面板</h2>
+    <span class="src">替代 editor_window.slint:149-236</span><div class="gap"></div><span class="tag">可交互</span></div>
+  <div class="stage"><div id="ed-find"></div></div>
+  <p class="cap">
+    <b>交互：</b>面板右上角浮在代码区之上，不挤压布局；<code>Enter</code> 下一个 / <code>Shift+Enter</code> 上一个 /
+    <code>Esc</code> 关闭并把光标还原到原位。三个开关：<b>Aa</b> 大小写、<b>ab</b> 整词、<b>.*</b> 正则。
+    计数显示 <code>3/17</code> 形式（当前/总数），命中处底色高亮、当前命中用更暖的橙底。
+    替换区折叠成一行，<b>全部替换</b>为唯一主动作，避免误触。
+  </p>
+</section>
+
+<!-- ═════════════ 03 命令面板 ═════════════ -->
+<section class="screen" id="s3">
+  <div class="sc-head"><span class="no">03</span><h2>命令面板 · Helix 风格 <code>:</code></h2>
+    <span class="src">新增</span><div class="gap"></div><span class="tag">可交互</span></div>
+  <div class="stage"><div id="ed-pal"></div></div>
+  <p class="cap">
+    <b>为什么做：</b>接上一轮的结论——不整体移植 Helix，但<b>借它的交互语言</b>。<code>:</code> 唤起是 Helix 的招牌动作，
+    零学习成本，且天然容纳后续扩展（<code>:w</code> 保存、<code>:q</code> 关闭、<code>:set wrap</code>）。
+    <code>Ctrl+Shift+P</code> 是 VSCode 习惯，作为别名保留。面板同时承载「保存 / 只读切换 / 换行切换 / 编码 / 跳行 / 复制路径」等
+    低频动作，<b>不占用顶栏空间</b>——顶栏只留高频的「保存」。
+  </p>
+</section>
+
+<!-- ═════════════ 04 只读态 ═════════════ -->
+<section class="screen" id="s4">
+  <div class="sc-head"><span class="no">04</span><h2>只读态</h2>
+    <span class="src">editor-readonly</span><div class="gap"></div></div>
+  <div class="stage"><div id="ed-ro"></div></div>
+  <p class="cap">
+    <b>要点：</b>只读时<b>保留高亮与查找</b>（看文件是主需求），仅去掉光标与保存入口；标题栏出现琥珀色
+    <code>只读</code> 徽标；状态栏右侧显示「只读」并禁用保存。<b>不做</b>「只读也允许编辑后另存」的复杂分支——
+    远程场景下另存为的路径选择器成本高于收益，先不做。
+  </p>
+</section>
+
+<!-- ═════════════ 05 大文件降级 ═════════════ -->
+<section class="screen" id="s5">
+  <div class="sc-head"><span class="no">05</span><h2>大文件降级态</h2>
+    <span class="src">新增 · &gt; 2 MB 或 &gt; 8 万行</span><div class="gap"></div></div>
+  <div class="stage"><div id="ed-big"></div></div>
+  <p class="cap">
+    <b>要点：</b>超过阈值时顶部出现一条 30px 横幅，明确告知<b>关掉了什么、为什么</b>（关语法高亮 + 关自动换行），
+    并提供「仍然启用」的一次性豁免。降级不是为了偷懒，而是把成本花在刀刃上：
+    <b>关掉软换行</b>能省掉每行一次 <code>TextInput</code> 测高（即 <code>editor_window.slint:254</code> 那个热点），
+    <b>关掉高亮</b>能省掉全量 tokenize。
+    <br><b>注意现状：</b>现在超限的文件是<b>直接拒绝打开</b>，不是降级——
+    <code>src/sftp/impls/sftp.rs:1710-1712</code> 的 <code>MAX_BUILTIN_EDITOR_BYTES = 512 * 1024</code>、
+    <code>MAX_BUILTIN_EDITOR_LINES = 20_000</code>、<code>MAX_BUILTIN_EDITOR_LINE_BYTES = 64 * 1024</code>
+    三道闸门任一触发就返回 <code>EditorTextRejection</code>。建议改成<b>软上限 + 降级</b>：
+    超限仍可打开（只读、可搜索、不可编辑），而不是一律拒绝。
+    编码 / 外观 / 格式化的完整设计见 <b>editor-settings-hifi-2026-10-23.html</b>（第二稿）。
+  </p>
+</section>
+
+<!-- ═════════════ 06 窄窗 ═════════════ -->
+<section class="screen" id="s6">
+  <div class="sc-head"><span class="no">06</span><h2>窄窗 / 小屏态</h2>
+    <span class="src">min-width 420px</span><div class="gap"></div></div>
+  <div class="stage narrow"><div id="ed-narrow"></div></div>
+  <p class="cap">
+    <b>要点：</b>420px 是 <code>editor_window.slint:48</code> 定的最小宽度。窄窗下：查找面板改为<b>整行覆盖</b>
+    （不再浮在右上角，否则只剩 200px 宽没法用）；状态栏只保留 <code>Ln/Col</code> 与两个图标按钮，其余折叠进命令面板；
+    行号槽缩到 38px（最多 4 位行号）。
+  </p>
+</section>
+
+<!-- ═════════════ 交互规格 ═════════════ -->
+<h2 class="sec" id="spec">交互规格</h2>
+<p class="lead">键位与状态机。快捷键取 Helix / VSCode 的交集部分，避免同时教两套。</p>
+<table class="tbl">
+<thead><tr><th style="width:168px">键</th><th style="width:120px">动作</th><th>行为</th><th style="width:130px">状态</th></tr></thead>
+<tbody>
+<tr><td class="k">Ctrl + F</td><td>查找</td><td>打开浮动查找面板；焦点进输入框；选中全文预填</td><td>可交互</td></tr>
+<tr><td class="k">Ctrl + H</td><td>替换</td><td>同上并展开替换行</td><td>可交互</td></tr>
+<tr><td class="k">Esc</td><td>关闭面板</td><td>先清多光标；再关面板；光标回到打开面板前的位置</td><td>可交互</td></tr>
+<tr><td class="k">Ctrl + S</td><td>保存</td><td>经 SFTP 回写（<code>sftp_callbacks.rs:850</code>）；失败弹 toast 不关窗</td><td>可交互</td></tr>
+<tr><td class="k">:</code></td><td>命令面板</td><td>光标在代码区时按下即唤起（Helix 语义）</td><td>可交互</td></tr>
+<tr><td class="k">Ctrl + Shift + P</td><td>命令面板</td><td>VSCode 习惯别名，等价于 <code>:</code></td><td>可交互</td></tr>
+<tr><td class="k">Ctrl + D</td><td>选中下一处相同</td><td>多光标；<b>Helix 语义</b>（VSCode 是加选词）</td><td>待定</td></tr>
+<tr><td class="k">Alt + ↑ / ↓</td><td>整行上移 / 下移</td><td>远程改配置时的高频动作</td><td>建议做</td></tr>
+<tr><td class="k">Ctrl + G</td><td>跳到行</td><td>行号输入框</td><td>建议做</td></tr>
+<tr><td class="k">Tab</td><td>缩进 / 反缩进</td><td>与 <code>.editorconfig</code> 一致（Tab 宽度、是否转空格）</td><td>建议做</td></tr>
+<tr><td class="k">Home / End</td><td>行首 / 行尾</td><td>行尾按<b>字素簇</b>（CJK 宽字符正确落位）</td><td>建议做</td></tr>
+<tr><td class="k">鼠标双击</td><td>选中词</td><td>按字素簇切分，中文按词不按字节</td><td>建议做</td></tr>
+<tr><td class="k">鼠标中键拖拽</td><td>平移滚轮</td><td>横向滚动，不换行时必备</td><td>建议做</td></tr>
+</tbody>
+</table>
+
+<div class="two">
+  <div class="box ok"><h4>本稿已实现（可点）</h4><ul>
+    <li>点击代码区 → 光标落位，状态栏 <b>Ln/Col 实时更新</b></li>
+    <li>拖拽 → 选区高亮，状态栏显示 <b>Sel N</b></li>
+    <li>直接打字 → 插入文本、行标记脏、标题栏出 ●</li>
+    <li>查找框输入 → 代码区实时标命中、计数 <b>n/m</b></li>
+    <li><b>:</b> → 命令面板，输入过滤，↑↓ 选择，Enter 执行</li>
+    <li>Ctrl+S → toast「已保存」</li>
+    <li>明暗主题切换（右上角按钮）</li>
+  </ul></div>
+  <div class="box"><h4>本稿未定（需你拍板）</h4><ul>
+    <li><b>命令面板</b>是 Helix 的 <code>:</code> 还是 VSCode 的 Ctrl+Shift+P？本稿两者都收</li>
+    <li><b>查找面板</b>浮在右上角，还是像现在这样顶到工具栏上？本稿浮</li>
+    <li>是否需要 <b>缩略图 / minimap</b>？本稿<b>不做</b>（Slint 自绘成本高，收益低）</li>
+    <li>是否保留<b>顶部工具栏</b>（现在有的查找/替换常驻条）？本稿取消</li>
+    <li><b>Ctrl+D</b> 语义取 Helix（选下一处）还是 VSCode（加选词）？本稿取 Helix</li>
+  </ul></div>
+</div>
+
+<!-- ═════════════ 实现对照 ═════════════ -->
+<h2 class="sec" id="impl">设计 → Slint 实现对照</h2>
+<p class="lead">每个视觉元素对应到 Slint 的实现手段与代价。这一栏是<b>可行性</b>，不是美学。</p>
+<table class="tbl">
+<thead><tr><th style="width:150px">视觉元素</th><th style="width:210px">实现手段</th><th>代价 / 风险</th><th style="width:96px">可行性</th></tr></thead>
+<tbody>
+<tr><td><b>语法高亮（彩色）</b></td><td><code>slint::StyledText</code> 公开 API 不可构造任意 span → <b>必须自绘</b>：自绘 <code>Rectangle</code>+<code>Text</code> 逐 token 渲染</td><td>每行 N 个元素；需配合<b>行号槽虚拟化</b>只渲染视口内 ±20 行，否则元素数爆炸</td><td class="yes">可行</td></tr>
+<tr><td><b>编辑态彩色</b></td><td>同上自绘 + 隐藏 <code>TextInput</code> 负责输入，光标位置由自绘层跟随</td><td>IME / 选区 / 光标同步是最大复杂度来源；<b>建议一期只做只读彩色</b></td><td class="no">一期不做</td></tr>
+<tr><td><b>行号槽</b></td><td><code>ScrollView</code> + <code>for</code> = <b>全量实例化</b>（已核实）→ 换 <b>std <code>ListView</code></b>（Slint 官方虚拟滚动）</td><td>ListView 要求<b>统一行高</b> → 与「关软换行」是同一个决定；行号必须并入每行才能同步滚动。<b>注意编辑器有两份实现</b>：<code>ui/editor_window.slint:291</code> 与 <code>ui/app.slint:5263</code>，应抽成共享组件</td><td class="yes">可行</td></tr>
+<tr><td><b>行高测量</b></td><td>每行一个隐藏 <code>TextInput</code> 测高 → 改为<b>整段一次测量</b> + 行高缓存</td><td>软换行下行高不一致；可退化为「单行高度 × 行数」，关掉软换行即完全一致</td><td class="yes">可行</td></tr>
+<tr><td><b>查找面板</b></td><td>普通 <code>Rectangle</code>+<code>TextInput</code>，<code>visible</code> 切换</td><td>无</td><td class="yes">简单</td></tr>
+<tr><td><b>命中高亮</b></td><td>自绘层按命中区间加底色</td><td>依赖自绘层（见上）</td><td class="yes">可行</td></tr>
+<tr><td><b>命令面板</b></td><td>浮层 + <code>TextInput</code> + <code>for</code> 过滤后的命令列表</td><td>命令列表用 <code>ModelRc</code> 驱动，随输入重建（量很小，无压力）</td><td class="yes">简单</td></tr>
+<tr><td><b>状态栏</b></td><td>一行 <code>Text</code>，属性绑定</td><td>行列号更新必须<b>增量</b>，不能再走全量重算</td><td class="yes">简单</td></tr>
+<tr><td><b>修改行标记</b></td><td>gutter 内一条 2-3px <code>Rectangle</code>，由「脏行号集合」驱动</td><td>集合用 <code>[int]</code> 传给 Slint</td><td class="yes">可行</td></tr>
+<tr><td><b>滚动条</b></td><td>Slint <code>ScrollView</code> 自带</td><td>无</td><td class="yes">已有</td></tr>
+<tr><td><b>minimap</b></td><td>自绘缩略条</td><td>额外一遍布局 + 持续重绘</td><td class="no">不做</td></tr>
+<tr><td><b>字素簇光标</b></td><td><code>unicode-segmentation</code>（已在依赖里）</td><td>需按 grapheme 而非 char 计算列宽，CJK 全角算 2</td><td class="yes">可行</td></tr>
+</tbody>
+</table>
+
+<!-- ═════════════ 性能预算 ═════════════ -->
+<h2 class="sec" id="perf">性能预算</h2>
+<p class="lead">给改造设硬指标，避免「感觉变快了」这种无法验收的说法。</p>
+<table class="tbl">
+<thead><tr><th style="width:230px">指标</th><th style="width:120px">现状</th><th style="width:120px">目标</th><th>口径</th></tr></thead>
+<tbody>
+<tr><td>打开 5 MB / 12 万行文件</td><td class="no"><b>根本打不开</b>：<code>sftp.rs:1710-1712</code> 硬上限 512 KB / 20000 行，超了直接拒</td><td class="yes">&lt; 400 ms（需先放开上限）</td><td>点击文件 → 首个可见帧</td></tr>
+<tr><td>打开 200 KB / 5000 行文件</td><td class="mid">可打开，但 UI 元素数 ≈ 10000</td><td class="yes">&lt; 120 ms</td><td>同上</td></tr>
+<tr><td>连续输入（每键一次按键到重绘）</td><td class="no">~60 ms（可感）</td><td class="yes">&lt; 16 ms</td><td>输入 20 个字符，取 P95</td></tr>
+<tr><td>编辑态 UI 元素数（5000 行文件）</td><td class="no">≥ 10000（每行一个测量器 + 一个行号）</td><td class="yes">≤ 1200（视口 ±20 行 × 2）</td><td>DevTools 元素计数</td></tr>
+<tr><td>查找首字响应（5 MB 文件）</td><td class="no">全量扫描，同步阻塞</td><td class="yes">&lt; 120 ms 且不阻塞 UI</td><td>输入到命中数出现</td></tr>
+<tr><td>查找输入去抖</td><td class="no">0 ms（每次按键全量重算）</td><td class="yes">150 ms</td><td>连续输入只在停顿后触发</td></tr>
+<tr><td>内存（打开 5 MB 文件）</td><td>—</td><td class="yes">≤ 3× 文件大小</td><td>rope + 行模型 + 高亮缓存</td></tr>
+</tbody>
+</table>
+
+<div class="box warn" style="margin-top:16px">
+  <h4>⚠ 一条待验证 + 一条已核实（2026-10-23 更新）</h4>
+  <ul>
+    <li><b>❗ 待验证：Slint 1.18 的 <code>Text</code> 是否接受 styled-text 属性</b>、markdown 是否支持内联颜色语法 ——
+    官网文档路径当前 404（<code>releases.slint.dev/1.18.1/docs/...</code>），需查 <code>docs.rs/slint/1.18.1</code> 源码确认。
+    若支持，<b>只读彩色</b>的工程量会从「自绘几百个元素」降到「一次 <code>StyledText</code> 构建」，成本差一个量级。</li>
+    <li><b>✅ 已核实：<code>ScrollView</code> + <code>for</code> = 全量实例化（每帧 O(n)）</b>。
+    Slint 官方内置的 <code>ListView</code>（<code>internal/compiler/widgets/common/listview.slint</code>）走
+    「Repeater 内嵌 Flickable」的虚拟滚动，<b>任意时刻只实例化可见行 + 少量缓冲</b>（源自 Slint 官方 issue #11021）。
+    MTerm 全仓库<b>零处使用 ListView</b>，编辑器两处（<code>ui/editor_window.slint:291</code>、<code>ui/app.slint:5263</code>）
+    用的都是最慢的 <code>ScrollView</code> + <code>for</code> 写法 → <b>行号槽虚拟化应直接用 std <code>ListView</code></b>，
+    不必自研窗口化。</li>
+  </ul>
+</div>
+
+<h2 class="sec">下一步</h2>
+<p class="lead">按这个顺序切，每一步都可独立验收、独立回滚。</p>
+<table class="tbl">
+<thead><tr><th style="width:70px">阶段</th><th style="width:230px">内容</th><th>验收口径</th></tr></thead>
+<tbody>
+<tr><td class="k">S0</td><td>行号槽虚拟化（改用 std <code>ListView</code>）+ 整段测高 + <b>抽成共享编辑器组件</b>（<code>editor_window.slint:291</code> 与 <code>app.slint:5263</code> 现在是两份重复实现）</td><td>5000 行文件元素数 ≤ 1200；输入 P95 &lt; 16 ms</td></tr>
+<tr><td class="k">S1</td><td>状态栏 + 行列号增量更新 + 标题栏脏标记（<code>:319-324</code>）</td><td>连续输入 P95 &lt; 16 ms；状态栏不闪</td></tr>
+<tr><td class="k">S2</td><td>查找改 regex + 150 ms 去抖 + 浮动面板替换常驻条</td><td>5 MB 首字 &lt; 120 ms 且不阻塞</td></tr>
+<tr><td class="k">S3</td><td>syntect 只读高亮（<code>default-fancy</code>，纯 Rust）+ ANSI 16 映射</td><td>着色正确；构建四平台通过</td></tr>
+<tr><td class="k">S4</td><td>命令面板 + 大文件降级 + 字素簇光标</td><td>命令可达全部低频动作；大文件横幅按预期出现</td></tr>
+<tr><td class="k">S5</td><td>（可选）自绘编辑态彩色 / 多光标 / 选中相同</td><td>与 Helix 手感对齐</td></tr>
+</tbody>
+</table>
+
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════
+   编辑器原型
+   ═══════════════════════════════════════════════════════════ */
+const CODE = `use std::sync::Arc;
+use tokio::sync::Mutex;
+
+use crate::session::Session;
+
+/// 会话管理器：负责 SSH 连接的复用与惰性关闭。
+pub struct SessionManager {
+    sessions: Arc<Mutex<HashMap<String, Session>>>,
+    max_idle: Duration,
+}
+
+impl SessionManager {
+    pub fn new(max_idle: Duration) -> Self {
+        Self {
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            max_idle,
+        }
+    }
+
+    /// 关闭空闲超过 max_idle 的会话，返回被关闭的数量。
+    pub async fn reap_idle(&self) -> usize {
+        let mut guard = self.sessions.lock().await;
+        let cutoff = Instant::now() - self.max_idle;
+        let before = guard.len();
+        guard.retain(|_, s| s.last_used < cutoff);
+        before - guard.len()
+    }
+
+    /// 打开会话：同名会话复用，异名新建。
+    pub async fn open(&self, name: &str) -> Result<Session> {
+        if let Some(s) = self.sessions.lock().await.get(name) {
+            return Ok(s.clone());
+        }
+        let session = Session::connect(name).await?;
+        self.sessions.lock().await.insert(name.to_string(), session.clone());
+        Ok(session)
+    }
+}`;
+
+const TOKEN_RE = /(\/\/[^\n]*)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`[^`]*`)|(\b(?:async|await|const|crate|dyn|else|enum|extern|false|fn|for|if|impl|in|let|loop|match|mod|move|mut|pub|ref|return|self|Self|static|struct|super|trait|true|type|unsafe|use|where|while)\b)|(\b(?:u8|u16|u32|u64|i8|i16|i32|i64|usize|isize|f32|f64|bool|str|String|Vec|Option|Result|Arc|Mutex|HashMap|Duration|Instant)\b)|(\b[A-Z][A-Za-z0-9_]*\b)|(\b\d[\d_]*(?:\.\d+)?\b)|(\b[a-zA-Z_][A-Za-z0-9_]*(?=\s*\())|(\#\[[^\]]*\])|([{}()\[\];,.:])/g;
+const GROUP_CLS = [null,'cm','st','kw','ty','ty','nu','fn','at','pu'];
+
+function baseClasses(text){
+  const out = new Array(text.length).fill('');
+  TOKEN_RE.lastIndex = 0;
+  let m;
+  while((m = TOKEN_RE.exec(text)) !== null){
+    let cls = '';
+    for(let g=1; g<=9; g++){ if(m[g] !== undefined){ cls = GROUP_CLS[g]; break; } }
+    if(!cls) continue;
+    for(let i=m.index; i<m.index+m[0].length; i++) out[i] = cls;
+  }
+  return out;
+}
+
+function esc(s){ return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+const SVG = {
+  file:'<svg class="fic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>',
+  close:'<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  up:'<svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
+  down:'<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12l7 7 7-7"/></svg>',
+  search:'<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>',
+  cmd:'<svg viewBox="0 0 24 24"><path d="M4 17l6-6 6 6M4 7l6 6 6-6"/></svg>',
+  warn:'<svg viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>'
+};
+
+const CMDS = [
+  {n:'保存文件', k:'Ctrl+S', g:'write'},
+  {n:'保存并关闭', k:'', g:'write'},
+  {n:'跳转到行…', k:'Ctrl+G', g:'goto'},
+  {n:'切换只读模式', k:'', g:'file'},
+  {n:'切换自动换行', k:'', g:'file'},
+  {n:'设置文件编码', k:'', g:'file'},
+  {n:'复制文件路径', k:'', g:'file'},
+  {n:'选中所有相同项', k:'Ctrl+D', g:'edit'},
+  {n:'格式化文档', k:'', g:'edit'},
+  {n:'撤销', k:'Ctrl+Z', g:'edit'},
+  {n:'重做', k:'Ctrl+Shift+Z', g:'edit'}
+];
+
+function createEditor(host, opts){
+  opts = Object.assign({readonly:false, highlight:true, narrow:false, big:false, findOpen:false, palOpen:false}, opts||{});
+
+  const st = {
+    lines: CODE.split('\n'),
+    caret: {l:2, c:4},
+    anchor: null,
+    dragging: false,
+    dirty: false,
+    dirtyLines: {},
+    multi: [],
+    hl: opts.highlight,
+    find: {q:'', ci:false, word:false, re:false, idx:0},
+    hits: []
+  };
+
+  const el = document.createElement('div');
+  el.className = 'ed' + (opts.narrow ? ' narrow' : '');
+  el.innerHTML = `
+    <div class="ed-bar">
+      ${SVG.file}
+      <span class="fname">session_manager.rs</span>
+      <span class="fpath">/srv/app/src/<b>session_manager.rs</b></span>
+      <span class="dot" style="display:none">●</span>
+      <span class="ro" style="display:none">只读</span>
+      <div class="sp"></div>
+      <button class="btn" data-act="save" ${opts.readonly?'style="display:none"':''}>保存</button>
+      <div class="x" data-act="close">${SVG.close}</div>
+    </div>
+    ${opts.big ? `<div class="ed-banner">${SVG.warn}<span>大文件模式 · 2.4 MB / 68,204 行 · 已关闭<b>语法高亮</b>与<b>自动换行</b></span><span class="sp"></span><a>仍然启用</a></div>` : ''}
+    <div class="ed-body">
+      <div class="ed-scroll">
+        <div class="ed-gutter"></div>
+        <div class="ed-code" tabindex="0"></div>
+      </div>
+      <div class="ed-find">
+        <div class="frow">
+          <div class="fgrp">
+            <input type="text" placeholder="查找" spellcheck="false">
+            <span class="cnt">无结果</span>
+          </div>
+          <div class="nav" data-nav="-1">${SVG.up}</div>
+          <div class="nav" data-nav="1">${SVG.down}</div>
+          <div class="nav" data-act="find-close">${SVG.close}</div>
+        </div>
+        <div class="frow">
+          <div class="tgl">
+            <div class="toggle" data-t="ci" title="区分大小写">Aa</div>
+            <div class="toggle" data-t="word" title="全字匹配">ab</div>
+            <div class="toggle" data-t="re" title="正则表达式">.*</div>
+          </div>
+          <input type="text" class="replace" placeholder="替换为" spellcheck="false">
+          <button class="rall primary" data-act="replace-all">全部替换</button>
+        </div>
+      </div>
+      <div class="ed-pal">
+        <div class="prow">
+          <span class="psig">:</span>
+          <input type="text" placeholder="输入命令…" spellcheck="false">
+        </div>
+        <div class="plist"></div>
+      </div>
+    </div>
+    <div class="ed-status">
+      <span class="st"><span data-f="lncol">Ln 3, Col 5</span></span>
+      <span class="st" data-f="sel" style="display:none">Sel 0</span>
+      <span class="sp"></span>
+      <span class="st" data-f="fmt">UTF-8 · LF · Rust</span>
+      <span class="st warn" data-f="ro" style="display:none">只读</span>
+      <span class="sbtn" data-act="find-open" title="查找 Ctrl+F">${SVG.search}</span>
+      <span class="sbtn" data-act="pal-open" title="命令面板 Ctrl+Shift+P">${SVG.cmd}</span>
+    </div>
+    <div class="toast"></div>
+  `;
+  host.appendChild(el);
+
+  const $ = s => el.querySelector(s);
+  const gutter = $('.ed-gutter'), code = $('.ed-code'), scroll = $('.ed-scroll');
+  const findPanel = $('.ed-find'), pal = $('.ed-pal');
+  const findInput = findPanel.querySelector('input:not(.replace)');
+  const replInput = findPanel.querySelector('input.replace');
+  const cntEl = findPanel.querySelector('.cnt');
+  const toast = $('.toast');
+
+  /* ── 选区 ── */
+  function selRange(){
+    if(st.anchor === null) return null;
+    const a = st.anchor, b = st.caret;
+    const p = (a.l<b.l) || (a.l===b.l && a.c<=b.c) ? a : b;
+    const q = (a.l<b.l) || (a.l===b.l && a.c<=b.c) ? b : a;
+    if(p.l===q.l && p.c===q.c) return null;
+    return {l1:p.l, c1:p.c, l2:q.l, c2:q.c};
+  }
+
+  /* ── 查找命中 ── */
+  function computeHits(){
+    const q = st.find.q;
+    st.hits = [];
+    if(!q) return;
+    let re;
+    try{
+      let src = st.find.re ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if(st.find.ci) src = '(?i)' + src;
+      if(st.find.word) src = '\\b(?:' + src + ')\\b';
+      re = new RegExp(src, 'g');
+    }catch(e){ re = null; }
+    if(!re) return;
+    for(let l=0; l<st.lines.length; l++){
+      const line = st.lines[l]; re.lastIndex = 0;
+      let m;
+      while((m = re.exec(line)) !== null){
+        if(m[0].length === 0){ re.lastIndex++; continue; }
+        st.hits.push({l, s:m.index, e:m.index+m[0].length});
+      }
+    }
+  }
+
+  /* ── 渲染 ── */
+  function render(){
+    const sel = selRange();
+    const hitByLine = {};
+    st.hits.forEach((h,i)=>{ (hitByLine[h.l] = hitByLine[h.l]||[]).push({s:h.s, e:h.e, cur:i===st.find.idx}); });
+
+    // gutter
+    let gh = '';
+    for(let l=0; l<st.lines.length; l++){
+      const cur = (st.caret.l === l);
+      gh += `<div class="g${cur?' cur':''}" data-l="${l}">${st.dirtyLines[l]?'<span class="mk"></span>':''}${l+1}</div>`;
+    }
+    gutter.innerHTML = gh;
+
+    // code
+    let ch = '';
+    for(let l=0; l<st.lines.length; l++){
+      const text = st.lines[l];
+      const base = st.hl ? baseClasses(text) : new Array(text.length).fill('');
+      const ov = [];
+      const hs = hitByLine[l];
+      if(hs) hs.forEach(h=>ov.push({s:h.s, e:h.e, cls:h.cur?'hit-cur':'hit'}));
+      if(sel && l>=sel.l1 && l<=sel.l2){
+        const s = (l===sel.l1)?sel.c1:0, e = (l===sel.l2)?sel.c2:text.length;
+        if(s<e) ov.push({s, e, cls:'sel'});
+      }
+      // 按字符聚类成 run
+      const n = text.length;
+      const cls = new Array(n).fill('');
+      for(let i=0;i<n;i++){ cls[i] = base[i]||''; }
+      ov.forEach(o=>{ for(let i=o.s;i<Math.min(o.e,n);i++) cls[i] = (cls[i]?cls[i]+' ':'')+o.cls; });
+
+      const isCur = (st.caret.l===l);
+      // 光标 / 多光标插入点
+      const marks = [];
+      if(isCur) marks.push({at:st.caret.c, k:'caret'});
+      st.multi.forEach(m=>{ if(m.l===l) marks.push({at:m.c, k:'mc'}); });
+      marks.sort((a,b)=>a.at-b.at);
+
+      let inner = '', pos = 0;
+      marks.forEach(m=>{
+        inner += run(text.slice(pos, m.at), cls, pos);
+        inner += `<span class="${m.k}"></span>`;
+        pos = m.at;
+      });
+      inner += run(text.slice(pos), cls, pos);
+      ch += `<div class="row${isCur?' cur':''}" data-l="${l}"><span class="txt">${inner}</span></div>`;
+    }
+    code.innerHTML = ch;
+
+    // 状态栏
+    const lnc = $('[data-f="lncol"]'); if(lnc) lnc.textContent = `Ln ${st.caret.l+1}, Col ${st.caret.c+1}`;
+    const selEl = $('[data-f="sel"]');
+    if(selEl){
+      if(sel){
+        let n = 0;
+        for(let l=sel.l1; l<=sel.l2; l++){
+          const s = (l===sel.l1)?sel.c1:0, e=(l===sel.l2)?sel.c2:st.lines[l].length;
+          n += Math.max(0, e-s);
+        }
+        selEl.textContent = `Sel ${n}`; selEl.style.display='';
+      } else selEl.style.display='none';
+    }
+    const dot = el.querySelector('.dot');
+    if(dot) dot.style.display = st.dirty ? '' : 'none';
+    const cnt = st.hits.length;
+    cntEl.textContent = cnt ? `${st.find.idx+1}/${cnt}` : (st.find.q ? '无结果' : '');
+  }
+  function run(s, cls, off){
+    if(!s) return '';
+    let out = '', cur = null, buf = '';
+    for(let i=0;i<s.length;i++){
+      const c = cls[off+i] || '';
+      if(c !== cur){ if(buf) out += wrap(cur, buf); cur = c; buf = ''; }
+      buf += s[i];
+    }
+    if(buf) out += wrap(cur, buf);
+    return out;
+  }
+  function wrap(c, t){
+    const e = esc(t);
+    return c ? `<span class="${c}">${e}</span>` : e;
+  }
+
+  /* ── 光标定位 ── */
+  function caretFromX(rowEl, clientX){
+    const txt = rowEl.querySelector('.txt');
+    const walker = document.createTreeWalker(txt, NodeFilter.SHOW_TEXT);
+    let node, idx = 0, best = 0, bestD = Infinity;
+    while((node = walker.nextNode())){
+      const r = document.createRange(); r.selectNodeContents(node);
+      const rects = r.getClientRects();
+      for(let i=0;i<rects.length;i++){
+        const rc = rects[i];
+        if(clientX >= rc.left && clientX <= rc.right){
+          let lo=0, hi=node.nodeValue.length;
+          while(lo<hi){
+            const mid = (lo+hi)>>1;
+            r.setStart(node, mid); r.setEnd(node, mid+1);
+            const cr = r.getBoundingClientRect();
+            if(cr.left <= clientX) lo = mid+1; else hi = mid;
+          }
+          return Math.min(idx+lo, st.lines[st.caret.l].length);
+        }
+        const d = clientX < rc.left ? rc.left-clientX : clientX-rc.right;
+        if(d < bestD){ bestD = d; best = idx+node.nodeValue.length; }
+      }
+      idx += node.nodeValue.length;
+    }
+    return Math.min(best, st.lines[st.caret.l].length);
+  }
+
+  function setCaret(l, c, extend){
+    l = Math.max(0, Math.min(st.lines.length-1, l));
+    c = Math.max(0, Math.min(st.lines[l].length, c));
+    if(!extend) st.anchor = null;
+    st.caret = {l, c};
+    if(extend && st.anchor === null) st.anchor = {l, c};
+    st.multi = [];
+    render();
+    revealRow(l);
+  }
+
+  /* 只滚编辑器内部，不让 scrollIntoView 把整个页面带着横滚 */
+  function revealRow(l, center){
+    const row = code.children[l]; if(!row || !scroll) return;
+    const top = row.offsetTop, bot = top + row.offsetHeight;
+    const vt = scroll.scrollTop, vb = vt + scroll.clientHeight;
+    if(center){ scroll.scrollTop = Math.max(0, top - scroll.clientHeight/2); }
+    else if(top < vt){ scroll.scrollTop = Math.max(0, top - 6); }
+    else if(bot > vb){ scroll.scrollTop = bot - scroll.clientHeight + 6; }
+  }
+
+  /* ── 事件 ── */
+  code.addEventListener('mousedown', e=>{
+    if(opts.readonly) { /* 只读仍可选 */ }
+    const row = e.target.closest('.row'); if(!row) return;
+    const l = +row.dataset.l;
+    const c = caretFromX(row, e.clientX);
+    st.anchor = {l, c}; st.caret = {l, c}; st.dragging = true; st.multi=[];
+    code.focus();
+    render();
+    e.preventDefault();
+  });
+  code.addEventListener('mousemove', e=>{
+    if(!st.dragging) return;
+    const row = e.target.closest('.row'); if(!row) return;
+    const l = +row.dataset.l;
+    st.caret = {l, c: caretFromX(row, e.clientX)};
+    render();
+  });
+  document.addEventListener('mouseup', ()=>{ st.dragging = false; });
+
+  el.addEventListener('keydown', e=>{
+    const inField = /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName) && el.contains(document.activeElement);
+    if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='s'){ e.preventDefault(); doSave(); return; }
+    if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='f'){ e.preventDefault(); openFind(false); return; }
+    if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='h'){ e.preventDefault(); openFind(true); return; }
+    if((e.ctrlKey||e.metaKey) && e.shiftKey && e.key.toLowerCase()==='p'){ e.preventDefault(); openPal(); return; }
+    if(inField) return;
+    if(e.key === 'Escape'){
+      if(st.multi.length){ st.multi=[]; render(); return; }
+      if(pal.classList.contains('on')){ closePal(); return; }
+      if(findPanel.classList.contains('on')){ closeFind(); return; }
+      return;
+    }
+    if(e.key === ':' && !e.ctrlKey && !e.metaKey){ e.preventDefault(); openPal(); return; }
+    if(e.ctrlKey || e.metaKey || e.altKey) return;
+    if(e.key === 'Enter'){ e.preventDefault(); st.caret.c = Math.min(st.lines[st.caret.l].length, st.caret.c+1); render(); return; }
+    if(e.key === 'Backspace'){
+      e.preventDefault();
+      if(st.caret.c>0){ st.lines[st.caret.l] = st.lines[st.caret.l].slice(0,st.caret.c-1)+st.lines[st.caret.l].slice(st.caret.c); st.caret.c--; }
+      else if(st.caret.l>0){ const prev=st.lines[st.caret.l-1]; st.caret={l:st.caret.l-1,c:prev.length}; st.lines[st.caret.l]=prev+st.lines[st.caret.l]; st.lines.splice(st.caret.l+1,1); }
+      markDirty(st.caret.l); return;
+    }
+    if(e.key.length === 1 && !e.ctrlKey && !e.metaKey){
+      e.preventDefault();
+      const l = st.caret.l;
+      st.lines[l] = st.lines[l].slice(0,st.caret.c) + e.key + st.lines[l].slice(st.caret.c);
+      st.caret.c++;
+      st.anchor = null;   // 打字后选区折叠到光标
+      markDirty(l);
+    }
+  });
+
+  function markDirty(l){
+    st.dirty = true; st.dirtyLines[l] = 1;
+    computeHits(); render();
+  }
+
+  /* ── 查找 ── */
+  function openFind(withReplace){
+    findPanel.classList.add('on');
+    findInput.focus(); findInput.select();
+    if(withReplace) replInput.focus();
+  }
+  function closeFind(){ findPanel.classList.remove('on'); }
+  findInput.addEventListener('input', ()=>{ st.find.q = findInput.value; st.find.idx = 0; computeHits(); render(); });
+  findInput.addEventListener('keydown', e=>{
+    if(e.key === 'Enter'){ e.preventDefault(); step(e.shiftKey ? -1 : 1); }
+    if(e.key === 'Escape'){ closeFind(); }
+  });
+  findPanel.addEventListener('click', e=>{
+    const nav = e.target.closest('[data-nav]');
+    if(nav){ step(+nav.dataset.nav); return; }
+    const tg = e.target.closest('[data-t]');
+    if(tg){
+      const k = tg.dataset.t; st.find[k] = !st.find[k];
+      tg.classList.toggle('on', st.find[k]);
+      computeHits(); render(); return;
+    }
+    const ac = e.target.closest('[data-act]');
+    if(ac){
+      if(ac.dataset.act === 'find-close') closeFind();
+      if(ac.dataset.act === 'replace-all'){
+        if(!st.find.q) return;
+        const re = new RegExp(st.find.re ? st.find.q : st.find.q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), st.find.ci?'gi':'g');
+        st.lines = st.lines.map(s => s.replace(re, replInput.value));
+        st.dirty = true; computeHits(); render(); showToast('已替换 '+st.find.q);
+      }
+    }
+  });
+  function step(dir){
+    if(!st.hits.length) return;
+    st.find.idx = (st.find.idx + dir + st.hits.length) % st.hits.length;
+    const h = st.hits[st.find.idx];
+    st.caret = {l:h.l, c:h.s}; st.anchor = {l:h.l, c:h.e};
+    render();
+    revealRow(h.l, true);
+  }
+
+  /* ── 命令面板 ── */
+  function openPal(){
+    pal.classList.add('on');
+    const inp = pal.querySelector('input');
+    inp.value=''; inp.focus();
+    paintCmds('');
+  }
+  function closePal(){ pal.classList.remove('on'); }
+  function paintCmds(q){
+    const list = pal.querySelector('.plist');
+    const hit = CMDS.filter(c => c.n.toLowerCase().includes(q.toLowerCase()) || c.g.includes(q));
+    list.innerHTML = hit.map((c,i)=>`<div class="pitem${i===0?' on':''}"><span class="g">›</span>${c.n}<span class="k">${c.k}</span></div>`).join('') || '<div class="pitem">无匹配命令</div>';
+    list._items = hit;
+  }
+  pal.querySelector('input').addEventListener('input', e=> paintCmds(e.target.value));
+  pal.querySelector('input').addEventListener('keydown', e=>{
+    if(e.key === 'Escape'){ closePal(); }
+    if(e.key === 'Enter'){
+      const list = pal.querySelector('.plist');
+      const on = list.querySelector('.pitem.on');
+      if(on) runCmd(on.textContent.replace('›','').trim());
+    }
+  });
+  function runCmd(name){
+    closePal();
+    if(name.includes('保存')) doSave();
+    else if(name.includes('只读')) showToast('只读切换（原型未实现）');
+    else if(name.includes('自动换行')) showToast('自动换行切换（原型未实现）');
+    else if(name.includes('复制文件路径')) showToast('已复制 /srv/app/src/session_manager.rs');
+    else if(name.includes('相同')){
+      const l = st.caret.l, c = st.caret.c;
+      const line = st.lines[l];
+      const word = (line.match(/[A-Za-z_][A-Za-z0-9_]*/g)||[])[0] || 'session';
+      st.multi = [{l: l, c: Math.max(0, line.indexOf(word))}];
+      render(); showToast('多光标：'+word);
+    }
+    else showToast(name+'（原型未实现）');
+  }
+
+  /* ── 其它 ── */
+  function doSave(){
+    if(opts.readonly){ showToast('只读文件，无法保存'); return; }
+    st.dirty = false; render(); showToast('已保存 → /srv/app/src/session_manager.rs');
+  }
+  function showToast(msg){
+    toast.textContent = msg; toast.classList.add('on');
+    clearTimeout(toast._t); toast._t = setTimeout(()=>toast.classList.remove('on'), 1700);
+  }
+  el.querySelector('[data-act="save"]').addEventListener('click', doSave);
+  el.querySelector('[data-act="close"]').addEventListener('click', ()=>showToast('关闭（原型未实现）'));
+  el.querySelector('[data-act="find-open"]').addEventListener('click', ()=>openFind(false));
+  el.querySelector('[data-act="pal-open"]').addEventListener('click', ()=>openPal());
+
+  if(opts.readonly){
+    el.querySelector('.ro').style.display = '';
+    el.querySelector('[data-f="ro"]').style.display = '';
+    st.caret = {l:2, c:0};
+  }
+  computeHits();
+  render();
+  if(opts.findOpen) openFind(false);
+  if(opts.palOpen) openPal();
+
+  return {el, st};
+}
+
+/* ── 装配 ── */
+document.querySelectorAll('.tbl').forEach(function(t){
+  var d = document.createElement('div'); d.className = 'tscroll';
+  t.parentNode.insertBefore(d, t); d.appendChild(t);
+});
+
+const main = createEditor(document.getElementById('ed-main'), {});
+createEditor(document.getElementById('ed-find'), {findOpen:true});
+createEditor(document.getElementById('ed-pal'), {palOpen:true});
+createEditor(document.getElementById('ed-ro'), {readonly:true});
+createEditor(document.getElementById('ed-big'), {big:true, highlight:false});
+createEditor(document.getElementById('ed-narrow'), {narrow:true, findOpen:true});
+
+/* 明暗切换 */
+document.getElementById('themeBtn').addEventListener('click', ()=>{
+  const cur = document.documentElement.getAttribute('data-theme');
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  document.querySelectorAll('.ed').forEach(e=>e.classList.toggle('light', next==='light'));
+});
+</script>
+</body>
+</html>

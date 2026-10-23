@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MTerm · 终端查找栏 · 清晰版高保真</title>
+<!-- #find-bar-hifi 2026-10-23 · v3.3
+     v3.3 反馈：首行被挡怎么办 → 兜底从「降透明」升级为「面板下移让位」：
+     滚不动（回滚区顶端 / alt 屏）且匹配与锚位相交时，面板 200ms 下移到匹配行
+     下方（几何上永远可行），匹配变化重新判定、不相交回锚位；降透明退役。
+     三层心智：跳转居中（内容挪给你看）→ 下移让位（面板挪开）→ 拖动手柄
+     （用户手动钉位，可选第四层）。其余定稿口径不变。 -->
+<style>
+:root{
+  --ease: cubic-bezier(.2,0,0,1);
+  --ff: "Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  --mono: "Cascadia Mono","Consolas","SF Mono",monospace;
+  --page:#0A0B0E; --stage:#0D0F13; --dlg:#15171C;
+  --field:#0E1014; --line:#262A32; --line2:#2F343E;
+  --t1:#EDEFF4; --t2:#C3C8D4; --t3:#98A0AE; --t4:#6C7380;
+  --hov:rgba(255,255,255,.07);
+  --ac:#1FC8B4; --ac-soft:rgba(31,200,180,.16);
+  --ac-tonal:rgba(31,200,180,.10); --ac-tonal-line:rgba(31,200,180,.30);
+  --dg:#D1453B; --dg-hi:#E06A5F;
+  --ok:#3DD68C;
+  --term-bg:#0E0F13; --term-dim:#939CAC;
+  --hl:rgba(226,168,74,.45);
+  --hl-cur:rgba(31,200,180,.62);
+}
+
+*,*::before,*::after{ box-sizing:border-box; }
+body{
+  margin:0; background:var(--page); color:var(--t1);
+  font-family:var(--ff); font-size:14px; line-height:1.65;
+  -webkit-font-smoothing:antialiased;
+}
+
+.top{
+  position:sticky; top:0; z-index:40; display:flex; align-items:center; gap:12px;
+  padding:12px 36px; background:var(--page); border-bottom:1px solid var(--line);
+}
+.top .brand{ font-size:12px; letter-spacing:.16em; font-weight:700; }
+.top .brand span{ color:var(--t4); font-weight:500; letter-spacing:.05em; margin-left:6px; }
+.top .gap{ flex:1; }
+.top .hint{ font-size:11.5px; color:var(--t4); }
+
+.wrap{ max-width:1080px; margin:0 auto; padding:0 36px 90px; }
+
+header.intro{ padding:40px 0 8px; }
+header.intro h1{ font-size:28px; font-weight:700; margin:0 0 12px; letter-spacing:-.01em; }
+header.intro p{ margin:0 0 8px; max-width:84ch; color:var(--t2); font-size:14px; }
+header.intro p b{ color:var(--t1); }
+header.intro .verdict{ color:var(--ok); font-weight:700; }
+
+.screen{ margin-top:44px; }
+.sc-head{ display:flex; align-items:baseline; gap:12px; margin-bottom:14px; }
+.sc-head .no{ font-family:var(--mono); font-size:12px; color:var(--ac); }
+.sc-head h2{ font-size:20px; margin:0; font-weight:700; }
+.sc-head .sub{ font-size:13px; color:var(--t3); }
+.sc-head .gap{ flex:1; }
+
+.stage{ background:var(--stage); border:1px solid var(--line); border-radius:14px; padding:30px; }
+
+/* ══ 终端背景（承托浮层）═════════════════════════════════ */
+.termctx{
+  position:relative; background:var(--term-bg);
+  border:1px solid #2A2E37; border-radius:12px; overflow:hidden;
+}
+.termctx .fl{
+  margin:0; padding:16px 18px; font-family:var(--mono); font-size:13px; line-height:22px;
+  color:var(--term-dim); white-space:pre; overflow:hidden;
+}
+.termctx .fl .g{ color:#5FA463; } .termctx .fl .w{ color:#D4D4D4; }
+.fl .hl{ background:var(--hl); border-radius:2px; }
+.fl .hlc{ background:var(--hl-cur); outline:1px solid rgba(31,200,180,.85); outline-offset:-1px; border-radius:2px; color:#EAFFFC; }
+
+/* ══ 查找浮层（放大 1.4× 示意）═══════════════════════════ */
+.panel{
+  display:flex; align-items:center; gap:10px;
+  height:48px; padding:0 10px 0 3px;
+  background:#191C23F7;
+  border:1px solid #3A3F4A; border-radius:12px;
+  box-shadow:0 16px 40px rgba(0,0,0,.55);
+}
+.fgroup{
+  display:flex; align-items:center; gap:3px; flex:1 1 0; min-width:0; height:36px;
+  padding:0 6px 0 12px;
+  background:var(--field); border:1.5px solid rgba(31,200,180,.75); border-radius:9px;
+  box-shadow:0 0 0 4px rgba(31,200,180,.12);
+}
+.fgroup .lens{ color:var(--t3); display:flex; flex:0 0 auto; }
+.fgroup .lens svg *{ fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; }
+.fgroup .query{ flex:1; min-width:0; font-size:17px; color:var(--t1); padding:0 6px; white-space:nowrap; overflow:hidden; }
+
+.ib{
+  width:32px; height:32px; flex:0 0 auto; border-radius:8px;
+  display:flex; align-items:center; justify-content:center;
+  color:#C7CDD9; background:transparent; border:0; cursor:default; position:relative;
+  transition:background-color 90ms var(--ease), color 90ms var(--ease);
+}
+.ib:hover{ background:var(--hov); color:var(--t1); }
+.ib.on{ background:var(--ac-tonal); box-shadow:inset 0 0 0 1.5px var(--ac-tonal-line); color:var(--ac); }
+.ib svg{ width:19px; height:19px; }
+.ib svg *{ fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+
+/* 清空 ×（现网 #find-clear-accent 放大版）：16→22px 圆，hover accent 实心 */
+.clr{
+  width:22px; height:22px; flex:0 0 auto; margin:0 3px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  color:var(--t3); border:0; background:transparent; cursor:default;
+  transition:background-color 90ms var(--ease), color 90ms var(--ease);
+}
+.clr:hover{ background:var(--ac); color:var(--term-bg); }
+.clr svg{ width:13px; height:13px; }
+.clr svg *{ fill:none; stroke:currentColor; stroke-width:2.1; stroke-linecap:round; }
+
+.count{ font-size:15px; font-weight:600; color:var(--t2); padding:0 6px; flex:0 0 auto; white-space:nowrap; }
+.count.none{ color:var(--dg-hi); }
+.nav{ display:flex; gap:2px; flex:0 0 auto; }
+.gap{ flex:1; }
+
+/* 编号气泡：钉在控件上 */
+.ct{
+  position:absolute; width:20px; height:20px; border-radius:50%;
+  background:var(--ac); color:#04211D; font-family:var(--mono); font-size:11px; font-weight:700;
+  display:flex; align-items:center; justify-content:center;
+  box-shadow:0 0 0 3px rgba(31,200,180,.22); z-index:5;
+}
+.aw{ position:relative; display:flex; flex:0 0 auto; }
+.aw > .ct{ left:50%; transform:translateX(-50%); top:-13px; }
+
+/* 图例 */
+.legend{ display:grid; grid-template-columns:1fr 1fr; gap:2px 34px; margin-top:22px; }
+.lg{ display:flex; align-items:baseline; gap:12px; padding:8px 0; border-bottom:1px dashed var(--line); font-size:14px; }
+.lg:nth-last-child(-n+2){ border-bottom:0; }
+.lg .n{
+  width:22px; height:22px; border-radius:50%; flex:0 0 auto; align-self:center;
+  background:var(--ac); color:#04211D; font-family:var(--mono); font-size:11.5px; font-weight:700;
+  display:flex; align-items:center; justify-content:center;
+}
+.lg b{ font-weight:600; color:var(--t1); white-space:nowrap; }
+.lg .d{ color:var(--t3); font-size:12.5px; }
+.lg kbd{
+  font-family:var(--mono); font-size:11px; color:var(--t2);
+  border:1px solid var(--line2); border-bottom-width:2px; border-radius:5px;
+  padding:0 6px; background:var(--field); white-space:nowrap; align-self:center;
+}
+
+/* ══ 1:1 位置示意 ═══════════════════════════════════════ */
+.strip{
+  margin-top:26px; position:relative;
+  border:1px solid var(--line2); border-radius:10px; overflow:hidden;
+  background:var(--term-bg);
+}
+.strip .pre{
+  margin:0; padding:12px 14px; font-family:var(--mono); font-size:12.5px; line-height:20px;
+  color:var(--term-dim); white-space:pre;
+}
+.strip .pre .hl{ background:var(--hl); border-radius:2px; }
+.strip .pre .hlc{ background:var(--hl-cur); outline:1px solid rgba(31,200,180,.85); outline-offset:-1px; border-radius:2px; color:#EAFFFC; }
+.strip .pre .g{ color:#5FA463; } .strip .pre .w{ color:#D4D4D4; }
+.strip .p1{
+  position:absolute; top:8px; right:8px; z-index:4;
+  display:flex; align-items:center; gap:6px;
+  width:430px; height:34px; padding:0 8px;
+  background:#191C23F7; border:1px solid #3A3F4A; border-radius:9px;
+  box-shadow:0 10px 26px rgba(0,0,0,.5); font-size:12px;
+}
+.strip .p1 .fgroup{ height:24px; border-radius:6px; border-width:1px; box-shadow:0 0 0 2.5px rgba(31,200,180,.10); padding:0 4px 0 9px; }
+.strip .p1 .fgroup .query{ font-size:12.5px; }
+.strip .p1 .ib{ width:24px; height:24px; border-radius:6px; }
+.strip .p1 .ib svg{ width:15px; height:15px; }
+.strip .p1 .clr{ width:16px; height:16px; margin:0 2px; }
+.strip .p1 .clr svg{ width:10px; height:10px; }
+.strip .p1 .count{ font-size:12px; font-weight:500; }
+
+/* ══ 03 被挡住怎么办：小终端对比 ════════════════════════ */
+.duel{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+.duel.wide3{ grid-template-columns:1fr; }
+.mini{
+  position:relative; height:252px; background:var(--term-bg);
+  border:1px solid #2A2E37; border-radius:12px; overflow:hidden;
+}
+.mini .fl{
+  margin:0; padding:12px 14px; font-family:var(--mono); font-size:12px; line-height:19px;
+  color:var(--term-dim); white-space:pre; overflow:hidden;
+}
+/* 小浮层 */
+.mini .p2{
+  position:absolute; top:10px; right:10px; z-index:4;
+  display:flex; align-items:center; gap:5px;
+  width:300px; height:36px; padding:0 6px;
+  background:#191C23F7; border:1px solid #3A3F4A; border-radius:9px;
+  box-shadow:0 10px 24px rgba(0,0,0,.5); font-size:12px;
+  transition:opacity 300ms var(--ease);
+}
+.mini .p2 .fgroup{ height:26px; border-radius:6px; border-width:1px; box-shadow:0 0 0 2.5px rgba(31,200,180,.10); padding:0 4px 0 8px; }
+.mini .p2 .fgroup .query{ font-size:12px; }
+.mini .p2 .ib{ width:24px; height:24px; border-radius:6px; }
+.mini .p2 .ib svg{ width:14px; height:14px; }
+.mini .p2 .clr{ width:16px; height:16px; margin:0 2px; }
+.mini .p2 .clr svg{ width:10px; height:10px; }
+.mini .p2 .count{ font-size:12px; font-weight:500; }
+.mini .p2.dim{ opacity:.35; box-shadow:none; }
+/* 视口中线 */
+.mline{ position:absolute; left:0; right:0; top:50%; border-top:1.5px dashed rgba(31,200,180,.45); z-index:2; }
+.mline i{
+  position:absolute; right:8px; top:-10px; font-style:normal;
+  font-size:10px; color:var(--ac); background:rgba(14,15,19,.85);
+  border:1px solid var(--ac-tonal-line); border-radius:4px; padding:0 5px;
+}
+/* 结论角标 */
+.vt{
+  position:absolute; left:10px; bottom:10px; z-index:6;
+  display:flex; align-items:center; gap:7px;
+  font-size:12px; color:var(--t1);
+  background:rgba(14,15,19,.92); border:1px solid var(--line2); border-radius:8px;
+  padding:5px 10px; box-shadow:0 6px 16px rgba(0,0,0,.4);
+}
+.vt .m{ font-weight:700; font-family:var(--mono); }
+.vt.bad{ border-color:rgba(224,106,95,.5); } .vt.bad .m{ color:var(--dg-hi); }
+.vt.good{ border-color:rgba(61,214,140,.5); } .vt.good .m{ color:var(--ok); }
+.vt.info .m{ color:var(--ac); }
+.duel .cap{ margin-top:10px; font-size:12.5px; color:var(--t3); }
+.duel .cap b{ color:var(--t2); }
+
+/* 下移让位三格序列 */
+.trio{ display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:16px; }
+.trio > div, .duel > div{ min-width:0; }
+.trio .mini{ height:212px; }
+.trio .mini .fl{ font-size:11.5px; line-height:18px; padding:10px 12px; }
+.trio .p2{ width:250px; height:32px; top:8px; right:8px; gap:4px; padding:0 4px; }
+.trio .p2 .fgroup{ height:22px; padding:0 3px 0 7px; }
+.trio .p2 .fgroup .query{ font-size:11.5px; }
+.trio .p2 .ib{ width:22px; height:22px; }
+.trio .p2 .ib svg{ width:13px; height:13px; }
+.trio .p2 .clr{ width:15px; height:15px; }
+.trio .p2 .clr svg{ width:9px; height:9px; }
+.trio .p2 .count{ font-size:11px; }
+.trio .vt{ font-size:11px; padding:4px 8px; bottom:8px; left:8px; }
+.ghost{ position:absolute; border:1.5px dashed rgba(152,160,174,.55); border-radius:9px; }
+.ghost i{ position:absolute; right:6px; top:50%; transform:translateY(-50%); font-style:normal; font-size:9.5px; color:var(--t4); }
+.sumcard{
+  margin-top:16px; background:var(--term-bg); border:1px solid var(--line); border-radius:12px;
+  padding:18px 22px; display:flex; flex-direction:column; gap:9px;
+}
+.sumcard h3{ margin:0; font-size:14px; color:var(--t1); }
+.sumcard p{ margin:0; font-size:13px; color:var(--t2); }
+.sumcard b{ color:var(--ac); font-weight:600; }
+.sumcard .n4{ color:var(--t4); font-size:12.5px; }
+
+/* 图标规格卡 */
+.iconsrow{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:2px; }
+.iconsrow > div, .ico{ min-width:0; }
+.ico{
+  display:flex; align-items:center; gap:18px;
+  background:var(--term-bg); border:1px solid var(--line); border-radius:10px;
+  padding:14px 16px;
+}
+.ico .big{
+  width:100px; height:64px; flex:0 0 auto;
+  display:flex; align-items:center; justify-content:center;
+  background:var(--field); border:1px solid var(--line2); border-radius:8px;
+}
+.ico .big svg *{ fill:none; stroke:var(--t2); stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.ico .big svg [fill="currentColor"]{ fill:var(--t2); stroke:none; }
+.ib svg [fill="currentColor"]{ fill:currentColor; stroke:none; }
+.ico .cap2{ display:flex; flex-direction:column; gap:3px; }
+.ico .cap2 b{ font-size:13.5px; color:var(--t1); }
+.ico .cap2 span{ font-size:12px; color:var(--t3); }
+
+/* 拖动手柄（⠿，面板最左）——与输入框等高的贴边热区：
+   图标撑满、四周不留空白；静默置灰 / 悬停 accent 淡染 + 张开手（grab）/
+   按住 accent 描边 + 握拳（grabbing）。强调色走 Theme accent，跟随主题。 */
+.grip{
+  flex:0 0 auto; width:22px; height:36px; border-radius:7px;
+  display:flex; align-items:center; justify-content:center;
+  color:var(--t4); cursor:grab;
+  transition:background-color 90ms var(--ease), color 90ms var(--ease);
+}
+.grip:hover{ background:var(--hov); color:var(--ac); }
+.grip:active{ cursor:grabbing; }
+.grip svg{ width:12px; height:20px; }
+.grip svg *{ fill:currentColor; stroke:none; }
+.panel > .grip{ margin-right:-3px; }   /* 手柄贴左缘；与输入框净距 7px，不压聚焦光圈（外扩 4px） */
+.p1{ padding-left:2px; }
+.p1 > .grip{ margin-right:-1px; }
+.mini .p2{ padding-left:2px; }
+.mini .p2 .grip{ width:14px; height:22px; border-radius:5px; margin-right:0; }
+.mini .p2 .grip svg{ width:8px; height:14px; }
+
+/* 手柄三态展示 */
+.gripdemo{ display:flex; gap:22px; flex-wrap:wrap; }
+.gd{ display:flex; align-items:center; gap:9px; }
+.gd i{ font-style:normal; font-size:11.5px; color:var(--t3); }
+.gd .grip{ background:transparent; }
+
+/* ══ 状态 ══════════════════════════════════════════════ */
+.states{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+.st{ background:var(--term-bg); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+.st .cap{ padding:10px 16px 12px; font-size:13px; color:var(--t3); border-top:1px solid var(--line); }
+.st .cap b{ color:var(--t1); font-weight:600; margin-right:8px; }
+.st .bandwrap{ padding:18px 16px 20px; }
+.st .panel{ height:44px; }
+
+/* ══ 行为细则 ══════════════════════════════════════════ */
+.rules{ display:grid; grid-template-columns:1fr 1fr; gap:0 34px; }
+.rl{ display:flex; gap:12px; padding:10px 0; border-bottom:1px dashed var(--line); font-size:13.5px; color:var(--t2); }
+.rl:nth-last-child(-n+2){ border-bottom:0; }
+.rl .k{ flex:0 0 150px; color:var(--t1); font-weight:600; }
+.rl kbd{
+  font-family:var(--mono); font-size:11px; color:var(--t2);
+  border:1px solid var(--line2); border-bottom-width:2px; border-radius:5px;
+  padding:0 5px; background:var(--field); white-space:nowrap;
+}
+
+/* ══ 映射表 ════════════════════════════════════════════ */
+table.spec{ width:100%; border-collapse:collapse; font-size:13.5px; }
+table.spec th, table.spec td{ text-align:left; padding:10px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+table.spec th{ font-size:11.5px; letter-spacing:.08em; color:var(--t4); font-weight:600; text-transform:uppercase; }
+table.spec td b{ color:var(--t1); font-weight:600; }
+table.spec td code{ font-family:var(--mono); font-size:12px; color:var(--ac); background:var(--ac-tonal); border-radius:4px; padding:1px 6px; }
+table.spec td .m{ font-family:var(--mono); font-size:11px; color:var(--t4); white-space:nowrap; }
+table.spec tr:last-child td{ border-bottom:0; }
+.badge{ display:inline-block; white-space:nowrap; font-family:var(--mono); font-size:10.5px; border-radius:5px; padding:1px 8px; }
+.badge.have{ color:var(--ok); border:1px solid rgba(61,214,140,.35); background:rgba(61,214,140,.08); }
+.badge.add{ color:var(--ac); border:1px solid var(--ac-tonal-line); background:var(--ac-tonal); }
+.badge.risk{ color:#E5C07B; border:1px solid rgba(226,168,74,.35); background:rgba(226,168,74,.08); }
+
+.foot-note{ margin-top:14px; font-size:12.5px; color:var(--t4); }
+</style>
+</head>
+<body>
+
+<div class="top">
+  <div class="brand">MTERM<span>设计稿 · 终端查找栏</span></div>
+  <div class="gap"></div>
+  <div class="hint">2026-10-23 · v3.5 右上浮层 + 三层遮挡解法 · 无选项菜单 · 仅高保真，未动代码</div>
+</div>
+
+<div class="wrap">
+
+<header class="intro">
+  <h1>终端查找栏</h1>
+  <p><span class="verdict">可以实现</span>——底层全文搜索已有（<b>compute_find_matches</b>），本稿补的是 IDEA 那套「看得清」的操作层。<b>定稿口径</b>：浮层锚在<b>终端区右上角</b>；Ctrl+F 打开即聚焦，输入框亮 accent 描边；匹配规则只有 <b>Aa / 正则</b> 两个，与清空 ×、历史 ↩ 一起收在输入框内；清空按钮沿用现网样式。匹配行被浮层挡住的解法见 <b>§03</b>（跳转居中 + 下移让位 + 拖动手柄）。</p>
+</header>
+
+<!-- ════════════════ 01 解剖图 ════════════════ -->
+<section class="screen">
+  <div class="sc-head">
+    <span class="no">01</span><h2>长什么样</h2><span class="sub">放大 1.4× 看清每个控件；实现为 34px 高浮层（见下方 1:1 位置示意）</span>
+  </div>
+  <div class="stage">
+    <div class="termctx" style="height:400px">
+      <pre class="fl">drwxr-xr-x  root root 4.0 KB  Wed Jun  3 13:56:58  .config
+drwxr-xr-x  root root  100 B  Sun Jun 21 13:12:48  java
+drwxr-xr-x  root root 4.0 KB  Thu Aug 20 14:38:19  .jpom
+.rw-------  root root 197 B   Wed Jul 22 14:31:29  .mysql_history
+drwxr-xr-x  root root 4.0 KB  Fri Sep 20 14:53:01  .ssh
+.rw-r--r--  root root  14 KB  Thu Oct 22 15:52:24  .viminfo
+.rw-r--r--  root root  18 MB  Fri May 15 16:49:54  backup_20260515.sql
+<span class="g">[root@localhost ~]#</span> <span class="w">cd /home/wec/java/</span>
+<span class="g">[root@localhost java]#</span> <span class="w">ll</span></pre>
+
+      <div class="panel" style="position:absolute; top:14px; right:14px; width:660px; max-width:calc(100% - 28px)">
+        <span class="grip" title="拖动浮层（双击回右上角）"><svg viewBox="0 0 9 15"><circle cx="2" cy="2.5" r="1.3"/><circle cx="7" cy="2.5" r="1.3"/><circle cx="2" cy="7.5" r="1.3"/><circle cx="7" cy="7.5" r="1.3"/><circle cx="2" cy="12.5" r="1.3"/><circle cx="7" cy="12.5" r="1.3"/></svg></span>
+        <div class="fgroup" style="position:relative">
+          <span class="ct" style="left:18px; top:-11px">1</span>
+          <span class="lens"><svg viewBox="0 0 16 16" width="18" height="18"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 L13.6 13.6"/></svg></span>
+          <span class="query">java</span>
+          <span class="aw"><button class="clr" title="清空"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button><span class="ct">2</span></span>
+          <span class="aw"><button class="ib" title="历史"><svg viewBox="0 0 16 16"><path d="M3 8 a5 5 0 1 1 1.5 3.5"/><path d="M3 12.5 V8.5 H7"/><path d="M8 5.5 V8 L10 9.5"/></svg></button><span class="ct">3</span></span>
+          <span class="aw"><button class="ib" title="区分大小写"><svg viewBox="0 0 18 16"><path d="M1.5 13.5 5.5 3.2l4 10.3"/><path d="M3.4 9.9h4.2"/><path d="M14.6 6.8v5.9"/><path d="M14.6 6.8c-.5-.8-1.4-1.3-2.3-1.3-1.1 0-2 .7-2 1.6 0 2 4.3 1 4.3 2.9"/><path d="M11.2 8v2.7c0 1.1.8 1.8 2 1.8 1.1 0 2-.6 2.3-1.6"/></svg></button><span class="ct">4</span></span>
+          <span class="aw"><button class="ib" title="正则"><svg viewBox="0 0 18 16"><path d="M5.2 3.4a6.6 6.6 0 0 0 0 11.2"/><circle cx="8" cy="11.9" r="1.6" fill="currentColor"/><path d="M11.1 4.8v5"/><path d="m9.2 6 3.8 2.7"/><path d="m13 6-3.8 2.7"/><path d="M13.3 3.4a6.6 6.6 0 0 1 0 11.2"/></svg></button><span class="ct">5</span></span>
+        </div>
+        <span class="aw"><span class="count">6 / 23</span><span class="ct">6</span></span>
+        <span class="aw"><span class="nav">
+          <button class="ib" title="上一个"><svg viewBox="0 0 16 16"><path d="M3.5 9.5 L8 5 L12.5 9.5"/></svg></button>
+          <button class="ib" title="下一个"><svg viewBox="0 0 16 16"><path d="M3.5 6.5 L8 11 L12.5 6.5"/></svg></button>
+        </span><span class="ct">7</span></span>
+        <button class="ib" title="关闭"><svg viewBox="0 0 16 16"><path d="M4.5 4.5 L11.5 11.5 M11.5 4.5 L4.5 11.5"/></svg><span class="ct" style="left:50%; transform:translateX(-50%); top:-13px; position:absolute">8</span></button>
+      </div>
+    </div>
+
+    <div class="legend">
+      <div class="lg"><span class="n">1</span><b>输入框</b><span class="d">打开即聚焦，accent 描边常亮；输入即时搜索</span></div>
+      <div class="lg"><span class="n">6</span><b>结果计数</b><span class="d">当前 / 总数；找不到时显示红色「0 个结果」</span></div>
+      <div class="lg"><span class="n">2</span><b>清空 ×</b><span class="d">有输入才出现；悬停变主题色实心圆（现网样式）</span></div>
+      <div class="lg"><span class="n">7</span><b>上 / 下一个</b><span class="d">匹配行滚到视口中部（不落浮层底下），换色高亮</span></div>
+      <div class="lg"><span class="n">3</span><b>历史 ↩</b><span class="d">最近 10 条查询，选中即重查</span></div>
+      <div class="lg"><span class="n">4</span><b>区分大小写 Aa</b><span class="d">默认忽略大小写</span></div>
+      <div class="lg"><span class="n">8</span><b>关闭 ✕</b><span class="d">清掉全部高亮，焦点还给终端</span></div>
+      <div class="lg"><span class="n">5</span><b>正则 (.·)*</b><span class="d">开启后按正则匹配；写错显示「正则无效」</span></div>
+      <div class="lg"><span class="n" style="visibility:hidden">·</span><b>拖动手柄 ⠿</b><span class="d">按住面板最左拖动浮层；双击回右上角（§03）</span></div>
+      <div class="lg"><span class="n" style="visibility:hidden">·</span><span class="d">快捷键：<kbd>Ctrl F</kbd> 打开 · <kbd>Enter</kbd>/<kbd>Shift Enter</kbd> 下/上一个 · <kbd>Alt C</kbd>/<kbd>Alt X</kbd> 大小写/正则 · <kbd>Alt ↓</kbd> 历史 · <kbd>Esc</kbd> 关闭</span></div>
+    </div>
+
+    <!-- 图标规格 -->
+    <div class="sumcard" style="margin-top:22px">
+      <h3>图标规格 · Aa / 正则</h3>
+      <div class="iconsrow">
+        <div class="ico">
+          <div class="big"><svg viewBox="0 0 24 24" width="66" height="48"><path d="M3.2 18.8 8.2 5.2l5 13.6"/><path d="M5.2 14.5h6"/><path d="M20.4 11v7.8"/><path d="M20.4 11c-.7-1.1-1.8-1.7-3-1.7-1.5 0-2.7.9-2.7 2.1 0 2.7 5.7 1.3 5.7 3.8"/><path d="M14.7 12.6v3.6c0 1.4 1.1 2.4 2.7 2.4 1.4 0 2.6-.8 3-2.1"/></svg></div>
+          <div class="cap2"><b>Aa · 区分大小写</b><span>大写 A + 双层小写 a（钩、碗、竖笔弧线相切）；Alt+C；开启态 = accent 淡染描边（见 02）</span></div>
+        </div>
+        <div class="ico">
+          <div class="big"><svg viewBox="0 0 24 24" width="66" height="48"><path d="M6.5 4.8a8.4 8.4 0 0 0 0 14.4"/><circle cx="10.4" cy="15.6" r="1.9" fill="currentColor"/><path d="M13.8 6.3v6.2"/><path d="m11.6 7.8 4.4 3.2"/><path d="m16 7.8-4.4 3.2"/><path d="M17.5 4.8a8.4 8.4 0 0 1 0 14.4"/></svg></div>
+          <div class="cap2"><b>(.*) · 正则表达式</b><span>括号内「点 + 星」= .*（IDEA 同款构成）；Alt+X；写错时计数位「正则无效」</span></div>
+        </div>
+      </div>
+      <p class="n4">线宽 1.7、圆角端点，颜色 idle 跟随前景灰、开启跟随主题强调色；与清空 × / 历史 ↩ 同一组（assets/icons SVG 经 Icon 组件渲染）。</p>
+    </div>
+
+    <div class="strip" style="height:170px">
+      <pre class="pre">drwxr-xr-x  root root 4.0 KB  Wed Jun  3 13:56:58  .config
+drwxr-xr-x  root root  100 B  Sun Jun 21 13:12:48  <span class="hl">java</span>
+drwxr-xr-x  root root 4.0 KB  Thu Aug 20 14:38:19  .jpom
+<span class="g">[root@localhost ~]#</span> <span class="w">cd /home/wec/</span><span class="hlc">java</span><span class="w">/</span>
+<span class="g">[root@localhost java]#</span> <span class="w">ll</span>
+drwxr-xr-x  root root 4.0 KB  Thu Oct 22 14:30:13  .</pre>
+      <div class="p1">
+        <span class="grip" title="拖动浮层（双击回右上角）"><svg viewBox="0 0 9 15"><circle cx="2" cy="2.5" r="1.3"/><circle cx="7" cy="2.5" r="1.3"/><circle cx="2" cy="7.5" r="1.3"/><circle cx="7" cy="7.5" r="1.3"/><circle cx="2" cy="12.5" r="1.3"/><circle cx="7" cy="12.5" r="1.3"/></svg></span>
+        <div class="fgroup">
+          <span class="lens"><svg viewBox="0 0 16 16" width="14" height="14"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 L13.6 13.6"/></svg></span>
+          <span class="query">java</span>
+          <button class="clr"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
+          <button class="ib"><svg viewBox="0 0 16 16"><path d="M3 8 a5 5 0 1 1 1.5 3.5"/><path d="M3 12.5 V8.5 H7"/><path d="M8 5.5 V8 L10 9.5"/></svg></button>
+          <button class="ib"><svg viewBox="0 0 18 16"><path d="M1.5 13.5 5.5 3.2l4 10.3"/><path d="M3.4 9.9h4.2"/><path d="M14.6 6.8v5.9"/><path d="M14.6 6.8c-.5-.8-1.4-1.3-2.3-1.3-1.1 0-2 .7-2 1.6 0 2 4.3 1 4.3 2.9"/><path d="M11.2 8v2.7c0 1.1.8 1.8 2 1.8 1.1 0 2-.6 2.3-1.6"/></svg></button>
+          <button class="ib"><svg viewBox="0 0 18 16"><path d="M5.2 3.4a6.6 6.6 0 0 0 0 11.2"/><circle cx="8" cy="11.9" r="1.6" fill="currentColor"/><path d="M11.1 4.8v5"/><path d="m9.2 6 3.8 2.7"/><path d="m13 6-3.8 2.7"/><path d="M13.3 3.4a6.6 6.6 0 0 1 0 11.2"/></svg></button>
+        </div>
+        <span class="count">6 / 23</span>
+        <span class="nav">
+          <button class="ib"><svg viewBox="0 0 16 16"><path d="M3.5 9.5 L8 5 L12.5 9.5"/></svg></button>
+          <button class="ib"><svg viewBox="0 0 16 16"><path d="M3.5 6.5 L8 11 L12.5 6.5"/></svg></button>
+        </span>
+        <button class="ib"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
+      </div>
+    </div>
+    <p class="foot-note">↑ 1:1 比例：浮层锚在终端区右上角（边距 8~10px）、高 34px、宽约 430px。其余匹配 = 琥珀（现状沿用），当前匹配 = 主题色。备选：整宽条带（前版方案）。</p>
+  </div>
+</section>
+
+<!-- ════════════════ 02 状态 ════════════════ -->
+<section class="screen">
+  <div class="sc-head">
+    <span class="no">02</span><h2>四种状态</h2><span class="sub">浮层只会出现这四种样子</span>
+  </div>
+  <div class="stage">
+    <div class="states">
+
+      <div class="st">
+        <div class="bandwrap">
+          <div class="panel">
+            <span class="grip" title="拖动浮层（双击回右上角）"><svg viewBox="0 0 9 15"><circle cx="2" cy="2.5" r="1.3"/><circle cx="7" cy="2.5" r="1.3"/><circle cx="2" cy="7.5" r="1.3"/><circle cx="7" cy="7.5" r="1.3"/><circle cx="2" cy="12.5" r="1.3"/><circle cx="7" cy="12.5" r="1.3"/></svg></span>
+            <div class="fgroup" style="border-color:#3D434F; box-shadow:none">
+              <span class="lens"><svg viewBox="0 0 16 16" width="18" height="18"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 L13.6 13.6"/></svg></span>
+              <span class="query" style="color:var(--t4)">查找 (Ctrl+F)</span>
+            </div>
+          </div>
+        </div>
+        <div class="cap"><b>刚打开</b>焦点已在输入框；框内指令组未出现；等输入。</div>
+      </div>
+
+      <div class="st">
+        <div class="bandwrap">
+          <div class="panel">
+            <span class="grip" title="拖动浮层（双击回右上角）"><svg viewBox="0 0 9 15"><circle cx="2" cy="2.5" r="1.3"/><circle cx="7" cy="2.5" r="1.3"/><circle cx="2" cy="7.5" r="1.3"/><circle cx="7" cy="7.5" r="1.3"/><circle cx="2" cy="12.5" r="1.3"/><circle cx="7" cy="12.5" r="1.3"/></svg></span>
+            <div class="fgroup">
+              <span class="lens"><svg viewBox="0 0 16 16" width="18" height="18"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 L13.6 13.6"/></svg></span>
+              <span class="query">java</span>
+              <button class="clr"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 16 16"><path d="M3 8 a5 5 0 1 1 1.5 3.5"/><path d="M3 12.5 V8.5 H7"/><path d="M8 5.5 V8 L10 9.5"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 18 16"><path d="M1.5 13.5 5.5 3.2l4 10.3"/><path d="M3.4 9.9h4.2"/><path d="M14.6 6.8v5.9"/><path d="M14.6 6.8c-.5-.8-1.4-1.3-2.3-1.3-1.1 0-2 .7-2 1.6 0 2 4.3 1 4.3 2.9"/><path d="M11.2 8v2.7c0 1.1.8 1.8 2 1.8 1.1 0 2-.6 2.3-1.6"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 18 16"><path d="M5.2 3.4a6.6 6.6 0 0 0 0 11.2"/><circle cx="8" cy="11.9" r="1.6" fill="currentColor"/><path d="M11.1 4.8v5"/><path d="m9.2 6 3.8 2.7"/><path d="m13 6-3.8 2.7"/><path d="M13.3 3.4a6.6 6.6 0 0 1 0 11.2"/></svg></button>
+            </div>
+            <span class="count">6 / 23</span>
+            <span class="nav">
+              <button class="ib"><svg viewBox="0 0 16 16"><path d="M3.5 9.5 L8 5 L12.5 9.5"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 16 16"><path d="M3.5 6.5 L8 11 L12.5 6.5"/></svg></button>
+            </span>
+            <button class="ib"><svg viewBox="0 0 16 16"><path d="M4.5 4.5 L11.5 11.5 M11.5 4.5 L4.5 11.5"/></svg></button>
+          </div>
+        </div>
+        <div class="cap"><b>有结果</b>全部匹配琥珀高亮，当前匹配主题色；Enter 往下跳。</div>
+      </div>
+
+      <div class="st">
+        <div class="bandwrap">
+          <div class="panel">
+            <span class="grip" title="拖动浮层（双击回右上角）"><svg viewBox="0 0 9 15"><circle cx="2" cy="2.5" r="1.3"/><circle cx="7" cy="2.5" r="1.3"/><circle cx="2" cy="7.5" r="1.3"/><circle cx="7" cy="7.5" r="1.3"/><circle cx="2" cy="12.5" r="1.3"/><circle cx="7" cy="12.5" r="1.3"/></svg></span>
+            <div class="fgroup" style="border-color:rgba(224,106,95,.7); box-shadow:0 0 0 4px rgba(209,69,59,.10)">
+              <span class="lens" style="color:var(--dg-hi)"><svg viewBox="0 0 16 16" width="18" height="18"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 L13.6 13.6"/></svg></span>
+              <span class="query">zheshigenbenbucunzai</span>
+              <button class="clr"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 16 16"><path d="M3 8 a5 5 0 1 1 1.5 3.5"/><path d="M3 12.5 V8.5 H7"/><path d="M8 5.5 V8 L10 9.5"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 18 16"><path d="M1.5 13.5 5.5 3.2l4 10.3"/><path d="M3.4 9.9h4.2"/><path d="M14.6 6.8v5.9"/><path d="M14.6 6.8c-.5-.8-1.4-1.3-2.3-1.3-1.1 0-2 .7-2 1.6 0 2 4.3 1 4.3 2.9"/><path d="M11.2 8v2.7c0 1.1.8 1.8 2 1.8 1.1 0 2-.6 2.3-1.6"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 18 16"><path d="M5.2 3.4a6.6 6.6 0 0 0 0 11.2"/><circle cx="8" cy="11.9" r="1.6" fill="currentColor"/><path d="M11.1 4.8v5"/><path d="m9.2 6 3.8 2.7"/><path d="m13 6-3.8 2.7"/><path d="M13.3 3.4a6.6 6.6 0 0 1 0 11.2"/></svg></button>
+            </div>
+            <span class="count none">0 个结果</span>
+          </div>
+        </div>
+        <div class="cap"><b>没找到</b>计数变红「0 个结果」，描边转红；↑↓ 停用。</div>
+      </div>
+
+      <div class="st">
+        <div class="bandwrap">
+          <div class="panel">
+            <span class="grip" title="拖动浮层（双击回右上角）"><svg viewBox="0 0 9 15"><circle cx="2" cy="2.5" r="1.3"/><circle cx="7" cy="2.5" r="1.3"/><circle cx="2" cy="7.5" r="1.3"/><circle cx="7" cy="7.5" r="1.3"/><circle cx="2" cy="12.5" r="1.3"/><circle cx="7" cy="12.5" r="1.3"/></svg></span>
+            <div class="fgroup">
+              <span class="lens"><svg viewBox="0 0 16 16" width="18" height="18"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 L13.6 13.6"/></svg></span>
+              <span class="query" style="font-family:var(--mono)">^root@.*java</span>
+              <button class="clr"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 16 16"><path d="M3 8 a5 5 0 1 1 1.5 3.5"/><path d="M3 12.5 V8.5 H7"/><path d="M8 5.5 V8 L10 9.5"/></svg></button>
+              <button class="ib on"><svg viewBox="0 0 18 16"><path d="M1.5 13.5 5.5 3.2l4 10.3"/><path d="M3.4 9.9h4.2"/><path d="M14.6 6.8v5.9"/><path d="M14.6 6.8c-.5-.8-1.4-1.3-2.3-1.3-1.1 0-2 .7-2 1.6 0 2 4.3 1 4.3 2.9"/><path d="M11.2 8v2.7c0 1.1.8 1.8 2 1.8 1.1 0 2-.6 2.3-1.6"/></svg></button>
+              <button class="ib on"><svg viewBox="0 0 18 16"><path d="M5.2 3.4a6.6 6.6 0 0 0 0 11.2"/><circle cx="8" cy="11.9" r="1.6" fill="currentColor"/><path d="M11.1 4.8v5"/><path d="m9.2 6 3.8 2.7"/><path d="m13 6-3.8 2.7"/><path d="M13.3 3.4a6.6 6.6 0 0 1 0 11.2"/></svg></button>
+            </div>
+            <span class="count">1 / 4</span>
+            <span class="nav">
+              <button class="ib"><svg viewBox="0 0 16 16"><path d="M3.5 9.5 L8 5 L12.5 9.5"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 16 16"><path d="M3.5 6.5 L8 11 L12.5 6.5"/></svg></button>
+            </span>
+          </div>
+        </div>
+        <div class="cap"><b>开关开启</b>Aa / 正则点亮主题色描边；正则写错时计数位显示红色「正则无效」。</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════ 03 被挡住怎么办 ════════════════ -->
+<section class="screen">
+  <div class="sc-head">
+    <span class="no">03</span><h2>匹配行被浮层挡住怎么办</h2><span class="sub">跳转居中 + 滚不动时下移让位 + 拖动手柄（手动钉位）</span>
+  </div>
+  <p class="sc-note" style="margin:0 0 14px; font-size:13px; color:var(--t3)">Enter/↑↓ 跳转时把<b style="color:var(--t2)">当前匹配行滚到视口中部</b>（IDEA/VS Code 同款），从根上不落在浮层底下；仅当滚不动（匹配在回滚区顶端，或 alt 屏无回滚——首行是典型）时，面板<b style="color:var(--t2)">自动下移到匹配行下方让位</b>，匹配变化重新判定、不相交即回锚位。</p>
+
+  <div class="stage">
+    <div class="duel">
+      <div>
+        <div class="mini">
+          <pre class="fl">drwxr-xr-x  root root  100 B  Sun Jun 21 13:12:48  <span class="hlc">java</span>
+drwxr-xr-x  root root 4.0 KB  Thu Aug 20 14:38:19  .jpom
+.rw-------  root root 197 B   Wed Jul 22 14:31:29  .mysql_history
+drwxr-xr-x  root root 4.0 KB  Fri Sep 20 14:53:01  .ssh
+.rw-r--r--  root root  14 KB  Thu Oct 22 15:52:24  .viminfo
+.rw-r--r--  root root  18 MB  Fri May 15 16:49:54  backup_2026.sql
+<span class="g">[root@localhost java]#</span> <span class="w">ll</span></pre>
+          <div class="p2">
+            <div class="fgroup">
+              <span class="lens"><svg viewBox="0 0 16 16" width="14" height="14"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 L13.6 13.6"/></svg></span>
+              <span class="query">java</span>
+              <button class="clr"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 18 16"><path d="M1.5 13.5 5.5 3.2l4 10.3"/><path d="M3.4 9.9h4.2"/><path d="M14.6 6.8v5.9"/><path d="M14.6 6.8c-.5-.8-1.4-1.3-2.3-1.3-1.1 0-2 .7-2 1.6 0 2 4.3 1 4.3 2.9"/><path d="M11.2 8v2.7c0 1.1.8 1.8 2 1.8 1.1 0 2-.6 2.3-1.6"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 18 16"><path d="M5.2 3.4a6.6 6.6 0 0 0 0 11.2"/><circle cx="8" cy="11.9" r="1.6" fill="currentColor"/><path d="M11.1 4.8v5"/><path d="m9.2 6 3.8 2.7"/><path d="m13 6-3.8 2.7"/><path d="M13.3 3.4a6.6 6.6 0 0 1 0 11.2"/></svg></button>
+            </div>
+            <span class="count">6 / 23</span>
+            <button class="ib"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
+          </div>
+          <div class="vt bad"><span class="m">✕</span>旧做法：匹配行贴顶滚 → 被浮层盖住</div>
+        </div>
+        <div class="cap"><b>问题</b>：当前匹配（主题色高亮）恰好滚到浮层正下方，被盖住看不见。</div>
+      </div>
+
+      <div>
+        <div class="mini">
+          <pre class="fl">drwxr-xr-x  root root 4.0 KB  Fri Sep 20 14:53:01  .ssh
+.rw-r--r--  root root  14 KB  Thu Oct 22 15:52:24  .viminfo
+.rw-r--r--  root root  18 MB  Fri May 15 16:49:54  backup_2026.sql
+<span class="g">[root@localhost ~]#</span> <span class="w">cd /home/wec/</span><span class="hlc">java</span><span class="w">/</span>
+drwxr-xr-x  root root 4.0 KB  Thu Oct 22 14:30:13  job_admin
+drwxr-xr-x  root root 4.0 KB  Wed Aug 15 16:40:19  wuxi
+<span class="g">[root@localhost java]#</span> <span class="w">ll</span></pre>
+          <div class="mline"><i>视口中线</i></div>
+          <div class="p2">
+            <div class="fgroup">
+              <span class="lens"><svg viewBox="0 0 16 16" width="14" height="14"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 L13.6 13.6"/></svg></span>
+              <span class="query">java</span>
+              <button class="clr"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 18 16"><path d="M1.5 13.5 5.5 3.2l4 10.3"/><path d="M3.4 9.9h4.2"/><path d="M14.6 6.8v5.9"/><path d="M14.6 6.8c-.5-.8-1.4-1.3-2.3-1.3-1.1 0-2 .7-2 1.6 0 2 4.3 1 4.3 2.9"/><path d="M11.2 8v2.7c0 1.1.8 1.8 2 1.8 1.1 0 2-.6 2.3-1.6"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 18 16"><path d="M5.2 3.4a6.6 6.6 0 0 0 0 11.2"/><circle cx="8" cy="11.9" r="1.6" fill="currentColor"/><path d="M11.1 4.8v5"/><path d="m9.2 6 3.8 2.7"/><path d="m13 6-3.8 2.7"/><path d="M13.3 3.4a6.6 6.6 0 0 1 0 11.2"/></svg></button>
+            </div>
+            <span class="count">6 / 23</span>
+            <button class="ib"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
+          </div>
+          <div class="vt good"><span class="m">✓</span>主解法：跳转滚动到匹配行居中</div>
+        </div>
+        <div class="cap"><b>跳转居中</b>：滚到匹配行落在视口中部——离浮层最远的位置，Enter/↑↓ 每跳一次都居中一次。</div>
+      </div>
+
+    </div>
+
+    <div class="trio">
+      <div>
+        <div class="mini">
+          <pre class="fl">drwxr-xr-x  root root  100 B  Sun Jun 21 13:12:48  <span class="hlc">java</span>
+.rw-------  root root 197 B   Wed Jul 22 14:31:29  .mysql_history
+drwxr-xr-x  root root 4.0 KB  Fri Sep 20 14:53:01  .ssh
+.rw-r--r--  root root  14 KB  Thu Oct 22 15:52:24  .viminfo
+.rw-r--r--  root root  18 MB  Fri May 15 16:49:54  backup_2026.sql
+<span class="g">[root@localhost java]#</span> <span class="w">vim app.log</span>
+<span class="g">[root@localhost java]#</span> <span class="w">grep -n err app.log</span></pre>
+          <div class="p2">
+            <div class="fgroup">
+              <span class="lens"><svg viewBox="0 0 16 16" width="13" height="13"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 L13.6 13.6"/></svg></span>
+              <span class="query">java</span>
+              <button class="clr"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 18 16"><path d="M1.5 13.5 5.5 3.2l4 10.3"/><path d="M3.4 9.9h4.2"/><path d="M14.6 6.8v5.9"/><path d="M14.6 6.8c-.5-.8-1.4-1.3-2.3-1.3-1.1 0-2 .7-2 1.6 0 2 4.3 1 4.3 2.9"/><path d="M11.2 8v2.7c0 1.1.8 1.8 2 1.8 1.1 0 2-.6 2.3-1.6"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 18 16"><path d="M5.2 3.4a6.6 6.6 0 0 0 0 11.2"/><circle cx="8" cy="11.9" r="1.6" fill="currentColor"/><path d="M11.1 4.8v5"/><path d="m9.2 6 3.8 2.7"/><path d="m13 6-3.8 2.7"/><path d="M13.3 3.4a6.6 6.6 0 0 1 0 11.2"/></svg></button>
+            </div>
+            <span class="count">6 / 23</span>
+            <button class="ib"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
+          </div>
+          <div class="vt bad"><span class="m">①</span>首行匹配压在锚位下，滚不动</div>
+        </div>
+        <div class="cap"><b>情形</b>：匹配在首行右端；回滚区顶端 / alt 屏（vim/tmux），居中滚动无效。</div>
+      </div>
+
+      <div>
+        <div class="mini">
+          <pre class="fl">drwxr-xr-x  root root  100 B  Sun Jun 21 13:12:48  <span class="hlc">java</span>
+.rw-------  root root 197 B   Wed Jul 22 14:31:29  .mysql_history
+drwxr-xr-x  root root 4.0 KB  Fri Sep 20 14:53:01  .ssh
+.rw-r--r--  root root  14 KB  Thu Oct 22 15:52:24  .viminfo
+.rw-r--r--  root root  18 MB  Fri May 15 16:49:54  backup_2026.sql
+<span class="g">[root@localhost java]#</span> <span class="w">vim app.log</span>
+<span class="g">[root@localhost java]#</span> <span class="w">grep -n err app.log</span></pre>
+          <div class="ghost" style="top:8px; right:8px; width:250px; height:32px"><i>原锚位</i></div>
+          <div class="p2" style="top:52px">
+            <div class="fgroup">
+              <span class="lens"><svg viewBox="0 0 16 16" width="13" height="13"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 L13.6 13.6"/></svg></span>
+              <span class="query">java</span>
+              <button class="clr"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 18 16"><path d="M1.5 13.5 5.5 3.2l4 10.3"/><path d="M3.4 9.9h4.2"/><path d="M14.6 6.8v5.9"/><path d="M14.6 6.8c-.5-.8-1.4-1.3-2.3-1.3-1.1 0-2 .7-2 1.6 0 2 4.3 1 4.3 2.9"/><path d="M11.2 8v2.7c0 1.1.8 1.8 2 1.8 1.1 0 2-.6 2.3-1.6"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 18 16"><path d="M5.2 3.4a6.6 6.6 0 0 0 0 11.2"/><circle cx="8" cy="11.9" r="1.6" fill="currentColor"/><path d="M11.1 4.8v5"/><path d="m9.2 6 3.8 2.7"/><path d="m13 6-3.8 2.7"/><path d="M13.3 3.4a6.6 6.6 0 0 1 0 11.2"/></svg></button>
+            </div>
+            <span class="count">6 / 23</span>
+            <button class="ib"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
+          </div>
+          <div class="vt good"><span class="m">②</span>面板下移到匹配行下方（200ms）</div>
+        </div>
+        <div class="cap"><b>下移让位</b>：高亮与面板同时完整可见；匹配行下方总有空间（面板 34px ≪ 终端行数），几何上永远可行。</div>
+      </div>
+
+      <div>
+        <div class="mini">
+          <pre class="fl">.rw-------  root root 197 B   Wed Jul 22 14:31:29  .mysql_history
+drwxr-xr-x  root root 4.0 KB  Fri Sep 20 14:53:01  .ssh
+.rw-r--r--  root root  14 KB  Thu Oct 22 15:52:24  .viminfo
+.rw-r--r--  root root  18 MB  Fri May 15 16:49:54  backup_2026.sql
+<span class="g">[root@localhost ~]#</span> <span class="w">cd /home/wec/</span><span class="hlc">java</span><span class="w">/</span>
+<span class="g">[root@localhost java]#</span> <span class="w">ll</span></pre>
+          <div class="p2">
+            <div class="fgroup">
+              <span class="lens"><svg viewBox="0 0 16 16" width="13" height="13"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 L13.6 13.6"/></svg></span>
+              <span class="query">java</span>
+              <button class="clr"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 18 16"><path d="M1.5 13.5 5.5 3.2l4 10.3"/><path d="M3.4 9.9h4.2"/><path d="M14.6 6.8v5.9"/><path d="M14.6 6.8c-.5-.8-1.4-1.3-2.3-1.3-1.1 0-2 .7-2 1.6 0 2 4.3 1 4.3 2.9"/><path d="M11.2 8v2.7c0 1.1.8 1.8 2 1.8 1.1 0 2-.6 2.3-1.6"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 18 16"><path d="M5.2 3.4a6.6 6.6 0 0 0 0 11.2"/><circle cx="8" cy="11.9" r="1.6" fill="currentColor"/><path d="M11.1 4.8v5"/><path d="m9.2 6 3.8 2.7"/><path d="m13 6-3.8 2.7"/><path d="M13.3 3.4a6.6 6.6 0 0 1 0 11.2"/></svg></button>
+            </div>
+            <span class="count">6 / 23</span>
+            <button class="ib"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
+          </div>
+          <div class="vt info"><span class="m">③</span>匹配变化 → 不再相交，回锚位</div>
+        </div>
+        <div class="cap"><b>回锚位</b>：Enter 到下一匹配（可视中部）→ 面板回到右上角默认位置。</div>
+      </div>
+    </div>
+
+    <div class="duel" style="margin-top:16px">
+      <div>
+        <div class="mini" style="height:280px">
+          <pre class="fl">drwxr-xr-x  root root 4.0 KB  Wed Jun  3 13:56:58  .config
+drwxr-xr-x  root root  100 B  Sun Jun 21 13:12:48  java
+drwxr-xr-x  root root 4.0 KB  Thu Aug 20 14:38:19  .jpom
+.rw-------  root root 197 B   Wed Jul 22 14:31:29  .mysql_history
+drwxr-xr-x  root root 4.0 KB  Fri Sep 20 14:53:01  .ssh
+.rw-r--r--  root root  14 KB  Thu Oct 22 15:52:24  .viminfo
+.rw-r--r--  root root  18 MB  Fri May 15 16:49:54  backup_2026.sql
+<span class="g">[root@localhost ~]#</span> <span class="w">cd /home/wec/java/</span>
+<span class="g">[root@localhost java]#</span> <span class="w">ll</span></pre>
+          <div class="ghost" style="top:8px; right:8px; width:250px; height:32px"><i>默认锚位</i></div>
+          <div class="p2" style="left:12px; right:auto; top:auto; bottom:56px; box-shadow:0 22px 52px rgba(0,0,0,.7)">
+            <span class="grip" style="background:var(--ac-tonal); box-shadow:inset 0 0 0 1.5px var(--ac-tonal-line); color:var(--ac)"><svg viewBox="0 0 9 15"><circle cx="2" cy="2.5" r="1.3"/><circle cx="7" cy="2.5" r="1.3"/><circle cx="2" cy="7.5" r="1.3"/><circle cx="7" cy="7.5" r="1.3"/><circle cx="2" cy="12.5" r="1.3"/><circle cx="7" cy="12.5" r="1.3"/></svg></span>
+            <div class="fgroup">
+              <span class="lens"><svg viewBox="0 0 16 16" width="13" height="13"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 L13.6 13.6"/></svg></span>
+              <span class="query">java</span>
+              <button class="clr"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 18 16"><path d="M1.5 13.5 5.5 3.2l4 10.3"/><path d="M3.4 9.9h4.2"/><path d="M14.6 6.8v5.9"/><path d="M14.6 6.8c-.5-.8-1.4-1.3-2.3-1.3-1.1 0-2 .7-2 1.6 0 2 4.3 1 4.3 2.9"/><path d="M11.2 8v2.7c0 1.1.8 1.8 2 1.8 1.1 0 2-.6 2.3-1.6"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 18 16"><path d="M5.2 3.4a6.6 6.6 0 0 0 0 11.2"/><circle cx="8" cy="11.9" r="1.6" fill="currentColor"/><path d="M11.1 4.8v5"/><path d="m9.2 6 3.8 2.7"/><path d="m13 6-3.8 2.7"/><path d="M13.3 3.4a6.6 6.6 0 0 1 0 11.2"/></svg></button>
+            </div>
+            <span class="count">6 / 23</span>
+            <button class="ib"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
+          </div>
+          <div class="vt info" style="left:auto; right:10px"><span class="m">⠿</span>按住手柄拖到哪，钉到哪</div>
+        </div>
+        <div class="cap"><b>拖动中</b>：光标握拳、手柄 accent 高亮、阴影加深；距四角 ≤12px 磁吸贴角；双击手柄回右上默认锚位。拖到哪，居中滚动 / 下移让位照样生效。</div>
+      </div>
+
+      <div>
+        <div class="sumcard" style="margin-top:0">
+          <h3>拖动手柄 · 细则</h3>
+          <div class="gripdemo">
+            <div class="gd"><span class="grip"><svg viewBox="0 0 9 15"><circle cx="2" cy="2.5" r="1.3"/><circle cx="7" cy="2.5" r="1.3"/><circle cx="2" cy="7.5" r="1.3"/><circle cx="7" cy="7.5" r="1.3"/><circle cx="2" cy="12.5" r="1.3"/><circle cx="7" cy="12.5" r="1.3"/></svg></span><i>静默</i></div>
+            <div class="gd"><span class="grip" style="background:var(--hov); color:var(--ac)"><svg viewBox="0 0 9 15"><circle cx="2" cy="2.5" r="1.3"/><circle cx="7" cy="2.5" r="1.3"/><circle cx="2" cy="7.5" r="1.3"/><circle cx="7" cy="7.5" r="1.3"/><circle cx="2" cy="12.5" r="1.3"/><circle cx="7" cy="12.5" r="1.3"/></svg></span><i>悬停 · 张开手 (grab)</i></div>
+            <div class="gd"><span class="grip" style="background:var(--ac-tonal); box-shadow:inset 0 0 0 1.5px var(--ac-tonal-line); color:var(--ac)"><svg viewBox="0 0 9 15"><circle cx="2" cy="2.5" r="1.3"/><circle cx="7" cy="2.5" r="1.3"/><circle cx="2" cy="7.5" r="1.3"/><circle cx="7" cy="7.5" r="1.3"/><circle cx="2" cy="12.5" r="1.3"/><circle cx="7" cy="12.5" r="1.3"/></svg></span><i>按住 · 握拳 (grabbing)</i></div>
+          </div>
+          <p><b>手柄</b>：面板最左 ⠿，贴左缘、与输入框等高的热区（左右留白对称且最小）；光标悬停 = 张开手（grab），按住拖动 = 握拳（grabbing）；高亮跟随<b>主题强调色</b>（悬停淡染 / 按住 accent 描边）。拖动中输入框保持焦点，松手直接继续打字。</p>
+          <p><b>范围</b>：自由拖动，clamp 在终端区矩形内——不会拖上侧栏 / 状态栏。</p>
+          <p><b>磁吸与复位</b>：靠近四角 ≤12px 自动贴角；<b>双击手柄</b>回右上默认锚位（双击复位是项目惯例）。</p>
+          <p><b>记忆</b>：位置只记本次查找会话，Esc / ✕ 关闭即复位，不持久化——避免「上次拖到角落，这次凭空在那」。</p>
+          <p class="n4">量级 S：TouchArea.moved 更新面板 x/y。项目先例齐全：滚动条拖拽、分组跨栏拖动、#settings-drag-ghost 像素对齐。</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="sumcard">
+      <h3>规则汇总</h3>
+      <p>① Enter / ↑↓ / 输入首个匹配 → 滚动目标 = <b>匹配行 − 行数/2</b>（能滚就居中）。</p>
+      <p>② 滚不动（回滚区顶端 / alt 屏）且匹配与锚位相交 → <b>面板下移到匹配行下方</b>（200ms 动画，200ms 去抖；输出流刷屏不触发位移）。</p>
+      <p>③ 匹配变化后重新判定，不再相交 → <b>回右上锚位</b>。</p>
+      <p>④ 点击高亮成为当前匹配 → 不滚动（那一行本来就可见）。</p>
+      <p class="n4">三层心智：内容挪给你看（居中）→ 面板挪开（下移让位）→ 用户手动钉位（拖动手柄，见上）。降透明方案退役；三项都是 S 级改动。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════ 04 行为细则 ════════════════ -->
+<section class="screen">
+  <div class="sc-head">
+    <span class="no">04</span><h2>怎么用</h2><span class="sub">Mac 显示 ⌘ 变体（Theme.is-mac 已有）</span>
+  </div>
+  <div class="stage">
+    <div class="rules">
+      <div class="rl"><span class="k">打开</span><span><kbd>Ctrl F</kbd> 打开并聚焦；再按一次全选已有查询词</span></div>
+      <div class="rl"><span class="k">跳转</span><span><kbd>Enter</kbd> 下一个 / <kbd>Shift Enter</kbd> 上一个；匹配行滚到视口中部</span></div>
+      <div class="rl"><span class="k">关闭</span><span><kbd>Esc</kbd> 或浮层 ✕；清掉高亮，焦点回终端</span></div>
+      <div class="rl"><span class="k">切换规则</span><span><kbd>Alt C</kbd> 大小写 · <kbd>Alt X</kbd> 正则，按钮同步点亮</span></div>
+      <div class="rl"><span class="k">被挡住</span><span>滚不动还压着 → 面板下移到匹配行下方，匹配变化后回锚位（§03）</span></div>
+      <div class="rl"><span class="k">拖动</span><span>按住面板最左 ⠿ 拖动；双击回右上角；位置本次查找会话内记忆</span></div>
+      <div class="rl"><span class="k">历史</span><span><kbd>Alt ↓</kbd> 或 ↩：最近 10 条，选中即重查；带 Aa / .* 标记的连开关一起恢复</span></div>
+      <div class="rl"><span class="k">点高亮</span><span>终端里点某个匹配矩形 → 它成为当前匹配</span></div>
+      <div class="rl"><span class="k">新输出</span><span>输出滚来时当前匹配不动；即时搜索在停顿 200ms 后静默重算</span></div>
+      <div class="rl"><span class="k">默认行为</span><span>循环查找（到头卷回）· 全部琥珀 + 当前主题色 · 输入即时搜索（200ms 去抖）——固定默认，无开关</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════ 05 落地 ════════════════ -->
+<section class="screen">
+  <div class="sc-head">
+    <span class="no">05</span><h2>怎么落地</h2><span class="sub">骨架复用现网控件，位置改右上</span>
+  </div>
+  <div class="stage">
+    <table class="spec">
+      <tr><th style="width:64px">状态</th><th style="width:210px">设计件</th><th>对应现有代码 / 落点</th><th style="width:90px">量级</th></tr>
+      <tr><td><span class="badge have">已有</span></td><td><b>浮层骨架 / 输入框 / 清空 ×</b></td><td><code>find-active</code> overlay 复用；位置改右上角（边距 + 固定宽度 + 圆角描边阴影）；<code>find-input</code>、<code>close-ta</code>（#find-clear-accent，跟随主题色）原样保留</td><td class="m">S</td></tr>
+      <tr><td><span class="badge have">已有</span></td><td><b>全文搜索 + 高亮</b></td><td><code>compute_find_matches</code> 全量匹配 + CJK 列宽对齐（#132）</td><td class="m">—</td></tr>
+      <tr><td><span class="badge add">新增</span></td><td><b>计数 / 0 个结果</b></td><td>匹配本就全量算出，把总数 + 当前序号回传 UI 即可</td><td class="m">S</td></tr>
+      <tr><td><span class="badge add">新增</span></td><td><b>当前匹配 + 跳转</b></td><td>记当前索引；跳行复用 <code>terminal-scroll-to</code>，目标 = 匹配行 − 行数/2（居中）；当前匹配矩形换主题色档</td><td class="m">S~M</td></tr>
+      <tr><td><span class="badge add">新增</span></td><td><b>遮挡解法（§03）</b></td><td>居中滚动即跳转目标偏移；滚不动且相交 → 面板 y 下移至匹配行下方（200ms 动画、200ms 去抖），匹配变化重新判定、不相交回锚位（降透明方案退役）</td><td class="m">S</td></tr>
+      <tr><td><span class="badge add">新增</span></td><td><b>拖动手柄（§03）</b></td><td>TouchArea.moved 更新浮层 x/y（clamp + 四角磁吸 ≤12px），双击回锚位；会话内记忆不持久化。先例：滚动条拖拽 / 分组跨栏拖 / #settings-drag-ghost</td><td class="m">S</td></tr>
+      <tr><td><span class="badge add">新增</span></td><td><b>Aa 大小写</b></td><td><code>compute_find_matches</code> 加 case 参数（现在写死小写化）</td><td class="m">S</td></tr>
+      <tr><td><span class="badge add">新增</span></td><td><b>正则 (.·)*</b></td><td>regex crate 已是依赖（Cargo.toml:46）；按行换 regex 匹配，列位映射复用 cell_prefix</td><td class="m">S~M</td></tr>
+      <tr><td><span class="badge add">新增</span></td><td><b>历史 ↩</b></td><td>复用命令历史下拉模式（#101）+ ConfigStore 存最近 10 条</td><td class="m">M</td></tr>
+      <tr><td><span class="badge risk">注意</span></td><td><b>alt 屏 / 大回滚正则 / IME</b></td><td>vim/tmux 下计数跳转限当前屏（is-alt-screen 已有），遮挡由下移让位兜底；即时搜索 200ms 去抖（#163 先例）；中文输入走 ui-font-family（#54 已解决）</td><td class="m">低风险</td></tr>
+    </table>
+    <p class="foot-note">实现顺序：① 计数 + 当前匹配 + 跳转（含居中）→ ② 遮挡兜底下移让位 → ③ Aa / 正则 → ④ 历史。循环 / 高亮全部 / 即时搜索为固定默认，无选项菜单。输入框、清空按钮原样复用，浮层只动定位与外形（S）。</p>
+  </div>
+</section>
+
+</div>
+</body>
+</html>
