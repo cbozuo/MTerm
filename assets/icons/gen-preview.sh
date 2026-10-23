@@ -180,6 +180,8 @@ row "协议图标" terminal "EB8E" "SSH / 本地 · 协议回落（终端窗+提
 row "协议图标" serial-port "E8C0" "串口（D-sub 接头+针脚）"
 row "协议图标" window-asset "E069" "Telnet（浏览器窗+控制点）"
 row "协议图标" remote-desktop "E30C" "RDP / VNC · 远程桌面（并排双屏 + 共享底座；两屏墨距 2 · 2026-10-04 重画）"
+row "查找与匹配" match-case "—" "区分大小写（大写 A + 小写 a：圆碗 + 右竖笔 · 基线对齐；Alt+C）"
+row "查找与匹配" regex "—" "正则表达式（括号内「点 + 星」= .* ；星号贴右括号、点贴基线；Alt+X）"
 
 CARDS+="</div>"$'\n'
 printf '%s' "$CARDS" >> "$OUT"
