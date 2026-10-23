@@ -143,9 +143,6 @@ component GmKeyCap inherits Text {
 
 export component GroupManagerDialog inherits Rectangle {
     in property <bool> lang-en;
-    // (#modal-titlebar-drag 2026-10-20) 顶部让位 = 主窗标题栏高度：
-    // 遮罩命中区从标题栏下沿开始，弹框打开时标题栏仍可拖动主窗口。
-    in property <length> top-inset: 0px;
     in property <bool> open;
     in-out property <string> selected: "";
     in property <[GroupRow]> groups: [];
@@ -271,10 +268,6 @@ export component GroupManagerDialog inherits Rectangle {
     in-out property <int> press-row: -1;
     in-out property <int> down-row: -1;
 
-    // 列表顶部的绝对 y（跨栏命中 / 刷选命中）
-    in-out property <length> list-top: 0px;
-    in-out property <length> mem-top: 0px;
-
     property <length> row-h: 36px;
     property <length> mem-h: 36px;
     // 「我的分组」小节标题（未分组与自定义组之间，高保真 §左栏）
@@ -300,7 +293,7 @@ export component GroupManagerDialog inherits Rectangle {
         return Math.max(0, Math.min(root.groups.length - 1,
             Math.floor((y - cap) / root.row-h)));
     }
-    // 组行号 → 该行顶部（与 list-top 同原点，含列表 8px padding）
+    // 组行号 → 该行顶部（相对 glay 内容顶 + 8px padding 的原点，含列表 8px padding）
     pure function gi-top(i: int) -> length {
         let cap = root.has-cap() ? root.cap-h : 0px;
         return 8px + i * root.row-h
@@ -459,10 +452,14 @@ export component GroupManagerDialog inherits Rectangle {
 
         Scrim { }
         // 点遮罩：先确认改名再关（改名不会因为点了一下外面就丢）
-        // (#modal-titlebar-drag) 命中区让开标题栏，弹框打开时标题栏仍可拖主窗。
+        // (#modal-titlebar-block 2026-10-23) 命中区恢复全屏：此前让开标题栏
+        // (#modal-titlebar-drag) 使弹框打开期间顶栏工具按钮仍可点，实测出现
+        // 「分组管理开着又点出新建会话」的双弹框叠层。模态期间标题栏一律不
+        // 响应，点标题栏 = 点背板（提交改名并关闭）；Scrim 视觉本来就铺满
+        // 全屏，无变化。
         TouchArea {
-            y: root.top-inset;
-            height: parent.height - root.top-inset;
+            width: 100%;
+            height: 100%;
             // 名字非法时不关窗（否则刚打的字白打）
             clicked => { if (commit_edit()) { root.close(); } }
         }
@@ -770,9 +767,14 @@ export component GroupManagerDialog inherits Rectangle {
                                     padding-right: 8px;
                                     spacing: 0px;
                                     alignment: start;
-                                    changed absolute-position => {
-                                        root.list-top = self.absolute-position.y + 8px;
-                                    }
+                                    // (#gm-hit-y 2026-10-23) 跨栏命中不再缓存 list-top：
+                                    // `changed absolute-position` 在元素**初次布局赋值时
+                                    // 不触发**（只在后续变化时 fire），而弹框是 if open
+                                    // 条件子树、每次打开整棵重建 → 缓存停留 0px，gi-at
+                                    // 拿窗口绝对 y 当列表内 y，命中 clamp 到最后一组
+                                    // （用户实测"成员只能拖到最后一组"）。改为调用点
+                                    // 直接读 glay.absolute-position.y（响应式、随滚动
+                                    // 正确），彻底删缓存。
 
                                     // 默认组空着被隐藏时，小节标题顶到列表最上面（Rust 不下发那一行）
                                     if !root.has-default-row() && root.has-cap() : GmCaption {
@@ -1727,9 +1729,9 @@ export component GroupManagerDialog inherits Rectangle {
                                     spacing: 0px;
                                     // 空组：整块在列表里垂直居中（有成员时仍从上排）
                                     alignment: root.total-count == 0 ? center : start;
-                                    changed absolute-position => {
-                                        root.mem-top = self.absolute-position.y + 6px;
-                                    }
+                                    // (#gm-hit-y 2026-10-23) 刷选命中同理不缓存 mem-top：
+                                    // changed absolute-position 初次布局不触发，直接读
+                                    // mem-lay.absolute-position.y（随滚动正确）。
 
                                     // 空态①：搜索没有任何命中（全局 0 命中）
                                     if root.total-count == 0 && root.query != "" && root.search-hits == 0 : Rectangle {
@@ -1936,7 +1938,7 @@ export component GroupManagerDialog inherits Rectangle {
                                                         root.drop-group = ax
                                                             < gm.absolute-position.x + root.left-w;
                                                         root.drop-gi = root.drop-group
-                                                            ? root.gi-at(ay - root.list-top)
+                                                            ? root.gi-at(ay - glay.absolute-position.y - 8px)
                                                             : -1;
                                                         root.drag-insert = root.drop-group
                                                             ? -1
@@ -1958,7 +1960,8 @@ export component GroupManagerDialog inherits Rectangle {
                                                 if (root.drag-kind == "member") {
                                                     if (root.drop-group) {
                                                         // 左栏：按指针绝对 y 命中组行（含小节标题偏移）
-                                                        let gi = root.gi-at(root.drag-abs-y - root.list-top);
+                                                        let gi = root.gi-at(
+                                                            root.drag-abs-y - glay.absolute-position.y - 8px);
                                                         let whole = root.picked-count > 0
                                                             && root.members[j].picked;
                                                         let n = whole ? root.picked-count : 1;
@@ -2050,7 +2053,8 @@ export component GroupManagerDialog inherits Rectangle {
                                                         root.pick-sweeping = true;
                                                         let ay = self.absolute-position.y + self.mouse-y;
                                                         let to = Math.max(0, Math.min(root.members.length - 1,
-                                                            Math.floor((ay - root.mem-top) / root.mem-h)));
+                                                            Math.floor((ay - mem-lay.absolute-position.y - 6px)
+                                                                / root.mem-h)));
                                                         root.paint-pick(root.pick-anchor, to, root.pick-on);
                                                     }
                                                 }
