@@ -74,6 +74,24 @@ def main():
         time.sleep(1)
     else:
         raise SystemExit("!! exe 拷贝哈希校验多次不一致，中止打包")
+    # (#tray-uipi 2026-10-24) Windows 的进程完整性 = min(父进程, exe 文件上的
+    # Mandatory Label)。exe 若从被打过 Medium 标签的目录继承标签，进程就被钉在
+    # Medium；而 explorer.exe 若跑在 High（本机就是），Shell_NotifyIconW 会被
+    # UIPI 拒绝 —— 托盘图标出不来，且只有日志里的 0x80070005 能看出来。
+    # 这里把分发副本钉到 High：zip 不保存 ACL，用户解压出来的那份本来就没有标签
+    # （进程继承父进程，反而最稳）；这一步只为「直接运行 dist 里这份 exe」的场景。
+    if os.name == "nt":
+        r = subprocess.run(["icacls", dst_exe, "/setintegritylevel", "High"],
+                           capture_output=True, text=True, encoding="mbcs",
+                           errors="replace")
+        if r.returncode != 0:
+            print("      [warn] 设置 exe 完整性级别失败（托盘可能不可用）：%s"
+                  % (r.stdout or r.stderr).strip())
+        else:
+            chk = subprocess.run(["icacls", dst_exe], capture_output=True, text=True,
+                                 encoding="mbcs", errors="replace").stdout
+            label = [ln.strip() for ln in chk.splitlines() if "Mandatory" in ln]
+            print("      [integrity] %s" % (label[0] if label else "无标签"))
     for f in EXTRA:
         p = os.path.join(ROOT, f)
         if os.path.isfile(p):

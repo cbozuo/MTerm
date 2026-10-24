@@ -218,7 +218,7 @@ mod win {
     use std::cell::{Cell, RefCell};
     use std::mem::size_of;
     use windows::core::{w, GUID, PCWSTR};
-    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Foundation::{E_ACCESSDENIED, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::Shell::{
         Shell_NotifyIconGetRect, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD,
@@ -508,6 +508,24 @@ mod win {
         if !Shell_NotifyIconW(NIM_ADD, &nid).as_bool() {
             let err = windows::core::Error::from_win32();
             tracing::warn!("tray: Shell_NotifyIconW(NIM_ADD) failed: {err}");
+            // (#tray-uipi 2026-10-24) ERROR_ACCESS_DENIED 在本 API 上几乎只有一种
+            // 成因：本进程的强制完整性级别低于 explorer.exe。托盘注册要先
+            // FindWindow("Shell_TrayWnd") 再跨进程发消息，UIPI 会直接拒绝低完整性
+            // 进程 —— 而**进程完整性 = min(父进程, exe 文件上的 Mandatory Label)**。
+            //
+            // 踩过的坑：工作区整树被打了 Medium 标签（早先为修 Low 导致的
+            // OS Error 5），编出来的 exe 于是被钉在 Medium，而本机 explorer 跑
+            // High，托盘从此恒失败；换个目录编出来的 exe 又正常 —— 表现就是
+            // 「一会好一会坏」。排查：`icacls MTerm.exe` 看 Mandatory Label；
+            // 修：`icacls <dir> /setintegritylevel "(OI)(CI)High" /T`（或让 exe 无标签）。
+            if err.code() == E_ACCESSDENIED {
+                tracing::warn!(
+                    "tray: NIM_ADD denied by UIPI — this process is lower integrity than \
+                     explorer.exe. Check `icacls MTerm.exe`: a Medium/Low Mandatory Label \
+                     caps the process (integrity = min(parent, exe label)). Fix: \
+                     icacls <dir> /setintegritylevel \"(OI)(CI)High\" /T"
+                );
+            }
             return false;
         }
         // (#tray-icon-vanish 2026-09-21) 记住已注册的图标句柄,refresh_icon 用。
