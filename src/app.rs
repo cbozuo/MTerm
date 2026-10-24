@@ -2708,6 +2708,10 @@ fn open_window(
     ));
     window.set_command_history(history_model(&store.borrow()));
     window.set_history_view(history_view_model(&store.borrow(), "")); // #101
+    // (#cmdbar-suggest 2026-10-24) 打字补全候选（快捷命令 + 历史），空 query 只留历史。
+    let (suggest_view, suggest_kind) = suggest_models(&store.borrow(), "");
+    window.set_suggest_view(suggest_view);
+    window.set_suggest_kind(suggest_kind);
 
     // Interface setting: SFTP follows the terminal's cd. The shell event pumps
     // read this AtomicBool on every CwdChanged, so toggling applies live to
@@ -10444,7 +10448,14 @@ fn wire_key_input(
         window.on_search_history(move |query: SharedString| {
             *hist_query.borrow_mut() = query.to_string();
             if let Some(w) = weak.upgrade() {
-                w.set_history_view(history_view_model(&store_rc.borrow(), &query));
+                let s = store_rc.borrow();
+                w.set_history_view(history_view_model(&s, &query));
+                // (#cmdbar-suggest 2026-10-24) 同一个 query 顺手把补全候选算好：
+                // 打字时的补全框读 suggest-*（快捷命令 + 历史），点时钟打开的
+                // 完整面板仍读 history-view（只要历史）。
+                let (view, kind) = suggest_models(&s, &query);
+                w.set_suggest_view(view);
+                w.set_suggest_kind(kind);
             }
         });
     }
@@ -10465,7 +10476,12 @@ fn wire_key_input(
             if let Some(w) = weak.upgrade() {
                 let s = store_rc.borrow();
                 w.set_command_history(history_model(&s));
-                w.set_history_view(history_view_model(&s, &hist_query.borrow()));
+                let q = hist_query.borrow().clone();
+                w.set_history_view(history_view_model(&s, &q));
+                // (#cmdbar-suggest 2026-10-24) 删掉一条后补全候选也要少一条。
+                let (view, kind) = suggest_models(&s, &q);
+                w.set_suggest_view(view);
+                w.set_suggest_kind(kind);
             }
         });
     }

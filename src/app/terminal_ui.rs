@@ -211,6 +211,42 @@ pub(super) fn history_view_model(store: &ConfigStore, query: &str) -> ModelRc<Sh
     ModelRc::from(Rc::new(VecModel::from(rows)))
 }
 
+/// (#cmdbar-suggest 2026-10-24) 打字时补全框的候选：**自定义指令集在前、
+/// 历史匹配在后**。返回 (展示文本, 类型)，两组等长；类型 1 = 快捷命令
+/// （UI 画 bolt 图标）、0 = 历史。
+///
+/// 和 `history_view_model` 分开是因为两者语义不同：点时钟打开的是「翻/搜
+/// 历史」，列历史就够；打字时是「我想执行什么」，自己配的指令集也该被找出来。
+/// 展示文本统一取 `command`（要执行的那串），`name` 只参与匹配 —— 否则
+/// 中文名的快捷命令点一下会把名字当命令发出去。
+pub(super) fn suggest_models(
+    store: &ConfigStore,
+    query: &str,
+) -> (ModelRc<SharedString>, ModelRc<i32>) {
+    let q = query.trim().to_lowercase();
+    let mut texts: Vec<SharedString> = Vec::new();
+    let mut kinds: Vec<i32> = Vec::new();
+    // 空 query 不端出指令集：补全框只在有输入时开，别让「刚聚焦」就刷一屏。
+    if !q.is_empty() {
+        for c in store.quick_commands() {
+            let name_hit = !c.name.trim().is_empty() && c.name.to_lowercase().contains(&q);
+            let cmd_hit = c.command.to_lowercase().contains(&q);
+            if name_hit || cmd_hit {
+                texts.push(c.command.clone().into());
+                kinds.push(1);
+            }
+        }
+    }
+    for row in history_view_rows(store.command_history(), query) {
+        texts.push(row);
+        kinds.push(0);
+    }
+    (
+        ModelRc::from(Rc::new(VecModel::from(texts))),
+        ModelRc::from(Rc::new(VecModel::from(kinds))),
+    )
+}
+
 #[cfg(test)]
 #[path = "../../tests/app/command_history/mod.rs"]
 mod history_view_tests;

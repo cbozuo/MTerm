@@ -282,8 +282,9 @@ fn cmdbar_has_frame_danger_turns_send_red_and_expand_opens_dialog() {
         }
     }
     assert!(input_right > SIDE_LEFT + 300, "找不到输入框右缘");
-    // (#cmdbar-clear) 右端现在是 ⚡ 🕘 │ ↗ × 五个钮：× 在最右（-32），↗ 左移一格（-61）。
-    let exp_x = input_right - 61 + 13;
+    // (#cmdbar-clear-first 2026-10-23) 右端现在是 × ⚡ 🕘 │ ↗ 五个钮：× 移到最左（-119），
+    // ↗ 仍在最右（-32，26 宽 → 中心 -19）。
+    let exp_x = input_right - 19;
     click(&ui, exp_x as f32, mid_y as f32);
 
     let mut expand = Frame::new();
@@ -399,8 +400,9 @@ fn cmdbar_has_frame_danger_turns_send_red_and_expand_opens_dialog() {
     );
 
     // ── 5. 清空按钮 ─────────────────────────────────────────
-    // × 在输入框最右（距右缘 32、26 宽）。清空后危险态必须一起消失。
-    let clear_x = input_right - 20;
+    // (#cmdbar-clear-first 2026-10-23) × 挪到内嵌钮组最左（槽位 W-119，26 宽 → 中心 -106）。
+    // 清空后危险态必须一起消失。
+    let clear_x = input_right - 106;
     click(&ui, clear_x as f32, mid_y as f32);
     // 发送键的 background 有 animate：清空后要推几帧才回到 accent
     for _ in 0..5 {

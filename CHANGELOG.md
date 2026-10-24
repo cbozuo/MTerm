@@ -6,6 +6,26 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **命令栏：补全候选纳入自定义指令集，历史浮层的两个模式各归其位（#cmdbar-suggest）。**
+  - **补全态不再只认历史**：打字弹出的候选框现在把**快捷命令**也找出来（`name` 与 `command` 都参与匹配，展示永远是 `command` —— 否则中文名点一下会把名字当命令发出去），排历史之前；每条左侧标类型：青色闪电 = 自定义指令集，灰色回形箭头 = 敲过的命令。
+  - **时钟图标不再误亮**：补全框与完整面板共用 `history-open`，历史钮原来绑的就是它，打字时也跟着亮。新增 `hist-panel-open`（= `history-open && !history-autocomplete`），只有点时钟 / `Ctrl+R` 才点亮。
+  - **完整面板以图标中心为锚**：原来钉在命令栏右端。现在 `x = cmd-box.x + cmd-box.width - 204`（图标中心偏移 54 + 面板半宽 150），面板中心正对时钟钮；补全框仍跟着光标走。
+  - **补全态点时钟不再关掉面板**：它同时清 `history-autocomplete` 和 `history-open`，`!history-open` 一算就成了关闭。改走 `open_history_panel()` 一步升级成完整面板，并**显式** `search-history("")` —— `history-open` 值没变不触发 `changed`，不显式清过滤的话列表还是按命令栏那几个字筛过的。
+- **Command bar: the completion popup now includes quick commands, and the two history-popup modes each behave like themselves (#cmdbar-suggest).**
+  - **Completion no longer means "history only"**: what pops up while typing now also searches **quick commands** — matched on both `name` and `command`, always displayed as `command` (otherwise clicking a Chinese name would send the name itself as the command) and listed before history. Each row carries a type glyph: teal bolt = quick command, grey arrow = a command you typed before.
+  - **The clock icon no longer lights up while typing**: the popup and the full panel share `history-open`, which is what the history button was bound to. Added `hist-panel-open` (= `history-open && !history-autocomplete`) so only a click / `Ctrl+R` lights it.
+  - **The full panel is anchored to the button's centre**: it used to sit pinned to the command bar's right edge. Now `x = cmd-box.x + cmd-box.width - 204` (54 icon-centre offset + 150 half width) puts the panel's centre on the clock button; the completion popup still follows the caret.
+  - **Clicking the clock from the completion popup no longer closes it**: that handler cleared `history-autocomplete` and then toggled `history-open`, so `!history-open` turned into "close". It now goes through `open_history_panel()`, which upgrades in one step and **explicitly** calls `search-history("")` — `history-open` does not change so `changed` never fires, and without the explicit clear the list stays filtered by whatever is in the command input.
+
+- **命令栏清空键移到内嵌钮组最前，样式回到「输入清空统一语言」（#cmdbar-clear-first）。**
+  - 顺序由 `⚡ 🕘 │ ↗ ×` 改成 **`× ⚡ 🕘 │ ↗`**：清空是「丢弃当前输入」，和后面三个「往输入框里塞东西」不是一类，藏在 ↗ 之后还要跨过去才点得到（用户反馈）。
+  - 槽位恒定（`parent.width - 119px`），空框时不画 ×——兄弟按钮都是绝对定位，不会跟着挪。
+  - 样式与侧栏搜索 / 主题搜索 / 新建会话 / 分组管理四处清空键同款：常态只有一枚 11px 灰叉，悬停才铺出 **16px accent 实心圆**、叉换成字段底色镂空；命中区仍是 26×26，不必精准戳 16px。
+- **The command bar's clear button moved to the front of the inlay group and rejoined the shared clear-button language (#cmdbar-clear-first).**
+  - Order went from `⚡ 🕘 │ ↗ ×` to **`× ⚡ 🕘 │ ↗`**: clearing is "discard what I typed", not one of the three "put something into the input" actions, and hiding it behind ↗ meant reaching across the group (user feedback).
+  - The slot is fixed (`parent.width - 119px`) and the × simply is not drawn when the box is empty — its siblings are absolutely positioned, so nothing shifts.
+  - Styling now matches the four other clear buttons (sidebar search, theme search, new-session dialog, group manager): a plain 11px grey × at rest, a **16px filled accent circle** with the × knocked out to the field colour on hover; the hit area stays 26×26 so you do not have to hit a 16px target.
+
 - **同步输入限定为 SSH，并修掉「没有会话」时的空态文案（#sync-ssh-only）。**
   - **候选与成员只列 SSH**：`fill_sync_rows` 按会话 `kind` 过滤（RDP/VNC 是整幅画面、SFTP 是本机文件面板、本机 shell 没有远端通道），离线持久成员同样过滤。广播侧（`send_key` 的频道投递）也加了同口径判断，配置里残留的非 SSH 成员不会被 `send_raw` 静默丢字节。
   - **tab 频道徽标只给 SSH**：`refresh_tab_channel_row` 对非 SSH tab 不再挂 A/B/C/D（否则 tab 上会出现一个永远不会生效的徽标）。

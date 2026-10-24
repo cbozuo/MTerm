@@ -344,7 +344,9 @@ fn cmdbar_input_focus_ring_matches_session_dialog_and_hides_hint() {
     // —— 那里在按钮里、但离 15px 的时钟字形还有一段，只可能量到底色。
     // 参考底色取按钮左侧 40px 处的输入框内衬（zone-sidebar-root）：按钮常态
     // 透明，看到的应是内衬而不是 bg-hover 的 hover 面。
-    let hist_cx = right - 19;
+    // (#cmdbar-clear-first 2026-10-23) 清空键插到最前，四钮整体左移 27px：
+    // 历史钮中心 = 右缘内 54px（原 19），快捷钮仍在其左 26px。
+    let hist_cx = right - 54;
     assert!(
         hist_cx < right && hist_cx > left,
         "内嵌历史按钮应落在输入框内部，实得 x={}（框 {}..{}）",
@@ -360,8 +362,8 @@ fn cmdbar_input_focus_ring_matches_session_dialog_and_hides_hint() {
         inlay,
         px
     );
-    // 「快捷」内嵌钮同款：槽位在历史钮左侧 28px，同样不铺底。
-    let quick_cx = hist_cx - 28;
+    // 「快捷」内嵌钮同款：槽位在历史钮左侧 26px，同样不铺底。
+    let quick_cx = hist_cx - 26;
     assert!(
         close(rest.rgb(quick_cx, mid_y + 6), inlay, 3),
         "内嵌快捷钮常态应透明，实得 {:?}",
