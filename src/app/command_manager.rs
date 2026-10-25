@@ -759,17 +759,24 @@ pub(super) fn install(
         let cm = cm.clone();
         window.on_cm_set_all_picked(move |on: bool| {
             if let Some(w) = weak.upgrade() {
-                let mut c = cm.borrow_mut();
                 let keys: Vec<u64> = w
                     .get_cm_cards()
                     .iter()
                     .filter_map(|card| parse_key(&card.key))
                     .collect();
-                for u in keys {
-                    if on {
-                        c.picked.insert(u);
-                    } else {
-                        c.picked.remove(&u);
+                // ⚠️ 借用必须圈在块里：`RefMut` 有 Drop，NLL 会把它活到作用域
+                // 末尾。写成 `let mut c = cm.borrow_mut();` 直接带到下面的
+                // `refresh(..., &cm.borrow(), ...)`，就是"already mutably
+                // borrowed" panic —— release 是 `panic = "abort"`，进程当场
+                // 静默退出（用户实测：点「全选」程序直接没了，无提示无进程）。
+                {
+                    let mut c = cm.borrow_mut();
+                    for u in keys {
+                        if on {
+                            c.picked.insert(u);
+                        } else {
+                            c.picked.remove(&u);
+                        }
                     }
                 }
                 refresh(&w, &store_rc.borrow(), &cm.borrow());
