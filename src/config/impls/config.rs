@@ -1780,7 +1780,8 @@ impl ConfigStore {
     }
 
     /// Rename a quick-command group, moving its commands along. No-op for
-    /// blank / "default".
+    /// blank / "default". 命令管理（2026-10-25）：改名**保位**——分组顺序由
+    /// 用户在左栏排定，改名不该顺手把它挪走；撞名由调用方前置校验。
     pub fn rename_quick_group(&mut self, old: &str, new: String) {
         let n = new.trim().to_string();
         if n.is_empty() || n.eq_ignore_ascii_case("default") || n == old {
@@ -1796,8 +1797,39 @@ impl ConfigStore {
                 c.group = n.clone();
             }
         }
-        self.cache.quick_groups.sort();
-        self.cache.quick_groups.dedup();
+    }
+
+    /// 全量覆写自定义分组清单（命令管理左栏排序落盘）：保留传入顺序，
+    /// 去重并过滤空名 / "default"。
+    pub fn set_quick_groups(&mut self, groups: Vec<String>) {
+        let mut out: Vec<String> = Vec::with_capacity(groups.len());
+        for g in groups {
+            let n = g.trim().to_string();
+            if n.is_empty() || n.eq_ignore_ascii_case("default") || out.contains(&n) {
+                continue;
+            }
+            out.push(n);
+        }
+        self.cache.quick_groups = out;
+    }
+
+    /// 删除快捷命令分组并把组员整体移入目标组（命令管理删除条：去向显式
+    /// 选择）。`target` 空串 = 默认分组。目标是自己则不动。
+    pub fn remove_quick_group_into(&mut self, name: &str, target: &str) {
+        if name.is_empty() || target.eq_ignore_ascii_case(name) {
+            return;
+        }
+        self.cache.quick_groups.retain(|g| g != name);
+        let t = if target.trim().is_empty() || target.trim().eq_ignore_ascii_case("default") {
+            String::new()
+        } else {
+            target.trim().to_string()
+        };
+        for c in &mut self.cache.quick_commands {
+            if c.group == name {
+                c.group = t.clone();
+            }
+        }
     }
 
     /// Update one quick command in place by index (#55).

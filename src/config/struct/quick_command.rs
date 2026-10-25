@@ -9,6 +9,10 @@ pub struct QuickCommand {
     /// Optional group/folder name. Empty = the implicit "default" group (#55).
     #[serde(default)]
     pub group: String,
+    /// 用户备注（可空；命令管理卡片名称下方的那行小字）。旧配置无此字段
+    /// 时回落空串——纯展示用途，不参与任何匹配/排序逻辑。
+    #[serde(default)]
+    pub note: String,
     /// Whether clicking the chip sends + executes (appends Return). `false` only
     /// drops the command into the input box to tweak first. Defaults to `true` so
     /// existing quick commands keep running on click. (B站 suggestion)

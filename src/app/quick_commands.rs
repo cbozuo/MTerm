@@ -21,11 +21,13 @@ pub(super) fn all_quick_group_names(store: &ConfigStore) -> std::collections::Ha
 /// Build the quick-command model for the command bar + manage dialog (#55).
 ///
 /// Grouped like the welcome session list: the implicit "default" group (entries
-/// with an empty group) comes first, then named groups alphabetically. Within a
-/// group, entries keep their saved order. `group_header` is set on the first row
-/// of each group; `collapsed` reflects `collapsed_groups` (runtime-only state);
-/// `orig_index` points back into the stored vec so deletes target the right entry
-/// even though the display order differs.
+/// with an empty group) comes first, then named groups. 命令管理（2026-10-25）：
+/// 自定义组按 `quick_groups` 的**存储顺序**排（用户在左栏排定的顺序，落盘后
+/// 这里跟着变），只被命令引用而没登记的隐含组追加在末尾（按字母序，兜底）。
+/// `group_header` is set on the first row of each group; `collapsed` reflects
+/// `collapsed_groups` (runtime-only state); `orig_index` points back into the
+/// stored vec so deletes target the right entry even though the display order
+/// differs.
 pub(super) fn quick_cmd_model(
     store: &ConfigStore,
     collapsed_groups: &std::collections::HashSet<String>,
@@ -33,19 +35,17 @@ pub(super) fn quick_cmd_model(
     let cmds = store.quick_commands();
 
     let has_default = cmds.iter().any(|c| c.group.trim().is_empty());
-    // Named groups = explicit quick-groups ∪ groups referenced by commands.
-    let mut named: Vec<String> = store
-        .quick_groups()
+    // Named groups = explicit quick-groups (stored order) ∪ groups referenced
+    // by commands (appended alphabetically).
+    let mut named: Vec<String> = store.quick_groups().to_vec();
+    let mut implied: Vec<String> = cmds
         .iter()
-        .cloned()
-        .chain(
-            cmds.iter()
-                .map(|c| c.group.trim().to_string())
-                .filter(|g| !g.is_empty()),
-        )
+        .map(|c| c.group.trim().to_string())
+        .filter(|g| !g.is_empty() && !named.contains(g))
         .collect();
-    named.sort_by_key(|g| g.to_lowercase());
-    named.dedup();
+    implied.sort_by_key(|g| g.to_lowercase());
+    implied.dedup();
+    named.extend(implied);
 
     let mut groups: Vec<String> = Vec::new();
     if has_default {
@@ -136,6 +136,7 @@ mod reorder_tests {
             name: name.to_string(),
             command: name.to_string(),
             group: group.to_string(),
+            note: String::new(),
             send_enter: true,
         }
     }

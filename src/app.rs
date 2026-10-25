@@ -11,6 +11,7 @@ pub(crate) mod core;
 mod jump_list;
 pub mod launch;
 mod port_forward;
+mod command_manager;
 mod quick_commands;
 mod resource_ui;
 mod session_event;
@@ -10490,39 +10491,8 @@ fn wire_key_input(
     // every group collapsed (default-collapsed view).
     let collapsed_quick_groups: Rc<RefCell<std::collections::HashSet<String>>> =
         Rc::new(RefCell::new(all_quick_group_names(&store.borrow())));
-    {
-        let store_rc = store.clone();
-        let weak = window.as_weak();
-        let collapsed = collapsed_quick_groups.clone();
-        window.on_add_quick_command(
-            move |name: SharedString,
-                  command: SharedString,
-                  group: SharedString,
-                  send_enter: bool| {
-                let name = name.trim().to_string();
-                let command = command.to_string();
-                let group = group.trim().to_string();
-                if name.is_empty() || command.trim().is_empty() {
-                    return;
-                }
-                {
-                    let mut s = store_rc.borrow_mut();
-                    let mut v = s.quick_commands().to_vec();
-                    v.push(crate::config::QuickCommand {
-                        name,
-                        command,
-                        group,
-                        send_enter,
-                    });
-                    s.set_quick_commands(v);
-                    let _ = s.save();
-                }
-                if let Some(w) = weak.upgrade() {
-                    w.set_quick_commands(quick_cmd_model(&store_rc.borrow(), &collapsed.borrow()));
-                }
-            },
-        );
-    }
+    // 命令管理弹框（#quick-cmd-manager 高保真 2026-10-24）：模型构建 + 回调。
+    command_manager::install(&window, &store, &collapsed_quick_groups);
     {
         let store_rc = store.clone();
         let weak = window.as_weak();
@@ -10560,58 +10530,16 @@ fn wire_key_input(
             }
         });
     }
-    // Edit (#55): load the entry into the manage form in edit mode.
+    // Edit (#55): 命令栏右键「编辑」→ 打开命令管理弹框。
     {
-        let store_rc = store.clone();
         let weak = window.as_weak();
-        window.on_edit_quick_command(move |index: i32| {
-            let i = index as usize;
-            let cmd = store_rc.borrow().quick_commands().get(i).cloned();
-            if let (Some(c), Some(w)) = (cmd, weak.upgrade()) {
-                w.set_qcm_name(c.name.into());
-                w.set_qcm_command(c.command.into());
-                w.set_qcm_group(c.group.into());
-                w.set_qcm_send_enter(c.send_enter);
-                w.set_qcm_edit_index(index);
-                w.set_quick_cmd_manage_open(true);
+        // (#quick-cmd-manager 2026-10-25) 表单已收进二级编辑卡，不再往旧表单
+        // 字段里回填。
+        window.on_edit_quick_command(move |_index: i32| {
+            if let Some(w) = weak.upgrade() {
+                w.invoke_open_command_manager();
             }
         });
-    }
-    // Save an edited entry (#55).
-    {
-        let store_rc = store.clone();
-        let weak = window.as_weak();
-        let collapsed = collapsed_quick_groups.clone();
-        window.on_save_quick_command(
-            move |index: i32,
-                  name: SharedString,
-                  command: SharedString,
-                  group: SharedString,
-                  send_enter: bool| {
-                let name = name.trim().to_string();
-                let command = command.to_string();
-                let group = group.trim().to_string();
-                if name.is_empty() || command.trim().is_empty() {
-                    return;
-                }
-                {
-                    let mut s = store_rc.borrow_mut();
-                    s.update_quick_command(
-                        index as usize,
-                        crate::config::QuickCommand {
-                            name,
-                            command,
-                            group,
-                            send_enter,
-                        },
-                    );
-                    let _ = s.save();
-                }
-                if let Some(w) = weak.upgrade() {
-                    w.set_quick_commands(quick_cmd_model(&store_rc.borrow(), &collapsed.borrow()));
-                }
-            },
-        );
     }
     // Duplicate (#55): clone the entry as a starting point.
     {
@@ -10627,6 +10555,7 @@ fn wire_key_input(
                         name: format!("{} (copy)", c.name),
                         command: c.command,
                         group: c.group,
+                        note: c.note,
                         send_enter: c.send_enter,
                     };
                     v.insert(index as usize + 1, dup);

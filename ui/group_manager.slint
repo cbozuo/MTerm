@@ -79,7 +79,7 @@ component GmLinkBtn inherits Rectangle {
     height: 22px;
     border-radius: Theme.radius-sm;
     border-width: 1px;
-    border-color: ta.has-hover ? Theme.accent-solid : Theme.border-strong;
+    border-color: ta.has-hover ? Theme.accent.with-alpha(0.42) : Theme.mgr-line-strong;
     background: ta.has-hover ? Theme.accent.with-alpha(0.10) : transparent;
     ta := TouchArea {
         mouse-cursor: default;
@@ -116,7 +116,7 @@ component GmKeyRow inherits HorizontalLayout {
         height: 18px;
         border-radius: 4px;
         border-width: 1px;
-        border-color: Theme.border-strong;
+        border-color: Theme.mgr-line-strong;
         background: Theme.bg-active;
         HorizontalLayout {
             padding-left: 5px;
@@ -211,6 +211,8 @@ export component GroupManagerDialog inherits Rectangle {
     in-out property <bool> move-menu: false;
     // 结果提示（删除后只报结果，不提供撤销）
     in-out property <string> toast: "";
+    // 键盘焦点脉冲（弹框打开时 +1，fs 盯着把自己推上焦点链——见 changed open）
+    property <int> focus-pulse: 0;
     // 底栏那条是**错误**而不是结果：图标转警示、文字转 danger，且不被 2.6s 定时器吞掉
     // （重名提示要一直留到用户把名字改回来 —— 用绿勾报错误是最误导的那种"优化"）
     in-out property <bool> toast-error: false;
@@ -388,6 +390,31 @@ export component GroupManagerDialog inherits Rectangle {
         return ok;
     }
 
+    // ── 悬浮提示（按钮 title 的落地）：150ms 出、跟指针、移开即收 ──
+    in-out property <string> tip-text: "";
+    in-out property <length> tip-ax: 0px;
+    in-out property <length> tip-ay: 0px;
+    in-out property <bool> tip-show: false;
+    btn-tip-timer := Timer {
+        interval: 150ms;
+        running: root.tip-text != "";
+        triggered => { root.tip-show = true; }
+    }
+    function tip-on(text: string, ax: length, ay: length) {
+        root.tip-text = text;
+        root.tip-ax = ax;
+        root.tip-ay = ay;
+        root.tip-show = false;
+    }
+    function tip-at(ax: length, ay: length) {
+        root.tip-ax = ax;
+        root.tip-ay = ay;
+    }
+    function tip-off() {
+        root.tip-text = "";
+        root.tip-show = false;
+    }
+
     // 悬停 150ms 出卡（与列表侧同一口径）；移开或开始拖拽立刻收起
     tip-timer := Timer {
         interval: 150ms;
@@ -415,7 +442,13 @@ export component GroupManagerDialog inherits Rectangle {
     }
     // 关窗时把弹框内的临时态全部复位：下次打开是干净的一份
     changed open => {
+        if (root.open) {
+            // 打开瞬间拉回键盘焦点（fs init 抢不过外层浮层关闭后的焦点归还
+            // 时序，首按 Esc 会丢给终端输入框）
+            root.focus-pulse += 1;
+        }
         if (!root.open) {
+            tip-off();
             root.hover-row = -1;
             root.tip-row = -1;
             root.color-for = "";
@@ -473,7 +506,7 @@ export component GroupManagerDialog inherits Rectangle {
             background: Theme.popup-bg;
             border-radius: Theme.radius-lg;
             border-width: 1px;
-            border-color: Theme.border-strong;
+            border-color: Theme.mgr-line-strong;
             // (#popup-no-shadow 2026-10-20) 28px 投影按 10-17 定稿移除
             clip: true;
 
@@ -524,6 +557,8 @@ export component GroupManagerDialog inherits Rectangle {
                 width: 100%;
                 height: 100%;
                 init => { self.focus(); }
+                property <int> pulse: root.focus-pulse;
+                changed pulse => { self.focus(); }
                 key-pressed(ev) => {
                     if (ev.text == Key.Escape) {
                         // Esc 逐级取消（高保真 §关闭）：改名 → 删除条 → 搜索词 → 关窗。
@@ -614,7 +649,7 @@ export component GroupManagerDialog inherits Rectangle {
                             text: root.lang-en ? "Manage groups" : "分组管理";
                             color: Theme.text-primary;
                             font-size: Theme.fs-lg;
-                            font-weight: Theme.fw-strong;
+                            font-weight: 650;
                             vertical-alignment: center;
                         }
                         // 计数胶囊：accent-soft 底 + accent 字 + 8px 圆角（与稿子同款）
@@ -648,7 +683,7 @@ export component GroupManagerDialog inherits Rectangle {
                             // 输入框聚焦语言与其余弹框统一：accent 描边 + 提底 + 外扩 3px accent-soft 光环
                             background: q-ta.has-focus ? Theme.popup-field-2 : Theme.popup-bg-inset;
                             border-width: 1px;
-                            border-color: q-ta.has-focus ? Theme.accent-solid : Theme.border-strong;
+                            border-color: q-ta.has-focus ? Theme.accent.with-alpha(0.42) : Theme.mgr-line-strong;
                             if q-ta.has-focus : Rectangle {
                                 x: -3px;
                                 y: -3px;
@@ -699,6 +734,19 @@ export component GroupManagerDialog inherits Rectangle {
                                     background: transparent;
                                     gm-clear-ta := TouchArea {
                                         mouse-cursor: default;
+                                    changed has-hover => {
+                                        if (self.has-hover) {
+                                            root.tip-on(root.lang-en ? "Clear search" : "清除搜索",
+                                                self.absolute-position.x + self.mouse-x,
+                                                self.absolute-position.y + self.mouse-y);
+                                        } else { root.tip-off(); }
+                                    }
+                                    pointer-event(__ev) => {
+                                        if (__ev.kind == PointerEventKind.move && self.has-hover) {
+                                            root.tip-at(self.absolute-position.x + self.mouse-x,
+                                                self.absolute-position.y + self.mouse-y);
+                                        }
+                                    }
                                         clicked => {
                                             root.query = "";
                                             root.search("");
@@ -735,7 +783,7 @@ export component GroupManagerDialog inherits Rectangle {
                         y: parent.height - 1px;
                         width: 100%;
                         height: 1px;
-                        background: Theme.border-subtle;
+                        background: Theme.mgr-line-soft;
                     }
                 }
 
@@ -921,7 +969,7 @@ export component GroupManagerDialog inherits Rectangle {
                                                         border-radius: 5px;
                                                         background: root.groups[i].color-hex != ""
                                                             ? root.groups[i].color : transparent;
-                                                        border-width: root.groups[i].color-hex != "" ? 0px : 1.5px;
+                                                        border-width: root.groups[i].color-hex != "" ? 0px : 1px;
                                                         border-color: Theme.text-muted;
                                                     }
                                                 }
@@ -936,7 +984,7 @@ export component GroupManagerDialog inherits Rectangle {
                                                     border-width: 1px;
                                                     border-color: root.editing-error != ""
                                                         ? Theme.danger
-                                                        : (grow-edit.has-focus ? Theme.accent-solid : Theme.border-strong);
+                                                        : (grow-edit.has-focus ? Theme.accent.with-alpha(0.42) : Theme.mgr-line-strong);
                                                     if grow-edit.has-focus && root.editing-error == "" : Rectangle {
                                                         x: -3px;
                                                         y: -3px;
@@ -1022,6 +1070,21 @@ export component GroupManagerDialog inherits Rectangle {
                                                         gu-ta := TouchArea {
                                                             enabled: i > 1;
                                                             mouse-cursor: default;
+                                                            changed has-hover => {
+                                                                if (self.has-hover) {
+                                                                    root.tip-on(i > 1
+                                                                ? (root.lang-en ? "Move group up" : "上移分组")
+                                                                : (root.lang-en ? "Already at top" : "已在最上"),
+                                                                        self.absolute-position.x + self.mouse-x,
+                                                                        self.absolute-position.y + self.mouse-y);
+                                                                } else { root.tip-off(); }
+                                                            }
+                                                            pointer-event(__ev) => {
+                                                                if (__ev.kind == PointerEventKind.move && self.has-hover) {
+                                                                    root.tip-at(self.absolute-position.x + self.mouse-x,
+                                                                        self.absolute-position.y + self.mouse-y);
+                                                                }
+                                                            }
                                                             clicked => {
                                                                 root.reorder-group(root.groups[i].name, root.groups[i - 1].name);
                                                             }
@@ -1036,6 +1099,21 @@ export component GroupManagerDialog inherits Rectangle {
                                                         gd-ta := TouchArea {
                                                             enabled: i < root.groups.length - 1;
                                                             mouse-cursor: default;
+                                                            changed has-hover => {
+                                                                if (self.has-hover) {
+                                                                    root.tip-on(i < root.groups.length - 1
+                                                                ? (root.lang-en ? "Move group down" : "下移分组")
+                                                                : (root.lang-en ? "Already at bottom" : "已在最下"),
+                                                                        self.absolute-position.x + self.mouse-x,
+                                                                        self.absolute-position.y + self.mouse-y);
+                                                                } else { root.tip-off(); }
+                                                            }
+                                                            pointer-event(__ev) => {
+                                                                if (__ev.kind == PointerEventKind.move && self.has-hover) {
+                                                                    root.tip-at(self.absolute-position.x + self.mouse-x,
+                                                                        self.absolute-position.y + self.mouse-y);
+                                                                }
+                                                            }
                                                             clicked => {
                                                                 let before = i + 2 < root.groups.length
                                                                     ? root.groups[i + 2].name : "";
@@ -1056,6 +1134,19 @@ export component GroupManagerDialog inherits Rectangle {
                                                 background: transparent;
                                                 cdot-ta := TouchArea {
                                                     mouse-cursor: default;
+                                                changed has-hover => {
+                                                    if (self.has-hover) {
+                                                        root.tip-on(root.lang-en ? "Set color" : "改色",
+                                                            self.absolute-position.x + self.mouse-x,
+                                                            self.absolute-position.y + self.mouse-y);
+                                                    } else { root.tip-off(); }
+                                                }
+                                                pointer-event(__ev) => {
+                                                    if (__ev.kind == PointerEventKind.move && self.has-hover) {
+                                                        root.tip-at(self.absolute-position.x + self.mouse-x,
+                                                            self.absolute-position.y + self.mouse-y);
+                                                    }
+                                                }
                                                     clicked => {
                                                         commit_edit();
                                                         root.color-row = i;
@@ -1086,7 +1177,7 @@ export component GroupManagerDialog inherits Rectangle {
                                             border-width: 1px;
                                             border-color: root.editing-error != ""
                                                 ? Theme.danger
-                                                : (new-name.has-focus ? Theme.accent-solid : Theme.border-strong);
+                                                : (new-name.has-focus ? Theme.accent.with-alpha(0.42) : Theme.mgr-line-strong);
                                             if new-name.has-focus && root.editing-error == "" : Rectangle {
                                                 x: -3px;
                                                 y: -3px;
@@ -1109,6 +1200,19 @@ export component GroupManagerDialog inherits Rectangle {
                                                         ? root.new-swatch : root.next-color).with-alpha(0.18);
                                                     newdot-ta := TouchArea {
                                                         mouse-cursor: default;
+                                                    changed has-hover => {
+                                                        if (self.has-hover) {
+                                                            root.tip-on(root.lang-en ? "Set color" : "改色",
+                                                                self.absolute-position.x + self.mouse-x,
+                                                                self.absolute-position.y + self.mouse-y);
+                                                        } else { root.tip-off(); }
+                                                    }
+                                                    pointer-event(__ev) => {
+                                                        if (__ev.kind == PointerEventKind.move && self.has-hover) {
+                                                            root.tip-at(self.absolute-position.x + self.mouse-x,
+                                                                self.absolute-position.y + self.mouse-y);
+                                                        }
+                                                    }
                                                         clicked => {
                                                             root.color-hex-for = root.new-color;
                                                             root.color-anchor-x = newdot-ta.absolute-position.x
@@ -1279,7 +1383,7 @@ export component GroupManagerDialog inherits Rectangle {
                                     background: new-ta.has-hover
                                         ? Theme.accent.with-alpha(Theme.dark ? 0.10 : 0.08) : transparent;
                                     border-width: 1px;
-                                    border-color: new-ta.has-hover ? Theme.accent-solid : Theme.border-strong;
+                                    border-color: new-ta.has-hover ? Theme.accent.with-alpha(0.42) : Theme.mgr-line-strong;
                                     new-ta := TouchArea {
                                         mouse-cursor: default;
                                         clicked => {
@@ -1320,7 +1424,19 @@ export component GroupManagerDialog inherits Rectangle {
                         background: transparent;
                         sp-ta := TouchArea {
                             mouse-cursor: col-resize;
+                        changed has-hover => {
+                            if (self.has-hover) {
+                                root.tip-on(root.lang-en
+                                ? "Drag to resize · double-click to reset" : "拖动调整左栏宽度 · 双击复位",
+                                    self.absolute-position.x + self.mouse-x,
+                                    self.absolute-position.y + self.mouse-y);
+                            } else { root.tip-off(); }
+                        }
                             pointer-event(ev) => {
+                                if (ev.kind == PointerEventKind.move && self.has-hover) {
+                                    root.tip-at(self.absolute-position.x + self.mouse-x,
+                                        self.absolute-position.y + self.mouse-y);
+                                }
                                 if (ev.kind == PointerEventKind.down) {
                                     root.sp-start = self.absolute-position.x + self.mouse-x;
                                     root.sp-base = root.left-w;
@@ -1340,7 +1456,7 @@ export component GroupManagerDialog inherits Rectangle {
                             width: root.sp-on || sp-ta.has-hover ? 2px : 1px;
                             height: 100%;
                             background: root.sp-on || sp-ta.has-hover
-                                ? Theme.accent-solid : Theme.border-subtle;
+                                ? Theme.accent-solid : Theme.mgr-line;
                             animate background { duration: 120ms; }
                         }
                     }
@@ -1372,6 +1488,19 @@ export component GroupManagerDialog inherits Rectangle {
                                             ? root.cur-color.with-alpha(0.16) : transparent;
                                         rdot-ta := TouchArea {
                                             mouse-cursor: default;
+                                        changed has-hover => {
+                                            if (self.has-hover) {
+                                                root.tip-on(root.lang-en ? "Set color" : "改色",
+                                                    self.absolute-position.x + self.mouse-x,
+                                                    self.absolute-position.y + self.mouse-y);
+                                            } else { root.tip-off(); }
+                                        }
+                                        pointer-event(__ev) => {
+                                            if (__ev.kind == PointerEventKind.move && self.has-hover) {
+                                                root.tip-at(self.absolute-position.x + self.mouse-x,
+                                                    self.absolute-position.y + self.mouse-y);
+                                            }
+                                        }
                                             clicked => {
                                                 commit_edit();
                                                 root.color-hex-for = root.cur-color-hex;
@@ -1392,7 +1521,7 @@ export component GroupManagerDialog inherits Rectangle {
                                             height: 12px;
                                             border-radius: 6px;
                                             background: root.cur-color-hex != "" ? root.cur-color : transparent;
-                                            border-width: root.cur-color-hex != "" ? 0px : 2px;
+                                            border-width: root.cur-color-hex != "" ? 0px : 1px;
                                             border-color: Theme.text-muted;
                                         }
                                     }
@@ -1408,7 +1537,7 @@ export component GroupManagerDialog inherits Rectangle {
                                         border-width: 1px;
                                         border-color: root.editing-error != ""
                                             ? Theme.danger
-                                            : (rhd-edit.has-focus ? Theme.accent-solid : Theme.border-strong);
+                                            : (rhd-edit.has-focus ? Theme.accent.with-alpha(0.42) : Theme.mgr-line-strong);
                                         if rhd-edit.has-focus && root.editing-error == "" : Rectangle {
                                             x: -3px;
                                             y: -3px;
@@ -1424,7 +1553,8 @@ export component GroupManagerDialog inherits Rectangle {
                                             height: parent.height;
                                             init => { self.focus(); }
                                             text <=> root.editing-text;
-                                            font-size: 15px;
+                                            font-size: 14px;
+                                            font-weight: 650;
                                             color: Theme.text-primary;
                                             vertical-alignment: center;
                                             single-line: true;
@@ -1510,7 +1640,7 @@ export component GroupManagerDialog inherits Rectangle {
                                     if !root.cur-reserved : Rectangle {
                                         width: 1px;
                                         height: 16px;
-                                        background: Theme.border-subtle;
+                                        background: Theme.mgr-line;
                                     }
                                     if !root.cur-reserved : Rectangle {
                                         width: 28px;
@@ -1541,7 +1671,7 @@ export component GroupManagerDialog inherits Rectangle {
                                     y: parent.height - 1px;
                                     width: 100%;
                                     height: 1px;
-                                    background: Theme.border-subtle;
+                                    background: Theme.mgr-line-soft;
                                 }
                             }
 
@@ -1611,7 +1741,7 @@ export component GroupManagerDialog inherits Rectangle {
                                         border-radius: Theme.radius-sm;
                                         background: Theme.popup-bg-inset;
                                         border-width: 1px;
-                                        border-color: root.del-menu ? Theme.accent-solid : Theme.border-strong;
+                                        border-color: root.del-menu ? Theme.accent.with-alpha(0.42) : Theme.mgr-line-strong;
                                         dsel-ta := TouchArea {
                                             mouse-cursor: default;
                                             clicked => {
@@ -1647,7 +1777,7 @@ export component GroupManagerDialog inherits Rectangle {
                                         height: 26px;
                                         border-radius: Theme.radius-sm;
                                         border-width: 1px;
-                                        border-color: Theme.border-strong;
+                                        border-color: Theme.mgr-line-strong;
                                         background: dcan-ta.has-hover ? Theme.bg-hover : Theme.popup-bg-inset;
                                         dcan-ta := TouchArea {
                                             mouse-cursor: default;
@@ -2066,9 +2196,9 @@ export component GroupManagerDialog inherits Rectangle {
                                                     border-radius: 4px;
                                                     background: root.members[j].picked
                                                         ? Theme.accent-solid : transparent;
-                                                    border-width: 1.5px;
+                                                    border-width: 1px;
                                                     border-color: root.members[j].picked
-                                                        ? Theme.accent-solid : Theme.border-strong;
+                                                        ? Theme.accent-solid : Theme.mgr-line-strong;
                                                     if root.members[j].picked : Icon {
                                                         glyph: "check";
                                                         tint: white;
@@ -2234,7 +2364,7 @@ export component GroupManagerDialog inherits Rectangle {
                                     height: 26px;
                                     border-radius: Theme.radius-sm;
                                     border-width: 1px;
-                                    border-color: root.move-menu ? Theme.accent-solid : Theme.border-strong;
+                                    border-color: root.move-menu ? Theme.accent.with-alpha(0.42) : Theme.mgr-line-strong;
                                     background: mv-ta.has-hover
                                         ? Theme.bg-hover : Theme.popup-bg-elevated;
                                     mv-ta := TouchArea {
@@ -2266,7 +2396,7 @@ export component GroupManagerDialog inherits Rectangle {
                                     height: 26px;
                                     border-radius: Theme.radius-sm;
                                     border-width: 1px;
-                                    border-color: Theme.border-strong;
+                                    border-color: Theme.mgr-line-strong;
                                     background: mo-ta.has-hover
                                         ? Theme.bg-hover : Theme.popup-bg-elevated;
                                     mo-ta := TouchArea {
@@ -2295,7 +2425,7 @@ export component GroupManagerDialog inherits Rectangle {
                                     height: 26px;
                                     border-radius: Theme.radius-sm;
                                     border-width: 1px;
-                                    border-color: Theme.border-strong;
+                                    border-color: Theme.mgr-line-strong;
                                     background: cl-ta.has-hover
                                         ? Theme.bg-hover : Theme.popup-bg-elevated;
                                     cl-ta := TouchArea {
@@ -2370,7 +2500,7 @@ export component GroupManagerDialog inherits Rectangle {
                                             height: 9px;
                                             border-radius: 5px;
                                             background: g.color-hex != "" ? g.color : transparent;
-                                            border-width: g.color-hex != "" ? 0px : 1.5px;
+                                            border-width: g.color-hex != "" ? 0px : 1px;
                                             border-color: Theme.text-muted;
                                         }
                                         Text {
@@ -2416,7 +2546,7 @@ export component GroupManagerDialog inherits Rectangle {
                                             height: 9px;
                                             border-radius: 5px;
                                             background: transparent;
-                                            border-width: 1.5px;
+                                            border-width: 1px;
                                             border-color: Theme.text-muted;
                                         }
                                         Text {
@@ -2428,7 +2558,7 @@ export component GroupManagerDialog inherits Rectangle {
                                         }
                                     }
                                 }
-                                Rectangle { height: 1px; background: Theme.border-subtle; }
+                                Rectangle { height: 1px; background: Theme.mgr-line; }
                                 HorizontalLayout {
                                     height: 20px;
                                     padding-left: 3px;
@@ -2458,7 +2588,7 @@ export component GroupManagerDialog inherits Rectangle {
                             border-radius: Theme.radius-md;
                             background: Theme.popup-bg-elevated;
                             border-width: 1px;
-                            border-color: Theme.border-strong;
+                            border-color: Theme.mgr-line-strong;
                             VerticalLayout {
                                 padding: 5px;
                                 spacing: 0px;
@@ -2495,7 +2625,7 @@ export component GroupManagerDialog inherits Rectangle {
                                             height: 9px;
                                             border-radius: 5px;
                                             background: g.color-hex != "" ? g.color : transparent;
-                                            border-width: g.color-hex != "" ? 0px : 1.5px;
+                                            border-width: g.color-hex != "" ? 0px : 1px;
                                             border-color: Theme.text-muted;
                                         }
                                         Text {
@@ -2538,7 +2668,7 @@ export component GroupManagerDialog inherits Rectangle {
                                             height: 9px;
                                             border-radius: 5px;
                                             background: transparent;
-                                            border-width: 1.5px;
+                                            border-width: 1px;
                                             border-color: Theme.text-muted;
                                         }
                                         Text {
@@ -2564,7 +2694,7 @@ export component GroupManagerDialog inherits Rectangle {
                         y: 0px;
                         width: 100%;
                         height: 1px;
-                        background: Theme.border-subtle;
+                        background: Theme.mgr-line-soft;
                     }
                     HorizontalLayout {
                         padding-left: 16px;
@@ -2596,10 +2726,23 @@ export component GroupManagerDialog inherits Rectangle {
                             border-radius: 12px;
                             border-width: 1px;
                             border-color: keys-ta.has-hover || root.keys-open
-                                ? Theme.accent-solid : Theme.border-strong;
+                                ? Theme.accent.with-alpha(0.42) : Theme.mgr-line-strong;
                             keys-ta := TouchArea {
                                 mouse-cursor: default;
                                 clicked => { root.keys-open = !root.keys-open; }
+                                changed has-hover => {
+                                    if (self.has-hover) {
+                                        root.tip-on(root.lang-en ? "Shortcuts" : "快捷键",
+                                            self.absolute-position.x + self.mouse-x,
+                                            self.absolute-position.y + self.mouse-y);
+                                    } else { root.tip-off(); }
+                                }
+                                pointer-event(__ev) => {
+                                    if (__ev.kind == PointerEventKind.move && self.has-hover) {
+                                        root.tip-at(self.absolute-position.x + self.mouse-x,
+                                            self.absolute-position.y + self.mouse-y);
+                                    }
+                                }
                             }
                             Text {
                                 text: "?";
@@ -2706,7 +2849,7 @@ export component GroupManagerDialog inherits Rectangle {
                 background: Theme.popup-bg-elevated;
                 border-radius: 9px;
                 border-width: 1px;
-                border-color: Theme.border-subtle;
+                border-color: Theme.mgr-line-strong;
 
                 // (#popup-no-shadow 2026-10-20) 投影按 10-17「弹窗投影全删」定稿移除（toast 与成员悬浮卡同清）
                 VerticalLayout {
@@ -2752,6 +2895,36 @@ export component GroupManagerDialog inherits Rectangle {
                         color: Theme.text-primary;
                         font-size: Theme.fs-xs;
                         overflow: elide;
+                    }
+                }
+            }
+
+            // ── 悬浮提示浮层（贴指针右上角；右/顶出界翻转）──
+            if root.tip-show && root.tip-text != "" : Rectangle {
+                property <length> tip-w: btn-tip-label.preferred-width + 16px;
+                x: root.tip-ax - gm.absolute-position.x + 14px + tip-w > gm.width - 8px
+                    ? root.tip-ax - gm.absolute-position.x - tip-w - 14px
+                    : root.tip-ax - gm.absolute-position.x + 14px;
+                y: root.tip-ay - gm.absolute-position.y - 28px < 8px
+                    ? root.tip-ay - gm.absolute-position.y + 18px
+                    : root.tip-ay - gm.absolute-position.y - 28px;
+                height: 24px;
+                width: tip-w;
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: Theme.border-strong;
+                background: Theme.popup-bg-elevated;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    alignment: center;
+                    btn-tip-label := Text {
+                        text: root.tip-text;
+                        color: Theme.text-primary;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        max-width: 240px;
                     }
                 }
             }
@@ -2805,7 +2978,7 @@ export component GroupManagerDialog inherits Rectangle {
                         height: 20px;
                         border-radius: 4px;
                         border-width: 1px;
-                        border-color: nc-ta.has-hover ? Theme.accent-solid : Theme.border-strong;
+                        border-color: nc-ta.has-hover ? Theme.accent.with-alpha(0.42) : Theme.mgr-line-strong;
                         nc-ta := TouchArea {
                             mouse-cursor: default;
                             clicked => {
