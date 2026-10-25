@@ -5100,6 +5100,22 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
                 }
             }
         });
+        // (#gm-accent-palette) 分组管理取色盘的取样点同步：同一套数学，属性是
+        // 弹框自己的 gm_pick_*（照 set_hl_picker_pos 四行直写，不引入间接层）。
+        window.on_gm_picker_sync({
+            let w = window.as_weak();
+            move || {
+                if let Some(w) = w.upgrade() {
+                    let c = crate::picker::parse_hex(&w.get_gm_pick_hex()).unwrap_or(0);
+                    let (h, s, v) = crate::picker::hex_to_hsv(c);
+                    let rad = h.to_radians();
+                    w.set_gm_pick_wheel_mx((0.5 + rad.cos() * s * 0.5).clamp(0.0, 1.0));
+                    w.set_gm_pick_wheel_my((0.5 - rad.sin() * s * 0.5).clamp(0.0, 1.0));
+                    w.set_gm_pick_val_my(v.clamp(0.0, 1.0));
+                    w.set_gm_pick_pick_v(v.clamp(0.0, 1.0));
+                }
+            }
+        });
         // (#hl-settings-hifi) 高亮设置弹框的取色盘：与强调色同一套数学/位图，
         // 位置状态是弹框自己的 highlight-pick-*（两个盘可以同时开着，不共享）。
         // set_hl_picker_pos 与 set_picker_pos 只差属性名，故意不合并 —— 合并
@@ -6990,17 +7006,21 @@ fn gm_picked_ids(window: &AppWindow) -> Vec<String> {
 /// 新建分组的默认色（高保真 10-22）：当前主题色板里第一个没被占用的颜色。
 /// 新建行的色点直接显示它，落盘时用的也是同一条规则 —— 建之前就能看到会得到什么色。
 fn next_group_color(store: &ConfigStore, dark: bool) -> String {
-    let pal = crate::theme::palette_or_default(&store.theme(), dark);
+    // (#gm-accent-palette) 自动分配色与色板同源 = ACCENT_PRESETS（强调色预设）。
     let used: std::collections::HashSet<String> = store
         .group_colors()
         .values()
         .map(|v| v.to_uppercase())
         .collect();
-    pal.group24
+    crate::theme::palettes::ACCENT_PRESETS
         .iter()
-        .map(|v| format!("#{:06X}", v))
+        .map(|&(_, _, raw)| format!("#{raw:06X}"))
         .find(|h| !used.contains(h))
-        .or_else(|| pal.group24.first().map(|v| format!("#{:06X}", v)))
+        .or_else(|| {
+            crate::theme::palettes::ACCENT_PRESETS
+                .first()
+                .map(|&(_, _, raw)| format!("#{raw:06X}"))
+        })
         .unwrap_or_else(|| "#1FC8B4".to_string())
 }
 

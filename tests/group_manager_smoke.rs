@@ -92,10 +92,9 @@ fn group_manager_opens_renders_and_handles_keys() {
         .dispatch_event(WindowEvent::KeyPressed { text: Key::DownArrow.into() });
     assert_eq!(ui.get_gm_selected().as_str(), "生产", "↓ 没有切到下一组");
 
-    // ③ Esc 逐级取消：首次打开会自动展开快捷键气泡，所以第一次 Esc 只收气泡
-    ui.window()
-        .dispatch_event(WindowEvent::KeyPressed { text: Key::Escape.into() });
-    assert!(ui.get_gm_open(), "第一次 Esc 应该只收起快捷键气泡，不关弹框");
+    // ③ Esc：快捷键气泡改成「按需展开」后（ui/group_manager.slint 的 keys-open
+    //    注释：打开弹框时不再自动弹），第一次 Esc 就是关弹框 —— 没有"先收气泡"
+    //    那一层了。旧断言留在这是红测试（2026-10-25 发现并同步）。
     ui.window()
         .dispatch_event(WindowEvent::KeyPressed { text: Key::Escape.into() });
     assert!(!ui.get_gm_open(), "Esc 没有关闭弹框");

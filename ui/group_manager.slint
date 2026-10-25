@@ -27,6 +27,7 @@ import { Theme } from "theme.slint";
 import { Icon } from "icons.slint";
 import { ProtocolIcon, Scrim, DialogClose } from "widgets.slint";
 import { GroupRow, GroupSwatch, GmMember } from "group_types.slint";
+import { ColorPickerDialog, PickerMath } from "color_picker.slint";
 import { ScrollView } from "std-widgets.slint";
 
 // 左栏「我的分组 N」小节标题：默认组之后出现；默认组空着被隐藏时它顶到最上面。
@@ -193,6 +194,17 @@ export component GroupManagerDialog inherits Rectangle {
     in-out property <string> del-target: "";     // 成员去向（"" = 未分组）
     in-out property <bool> del-menu: false;      // 删除条的「去向」下拉
     in-out property <string> color-for: "";      // 展开色板的组名（"__new" = 新建行）
+    // (#gm-accent-palette) 自定义颜色：色板左下角入口 → 取色盘（属性在 app.slint
+    // 根上双向绑定，Rust 侧照 highlight 版四行直写同步取样点）
+    in-out property <bool> pick-open: false;
+    in-out property <string> pick-hex: "";
+    in-out property <string> pick-fmt: "rgb";
+    in-out property <float> pick-wheel-mx: 0.5;
+    in-out property <float> pick-wheel-my: 0.5;
+    in-out property <float> pick-val-my: 1.0;
+    in-out property <float> pick-pick-v: 1.0;
+    callback picker-sync();
+    callback copy-text(string);
     in-out property <string> color-hex-for: "";  // 色板里打环的当前色
     in-out property <string> new-color: "";      // 新建行手选色（"" = 自动分配）
     in-out property <color> new-swatch: transparent;   // 手选色的 color 值（画色点用）
@@ -561,9 +573,12 @@ export component GroupManagerDialog inherits Rectangle {
                 changed pulse => { self.focus(); }
                 key-pressed(ev) => {
                     if (ev.text == Key.Escape) {
-                        // Esc 逐级取消（高保真 §关闭）：改名 → 删除条 → 搜索词 → 关窗。
-                        // 删除条未确认时只收删除条 —— 误按一次 Esc 不该把弹框关掉。
-                        if (root.editing != "" || root.creating) {
+                        // Esc 逐级取消：取色盘 → 改名 → 删除条 → 搜索词 → 关窗。
+                        // 取色盘先关（色板浮层保留，可继续选预设）；删除条未确认时
+                        // 只收删除条 —— 误按一次 Esc 不该把弹框关掉。
+                        if (root.pick-open) {
+                            root.pick-open = false;
+                        } else if (root.editing != "" || root.creating) {
                             root.editing = "";
                             root.creating = false;
                             root.editing-error = "";
@@ -2933,7 +2948,9 @@ export component GroupManagerDialog inherits Rectangle {
             // 高保真 §改色：就地 8 列色板，当前色带环，选色即时落盘，点外部关闭。
             if root.color-for != "" : Rectangle {
                 width: 195px;
-                height: 108px;
+                // 47 预设色 8 列（6 行）+ 底行两钮（自定义 / 无颜色）
+                height: 16px + Math.ceil(root.palette.length / 8) * 18px
+                    + (Math.ceil(root.palette.length / 8) - 1) * 5px + 6px + 20px + 8px;
                 x: Math.max(8px, Math.min(root.color-anchor-x - 8px, gm.width - self.width - 8px));
                 y: Math.max(8px, Math.min(root.color-anchor-y + 6px, gm.height - self.height - 8px));
                 border-radius: Theme.radius-lg;
@@ -2945,7 +2962,7 @@ export component GroupManagerDialog inherits Rectangle {
                     spacing: 6px;
                     GridLayout {
                         spacing: 5px;
-                        for k in 24 : Rectangle {
+                        for k in root.palette.length : Rectangle {
                             row: k / 8;
                             col: Math.mod(k, 8);
                             width: 18px;
@@ -2973,31 +2990,96 @@ export component GroupManagerDialog inherits Rectangle {
                             }
                         }
                     }
-                    // 「无颜色」= 清空该组颜色（未分组同样可改色）
-                    Rectangle {
+                    // 底行两钮：左「自定义颜色…」（取色盘）/ 右「无颜色」（清空）
+                    HorizontalLayout {
                         height: 20px;
-                        border-radius: 4px;
-                        border-width: 1px;
-                        border-color: nc-ta.has-hover ? Theme.accent.with-alpha(0.42) : Theme.mgr-line-strong;
-                        nc-ta := TouchArea {
-                            mouse-cursor: default;
-                            clicked => {
-                                if (root.color-for == "__new") {
-                                    root.new-color = "";
-                                    root.new-swatch = transparent;
-                                } else {
-                                    root.set-group-color(root.color-for, "");
+                        spacing: 5px;
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: cp-ta.has-hover ? Theme.accent.with-alpha(0.42) : Theme.mgr-line-strong;
+                            cp-ta := TouchArea {
+                                mouse-cursor: default;
+                                clicked => {
+                                    // 起点色 = 该组当前色（无色则第一预设）；色板
+                                    // 浮层保留，取消取色盘即回到色板继续选预设
+                                    root.pick-hex = root.color-hex-for != ""
+                                        ? root.color-hex-for : root.palette[0].hex;
+                                    root.pick-open = true;
                                 }
-                                root.color-for = "";
+                            }
+                            Text {
+                                text: root.lang-en ? "Custom…" : "自定义颜色…";
+                                color: cp-ta.has-hover ? Theme.accent-solid : Theme.text-secondary;
+                                font-size: Theme.fs-2xs;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
                             }
                         }
-                        Text {
-                            text: root.lang-en ? "No color" : "无颜色";
-                            color: nc-ta.has-hover ? Theme.accent-solid : Theme.text-secondary;
-                            font-size: Theme.fs-2xs;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        Rectangle {
+                            width: 64px;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: nc-ta.has-hover ? Theme.accent.with-alpha(0.42) : Theme.mgr-line-strong;
+                            nc-ta := TouchArea {
+                                mouse-cursor: default;
+                                clicked => {
+                                    if (root.color-for == "__new") {
+                                        root.new-color = "";
+                                        root.new-swatch = transparent;
+                                    } else {
+                                        root.set-group-color(root.color-for, "");
+                                    }
+                                    root.color-for = "";
+                                }
+                            }
+                            Text {
+                                text: root.lang-en ? "No color" : "无颜色";
+                                color: nc-ta.has-hover ? Theme.accent-solid : Theme.text-secondary;
+                                font-size: Theme.fs-2xs;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
                         }
+                    }
+                }
+            }
+
+            // ── 自定义颜色取色盘（盖整个弹框；取消回到色板，确认落盘组色）──
+            if root.pick-open : Rectangle {
+                width: 100%;
+                height: 100%;
+                background: transparent;
+                Scrim { }
+                TouchArea { clicked => { root.pick-open = false; } }
+                ColorPickerDialog {
+                    x: clamp((parent.width - self.width) / 2, 8px,
+                        max(8px, parent.width - self.width - 8px));
+                    y: clamp((parent.height - self.height) / 2, 8px,
+                        max(8px, parent.height - self.height - 8px));
+                    bounds-w: gm.width;
+                    bounds-h: gm.height;
+                    title: root.lang-en ? "Palette" : "调色盘";
+                    en: root.lang-en;
+                    hex <=> root.pick-hex;
+                    fmt <=> root.pick-fmt;
+                    wheel-mx <=> root.pick-wheel-mx;
+                    wheel-my <=> root.pick-wheel-my;
+                    val-my <=> root.pick-val-my;
+                    pick-v <=> root.pick-pick-v;
+                    sync-pos => { root.picker-sync(); }
+                    copy-requested(h) => { root.copy-text(h); }
+                    cancelled => { root.pick-open = false; }
+                    confirmed => {
+                        if (root.color-for == "__new") {
+                            root.new-color = root.pick-hex;
+                            root.new-swatch = PickerMath.hex-color(root.pick-hex);
+                        } else if (root.color-for != "") {
+                            root.set-group-color(root.color-for, root.pick-hex);
+                        }
+                        root.color-for = "";
+                        root.pick-open = false;
                     }
                 }
             }

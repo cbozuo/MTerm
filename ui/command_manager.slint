@@ -69,6 +69,10 @@ component CmCaption inherits Rectangle {
         padding-right: 8px;
         padding-top: 4px;
         spacing: 7px;
+        // (#cm-caption-badge 2026-10-25) 不写 alignment 时主轴默认 stretch：
+        // label 与计数块会被一起拉宽，计数块于是拉成一枚长胶囊、数字也不居中
+        // （用户截图）。靠左排 + 计数块定宽 = 稿子里的「我的分组 (7)」圆点。
+        alignment: start;
         cross-axis-alignment: center;
         Text {
             text: root.label;
@@ -78,20 +82,22 @@ component CmCaption inherits Rectangle {
             vertical-alignment: center;
         }
         Rectangle {
+            // 1–2 位数字 = 正圆（16×16，半径 8）；3 位以上按内容长出去，
+            // 仍保持全圆角（半径 = 高的一半）。
+            width: max(16px, cnt-num.preferred-width + 10px);
             height: 16px;
             border-radius: 8px;
             background: Theme.accent-soft;
             HorizontalLayout {
-                padding-left: 6px;
-                padding-right: 6px;
                 alignment: center;
-                Text {
+                cnt-num := Text {
                     text: root.count;
                     color: Theme.accent;
                     font-size: 10px;
                     font-family: Theme.font-mono;
                     font-weight: 600;
                     vertical-alignment: center;
+                    horizontal-alignment: center;
                 }
             }
         }
@@ -299,8 +305,10 @@ component CmCardSlot inherits Rectangle {
     animate background { duration: 100ms; }
 
     function acts-hover() -> bool {
+        // 不含确认钮：它现在挂在 `if root.armed` 里（条件元素内的 id 出不了
+        // 作用域），而 armed 本身就走 danger 配色，不再需要这一个悬停位。
         return up-btn.hover || down-btn.hover || edit-btn.hover
-            || dup-btn.hover || del-btn.hover || ok-ta.has-hover
+            || dup-btn.hover || del-btn.hover
             || chip-ta.has-hover || send-ta.hover;
     }
 
@@ -435,9 +443,15 @@ component CmCardSlot inherits Rectangle {
                     }
                 }
                 HorizontalLayout {
-                    padding-left: 5px;
-                    padding-right: 7px;
+                    // (#cm-chip-center 2026-10-25) 不写 alignment 时主轴默认
+                    // stretch：Text 被撑满剩余宽度、文字靠左，右侧留一大块空白
+                    // （用户截图「文字不居中，右侧比较空」）。居中 + 左右对称
+                    // padding，chip 才与稿子 `.c-grp{padding:3px 7px 3px 5px}`
+                    // 的观感一致。
+                    padding-left: 6px;
+                    padding-right: 6px;
                     spacing: 5px;
+                    alignment: center;
                     cross-axis-alignment: center;
                     Rectangle {
                         width: 6px;
@@ -451,55 +465,20 @@ component CmCardSlot inherits Rectangle {
                         font-size: 10px;
                         font-family: Theme.font-mono;
                         vertical-alignment: center;
+                        horizontal-alignment: center;
                         overflow: elide;
                     }
                 }
             }
             Rectangle { horizontal-stretch: 1; height: 1px; }
-            // 操作组：悬停渐显；武装态常显且整组换成红底「确认」
+            // 操作组：悬停渐显。武装态五个钮只是不显示 —— **宽度照旧**，
+            // 卡片的 preferred-width（= 网格列宽）因此完全不变；红底「确认」
+            // 是卡片根上的绝对定位块，原地盖住删除钮（见下方 CmCardSlot 根）。
             HorizontalLayout {
                 spacing: 1px;
                 alignment: end;
                 opacity: root.armed || card-ta.has-hover || acts-hover() ? 1.0 : 0.0;
                 animate opacity { duration: 120ms; }
-                Rectangle {
-                    visible: root.armed;
-                    height: 20px;
-                    // 内容撑宽：绝对定位的 Text 不贡献 preferred 宽度，裸
-                    // Rectangle 在 acts 行里会被压成 0 宽（确认钮「消失」的真因）
-                    min-width: 34px;
-                    border-radius: 4px;
-                    background: ok-ta.has-hover ? Theme.danger-strong : Theme.danger;
-                    animate background { duration: 100ms; }
-                    ok-ta := TouchArea {
-                        mouse-cursor: default;
-                        clicked => { root.confirm-del(root.card.key); }
-                        changed has-hover => {
-                            root.tip-armed2(self.has-hover,
-                                root.lang-en ? "Confirm delete this command" : "确认删除这条命令",
-                                self.absolute-position.x + self.mouse-x,
-                                self.absolute-position.y + self.mouse-y);
-                        }
-                        pointer-event(ev) => {
-                            if (ev.kind == PointerEventKind.move && self.has-hover) {
-                                root.tip-move(self.absolute-position.x + self.mouse-x,
-                    self.absolute-position.y + self.mouse-y);
-                            }
-                        }
-                    }
-                    HorizontalLayout {
-                        padding-left: 7px;
-                        padding-right: 7px;
-                        alignment: center;
-                        Text {
-                            text: root.lang-en ? "Confirm" : "确认";
-                            color: white;
-                            font-size: 10px;
-                            font-weight: 600;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
                 up-btn := CmActBtn {
                     visible: !root.armed;
                     glyph: "arrow-up";
@@ -557,6 +536,52 @@ component CmCardSlot inherits Rectangle {
                     }
                     tip-track(ax, ay) => { root.tip-move(ax, ay); }
                 }
+            }
+        }
+    }
+
+    // 单删二段式的确认钮（#cm-confirm-inplace 2026-10-25）：**绝对定位在卡片
+    // 右下角**，右缘/下缘与删除钮同参（padding 11 / 8、20 高），看起来就是
+    // 删除钮原地变成红底「确认」。
+    // ⚠️ 不能塞进底行的操作组：那里五个图标钮 `visible: false` 仍占 20px 宽，
+    // 把确认钮排在组内会被顶到卡片中间（用户截图）；而把五个钮的宽度归零会让
+    // 卡片的 preferred-width 一起缩，网格列宽从 247 掉到 211，整块卡片跟着
+    // 重新排版 —— 两种都不行。绝对定位不参与布局，卡片纹丝不动。
+    if root.armed : Rectangle {
+        x: parent.width - 11px - self.width;
+        y: parent.height - 8px - self.height;
+        // 宽度按文案算（英文 "Confirm" 比「确认」宽），右缘固定，只向左扩。
+        width: max(34px, ok-label.preferred-width + 14px);
+        height: 20px;
+        border-radius: 4px;
+        background: ok-ta.has-hover ? Theme.danger-strong : Theme.danger;
+        animate background { duration: 100ms; }
+        ok-ta := TouchArea {
+            mouse-cursor: default;
+            clicked => { root.confirm-del(root.card.key); }
+            changed has-hover => {
+                root.tip-armed2(self.has-hover,
+                    root.lang-en ? "Confirm delete this command" : "确认删除这条命令",
+                    self.absolute-position.x + self.mouse-x,
+                    self.absolute-position.y + self.mouse-y);
+            }
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.move && self.has-hover) {
+                    root.tip-move(self.absolute-position.x + self.mouse-x,
+                        self.absolute-position.y + self.mouse-y);
+                }
+            }
+        }
+        HorizontalLayout {
+            padding-left: 7px;
+            padding-right: 7px;
+            alignment: center;
+            ok-label := Text {
+                text: root.lang-en ? "Confirm" : "确认";
+                color: white;
+                font-size: 10px;
+                font-weight: 600;
+                vertical-alignment: center;
             }
         }
     }
@@ -661,6 +686,9 @@ export component CommandManagerDialog inherits Rectangle {
     // 批量条
     in-out property <bool> batch-confirm: false;
     in-out property <bool> move-menu: false;
+    // 「移动至」菜单锚点：按钮中心的**窗口绝对** x（菜单在右栏容器里，定位时
+    // 减去 rcol.absolute-position.x 换算成局部坐标 —— 存相对弹窗的坐标会让菜单
+    // 整体右移一个左栏宽度，#cm-move-menu-anchor）。
     in-out property <length> move-menu-x: 0px;
     // 二级编辑卡
     in-out property <bool> ed-open: false;
@@ -676,6 +704,14 @@ export component CommandManagerDialog inherits Rectangle {
     in-out property <bool> gc-pop: false;
     // 左栏宽度（默认 224，拖 180–320，双击复位）
     in-out property <length> left-w: 224px;
+    // 二级编辑卡的宽度与「名称 / 分组」两列的列宽。
+    // (#cm-ed-cols 2026-10-25) 两列都写 `horizontal-stretch: 1` 只保证"都能长"，
+    // 宽度 = preferred + 按 stretch 均分的剩余量 —— 两列 preferred 不同（分组列
+    // 多了 hint 与 ▾），结果就是名称框明显比分组框窄（用户截图：两框大小不一致）。
+    // 改成把卡宽算出来、两列都钉死成同一半宽，才是稿子里的 minmax(0,1fr) 等分。
+    // 44 = 表单左右 padding 16×2 + 列间距 12。
+    property <length> ed-card-w: min(440px, self.width - 32px);
+    property <length> ed-col-w: (root.ed-card-w - 44px) / 2;
     in-out property <bool> sp-on: false;
     in-out property <length> sp-start: 0px;
     in-out property <length> sp-base: 224px;
@@ -851,6 +887,9 @@ export component CommandManagerDialog inherits Rectangle {
     if root.open : Rectangle {
         width: 100%;
         height: 100%;
+        // 显式透明：遮罩由 Scrim 组件画（tests/dialog_scrim_drag 的遮罩来源
+        // 审计要求覆盖层底不写色值）。
+        background: transparent;
 
         Scrim { }
         TouchArea {
@@ -1170,9 +1209,21 @@ export component CommandManagerDialog inherits Rectangle {
                                 padding-right: 14px;
                                 alignment: center;
                                 spacing: 6px;
+                                // (#cm-new-btn 2026-10-25) 加号改用 Icon：原来写的是
+                                // 全角「＋」字符，字形比稿子的 14px svg 宽一档、
+                                // 基线还随字体漂，与「完成」摆在一起明显不是同一套
+                                // （用户截图：两个主按钮没对齐高保真）。
+                                // 字色 = 稿子的 --ac-ink（#06201d）：深色主题下 accent 是
+                                // 亮青，白字偏"发灰"、对比也不如深墨绿；浅色主题 accent 是
+                                // 深青，仍用白字（Theme.dark 取反色，同 ScopeRow 勾选那套口径）。
+                                Icon {
+                                    glyph: "add";
+                                    tint: Theme.dark ? #06201d : #ffffff;
+                                    size: 14px;
+                                }
                                 Text {
-                                    text: root.lang-en ? "+ New command" : "＋ 新建命令";
-                                    color: #ffffff;
+                                    text: root.lang-en ? "New command" : "新建命令";
+                                    color: Theme.dark ? #06201d : #ffffff;
                                     font-size: 12.5px;
                                     font-weight: 650;
                                     vertical-alignment: center;
@@ -1734,7 +1785,7 @@ export component CommandManagerDialog inherits Rectangle {
                     }
 
                     // ── 右栏 ──
-                    Rectangle {
+                    rcol := Rectangle {
                         horizontal-stretch: 1;
                         clip: true;
                         VerticalLayout {
@@ -2486,8 +2537,12 @@ export component CommandManagerDialog inherits Rectangle {
                                     bmove-ta := TouchArea {
                                         mouse-cursor: default;
                                         clicked => {
+                                            // (#cm-move-menu-anchor 2026-10-25) 存**绝对**中心 x：
+                                            // 菜单挂在右栏容器里（rcol），以前存的是相对弹窗
+                                            // 的坐标，菜单按它定位就整体右移了一个左栏宽度
+                                            // （用户截图：菜单没对准「移动至」）。
                                             root.move-menu-x = bmove-ta.absolute-position.x
-                                                + bmove-ta.width / 2 - cm.absolute-position.x;
+                                                + bmove-ta.width / 2;
                                             root.move-menu = !root.move-menu;
                                         }
                                     }
@@ -2495,11 +2550,20 @@ export component CommandManagerDialog inherits Rectangle {
                                         padding-left: 12px;
                                         padding-right: 12px;
                                         alignment: center;
+                                        spacing: 5px;
+                                        cross-axis-alignment: center;
                                         Text {
-                                            text: root.lang-en ? "Move to ▾" : "移动至 ▾";
+                                            // ▾ 不写字符：字体里没有 U+25BE 时整支图标消失
+                                            // （用户截图「丢失下拉的符号」），一律用 Icon。
+                                            text: root.lang-en ? "Move to" : "移动至";
                                             color: bmove-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
                                             font-size: 11.5px;
                                             vertical-alignment: center;
+                                        }
+                                        Icon {
+                                            glyph: "expand-more";
+                                            tint: bmove-ta.has-hover ? Theme.text-primary : Theme.text-muted;
+                                            size: 11px;
                                         }
                                     }
                                 }
@@ -2599,8 +2663,10 @@ export component CommandManagerDialog inherits Rectangle {
 
                         // 移动至菜单（水平中心对准触发钮，上方 4px 弹出）
                         if root.move-menu && root.picked-count > 0 : Rectangle {
+                            // move-menu-x 是按钮中心的**绝对** x，这里减去右栏容器
+                            // 的绝对左缘换算成局部坐标，再居中（同稿子 .move-pop）。
                             x: Math.max(8px, Math.min(parent.width - self.width - 8px,
-                                root.move-menu-x - self.width / 2));
+                                root.move-menu-x - rcol.absolute-position.x - self.width / 2));
                             y: parent.height - 52px - 4px - self.height;
                             width: max(mmenu-col.preferred-width + 10px, 160px);
                             height: mmenu-col.preferred-height + 10px;
@@ -2666,9 +2732,13 @@ export component CommandManagerDialog inherits Rectangle {
                 }
 
                 // ══ 底部 48px ══
+                // (#cm-foot-bg 2026-10-25) 底色改回弹窗底同色：稿子 .qm-foot 的
+                // #17191c 相对弹窗底 #181a1d 只深 1/255，分区靠那条 1px 顶线；
+                // 之前用 popup-bg-inset（= bg-root，深得多）会在底部糊出一块
+                // 明显更黑的横条，与高保真对不上。
                 Rectangle {
                     height: 48px;
-                    background: Theme.popup-bg-inset;
+                    background: Theme.popup-bg;
                     Rectangle {
                         y: 0px;
                         width: 100%;
@@ -2712,9 +2782,14 @@ export component CommandManagerDialog inherits Rectangle {
                             }
                         }
                         Rectangle { horizontal-stretch: 1; height: 1px; }
+                        // (#cm-foot-btn 2026-10-25) 页脚主按钮按稿子 `.primary`
+                        // 的默认档（30 高 / 12.5 字 / padding 0 14，宽度随文案），
+                        // 与头部「新建命令」同高 —— 之前写死 64×28，和头部差 2px
+                        // 且比稿子小一号（用户截图：两个主按钮没对齐高保真）。
+                        // 编辑卡底栏那两个按钮是稿子明确规定的 64×28，不动。
                         Rectangle {
-                            width: 64px;
-                            height: 28px;
+                            width: max(54px, done-txt.preferred-width + 28px);
+                            height: 30px;
                             border-radius: 7px;
                             background: done-ta.has-hover ? Theme.accent-hover : Theme.accent;
                             animate background { duration: 120ms; }
@@ -2722,10 +2797,11 @@ export component CommandManagerDialog inherits Rectangle {
                                 mouse-cursor: default;
                                 clicked => { if (commit-edit()) { root.close(); } }
                             }
-                            Text {
+                            done-txt := Text {
                                 text: root.lang-en ? "Done" : "完成";
-                                color: #ffffff;
-                                font-size: 12px;
+                                // 同头部主按钮：稿子 --ac-ink；浅色主题反过来用白字。
+                                color: Theme.dark ? #06201d : #ffffff;
+                                font-size: 12.5px;
                                 font-weight: 650;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
@@ -2836,13 +2912,14 @@ export component CommandManagerDialog inherits Rectangle {
                             padding-top: 14px;
                             padding-bottom: 4px;
                             spacing: 12px;
-                            // 名称 + 分组 同行（两列等分：minmax(0,1fr) 语义——
-                            // 两列都 stretch:1 才等宽，名称列不设会被压成内容宽）
+                            // 名称 + 分组 同行：两列钉死成同一半宽（root.ed-col-w），
+                            // 见属性区 #cm-ed-cols 的注释。
                             HorizontalLayout {
                                 spacing: 12px;
                                 VerticalLayout {
                                     spacing: 6px;
-                                    horizontal-stretch: 1;
+                                    min-width: root.ed-col-w;
+                                    max-width: root.ed-col-w;
                                     Text {
                                         text: root.lang-en ? "Name" : "名称";
                                         color: Theme.text-secondary;
@@ -2899,7 +2976,8 @@ export component CommandManagerDialog inherits Rectangle {
                                 }
                                 VerticalLayout {
                                     spacing: 6px;
-                                    horizontal-stretch: 1;
+                                    min-width: root.ed-col-w;
+                                    max-width: root.ed-col-w;
                                     // 分组 label + 动态 hint 同行
                                     HorizontalLayout {
                                         spacing: 6px;

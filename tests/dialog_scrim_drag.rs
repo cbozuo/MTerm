@@ -679,7 +679,9 @@ fn modal_dialog_scrims_come_from_the_theme_token() {
         ("proc_window.slint", "if root.terminate-dialog-open : Rectangle", "进程窗口结束确认"),
         ("app.slint", "if root.group-dialog-open : Rectangle", "新建/重命名组"),
         ("app.slint", "if root.tab-rename-open : Rectangle", "重命名会话"),
-        ("app.slint", "if root.quick-cmd-manage-open : Rectangle", "快捷指令管理"),
+        // (#quick-cmd-manager 2026-10-24) 命令管理拆成独立组件
+        // ui/command_manager.slint，app.slint 里只剩一行实例化 —— 锚点跟过去。
+        ("command_manager.slint", "if root.open : Rectangle", "快捷指令管理"),
         ("app.slint", "if root.qcg-open : Rectangle", "快捷指令组名"),
         ("app.slint", "if root.sftp-prompt-open : Rectangle", "SFTP 提示"),
         ("app.slint", "if root.confirm-close-open : Rectangle", "关闭主窗口"),
@@ -744,6 +746,11 @@ fn modal_dialog_scrims_come_from_the_theme_token() {
         // 与强调色预设弹框的轻遮罩同款，走写死轻档而不吃 Theme.modal-scrim
         // （后者在 tint/soft/frost/spot/sheen 样式下基座 alpha=0 会整层消失）。
         ("highlight_dialog.slint", "background: #00000073;"),
+        // 命令管理的二级编辑卡（新建/编辑一条命令）也有一层**卡内**遮罩：
+        // 它盖住的是 760×560 的弹框本体、点空白 = 放弃编辑并关闭，不是弹框级
+        // 遮罩；理由同上（不吃 Theme.modal-scrim，避免 tint/soft/frost/spot/
+        // sheen 样式下 alpha=0 整层消失）。
+        ("command_manager.slint", "background: #00000059;"),
     ];
     for entry in std::fs::read_dir(&ui_dir).unwrap() {
         let path = entry.unwrap().path();

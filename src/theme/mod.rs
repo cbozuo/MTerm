@@ -469,13 +469,15 @@ pub fn default_for(dark: bool) -> &'static str {
 
 /// 刷新分组取色面板的候选 24 色（§3-调整⑤：按当前主题查表）。切主题时由
 /// on_set_theme 路径调用。
-pub fn rebuild_group_palette(win: &crate::ui::AppWindow, p: &Palette) {
-    let swatches: Vec<crate::ui::GroupSwatch> = p
-        .group24
+pub fn rebuild_group_palette(win: &crate::ui::AppWindow, _p: &Palette) {
+    // (#gm-accent-palette 2026-10-25) 分组色板改为**主题强调色预设同款**
+    // （设置页外观那套 ACCENT_PRESETS，用户点名）——自动分配色（next_group_color）
+    // 同源；自定义色走色板左下角的取色盘入口。
+    let swatches: Vec<crate::ui::GroupSwatch> = palettes::ACCENT_PRESETS
         .iter()
-        .map(|v| crate::ui::GroupSwatch {
-            hex: format!("#{:06X}", v).into(),
-            swatch: color(*v),
+        .map(|&(_, _, raw)| crate::ui::GroupSwatch {
+            hex: format!("#{raw:06X}").into(),
+            swatch: color(raw),
         })
         .collect();
     win.set_group_palette(ModelRc::from(Rc::new(VecModel::from(swatches))));

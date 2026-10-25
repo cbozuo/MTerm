@@ -176,6 +176,9 @@ component ScopeButton inherits Rectangle {
     // 菜单展开方向：主命令栏贴右端（默认右对齐、往左长）；弹出编辑窗口底部
     // 的范围键靠左，往左长会伸出面板、被左侧栏压掉一半 → 传 true 向右展开。
     in property <bool> menu-left: false;
+    // 是否自带「点外部关闭」层。命令栏自己用（整个终端区都是外部）；弹出编辑
+    // 弹窗传 false —— 那边是模态面板，由面板内层 / 遮罩分工处理（见下方注释）。
+    in property <bool> outside-close: true;
     // 草稿（菜单里勾的那一份）—— 组件私有，不参与双向绑定
     property <bool> d-all: false;
     property <bool> d-a: false;
@@ -348,6 +351,33 @@ component ScopeButton inherits Rectangle {
     background: root.open ? Theme.bg-active
               : scope-ta.has-hover ? Theme.bg-hover : transparent;
     animate background, border-color { duration: 110ms; }
+
+    // 点外部关闭（#scope-menu-outside 2026-10-25）：菜单开着时，在组件**最底层**
+    // 铺一张盖住整个可视区的透明层接住"别处"的点击。
+    // ⚠️ 必须声明在按钮/菜单**之前**（z 最低）：放到它们后面就成了 cmd-expand
+    // 遮罩踩过的那个坑（吞掉面板里所有按钮的点击，实测点不动）。这里按钮行与
+    // 菜单都压在它上面，所以只有菜单以外的空白落到它身上 —— 正好关菜单。
+    // 落到它身上的点击一律 reject 放行：关掉菜单的同时，下面该聚焦的聚焦、该
+    // 点的照点（否则下拉一开，第一次点击全被吃掉）。
+    // 祖先 central 有 clip: true，超出终端区的部分自然被裁掉，不需要精确尺寸。
+    // outside-close: false 的宿主（弹出编辑弹窗）自己管外部点击 —— 那个面板是
+    // 模态的，点面板外要连面板一起收起，不能只关菜单把点击吞在这儿。
+    if root.open && root.outside-close : Rectangle {
+        x: -2000px;
+        y: -2000px;
+        width: 9000px;
+        height: 9000px;
+        background: transparent;
+        outside-ta := TouchArea {
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.down) {
+                    root.open = false;   // 草稿丢弃，已应用的那份不动
+                }
+                EventResult.reject
+            }
+        }
+    }
+
     scope-ta := TouchArea {
         mouse-cursor: default;
         clicked => {
@@ -3437,18 +3467,40 @@ export component TerminalView inherits Rectangle {
         // 遮罩点击 = 收起。⚠️ 面板上**不放**吞点击的 TouchArea：它会把面板里
         // 所有按钮的点击一起吃掉（实测：点 ↗ 打开弹窗后，底部范围键、标题栏 ×
         // 全都点不动）。改成遮罩自己按坐标放行 —— 落在面板矩形内就忽略。
+        // (#scope-menu-outside 2026-10-25) 点面板外时范围菜单若还开着，先关它
+        // （视觉上就是"退一层"），再收面板。
         TouchArea {
             clicked => {
                 let px = self.mouse-x;
                 let py = self.mouse-y;
                 if (px < exp-panel.x || px > exp-panel.x + exp-panel.width
                         || py < exp-panel.y || py > exp-panel.y + exp-panel.height) {
+                    root.exp-scope-open = false;
                     root.cmd-expand-hide();
                 }
             }
         }
 
         exp-panel := Rectangle {
+            // (#scope-menu-outside 2026-10-25) 面板内的「点外部关范围菜单」层。
+            // 声明在 VerticalLayout **之前** = z 最低：面板里的按钮、菜单都压在
+            // 它上面，所以只有面板内的空白会落到这里。reject 放行，关菜单的同时
+            // 该聚焦的编辑器照常拿到焦点。
+            // （这个面板里的 ScopeButton 传 outside-close: false，就是因为这张
+            // 层只管面板内 —— 面板外的点击必须留给遮罩"连面板一起收"。）
+            if root.exp-scope-open : Rectangle {
+                width: parent.width;
+                height: parent.height;
+                background: transparent;
+                panel-outside-ta := TouchArea {
+                    pointer-event(ev) => {
+                        if (ev.kind == PointerEventKind.down) {
+                            root.exp-scope-open = false;
+                        }
+                        EventResult.reject
+                    }
+                }
+            }
             // (#cmdbar-expand-snap 2026-10-23) 尺寸与位置都 snap 到设备栅格：
             // 奇数宽度 / 居中余 0.5px 会让 1phx 外框骑在半个设备像素上，
             // 四条边一会儿粗一会儿细（用户截图：「边框线要么缺失要么粗细不同」）。
@@ -3458,8 +3510,11 @@ export component TerminalView inherits Rectangle {
             y: Theme.snap-to-device((parent.height - self.height) / 2);
             background: Theme.popup-bg;
             border-radius: 10px;
-            border-width: 1phx;   // (#hairline-phx) 同命令栏分隔线：恒定一个设备像素
-            border-color: Theme.border-strong;
+            // ⚠️ 描边**不写在这层**：Rectangle 的 border 画在 background 之上、
+            // 子元素之下，而主体那两栏（左 popup-bg-inset / 右 bg-root）是不
+            // 透明底、从 (0,0) 铺满，正好把左右两条 1phx 竖线整段盖掉 —— 只剩
+            // 标题栏与底栏那两段露出来，看着像「外框断成三截」（用户截图）。
+            // 描边改由本层最后面的 overlay-rim 画（子元素之上）。
 
             // 下一帧再 focus（见根作用域那条注释）
             exp-focus-timer := Timer {
@@ -3813,6 +3868,7 @@ export component TerminalView inherits Rectangle {
                         ch-d <=> root.scope-ch-d;
                         open <=> root.exp-scope-open;
                         menu-left: true;
+                        outside-close: false;
                     }
                     Text {
                         x: exp-send.x - 14px - self.width;
@@ -3848,6 +3904,19 @@ export component TerminalView inherits Rectangle {
                         }
                     }
                 }
+            }
+
+            // 描边叠层（#cmdbar-expand-rim 2026-10-25）：整个面板的外框。
+            // 必须是 VerticalLayout 的**后一个兄弟**（z 在内容之上），否则左右
+            // 两栏的不透明底会把竖线盖掉。本身没有 TouchArea，不吃点击。
+            // 圆角/边框宽度与面板同参（10px / 1phx），两条边严丝合缝。
+            Rectangle {
+                width: parent.width;
+                height: parent.height;
+                border-radius: 10px;
+                border-width: 1phx;   // (#hairline-phx) 恒定一个设备像素
+                border-color: Theme.border-strong;
+                background: transparent;
             }
         }
     }
