@@ -157,3 +157,193 @@ fn duplicate_rename_keeps_dialog_open() {
     click(&ui, done.0, done.1);
     assert!(ui.get_gm_open(), "重名时按「完成」把弹框关掉了 —— 改名会被静默丢弃");
 }
+
+/// 改色弹层（#swatch-popup 2026-10-26 / #swatch-popup-lift）：展开后是**盖住整个
+/// 界面**的取色卡（挂在窗口根，不在 760×560 的分组弹框里），与设置页「强调色」
+/// 同一套。旧版是锚在色点旁的 195px 小浮层、8×6 无名色格。
+///
+/// 判据（不锁像素细节）：
+///  ① 展开后背景被 scrim 压暗，卡片内衬仍是未压暗的 popup-bg；
+///  ② 预设色块真的画出来了（ACCENT_PRESETS 的番茄色成片出现）；
+///  ③ **整窗可拖**：把卡片往上拖 200px，卡片能越过分组弹框顶边（不在 gm 的
+///     clip 里），同时被窗口边界钳住（top ≥ 8px）。
+#[test]
+fn color_popup_floats_over_the_window_and_drags_across_it() {
+    use mterm::ui::GroupSwatch;
+
+    // 比分组弹框（760×560）大一圈，才看得出「弹层在窗口根、不受 gm 裁剪」。
+    const CW: usize = 1200;
+    const CH: usize = 820;
+
+    fn grab(ui: &AppWindow, buf: &mut Vec<PremultipliedRgbaColor>, w: usize) {
+        ui.window().request_redraw();
+        WIN.with(|win| {
+            win.draw_if_needed(|r| {
+                r.render(buf, w);
+            });
+        });
+    }
+    fn rgb(buf: &[PremultipliedRgbaColor], x: usize, y: usize, w: usize) -> (u8, u8, u8) {
+        let p = buf[y * w + x];
+        if p.alpha == 0 {
+            return (0, 0, 0);
+        }
+        let un = |c: u8| (c as u16 * 255 / p.alpha as u16) as u8;
+        (un(p.red), un(p.green), un(p.blue))
+    }
+
+    slint::platform::set_platform(Box::new(ProbePlatform)).ok();
+    let ui = AppWindow::new().unwrap();
+    ui.window().set_size(LogicalSize::new(CW as f32, CH as f32));
+
+    // PickerMath 全局的生产接线在 src/app.rs::open_window 里，离屏探针不会跑那段；
+    // 不接的话 hex→color 全返回透明，色板井/应用键看起来是空的（本测试要截证据帧）。
+    {
+        use slint::SharedString;
+        let pm = ui.global::<mterm::ui::PickerMath>();
+        pm.on_hex_color(|hex: SharedString| match mterm::picker::parse_hex(&hex) {
+            Some(v) => slint::Color::from_rgb_u8(
+                ((v >> 16) & 0xFF) as u8,
+                ((v >> 8) & 0xFF) as u8,
+                (v & 0xFF) as u8,
+            ),
+            None => slint::Color::from_rgb_u8(0, 0, 0),
+        });
+        pm.on_ink_on(|hex: SharedString| {
+            let ink = mterm::picker::ink_on(mterm::picker::parse_hex(&hex).unwrap_or(0));
+            slint::Color::from_rgb_u8(
+                ((ink >> 16) & 0xFF) as u8,
+                ((ink >> 8) & 0xFF) as u8,
+                (ink & 0xFF) as u8,
+            )
+        });
+        pm.on_fit_hex(|hex: SharedString| match mterm::picker::parse_hex(&hex) {
+            Some(v) => format!("#{v:06X}").into(),
+            None => SharedString::default(),
+        });
+    }
+
+    ui.set_gm_groups(ModelRc::from(Rc::new(VecModel::from(vec![
+        group("默认组", 0, true),
+        group("生产", 0, false),
+    ]))));
+    ui.set_gm_members(ModelRc::from(Rc::new(VecModel::from(Vec::<GmMember>::new()))));
+    // 色板 = 生产里那份（theme::palettes::ACCENT_PRESETS，48 色），不另造数据。
+    let swatches: Vec<GroupSwatch> = mterm::theme::palettes::ACCENT_PRESETS
+        .iter()
+        .map(|&(_, name, raw)| GroupSwatch {
+            hex: format!("#{raw:06X}").into(),
+            swatch: slint::Color::from_rgb_u8(
+                ((raw >> 16) & 0xFF) as u8,
+                ((raw >> 8) & 0xFF) as u8,
+                (raw & 0xFF) as u8,
+            ),
+            name: name.into(),
+        })
+        .collect();
+    ui.set_group_palette(ModelRc::from(Rc::new(VecModel::from(swatches))));
+    ui.set_gm_selected("生产".into());
+    ui.set_gm_cur_index(1);
+    ui.set_gm_open(true);
+    ui.show().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(80));
+
+    let bg = match ui.global::<Theme>().get_popup_bg() {
+        slint::Brush::SolidColor(c) => (c.red(), c.green(), c.blue()),
+        _ => panic!("popup-bg 必须是纯色"),
+    };
+    let lum = |c: (u8, u8, u8)| c.0 as u32 + c.1 as u32 + c.2 as u32;
+
+    let mut buf = vec![PremultipliedRgbaColor::default(); CW * CH];
+    grab(&ui, &mut buf, CW);
+    // 未展开时，窗口左上角那块是应用底色（记下来做「被压暗」的基线）
+    let corner = (8, 8);
+    let base_corner = rgb(&buf, corner.0, corner.1, CW);
+
+    // 展开改色弹层（模拟点了「生产」组的色点：当前色 = 翡翠绿）
+    ui.set_gm_color_hex_for("#29A383".into());
+    ui.set_gm_color_for("生产".into());
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    let mut buf2 = vec![PremultipliedRgbaColor::default(); CW * CH];
+    grab(&ui, &mut buf2, CW);
+
+    // ① 整窗被 scrim 压暗（弹层挂在窗口根，不只是盖住分组弹框）
+    let dimmed = rgb(&buf2, corner.0, corner.1, CW);
+    assert!(
+        lum(dimmed) < lum(base_corner),
+        "改色弹层没有覆盖整个界面：窗口角落 {dimmed:?} vs 基线 {base_corner:?}"
+    );
+
+    // ② 卡片自身：656 宽居中于 1200 → 左缘 x=272，16px 内衬里的 x=280 必然是卡片底
+    let card_left = (CW - 656) / 2;
+    let pad = rgb(&buf2, card_left + 8, CH / 2, CW);
+    assert!(
+        pad.0.abs_diff(bg.0) <= 3 && pad.1.abs_diff(bg.1) <= 3 && pad.2.abs_diff(bg.2) <= 3,
+        "改色卡片左内衬应为 popup-bg：{pad:?} vs {bg:?}"
+    );
+
+    // ③ 预设色块画出来了：番茄色成片出现
+    let tomato = (0xF4u8, 0x43u8, 0x33u8);
+    let hits = (0..CW * CH)
+        .filter(|i| {
+            let c = rgb(&buf2, i % CW, i / CW, CW);
+            c.0.abs_diff(tomato.0) <= 4
+                && c.1.abs_diff(tomato.1) <= 4
+                && c.2.abs_diff(tomato.2) <= 4
+        })
+        .count();
+    assert!(hits > 300, "色板里没画出预设色块（番茄色命中 {hits} 像素）");
+
+    // 证据帧（与 tests/cmd_manager_polish.rs 同款：PROBE_DUMP_DIR 下导 PPM）
+    if let Ok(dir) = std::env::var("PROBE_DUMP_DIR") {
+        let mut data = Vec::with_capacity(CW * CH * 3);
+        for y in 0..CH {
+            for x in 0..CW {
+                let (r, g, b) = rgb(&buf2, x, y, CW);
+                data.extend_from_slice(&[r, g, b]);
+            }
+        }
+        let header = format!("P6\n{CW} {CH}\n255\n");
+        std::fs::write(
+            std::path::Path::new(&dir).join("gm-color-popup.ppm"),
+            [header.as_bytes(), &data].concat(),
+        )
+        .ok();
+    }
+
+    // ④ 整窗可拖：按住卡片空白区往上拖 200px，卡片应越过分组弹框顶边
+    //    （gm 只占 760×560，顶边在 y=(820-560)/2=130），并被窗口顶边钳住。
+    use slint::platform::PointerEventButton;
+    use slint::LogicalPosition;
+    let start = LogicalPosition::new((card_left + 8) as f32, (CH / 2) as f32);
+    ui.window().dispatch_event(WindowEvent::PointerMoved { position: start });
+    ui.window().dispatch_event(WindowEvent::PointerPressed {
+        position: start,
+        button: PointerEventButton::Left,
+    });
+    for step in 1..=10 {
+        let p = LogicalPosition::new(start.x, start.y - 20.0 * step as f32);
+        ui.window().dispatch_event(WindowEvent::PointerMoved { position: p });
+    }
+    ui.window()
+        .dispatch_event(WindowEvent::PointerReleased {
+            position: LogicalPosition::new(start.x, start.y - 200.0),
+            button: PointerEventButton::Left,
+        });
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    let mut buf3 = vec![PremultipliedRgbaColor::default(); CW * CH];
+    grab(&ui, &mut buf3, CW);
+
+    // 卡片内衬 y=20 处仍是卡片底：说明卡片已越过 gm 顶边（130）且没被裁
+    let above = rgb(&buf3, card_left + 8, 20, CW);
+    assert!(
+        above.0.abs_diff(bg.0) <= 3 && above.1.abs_diff(bg.1) <= 3 && above.2.abs_diff(bg.2) <= 3,
+        "卡片拖不到分组弹框之外：y=20 处是 {above:?}（应为卡片底 {bg:?}）"
+    );
+    // 窗口边界仍钳住（卡片顶边 8px），不会整块拖出可视区
+    let edge = rgb(&buf3, card_left + 8, 3, CW);
+    assert!(
+        edge.0.abs_diff(bg.0) > 3 || edge.1.abs_diff(bg.1) > 3 || edge.2.abs_diff(bg.2) > 3,
+        "卡片被拖出了窗口（y=3 仍是卡片底 {edge:?}）"
+    );
+}

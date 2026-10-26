@@ -193,7 +193,10 @@ export component GroupManagerDialog inherits Rectangle {
     in-out property <string> confirm-del: "";    // 展开删除条的组名
     in-out property <string> del-target: "";     // 成员去向（"" = 未分组）
     in-out property <bool> del-menu: false;      // 删除条的「去向」下拉
-    in-out property <string> color-for: "";      // 展开色板的组名（"__new" = 新建行）
+    // 展开改色弹层的组名（"__new" = 新建行）。弹层本身挂在 app 根上
+    // （#swatch-popup-lift 2026-10-26）—— gm 有 clip，弹层里的悬浮信息卡会被
+    // 对话框边缘裁掉，而且拖动被限制在 760×560 内；宿主上移后整窗可拖、不裁剪。
+    in-out property <string> color-for: "";
     // (#gm-accent-palette) 自定义颜色：色板左下角入口 → 取色盘（属性在 app.slint
     // 根上双向绑定，Rust 侧照 highlight 版四行直写同步取样点）
     in-out property <bool> pick-open: false;
@@ -213,13 +216,10 @@ export component GroupManagerDialog inherits Rectangle {
     in property <color> next-color: transparent;
     in-out property <string> edit-where: "";     // "left" = 左栏行内改名，"right" = 右栏头部
     in-out property <int> color-row: 0;
-    // 色板锚点（gm 坐标系）：贴在被点的色点下方 6px，出界自动夹回
-    in-out property <length> color-anchor-x: 0px;
     // 「移动到 / 删除去向」下拉的锚点（gm 坐标，= 触发按钮**中心** x）：
     // 菜单以按钮为轴左右居中（右缘对齐会显得偏右），出界再夹回面板内。
     in-out property <length> move-menu-x: 0px;
     in-out property <length> del-menu-x: 0px;
-    in-out property <length> color-anchor-y: 0px;
     in-out property <bool> move-menu: false;
     // 结果提示（删除后只报结果，不提供撤销）
     in-out property <string> toast: "";
@@ -578,6 +578,10 @@ export component GroupManagerDialog inherits Rectangle {
                         // 只收删除条 —— 误按一次 Esc 不该把弹框关掉。
                         if (root.pick-open) {
                             root.pick-open = false;
+                        } else if (root.color-for != "") {
+                            // 改色弹层挂在 app 根上（#swatch-popup-lift），Esc 仍由
+                            // 这里的焦点域统一处理：先收弹层，别一步关掉整个弹框。
+                            root.color-for = "";
                         } else if (root.editing != "" || root.creating) {
                             root.editing = "";
                             root.creating = false;
@@ -1166,10 +1170,6 @@ export component GroupManagerDialog inherits Rectangle {
                                                         commit_edit();
                                                         root.color-row = i;
                                                         root.color-hex-for = root.groups[i].color-hex;
-                                                        root.color-anchor-x = cdot-ta.absolute-position.x
-                                                            - gm.absolute-position.x;
-                                                        root.color-anchor-y = cdot-ta.absolute-position.y
-                                                            - gm.absolute-position.y + cdot-ta.height - 2px;
                                                         root.color-for = root.color-for == root.groups[i].name
                                                             ? "" : root.groups[i].name;
                                                         root.move-menu = false;
@@ -1230,10 +1230,6 @@ export component GroupManagerDialog inherits Rectangle {
                                                     }
                                                         clicked => {
                                                             root.color-hex-for = root.new-color;
-                                                            root.color-anchor-x = newdot-ta.absolute-position.x
-                                                                - gm.absolute-position.x;
-                                                            root.color-anchor-y = newdot-ta.absolute-position.y
-                                                                - gm.absolute-position.y + newdot-ta.height - 2px;
                                                             root.color-for = root.color-for == "__new" ? "" : "__new";
                                                             root.move-menu = false;
                                                         }
@@ -1519,10 +1515,6 @@ export component GroupManagerDialog inherits Rectangle {
                                             clicked => {
                                                 commit_edit();
                                                 root.color-hex-for = root.cur-color-hex;
-                                                root.color-anchor-x = rdot-ta.absolute-position.x
-                                                    - gm.absolute-position.x;
-                                                root.color-anchor-y = rdot-ta.absolute-position.y
-                                                    - gm.absolute-position.y + rdot-ta.height - 2px;
                                                 root.color-for = root.color-for == root.cur-name
                                                     ? "" : root.cur-name;
                                                 root.move-menu = false;
@@ -2940,108 +2932,6 @@ export component GroupManagerDialog inherits Rectangle {
                         vertical-alignment: center;
                         overflow: elide;
                         max-width: 240px;
-                    }
-                }
-            }
-
-            // ── 色板浮层：锚在被点的色点下方（左栏行 / 右栏头部 / 新建行共用）──
-            // 高保真 §改色：就地 8 列色板，当前色带环，选色即时落盘，点外部关闭。
-            if root.color-for != "" : Rectangle {
-                width: 195px;
-                // 47 预设色 8 列（6 行）+ 底行两钮（自定义 / 无颜色）
-                height: 16px + Math.ceil(root.palette.length / 8) * 18px
-                    + (Math.ceil(root.palette.length / 8) - 1) * 5px + 6px + 20px + 8px;
-                x: Math.max(8px, Math.min(root.color-anchor-x - 8px, gm.width - self.width - 8px));
-                y: Math.max(8px, Math.min(root.color-anchor-y + 6px, gm.height - self.height - 8px));
-                border-radius: Theme.radius-lg;
-                background: Theme.popup-bg-elevated;
-                border-width: 1px;
-                border-color: Theme.border-strong;
-                VerticalLayout {
-                    padding: 8px;
-                    spacing: 6px;
-                    GridLayout {
-                        spacing: 5px;
-                        for k in root.palette.length : Rectangle {
-                            row: k / 8;
-                            col: Math.mod(k, 8);
-                            width: 18px;
-                            height: 18px;
-                            border-radius: 4px;
-                            background: root.palette[k].swatch;
-                            // 当前色打环（用被编辑组的色，不是「当前组」的色）
-                            border-width: 2px;
-                            border-color: root.palette[k].hex == root.color-hex-for
-                                ? white : transparent;
-                            pw-ta := TouchArea {
-                                mouse-cursor: default;
-                                clicked => {
-                                    root.color-hex-for = root.palette[k].hex;
-                                    if (root.color-for == "__new") {
-                                        // 新建行：只改待建色，不落盘（组还不存在）
-                                        root.new-color = root.palette[k].hex;
-                                        root.new-swatch = root.palette[k].swatch;
-                                        root.color-for = "";
-                                    } else {
-                                        root.set-group-color(root.color-for, root.palette[k].hex);
-                                        root.color-for = "";
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // 底行两钮：左「自定义颜色…」（取色盘）/ 右「无颜色」（清空）
-                    HorizontalLayout {
-                        height: 20px;
-                        spacing: 5px;
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            border-radius: 4px;
-                            border-width: 1px;
-                            border-color: cp-ta.has-hover ? Theme.accent.with-alpha(0.42) : Theme.mgr-line-strong;
-                            cp-ta := TouchArea {
-                                mouse-cursor: default;
-                                clicked => {
-                                    // 起点色 = 该组当前色（无色则第一预设）；色板
-                                    // 浮层保留，取消取色盘即回到色板继续选预设
-                                    root.pick-hex = root.color-hex-for != ""
-                                        ? root.color-hex-for : root.palette[0].hex;
-                                    root.pick-open = true;
-                                }
-                            }
-                            Text {
-                                text: root.lang-en ? "Custom…" : "自定义颜色…";
-                                color: cp-ta.has-hover ? Theme.accent-solid : Theme.text-secondary;
-                                font-size: Theme.fs-2xs;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                        Rectangle {
-                            width: 64px;
-                            border-radius: 4px;
-                            border-width: 1px;
-                            border-color: nc-ta.has-hover ? Theme.accent.with-alpha(0.42) : Theme.mgr-line-strong;
-                            nc-ta := TouchArea {
-                                mouse-cursor: default;
-                                clicked => {
-                                    if (root.color-for == "__new") {
-                                        root.new-color = "";
-                                        root.new-swatch = transparent;
-                                    } else {
-                                        root.set-group-color(root.color-for, "");
-                                    }
-                                    root.color-for = "";
-                                }
-                            }
-                            Text {
-                                text: root.lang-en ? "No color" : "无颜色";
-                                color: nc-ta.has-hover ? Theme.accent-solid : Theme.text-secondary;
-                                font-size: Theme.fs-2xs;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
                     }
                 }
             }

@@ -665,6 +665,8 @@ export component CommandManagerDialog inherits Rectangle {
     callback step-cmd(string /* key */, int /* dir */);
     callback drop-group(string /* key */, string /* target */) -> int;
     callback drop-cards(string /* key */, string /* before-key */, bool /* after */) -> int;
+    // 空态「从预置导入」（#preset-commands）：注入出厂清单，返回实际导入条数。
+    callback import-presets() -> int;
 
     // ── 弹框内临时态（不落盘）──
     in-out property <string> query: "";
@@ -758,6 +760,11 @@ export component CommandManagerDialog inherits Rectangle {
     property <length> card-h: 108px;    // 卡高（固定：徽章28+5+预览33+5+底行20+上下内衬）
     property <length> card-gap: 8px;
     property <length> card-row-h: root.card-h + root.card-gap;
+    // (#cm-card-eq 2026-10-26) 列宽**必须由行宽算**，不能让每行自己分：行内两张卡
+    // 的 preferred 宽度随命令/备注文字长度走，Slint 的 box layout 以 pref 为起点
+    // 再均摊余量 → 同一列在不同行宽度不同（用户截图实测 229/289/299/191 四种，
+    // 最窄那行的分组 chip 被压成「…」）。列宽 = (行宽 − 列间距) / 2，行宽由
+    // mgrid 决定（网格横向内衬 14×2），故行内算好后两张卡都取它。
 
     function flash(m: string) {
         root.toast = m;
@@ -1209,18 +1216,11 @@ export component CommandManagerDialog inherits Rectangle {
                                 padding-right: 14px;
                                 alignment: center;
                                 spacing: 6px;
-                                // (#cm-new-btn 2026-10-25) 加号改用 Icon：原来写的是
-                                // 全角「＋」字符，字形比稿子的 14px svg 宽一档、
-                                // 基线还随字体漂，与「完成」摆在一起明显不是同一套
-                                // （用户截图：两个主按钮没对齐高保真）。
+                                // (#cm-new-btn-plain 2026-10-26) 加号整个去掉（用户点名）：
+                                // 与「完成」一致，主按钮纯文案、宽度随字走。
                                 // 字色 = 稿子的 --ac-ink（#06201d）：深色主题下 accent 是
                                 // 亮青，白字偏"发灰"、对比也不如深墨绿；浅色主题 accent 是
                                 // 深青，仍用白字（Theme.dark 取反色，同 ScopeRow 勾选那套口径）。
-                                Icon {
-                                    glyph: "add";
-                                    tint: Theme.dark ? #06201d : #ffffff;
-                                    size: 14px;
-                                }
                                 Text {
                                     text: root.lang-en ? "New command" : "新建命令";
                                     color: Theme.dark ? #06201d : #ffffff;
@@ -1696,6 +1696,60 @@ export component CommandManagerDialog inherits Rectangle {
                                 }
                             }
 
+                            // 从预置导入（#preset-groups 2026-10-26）：**常驻**入口。
+                            // 以前只挂在「一条命令都没有」的空态里 —— 用户删过几条、
+                            // 或换过机器后就没地方补了，新用户也发现不了出厂清单。
+                            // 常驻后任何时候都能补：按命令文本去重，已有的不重复加。
+                            HorizontalLayout {
+                                height: 32px;
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    border-radius: 8px;
+                                    background: pre-ta.has-hover ? Theme.accent.with-alpha(0.10) : transparent;
+                                    animate background { duration: 120ms; }
+                                    pre-ta := TouchArea {
+                                        mouse-cursor: default;
+                                        clicked => {
+                                            if (!commit-edit()) { return; }
+                                            let n = root.import-presets();
+                                            if (n > 0) {
+                                                root.flash(root.lang-en
+                                                    ? "Imported \{n} preset commands"
+                                                    : "已导入 \{n} 条预置命令");
+                                                // 导入的条目分散在 4 个分类组里，跳到
+                                                // 「全部命令」才看得见结果。
+                                                root.query = "";
+                                                root.search("");
+                                                root.clear-picks();
+                                                root.selected = "__all";
+                                                root.select("__all");
+                                            } else {
+                                                root.flash(root.lang-en
+                                                    ? "All preset commands are already in the list"
+                                                    : "预置命令都在列表里了");
+                                            }
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        alignment: center;
+                                        spacing: 6px;
+                                        Icon {
+                                            glyph: "download";
+                                            tint: pre-ta.has-hover ? Theme.accent-solid : Theme.text-muted;
+                                            size: 12px;
+                                        }
+                                        Text {
+                                            text: root.lang-en ? "Import presets" : "从预置导入";
+                                            color: pre-ta.has-hover ? Theme.accent-solid : Theme.text-muted;
+                                            font-size: 11.5px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
                             // 新建分组按钮（吸底虚线框；编辑态让位）
                             HorizontalLayout {
                                 height: root.creating ? 0px : 40px;
@@ -2138,8 +2192,8 @@ export component CommandManagerDialog inherits Rectangle {
                                                             }
                                                             Text {
                                                                 text: root.lang-en
-                                                                    ? "Save the ones you keep retyping"
-                                                                    : "命令栏里常用的那几条，存进来一键直达";
+                                                                    ? "Save frequent commands, then click to send"
+                                                                    : "把常用的命令存进分组，点击即可发送到当前终端";
                                                                 color: Theme.text-muted;
                                                                 font-size: 11px;
                                                                 horizontal-alignment: center;
@@ -2150,22 +2204,61 @@ export component CommandManagerDialog inherits Rectangle {
                                                 }
                                                 HorizontalLayout {
                                                     alignment: center;
-                                                    height: 28px;
+                                                    height: 30px;
+                                                    spacing: 9px;
+                                                    // (#cm-empty-btn 2026-10-26) 与头部/页脚主按钮同款：
+                                                    // 30 高 / 12.5 字 / padding 0 14、宽度随文案，
+                                                    // 深色主题墨绿字（--ac-ink），去掉全角「＋」。
                                                     Rectangle {
-                                                        width: 110px;
-                                                        height: 28px;
+                                                        width: max(54px, first-txt.preferred-width + 28px);
+                                                        height: 30px;
                                                         border-radius: 7px;
                                                         background: first-ta.has-hover
                                                             ? Theme.accent-hover : Theme.accent;
+                                                        animate background { duration: 120ms; }
                                                         first-ta := TouchArea {
                                                             mouse-cursor: default;
                                                             clicked => { open-editor-new(); }
                                                         }
-                                                        Text {
-                                                            text: root.lang-en ? "+ First command" : "＋ 新建第一条";
-                                                            color: #ffffff;
-                                                            font-size: 12px;
+                                                        first-txt := Text {
+                                                            text: root.lang-en ? "First command" : "新建第一条";
+                                                            color: Theme.dark ? #06201d : #ffffff;
+                                                            font-size: 12.5px;
                                                             font-weight: 650;
+                                                            horizontal-alignment: center;
+                                                            vertical-alignment: center;
+                                                        }
+                                                    }
+                                                    // (#cm-empty-import 2026-10-26) 从预置导入：
+                                                    // 次级 ghost 框（同「新建分组」的描边/悬停口径）。
+                                                    // 出厂清单全部只读诊断类，命令文本去重。
+                                                    Rectangle {
+                                                        width: max(54px, imp-txt.preferred-width + 28px);
+                                                        height: 30px;
+                                                        border-radius: 7px;
+                                                        border-width: 1px;
+                                                        border-color: imp-ta.has-hover
+                                                            ? Theme.accent.with-alpha(0.42) : Theme.mgr-line-strong;
+                                                        background: imp-ta.has-hover
+                                                            ? Theme.accent.with-alpha(0.10) : transparent;
+                                                        animate background { duration: 120ms; }
+                                                        imp-ta := TouchArea {
+                                                            mouse-cursor: default;
+                                                            clicked => {
+                                                                let n = root.import-presets();
+                                                                if (n > 0) {
+                                                                    root.flash(root.lang-en
+                                                                        ? "Imported \{n} preset commands"
+                                                                        : "已导入 \{n} 条预置命令");
+                                                                }
+                                                            }
+                                                        }
+                                                        imp-txt := Text {
+                                                            text: root.lang-en ? "Import presets" : "从预置导入";
+                                                            color: imp-ta.has-hover
+                                                                ? Theme.accent-solid : Theme.text-secondary;
+                                                            font-size: 12.5px;
+                                                            font-weight: 600;
                                                             horizontal-alignment: center;
                                                             vertical-alignment: center;
                                                         }
@@ -2365,9 +2458,16 @@ export component CommandManagerDialog inherits Rectangle {
 
                                         // 卡片两列（Rust 下发扁平序，这里按 2 张一行摊开）
                                         for r in root.card-rows : HorizontalLayout {
+                                            // 列宽只在这里算一次（#cm-card-eq）：视口宽（msv，
+                                            // 由外层容器决定，与卡片内容无关）减网格内衬 28
+                                            // 与列间距后对半。**不能用行宽 self.width**：
+                                            // 行宽是 flickable 按内容推的，会立刻成环。
+                                            property <length> cw: Math.max(150px,
+                                                (msv.width - 28px - root.card-gap) / 2);
                                             height: root.card-h;
                                             spacing: root.card-gap;
                                             if r * 2 < root.cards.length : CmCardSlot {
+                                                width: parent.cw;
                                                 card: root.cards[r * 2];
                                                 lang-en: root.lang-en;
                                                 is-all: root.is-all;
@@ -2428,6 +2528,7 @@ export component CommandManagerDialog inherits Rectangle {
                                                 height: root.card-h;
                                             }
                                             if r * 2 + 1 < root.cards.length : CmCardSlot {
+                                                width: parent.cw;
                                                 card: root.cards[r * 2 + 1];
                                                 lang-en: root.lang-en;
                                                 is-all: root.is-all;
@@ -3132,8 +3233,12 @@ export component CommandManagerDialog inherits Rectangle {
                             // 备注
                             VerticalLayout {
                                 spacing: 6px;
+                                // (#cm-note-hint 2026-10-26) hint 用撑条钉到行尾：原来
+                                // 裸排两个 Text，布局会把无约束的文字拉伸填空，提示
+                                // 悬在行中间（分组行有撑条所以正常，同款口径对齐）。
                                 HorizontalLayout {
                                     spacing: 6px;
+                                    height: 16px;
                                     Text {
                                         text: root.lang-en ? "Note" : "备注";
                                         color: Theme.text-secondary;
@@ -3141,6 +3246,7 @@ export component CommandManagerDialog inherits Rectangle {
                                         font-weight: 600;
                                         vertical-alignment: center;
                                     }
+                                    Rectangle { horizontal-stretch: 1; height: 1px; }
                                     Text {
                                         text: root.lang-en
                                             ? "optional; shown under the card name"
@@ -3148,6 +3254,7 @@ export component CommandManagerDialog inherits Rectangle {
                                         color: Theme.text-muted;
                                         font-size: 10.5px;
                                         vertical-alignment: center;
+                                        overflow: elide;
                                     }
                                 }
                                 Rectangle {

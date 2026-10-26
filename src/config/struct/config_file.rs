@@ -39,7 +39,10 @@ fn default_wallpaper() -> String {
 /// Bump when `migrate_defaults` gains a new one-time default-layout change.
 /// rev 5 = #follow-ui-removed（跟随系统下线：一律 follow=false、theme 落成具体一套）。
 /// rev 7 = #wallpaper-scope-params（壁纸参数按 主题 × 壁纸 × 作用域 分层）。
-pub const DEFAULTS_REV: u32 = 7;
+/// rev 8 = #preset-commands（预置快捷命令：仅注入快捷命令表为空的存量用户）。
+/// rev 9 = #preset-groups（预置命令按用途拆成 4 个分类组；rev 8 那种单
+///         「预设」大组按命令原文回填分类，旧组清空即删）。
+pub const DEFAULTS_REV: u32 = 9;
 
 pub(crate) const PREVIOUS_DEFAULT_WALLPAPER_TRANSPARENCY: f32 = 0.38;
 pub(crate) const PREVIOUS_DEFAULT_WALLPAPER_OVERLAY: f32 =

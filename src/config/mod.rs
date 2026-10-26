@@ -2,6 +2,8 @@
 mod structs;
 #[path = "impls/config.rs"]
 mod config;
+#[path = "impls/preset_commands.rs"]
+mod preset_commands;
 #[path = "impls/finalshell.rs"]
 mod finalshell;
 

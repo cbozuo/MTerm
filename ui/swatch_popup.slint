@@ -1,0 +1,469 @@
+// 通用取色弹层（#swatch-popup 2026-10-26）——主题「强调色」与会话分组颜色
+// 共用同一套取色界面：48 色带名称/色号的大色格 + 「最近」行 + 「选定 / 调色盘」
+// 合并按钮 + 页脚（无颜色 / 随机 / 取消 / 应用）。
+//
+// 视觉规格与交互语义照抄设置页「强调色」弹层（ui/app.slint `accent-pop-open`
+// 那段仍是同款实现的另一份 —— 分组改色弹框此前是 8×6 无名字的小色格，用户
+// 要求「和主题里设置强调色的弹框保持一致」）。**改这里必须同步那边**，或以
+// 后把那边也换成本组件，别再各写一套。
+//
+// 语义：点色块只改「选定（stage）」；「应用」才把结果交给调用方落盘，
+// 取消 / 遮罩 / Esc 一律还原为 `baseline`。
+
+import { Theme } from "theme.slint";
+import { PickerMath, InfoSwatch, ColorInfoCard } from "color_picker.slint";
+import { GroupSwatch } from "group_types.slint";
+import { Scrim } from "widgets.slint";
+
+export component SwatchPopup inherits Rectangle {
+    in property <[GroupSwatch]> swatches;
+    // 打开时的选定色（通常 = baseline；调用方只传这个，选定态由本组件自己持有，
+    // 免得每个调用点都要多开一个 in-out 属性跟它双向绑定）。
+    in property <string> initial: "";
+    in-out property <string> stage: "";        // 选定色（未应用）
+    in property <string> baseline: "";         // 当前生效色（取消/关闭的还原点）
+    in property <[string]> recent: [];
+    in property <bool> en: false;
+    // 分组色没有「随机」的语义负担、但需要「无颜色」；强调色正好相反。
+    in property <bool> allow-random: true;
+    in property <bool> allow-clear: false;
+
+    callback applied(string /* hex */);
+    callback dismissed;                        // 取消 / 遮罩 / 空白
+    callback cleared;                          // 「无颜色」
+    callback picker-requested(string /* hex */);
+    callback random-requested() -> string;
+
+    width: 100%;
+    height: 100%;
+    background: transparent;
+
+    // 每次打开（调用方用 `if` 包住本组件，实例随开随建）都把选定色落到 initial；
+    // changed 兜住「实例常驻、只换 initial」的用法。
+    init => { root.stage = root.initial; }
+    changed initial => { root.stage = root.initial; }
+
+    // 对比度守卫：不足 3:1 时预览调亮后的色，并在副标题里警示。
+    property <string> fitted: PickerMath.fit-hex(root.stage);
+    property <bool> warn: self.fitted != root.stage;
+    property <bool> dirty: root.stage != root.baseline;
+    property <bool> has-recent: root.recent.length > 0 || root.baseline != "";
+    // 组还没设过颜色时 stage = ""（分组「无颜色」是合法状态）。此时「选定」井与
+    // 「应用」键要显式画成「未设定 / 不可应用」，不能靠 hex-color("") 兜底成透明
+    // （实测：整块井和「应用」键会一起消失，看起来像弹框坏了）。
+    property <bool> has-stage: root.stage != "";
+
+    Scrim { }
+    // 点遮罩 = 放弃修改（与「取消」同义）
+    dismiss-ta := TouchArea {
+        clicked => {
+            root.stage = root.baseline;
+            root.dismissed();
+        }
+    }
+
+    pop := Rectangle {
+        width: 656px;
+        height: Theme.snap-to-device(min(root.height - 16px, lay.preferred-height));
+        x: Math.max(8px, Math.min(
+            Theme.snap-to-device((root.width - self.width) / 2),
+            Math.max(8px, root.width - self.width - 8px)));
+        y: Math.max(8px, Math.min(
+            Theme.snap-to-device((root.height - self.height) / 2),
+            Math.max(8px, root.height - self.height - 8px)));
+        background: Theme.popup-bg;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: transparent;
+
+        property <length> drag-ox;
+        property <length> drag-oy;
+        property <length> drag-cx;
+        property <length> drag-cy;
+        property <bool> dragging: false;
+
+        // 卡片留白吞点击（否则点 padding 落到遮罩上 = 取消）；空白区可拖动卡片
+        card-ta := TouchArea {
+            clicked => {}
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.down) {
+                    pop.dragging = true;
+                    pop.drag-ox = pop.x;
+                    pop.drag-oy = pop.y;
+                    pop.drag-cx = card-ta.absolute-position.x + card-ta.mouse-x;
+                    pop.drag-cy = card-ta.absolute-position.y + card-ta.mouse-y;
+                } else if (ev.kind == PointerEventKind.up) {
+                    pop.dragging = false;
+                }
+            }
+            moved => {
+                pop.x = Theme.snap-to-device(Math.max(8px, Math.min(
+                    pop.drag-ox + (card-ta.absolute-position.x + card-ta.mouse-x - pop.drag-cx),
+                    Math.max(8px, root.width - pop.width - 8px))));
+                pop.y = Theme.snap-to-device(Math.max(8px, Math.min(
+                    pop.drag-oy + (card-ta.absolute-position.y + card-ta.mouse-y - pop.drag-cy),
+                    Math.max(8px, root.height - pop.height - 8px))));
+            }
+        }
+
+        lay := VerticalLayout {
+            padding-top: 14px;
+            padding-bottom: 14px;
+            padding-left: 16px;
+            padding-right: 16px;
+            spacing: 10px;
+
+            // ── 副标题行：三态互斥（警示 / 已选未生效 / 中性提示）──────────
+            // 尾部的 stretch 吸空块不能省：无 stretch 子项时 Slint 把余量均摊给
+            // 可生长的 Text，色块会被推离文字（用户当年截图反馈过）。
+            if root.warn : HorizontalLayout {
+                spacing: 4px;
+                cross-axis-alignment: center;
+                Text {
+                    height: 20px;
+                    horizontal-stretch: 0;
+                    vertical-alignment: center;
+                    text: root.en ? "Selected" : "已选择";
+                    color: Theme.warning;
+                    font-size: 11px;
+                }
+                InfoSwatch { hex: root.stage; card-below: false; }
+                Text {
+                    height: 20px;
+                    horizontal-stretch: 0;
+                    vertical-alignment: center;
+                    text: root.en
+                        ? "not applied — below 3:1 on the panel; applying lightens to"
+                        : "（未生效）—— 对面板对比度不足 3:1，应用时将自动调亮为";
+                    color: Theme.warning;
+                    font-size: 11px;
+                }
+                InfoSwatch { hex: root.fitted; card-below: false; }
+                Text {
+                    height: 20px;
+                    horizontal-stretch: 0;
+                    vertical-alignment: center;
+                    text: root.en ? ". Apply takes effect; Cancel / ✕ / blank reverts."
+                        : "；点「应用」生效，取消 / 关闭还原。";
+                    color: Theme.warning;
+                    font-size: 11px;
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            if !root.warn && root.dirty : HorizontalLayout {
+                spacing: 4px;
+                cross-axis-alignment: center;
+                Text {
+                    height: 20px;
+                    horizontal-stretch: 0;
+                    vertical-alignment: center;
+                    text: root.en ? "Selected" : "已选择";
+                    color: Theme.text-muted;
+                    font-size: 11px;
+                }
+                InfoSwatch { hex: root.stage; card-below: false; }
+                Text {
+                    height: 20px;
+                    horizontal-stretch: 0;
+                    vertical-alignment: center;
+                    text: root.en
+                        ? "(not applied). Apply takes effect; Cancel / ✕ / blank reverts."
+                        : "（未生效）；点「应用」生效，取消 / 关闭还原。";
+                    color: Theme.text-muted;
+                    font-size: 11px;
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+            if !root.warn && !root.dirty : HorizontalLayout {
+                spacing: 4px;
+                cross-axis-alignment: center;
+                Text {
+                    height: 20px;
+                    horizontal-stretch: 0;
+                    vertical-alignment: center;
+                    text: root.en
+                        ? "Pick a swatch to select; Apply takes effect. Cancel / ✕ / blank reverts to"
+                        : "点选色块仅选中；「应用」后生效，取消 / 关闭还原当前色";
+                    color: Theme.text-muted;
+                    font-size: 11px;
+                }
+                if root.has-recent : InfoSwatch {
+                    hex: root.baseline != "" ? root.baseline : root.swatches.length > 0
+                        ? root.swatches[0].hex : "";
+                    card-below: false;
+                }
+                if root.has-recent : Text {
+                    height: 20px;
+                    horizontal-stretch: 0;
+                    vertical-alignment: center;
+                    text: ".";
+                    color: Theme.text-muted;
+                    font-size: 11px;
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+
+            // ── 最近使用（点选 = 仅选中；空时回落显示当前生效色）──────────
+            if root.has-recent : HorizontalLayout {
+                spacing: 6px;
+                cross-axis-alignment: center;
+                Text {
+                    text: root.en ? "Recent" : "最近";
+                    color: Theme.text-muted;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 0;
+                }
+                for r in (root.recent.length > 0 ? root.recent : [root.baseline]) : Rectangle {
+                    width: 14px;
+                    height: 14px;
+                    border-radius: 4px;
+                    background: PickerMath.hex-color(r);
+                    border-width: r-ta.has-hover ? 2px : 1px;
+                    border-color: r-ta.has-hover ? PickerMath.ink-on(r).with-alpha(0.72) : #ffffff26;
+                    drop-shadow-blur: r-ta.has-hover ? 10px : 0px;
+                    drop-shadow-color: #00000066;
+                    animate drop-shadow-blur { duration: 100ms; }
+                    Rectangle {
+                        border-radius: 4px;
+                        background: #ffffff;
+                        opacity: r-ta.has-hover ? 0.10 : 0;
+                    }
+                    ColorInfoCard {
+                        hex: r;
+                        x: (parent.width - self.width) / 2 - 8px;
+                        y: -(self.height + 7px);
+                        visible: r-ta.has-hover;
+                    }
+                    r-ta := TouchArea {
+                        mouse-cursor: default;
+                        clicked => { root.stage = r; }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+
+            // ── 预设网格：8 列，名称 + 色号（点选仅选中）──────────────────
+            GridLayout {
+                spacing: 6px;
+                for p[i] in root.swatches : Rectangle {
+                    row: i / 8;
+                    col: Math.mod(i, 8);
+                    width: 72px;
+                    height: 40px;
+                    border-radius: 8px;
+                    background: p.swatch;
+                    border-width: root.stage == p.hex ? 2px : p-ta.has-hover ? 2px : 1px;
+                    border-color: root.stage == p.hex
+                        ? PickerMath.ink-on(p.hex)
+                        : p-ta.has-hover ? PickerMath.ink-on(p.hex).with-alpha(0.72) : #ffffff1a;
+                    drop-shadow-blur: p-ta.has-hover ? 12px : 0px;
+                    drop-shadow-color: #00000066;
+                    animate drop-shadow-blur { duration: 100ms; }
+                    Rectangle {
+                        border-radius: 8px;
+                        background: #ffffff;
+                        opacity: p-ta.has-hover ? 0.10 : 0;
+                    }
+                    VerticalLayout {
+                        padding-left: 7px;
+                        padding-right: 5px;
+                        alignment: center;
+                        Text {
+                            text: p.name;
+                            color: PickerMath.ink-on(p.hex);
+                            font-size: 10px;
+                            font-weight: 600;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: p.hex;
+                            color: PickerMath.ink-on(p.hex);
+                            opacity: 0.78;
+                            font-size: 8.5px;
+                            font-family: Theme.term-font-family;
+                            overflow: elide;
+                        }
+                    }
+                    p-ta := TouchArea {
+                        mouse-cursor: default;
+                        clicked => { root.stage = p.hex; }
+                    }
+                }
+            }
+
+            // ── 页脚：顶部分隔线 + 左侧「选定 | 调色盘」 + 右侧动作键 ──────
+            Rectangle { height: 1px; background: #3a3d46; }
+            HorizontalLayout {
+                height: 36px;
+                spacing: 8px;
+
+                // 「选定色票」+「调色盘」合并成一个按钮：左段填选定色，右段 hint，
+                // 整卡一个 TouchArea（两段动作本来就相同 = 开调色盘）。
+                Rectangle {
+                    width: 194px;
+                    height: parent.height;
+                    border-radius: 10px;
+                    border-width: Theme.hairline();
+                    border-color: cur-ta.has-hover && root.has-stage
+                        ? PickerMath.hex-color(root.stage) : Theme.border-strong;
+                    clip: true;
+                    animate border-color { duration: 120ms; }
+                    Rectangle {
+                        x: 1px;
+                        y: Theme.hairline();
+                        width: 103px;
+                        height: parent.height - 2 * Theme.hairline();
+                        border-top-left-radius: 9px;
+                        border-bottom-left-radius: 9px;
+                        background: root.has-stage
+                            ? PickerMath.hex-color(root.stage) : Theme.bg-active;
+                        VerticalLayout {
+                            x: 10px;
+                            alignment: center;
+                            Text {
+                                text: root.en ? "Selected" : "选定";
+                                color: root.has-stage
+                                    ? PickerMath.ink-on(root.stage) : Theme.text-muted;
+                                font-size: 9px;
+                                font-weight: 600;
+                                opacity: 0.85;
+                            }
+                            Text {
+                                text: root.has-stage ? root.stage
+                                    : (root.en ? "Not set" : "未设定");
+                                color: root.has-stage
+                                    ? PickerMath.ink-on(root.stage) : Theme.text-muted;
+                                font-size: 10px;
+                                font-family: Theme.term-font-family;
+                            }
+                        }
+                    }
+                    Rectangle {
+                        x: 104px;
+                        y: Theme.hairline();
+                        width: 1px;
+                        height: parent.height - 2 * Theme.hairline();
+                        background: Theme.border-strong;
+                    }
+                    Text {
+                        x: 105px;
+                        y: Theme.hairline();
+                        width: parent.width - 105px - 1px;
+                        height: parent.height - 2 * Theme.hairline();
+                        text: root.en ? "Palette ›" : "调色盘 ›";
+                        color: cur-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    cur-ta := TouchArea {
+                        mouse-cursor: default;
+                        clicked => { root.picker-requested(root.stage); }
+                    }
+                }
+
+                // 尾部吸空：右侧动作键整体贴右
+                Rectangle { horizontal-stretch: 1; }
+
+                if root.allow-clear : Rectangle {
+                    width: 64px;
+                    height: parent.height;
+                    border-radius: 8px;
+                    background: clr-ta.has-hover ? Theme.bg-hover : transparent;
+                    border-width: 1px;
+                    border-color: clr-ta.has-hover ? Theme.text-muted : Theme.border-strong;
+                    Text {
+                        width: 100%;
+                        height: 100%;
+                        text: root.en ? "No color" : "无颜色";
+                        color: clr-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    clr-ta := TouchArea {
+                        mouse-cursor: default;
+                        clicked => { root.cleared(); }
+                    }
+                }
+                if root.allow-random : Rectangle {
+                    width: 64px;
+                    height: parent.height;
+                    border-radius: 8px;
+                    background: rnd-ta.has-hover ? Theme.bg-hover : transparent;
+                    border-width: 1px;
+                    border-color: rnd-ta.has-hover ? Theme.text-muted : Theme.border-strong;
+                    Text {
+                        width: 100%;
+                        height: 100%;
+                        text: root.en ? "Random" : "随机";
+                        color: rnd-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    rnd-ta := TouchArea {
+                        mouse-cursor: default;
+                        clicked => { root.stage = root.random-requested(); }
+                    }
+                }
+                Rectangle {
+                    width: 64px;
+                    height: parent.height;
+                    border-radius: 8px;
+                    background: cxl-ta.has-hover ? Theme.bg-hover : transparent;
+                    border-width: 1px;
+                    border-color: cxl-ta.has-hover ? Theme.text-muted : Theme.border-strong;
+                    Text {
+                        width: 100%;
+                        height: 100%;
+                        text: root.en ? "Cancel" : "取消";
+                        color: cxl-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    cxl-ta := TouchArea {
+                        mouse-cursor: default;
+                        clicked => {
+                            root.stage = root.baseline;
+                            root.dismissed();
+                        }
+                    }
+                }
+                Rectangle {
+                    width: 64px;
+                    height: parent.height;
+                    border-radius: 8px;
+                    background: root.has-stage
+                        ? PickerMath.hex-color(root.fitted) : Theme.bg-active;
+                    opacity: root.has-stage ? 1.0 : 0.75;
+                    clip: true;
+                    Rectangle {
+                        border-radius: 8px;
+                        background: #ffffff;
+                        opacity: ok-ta.has-hover ? 0.12 : ok-ta.pressed ? 0.22 : 0;
+                    }
+                    Text {
+                        width: 100%;
+                        height: 100%;
+                        text: root.en ? "Apply" : "应用";
+                        color: root.has-stage
+                            ? PickerMath.ink-on(root.fitted) : Theme.text-muted;
+                        font-size: 12px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    ok-ta := TouchArea {
+                        mouse-cursor: default;
+                        clicked => { if (root.has-stage) { root.applied(root.fitted); } }
+                    }
+                }
+            }
+        }
+    }
+}

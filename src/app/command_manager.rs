@@ -668,6 +668,27 @@ pub(super) fn install(
         });
     }
 
+    // ── 空态「从预置导入」：注入出厂清单（命令文本去重），条数给 Slint 组织 toast ──
+    {
+        let store_rc = store.clone();
+        let weak = window.as_weak();
+        let collapsed = collapsed.clone();
+        let cm = cm.clone();
+        window.on_cm_import_presets(move || -> i32 {
+            let added = store_rc.borrow_mut().import_presets();
+            if added > 0 {
+                if let Some(w) = weak.upgrade() {
+                    // 导入只追加在尾部：uid 表就地补齐即可（reseat 会清勾选，
+                    // 空态下本来就没有勾选，无副作用）。
+                    cm.borrow_mut()
+                        .reseat(store_rc.borrow().quick_commands().len());
+                    commit(&w, &store_rc, &collapsed, &cm);
+                }
+            }
+            added as i32
+        });
+    }
+
     // ── 切换发送方式（卡片右上图标一点即切，落盘）──
     {
         let store_rc = store.clone();

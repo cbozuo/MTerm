@@ -475,9 +475,10 @@ pub fn rebuild_group_palette(win: &crate::ui::AppWindow, _p: &Palette) {
     // 同源；自定义色走色板左下角的取色盘入口。
     let swatches: Vec<crate::ui::GroupSwatch> = palettes::ACCENT_PRESETS
         .iter()
-        .map(|&(_, _, raw)| crate::ui::GroupSwatch {
+        .map(|&(_, name, raw)| crate::ui::GroupSwatch {
             hex: format!("#{raw:06X}").into(),
             swatch: color(raw),
+            name: name.into(),
         })
         .collect();
     win.set_group_palette(ModelRc::from(Rc::new(VecModel::from(swatches))));

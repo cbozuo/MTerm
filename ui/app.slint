@@ -33,6 +33,7 @@ export { Theme }
 // 终端光标共用，@children 传示例条）+ PickerMath 全局（Rust 一次性接线，
 // 见 src/app.rs「PickerMath 接线」块；src/picker/mod.rs 为取色业务模块）。
 import { ColorPickerDialog, PickerMath, InfoSwatch, ColorInfoCard } from "color_picker.slint";
+import { SwatchPopup } from "swatch_popup.slint";
 export { PickerMath }
 import { RightSidebar, DiskInfo } from "right_sidebar.slint";
 import { TabBar, TabInfo } from "tabs.slint";
@@ -1199,6 +1200,7 @@ export component AppWindow inherits Window {
     callback cm-step-cmd(string /* key */, int /* dir */);
     callback cm-drop-group(string /* key */, string /* target */) -> int;
     callback cm-drop-cards(string /* key */, string /* before-key */, bool /* after */) -> int;
+    callback cm-import-presets() -> int;
     callback toggle-quick-group(string /* group */);  // collapse/expand a group (#55)
     // 命令栏「快捷」面板的右键菜单动作（#55）——管理走命令管理弹框，这五个
     // 快捷动作直接对命令表操作。
@@ -1617,6 +1619,17 @@ export component AppWindow inherits Window {
     in property <color> gm-cur-color: transparent;
     in property <string> gm-cur-color-hex: "";
     in-out property <string> gm-query: "";   // 搜索词（过滤在 Rust）
+    // 改色弹层当前针对哪个组（"" = 未展开，"__new" = 新建行）。#swatch-popup
+    // 起弹层是整块覆盖，不再是锚在色点旁的小浮层；这里双向暴露给根，Rust 与
+    // 离屏探针都能读到/设置它。
+    in-out property <string> gm-color-for: "";
+    // 弹层里「选定色」的初值（= 该组当前色；色板据此打环、页脚井填色）。
+    // 人工点色点时会就地重设，这里暴露是为了 Rust / 探针能在不点击的情况下
+    // 直接展开某个组的改色弹层。
+    in-out property <string> gm-color-hex-for: "";
+    // 「新建分组」行的手选色（弹层挂在根上，所以要把这两个状态提到根）。
+    in-out property <string> gm-new-color: "";
+    in-out property <color> gm-new-swatch: transparent;
     callback gm-open-request();
     // (#gm-accent-palette) 分组管理取色盘状态（Rust 同步取样点用，照 highlight 版）
     in-out property <bool> gm-pick-open: false;
@@ -6278,6 +6291,10 @@ export component AppWindow inherits Window {
         cur-color: root.gm-cur-color;
         cur-color-hex: root.gm-cur-color-hex;
         query <=> root.gm-query;
+        color-for <=> root.gm-color-for;
+        color-hex-for <=> root.gm-color-hex-for;
+        new-color <=> root.gm-new-color;
+        new-swatch <=> root.gm-new-swatch;
         palette: root.group-palette;
         lang-en: root.lang-en;
         pick-open <=> root.gm-pick-open;
@@ -6305,6 +6322,49 @@ export component AppWindow inherits Window {
         reorder-members(id, b, a, w) => { root.gm-reorder-members(id, b, a, w); }
         step-members(dir) => { root.gm-step-members(dir); }
         move-out(id, w) => { root.gm-move-out(id, w); }
+    }
+
+    // --- 分组改色弹层（#swatch-popup）------------------------------------
+    // 挂在窗口根、盖在分组管理之上。为什么不放在 gm 里面：
+    //  ① gm 是 760×560 且 `clip: true` —— 色块悬浮信息卡（RGB/HSV/HSL）在
+    //     「最近」行上方，卡片贴近对话框顶边时会被裁掉（用户截图）；
+    //  ② 拖动被 clamp 在 gm 内，用户要求「整个界面都可以拖动」。
+    // 放到根上后与设置页「强调色」弹层完全一致：整窗可拖、信息卡不被裁。
+    // 打开「调色盘」时先收起：取色盘在 gm 内部、层级比本层低，不收起会被压住。
+    if root.gm-open && root.gm-color-for != "" && !root.gm-pick-open : SwatchPopup {
+        swatches: root.group-palette;
+        // 选定色初值 = 该组当前色（组还没颜色时为空 = 显式「未设定」）
+        initial: root.gm-color-hex-for;
+        baseline: root.gm-color-hex-for;
+        recent: root.gm-color-hex-for != "" ? [root.gm-color-hex-for] : [];
+        en: root.lang-en;
+        allow-random: false;      // 分组色没有「随机」（强调色才有）
+        allow-clear: true;        // 分组可以「无颜色」
+        dismissed => { root.gm-color-for = ""; }
+        cleared => {
+            if (root.gm-color-for == "__new") {
+                root.gm-new-color = "";
+                root.gm-new-swatch = transparent;
+            } else {
+                root.gm-set-color(root.gm-color-for, "");
+            }
+            root.gm-color-for = "";
+        }
+        applied(hex) => {
+            if (root.gm-color-for == "__new") {
+                // 新建行：只改待建色，不落盘（组还不存在）
+                root.gm-new-color = hex;
+                root.gm-new-swatch = PickerMath.hex-color(hex);
+            } else {
+                root.gm-set-color(root.gm-color-for, hex);
+            }
+            root.gm-color-for = "";
+        }
+        picker-requested(hex) => {
+            // 色板不关：取消取色盘即回到色板继续选预设
+            root.gm-pick-hex = hex;
+            root.gm-pick-open = true;
+        }
     }
 
     // --- Rename-session dialog ----------------------------------------------
@@ -6434,6 +6494,7 @@ export component AppWindow inherits Window {
         step-cmd(k, d) => { root.cm-step-cmd(k, d); }
         drop-group(k, t) => { return root.cm-drop-group(k, t); }
         drop-cards(k, b, a) => { return root.cm-drop-cards(k, b, a); }
+        import-presets() => { return root.cm-import-presets(); }
     }
 
 

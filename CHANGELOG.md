@@ -6,6 +6,33 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **命令管理：卡片网格等宽 + 预置命令按用途分四组 + 「从预置导入」常驻（#cm-card-eq / #preset-groups）。**
+  - **两张卡不再各算各的宽**：行内两张卡的 preferred 宽度跟着命令/备注文字走，Slint 又按 pref 起点均摊余量 → 同一列在不同行宽度不同（实测四种列宽，最窄那行的分组 chip 被压成「…」）。现在列宽只由视口算一次（`(msv.width − 28 − card-gap) / 2`），两张卡都取它，奇数行尾随吸空块。
+  - **预置命令分四组**：磁盘与内存 / 网络排查 / 服务与日志 / 进程与容器，各自带一个出厂组色（取自 `ACCENT_PRESETS`）。新装即按分类种下，存量配置走 `defaults_rev` rev 9 按**命令原文**回填分类 —— 用户改过的命令、自己加的条目一条不碰，旧「预设」组清空即删、还有自建条目则保留。
+  - **「从预置导入」不再只藏在空态**：左栏底部常驻入口，任何时候都能补回出厂清单（按命令文本去重），导完跳到「全部命令」并报条数。
+- **Command manager: equal-width card grid, presets split into four purpose groups, and an always-available "Import presets" entry (#cm-card-eq / #preset-groups).**
+  - **The two cards no longer size themselves independently**: each card's preferred width followed its command/note text, and Slint distributed the leftover space from that starting point — so a column had a different width on every row (four distinct widths measured; the narrowest row squeezed its group chip down to "…"). The column width is now computed once from the viewport (`(msv.width − 28 − card-gap) / 2`) and both cards take it; an odd last row keeps the trailing spacer.
+  - **Presets split into four groups**: Storage & memory / Network / Services & logs / Processes & containers, each seeded with a factory group colour (taken from `ACCENT_PRESETS`). Fresh installs are seeded that way; existing configs go through `defaults_rev` rev 9, which re-files them **by exact command text** — commands the user edited and entries they added are never touched, and the old "Presets" group is dropped once empty (kept if it still holds their own commands).
+  - **"Import presets" is no longer hidden in the empty state**: a permanent entry at the bottom of the left column restores the factory list at any time (deduplicating by command text), then jumps to "All commands" and reports the count.
+
+- **分组管理：改色弹层换成与设置页「强调色」同一套取色界面（#swatch-popup）。**
+  - 原来是锚在色点旁的 195px 小浮层、8×6 无名色格、点一下立即落盘；现在是整块取色卡：48 色带**名称 + 色号**、最近行、「选定 ▏调色盘」合并按钮，页脚 无颜色 / 取消 / 应用。点色块只改「选定」，取消 / 遮罩还原，应用才落盘 —— 误点不再改色。
+  - 共用组件 `ui/swatch_popup.slint`（`PickerMath` 出字色与对比度守卫）；组还没设颜色时「选定」井与「应用」键显式画成「未设定 / 不可应用」，不再因空 hex 变成透明消失。
+  - **弹层改挂窗口根**（#swatch-popup-lift）：分组弹框是 760×560 且 `clip: true`，色块悬浮信息卡（RGB/HSV/HSL）贴着「最近」行上方，弹框靠上时会被裁掉；拖动也被钳在对话框内。现在整块弹层挂在 `app.slint` 根上 —— 整个窗口都能拖、信息卡不被裁，打开「调色盘」时先收起（取色盘层级更低），Esc 先收弹层再关弹框。
+- **Group manager: the colour popup now uses the same swatch UI as the theme's accent picker (#swatch-popup).**
+  - It used to be a 195px popover anchored to the colour dot with an 8×6 grid of unnamed swatches that applied on click. It is now a full palette card: 48 swatches with **names + hex**, a Recent row, a merged "Selected ▏Palette" button, and a footer of No colour / Cancel / Apply. Clicking a swatch only changes the selection; Cancel or the scrim reverts; only Apply writes — a misclick no longer recolours the group.
+  - Shared component `ui/swatch_popup.slint` (ink colour and contrast guard via `PickerMath`). When a group has no colour yet, the "Selected" well and the Apply button render explicitly as "Not set / not applicable" instead of turning transparent and vanishing on an empty hex.
+  - **The overlay now lives at the window root** (#swatch-popup-lift): the group dialog is 760×560 with `clip: true`, so the swatch hover card (RGB/HSV/HSL) — which floats above the Recent row — was cut off whenever the card sat near the dialog's top edge, and dragging was clamped inside the dialog. The whole palette now hangs off `app.slint`'s root: it can be dragged anywhere in the window and the hover card is never clipped. It hides while the Palette picker is open (the picker sits lower in the z-order), and Esc closes the palette before the dialog.
+
+- **命令管理：出厂预置 12 条诊断命令，空态一键导入（#preset-commands）。**
+  - **预置清单**：磁盘/目录/内存占用、实时进程、监听端口、网卡地址、运行中/异常服务、容器列表、跟踪日志、内核消息 —— 全部只读、主流 Linux 即开即用；「连通测试」只落入输入框不回车，补全目标地址再执行（顺带演示「填入」档）。收进「预设」分组，与普通分组无异，可改名可删除。
+  - **三个注入点互不重跑**：新装 `fresh_config()` 直接种子；存量用户走 `defaults_rev` rev 8 迁移，**仅快捷命令表为空时**注入 —— 已有命令的用户不受打扰，删掉的预置也不会被"复活"；管理器空态新增「从预置导入」次级按钮，按**命令文本**去重（自己录过的不重复塞），清空后随时可补。
+  - **顺手的界面修正（同一张截图里的反馈）**：头部「新建命令」与空态「新建第一条」去掉加号、统一主按钮规范（30 高 / 12.5 字 / 墨绿字、宽度随文案）；空态文案改为「把常用的命令存进分组，点击即可发送到当前终端」；编辑卡「备注」行提示用撑条钉到行尾 —— 原来裸排两个 Text 会被布局拉伸，提示悬在行中间（分组行有撑条所以一直正常）。
+- **Command manager: 12 factory preset diagnostic commands, one-click import from the empty state (#preset-commands).**
+  - **The preset list**: disk / directory / memory usage, top processes, listening ports, NIC addresses, running / failed services, containers, journal follow, kernel messages — all read-only, work out of the box on mainstream Linux. "Ping" only fills the input without pressing Enter: complete the host and run it yourself (which also demonstrates the "fill-in" send mode). They land in a "Presets" group that behaves like any user group — rename it, delete it.
+  - **Three injection points, never doubled**: fresh installs are seeded straight from `fresh_config()`; existing users go through the `defaults_rev` rev-8 migration and get the presets **only when their quick-command list is empty** — anyone already using quick commands is left untouched, and deleted presets are not resurrected; the manager's empty state gains a secondary "Import presets" button that dedupes by **command text** (commands you recorded yourself are skipped) and can restore the list at any time.
+  - **UI fixes from the same screenshots**: the header "New command" and empty-state "First command" buttons drop the plus sign and share one primary-button spec (30 tall / 12.5 type / dark-ink on accent, width follows the label); the empty-state copy now reads "Save frequent commands into groups, then click to send them to the active terminal"; the editor card's Note-row hint is pinned to the line end with a stretch spacer — two bare Texts used to get stretched apart by the layout, floating the hint mid-row (the Group row always had the spacer, which is why it looked right).
+
 - **命令栏：补全候选纳入自定义指令集，历史浮层的两个模式各归其位（#cmdbar-suggest）。**
   - **补全态不再只认历史**：打字弹出的候选框现在把**快捷命令**也找出来（`name` 与 `command` 都参与匹配，展示永远是 `command` —— 否则中文名点一下会把名字当命令发出去），排历史之前；每条左侧标类型：青色闪电 = 自定义指令集，灰色回形箭头 = 敲过的命令。
   - **时钟图标不再误亮**：补全框与完整面板共用 `history-open`，历史钮原来绑的就是它，打字时也跟着亮。新增 `hist-panel-open`（= `history-open && !history-autocomplete`），只有点时钟 / `Ctrl+R` 才点亮。

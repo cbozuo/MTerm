@@ -52,6 +52,9 @@ fn normalize_hex_color(value: &str) -> Option<String> {
 /// (#theme-split rev4) 壁纸默认改为**无**（§0：新用户装完是"幻想3048+被反写的
 /// dark"的坑）+ 跟随系统 + mterm 门面默认主题（#theme-dedupe 2026-10-15：新老用户一律新底色）。
 fn fresh_config() -> ConfigFile {
+    // (#preset-groups 2026-10-26) 出厂预置命令按用途分 4 组，组名与组色一并
+    // 种子（组色只用作出厂观感，之后用户在分组管理里改就是用户的）。
+    let (preset_groups, preset_colors) = super::preset_commands::preset_group_seed();
     ConfigFile {
         wallpaper: String::new(),
         right_sidebar_dock: "right".to_string(),
@@ -66,6 +69,11 @@ fn fresh_config() -> ConfigFile {
         // （serde 默认的空串是给 rev4 迁移判定「从未挑过」用的，新装不该带它）。
         follow_system: false,
         theme: "mterm-dark".to_string(),
+        // (#preset-commands 2026-10-26) 出厂自带预置快捷命令。defaults_rev
+        // 直接落在最新，因此不会再进 migrate_defaults 的 rev8 注入分支。
+        quick_commands: super::preset_commands::preset_commands(),
+        quick_groups: preset_groups,
+        group_colors: preset_colors,
         defaults_rev: DEFAULTS_REV,
         ..ConfigFile::default()
     }
@@ -243,6 +251,28 @@ fn migrate_defaults(cfg: &mut ConfigFile) -> bool {
                 }
             }
         }
+    }
+    // rev 8 (#preset-commands 2026-10-26): 出厂预置快捷命令。只注入**一条都
+    // 没有**的存量用户——表非空说明用户已在用（或刻意清空过，同样不掺，
+    // 需要时从管理器空态「从预置导入」补）。注入是一次性的：defaults_rev
+    // 推进后不再重跑，用户删掉预置不会被"复活"。
+    if cfg.defaults_rev < 8 && cfg.quick_commands.is_empty() {
+        cfg.quick_commands = super::preset_commands::preset_commands();
+        let (groups, colors) = super::preset_commands::preset_group_seed();
+        for g in groups {
+            if !cfg.quick_groups.iter().any(|x| x == &g) {
+                cfg.quick_groups.push(g);
+            }
+        }
+        for (name, hex) in colors {
+            cfg.group_colors.entry(name).or_insert(hex);
+        }
+    }
+    // rev 9 (#preset-groups 2026-10-26): rev 8 把 12 条预置全塞进一个「预设」
+    // 组，卡片上只能看到同一个 chip，用户自己的分组也被挤下去。按用途拆成
+    // 4 个分类组（只搬**命令原文还是出厂值**的条目，改过/自建的一条不碰）。
+    if cfg.defaults_rev < 9 {
+        super::preset_commands::regroup_legacy_presets(cfg);
     }
     cfg.defaults_rev = DEFAULTS_REV;
     true
@@ -1664,6 +1694,39 @@ impl ConfigStore {
         self.cache.quick_commands = cmds;
     }
 
+    /// 管理器空态「从预置导入」（#preset-commands 2026-10-26）：把出厂预置
+    /// 追加进来。按**命令文本**（trim 后）去重——用户自己录过同一条命令的
+    /// （哪怕改了名）不再重复塞。返回实际导入条数（0 = 全部已存在）。
+    ///
+    /// (#preset-groups) 分类组顺带建成普通分组并补出厂组色（组已有色则不动：
+    /// 用户改过的颜色不该被一次「导入」重置）。
+    pub fn import_presets(&mut self) -> usize {
+        let existing: std::collections::HashSet<String> = self
+            .cache
+            .quick_commands
+            .iter()
+            .map(|c| c.command.trim().to_string())
+            .collect();
+        let mut added = 0usize;
+        for p in super::preset_commands::preset_commands() {
+            if existing.contains(p.command.trim()) {
+                continue;
+            }
+            // 预置分组不存在则就地建组（保序追加），与 save-cmd 同口径。
+            self.add_quick_group(p.group.clone());
+            self.cache.quick_commands.push(p);
+            added += 1;
+        }
+        if added > 0 {
+            for (name, hex) in super::preset_commands::preset_group_seed().1 {
+                if self.cache.quick_groups.iter().any(|g| g == &name) {
+                    self.cache.group_colors.entry(name).or_insert(hex);
+                }
+            }
+        }
+        added
+    }
+
     pub fn wsl_profiles(&self) -> &[WslProfile] {
         &self.cache.wsl_profiles
     }
@@ -2648,6 +2711,111 @@ mod tests {
     fn missing_sftp_columns_use_the_current_default() {
         let store = temp_store();
         assert_eq!(store.sftp_visible_columns().len(), 7);
+    }
+
+    // ── 预置快捷命令（#preset-commands 2026-10-26）───────────────────────────
+
+    #[test]
+    fn fresh_config_seeds_presets_and_skips_migration() {
+        let cfg = fresh_config();
+        assert!(!cfg.quick_commands.is_empty(), "新装必须自带预置命令");
+        assert_eq!(cfg.defaults_rev, DEFAULTS_REV);
+        // (#preset-groups) 出厂即分好类：组清单登记齐全、组色齐备，且**不是**
+        // 全部挤在一个「预设」组里。
+        let (seed_groups, seed_colors) = super::super::preset_commands::preset_group_seed();
+        assert_eq!(cfg.quick_groups, seed_groups);
+        assert!(cfg.quick_groups.len() > 1, "预置命令必须按用途分组");
+        for g in &cfg.quick_groups {
+            assert!(seed_colors.contains_key(g), "分类组缺少出厂组色：{g}");
+            assert_eq!(cfg.group_colors.get(g), seed_colors.get(g));
+            assert!(cfg.quick_commands.iter().any(|c| &c.group == g), "空分类组不该出现：{g}");
+        }
+        // 出厂即最新 rev：migrate_defaults 对它必须是 no-op（防止重复注入）。
+        let mut cfg = cfg;
+        assert!(!migrate_defaults(&mut cfg));
+        assert_eq!(cfg.quick_commands.len(), fresh_config().quick_commands.len());
+    }
+
+    #[test]
+    fn rev8_migration_injects_only_into_empty_command_lists() {
+        // 存量用户、从未建过快捷命令 → 注入（含分类组与组色）。
+        let mut cfg = ConfigFile::default();
+        cfg.defaults_rev = 7;
+        cfg.quick_commands = Vec::new();
+        assert!(migrate_defaults(&mut cfg));
+        assert_eq!(cfg.quick_commands.len(), super::super::preset_commands::preset_commands().len());
+        let (seed_groups, _) = super::super::preset_commands::preset_group_seed();
+        assert_eq!(cfg.quick_groups, seed_groups);
+        assert_eq!(cfg.defaults_rev, DEFAULTS_REV);
+
+        // 存量用户、已有自己的命令 → 绝不掺入。
+        let mut cfg = ConfigFile::default();
+        cfg.defaults_rev = 7;
+        cfg.quick_commands = vec![QuickCommand {
+            name: "我的".into(),
+            command: "echo mine".into(),
+            group: String::new(),
+            note: String::new(),
+            send_enter: true,
+        }];
+        assert!(migrate_defaults(&mut cfg));
+        assert_eq!(cfg.quick_commands.len(), 1);
+        assert_eq!(cfg.quick_commands[0].command, "echo mine");
+        assert!(cfg.quick_groups.is_empty(), "没注入命令就不该塞空分组");
+    }
+
+    #[test]
+    fn import_presets_dedups_by_command_text() {
+        let preset_len = super::super::preset_commands::preset_commands().len();
+        let (seed_groups, _) = super::super::preset_commands::preset_group_seed();
+        let mut store = temp_store();
+
+        // 空表：全量导入，分类组就地建立（顺序 = 出厂顺序）。
+        assert_eq!(store.import_presets(), preset_len);
+        assert_eq!(store.quick_commands().len(), preset_len);
+        assert_eq!(store.quick_groups(), seed_groups.as_slice());
+        assert!(store
+            .quick_commands()
+            .iter()
+            .all(|c| seed_groups.iter().any(|g| g == &c.group)));
+        // 组色一并补上。
+        for g in &seed_groups {
+            assert!(store.group_colors().contains_key(g), "导入后分类组应有组色：{g}");
+        }
+
+        // 再导一次：按命令文本去重，一条都不加。
+        assert_eq!(store.import_presets(), 0);
+        assert_eq!(store.quick_commands().len(), preset_len);
+
+        // 用户自己录过同一条命令（改名）→ 该条跳过，其余照导。
+        let mut store = temp_store();
+        store.set_quick_commands(vec![QuickCommand {
+            name: "自定义名".into(),
+            command: " df -h ".into(), // trim 后与预置相同
+            group: String::new(),
+            note: String::new(),
+            send_enter: false,
+        }]);
+        assert_eq!(store.import_presets(), preset_len - 1);
+        assert_eq!(store.quick_commands()[0].name, "自定义名");
+    }
+
+    #[test]
+    fn rev9_splits_the_legacy_single_preset_group() {
+        // rev 8 那版装上的样子：12 条全在「预设」组、组清单只有它。
+        let mut cfg = ConfigFile::default();
+        cfg.defaults_rev = 8;
+        cfg.quick_commands = super::super::preset_commands::preset_commands();
+        for c in &mut cfg.quick_commands {
+            c.group = "预设".into();
+        }
+        cfg.quick_groups = vec!["预设".into()];
+        assert!(migrate_defaults(&mut cfg));
+        let (seed_groups, _) = super::super::preset_commands::preset_group_seed();
+        assert_eq!(cfg.quick_groups, seed_groups);
+        assert!(cfg.quick_commands.iter().all(|c| c.group != "预设"));
+        assert!(!cfg.group_colors.contains_key("预设"));
+        assert_eq!(cfg.defaults_rev, DEFAULTS_REV);
     }
 
     #[test]
