@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 
 use crate::config::ConfigStore;
+use crate::ui::SendCmdWindow;
 use crate::resource::{LocalSnap, NetHist, TabStatuses};
 use crate::sftp::{SftpHandles, SftpLastCwd};
 use crate::ssh::SessionHandle;
@@ -81,6 +82,8 @@ pub struct WindowState {
     pub proc_win: Rc<ProcWindow>,
     pub sys_win: Rc<SystemInfoWindow>,
     pub editor_win: Rc<EditorWindow>,
+    /// 「发送命令」独立窗口（#send-cmd-window）
+    pub send_win: Rc<SendCmdWindow>,
     pub proc_weak: slint::Weak<ProcWindow>,
     pub sys_weak: slint::Weak<SystemInfoWindow>,
 }

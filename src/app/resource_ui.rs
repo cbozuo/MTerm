@@ -576,6 +576,50 @@ macro_rules! copy_theme_slots {
 /// Mirror the main window's theme/scale/UI-font onto the detached process
 /// window. Theme is a per-window Slint global, so a detached window keeps its
 /// compile-time (dark) defaults until we copy these across (#23).
+/// 「发送命令」独立窗口的主题镜像（与 sync_proc_theme 同款）。
+pub(super) fn sync_send_cmd_theme(main: &AppWindow, w: &SendCmdWindow) {
+    copy_theme_slots!(main, w);
+    w.set_dark_mode(main.get_dark_mode());
+    w.set_ui_scale(main.get_ui_scale());
+    w.set_ui_font_family(main.get_ui_font_family());
+    w.set_wallpaper_img(main.get_wallpaper_img());
+    w.set_wallpaper_active(main.get_wallpaper_active());
+    w.set_wp_accent(main.get_wp_accent());
+    w.set_wp_tint(main.get_wp_tint());
+}
+
+/// 把「发送命令」窗口摆到主窗内容区正中（尺寸固定 620×420，与面板时代一致）。
+pub(super) fn place_send_cmd_window(main: &AppWindow, w: &SendCmdWindow) {
+    const W: f64 = 620.0;
+    const H: f64 = 420.0;
+    let Some(((ox, oy), (iw, ih))) = main
+        .window()
+        .with_winit_window(|ww| {
+            let scale = ww.scale_factor().max(0.01);
+            let outer_pos = ww
+                .outer_position()
+                .ok()
+                .or_else(|| ww.inner_position().ok())
+                .unwrap_or_default();
+            let inner = ww.inner_size();
+            Some((
+                (outer_pos.x as f64 / scale, outer_pos.y as f64 / scale),
+                (inner.width as f64 / scale, inner.height as f64 / scale),
+            ))
+        })
+        .flatten()
+    else {
+        return;
+    };
+    if iw <= 0.0 || ih <= 0.0 {
+        return;
+    }
+    let x = ox + (iw - W).max(0.0) / 2.0;
+    let y = oy + (ih - H).max(0.0) / 2.0;
+    w.window().set_size(slint::LogicalSize::new(W as f32, H as f32));
+    w.window().set_position(slint::LogicalPosition::new(x as f32, y as f32));
+}
+
 pub(super) fn sync_proc_theme(main: &AppWindow, proc: &ProcWindow) {
     copy_theme_slots!(main, proc);
     proc.set_dark_mode(main.get_dark_mode());

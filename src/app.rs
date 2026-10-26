@@ -2234,6 +2234,11 @@ fn open_window(
     // device-pixel-ratio 默认 1.0,子窗口的 1px 线在高 DPI 屏上会粗一倍。
     crate::theme::set_dpr_proc(&proc_win, window.window().scale_factor() as f32);
     proc_win.set_proc_list(ModelRc::from(proc_rows_model.clone()));
+    // (#send-cmd-window 2026-10-26) 「发送命令」独立窗口：命令栏 ↗ / Ctrl+Shift+E
+    // 打开，能拖到别的屏幕、和主窗并排，发完不关。
+    let send_win = Rc::new(SendCmdWindow::new().context("failed to build send-command window")?);
+    send_win.set_custom_titlebar(cfg!(not(target_os = "macos")));
+    crate::theme::set_dpr_send_cmd(&send_win, window.window().scale_factor() as f32);
     let sys_win = Rc::new(SystemInfoWindow::new().context("failed to build system info window")?);
     crate::theme::set_dpr_system_info(&sys_win, window.window().scale_factor() as f32);
     let editor_win = Rc::new(EditorWindow::new().context("failed to build editor window")?);
@@ -2423,6 +2428,101 @@ fn open_window(
             // `drag_resize_window`，靠 #win-resize-blank-corner 在拖完重新
             // set_size 兜底；设置弹窗则常驻 `set_full_redraw_hold`。
             i_slint_backend_winit::force_full_redraw_all_windows();
+        });
+    }
+    {
+        // 命令栏 ↗ / Ctrl+Shift+E：打开「发送命令」窗口（#send-cmd-window）。
+        // 每次打开都从主窗镜像一份模型（快捷命令/历史/范围/台数/语言）——
+        // 模型可能刚在命令管理里改过，窗口关着时不会自己更新。
+        let win_weak = window.as_weak();
+        let snd_weak = send_win.as_weak();
+        window.on_open_send_window(move |draft: SharedString| {
+            let (Some(main), Some(sw)) = (win_weak.upgrade(), snd_weak.upgrade()) else {
+                return;
+            };
+            sw.set_quick_commands(main.get_quick_commands());
+            sw.set_command_history(main.get_command_history());
+            sw.set_scopes(main.get_send_scopes());
+            sw.set_tab_count(main.get_sendable_tabs());
+            sw.set_lang_en(main.get_lang_en());
+            sync_send_cmd_theme(&main, &sw);
+            sw.set_text(draft);
+            place_send_cmd_window(&main, &sw);
+            let _ = sw.show();
+            arm_window_icon(sw.window());
+            sw.window().with_winit_window(|ww| ww.focus_window());
+        });
+    }
+    {
+        // 发送：目标按**主窗当前标签页**算（scope 为空时只发这一个；"*" 或
+        // 频道串由 run-command 自己展开到所有打开的终端标签页）。
+        let win_weak = window.as_weak();
+        let snd_weak = send_win.as_weak();
+        send_win.on_send(move |cmd: SharedString, scope: SharedString| {
+            let Some(sw) = snd_weak.upgrade() else { return };
+            let Some(main) = win_weak.upgrade() else { return };
+            let tab = main.get_active_tab_id();
+            main.invoke_run_command(tab, cmd, scope);
+            // 发完历史多了一条：窗口里的「最近」跟着刷
+            sw.set_command_history(main.get_command_history());
+            sw.window().with_winit_window(|ww| ww.focus_window());
+        });
+    }
+    {
+        // 管理快捷命令：直接开主窗的命令管理弹框，窗口先收起（避免两块 UI 打架）
+        let win_weak = window.as_weak();
+        let snd_weak = send_win.as_weak();
+        send_win.on_manage(move || {
+            if let (Some(main), Some(sw)) = (win_weak.upgrade(), snd_weak.upgrade()) {
+                let _ = sw.hide();
+                main.invoke_open_command_manager();
+                main.window().with_winit_window(|ww| ww.focus_window());
+            }
+        });
+    }
+    {
+        let snd_weak = send_win.as_weak();
+        send_win.on_request_close(move || {
+            if let Some(sw) = snd_weak.upgrade() {
+                let _ = sw.hide();
+            }
+        });
+    }
+    {
+        // 右下角抓手 → OS 拖拽改尺寸（无边框窗口没有系统 resize 边框，与进程窗同款）
+        use i_slint_backend_winit::winit::window::ResizeDirection;
+        let snd_weak = send_win.as_weak();
+        send_win.on_win_resize_se(move || {
+            if let Some(w) = snd_weak.upgrade() {
+                let pre = w
+                    .window()
+                    .with_winit_window(|ww| ww.outer_size())
+                    .unwrap_or_default();
+                w.window().with_winit_window(|ww| {
+                    let _ = ww.drag_resize_window(ResizeDirection::SouthEast);
+                });
+                if let Some(post) = w.window().with_winit_window(|ww| ww.outer_size()) {
+                    if post.width != pre.width || post.height != pre.height {
+                        w.window().set_size(slint::LogicalSize::new(
+                            post.width as f32,
+                            post.height as f32,
+                        ));
+                    }
+                }
+                schedule_slint_pointer_ungrab(snd_weak.clone());
+            }
+        });
+    }
+    {
+        let snd_weak = send_win.as_weak();
+        let snd_weak2 = send_win.as_weak();
+        send_win.on_win_drag(move || {
+            if let Some(sw) = snd_weak.upgrade() {
+                sw.window().with_winit_window(|ww| {
+                    let _ = ww.drag_window();
+                });
+                schedule_slint_pointer_ungrab(snd_weak2.clone());
+            }
         });
     }
     {
@@ -4068,6 +4168,7 @@ fn open_window(
             proc_win: proc_win.clone(),
             sys_win: sys_win.clone(),
             editor_win: editor_win.clone(),
+            send_win: send_win.clone(),
             proc_weak: proc_win.as_weak(),
             sys_weak: sys_win.as_weak(),
         },

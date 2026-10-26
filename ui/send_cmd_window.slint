@@ -1,0 +1,709 @@
+// 「发送命令」独立窗口（#send-cmd-window 2026-10-26）
+//
+// 从 AppWindow 里那块浮层搬出来的**真·系统窗口**（做法同 proc_window.slint）：
+//   * 能拖到第二块屏幕、能和主窗并排，不挡终端输出；
+//   * 发送完不关窗，改个范围（当前标签页 / 全部标签页 / 频道 A-D）接着发；
+//   * 主题 / 语言 / 模型由 Rust 在打开时从主窗镜像过来（Theme 是**每窗口**
+//     的 global，不镜像的话这里会永远是编译期的深色默认值）。
+import { Icon } from "icons.slint";
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { DialogClose } from "widgets.slint";
+// ScopeButton / SendScope / QuickCmd 都定义在 terminal_view.slint（导出过的），
+// 直接复用：面板里的范围键与命令栏那枚是**同一个组件**，状态各自独立。
+import { ScopeButton, SendScope, QuickCmd } from "terminal_view.slint";
+
+export component SendCmdWindow inherits Window {
+    title: "MTerm - " + @tr("Send command");
+    preferred-width: 620px;
+    preferred-height: 420px;
+    min-width: 520px;
+    min-height: 340px;
+    default-font-family: Theme.ui-font-family;
+    // 自定义标题栏（Windows/Linux 由 Rust 置 true）；与主窗 / 进程窗同一套。
+    in property <bool> custom-titlebar;
+    no-frame: root.custom-titlebar;
+    // Theme 是 per-window 的 global —— 这些双向绑定给 Rust 一个开关，
+    // 打开窗口时从主窗镜像（见 src/app/resource_ui.rs::sync_send_cmd_theme）。
+    in-out property <bool> dark-mode <=> Theme.dark;
+    in-out property <float> ui-scale <=> Theme.ui-scale;
+    in-out property <string> ui-font-family <=> Theme.ui-font-family;
+    in-out property <image> wallpaper-img <=> Theme.wallpaper;
+    in-out property <bool> wallpaper-active <=> Theme.wallpaper-active;
+    in-out property <color> wp-accent <=> Theme.wp-accent;
+    in-out property <color> wp-tint <=> Theme.wp-tint;
+
+    // ── 数据（打开时由 Rust 从主窗镜像）──
+    in property <[QuickCmd]> quick-commands: [];
+    in property <[string]> command-history: [];
+    in property <[SendScope]> scopes: [];
+    in property <int> tab-count: 0;
+    in property <bool> lang-en: false;
+
+    // ── 状态 ──
+    in-out property <string> text: "";
+    in-out property <bool> all: false;
+    in-out property <bool> ch-a: false;
+    in-out property <bool> ch-b: false;
+    in-out property <bool> ch-c: false;
+    in-out property <bool> ch-d: false;
+    property <bool> scope-open: false;
+    property <bool> sent-flash: false;
+    property <bool> text-push: false;
+    property <bool> focus-pending: false;
+
+    // ── 对外 ──
+    callback send(string /* cmd */, string /* scope */);
+    callback manage();
+    callback request-close();
+    callback win-drag();
+    callback win-resize-se();
+
+    // ── 纯函数（与 TerminalView 里那份同源）──
+    function line-count(t: string) -> int {
+        if (t == "") { return 1; }
+        return t.character-count - t.replace-all("\n", "").character-count + 1;
+    }
+    function has-token(t: string, tok: string) -> bool {
+        return t.replace-all(tok, "") != t;
+    }
+    function danger-token(t: string) -> string {
+        if (t == "") { return ""; }
+        let s = t.to-lowercase();
+        if (root.has-token(s, "rm -rf") || root.has-token(s, "rm -fr")
+                || root.has-token(s, "rm -r -f")) {
+            return "rm -rf";
+        }
+        if (root.has-token(s, "mkfs")) { return "mkfs"; }
+        if (root.has-token(s, "dd if=")) { return "dd if="; }
+        if (root.has-token(s, "shutdown")) { return "shutdown"; }
+        if (root.has-token(s, "reboot")) { return "reboot"; }
+        if (root.has-token(s, "chmod -r 777")) { return "chmod -R 777"; }
+        if (root.has-token(s, "init 0")) { return "init 0"; }
+        return "";
+    }
+    function applied-n() -> int {
+        return (root.ch-a ? 1 : 0) + (root.ch-b ? 1 : 0)
+             + (root.ch-c ? 1 : 0) + (root.ch-d ? 1 : 0);
+    }
+    function scope-count-of(letter: string) -> int {
+        if (root.scopes.length > 0 && root.scopes[0].letter == letter) { return root.scopes[0].count; }
+        if (root.scopes.length > 1 && root.scopes[1].letter == letter) { return root.scopes[1].count; }
+        if (root.scopes.length > 2 && root.scopes[2].letter == letter) { return root.scopes[2].count; }
+        if (root.scopes.length > 3 && root.scopes[3].letter == letter) { return root.scopes[3].count; }
+        return 0;
+    }
+    function danger-targets() -> int {
+        if (root.all) { return root.tab-count; }
+        if (root.applied-n() == 0) { return 0; }
+        return (root.ch-a ? root.scope-count-of("A") : 0)
+             + (root.ch-b ? root.scope-count-of("B") : 0)
+             + (root.ch-c ? root.scope-count-of("C") : 0)
+             + (root.ch-d ? root.scope-count-of("D") : 0);
+    }
+    // 范围串："" = 当前标签页、""* = 全部、`A,C` = 勾选的频道（Rust 侧过滤空段）
+    function scope-spec() -> string {
+        if (root.all) { return "*"; }
+        if (root.applied-n() == 0) { return ""; }
+        return (root.ch-a ? "A," : "") + (root.ch-b ? "B," : "")
+             + (root.ch-c ? "C," : "") + (root.ch-d ? "D," : "");
+    }
+    function send-now() {
+        if (root.text == "") { return; }
+        root.send(root.text, root.scope-spec());
+        root.sent-flash = true;
+        root.focus-pending = true;
+    }
+    property <string> danger: root.danger-token(root.text);
+
+    Rectangle {
+        background: Theme.popup-bg;
+
+        // (#scope-menu-outside 2026-10-25 搬家版) 菜单开着时点面板空白：关菜单、
+        // 放行点击（reject 不吞）。声明在最前 = z 最低，菜单压在它上面。
+        if root.scope-open : Rectangle {
+            width: 100%;
+            height: 100%;
+            background: transparent;
+            panel-outside-ta := TouchArea {
+                pointer-event(ev) => {
+                    if (ev.kind == PointerEventKind.down) {
+                        root.scope-open = false;
+                    }
+                    EventResult.reject
+                }
+            }
+        }
+
+        VerticalLayout {
+            // 标题栏
+            Rectangle {
+                height: 46px;
+                Text {
+                    x: 14px;
+                    width: parent.width - 60px;
+                    height: parent.height;
+                    text: @tr("Send command");
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-md;
+                    font-weight: Theme.fw-strong;
+                    vertical-alignment: center;
+                }
+                // 窗口拖动（#send-cmd-window）：独立窗口，按下标题栏交给 OS 拖。
+                TouchArea {
+                    pointer-event(ev) => {
+                        if (ev.kind == PointerEventKind.down) {
+                            if (root.scope-open) { root.scope-open = false; }
+                            root.win-drag();
+                        }
+                        EventResult.reject
+                    }
+                }
+                // (#cmd-expand-close 2026-10-26) 与命令管理 / 分组管理 / 设置
+                // 同一个 DialogClose（28px、悬停红底白 ×）—— 之前是自绘的 26px
+                // 灰 ×，一屏里有两种关闭按钮。
+                DialogClose {
+                    x: parent.width - 12px - self.width;
+                    y: (parent.height - self.height) / 2;
+                    btn-size: 28px;
+                    glyph-size: 15px;
+                    clicked => { root.request-close(); }
+                }
+                Rectangle {
+                    // (#cmdbar-expand-hairline 2026-10-26) chrome 线 = 1 物理像素，
+                    // **且位置必须贴设备栅格**：1phx 落在半个像素上会被抗锯齿摊成
+                    // 两行 ~50% 的淡影，看起来"有时有线、有时没了"（用户截图：
+                    // 同一个面板滚动前后，中缝线一会儿在、一会儿消失）。
+                    // 位置一律按**绝对坐标**对齐，再换回父级坐标。
+                    y: Theme.snap-to-device(parent.absolute-position.y + parent.height)
+                        - parent.absolute-position.y - Theme.hairline();
+                    width: parent.width;
+                    height: Theme.hairline();
+                    background: Theme.line-2;
+                }
+            }
+
+            // 主体：左列表 + 右编辑
+            HorizontalLayout {
+                vertical-stretch: 1;
+
+                // 左栏：可插入的片段清单（#cmdbar-expand-left 2026-10-26）
+                // 这里不是导航树，是「挑一条塞进右边编辑器」的清单：
+                //   * **不看分组折叠态** —— `collapsed` 只属于命令栏那个面板。
+                //     之前直接复用了面板的 `!q.collapsed` 判断，用户在面板里
+                //     折叠过分组后这块就整段空白（用户截图：左栏只剩「最近」
+                //     两个字，看着像坏了）。分组名改画成小标题，顺序仍是
+                //     面板里的分组顺序（模型把组名挂在每组第一行）。
+                //   * 「管理快捷命令…」吸底，不跟列表一起滚走。
+                Rectangle {
+                    width: 224px;
+                    // (#cmdbar-expand-flat 2026-10-26) 底色不再分档：高保真稿那种
+                    // 「左栏 inset / 编辑区 field」会让标题行、页脚行和面板主体
+                    // 三种颜色并存（用户截图「每个弹框的标题行、页脚行要和面板
+                    // 颜色一致，参考命令管理」）。命令管理就是整块 popup-bg、只靠
+                    // 1px 分隔线分区 —— 这里照抄。
+                    VerticalLayout {
+                        spacing: 0px;
+
+                        // 滚动区
+                        Rectangle {
+                            vertical-stretch: 1;
+                            ScrollView {
+                                width: 100%;
+                                height: 100%;
+                                // ⚠️ 不要写 `content-height: max(visible, 内容高)`：
+                                // 内容比视口矮时它会把**视口高度**下发给内层布局，
+                                // 余量就被摊到各子项之间（「最近」在顶、历史掉到栏底）。
+                                // 交给 ScrollView 按子项首选高自己算，内容自然贴顶。
+                                content-width: self.visible-width;
+                                exp-side-col := VerticalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    padding-top: 4px;
+                                    padding-bottom: 8px;
+                                    spacing: 1px;
+                                    // ⚠️ 必须钉住主轴对齐：content-height 取的是
+                                    // max(视口高, 内容高)，内容比视口矮时布局拿到的是
+                                    // **视口高度**，默认 stretch 会把余量摊到各子项之间
+                                    // ——「最近」在顶、唯一那条历史掉到栏底（用户截图）。
+                                    alignment: start;
+
+                                    // ── 快捷命令 ──
+                                    Text {
+                                        height: 26px;
+                                        text: @tr("Quick commands");
+                                        color: Theme.text-secondary;
+                                        font-size: 10px;
+                                        font-weight: 600;
+                                        letter-spacing: 1px;
+                                        vertical-alignment: center;
+                                    }
+                                    if root.quick-commands.length == 0 : Rectangle {
+                                        height: 28px;
+                                        Text {
+                                            x: 8px;
+                                            width: parent.width - 16px;
+                                            height: parent.height;
+                                            text: @tr("No quick commands yet");
+                                            color: Theme.text-muted;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    // 一行 = 「可选的组标题 + 条目」：模型的组名挂在
+                                    // 每组第一行上，所以两段都画在这里，顺序不会乱。
+                                    for q in root.quick-commands : VerticalLayout {
+                                        spacing: 0px;
+                                        height: (q.group-header != "" ? 24px : 0px)
+                                            + (q.orig-index >= 0 ? 34px : 0px);
+                                        // ⚠️ 组标题要套一层 Rectangle：直接把 `width: parent.width - 8px`
+                                        // 写在**布局子项**上会成环（width → min-width →
+                                        // flickable.content-width → exp-side-col.width）。
+                                        if q.group-header != "" : Rectangle {
+                                            height: 24px;
+                                            Text {
+                                                x: 8px;
+                                                width: parent.width - 12px;
+                                                height: parent.height;
+                                                text: q.group == "default" ? @tr("Default group") : q.group;
+                                                color: Theme.text-muted;
+                                                font-size: 10px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                                overflow: elide;
+                                            }
+                                        }
+                                        if q.orig-index >= 0 : Rectangle {
+                                            height: 34px;
+                                            border-radius: 5px;
+                                            background: q-ta.has-hover ? Theme.bg-hover : transparent;
+                                            animate background { duration: 100ms; }
+                                            q-ta := TouchArea {
+                                                mouse-cursor: default;
+                                                clicked => {
+                                                    root.text = root.text == ""
+                                                        ? q.command
+                                                        : root.text + "\n" + q.command;
+                                                    // 编辑器在本列之后声明，不能直接引用它的 id
+                                                    root.text-push = true;
+                                                }
+                                            }
+                                            VerticalLayout {
+                                                padding-left: 8px;
+                                                padding-right: 8px;
+                                                padding-top: 3px;
+                                                padding-bottom: 3px;
+                                                spacing: 0px;
+                                                Text {
+                                                    text: q.name;
+                                                    color: Theme.text-primary;
+                                                    font-size: Theme.fs-xs;
+                                                    overflow: elide;
+                                                }
+                                                Text {
+                                                    text: q.command;
+                                                    color: Theme.text-muted;
+                                                    font-family: Theme.font-mono;
+                                                    font-size: 10.5px;
+                                                    overflow: elide;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // ── 最近 ──
+                                    Text {
+                                        height: 26px;
+                                        text: @tr("Recent");
+                                        color: Theme.text-secondary;
+                                        font-size: 10px;
+                                        font-weight: 600;
+                                        letter-spacing: 1px;
+                                        vertical-alignment: center;
+                                    }
+                                    if root.command-history.length == 0 : Rectangle {
+                                        height: 28px;
+                                        Text {
+                                            x: 8px;
+                                            width: parent.width - 16px;
+                                            height: parent.height;
+                                            text: @tr("No history yet");
+                                            color: Theme.text-muted;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    for h[i] in root.command-history : Rectangle {
+                                        // 只列最后 8 条（历史可能很长，弹窗里翻不动）
+                                        visible: i >= root.command-history.length - 8;
+                                        height: (i >= root.command-history.length - 8) ? 30px : 0px;
+                                        border-radius: 5px;
+                                        background: h-ta.has-hover ? Theme.bg-hover : transparent;
+                                        h-ta := TouchArea {
+                                            mouse-cursor: default;
+                                            clicked => {
+                                                root.text = root.text == ""
+                                                    ? h : root.text + "\n" + h;
+                                                root.text-push = true;
+                                            }
+                                        }
+                                        Text {
+                                            x: 8px;
+                                            width: parent.width - 16px;
+                                            height: parent.height;
+                                            text: h;
+                                            color: Theme.text-secondary;
+                                            font-family: Theme.font-mono;
+                                            font-size: 10.5px;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                    }
+                                }
+                            }
+                            // 底部渐隐：列表高于视口时最下面那行会被切一半
+                            // （用户截图「管理快捷命令上面的文字时有时没」）。
+                            // ⚠️ 必须声明在 ScrollView **之后**：放前面会被内容盖住。
+                            Rectangle {
+                                y: parent.height - 14px;
+                                width: parent.width;
+                                height: 14px;
+                                background: @linear-gradient(180deg, transparent 0%, Theme.popup-bg 100%);
+                            }
+                        }
+
+                        // 吸底：管理入口（列表再长也不会把它滚走）
+                        Rectangle {
+                            height: 1phx;
+                            background: Theme.line-2;
+                        }
+                        // (#cmd-expand-mgmt-row 2026-10-26) 行高 34 → 30、圆角 5：
+                        // 34 高 + 整栏宽的悬停底在那条窄栏里显得很"胖"（用户截图）。
+                        Rectangle {
+                            height: 30px;
+                            mgr-ta := TouchArea {
+                                mouse-cursor: default;
+                                clicked => {
+                                    root.manage();
+                                    root.request-close();
+                                }
+                            }
+                            // (#cmd-expand-mgmt-row) 悬停底跟列表行一样**内缩 6px**：
+                            // 之前是整栏通宽，比上面每一行都宽一截，看着不协调。
+                            Rectangle {
+                                x: 6px;
+                                width: parent.width - 12px;
+                                height: parent.height;
+                                border-radius: 5px;
+                                background: mgr-ta.has-hover ? Theme.bg-hover : transparent;
+                                animate background { duration: 100ms; }
+                            }
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 8px;
+                                spacing: 5px;
+                                alignment: start;
+                                Icon {
+                                    glyph: "tune";
+                                    tint: mgr-ta.has-hover ? Theme.accent-solid : Theme.text-muted;
+                                    size: 11px;
+                                }
+                                Text {
+                                    text: @tr("Manage quick commands…");
+                                    color: mgr-ta.has-hover ? Theme.accent-solid : Theme.text-secondary;
+                                    font-size: Theme.fs-xs;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 右栏：行号 + 多行编辑（底色跟随面板，见左栏那条注释）
+                Rectangle {
+                    horizontal-stretch: 1;
+                    exp-scroll := ScrollView {
+                        width: parent.width;
+                        height: parent.height;
+                        content-width: self.visible-width;
+                        content-height: max(self.visible-height, exp-input.preferred-height + 16px);
+                        HorizontalLayout {
+                            // 行号：只是显示，不参与复制（高保真屏 06 的三样之一）
+                            // ⚠️ 高度不能写 `exp-scroll.content-height`：那会把
+                            // 布局 min-height 接回 ScrollView 的 content-height，
+                            // 形成 content-height → height → min-height →
+                            // flickable.content-height 的绑定环（实测编译报
+                            // "part of a binding loop"）。直接用编辑器的首选高。
+                            gutter := Rectangle {
+                                width: 34px;
+                                height: exp-input.preferred-height + 16px;
+                                // (#cmdbar-expand-gutter 2026-10-26) 行号必须与正文
+                                // **逐行对齐**：以前行号写死 18px 高、正文用
+                                // `Theme.fs-sm` 的等宽字体（行距由字体决定，≈19.4px）
+                                // → 每多一行多错一点，第 4 行起肉眼可见。
+                                // 现在行距**量出来**：同一字体/字号下「两行的首选高 −
+                                // 一行的首选高」= 一行行距，换字体/DPI 也自动跟随。
+                                // 字号必须与编辑器一致（ln-p1/ln-p2 与 exp-input 同款），
+                                // 否则字形在行框里的起点还会再差一截。
+                                ln-p1 := Text {
+                                    visible: false;
+                                    text: "1";
+                                    font-family: Theme.font-mono;
+                                    font-size: Theme.fs-sm;
+                                }
+                                ln-p2 := Text {
+                                    visible: false;
+                                    text: "1\n2";
+                                    font-family: Theme.font-mono;
+                                    font-size: Theme.fs-sm;
+                                }
+                                property <length> pitch: ln-p2.preferred-height - ln-p1.preferred-height;
+                                VerticalLayout {
+                                    padding-top: 8px;
+                                    padding-right: 8px;
+                                    spacing: 0;
+                                    for i in [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29] : Text {
+                                        visible: i < root.line-count(root.text);
+                                        height: (i < root.line-count(root.text)) ? gutter.pitch : 0px;
+                                        text: i + 1;
+                                        color: Theme.text-muted;
+                                        font-family: Theme.font-mono;
+                                        font-size: Theme.fs-sm;
+                                        vertical-alignment: top;
+                                        horizontal-alignment: right;
+                                    }
+                                }
+                            }
+                            exp-input := TextInput {
+                                horizontal-stretch: 1;
+                                y: 8px;
+                                height: max(exp-scroll.visible-height - 16px, self.preferred-height);
+                                text: root.text;
+                                color: Theme.text-primary;
+                                font-family: Theme.font-mono;
+                                font-size: Theme.fs-sm;
+                                vertical-alignment: top;
+                                wrap: no-wrap;
+                                single-line: false;
+                                edited => {
+                                    root.text = self.text;
+                                }
+                                key-pressed(e) => {
+                                    if (e.text == Key.Escape) {
+                                        root.request-close();
+                                        accept
+                                    } else if (e.text == Key.Return && e.modifiers.control) {
+                                        root.send-now();
+                                        accept
+                                    } else {
+                                        reject
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // 空编辑器时的占位（#cmdbar-expand-left）：面板打开后
+                    // 一大片纯黑看不出"这儿能打字"，给一句动作提示。
+                    // 占位提示必须与编辑器首行**同字体同字号同起点**，否则
+                    // 它比正文低一截、还换成比例字体，看起来"没对齐"（用户截图）。
+                    if root.text == "" : Text {
+                        x: 44px;
+                        y: 8px;
+                        width: parent.width - 60px;
+                        text: @tr("Type or paste a command; Ctrl+Enter sends it");
+                        color: Theme.text-muted;
+                        font-family: Theme.font-mono;
+                        font-size: Theme.fs-sm;
+                        opacity: 0.7;
+                    }
+                }
+            }
+
+            // 危险告警：**预留槽位**（高 28），出现在代码与发送键之间，
+            // 出现/消失都不改动弹窗高度（高保真 notes：否则每敲一个字都跳）
+            Rectangle {
+                height: 28px;
+                background: root.danger != "" ? Theme.danger-strong.with-alpha(0.10) : transparent;
+                if root.danger != "" : Rectangle {
+                    y: 0;
+                    width: parent.width;
+                    height: 1phx;
+                    background: Theme.danger-strong.with-alpha(0.28);
+                }
+                if root.danger != "" : Rectangle {
+                    y: parent.height - 1phx;
+                    width: parent.width;
+                    height: 1phx;
+                    background: Theme.danger-strong.with-alpha(0.28);
+                }
+                if root.danger != "" : HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    spacing: 7px;
+                    Rectangle {
+                        width: 12px;
+                        height: 28px;
+                        Icon { glyph: "warning"; tint: Theme.danger-strong; size: 12px; }
+                    }
+                    Text {
+                        text: @tr("Dangerous command");
+                        color: Theme.danger-strong;
+                        font-size: Theme.fs-xs;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        width: dchip.preferred-width + 8px;
+                        height: 16px;
+                        border-radius: 3px;
+                        background: Theme.danger-strong.with-alpha(0.18);
+                        dchip := Text {
+                            width: parent.width;
+                            height: parent.height;
+                            text: root.danger;
+                            color: Theme.danger-strong;
+                            font-family: Theme.font-mono;
+                            font-size: 10px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    if root.danger-targets() > 0 : Text {
+                        text: @tr("· will be sent to {0} hosts", root.danger-targets());
+                        color: Theme.danger-strong;
+                        font-size: Theme.fs-xs;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text {
+                        text: @tr("Edit the command to cancel");
+                        color: Theme.text-muted;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // 底栏：范围键（同一份状态）+ 快捷键提示 + 发送
+            Rectangle {
+                height: 56px;
+                Rectangle {
+                    y: Theme.snap-to-device(parent.absolute-position.y)
+                        - parent.absolute-position.y;
+                    width: parent.width;
+                    height: Theme.hairline();
+                    background: Theme.line-2;
+                }
+                ScopeButton {
+                    x: 12px;
+                    y: (parent.height - self.height) / 2;
+                    height: 32px;
+                    framed: true;     // 页脚只有它一个，必须自己像控件
+                    on-popup: true;   // 菜单/气泡用不透明底，别"穿透"
+                    scopes: root.scopes;
+                    tab-count: root.tab-count;
+                    all <=> root.all;
+                    ch-a <=> root.ch-a;
+                    ch-b <=> root.ch-b;
+                    ch-c <=> root.ch-c;
+                    ch-d <=> root.ch-d;
+                    open <=> root.scope-open;
+                    menu-left: true;
+                    outside-close: false;
+                }
+                Text {
+                    x: exp-send.x - 14px - self.width;
+                    y: 0;
+                    height: parent.height;
+                    text: @tr("Ctrl+Enter to send · Esc to collapse");
+                    color: Theme.text-muted;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+                exp-send := Rectangle {
+                    x: parent.width - 12px - self.width;
+                    y: (parent.height - self.height) / 2;
+                    width: max(64px, exp-send-txt.preferred-width + 24px);
+                    height: 32px;
+                    border-radius: 7px;
+                    background: root.danger != ""
+                        ? (exp-send-ta.has-hover ? Theme.danger-strong.brighter(0.10) : Theme.danger-strong)
+                        : (exp-send-ta.has-hover ? Theme.accent-solid.brighter(0.08) : Theme.accent-solid);
+                    animate background { duration: 110ms; }
+                    exp-send-ta := TouchArea {
+                        mouse-cursor: default;
+                        clicked => { root.send-now(); }
+                    }
+                    exp-send-txt := Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: root.sent-flash
+                            ? @tr("Sent")
+                            : (root.danger != "" ? @tr("Send anyway") : @tr("Send"));
+                        color: #ffffff;
+                        font-size: Theme.fs-sm;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+        // 中缝竖线（#cmdbar-expand-hairline 2026-10-26）：从标题下沿一直画到
+        // 页脚上沿，**穿过危险告警槽那条 28px 的空档**。
+        // 以前这条线挂在左栏里（height = 左栏高），左栏到"危险槽"上面就结束，
+        // 下面还有 28px 的空白槽 + 页脚，于是竖线看着"断了一截"（用户截图）。
+        // 画在布局之后 = z 在内容之上：危险槽的淡红底也盖不住它。
+        Rectangle {
+            // 位置贴设备栅格（见标题栏那条注释）；1phx 落半像素会整条"消失"
+            x: Theme.snap-to-device(parent.absolute-position.x + 224px)
+                - parent.absolute-position.x;
+            y: 46px;
+            width: Theme.hairline();
+            height: parent.height - 46px - 56px;
+            background: Theme.line-2;
+        }
+        exp-text-timer := Timer {
+            interval: 0ms;
+            running: root.text-push;
+            triggered => {
+                exp-input.text = root.text;
+                root.text-push = false;
+                exp-input.focus();
+            }
+        }
+        // 发送反馈：按钮短暂显示「已发送」，1.4s 后复原（连发会重新计时）
+        exp-sent-timer := Timer {
+            interval: 1400ms;
+            running: root.sent-flash;
+            triggered => { root.sent-flash = false; }
+        }
+        exp-focus-timer := Timer {
+            interval: 0ms;
+            running: root.focus-pending;
+            triggered => {
+                if (root.focus-pending) {
+                    root.focus-pending = false;
+                    exp-input.focus();
+                }
+            }
+        }
+    }
+
+    // --- 右下角 resize 抓手（无边框平台用，同 proc_window）----------------
+    if root.custom-titlebar : Rectangle {
+        width: 16px;
+        height: 16px;
+        x: root.width - self.width;
+        y: root.height - self.height;
+        TouchArea {
+            mouse-cursor: nwse-resize;
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                    root.win-resize-se();
+                }
+            }
+        }
+        Icon { glyph: "resize-se"; tint: Theme.text-muted; size: 16px; }
+    }
+}
+

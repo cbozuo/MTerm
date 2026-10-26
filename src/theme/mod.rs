@@ -247,6 +247,7 @@ macro_rules! impl_theme_dpr {
 
 impl_theme_dpr!(set_dpr, crate::ui::AppWindow);
 impl_theme_dpr!(set_dpr_proc, crate::ui::ProcWindow);
+impl_theme_dpr!(set_dpr_send_cmd, crate::ui::SendCmdWindow);
 impl_theme_dpr!(set_dpr_editor, crate::ui::EditorWindow);
 impl_theme_dpr!(set_dpr_system_info, crate::ui::SystemInfoWindow);
 impl_theme_dpr!(set_dpr_about, crate::ui::AboutWindow);

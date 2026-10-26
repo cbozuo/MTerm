@@ -6,6 +6,60 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **「发送命令」搬成独立系统窗口，可拖拽改尺寸（#send-cmd-window）。**
+  - 面板从 AppWindow 的浮层抽成 `ui/send_cmd_window.slint` 的顶层窗口（做法同进程信息窗）：命令栏 ↗ / Ctrl+Shift+E 打开，能拖到第二块屏、和主窗并排，不挡终端；发送完不关窗，范围键（当前标签页 / 全部标签页 / 频道 A-D）随时切换连发。
+  - 主题 / 语言 / 模型（快捷命令、历史、范围、台数）每次打开从主窗镜像；`Theme` 是每窗口 global，不镜像会一直是深色默认值。
+  - 支持**拖拽窗口 + 右下角抓手改尺寸**（无边框窗口没有系统 resize 边框，与进程窗同款 `drag_resize_window`），布局自适应：左栏固定 224、编辑区随窗拉伸、行号行距运行时实测。
+  - 旧浮层及其状态机从 `terminal_view.slint` 移除（`cmd-expand-*` 系列死代码清理）。
+  - 测试迁到 `tests/cmd_expand_polish.rs`：直接建 `SendCmdWindow` 量帧，9 条（折叠态列全 / 点选落字 / 行号对齐 / 四区同色 / 中缝贯通 / 占位对齐 / 发送回调不关窗 / 点空白关菜单 / 改尺寸自适应）。
+- **"Send command" is now a real OS window, resizable and adaptive (#send-cmd-window).**
+  - The panel moved out of AppWindow into a top-level `SendCmdWindow` (`ui/send_cmd_window.slint`, same pattern as the process monitor). Command bar ↗ / Ctrl+Shift+E open it; it can be dragged to a second monitor and side-by-side with the main window, no longer covering the terminal. Sending keeps it open and the scope picker (this tab / all tabs / channels A-D) lets you fire repeatedly.
+  - Theme / language / models (quick commands, history, scopes, tab count) are mirrored from the main window on every open (Theme is a per-window global, so without the mirror it would stay dark).
+  - **Draggable and resizable**: a bottom-right grip drives `drag_resize_window` (frameless windows have no OS resize border, same as the process window); the layout adapts — the left column stays 224 wide, the editor stretches, and the line-number pitch is measured at runtime.
+  - The old overlay and its `cmd-expand-*` state machine were removed from `terminal_view.slint`.
+  - Tests moved to `tests/cmd_expand_polish.rs` (drive `SendCmdWindow` directly, 9 cases).
+
+- **弹出编辑面板：范围菜单不再穿透、点左栏能落字、关闭钮统一（#cmd-expand-fixes）。**
+  - **范围下拉「穿透」**：面板里的范围菜单还在用 `popup-bg`（半透明），而它本身就压在一块同样半透明的面板上，两层一叠就看得见底下的左栏文字。`ScopeButton` 新增 `on-popup` 档，面板内这一枚传 true → 菜单与悬停气泡改用不透明的 `Theme.field`。
+  - **点左栏命令编辑器不刷新**：Slint 的 TextInput 一旦被用户敲过，`text` 就与外部绑定断开，再改 `cmd-expand-text` 编辑器不会跟着变（截图：行号涨到 5 行、编辑区一片空白）。改成用一个 0ms Timer 直接写 `exp-input.text`，并同时回写 `cmd-expand-text`。
+  - **「管理快捷命令…」上面那行「时有时没」**：列表高于视口时最后一行被切断。列表底部加 14px 渐隐（必须声明在 ScrollView 之后才盖得住内容）；「管理快捷命令…」的悬停底也从整栏通宽改成与列表行一致的内缩 6px。
+  - **右上角关闭按钮统一**：换成与命令管理 / 分组管理 / 设置同一个 `DialogClose`（28px、悬停红底白 ×）。
+- **Edit-command panel: the scope menu no longer shows through, picking a command fills the editor, and the close button is unified (#cmd-expand-fixes).**
+  - **Scope dropdown was see-through**: the menu still used `popup-bg` (translucent) while sitting on an equally translucent panel, so the left column's text bled through. `ScopeButton` gained an `on-popup` mode; the panel's instance sets it, and its menu / hover card switch to the opaque `Theme.field`.
+  - **Clicking a command in the left column did not update the editor**: once a Slint `TextInput` has been edited by the user its `text` is no longer bound to the outside, so changing `cmd-expand-text` no longer refreshed it (the screenshot showed line numbers 1–5 with an empty editor). A 0 ms timer now writes `exp-input.text` directly and syncs `cmd-expand-text` back.
+  - **The row above "Manage quick commands…" flickered**: when the list is taller than the viewport, the last row gets sliced. The list now has a 14px fade at the bottom (declared after the ScrollView so it covers the content), and the "Manage quick commands…" hover band is inset 6px like every list row instead of spanning the full column.
+  - **Close button unified**: it is now the same `DialogClose` used by the command manager / group manager / settings (28px, red hover, white ×).
+
+- **弹出编辑面板改成常驻浮窗：发送不关窗，可连发（#cmd-expand-window）。**
+  - **去掉模态遮罩**：面板外不再压暗、点面板外也不再收起 —— 发完直接能看到终端输出；收起只有标题栏 × 和 Esc 两条路。
+  - **点「发送」不关窗**：面板留在原地，命令文本保留（「发给频道 A，再发给全部标签页」是常见用法），发送键短暂变成「已发送」；范围键仍是那一份状态，所以「当前标签页 / 全部标签页 / 频道 A-D」随时切换再发。
+  - **标题栏可拖**：绝对坐标差 + 窗格内钳制，与其它弹框同一套。
+  - **「管理快捷命令…」行瘦身**：34 → 30 高、圆角 5、内衬收紧（整栏宽的悬停底在窄栏里显得很胖）。
+  - **chrome 线按绝对坐标贴设备栅格**：1phx 落在半个像素上会被抗锯齿摊成两行淡影，表现就是「同一个面板，滚动前后中缝线一会儿在、一会儿没了」（用户截图）。标题栏下沿 / 页脚上沿 / 中缝三处都改成 `snap-to-device(绝对坐标) - 父级偏移`。
+- **The edit-command panel is now a persistent floating window; sending no longer closes it (#cmd-expand-window).**
+  - **Modal scrim removed**: the area outside the panel is no longer dimmed and clicking it no longer dismisses the panel — you can watch the terminal output while it stays open. Closing is via the title-bar × or Esc only.
+  - **"Send" keeps the window open**: the panel stays put and the command text is kept ("send to channel A, then to all tabs" is a common flow); the send button briefly shows "Sent". The scope picker keeps its own state, so switching between this tab / all tabs / channels A-D and firing again is one click.
+  - **The title bar drags the panel** (absolute-coordinate delta, clamped inside the pane), same pattern as the other dialogs.
+  - **The "Manage quick commands…" row is slimmer**: 34 → 30 tall, 5px radius, tighter padding.
+  - **Chrome rules are now snapped to the device grid in absolute coordinates**: a 1phx rule landing on a half pixel gets anti-aliased into two faint rows, which is why the same panel showed the middle divider before scrolling and lost it after. The title-bar edge, footer edge and middle divider all use `snap-to-device(absolute) - parent offset` now.
+
+- **弹出编辑面板（命令栏 ↗）：左栏不再空白，管理入口吸底（#cmdbar-expand-left）。**
+  - **左栏按分组列出全部快捷命令**：此前直接复用了命令栏那个下拉面板的 `!q.collapsed` 判断 —— 只要用户在面板里折叠过分组，这块就整段空白（用户截图：左栏只剩「最近」两个字，看着像坏了）。现在忽略折叠态，组名画成小标题，顺序仍与面板一致（模型把组名挂在每组第一行）。
+  - **内容贴顶 + 管理入口吸底**：`content-height: max(视口高, 内容高)` 会把视口高度下发给内层布局，余量被摊到子项之间 —— 短内容时「最近」贴在栏顶、唯一那条历史孤零零掉到栏底（用户截图左下角那行）。改成让 ScrollView 按子项首选高自己算，并把「管理快捷命令…」钉在栏底（列表再长也不会滚走）。
+  - **编辑器占位提示**：空编辑器时显示「输入或粘贴命令；Ctrl+Enter 发送」，不再是一整片纯黑；小节标题（快捷命令 / 最近）提亮到次级色，与分组名拉开层级。
+  - **整块面板一个底色**（#cmdbar-expand-flat）：原先左栏是 `popup-bg-inset`、编辑区是 `bg-root`（终端底色，整块里最黑的一块），加上标题行/页脚行一共三种颜色；现在整块 `popup-bg`、只靠 1px 分隔线分区 —— 与命令管理同一口径（用户口径：「每个弹框的标题行、页脚行和面板颜色一致，参考命令管理」）。
+  - **行号与正文逐行对齐**：行号列原来写死 18px 行高，正文用 `Theme.fs-sm` 的等宽字体（行距由字体决定，≈15px）—— 每多一行多错一点。现在行距在运行时量出来（同字体同字号下「两行首选高 − 一行首选高」），换字体/DPI 也自动跟随。
+  - **页脚范围键画成控件、占位提示与正文同款**（#scope-chip）：弹出编辑面板页脚只有「当前标签页 ⌄」一个东西，原来常态无描边无底色，看着像一行普通文字 —— `ScopeButton` 增加 `framed` 档（1phx 描边 + 圆角，悬停/展开加深），面板页脚启用，命令栏保持原样。编辑器占位提示改成与正文**同字体、同字号、同起点**（原先用比例字体且低 2px，正是「行号和文字不对齐」的观感来源）。
+  - **线条统一 1phx，中缝竖线贯通**（#cmdbar-expand-hairline）：标题栏下沿、页脚上沿、中缝、危险告警槽上下沿一律 1 物理像素（逻辑 1px 在 125% 下是 1.25 物理，取整后忽粗忽细）；中缝竖线原来挂在左栏里，到危险槽上面就结束，看着「断了一截」—— 现在画在面板层、从标题下沿直通页脚上沿。命令管理 / 分组管理的可见分隔线也一并改成 1phx。
+- **Edit-command panel (command bar ↗): the left column is no longer blank, and the manage entry is pinned (#cmdbar-expand-left).**
+  - **The left column lists every quick command, grouped**: it used to reuse the command bar's dropdown `!q.collapsed` check, so as soon as the user had collapsed a group in the panel this whole column went blank (the screenshot showed nothing but the word "Recent", which looked broken). Collapse is now ignored, group names are drawn as small headings, and the order still matches the panel (the model carries the group name on each group's first row).
+  - **Content sticks to the top, the manage entry sticks to the bottom**: `content-height: max(viewport, content)` handed the viewport height down to the inner layout, so the leftover space got spread between children — with little content, "Recent" sat at the top and the single history entry was stranded at the bottom of the column (that lone line in the screenshot). The ScrollView now derives the content height from the children, and "Manage quick commands…" is pinned to the bottom of the column so it never scrolls away.
+  - **Editor placeholder**: an empty editor now shows "Type or paste a command; Ctrl+Enter sends it" instead of a solid black void; the section headings (Quick commands / Recent) moved up to the secondary colour so they read as headings rather than peers of the group names.
+  - **One background for the whole panel** (#cmdbar-expand-flat): the left column used `popup-bg-inset`, the editor pane used `bg-root` (the terminal background, the blackest patch in the panel), so title row / body / footer ended up three different tones. Everything is `popup-bg` now, separated only by 1px dividers — the same rule the command manager follows ("every dialog's title row, footer row and panel should share one colour").
+  - **Line numbers line up with the code, row by row**: the gutter had a hard-coded 18px row height while the editor uses the `Theme.fs-sm` monospace font (line pitch ~15px, decided by the font), so every extra line drifted a bit further. The pitch is now measured at runtime (`two-line preferred height − one-line preferred height` with the same font/size) and follows font/DPI changes.
+  - **The footer scope picker reads as a control, and the placeholder matches the code** (#scope-chip): the panel footer holds nothing but "This tab ⌄", which used to have no border or fill at rest and looked like a line of plain text. `ScopeButton` gained a `framed` mode (1phx outline, rounded, darker on hover/open) that the footer enables; the command bar keeps its previous look. The editor placeholder now uses the same font, size and origin as the code (it was a proportional font sitting 2px lower — exactly what made the line number look off-centre).
+  - **Hairline rules and a continuous middle divider** (#cmdbar-expand-hairline): the title-bar bottom edge, the footer top edge, the middle divider and the danger-strip edges are now 1 device pixel (a logical 1px is 1.25 device px at 125%, which rounds into lines that look thicker or thinner at random). The middle divider used to live inside the left column and stopped right above the 28px danger strip, so it looked cut in half; it is now drawn at panel level, running from the title edge down to the footer edge. The visible dividers in the command manager and group manager were switched to 1phx as well.
+
 - **命令管理：卡片网格等宽 + 预置命令按用途分四组 + 「从预置导入」常驻（#cm-card-eq / #preset-groups）。**
   - **两张卡不再各算各的宽**：行内两张卡的 preferred 宽度跟着命令/备注文字走，Slint 又按 pref 起点均摊余量 → 同一列在不同行宽度不同（实测四种列宽，最窄那行的分组 chip 被压成「…」）。现在列宽只由视口算一次（`(msv.width − 28 − card-gap) / 2`），两张卡都取它，奇数行尾随吸空块。
   - **预置命令分四组**：磁盘与内存 / 网络排查 / 服务与日志 / 进程与容器，各自带一个出厂组色（取自 `ACCENT_PRESETS`）。新装即按分类种下，存量配置走 `defaults_rev` rev 9 按**命令原文**回填分类 —— 用户改过的命令、自己加的条目一条不碰，旧「预设」组清空即删、还有自建条目则保留。
