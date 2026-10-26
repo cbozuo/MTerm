@@ -7,7 +7,7 @@
 //! 运行：`cargo test --test cmd_expand_polish`；
 //! `PROBE_DUMP_DIR=<dir>` 时额外导出 PPM 证据图。
 
-use mterm::ui::{QuickCmd, SendCmdWindow, SendScope};
+use mterm::ui::{QuickCmd, SendCmdWindow, SendScope, Theme};
 use slint::platform::software_renderer::{
     MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
 };
@@ -137,6 +137,8 @@ fn setup(rows: Vec<QuickCmd>) -> SendCmdWindow {
         count: 2,
     }]))));
     ui.set_tab_count(3);
+    // 真机上是无边框自绘标题栏（Windows/Linux），边框/四角那条路径也要走
+    ui.set_custom_titlebar(true);
     ui.show().unwrap();
     std::thread::sleep(std::time::Duration::from_millis(60));
     ui
@@ -231,6 +233,46 @@ fn window_lists_all_quick_commands_even_when_groups_are_collapsed() {
     );
 }
 
+/// (#send-cmd-filter 2026-10-27) 右侧打字时左栏跟着过滤 —— 与命令栏打字
+/// 补全同一套规则：大小写不敏感子串、name 或 command 命中；清空恢复
+/// 分组视图。
+#[test]
+fn window_typing_filters_the_left_column() {
+    let ui = setup(preset_rows(false));
+    let mut f = Frame::new();
+    f.grab(&ui);
+    let full = text_rows(&f, 8, LEFT_W - 8, TITLE_H + 4, H - FOOTER_H - 40, 60).len();
+    assert!(full >= 8, "未过滤时左栏应有整列条目，只有 {} 行", full);
+
+    // "df" 只命中「磁盘占用 df -h」一条（命令行两行文字）+ 两个节标题
+    ui.set_text("df".into());
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    f.grab(&ui);
+    maybe_dump(&f, "sendwin-filter");
+    let filtered = text_rows(&f, 8, LEFT_W - 8, TITLE_H + 4, H - FOOTER_H - 40, 60);
+    eprintln!("过滤后左栏文字行 y：{:?}", filtered);
+    assert!(
+        filtered.len() < full && filtered.len() >= 1,
+        "过滤后应只剩命中的少量行：full={} filtered={}",
+        full,
+        filtered.len()
+    );
+
+    // 大小写不敏感：大写 "DF" 与 "df" 命中同样的行
+    ui.set_text("DF".into());
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    f.grab(&ui);
+    let upper = text_rows(&f, 8, LEFT_W - 8, TITLE_H + 4, H - FOOTER_H - 40, 60).len();
+    assert_eq!(filtered.len(), upper, "大小写不应影响命中");
+
+    // 清空恢复完整分组视图
+    ui.set_text("".into());
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    f.grab(&ui);
+    let restored = text_rows(&f, 8, LEFT_W - 8, TITLE_H + 4, H - FOOTER_H - 40, 60).len();
+    assert_eq!(restored, full, "清空后应恢复完整分组视图");
+}
+
 #[test]
 fn window_clicking_a_command_fills_the_editor() {
     let ui = setup(preset_rows(false));
@@ -239,6 +281,11 @@ fn window_clicking_a_command_fills_the_editor() {
     // 正是线上那条会让「点命令没反应」的路径。
     click(&ui, 420.0, 110.0);
     type_text(&ui, "ls");
+
+    // (#send-cmd-filter) 打字会触发左栏过滤，"ls" 无命中、清单全空 ——
+    // 点命令前清掉（清空编辑器同样保持「text 与 TextInput 绑定断开」的场景）。
+    ui.set_text("".into());
+    std::thread::sleep(std::time::Duration::from_millis(60));
 
     // 点第一条快捷命令（组名 24 + 条目 34 → 中心约 y=141）
     click(&ui, 110.0, 141.0);
@@ -343,26 +390,6 @@ fn window_middle_divider_has_no_gap() {
         "中缝竖线断开了：{}/{} 行有像素",
         hits,
         total
-    );
-}
-
-#[test]
-fn window_placeholder_aligns_with_first_line_number() {
-    let ui = setup(preset_rows(false));
-    let mut f = Frame::new();
-    f.grab(&ui);
-    maybe_dump(&f, "sendwin-placeholder");
-
-    let gutter = text_rows(&f, LEFT_W + 2, LEFT_W + 33, TITLE_H + 4, TITLE_H + 120, 45);
-    let placeholder = text_rows(&f, LEFT_W + 44, W - 40, TITLE_H + 4, TITLE_H + 120, 45);
-    eprintln!("行号 {:?} / 占位 {:?}", gutter, placeholder);
-    assert!(!gutter.is_empty(), "行号列没画出来");
-    assert!(!placeholder.is_empty(), "占位提示没画出来");
-    assert!(
-        gutter[0].abs_diff(placeholder[0]) <= 3,
-        "占位提示与第 1 行行号不对齐：{:?} / {:?}",
-        gutter,
-        placeholder
     );
 }
 
@@ -486,3 +513,160 @@ fn window_adapts_when_resized() {
         total
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// 2026-10-26 用户七条反馈的回归
+// ─────────────────────────────────────────────────────────────────────────
+
+/// (1) 范围菜单是浮层、横跨 x=224 那条中缝：线画在布局之后（z 最高），
+/// 不处理就会出现在菜单正中间 —— 用户报的「下拉框好像穿透了」。
+#[test]
+fn window_middle_divider_hides_under_the_scope_menu() {
+    let ui = setup(preset_rows(false));
+    let mut f = Frame::new();
+    f.grab(&ui);
+    // 菜单没开：x=224 是一条可见分隔线（比两侧面板亮）
+    let idle = f.rgb(LEFT_W, 300);
+
+    // 与 window_scope_menu_closes_when_clicking_blank_area 同一个命中点
+    click(&ui, 67.0, (H - 28) as f32);
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    f.grab(&ui);
+    maybe_dump(&f, "sendwin-menu-divider");
+    let over_menu = f.rgb(LEFT_W, 300);
+
+    assert!(
+        lum(idle) > lum(over_menu) + 6,
+        "范围菜单打开后中缝仍压在菜单上（无菜单 {} / 有菜单 {}）",
+        lum(idle),
+        lum(over_menu)
+    );
+}
+
+/// (7) 窗口内分隔线要跟设置里的标题栏下沿同一档（border-subtle），
+/// 不是更亮更硬的 line-2。
+#[test]
+fn window_chrome_lines_use_the_settings_divider_token() {
+    let ui = setup(preset_rows(false));
+    let mut f = Frame::new();
+    f.grab(&ui);
+    maybe_dump(&f, "sendwin-lines");
+
+    let want = ui.global::<Theme>().get_border_subtle();
+    let slint::Brush::SolidColor(c) = want else {
+        panic!("border-subtle 不是实色，测试假设失效");
+    };
+    let want_rgb = (c.red(), c.green(), c.blue());
+
+    // 标题栏下沿：46 高的最后 1 设备像素（DPR=1 → y=45）；x=300 处没有文字/按钮
+    let got = f.rgb(300, TITLE_H - 1);
+    assert!(
+        close(got, want_rgb, 6),
+        "标题栏下沿 {got:?} ≠ Theme.border-subtle {want_rgb:?}"
+    );
+
+    // 页脚上沿同理
+    let foot = f.rgb(300, H - FOOTER_H);
+    assert!(
+        close(foot, want_rgb, 6),
+        "页脚上沿 {foot:?} ≠ Theme.border-subtle {want_rgb:?}"
+    );
+}
+
+/// (5) 关闭键左边的「钉住」钮：点一下置顶、再点取消。
+/// `Window.always-on-top` 绑定 pinned，winit 后端会落到 WindowLevel。
+#[test]
+fn window_pin_button_toggles_always_on_top() {
+    let ui = setup(preset_rows(false));
+    // 位置：右衬 12 + 关闭 28 + 间距 5 + 钉住 24 → 中心 x = W - 57
+    let pin_x = (W - 57) as f32;
+    let pin_y = 23.0;
+
+    assert!(!ui.get_pinned(), "新窗口不该默认置顶");
+    click(&ui, pin_x, pin_y);
+    assert!(ui.get_pinned(), "点钉住后窗口没置顶");
+    click(&ui, pin_x, pin_y);
+    assert!(!ui.get_pinned(), "再点钉住没有取消置顶");
+}
+
+/// (6) 编辑器光标类型跟随设置：block 画一个字符格、bar 只有 2px、
+/// underline 贴行底。断言靠「同一位置几种形状的像素覆盖」。
+#[test]
+fn window_caret_follows_the_configured_cursor_style() {
+    // 先在编辑器里打一段固定宽度不会变化的文本
+    let ui = setup(preset_rows(false));
+    click(&ui, 420.0, 110.0);
+    type_text(&ui, "ls");
+    std::thread::sleep(std::time::Duration::from_millis(120));
+
+    // 量「块状」时被染色的像素数（编辑器区，第一行附近）
+    let block_pixels = |ui: &SendCmdWindow, style: &str| -> usize {
+        ui.set_cursor_style(style.into());
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        let mut f = Frame::new();
+        f.grab(ui);
+        let mut n = 0;
+        for y in (TITLE_H + 2)..(TITLE_H + 40) {
+            for x in (LEFT_W + 30)..(W - 20) {
+                let (r, g, b) = f.rgb(x, y);
+                // 光标色是 term-fg（深色主题近白）—— 找明显亮于面板底的像素
+                if lum((r, g, b)) > 90 {
+                    n += 1;
+                }
+            }
+        }
+        n
+    };
+
+    let block = block_pixels(&ui, "block");
+    let bar = block_pixels(&ui, "bar");
+    eprintln!("光标像素数：block={block} bar={bar}");
+    assert!(
+        block > bar * 2,
+        "块状光标（{block} 像素）没有明显宽于竖线（{bar} 像素）"
+    );
+
+    // (#send-cmd-caret-underline) 下划线档：内建光标宽 0，行底自绘一条短横。
+    // 旧实现把下划线退化成 2px 竖线（与「竖线」档无法区分，用户反馈「没跟着
+    // 变」）。行中带用**同窗口差值**判断：bar 与 underline 两档的文字底噪
+    // 相同，差值 = 光标本体 —— bar 有全行高竖线、underline 没有（不猜 caret
+    // 的像素坐标，文字宽度随字体度量变）。
+    type_text(&ui, " ");
+    std::thread::sleep(std::time::Duration::from_millis(80));
+
+    let band_pixels = |ui: &SendCmdWindow, style: &str, y0: usize, y1: usize| -> usize {
+        ui.set_cursor_style(style.into());
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        let mut f = Frame::new();
+        f.grab(ui);
+        let mut n = 0;
+        for y in y0..y1 {
+            for x in (LEFT_W + 30)..(W - 20) {
+                if lum(f.rgb(x, y)) > 90 {
+                    n += 1;
+                }
+            }
+        }
+        n
+    };
+    // 行中带（编辑器首行上半段）：bar 档 = 文字 + 全行高竖线，underline 档
+    // = 同样的文字（内建光标已隐藏）→ 差值即竖线；退化成竖线时差值≈0。
+    let mid_bar = band_pixels(&ui, "bar", TITLE_H + 8, TITLE_H + 20);
+    let mid_underline = band_pixels(&ui, "underline", TITLE_H + 8, TITLE_H + 20);
+    // 行底带：下划线档的 2px 横条画在光标行底部（行顶 ≈TITLE_H+8 + 行距 − 2）。
+    let bottom_underline = band_pixels(&ui, "underline", TITLE_H + 20, TITLE_H + 34);
+    eprintln!(
+        "光标分带：bar 行中={mid_bar} underline 行中={mid_underline} \
+         差值={} 行底={bottom_underline}",
+        mid_bar as isize - mid_underline as isize
+    );
+    assert!(
+        mid_bar as isize - mid_underline as isize >= 15,
+        "竖线档行中应有全行高竖线（bar={mid_bar} underline={mid_underline}）"
+    );
+    assert!(
+        bottom_underline >= 6,
+        "下划线档行底应有一条短横（得 {bottom_underline}）"
+    );
+}
+

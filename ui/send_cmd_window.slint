@@ -6,9 +6,13 @@
 //   * 主题 / 语言 / 模型由 Rust 在打开时从主窗镜像过来（Theme 是**每窗口**
 //     的 global，不镜像的话这里会永远是编译期的深色默认值）。
 import { Icon } from "icons.slint";
-import { ScrollView } from "std-widgets.slint";
+import { ScrollView, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { DialogClose } from "widgets.slint";
+// (#send-cmd-frame 2026-10-26) 与主窗同一套最外圈描边（1 设备像素直边 +
+// 四角弧，弧外缘压在 DWM 裁剪弧上）。独立窗口原先什么都没有，看着像块
+// 贴在桌面上的矩形，用户要求「和主界面对齐，包含边线和四个角」。
+import { WindowFrame } from "window_frame.slint";
 // ScopeButton / SendScope / QuickCmd 都定义在 terminal_view.slint（导出过的），
 // 直接复用：面板里的范围键与命令栏那枚是**同一个组件**，状态各自独立。
 import { ScopeButton, SendScope, QuickCmd } from "terminal_view.slint";
@@ -23,6 +27,13 @@ export component SendCmdWindow inherits Window {
     // 自定义标题栏（Windows/Linux 由 Rust 置 true）；与主窗 / 进程窗同一套。
     in property <bool> custom-titlebar;
     no-frame: root.custom-titlebar;
+    // (#send-cmd-pin 2026-10-26) 「钉住」= 窗口一直置顶。Slint 1.18 的 Window
+    // 自带 `always-on-top`（winit 后端的 WindowLevel），浏览器/测试后端忽略。
+    in-out property <bool> pinned: false;
+    always-on-top: root.pinned;
+    // DWM 圆角是否生效（Rust `apply_window_chrome` 的返回值）；Win10 / 调用
+    // 失败时只画直角直边。与主窗同口径（见 ui/window_frame.slint）。
+    in property <bool> win-rounded: true;
     // Theme 是 per-window 的 global —— 这些双向绑定给 Rust 一个开关，
     // 打开窗口时从主窗镜像（见 src/app/resource_ui.rs::sync_send_cmd_theme）。
     in-out property <bool> dark-mode <=> Theme.dark;
@@ -32,6 +43,26 @@ export component SendCmdWindow inherits Window {
     in-out property <bool> wallpaper-active <=> Theme.wallpaper-active;
     in-out property <color> wp-accent <=> Theme.wp-accent;
     in-out property <color> wp-tint <=> Theme.wp-tint;
+
+    // (#send-cmd-cursor 2026-10-26) 编辑器光标形状跟随设置 › 终端 ›「光标
+    // 类型」（block / bar / underline）。值由 Rust 打开时从主窗镜像。
+    in property <string> cursor-style: "block";
+    // (#send-cmd-caret-underline 2026-10-27) 下划线光标：TextInput 内建光标是
+    // 一根全行高的实心矩形，画不出「行底短横线」—— 下划线档把内建光标宽设
+    // 0，在光标像素位置自绘一条 2px 横条。位置由 cursor-position-changed
+    // 缓存（TextInput 没有可读的 cursor 属性，同命令栏 cmd-caret-x 的做法）；
+    // 闪烁与内建光标同拍（530ms）。
+    property <length> caret-x;
+    property <length> caret-y;
+    property <bool> caret-blink: true;
+
+    // (#send-cmd-palette 2026-10-26) std-widgets 的 Palette 也是**每窗口**的
+    // global，独立窗口不设就停在 light 默认值 —— 滚动条/复选框全按亮色画
+    // （用户截图：深色面板里立着一根白色滚动柱）。主窗同样两行见 app.slint。
+    init => { Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light; }
+    changed dark-mode => {
+        Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light;
+    }
 
     // ── 数据（打开时由 Rust 从主窗镜像）──
     in property <[QuickCmd]> quick-commands: [];
@@ -51,10 +82,15 @@ export component SendCmdWindow inherits Window {
     property <bool> sent-flash: false;
     property <bool> text-push: false;
     property <bool> focus-pending: false;
+    // 「把光标挪到末尾」这一动作要排到 text 生效之后的下一轮事件循环
+    // （见 exp-caret-timer 的注释）。
+    property <bool> caret-pending: false;
 
     // ── 对外 ──
     callback send(string /* cmd */, string /* scope */);
-    callback manage();
+    // (#send-cmd-mgmt-row-gone 2026-10-27) 「管理快捷命令…」入口按用户要求
+    // 移除 —— 命令管理从主窗侧栏/设置进，这个窗口专注「挑一条 → 发」。
+    // callback manage() 一并删除，Rust 侧的 on_manage 注册同步清掉。
     callback request-close();
     callback win-drag();
     callback win-resize-se();
@@ -116,6 +152,35 @@ export component SendCmdWindow inherits Window {
     }
     property <string> danger: root.danger-token(root.text);
 
+    // (#send-cmd-filter 2026-10-27) 右侧编辑器打字时左栏跟着过滤 —— 与命令栏
+    // 打字补全同一套规则（Rust 侧 suggest_models：大小写不敏感子串；快捷命令
+    // name 或 command 命中、历史只匹配命令文本）。这里在 UI 层用 has-token
+    // （replace-all 判 contains）复刻，省一条每键回 Rust 的链路。
+    // 命令为空 = 不过滤，左栏照常分组显示；过滤态组标题不画（扁平候选，
+    // 同命令栏匹配框）。
+    property <bool> filtering: root.text != "";
+    // 滚动条拖拽起点：按下时的 content-y 与指针全局 y（照抄 confirm_dialog
+    // 卡片拖拽的取位移方式）
+    property <length> grab-content-y;
+    property <length> grab-pointer-y;
+    function qc-hit(q: QuickCmd) -> bool {
+        if (!root.filtering) { return true; }
+        let s = root.text.to-lowercase();
+        let cmd = q.command.to-lowercase();
+        // ⚠️ Slint 的 string 没有 split / 截取，query 只能是**整段**文本：
+        // 正常打字时 = 子串过滤（与命令栏补全一致）；点行追加成多行后，
+        // 已拼进去的命令靠「文本包含该命令」这条保持可见，不至于瞬间清空。
+        return root.has-token(q.name.to-lowercase(), s)
+            || root.has-token(cmd, s)
+            || root.has-token(s, cmd);
+    }
+    function hist-hit(h: string) -> bool {
+        if (!root.filtering) { return true; }
+        let s = root.text.to-lowercase();
+        let cmd = h.to-lowercase();
+        return root.has-token(cmd, s) || root.has-token(s, cmd);
+    }
+
     Rectangle {
         background: Theme.popup-bg;
 
@@ -135,13 +200,52 @@ export component SendCmdWindow inherits Window {
             }
         }
 
+        // (#send-cmd-divider-z 2026-10-27) 中缝竖线：从标题下沿一直画到页脚
+        // 上沿，**穿过危险告警槽那条 28px 的空档**。以前这条线挂在左栏里
+        // （height = 左栏高），左栏到"危险槽"上面就结束，下面还有 28px 的
+        // 空白槽 + 页脚，于是竖线看着"断了一截"（用户截图）。
+        // z 压到**内容之下**（画在遮罩之后、布局之前）：上一版它画在布局
+        // 之后（z 最高），为了不让它压在从页脚向上弹的范围菜单正中间，菜单
+        // 开着时整条隐藏 —— 用户反馈「点开左下角按钮，中缝竖线消失了」。
+        // 降 z 后菜单（页脚里，z 更高）打开时正好盖住线穿过的那段，线常显；
+        // 危险告警的淡红底（alpha 0.10）叠在上面也几乎看不出差别。
+        Rectangle {
+            // 位置贴设备栅格（见标题栏那条注释）；1phx 落半像素会整条"消失"
+            x: Theme.snap-to-device(parent.absolute-position.x + 224px)
+                - parent.absolute-position.x;
+            y: 46px;
+            width: Theme.hairline();
+            height: parent.height - 46px - 56px;
+            background: Theme.border-subtle;
+        }
+        // (#send-cmd-drag-blank 2026-10-27) 空白也能拖窗：标题栏之外，编辑区
+        // 下方的大片留白、危险告警槽、页脚缝隙这些**没有控件**的地方，按下
+        // 同样交给 OS 拖动。z 夹在「点外部关菜单」遮罩与布局之间 —— 标题栏/
+        // 输入框/列表行/按钮的命中区都声明得更晚（z 更高）照常先拿到点击，
+        // 落到这层的只剩空白。菜单开着时这次按下算"点外部"：不拖窗、reject
+        // 放行给下面的遮罩去关菜单。
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: transparent;
+            TouchArea {
+                pointer-event(ev) => {
+                    if (ev.kind == PointerEventKind.down && !root.scope-open) {
+                        root.win-drag();
+                    }
+                    EventResult.reject
+                }
+            }
+        }
+
         VerticalLayout {
             // 标题栏
             Rectangle {
                 height: 46px;
                 Text {
                     x: 14px;
-                    width: parent.width - 60px;
+                    // 右侧两个按钮（钉住 24 + 间距 5 + 关闭 28 + 右衬 12）
+                    width: parent.width - 100px;
                     height: parent.height;
                     text: @tr("Send command");
                     color: Theme.text-primary;
@@ -157,6 +261,31 @@ export component SendCmdWindow inherits Window {
                             root.win-drag();
                         }
                         EventResult.reject
+                    }
+                }
+                // ── 标题栏右侧按钮组 ──────────────────────────────────
+                // (#send-cmd-pin 2026-10-26) 「钉住」在关闭键左边：开着时窗口
+                // 一直置顶（改代码/对着终端连发时不用反复把它捞到前面）。
+                // 常态只有一枚灰图钉，钉住后染 accent + 浅底 —— 与标题栏其它
+                // 图标钮同一套「常态灰、激活染 accent」的语言。
+                pin-btn := Rectangle {
+                    x: parent.width - 12px - 28px - 5px - self.width;
+                    y: (parent.height - self.height) / 2;
+                    width: 24px;
+                    height: 24px;
+                    border-radius: 5px;
+                    background: root.pinned ? Theme.accent-soft
+                        : (pin-ta.has-hover ? Theme.bg-hover : transparent);
+                    animate background { duration: 90ms; }
+                    Icon {
+                        glyph: root.pinned ? "unpin" : "pin";
+                        tint: root.pinned ? Theme.accent-solid
+                            : (pin-ta.has-hover ? Theme.text-primary : Theme.text-muted);
+                        size: 14px;
+                    }
+                    pin-ta := TouchArea {
+                        mouse-cursor: default;
+                        clicked => { root.pinned = !root.pinned; }
                     }
                 }
                 // (#cmd-expand-close 2026-10-26) 与命令管理 / 分组管理 / 设置
@@ -175,11 +304,14 @@ export component SendCmdWindow inherits Window {
                     // 两行 ~50% 的淡影，看起来"有时有线、有时没了"（用户截图：
                     // 同一个面板滚动前后，中缝线一会儿在、一会儿消失）。
                     // 位置一律按**绝对坐标**对齐，再换回父级坐标。
+                    // (#send-cmd-line-token 2026-10-26) 颜色改 `border-subtle`：
+                    // 设置里标题栏下沿就是这一档，而这里原先用 line-2（更亮更硬，
+                    // 深色下 #3f444f），整块窗口的分隔线比设置里的重一档。
                     y: Theme.snap-to-device(parent.absolute-position.y + parent.height)
                         - parent.absolute-position.y - Theme.hairline();
                     width: parent.width;
                     height: Theme.hairline();
-                    background: Theme.line-2;
+                    background: Theme.border-subtle;
                 }
             }
 
@@ -208,9 +340,15 @@ export component SendCmdWindow inherits Window {
                         // 滚动区
                         Rectangle {
                             vertical-stretch: 1;
-                            ScrollView {
+                            // (#send-cmd-scrollbar 2026-10-26) 原生滚动条关掉：
+                            // std-widgets 那条是 16px 轨道 + 上下箭头的粗柱，在
+                            // 深色面板里立着一根白条（用户截图），与全应用的
+                            // 4px overlay 细条是两套语言。细条见下方自绘。
+                            exp-side-scroll := ScrollView {
                                 width: 100%;
                                 height: 100%;
+                                vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                                horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
                                 // ⚠️ 不要写 `content-height: max(visible, 内容高)`：
                                 // 内容比视口矮时它会把**视口高度**下发给内层布局，
                                 // 余量就被摊到各子项之间（「最近」在顶、历史掉到栏底）。
@@ -254,12 +392,15 @@ export component SendCmdWindow inherits Window {
                                     // 每组第一行上，所以两段都画在这里，顺序不会乱。
                                     for q in root.quick-commands : VerticalLayout {
                                         spacing: 0px;
-                                        height: (q.group-header != "" ? 24px : 0px)
+                                        // (#send-cmd-filter 2026-10-27) 过滤态：不命中的条目
+                                        // 高度归零、组标题不画（扁平候选，同命令栏补全框）。
+                                        height: (root.filtering && !root.qc-hit(q)) ? 0px
+                                            : (q.group-header != "" ? 24px : 0px)
                                             + (q.orig-index >= 0 ? 34px : 0px);
                                         // ⚠️ 组标题要套一层 Rectangle：直接把 `width: parent.width - 8px`
                                         // 写在**布局子项**上会成环（width → min-width →
                                         // flickable.content-width → exp-side-col.width）。
-                                        if q.group-header != "" : Rectangle {
+                                        if q.group-header != "" && !root.filtering : Rectangle {
                                             height: 24px;
                                             Text {
                                                 x: 8px;
@@ -273,7 +414,7 @@ export component SendCmdWindow inherits Window {
                                                 overflow: elide;
                                             }
                                         }
-                                        if q.orig-index >= 0 : Rectangle {
+                                        if q.orig-index >= 0 && (!root.filtering || root.qc-hit(q)) : Rectangle {
                                             height: 34px;
                                             border-radius: 5px;
                                             background: q-ta.has-hover ? Theme.bg-hover : transparent;
@@ -336,7 +477,10 @@ export component SendCmdWindow inherits Window {
                                     for h[i] in root.command-history : Rectangle {
                                         // 只列最后 8 条（历史可能很长，弹窗里翻不动）
                                         visible: i >= root.command-history.length - 8;
-                                        height: (i >= root.command-history.length - 8) ? 30px : 0px;
+                                        // (#send-cmd-filter 2026-10-27) 过滤态再叠一层：
+                                        // 不命中的历史行高度归零（可见范围仍限最后 8 条）。
+                                        height: (i < root.command-history.length - 8
+                                            || (root.filtering && !root.hist-hit(h))) ? 0px : 30px;
                                         border-radius: 5px;
                                         background: h-ta.has-hover ? Theme.bg-hover : transparent;
                                         h-ta := TouchArea {
@@ -370,50 +514,47 @@ export component SendCmdWindow inherits Window {
                                 height: 14px;
                                 background: @linear-gradient(180deg, transparent 0%, Theme.popup-bg 100%);
                             }
-                        }
-
-                        // 吸底：管理入口（列表再长也不会把它滚走）
-                        Rectangle {
-                            height: 1phx;
-                            background: Theme.line-2;
-                        }
-                        // (#cmd-expand-mgmt-row 2026-10-26) 行高 34 → 30、圆角 5：
-                        // 34 高 + 整栏宽的悬停底在那条窄栏里显得很"胖"（用户截图）。
-                        Rectangle {
-                            height: 30px;
-                            mgr-ta := TouchArea {
-                                mouse-cursor: default;
-                                clicked => {
-                                    root.manage();
-                                    root.request-close();
+                            // (#send-cmd-scrollbar 2026-10-26) 自绘 4px 细条：
+                            // 只在内容超出视口时出现，位置与长度按 content-y 比例
+                            // 走。声明在渐隐层之后 = 压在最上层，否则底端会被淡掉。
+                            // (#send-cmd-scrollbar-drag 2026-10-27) 上版是纯指示
+                            // （怕热区吃掉行点击），用户实测要点着拖：外层命中矩形
+                            // 加宽到 14px（视觉细条仍 4px、贴右缘），按住上下拖
+                            // = 指针位移 × (内容高/视口高) 写回 content-y。热区只
+                            // 在内容溢出时存在、只盖右缘一窄条（行内文字够不到），
+                            // 不挡列表行的点击。
+                            if exp-side-scroll.content-height > exp-side-scroll.visible-height + 0.5px : Rectangle {
+                                x: parent.width - self.width;
+                                width: 14px;
+                                y: exp-side-scroll.height
+                                    * (-exp-side-scroll.content-y) / max(1px, exp-side-scroll.content-height);
+                                height: max(24px, exp-side-scroll.height
+                                    * exp-side-scroll.visible-height / max(1px, exp-side-scroll.content-height));
+                                thumb-ta := TouchArea {
+                                    mouse-cursor: default;
+                                    pointer-event(ev) => {
+                                        if (ev.kind == PointerEventKind.down) {
+                                            root.grab-content-y = exp-side-scroll.content-y;
+                                            root.grab-pointer-y = self.absolute-position.y + self.mouse-y;
+                                        }
+                                    }
+                                    moved => {
+                                        let range = exp-side-scroll.content-height
+                                            - exp-side-scroll.visible-height;
+                                        let dy = (self.absolute-position.y + self.mouse-y)
+                                            - root.grab-pointer-y;
+                                        exp-side-scroll.content-y = Math.max(-range, Math.min(0px,
+                                            root.grab-content-y - dy
+                                                * (range / max(1px, exp-side-scroll.visible-height))));
+                                    }
                                 }
-                            }
-                            // (#cmd-expand-mgmt-row) 悬停底跟列表行一样**内缩 6px**：
-                            // 之前是整栏通宽，比上面每一行都宽一截，看着不协调。
-                            Rectangle {
-                                x: 6px;
-                                width: parent.width - 12px;
-                                height: parent.height;
-                                border-radius: 5px;
-                                background: mgr-ta.has-hover ? Theme.bg-hover : transparent;
-                                animate background { duration: 100ms; }
-                            }
-                            HorizontalLayout {
-                                padding-left: 10px;
-                                padding-right: 8px;
-                                spacing: 5px;
-                                alignment: start;
-                                Icon {
-                                    glyph: "tune";
-                                    tint: mgr-ta.has-hover ? Theme.accent-solid : Theme.text-muted;
-                                    size: 11px;
-                                }
-                                Text {
-                                    text: @tr("Manage quick commands…");
-                                    color: mgr-ta.has-hover ? Theme.accent-solid : Theme.text-secondary;
-                                    font-size: Theme.fs-xs;
-                                    vertical-alignment: center;
-                                    horizontal-stretch: 1;
+                                Rectangle {
+                                    x: parent.width - 10px;
+                                    width: 4px;
+                                    height: parent.height;
+                                    border-radius: 2px;
+                                    background: Theme.text-muted.with-alpha(thumb-ta.has-hover ? 0.60 : 0.40);
+                                    animate background { duration: 90ms; }
                                 }
                             }
                         }
@@ -423,9 +564,15 @@ export component SendCmdWindow inherits Window {
                 // 右栏：行号 + 多行编辑（底色跟随面板，见左栏那条注释）
                 Rectangle {
                     horizontal-stretch: 1;
+                    // 编辑器内容由 ScrollView 自己裁；这里再裁一层，占位提示
+                    // 与行号列都不会溢到页脚上去。
+                    clip: true;
                     exp-scroll := ScrollView {
                         width: parent.width;
                         height: parent.height;
+                        // 同左栏：原生滚动条与本应用的语言不合（#send-cmd-scrollbar）。
+                        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
                         content-width: self.visible-width;
                         content-height: max(self.visible-height, exp-input.preferred-height + 16px);
                         HorizontalLayout {
@@ -459,6 +606,10 @@ export component SendCmdWindow inherits Window {
                                     font-size: Theme.fs-sm;
                                 }
                                 property <length> pitch: ln-p2.preferred-height - ln-p1.preferred-height;
+                                // (#send-cmd-cursor) 等宽字符宽：块状光标要正好
+                                // 盖住一个字符格，取数字字形的首选宽（等宽字体下
+                                // 与任何字符同宽）。
+                                property <length> char-w: ln-p1.preferred-width;
                                 VerticalLayout {
                                     padding-top: 8px;
                                     padding-right: 8px;
@@ -486,6 +637,23 @@ export component SendCmdWindow inherits Window {
                                 vertical-alignment: top;
                                 wrap: no-wrap;
                                 single-line: false;
+                                // (#send-cmd-cursor 2026-10-26) 跟随设置 › 终端 ›
+                                // 「光标类型」：TextInput 的光标就是一条
+                                // `text-cursor-width` 宽、行高的实心矩形 ——
+                                // 块状给一个字符宽、竖线给 2px 就是两种形状。
+                                // 位置交给 TextInput 自己算，永远准。
+                                // (#send-cmd-caret-underline 2026-10-27) 下划线档
+                                // 内建光标宽 0（全行高矩形画不出行底短横线），
+                                // 形状由下方自绘的 2px 横条承担。
+                                text-cursor-width: root.cursor-style == "bar" ? 2px
+                                    : (root.cursor-style == "underline" ? 0px
+                                    : max(6px, gutter.char-w));
+                                // 光标像素位置（相对 TextInput）：下划线横条的
+                                // 定位依据；块状/竖线档也缓存着，无害。
+                                cursor-position-changed(position) => {
+                                    root.caret-x = position.x;
+                                    root.caret-y = position.y;
+                                }
                                 edited => {
                                     root.text = self.text;
                                 }
@@ -503,19 +671,23 @@ export component SendCmdWindow inherits Window {
                             }
                         }
                     }
-                    // 空编辑器时的占位（#cmdbar-expand-left）：面板打开后
-                    // 一大片纯黑看不出"这儿能打字"，给一句动作提示。
-                    // 占位提示必须与编辑器首行**同字体同字号同起点**，否则
-                    // 它比正文低一截、还换成比例字体，看起来"没对齐"（用户截图）。
-                    if root.text == "" : Text {
-                        x: 44px;
-                        y: 8px;
-                        width: parent.width - 60px;
-                        text: @tr("Type or paste a command; Ctrl+Enter sends it");
-                        color: Theme.text-muted;
-                        font-family: Theme.font-mono;
-                        font-size: Theme.fs-sm;
-                        opacity: 0.7;
+                    // (#send-cmd-caret-underline 2026-10-27) 下划线光标本体：
+                    // 一条 2px 横条贴光标所在行的**行底**，宽度 = 一个字符宽
+                    // （同块状档）。位置 = TextInput 绝对位置 + 回调缓存的光标
+                    // 相对位置 —— absolute-position 在绘制期求值是准的，同中缝
+                    // 竖线的用法；行高用行号列量出的 pitch，第几行都自动对齐。
+                    // 闪烁与内建光标同拍（exp-blink-timer），失焦即隐藏（与
+                    // 块状/竖线档失焦不画光标一致）。右栏 clip:true 负责裁边。
+                    if root.cursor-style == "underline" : Rectangle {
+                        x: exp-input.absolute-position.x + root.caret-x
+                            - parent.absolute-position.x;
+                        y: exp-input.absolute-position.y + root.caret-y
+                            + gutter.pitch - 2px
+                            - parent.absolute-position.y;
+                        width: max(6px, gutter.char-w);
+                        height: 2px;
+                        visible: exp-input.has-focus && root.caret-blink;
+                        background: Theme.text-primary;
                     }
                 }
             }
@@ -592,7 +764,7 @@ export component SendCmdWindow inherits Window {
                         - parent.absolute-position.y;
                     width: parent.width;
                     height: Theme.hairline();
-                    background: Theme.line-2;
+                    background: Theme.border-subtle;
                 }
                 ScopeButton {
                     x: 12px;
@@ -648,20 +820,6 @@ export component SendCmdWindow inherits Window {
                 }
             }
         }
-        // 中缝竖线（#cmdbar-expand-hairline 2026-10-26）：从标题下沿一直画到
-        // 页脚上沿，**穿过危险告警槽那条 28px 的空档**。
-        // 以前这条线挂在左栏里（height = 左栏高），左栏到"危险槽"上面就结束，
-        // 下面还有 28px 的空白槽 + 页脚，于是竖线看着"断了一截"（用户截图）。
-        // 画在布局之后 = z 在内容之上：危险槽的淡红底也盖不住它。
-        Rectangle {
-            // 位置贴设备栅格（见标题栏那条注释）；1phx 落半像素会整条"消失"
-            x: Theme.snap-to-device(parent.absolute-position.x + 224px)
-                - parent.absolute-position.x;
-            y: 46px;
-            width: Theme.hairline();
-            height: parent.height - 46px - 56px;
-            background: Theme.line-2;
-        }
         exp-text-timer := Timer {
             interval: 0ms;
             running: root.text-push;
@@ -669,6 +827,25 @@ export component SendCmdWindow inherits Window {
                 exp-input.text = root.text;
                 root.text-push = false;
                 exp-input.focus();
+                // (#send-cmd-caret-end 2026-10-26) 点左边的命令 = 「把这条塞进
+                // 编辑器准备发」，光标要落在**末尾**才能接着补参数；此前外部
+                // 写 text 会把光标重置到 0，表现为停在第一行第一个字前面
+                // （用户截图：`uname -a` 的竖线卡在 u 前）。
+                // ⚠️ 不能在同一帧里 set-selection-offsets：那时 text 还没落到
+                // TextInput 内部，偏移会按**旧（空）文本**钳成 0（实测点了
+                // 命令光标仍停在开头）。挂一个 0ms timer 排到下一轮再设。
+                root.caret-pending = true;
+            }
+        }
+        exp-caret-timer := Timer {
+            interval: 0ms;
+            running: root.caret-pending;
+            triggered => {
+                root.caret-pending = false;
+                // 偏移传个大数即可：Slint 的 safe_byte_offset 走 ceil_char_boundary，
+                // 超出长度自动钳到文本末尾 —— 不必自己算 UTF-8 字节长度
+                // （Slint 只给了 character-count，中文命令会对不上）。
+                exp-input.set-selection-offsets(999999, 999999);
             }
         }
         // 发送反馈：按钮短暂显示「已发送」，1.4s 后复原（连发会重新计时）
@@ -676,6 +853,14 @@ export component SendCmdWindow inherits Window {
             interval: 1400ms;
             running: root.sent-flash;
             triggered => { root.sent-flash = false; }
+        }
+        // (#send-cmd-caret-underline) 下划线光标的闪烁：与 TextInput 内建光标
+        // 同一节奏；只有下划线档且编辑器持焦时才跑（visible 里有同样的条件，
+        // 失焦时横条直接隐藏）。
+        exp-blink-timer := Timer {
+            interval: 530ms;
+            running: root.cursor-style == "underline" && exp-input.has-focus;
+            triggered => { root.caret-blink = !root.caret-blink; }
         }
         exp-focus-timer := Timer {
             interval: 0ms;
@@ -687,6 +872,17 @@ export component SendCmdWindow inherits Window {
                 }
             }
         }
+    }
+
+    // (#send-cmd-frame 2026-10-26) 与主窗同一套最外圈描边：四条 1 设备像素
+    // 直边贴着真实窗口边界，四角各一段 1 设备像素弧、外缘正好压在 DWM 裁剪弧
+    // 上。无边框窗口原先完全看不到边界，悬浮在桌面上像一块贴纸（用户要求
+    // 「和主界面对齐，包含边线和四个角」）。几何推导见 ui/window_frame.slint。
+    // 不接任何事件（纯 Rectangle + Path），命中测试照旧落到下面的内容/热区。
+    if root.custom-titlebar : WindowFrame {
+        width: root.width;
+        height: root.height;
+        rounded: root.win-rounded;
     }
 
     // --- 右下角 resize 抓手（无边框平台用，同 proc_window）----------------

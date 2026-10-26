@@ -2129,6 +2129,22 @@ fn build_theme_entries(favorites: &[String]) -> Vec<crate::ui::ThemeEntry> {
     }
     entries
 }
+// (#send-cmd-single 2026-10-27)「发送命令」窗口进程级唯一。主窗可以有多个
+// （tab 拖出 / 新连接级联），每个主窗的 open_window 都会走到发送窗的创建处
+// —— 老做法是各养一份 SendCmdWindow，两个主窗就能同时弹出两个发送窗（用户
+// 要求「永远只能打开一个」）。现在全局只登记一份句柄：登记表里已有活实例就
+// 直接复用（回调注册在实例上，后一个主窗注册的会覆盖前一个，发送目标因此
+// 由 SEND_CMD_HOST 决定而不是注册者）；实例没了（唯一持强者随主窗退出释放）
+// 再新建一份并顶掉登记。都在 Slint 事件循环线程上，thread_local 即可。
+thread_local! {
+    static SEND_CMD_WIN: std::cell::RefCell<Option<slint::Weak<SendCmdWindow>>> =
+        std::cell::RefCell::new(None);
+    // 最近一次**打开发送窗**的主窗：send 的目标跟着它走 —— 在哪个主窗上
+    // 点开，命令就发到那个主窗的当前标签页。
+    static SEND_CMD_HOST: std::cell::RefCell<Option<slint::Weak<AppWindow>>> =
+        std::cell::RefCell::new(None);
+}
+
 /// Build and wire one application window. Called for the first window by
 /// `run()` and for every subsequent window by the new-window entry points.
 /// `at` pins the window to a physical screen position (tab detach); without
@@ -2236,9 +2252,18 @@ fn open_window(
     proc_win.set_proc_list(ModelRc::from(proc_rows_model.clone()));
     // (#send-cmd-window 2026-10-26) 「发送命令」独立窗口：命令栏 ↗ / Ctrl+Shift+E
     // 打开，能拖到别的屏幕、和主窗并排，发完不关。
-    let send_win = Rc::new(SendCmdWindow::new().context("failed to build send-command window")?);
-    send_win.set_custom_titlebar(cfg!(not(target_os = "macos")));
-    crate::theme::set_dpr_send_cmd(&send_win, window.window().scale_factor() as f32);
+    // (#send-cmd-single 2026-10-27) 进程级只留一份（见 SEND_CMD_WIN 的注释）；
+    // DPR 不在这里写 —— open_window 跑在主窗映射之前，scale_factor() 恒 1.0，
+    // 写进去的就是错的，打开时 show 之后再按真实缩放纠正。
+    let send_win = match SEND_CMD_WIN.with(|c| c.borrow().as_ref().and_then(|w| w.upgrade())) {
+        Some(existing) => Rc::new(existing),
+        None => {
+            let w = Rc::new(SendCmdWindow::new().context("failed to build send-command window")?);
+            w.set_custom_titlebar(cfg!(not(target_os = "macos")));
+            SEND_CMD_WIN.with(|c| *c.borrow_mut() = Some(w.as_weak()));
+            w
+        }
+    };
     let sys_win = Rc::new(SystemInfoWindow::new().context("failed to build system info window")?);
     crate::theme::set_dpr_system_info(&sys_win, window.window().scale_factor() as f32);
     let editor_win = Rc::new(EditorWindow::new().context("failed to build editor window")?);
@@ -2440,16 +2465,40 @@ fn open_window(
             let (Some(main), Some(sw)) = (win_weak.upgrade(), snd_weak.upgrade()) else {
                 return;
             };
+            // (#send-cmd-single 2026-10-27) 本次打开者成为发送目标：send 回调
+            // 按它取主窗（窗口可能是别的主窗先开的那份全局实例）。
+            SEND_CMD_HOST.with(|h| *h.borrow_mut() = Some(main.as_weak()));
             sw.set_quick_commands(main.get_quick_commands());
             sw.set_command_history(main.get_command_history());
             sw.set_scopes(main.get_send_scopes());
             sw.set_tab_count(main.get_sendable_tabs());
             sw.set_lang_en(main.get_lang_en());
             sync_send_cmd_theme(&main, &sw);
-            sw.set_text(draft);
-            place_send_cmd_window(&main, &sw);
-            let _ = sw.show();
-            arm_window_icon(sw.window());
+            // (#send-cmd-cursor 2026-10-26) 设置 › 终端 › 光标类型也镜像过去：
+            // 编辑器光标的宽度按它算（块状 = 一个字符宽，竖线 = 2px）。
+            sw.set_cursor_style(main.get_term_cursor_style());
+            if sw.window().is_visible() {
+                // (#send-cmd-single 2026-10-27) 已经开着：只弹到前台，不动
+                // 位置/尺寸（用户拖过的大小要留），也不覆盖草稿 —— 窗里
+                // 可能有没发完的编辑内容。
+            } else {
+                sw.set_text(draft);
+                place_send_cmd_window(&main, &sw);
+                let _ = sw.show();
+                // (#send-cmd-dpr 2026-10-27) 创建时主窗还没映射，主窗的
+                // scale_factor() 恒 1.0（见下面对主窗 scale mirror 的注释），
+                // Theme.device-pixel-ratio 一直停在 1.0 → hairline() = 1 逻辑
+                // px，200% 屏上窗口四边描边、标题线、中缝线全粗一倍（用户
+                // 截图「发送命令窗口的边线太粗」）。映射后按这个窗口自己的
+                // 真实缩放纠正，再要与主窗同口径的系统边框/圆角。
+                crate::theme::set_dpr_send_cmd(&sw, sw.window().scale_factor() as f32);
+                // (#send-cmd-frame 2026-10-26) 窗口映射之后再要 DWM 圆角、并把系统
+                // 边框设成 NONE：自绘的那圈 1 设备像素描边要和真实边界重合，系统
+                // 边框还留着就会变成双线。返回值回写给 UI（Win10 只画直角直边）。
+                let rounded = apply_window_chrome(sw.window());
+                sw.set_win_rounded(rounded);
+                arm_window_icon(sw.window());
+            }
             sw.window().with_winit_window(|ww| ww.focus_window());
         });
     }
@@ -2460,7 +2509,13 @@ fn open_window(
         let snd_weak = send_win.as_weak();
         send_win.on_send(move |cmd: SharedString, scope: SharedString| {
             let Some(sw) = snd_weak.upgrade() else { return };
-            let Some(main) = win_weak.upgrade() else { return };
+            // (#send-cmd-single 2026-10-27) 目标 = 最近打开发送窗的主窗（可能
+            // 是任意一个主窗；全局实例上注册的这份回调属于最后完成 open_window
+            // 的主窗，不能直接用它）；兜底回注册者。
+            let main = SEND_CMD_HOST
+                .with(|h| h.borrow().as_ref().and_then(|w| w.upgrade()))
+                .or_else(|| win_weak.upgrade());
+            let Some(main) = main else { return };
             let tab = main.get_active_tab_id();
             main.invoke_run_command(tab, cmd, scope);
             // 发完历史多了一条：窗口里的「最近」跟着刷
@@ -2469,18 +2524,8 @@ fn open_window(
         });
     }
     {
-        // 管理快捷命令：直接开主窗的命令管理弹框，窗口先收起（避免两块 UI 打架）
-        let win_weak = window.as_weak();
-        let snd_weak = send_win.as_weak();
-        send_win.on_manage(move || {
-            if let (Some(main), Some(sw)) = (win_weak.upgrade(), snd_weak.upgrade()) {
-                let _ = sw.hide();
-                main.invoke_open_command_manager();
-                main.window().with_winit_window(|ww| ww.focus_window());
-            }
-        });
-    }
-    {
+        // (#send-cmd-mgmt-row-gone 2026-10-27) 窗口里的「管理快捷命令…」入口
+        // 按用户要求移除，manage 回调删了；命令管理仍从主窗侧栏/设置进。
         let snd_weak = send_win.as_weak();
         send_win.on_request_close(move || {
             if let Some(sw) = snd_weak.upgrade() {
@@ -3576,8 +3621,16 @@ fn open_window(
                 normalized
             };
             if let Some(w) = weak.upgrade() {
-                w.set_term_cursor_style(normalized.into());
+                w.set_term_cursor_style(normalized.clone().into());
             }
+            // (#send-cmd-caret-underline 2026-10-27) 发送命令窗口开着时也即时
+            // 跟随：光标类型只在打开时镜像的话，改完设置得关掉重开才生效
+            // （用户反馈「设置了光标类型，输入命令窗口没跟着变」）。
+            SEND_CMD_WIN.with(|c| {
+                if let Some(sw) = c.borrow().as_ref().and_then(|w| w.upgrade()) {
+                    sw.set_cursor_style(normalized.as_str().into());
+                }
+            });
         });
     }
     // Global UI scale (#100): persist the percent and apply it live.

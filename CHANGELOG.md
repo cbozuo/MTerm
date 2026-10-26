@@ -6,6 +6,54 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **光标类型在发送命令窗口真正生效（#send-cmd-caret-live）。**
+  - **下划线档有形状了**：之前下划线退化成 2px 竖线（和「竖线」档无法区分，用户反馈「设置了光标类型没跟着变」）。TextInput 的内建光标是一根全行高矩形，画不出行底短横线 —— 下划线档把内建光标宽设 0，在 `cursor-position-changed` 缓存的光标像素位置自绘一条 2px 横条（宽度 = 一个字符宽，行高用行号列量出的行距，第几行都对齐），闪烁与内建光标同拍（530ms）、失焦即隐藏。
+  - **改设置即时跟随**：光标类型原先只在发送窗打开时镜像一次 —— 窗口开着时去设置里改，得关掉重开才生效。现在 `on_set_term_cursor_style` 落盘后同步到已开的发送窗（进程级单例句柄现成）。
+- **Cursor shape now actually applies in the send-command window (#send-cmd-caret-live).**
+  - **The underline cursor has a shape**: it used to degrade into a 2px bar, indistinguishable from the "bar" option (user feedback: "it doesn't follow the setting"). TextInput's built-in cursor is a full-line-height rectangle and cannot draw a bottom rule — the underline option now hides the built-in cursor (width 0) and self-draws a 2px rule at the caret's pixel position from `cursor-position-changed` (one character wide, aligned on every line via the gutter-measured line pitch), blinking at the same 530ms cadence and hiding on focus loss.
+  - **Live follow**: the style was only mirrored when the window opened, so changing the setting while the window was open required a reopen. `on_set_term_cursor_style` now also pushes the value to the already-open send window (the process-wide singleton handle is right there).
+
+- **「发送命令」窗口第三轮反馈三连修：滚动条可拖、管理入口移除、左栏随输入过滤（#send-cmd-round3）。**
+  - **滚动条可拖动**：左栏自绘细条（#send-cmd-scrollbar）原先是纯指示，现在按住上下拖即滚动 —— 命中矩形加宽到 14px（视觉仍 4px 贴右缘、悬停变亮），指针位移 ×（内容高/视口高）写回 `content-y`；热区只在内容溢出时存在、只盖右缘一窄条，不挡列表行点击。
+  - **「管理快捷命令…」入口移除**：这个窗口专注「挑一条 → 发」，命令管理仍从主窗侧栏/设置进；`manage` 回调与 Rust 侧注册一并清理。
+  - **左栏随输入过滤**：右侧编辑器打字时左栏实时过滤 —— 与命令栏打字补全同一套规则（大小写不敏感子串、快捷命令 name 或 command 命中、历史匹配命令文本），UI 层复刻（`replace-all` 判 contains），省一条每键回 Rust 的链路。过滤态组标题不画（扁平候选，同命令栏匹配框）；点行追加成多行后，已拼进去的命令靠「文本包含该命令」保持可见（Slint string 没有 split，query 只能是整段文本）；清空恢复分组视图。
+- **"Send command" window, third feedback round: draggable scrollbar, no manage row, live filtering (#send-cmd-round3).**
+  - **Scrollbar is draggable**: the self-drawn thin bar used to be indicator-only — press and drag it now. The hit rect is 14px wide (the visible thumb stays 4px at the edge, brightens on hover); pointer delta × (content/viewport height) is written back to `content-y`. The hit rect only exists while content overflows and covers just the right edge, so list rows keep their clicks.
+  - **"Manage quick commands…" entry removed**: the window focuses on "pick one and send"; command management stays in the main window's sidebar/settings. The `manage` callback and its Rust handler are cleaned up.
+  - **Left column filters as you type**: typing in the editor filters the left column live, matching the command bar's suggestion rules (case-insensitive substring; quick commands hit on name or command, history on text) — replicated in the UI layer with the `replace-all` contains trick, no per-keystroke round-trip. Group headers are hidden while filtering (flat candidate list, like the command bar); commands already appended into a multi-line draft stay visible via "the draft contains the command" (Slint strings have no split, so the query is the whole text); clearing restores the grouped view.
+
+- **「发送命令」窗口第二轮反馈五连修：边线、竖线、占位、空白拖动与全局单例（#send-cmd-round2）。**
+  - **边线粗一倍的真凶**：发送窗的 `Theme.device-pixel-ratio` 在创建时从**还没映射**的主窗拿 `scale_factor()`（恒 1.0），`hairline()` 一直是 1 逻辑 px —— 200% 屏上窗口四边描边、标题线、中缝线全粗一倍。现在打开窗口 show 之后再按自己的真实缩放纠正（主窗同款口径）。
+  - **下拉框边线/横线同档**：范围菜单外框 1 逻辑 px → 1 设备 px，且外框整体 snap 到设备栅格（绝对坐标对齐再换回父级坐标，做法同标题栏 hairline）；菜单内两条分隔横线同步改 `hairline()`。主窗命令栏的范围菜单共用同一组件，一起对齐。
+  - **中缝竖线不再随菜单消失**：竖线 z 压到内容之下（遮罩之后、布局之前），菜单（z 更高）打开时正好盖住线穿过的那段 —— 上一版是「菜单开着整条隐藏」，用户反馈看着像线丢了。
+  - **删占位提示**：编辑区空态那句「输入或粘贴命令；Ctrl+Enter 发送」按用户要求移除（快捷键提示在页脚仍在）。
+  - **空白也能拖窗**：加一层夹在「点外部关菜单」遮罩与内容之间的全窗口拖动层 —— 编辑区下方留白、危险告警槽、页脚缝隙这些没有控件的地方按下都能拖；标题栏/输入框/列表行/按钮照常先命中，菜单开着时按空白仍只关菜单不拖窗。
+  - **进程级只开一个**：主窗可以有多个（tab 拖出 / 级联），发送窗句柄改为全局登记 —— 已有活实例就复用，再次打开只刷数据并弹到前台（不重置用户拖过的位置/尺寸、不覆盖没发完的草稿）；发送/管理目标跟随最近打开发送窗的那个主窗。
+- **"Send command" window, second feedback round: edges, divider, placeholder, blank-drag and single instance (#send-cmd-round2).**
+  - **Root cause of the doubled edges**: the window's `Theme.device-pixel-ratio` was taken from the not-yet-mapped main window at creation time (`scale_factor()` is always 1.0 there), so `hairline()` stayed 1 logical px — on a 200% display every border/divider in the window was twice as thick. It is now corrected from the window's own real scale after show.
+  - **Scope menu lines aligned**: the menu border went from 1 logical px to 1 device px with the whole frame snapped to the device grid (absolute-position based, like the title-bar hairline); the two inner divider lines also use `hairline()`. The command-bar scope menu shares the component and follows along.
+  - **The middle divider no longer vanishes with the menu**: its z was moved below the content (after the outside-click shield, before the layout) — the menu, being higher, simply covers the stretch it spans. The old build hid the whole line while the menu was open.
+  - **Placeholder removed**: the "Type or paste a command; Ctrl+Enter sends it" hint is gone per user request (the footer shortcut hint remains).
+  - **Blank areas drag the window**: a full-window drag layer sits between the outside-click shield and the content — pressing blank areas (editor whitespace, the danger slot, footer gaps) now drags like the title bar; real controls keep priority, and pressing blank while the menu is open still just closes the menu.
+  - **One instance per process**: main windows can multiply (tab detach / cascade); the send window handle is now registered globally — reopening refreshes the data and brings the existing window to the front (keeping user-moved geometry and unfinished text), and send/manage target whichever main window opened it last.
+
+- **「发送命令」窗口七处打磨：边框、置顶、光标、滚动条与线条（#send-cmd-polish）。**
+  - **边框与四角**：复用主窗的 `WindowFrame`（1 设备像素直边贴真实边界 + 四角 1 设备像素弧，弧外缘压在 DWM 裁剪弧上），打开时调 `apply_window_chrome` 把系统边框设成 NONE 并把圆角结果回写 —— 和主窗一样「有边、有角」。Win10 / 属性被拒时只画直角直边。
+  - **范围菜单不再「穿透」**：中缝竖线画在布局之后（z 最高），菜单从页脚向上弹、横跨 x=224，线就压在菜单中间（用户截图）。菜单打开时整条线不画。
+  - **滚动条**：std-widgets 的原生滚动条（16px 轨道 + 上下箭头、在深色面板里立着一根白柱）关掉，左栏换成 4px 自绘细条（内容超出才出现，比例跟 `content-y` 走）。白色根因是 `Palette` 也是**每窗口** global，独立窗口不设就停在 light 默认值 —— 现在和主窗一样随 `dark-mode` 切 `ColorScheme`。
+  - **点命令光标落末尾**：外部写 `text` 会把光标重置到 0，表现为停在第一行第一个字前面。补 `set-selection-offsets` 到文本末尾（偏移传大数，Slint 内部走 `ceil_char_boundary` 自动钳到末尾，不必算 UTF-8 字节长度）。
+  - **标题栏「钉住」**：关闭键左边一枚 24px 图钉，绑 `Window.always-on-top`（winit 后端的 `WindowLevel::AlwaysOnTop`），钉住时染 accent + 浅底。
+  - **编辑器光标跟随设置**：按设置 › 终端 ›「光标类型」给 `text-cursor-width` 取不同值 —— 块状 = 一个字符宽（等宽字符宽从行号列量出来）、竖线 = 2px。位置仍由 TextInput 自己算，永远准；下划线档没有对应画法，退化为细竖线。
+  - **分隔线改 `border-subtle`**：标题栏下沿、页脚上沿、中缝、管理入口上沿四处由 `line-2`（更深更硬）换成设置里标题栏下沿那一档，一块窗口里不再两种线。
+- **"Send command" window polish: frame, pin, caret, scrollbar and dividers (#send-cmd-polish).**
+  - **Frame and corners**: reuses the main window's `WindowFrame` (1-device-pixel straight edges on the real boundary + four 1-device-pixel corner arcs whose outer edge sits on the DWM clip arc). On open it calls `apply_window_chrome` to drop the system border and writes the rounded-corner result back, so the window has an edge and corners like the main one. Win10 / rejected attribute → straight edges only.
+  - **Scope menu no longer shows the divider through it**: the middle divider is drawn after the layout (topmost z), while the menu pops up from the footer across x=224 — the line landed in the middle of the menu (user screenshot). The whole line is now hidden while the menu is open.
+  - **Scrollbars**: the stock std-widgets bar (16px track with arrows, a white column on a dark panel) is gone; the left column gets a 4px self-drawn thumb (only when content overflows, proportional to `content-y`). The white colour was because `Palette` is a **per-window** global too: a detached window keeps the light defaults. It now follows `dark-mode` like the main window.
+  - **Picking a command puts the caret at the end**: writing `text` from the outside resets the cursor to offset 0, so the caret sat before the first character. `set-selection-offsets` now moves it to the end (a huge offset is fine — Slint clamps through `ceil_char_boundary`, so there is no UTF-8 byte counting to do in Slint).
+  - **Title-bar "pin"**: a 24px pin left of the close button bound to `Window.always-on-top` (winit's `WindowLevel::AlwaysOnTop`); pinned tints it with the accent colour.
+  - **Caret follows the setting**: `text-cursor-width` now depends on Settings › Terminal › "Cursor shape" — block gets one character width (measured from the gutter's monospace digit), bar gets 2px. The position stays with TextInput, so it is always right; the underline option has no equivalent and degrades to a thin bar.
+  - **Dividers moved to `border-subtle`**: title-bar edge, footer edge, middle divider and the manage-row edge no longer use the harder `line-2`; they match the settings dialog's title-bar divider.
+
 - **「发送命令」搬成独立系统窗口，可拖拽改尺寸（#send-cmd-window）。**
   - 面板从 AppWindow 的浮层抽成 `ui/send_cmd_window.slint` 的顶层窗口（做法同进程信息窗）：命令栏 ↗ / Ctrl+Shift+E 打开，能拖到第二块屏、和主窗并排，不挡终端；发送完不关窗，范围键（当前标签页 / 全部标签页 / 频道 A-D）随时切换连发。
   - 主题 / 语言 / 模型（快捷命令、历史、范围、台数）每次打开从主窗镜像；`Theme` 是每窗口 global，不镜像会一直是深色默认值。
