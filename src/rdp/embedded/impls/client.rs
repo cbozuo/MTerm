@@ -202,6 +202,15 @@ pub async fn run_with_input(
                         push_state(&deps, RemoteState::Disconnected, note);
                         break;
                     }
+                    RdpOutputEvent::Reconnecting => {
+                        // (#rdp-resize-reconnect) The client is re-dialling
+                        // because the server could not apply a resize in
+                        // session (or a retry after a failed attempt). Surface
+                        // it so the tab says 重连中 instead of freezing on the
+                        // cleared framebuffer; the next Image flips the state
+                        // back to Connected.
+                        push_state(&deps, RemoteState::Reconnecting, None);
+                    }
                     RdpOutputEvent::PointerDefault
                     | RdpOutputEvent::PointerHidden
                     | RdpOutputEvent::PointerPosition { .. }

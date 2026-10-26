@@ -700,10 +700,20 @@ impl WindowCloser {
         }
         // 先让所有 worker 停下再拆运行时/事件循环;清空映射也让后续重复的
         // 关闭请求看到「没有活动会话」而直接放行。
+        // (#remote-close-on-window 2026-10-27) 该窗口托管的 RDP/VNC 会话随
+        // teardown 一起关闭（见 teardown_window 里的远程分支）。
+        let window_remote_handles = self
+            .core
+            .window_states
+            .borrow()
+            .get(&self.window_id)
+            .map(|st| st.remote_handles.clone())
+            .unwrap_or_default();
         teardown_window(
             self.window_id,
             &self.handles,
             &self.sftp_handles,
+            &window_remote_handles,
             &self.proc_weak,
             &self.sys_weak,
             &self.editor_weak,
@@ -1579,6 +1589,7 @@ fn teardown_window(
     window_id: u64,
     handles: &Rc<RefCell<HashMap<String, SessionHandle>>>,
     sftp_handles: &SftpHandles,
+    remote_handles: &Rc<RefCell<HashMap<String, crate::remote::RemoteHandle>>>,
     proc_weak: &slint::Weak<ProcWindow>,
     sys_weak: &slint::Weak<SystemInfoWindow>,
     editor_weak: &slint::Weak<EditorWindow>,
@@ -1597,6 +1608,27 @@ fn teardown_window(
         }
         sftp.clear();
     }
+    // (#remote-close-on-window 2026-10-27) 关窗必须连远程桌面会话一起关。此前
+    // 只拆 SSH/SFTP 句柄：RDP/VNC 的驱动线程、socket 和远端会话原样存活到
+    // 进程退出 —— 用户实测关窗后服务器上的 RDP 会话既不断开也不释放。close()
+    // 置位后驱动会走优雅断开（#remote-graceful-close 的 400ms 窗口），这里给
+    // 驱动 150ms 把「拜拜」发上网络再继续，之后即使进程因最后一个窗口关闭而
+    // 退出，服务器也已收到断开请求。不等待回执：窗口关闭不能被服务器拖住。
+    let had_remote = {
+        let mut remote = remote_handles.borrow_mut();
+        let had_any = !remote.is_empty();
+        for handle in remote.values() {
+            handle.close();
+        }
+        remote.clear();
+        had_any
+    };
+    if had_remote {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    // 面板行注册表随窗口注销。此前只 register 从不 unregister，每个窗口的
+    // RemotePanes 在进程里滞留到退出；顺手补齐（幂等）。
+    crate::remote::registry::unregister(window_id);
     if let Some(w) = proc_weak.upgrade() {
         let _ = w.hide();
     }
@@ -6308,10 +6340,19 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
                         // this window's workers and unregister it, quitting the
                         // shared event loop if it was the last one — otherwise a
                         // stale registry entry blocks the quit of a later window.
+                        // (#remote-close-on-window 2026-10-27) 该窗口托管的
+                        // RDP/VNC 会话随 teardown 一起关闭。
+                        let window_remote_handles = ev_core
+                            .window_states
+                            .borrow()
+                            .get(&window_id)
+                            .map(|st| st.remote_handles.clone())
+                            .unwrap_or_default();
                         teardown_window(
                             window_id,
                             &close_handles,
                             &close_sftp_handles,
+                            &window_remote_handles,
                             &ev_proc_weak,
                             &ev_sys_weak,
                             &ev_editor_weak,

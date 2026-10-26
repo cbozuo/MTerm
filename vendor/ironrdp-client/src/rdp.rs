@@ -17,8 +17,14 @@ use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::input::MousePdu;
 use ironrdp_pdu::input::fast_path::FastPathInputEvent;
 use ironrdp_pdu::input::mouse::PointerFlags;
+// (MTerm patch, #rdp-resize-dpu) Transport-level polite disconnect used before a
+// resize-driven reconnect: MCS Disconnect Provider Ultimatum makes the server
+// mark the old transport dead immediately, so the new connection reattaches to
+// the session instead of racing a still-"Active" ghost transport.
+use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage};
 #[cfg(any(feature = "dvc-pipe-proxy", all(windows, feature = "dvc-com-plugin")))]
 use ironrdp_pdu::pdu_other_err;
+use ironrdp_pdu::x224::X224;
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult, fast_path};
 use ironrdp_svc::SvcMessage;
@@ -57,6 +63,11 @@ pub enum RdpOutputEvent {
         height: NonZeroU16,
     },
     ConnectionFailure(ironrdp_connector::ConnectorError),
+    /// (MTerm patch, #rdp-resize-reconnect) A resize-driven reconnect is under
+    /// way — either the first attempt after a `ReconnectWithNewSize` or a retry
+    /// after a failed one. Emitted before each connect attempt so the UI can
+    /// show a "reconnecting" state instead of a silently blank tab.
+    Reconnecting,
     PointerDefault,
     PointerHidden,
     PointerPosition {
@@ -188,12 +199,42 @@ impl RdpClient {
         let cliprdr_factory: CliprdrFactoryRef<'_> = core::marker::PhantomData;
 
         // ── Connection + session loop ─────────────────────────────────────────
+        //
+        // (MTerm patch, #rdp-resize-reconnect) A resize the server cannot apply
+        // through Display Control falls back to a full reconnect. On a real
+        // server that reconnect used to fail hard the first time it was tried:
+        // the old transport is dropped unceremoniously, and a new connection for
+        // the same account arrives while the server still counts the previous
+        // session as Active — which some servers answer with a session-conflict
+        // refusal. While a resize reconnect is pending, connect failures are
+        // therefore retried a few times with a short backoff, and every attempt
+        // is announced through [`RdpOutputEvent::Reconnecting`] so the GUI can
+        // label the gap instead of showing a frozen picture.
+        const RESIZE_RECONNECT_RETRIES: u32 = 3;
+        const RESIZE_RECONNECT_BACKOFF: Duration = Duration::from_millis(1500);
+        let mut resize_reconnect = false;
+        let mut reconnect_attempt: u32 = 0;
         loop {
+            if resize_reconnect {
+                let _ = self.output_event_sender.send(RdpOutputEvent::Reconnecting).await;
+            }
             let (connection_result, framed) = match &self.config.transport {
                 Transport::Direct => {
                     match connect_direct(&self.config, &self.input_event_sender, cliprdr_factory).await {
                         Ok(r) => r,
                         Err(e) => {
+                            if resize_reconnect
+                                && reconnect_attempt < RESIZE_RECONNECT_RETRIES
+                            {
+                                reconnect_attempt += 1;
+                                tracing::warn!(
+                                    attempt = reconnect_attempt,
+                                    error = %e,
+                                    "resize reconnect failed; retrying"
+                                );
+                                tokio::time::sleep(RESIZE_RECONNECT_BACKOFF).await;
+                                continue;
+                            }
                             let _ = self
                                 .output_event_sender
                                 .send(RdpOutputEvent::ConnectionFailure(e))
@@ -233,6 +274,9 @@ impl RdpClient {
                 }
             };
 
+            // A connection (initial or retried) is up: the retry bookkeeping
+            // only covers the gap between the two.
+            reconnect_attempt = 0;
             match active_session(
                 framed,
                 connection_result,
@@ -245,6 +289,7 @@ impl RdpClient {
                 Ok(RdpControlFlow::ReconnectWithNewSize { width, height }) => {
                     self.config.connector.desktop_size.width = width;
                     self.config.connector.desktop_size.height = height;
+                    resize_reconnect = true;
                 }
                 Ok(RdpControlFlow::TerminatedGracefully(reason)) => {
                     let _ = self
@@ -737,13 +782,13 @@ async fn active_session(
     // We retain the factory to drive the Deactivation-Reactivation Sequence locally.
     let activation_factory = connection_result.activation_factory;
 
-    // (MTerm patch, #rdp-resize-decompressor) Keep a copy of the negotiated bulk
+    // (MTerm patch, #rdp-resize-history) Keep a copy of the negotiated bulk
     // compression type. The Deactivation-Reactivation Sequence below rebuilds the
-    // fast-path processor, and a processor without the matching decompressor
-    // hands the server's compressed FastPath updates to the decoder as plaintext,
-    // which fails and terminates the session. The type is fixed at MCS connect
-    // time and does not change across reactivation, so the value captured here
-    // stays valid for the life of the connection. Upstream IronRDP fixed this by
+    // fast-path processor; the *decompressor itself* is carried over from the
+    // outgoing processor (`take_fastpath_decompressor`) so its compression
+    // history survives, and the type captured here only rebuilds one when there
+    // was nothing to carry. The type is fixed at MCS connect time and does not
+    // change across reactivation. Upstream IronRDP fixed the root problem by
     // moving the decompressor into `ActiveStage` (unreleased as of 0.1.0).
     let compression_type = connection_result.compression_type;
 
@@ -771,6 +816,25 @@ async fn active_session(
     let mut fake_events_interval =
         fake_events_interval.map(|interval| tokio::time::interval(core::cmp::max(interval, Duration::from_secs(1))));
 
+    // (MTerm patch, #rdp-resize-defer) A resize whose Display Control channel is
+    // not usable yet. The channel opens asynchronously after activation, so a
+    // resize that lands in that window — the common case when the user maximises
+    // right after connecting — used to fall through to a full reconnect. The
+    // request is parked here and retried on `resize_retry.tick()` until the
+    // channel appears or the deadline lapses; only then does the reconnect
+    // fallback fire.
+    struct PendingResize {
+        width: u32,
+        height: u32,
+        scale_factor: u32,
+        physical_size: Option<(u32, u32)>,
+        deadline: tokio::time::Instant,
+    }
+    const DISPLAY_CONTROL_WAIT: Duration = Duration::from_secs(3);
+    let mut pending_resize: Option<PendingResize> = None;
+    let mut resize_retry = tokio::time::interval(Duration::from_millis(200));
+    resize_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     let disconnect_reason = 'outer: loop {
         let outputs = tokio::select! {
             frame = reader.read_pdu() => {
@@ -793,14 +857,31 @@ async fn active_session(
                         // Therefore, we can remove unnecessary casts from u16 to u32 and back.
                         let (width, height) = MonitorLayoutEntry::adjust_display_size(width, height);
                         debug!(width, height, "Adjusted display size");
-                        if let Some(response_frame) = active_stage.encode_resize(width, height, Some(scale_factor), physical_size) {
+                        if let Some(response_frame) =
+                            active_stage.encode_resize(width, height, Some(scale_factor), physical_size)
+                        {
+                            pending_resize = None;
                             vec![ActiveStageOutput::ResponseFrame(response_frame?)]
+                        } else if let Some(pending) = pending_resize.as_mut() {
+                            // A request is already parked: a *changed* size
+                            // replaces it (the window kept moving), an identical
+                            // one is ignored — either way the parked deadline
+                            // governs the fallback.
+                            pending.width = width;
+                            pending.height = height;
+                            pending.scale_factor = scale_factor;
+                            pending.physical_size = physical_size;
+                            Vec::new()
                         } else {
-                            // TODO(#271): use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
-                            debug!("Reconnecting with new size");
-                            let width = u16::try_from(width).expect("always in the range");
-                            let height = u16::try_from(height).expect("always in the range");
-                            return Ok(RdpControlFlow::ReconnectWithNewSize { width, height })
+                            debug!("Display Control not ready; deferring the resize");
+                            pending_resize = Some(PendingResize {
+                                width,
+                                height,
+                                scale_factor,
+                                physical_size,
+                                deadline: tokio::time::Instant::now() + DISPLAY_CONTROL_WAIT,
+                            });
+                            Vec::new()
                         }
                     }
                     RdpInputEvent::FastPath(events) => {
@@ -888,6 +969,54 @@ async fn active_session(
                 }
                 #[cfg(not(feature = "clipboard"))]
                 Vec::new()
+            }
+            _ = resize_retry.tick() => {
+                // (MTerm patch, #rdp-resize-defer) Retry the parked resize in
+                // case the Display Control channel has come up; fall back to a
+                // reconnect once the deadline lapses.
+                let now = tokio::time::Instant::now();
+                let expired = matches!(pending_resize.as_ref(), Some(pending) if now >= pending.deadline);
+                if expired {
+                    let Some(pending) = pending_resize.take() else {
+                        unreachable!("expired is only true while a resize is parked");
+                    };
+                    debug!("Display Control never became ready; reconnecting with new size");
+                    // TODO(#271): use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
+                    let width = u16::try_from(pending.width).expect("always in the range");
+                    let height = u16::try_from(pending.height).expect("always in the range");
+                    // (MTerm patch, #rdp-resize-dpu) Say goodbye at the transport
+                    // layer first: the ultimatum makes the server retire the old
+                    // transport right away instead of keeping the session Active
+                    // behind a dead socket, which is what turned the follow-up
+                    // connection into a session conflict on some servers.
+                    match ironrdp_core::encode_vec(&X224(McsMessage::DisconnectProviderUltimatum(
+                        DisconnectProviderUltimatum::from_reason(DisconnectReason::UserRequested),
+                    ))) {
+                        Ok(dpu) => {
+                            if let Err(e) = writer.write_all(&dpu).await {
+                                debug!(error = %e, "writing the disconnect ultimatum failed; dropping the transport");
+                            }
+                        }
+                        Err(e) => debug!(error = %e, "encoding the disconnect ultimatum failed; dropping the transport"),
+                    }
+                    return Ok(RdpControlFlow::ReconnectWithNewSize { width, height });
+                }
+                let mut outputs = Vec::new();
+                if let Some(pending) = pending_resize.as_ref() {
+                    // The fields are `Copy`; taking them by value ends the borrow
+                    // before `pending_resize` is cleared below.
+                    let (width, height, scale_factor, physical_size) =
+                        (pending.width, pending.height, pending.scale_factor, pending.physical_size);
+                    if let Some(response_frame) =
+                        active_stage.encode_resize(width, height, Some(scale_factor), physical_size)
+                    {
+                        pending_resize = None;
+                        outputs = vec![ActiveStageOutput::ResponseFrame(response_frame?)];
+                    } else {
+                        trace!("Display Control still not ready; resize stays deferred");
+                    }
+                }
+                outputs
             }
             _ = async { match fake_events_interval.as_mut() {
                 Some(interval) => interval.tick().await,
@@ -989,29 +1118,38 @@ async fn active_session(
                         {
                             debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");
                             image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
-                            // (MTerm patch, #rdp-resize-decompressor) Recreate the bulk
-                            // decompressor for the compression type negotiated at connect
-                            // time instead of dropping it: the server keeps sending
-                            // compressed FastPath updates after the reactivation, and a
-                            // processor built without one passes those bytes to the
-                            // decoder undecoded, which fails and ends the session. See
-                            // the comment where `compression_type` is captured above.
-                            let bulk_decompressor = compression_type.and_then(|ct| {
-                                let bulk_type = match ct {
-                                    ironrdp_pdu::rdp::client_info::CompressionType::K8 => {
-                                        ironrdp_bulk::CompressionType::Rdp4
-                                    }
-                                    ironrdp_pdu::rdp::client_info::CompressionType::K64 => {
-                                        ironrdp_bulk::CompressionType::Rdp5
-                                    }
-                                    ironrdp_pdu::rdp::client_info::CompressionType::Rdp6 => {
-                                        ironrdp_bulk::CompressionType::Rdp6
-                                    }
-                                    ironrdp_pdu::rdp::client_info::CompressionType::Rdp61 => {
-                                        ironrdp_bulk::CompressionType::Rdp61
-                                    }
-                                };
-                                BulkCompressor::new(bulk_type).ok()
+                            // (MTerm patch, #rdp-resize-history) Carry the bulk
+                            // decompressor — *with its compression history* — into
+                            // the replacement processor. The server's RDP-6
+                            // compressor keeps its 64 KiB history across the
+                            // reactivation and signals real resets per-update via
+                            // PACKET_FLUSHED / PACKET_AT_FRONT, so rebuilding from
+                            // scratch decodes the next compressed update against
+                            // an empty history and kills the session. Upstream
+                            // IronRDP fixed this by moving the decompressor into
+                            // `ActiveStage` (unreleased as of 0.1.0); here the
+                            // equivalent effect comes from moving it out of the
+                            // outgoing processor (`take_fastpath_decompressor`).
+                            // The `compression_type` fallback only matters if
+                            // there was nothing to carry over.
+                            let bulk_decompressor = active_stage.take_fastpath_decompressor().or_else(|| {
+                                compression_type.and_then(|ct| {
+                                    let bulk_type = match ct {
+                                        ironrdp_pdu::rdp::client_info::CompressionType::K8 => {
+                                            ironrdp_bulk::CompressionType::Rdp4
+                                        }
+                                        ironrdp_pdu::rdp::client_info::CompressionType::K64 => {
+                                            ironrdp_bulk::CompressionType::Rdp5
+                                        }
+                                        ironrdp_pdu::rdp::client_info::CompressionType::Rdp6 => {
+                                            ironrdp_bulk::CompressionType::Rdp6
+                                        }
+                                        ironrdp_pdu::rdp::client_info::CompressionType::Rdp61 => {
+                                            ironrdp_bulk::CompressionType::Rdp61
+                                        }
+                                    };
+                                    BulkCompressor::new(bulk_type).ok()
+                                })
                             });
                             active_stage.set_fastpath_processor(
                                 fast_path::ProcessorBuilder {

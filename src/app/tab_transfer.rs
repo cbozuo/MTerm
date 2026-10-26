@@ -534,10 +534,13 @@ pub(super) fn close_window_now(core: &Rc<AppCore>, window_id: u64) {
     if let Some(win) = st.weak.upgrade() {
         save_layout(&win, &core.store);
         clear_zen_on_close(&win, &core.store);
+        // (#remote-close-on-window 2026-10-27) 该窗口托管的 RDP/VNC 会话随
+        // teardown 一起关闭。
         teardown_window(
             window_id,
             &st.handles,
             &st.sftp_handles,
+            &st.remote_handles,
             &st.proc_weak,
             &st.sys_weak,
             &st.editor_win.as_weak(),

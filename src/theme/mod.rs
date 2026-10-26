@@ -659,6 +659,13 @@ mod tests {
         for p in PALETTES.iter() {
             for i in [1usize, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14] {
                 let c = contrast(p.ansi16[i], p.tbg);
+                // (#ansi-yellow-fix) 53ba7f0 按用户定稿恢复了暗色档黄色原值
+                //（flexoki-dark a3=0xAD8301 对深底 4.28:1、solarized-dark
+                // a11=0x657B83 对深底 3.37:1，均官方原色）—— 暗色黄不许为凑
+                // 对比度再压暗，本断言随之豁免暗档 a3/a11；其余槽位红线不变。
+                if p.dark && (i == 3 || i == 11) {
+                    continue;
+                }
                 assert!(c >= 4.5, "{}: a{i}={:06X} on tbg 只有 {c:.2}", p.id, p.ansi16[i]);
             }
             if !p.dark {

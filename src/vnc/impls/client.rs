@@ -274,16 +274,34 @@ async fn run_once(
         }
 
         tokio::select! {
-            event = client.poll_event() => {
+            // (#vnc-starve 2026-10-27) This used to be `poll_event`, and that
+            // choice is why VNC never connected. `poll_event` is a `try_recv`:
+            // with no event queued it resolves *immediately* with `Ok(None)`,
+            // so the `select!` always had a ready branch and this loop never
+            // yielded. Every vnc-rs worker — the network reader and the frame
+            // decoder — is `tokio::spawn`ed onto **this** driver's dedicated
+            // current-thread runtime, so they were starved the moment the
+            // session loop started spinning: the handshake completed, and then
+            // no frame, no state change and no input ever happened again. The
+            // tab hung on 连接中/正在认证 for as long as it lived. `recv_event`
+            // is the blocking variant (an honest `Receiver::recv`), so the
+            // select parks until the runtime's own tasks produce an event.
+            event = client.recv_event() => {
                 match event {
-                    Ok(Some(ev)) => {
+                    Ok(ev) => {
                         if let Err(err) = handle_event(ev, &mut framebuffer, &mut dirty, status, events, config).await {
                             release_keys(&client, &mut held_keys).await;
                             let _ = client.close().await;
                             return Err(err);
                         }
                     }
-                    Ok(None) => {}
+                    // `ClientNotRunning` is what the library reports once the
+                    // client is stopped: either we closed it below (the `closed`
+                    // flag wins, and ending here is the graceful path) or the
+                    // internal reader died on a dead socket — a transport
+                    // failure worth one retry.
+                    Err(err) if matches!(err, vnc::VncError::ClientNotRunning)
+                        && closed.load(Ordering::Relaxed) => {}
                     Err(err) => {
                         release_keys(&client, &mut held_keys).await;
                         let _ = client.close().await;
@@ -709,5 +727,268 @@ mod tests {
             !message.contains("buffer"),
             "the library's wording leaked through: {message}"
         );
+    }
+}
+
+/// End-to-end handshake tests against a mock RFB server.
+///
+/// The mock speaks just enough RFB 3.8 to satisfy vnc-rs — version exchange,
+/// security-type negotiation, [`MockAuth`], ServerInit — and then answers every
+/// framebuffer update request with one full-width raw rect. That is enough to
+/// drive `run_with_input` from TCP connect through to a delivered frame, which
+/// is exactly the stretch of the pipeline that no unit test covers.
+///
+/// These exist because of #vnc-starve: the session loop used `poll_event`
+/// (a `try_recv`), which resolved instantly on every turn and starved the
+/// vnc-rs worker tasks that live on the same current-thread runtime — the
+/// handshake passed, then nothing ever happened again. Only a real, yielding
+/// event loop over a real socket can catch that class of bug.
+#[cfg(test)]
+mod mock_server_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::TcpListener;
+
+    const WIDTH: u16 = 64;
+    const HEIGHT: u16 = 48;
+
+    /// What the mock server offers at the security stage.
+    enum MockAuth {
+        /// Security type 1, no challenge.
+        None,
+        /// Security type 2: challenge, accept whatever comes back.
+        VncAuth,
+        /// Only types vnc-rs cannot speak (RA2=5, Tight-security=16): the
+        /// handshake must fail with the library's own reason and no retry.
+        Unsupported,
+    }
+
+    /// Server side of one RFB session. Panics inside the spawned task are
+    /// surfaced as a disconnect; the assertions on the driver's side are what
+    /// actually judge the exchange.
+    async fn serve(mut stream: tokio::net::TcpStream, auth: MockAuth) {
+        // Version handshake: we offer 3.8, the client echoes its own.
+        stream.write_all(b"RFB 003.008\n").await.expect("write version");
+        let mut version = [0u8; 12];
+        stream.read_exact(&mut version).await.expect("read version");
+
+        match auth {
+            MockAuth::None => {
+                stream.write_all(&[1, 1]).await.expect("write security types");
+                let mut chosen = [0u8; 1];
+                stream.read_exact(&mut chosen).await.expect("read security choice");
+                assert_eq!(chosen[0], 1, "the client must pick None here");
+                // RFB 3.8 sends a SecurityResult even for "no auth".
+                stream.write_all(&0u32.to_be_bytes()).await.expect("write result");
+            }
+            MockAuth::VncAuth => {
+                stream.write_all(&[1, 2]).await.expect("write security types");
+                let mut chosen = [0u8; 1];
+                stream.read_exact(&mut chosen).await.expect("read security choice");
+                assert_eq!(chosen[0], 2, "the client must pick VncAuth here");
+                stream.write_all(&[7u8; 16]).await.expect("write challenge");
+                let mut response = [0u8; 16];
+                stream.read_exact(&mut response).await.expect("read response");
+                // Not verifying the DES answer: vnc-rs owns the cipher, and the
+                // contract under test is the *flow*, not the math.
+                stream.write_all(&0u32.to_be_bytes()).await.expect("write result");
+            }
+            MockAuth::Unsupported => {
+                stream.write_all(&[2, 5, 16]).await.expect("write security types");
+                // vnc-rs refuses before sending a choice; dropping the socket
+                // here mirrors a real server walking away.
+                return;
+            }
+        }
+
+        // ClientInit (shared flag), then ServerInit.
+        let mut shared = [0u8; 1];
+        stream.read_exact(&mut shared).await.expect("read shared flag");
+        let mut init = Vec::new();
+        init.extend_from_slice(&WIDTH.to_be_bytes());
+        init.extend_from_slice(&HEIGHT.to_be_bytes());
+        // The pixel format MTerm requests (PixelFormat::bgra): 32bpp, depth 24,
+        // little-endian, true-colour, full 8-bit channels, r:g:b = 16:8:0.
+        init.extend_from_slice(&[32, 24, 0, 1]);
+        init.extend_from_slice(&255u16.to_be_bytes());
+        init.extend_from_slice(&255u16.to_be_bytes());
+        init.extend_from_slice(&255u16.to_be_bytes());
+        init.extend_from_slice(&[16, 8, 0, 0, 0, 0]);
+        init.extend_from_slice(&4u32.to_be_bytes());
+        init.extend_from_slice(b"mock");
+        stream.write_all(&init).await.expect("write ServerInit");
+
+        // Client → SetPixelFormat (1B type + 3B pad + 16B format),
+        // SetEncodings (4B + 4B per encoding), then the first
+        // FramebufferUpdateRequest (10B).
+        let mut pixel_format = [0u8; 20];
+        stream.read_exact(&mut pixel_format).await.expect("read SetPixelFormat");
+        assert_eq!(pixel_format[0], 0, "SetPixelFormat message type");
+        let mut head = [0u8; 4];
+        stream.read_exact(&mut head).await.expect("read SetEncodings head");
+        assert_eq!(head[0], 2, "SetEncodings message type");
+        let encoding_count = u16::from_be_bytes([head[2], head[3]]) as usize;
+        let mut encodings = vec![0u8; encoding_count * 4];
+        stream.read_exact(&mut encodings).await.expect("read encoding list");
+        let mut request = [0u8; 10];
+        stream.read_exact(&mut request).await.expect("read first update request");
+        assert_eq!(request[0], 3, "FramebufferUpdateRequest message type");
+
+        // Serve one full-frame raw rect per update request until the client
+        // stops asking (test over) or the socket dies.
+        loop {
+            let mut update = Vec::new();
+            update.extend_from_slice(&[0, 0]); // FramebufferUpdate + padding
+            update.extend_from_slice(&1u16.to_be_bytes()); // one rect
+            update.extend_from_slice(&0u16.to_be_bytes()); // x
+            update.extend_from_slice(&0u16.to_be_bytes()); // y
+            update.extend_from_slice(&WIDTH.to_be_bytes());
+            update.extend_from_slice(&HEIGHT.to_be_bytes());
+            update.extend_from_slice(&0i32.to_be_bytes()); // Raw
+            update.extend(vec![0xA5u8; WIDTH as usize * HEIGHT as usize * 4]);
+            if stream.write_all(&update).await.is_err() {
+                return;
+            }
+            if stream.read_exact(&mut request).await.is_ok() && request[0] == 3 {
+                continue;
+            }
+            return;
+        }
+    }
+
+    /// One driven session: the mock server is already accepting.
+    struct Driven {
+        events: mpsc::UnboundedReceiver<RemoteEvent>,
+        _input: mpsc::UnboundedSender<RemoteInput>,
+        closed: Arc<AtomicBool>,
+    }
+
+    async fn drive(auth: MockAuth) -> Driven {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                serve(stream, auth).await;
+            }
+        });
+
+        let config = VncConnectConfig {
+            tab_id: "tab-1".to_string(),
+            session_id: "session-1".to_string(),
+            host: "127.0.0.1".to_string(),
+            port,
+            password: "secret".to_string(),
+            has_password: true,
+            security: String::new(),
+            view_only: false,
+            shared: true,
+            clipboard: false,
+            follow_tab_size: false,
+            width: 1280,
+            height: 720,
+        };
+        let status = Arc::new(RemoteStatus::new(RemoteState::Connecting));
+        let closed = Arc::new(AtomicBool::new(false));
+        let (events_tx, events) = mpsc::unbounded_channel::<RemoteEvent>();
+        let (_trust_tx, trust) = mpsc::unbounded_channel();
+        // The input sender is held for the session's life, exactly as the real
+        // handle does: dropping it would end the session at the first select.
+        let (input_tx, input_rx) = mpsc::unbounded_channel::<RemoteInput>();
+        let deps = DriverDeps {
+            status,
+            closed: closed.clone(),
+            events: events_tx,
+            trust,
+        };
+        tokio::spawn(run_with_input(config, deps, input_rx));
+        Driven {
+            events,
+            _input: input_tx,
+            closed,
+        }
+    }
+
+    /// Collect events until `predicate` accepts one, bounded so a starved or
+    /// deadlocked loop fails the test instead of hanging it.
+    async fn wait_for(
+        driven: &mut Driven,
+        what: &'static str,
+        mut predicate: impl FnMut(&RemoteEvent) -> bool,
+    ) -> RemoteEvent {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let event = tokio::time::timeout(remaining, driven.events.recv())
+                .await
+                .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+                .expect("the driver's event sender stays alive for the session");
+            if predicate(&event) {
+                return event;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_vnc_auth_server_connects_and_delivers_frames() {
+        let mut driven = drive(MockAuth::VncAuth).await;
+        wait_for(&mut driven, "the Connected state", |event| {
+            matches!(event, RemoteEvent::State { state, .. } if state.state() == RemoteState::Connected)
+        })
+        .await;
+        let frame = wait_for(&mut driven, "a frame", |event| {
+            matches!(event, RemoteEvent::Frame(_))
+        })
+        .await;
+        let RemoteEvent::Frame(image) = frame else {
+            unreachable!("the predicate matched a Frame");
+        };
+        assert_eq!(image.dimensions(), (u32::from(WIDTH), u32::from(HEIGHT)));
+        // The mock fills every source byte with 0xA5; the framebuffer's
+        // `to_rgba` re-forces the alpha channel opaque, so each pixel comes
+        // back as [0xA5, 0xA5, 0xA5, 0xFF].
+        assert!(
+            image
+                .as_raw()
+                .chunks_exact(4)
+                .all(|px| px == [0xA5, 0xA5, 0xA5, 0xFF]),
+            "unexpected pixel content"
+        );
+        driven.closed.store(true, Ordering::Relaxed);
+    }
+
+    #[tokio::test]
+    async fn a_no_auth_server_connects_and_delivers_frames() {
+        let mut driven = drive(MockAuth::None).await;
+        wait_for(&mut driven, "the Connected state", |event| {
+            matches!(event, RemoteEvent::State { state, .. } if state.state() == RemoteState::Connected)
+        })
+        .await;
+        wait_for(&mut driven, "a frame", |event| matches!(event, RemoteEvent::Frame(_))).await;
+        driven.closed.store(true, Ordering::Relaxed);
+    }
+
+    #[tokio::test]
+    async fn unsupported_security_types_fail_without_a_retry() {
+        let mut driven = drive(MockAuth::Unsupported).await;
+        let event = wait_for(&mut driven, "the Failed state", |event| {
+            matches!(event, RemoteEvent::State { state, .. } if state.state() == RemoteState::Failed)
+        })
+        .await;
+        let RemoteEvent::State { message, .. } = event else {
+            unreachable!("the predicate matched a State");
+        };
+        let message = message.unwrap_or_default();
+        assert!(
+            message.contains("Security type apart from Vnc Auth"),
+            "the raw reason must survive into the details text: {message}"
+        );
+        // A refusal the server has already made is final: no retry loop may
+        // spin behind it.
+        let retried = driven
+            .events
+            .recv()
+            .await
+            .is_some_and(|event| matches!(event, RemoteEvent::State { state, .. } if state.state() == RemoteState::Reconnecting));
+        assert!(!retried, "an unsupported-auth refusal must not be retried");
     }
 }

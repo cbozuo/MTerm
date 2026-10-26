@@ -285,12 +285,31 @@ i-slint-backend-winit = { path = "vendor/i-slint-backend-winit" }
 # `bulk_decompressor: None`, so after a DisplayControl-driven resize (server sends
 # Deactivate All) every compressed FastPath update is fed to the decoder as
 # plaintext, decoding fails, and the session dies with a reasonless 已断线.
-# The patch recreates the decompressor from the compression type negotiated at
-# connect time. Upstream fixed this on master by moving the decompressor into
-# `ActiveStage`, but no released ironrdp/ironrdp-client version contains the fix
-# (0.17.0 / 0.1.0 are the latest), so upgrade is not an option yet.
+# (#rdp-resize-history 2026-10-27) The 2026-10-13 fix rebuilt a *fresh* decompressor,
+# which still lost the server's RDP-6 compression history across the reactivation —
+# the next compressed update decoded against an empty history and the session died
+# anyway. The patch now carries the outgoing processor's decompressor (history
+# intact) into the replacement, and adds the resize-resilience work upstream grew
+# later: defer a resize while Display Control is not ready (≤3 s) instead of
+# reconnecting at once, send the MCS Disconnect Provider Ultimatum before the
+# reconnect fallback, retry a failed resize-reconnect a few times, and announce
+# attempts through `RdpOutputEvent::Reconnecting`.
 # Re-sync recipe on every ironrdp upgrade: re-extract the pristine crate, then
-# re-apply the two marked hunks in src/rdp.rs (capture `compression_type` before
-# the ActiveStageBuilder; rebuild `BulkCompressor` in the DeactivateAll →
-# Finalized branch) and drop the patch entry once upstream ships the fix.
+# re-apply the marked hunks in src/rdp.rs (capture `compression_type` before
+# the ActiveStageBuilder; the resize-defer + DPU reconnect fallback in the
+# select!; carry the decompressor over in the DeactivateAll → Finalized branch;
+# the retry loop in `run`) and drop the patch entry once upstream ships the fix.
 ironrdp-client = { path = "vendor/ironrdp-client" }
+
+# (#rdp-resize-history 2026-10-27) Local patch of ironrdp-session 0.11.0: two
+# accessors, `fast_path::Processor::take_bulk_decompressor` and
+# `ActiveStage::take_fastpath_decompressor`, so the vendor patch of
+# ironrdp-client can move the bulk decompressor — with its compression history —
+# out of the outgoing fast-path processor during a Deactivation-Reactivation
+# Sequence. Upstream master solves this by owning the decompressor in
+# `ActiveStage::reactivate`; no released version has that.
+# Re-sync recipe on every ironrdp upgrade: re-extract the pristine crate, then
+# re-apply the two `take_bulk_decompressor` methods (marked `#rdp-resize-history`)
+# in src/fast_path.rs and src/active_stage.rs, and drop the patch entry once
+# upstream ships the fix.
+ironrdp-session = { path = "vendor/ironrdp-session" }

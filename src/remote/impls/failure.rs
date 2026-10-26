@@ -62,6 +62,13 @@ enum Reason {
     /// last specific rule rather than the first.
     SecurityNegotiation,
     Certificate,
+    /// (#vnc-auth-reasons 2026-10-27) VNC-specific, from vnc-rs's handshake:
+    /// the server offered only security types this client cannot speak
+    /// (RA2/TLS/SASL…), so connecting can never succeed no matter the retry.
+    AuthMethodUnsupported,
+    /// The server demands authentication, but the session has no password
+    /// configured to answer it with.
+    PasswordRequired,
 }
 
 /// One readable line naming the failure.
@@ -103,6 +110,18 @@ fn classify(raw: &str) -> Option<Reason> {
     // part a future sspi could reword. The hex is the stable half.
     if contains(&text, &["0xc000006d", "status_logon_failure"]) {
         return Some(Reason::Credentials);
+    }
+    // (#vnc-auth-reasons 2026-10-27) VNC has no status codes; its verdicts are
+    // these two library strings. Before everything transport-shaped, and before
+    // the negotiation rule, for the same reason the NTSTATUS rules sit first.
+    if contains(&text, &["wrong password"]) {
+        return Some(Reason::Credentials);
+    }
+    if contains(&text, &["auth is required but no password provided"]) {
+        return Some(Reason::PasswordRequired);
+    }
+    if contains(&text, &["security type apart from vnc auth"]) {
+        return Some(Reason::AuthMethodUnsupported);
     }
     if contains(&text, &["0xc0000234", "status_account_locked_out"]) {
         return Some(Reason::AccountLocked);
@@ -210,6 +229,14 @@ fn headline(reason: Reason) -> &'static str {
             "Security negotiation with the server failed",
         ),
         Reason::Certificate => t("服务器证书未被接受", "The server certificate was not accepted"),
+        Reason::AuthMethodUnsupported => t(
+            "服务器要求的认证方式不受支持（需要 VNC 密码认证或无认证）",
+            "The server's authentication type is unsupported (VNC password auth or none required)",
+        ),
+        Reason::PasswordRequired => t(
+            "该服务器要求认证，但会话未配置密码",
+            "The server demands authentication, but no password is configured",
+        ),
     }
 }
 
@@ -296,6 +323,22 @@ mod tests {
         assert_eq!(
             classify("CredSSP: attempted to feed server request in an unexpected state"),
             Some(Reason::SecurityNegotiation)
+        );
+    }
+
+    #[test]
+    fn vnc_auth_verdicts_classify_by_the_librarys_own_words() {
+        // (#vnc-auth-reasons 2026-10-27) vnc-rs's three credential-shaped
+        // failures, verbatim (wrapped by its `VNC Error with message:` prefix in
+        // one case) — each must reach the user as something they can act on.
+        assert_eq!(
+            classify("VNC Error with message: Security type apart from Vnc Auth has not been implemented"),
+            Some(Reason::AuthMethodUnsupported)
+        );
+        assert_eq!(classify("Wrong password"), Some(Reason::Credentials));
+        assert_eq!(
+            classify("Auth is required but no password provided"),
+            Some(Reason::PasswordRequired)
         );
     }
 
