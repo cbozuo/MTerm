@@ -6326,6 +6326,24 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
                             // observe an installer/minimize transition instead
                             // (#278). Keep writes in memory here; save_layout flushes
                             // the config on exit.
+                            //
+                            // (#topbar-compact 2026-10-27) 标题栏「纯图标」断点在这里
+                            // 决定，而不是在 Slint 里读 `root.width`。Slint 侧那样写会
+                            // 构成绑定循环（按钮宽度影响根 layoutinfo，layoutinfo 又参与
+                            // 断点判断），Slint 只 warn 不报错，取值却不可靠。窗口宽度
+                            // 是窗体的外部事实，由这里在每次 Resized 时写进 UI。
+                            //
+                            // 1010px 的来由（实测，见 app.slint 该属性的注释）：
+                            // 8 个按钮中文标签需 ≈891px、英文 ≈1004px，纯图标 ≈528px。
+                            // 取 1010 让英文也放得下才保留文字，否则统一退图标。
+                            //
+                            // 用**逻辑宽度**（除以 scale factor）：断点比的是排版用的
+                            // 逻辑像素，拿物理宽度在 200% 屏上会提前一倍触发。
+                            if let Some(w) = weak.upgrade() {
+                                let logical_w =
+                                    size.width as f32 / w.window().scale_factor().max(0.01);
+                                w.set_topbar_compact(logical_w < 1010.0);
+                            }
                             if ev_window_size_tracking_ready.get() && !maxed && !minimized {
                                 let scale = win.window().scale_factor().max(0.01);
                                 let width = size.width as f32 / scale;

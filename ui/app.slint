@@ -572,8 +572,22 @@ component IconBtn inherits Rectangle {
 component TopbarBtn inherits Rectangle {
     in property <string> icon;
     in property <string> label;
+    // (#topbar-compact 2026-10-27) 鼠标停留气泡的文案。
+    //
+    // 窄窗时标题栏放不下「图标 + 文字」，`label` 会传空串让按钮退成纯图标
+    // （见下方 `icon-only`）；文字信息不能就这么丢了，改由气泡给出。
+    in property <string> tip;
     in property <bool> active;
     in property <bool> breathe: false;
+    // `label` 为空 = 纯图标模式（宽度从 ~90px 收到 32px）。
+    // 判据放在组件内而不是由实例传 bool：实例已经按同一个 `label` 表达式
+    // 决定文案，两处各写一个 bool 迟早会不同步（比如某个实例忘了传）。
+    property <bool> icon-only: root.label == "";
+    // 气泡输出走回调而非 in-out 属性：标题栏上有 8 个实例共享窗口根那一个
+    // 渲染槽，属性双向绑定会让 A 的文本被 B 覆写；回调带上「我是哪条文本」，
+    // 隐藏时才知道该不该清（只清自己那条，与 IconBtn 的旧守卫同语义）。
+    callback tip-show(string /* text */, length /* right edge x */, length /* top y */);
+    callback tip-hide(string /* text */);
     callback clicked();
     // (#topbar-ctx 2026-09-09) 右键也唤出同款菜单(用户要求左右键都能弹),
     // 位置同样跟随右击点右下角。
@@ -594,6 +608,13 @@ component TopbarBtn inherits Rectangle {
     // parent。hover/激活高亮整行,也规避 HL 固定高子项的顶对齐问题;
     // horizontal-stretch: 0 防止 HL 把按钮拉伸变宽。
     horizontal-stretch: 0;
+    // (#topbar-compact) 纯图标模式锁死 32px：标题栏是 `HorizontalLayout`，
+    // 空间不够时它会把子项一路压到 0 宽（窗口控制键曾因此整组消失）。定宽
+    // 只是必要条件，真正的保命是「窗口控制组已移出布局流」，见标题栏块。
+    //
+    // 用 min-width 而不是 width：Slint 不允许同时声明两者，而这里要的是
+    // 「至少 32px、文字模式则按内容自适应」，正是 min-width 的语义。
+    min-width: root.icon-only ? 32px : 0px;
     border-radius: Theme.radius-sm;
     background: ta.pressed ? Theme.bg-active
         : root.active ? Theme.accent.with-alpha(0.15)
@@ -635,9 +656,39 @@ component TopbarBtn inherits Rectangle {
             }
         }
     }
+    // (#topbar-compact 2026-10-27) 纯图标模式下悬停给文字说明。
+    //
+    // 300ms 延迟与 `IconBtn` 一致（app.slint 里那套 tip-delay 的既有节奏），
+    // 但**不接** `IconBtn` 的 tip-out-* 管道 —— 那条管道在 AppWindow 里没有
+    // 消费者（见 BrandLogoBtn 的注释：tip-out-* 与 topbar-tip-* 之间本就
+    // 没有桥接）。这里直接走 tip-show/tip-hide 回调，由标题栏实例转写到窗口
+    // 根那唯一一个 topbar-tip-* 渲染槽。
+    property <bool> tip-armed: ta.has-hover && root.icon-only && root.tip != "";
+    tip-delay := Timer {
+        interval: 300ms;
+        triggered => {
+            // changed 在初始求值时也会跑一次（has-hover 尚为 false），
+            // 触发时必须复查确实悬浮着，否则启动即凭空弹泡。
+            if (root.tip-armed) {
+                root.tip-show(root.tip, ta.absolute-position.x + ta.width,
+                              ta.absolute-position.y + ta.height + 5px);
+            }
+        }
+    }
+    changed tip-armed => {
+        if (root.tip-armed) {
+            tip-delay.restart();
+        } else {
+            tip-delay.running = false;
+            root.tip-hide(root.tip);
+        }
+    }
     HorizontalLayout {
+        // 纯图标时左右内距对称，让 16px 图标在 32px 方块里居中;
+        // 有文字时保持原「左 8 / 右 10」——右多 2px 是给 CJK 字形右侧留的
+        // 呼吸，标题栏按钮一直这么排版。
         padding-left: 8px;
-        padding-right: 10px;
+        padding-right: root.icon-only ? 8px : 10px;
         spacing: 6px;
         Icon {
     glyph: root.icon;
@@ -646,7 +697,7 @@ component TopbarBtn inherits Rectangle {
     tint: root.active ? Theme.accent : Theme.text-primary;
     size: 16px;
 }
-        Text {
+        if !root.icon-only : Text {
             text: root.label;
             color: root.active ? Theme.accent : Theme.text-primary;   // (#theme-dedupe §5 B 类)
             font-size: Theme.fs-sm;
@@ -1478,6 +1529,25 @@ export component AppWindow inherits Window {
     callback set-extra-paste-shortcuts-enabled(bool);
     in-out property <bool> zen-mode: false;
     callback set-zen-mode(bool);
+    // (#topbar-compact 2026-10-27) 标题栏是否退成「纯图标」。
+    //
+    // 触发条件：窗口放不下「图标 + 文字」的工具组。实测各段宽度（按
+    // `TopbarBtn` 的真实排版规则算：左内距 8 + 图标 16 + 间距 6 + 右内距 10，
+    // 中文标签按 1em、英文按 0.52em 估）：
+    //   * 8 个按钮中文标签合计 ≈ 619px，加垫片/间距/右侧控制组 160px ≈ 891px；
+    //   * 英文标签合计 ≈ 732px ≈ 1004px；
+    //   * 纯图标模式 ≈ 528px。
+    // 断点取 1010px：英文也放得下就维持原样，放不下就统一退成图标 ——
+    // 不留「中文显示文字、英文已溢出」的灰色地带（那种状态下右侧会被裁）。
+    //
+    // ⚠️ **必须由 Rust 推送，不能在 Slint 里写 `root.width < 1010px`。**
+    // 那样会形成绑定循环：`root.layoutinfo-h -> topbar-compact -> label ->
+    // icon-only -> layoutinfo-h`（按钮宽度反过来影响根的高度信息），Slint
+    // 只打一条 warning 就继续跑，取值不再可靠 —— 实测 900px 时该表达式
+    // 返回值与窗口宽度对不上。窗口宽度是窗体的外部事实，由 Rust 在
+    // `WEvent::Resized` 里写进来（见 app.rs 的 set-topbar-compact），
+    // Slint 只当消费者，就没有环。
+    in-out property <bool> topbar-compact: false;
     // Collapse-by-default settings + shared SFTP collapse state (#78).
     in-out property <bool> collapse-right-sidebar-default: false;
     callback set-collapse-right-sidebar-default(bool);   // apply + persist
@@ -2267,6 +2337,20 @@ export component AppWindow inherits Window {
                     }
                     double-clicked => { root.win-maximize-toggle(); }
                 }
+                // (#topbar-compact 2026-10-27) 左侧工具组**必须裁切**，不能
+                // 把压力传给右边。`HorizontalLayout` 空间不够时会把子项一路
+                // 压到 0 宽，而这个布局的右侧曾是窗口控制键 —— 于是窗口一
+                // 窄，最小化/最大化/关闭会整组缩成 0 宽"消失"（用户截图
+                // 900px 时四个按钮全没了）。现在：右侧控制组已移出本布局
+                // （绝对定位贴右缘），本布局只负责左侧且自己裁切。
+                //
+                // 裁切需要一个 `clip: true` 的 Rectangle 包着 —— Slint 1.18
+                // 的 `clip` 只允许用在 Rectangle / Path 上，不能直接写在
+                // HorizontalLayout 上。
+                topbar-left-clip := Rectangle {
+                    width: parent.width - 160px;   // 让出右侧绝对定位的控制组
+                    height: parent.height;
+                    clip: true;
                 HorizontalLayout {
                     // (#polish-topbar-r5) 贴合窗口左缘:去掉标题栏左 padding,
                     // 呼吸空间由按钮自身的 padding-left(8px)提供。
@@ -2282,7 +2366,10 @@ export component AppWindow inherits Window {
                     // 对等,DBeaver"新建连接"同型;#polish-topbar-r5)。
                     TopbarBtn { height: parent.height;
                         icon: "add";   // add —— "新建"
-                        label: root.lang-en ? "New session" : "新建会话";
+                        label: root.topbar-compact ? "" : (root.lang-en ? "New session" : "新建会话");
+                        tip: root.lang-en ? "New session" : "新建会话";
+                        tip-show(t, tx, ty) => { root.topbar-tip-text = t; root.topbar-tip-x = tx; root.topbar-tip-y = ty; }
+                        tip-hide(t) => { if (root.topbar-tip-text == t) { root.topbar-tip-text = ""; } }
                         // 会话对话框(新建/编辑)打开期间保持选中(#polish-topbar-r5)。
                         active: root.dialog-open;
                         clicked => { root.new-session-clicked(); }
@@ -2291,7 +2378,10 @@ export component AppWindow inherits Window {
                     // 当前活动终端,状态由 Rust 维护并在切标签时联动。
                     TopbarBtn { height: parent.height;
                         icon: "command-bar";   // terminal
-                        label: root.lang-en ? "Command" : "命令栏";
+                        label: root.topbar-compact ? "" : (root.lang-en ? "Command" : "命令栏");
+                        tip: root.lang-en ? "Command bar" : "命令栏";
+                        tip-show(t, tx, ty) => { root.topbar-tip-text = t; root.topbar-tip-x = tx; root.topbar-tip-y = ty; }
+                        tip-hide(t) => { if (root.topbar-tip-text == t) { root.topbar-tip-text = ""; } }
                         active: !root.cmd-bar-hidden;
                         clicked => { root.toggle-cmd-bar-active(); }
                     }
@@ -2299,7 +2389,10 @@ export component AppWindow inherits Window {
                     // 对话框（WindTerm 式：四频道页签 + 双栏成员管理）。
                     TopbarBtn { height: parent.height;
                         icon: "link";
-                        label: root.lang-en ? "Sync input" : "同步输入";
+                        label: root.topbar-compact ? "" : (root.lang-en ? "Sync input" : "同步输入");
+                        tip: root.lang-en ? "Sync input" : "同步输入";
+                        tip-show(t, tx, ty) => { root.topbar-tip-text = t; root.topbar-tip-x = tx; root.topbar-tip-y = ty; }
+                        tip-hide(t) => { if (root.topbar-tip-text == t) { root.topbar-tip-text = ""; } }
                         active: SyncInputState.dialog-open;
                         clicked => { SyncInputState.open-dialog(); }
                     }
@@ -2310,7 +2403,10 @@ export component AppWindow inherits Window {
                     // 该浮层顶部在 #follow-ui-removed 后只剩「反向（亮↔暗）」。
                     theme-btn := TopbarBtn { height: parent.height;
                         icon: "palette-grid";
-                        label: root.lang-en ? "Theme" : "主题";
+                        label: root.topbar-compact ? "" : (root.lang-en ? "Theme" : "主题");
+                        tip: root.lang-en ? "Theme" : "主题";
+                        tip-show(t, tx, ty) => { root.topbar-tip-text = t; root.topbar-tip-x = tx; root.topbar-tip-y = ty; }
+                        tip-hide(t) => { if (root.topbar-tip-text == t) { root.topbar-tip-text = ""; } }
                         active: root.theme-pick-open;
                         clicked => {
                             // 与设置页同款浮层（同一个 theme-pick 浮层本体）。
@@ -2332,7 +2428,10 @@ export component AppWindow inherits Window {
                     // （根层实例，见文件末尾 highlight-dialog-open 块）。
                     highlight-btn := TopbarBtn { height: parent.height;
                         icon: "highlighter";
-                        label: root.lang-en ? "Highlight" : "高亮";
+                        label: root.topbar-compact ? "" : (root.lang-en ? "Highlight" : "高亮");
+                        tip: root.lang-en ? "Highlight" : "高亮";
+                        tip-show(t, tx, ty) => { root.topbar-tip-text = t; root.topbar-tip-x = tx; root.topbar-tip-y = ty; }
+                        tip-hide(t) => { if (root.topbar-tip-text == t) { root.topbar-tip-text = ""; } }
                         active: root.highlight-dialog-open;
                         clicked => {
                             root.highlight-dialog-open = true;
@@ -2345,7 +2444,10 @@ export component AppWindow inherits Window {
                     // 传输管理 —— 呼吸灯 + 下载弹层锚点(transfer-btn)。
                     transfer-btn := TopbarBtn { height: parent.height;
                         icon: "swap-vert";
-                        label: root.lang-en ? "Transfers" : "传输";
+                        label: root.topbar-compact ? "" : (root.lang-en ? "Transfers" : "传输");
+                        tip: root.lang-en ? "Transfers" : "传输";
+                        tip-show(t, tx, ty) => { root.topbar-tip-text = t; root.topbar-tip-x = tx; root.topbar-tip-y = ty; }
+                        tip-hide(t) => { if (root.topbar-tip-text == t) { root.topbar-tip-text = ""; } }
                         active: root.download-open;
                         breathe: root.has-active-transfers;
                         clicked => {
@@ -2366,7 +2468,10 @@ export component AppWindow inherits Window {
                     // 它是会话管理动作，不属于外观组；弹框打开期间保持选中。
                     TopbarBtn { height: parent.height;
                         icon: "group-list";
-                        label: root.lang-en ? "Groups" : "管理分组";
+                        label: root.topbar-compact ? "" : (root.lang-en ? "Groups" : "管理分组");
+                        tip: root.lang-en ? "Groups" : "管理分组";
+                        tip-show(t, tx, ty) => { root.topbar-tip-text = t; root.topbar-tip-x = tx; root.topbar-tip-y = ty; }
+                        tip-hide(t) => { if (root.topbar-tip-text == t) { root.topbar-tip-text = ""; } }
                         active: root.gm-open;
                         clicked => {
                             // 顶栏的其它弹层先收起，避免关掉分组弹框后菜单还挂着
@@ -2380,7 +2485,10 @@ export component AppWindow inherits Window {
                     // "更多"在整条链路中保持选中(#polish-topbar-r5)。
                     set-btn := TopbarBtn { height: parent.height;
                         icon: "more-vert";   // more_vert —— "更多"语义(码点已验证)
-                        label: root.lang-en ? "More" : "更多";
+                        label: root.topbar-compact ? "" : (root.lang-en ? "More" : "更多");
+                        tip: root.lang-en ? "More" : "更多";
+                        tip-show(t, tx, ty) => { root.topbar-tip-text = t; root.topbar-tip-x = tx; root.topbar-tip-y = ty; }
+                        tip-hide(t) => { if (root.topbar-tip-text == t) { root.topbar-tip-text = ""; } }
                         active: root.settings-open || root.interface-open;
                         clicked => {
                             // (#topbar-click-anchor) 弹层跟随本次点击点右下角。
@@ -2403,56 +2511,75 @@ export component AppWindow inherits Window {
                             root.settings-open = true; root.download-open = false; root.ssh-import-hint = "";
                         }
                     }
-                    // Draggable spacer (no TouchArea → clicks fall to tb-drag).
+                    // 弹性占位：仍然保留，作用变成「把左侧组顶到左边」，不再承担
+                    // 挤压保护 —— 那件事由右侧控制组的绝对定位完成
+                    // （见下方 win-controls，已移出本布局）。
                     Rectangle { horizontal-stretch: 1; }
-                    // Window controls only — the app toolbar icons live in the tab
-                    // row below, not here (#119).
+                }
+                }   // topbar-left-clip
+                // (#topbar-compact 2026-10-27) 右侧窗口控制组：**移出 HorizontalLayout**，
+                // 改为绝对定位贴右缘。
+                //
+                // 为什么非移不可：`HorizontalLayout` 在空间不足时会把子项一路压到
+                // 0 宽。修复前实测（真实渲染帧逐列量的图标宽度）：
+                //   * 720px：`[13, 52, 2, 26]` —— 第三个键（最大化）只剩 2px 一条竖线；
+                //   * 900px：`[14, 12, 10, 1]`  —— 关闭键只剩 1 列。
+                // 用户描述成"四个按钮消失"是准确的：图标被压扁到认不出。
+                // 修复后各宽度一律 `[14, 12, 12, 10]`。
+                // Slint 1.18 的 HL 没有 flex-shrink，唯一可靠的锁宽手段就是脱离
+                // 布局流。
+                //
+                // 宽度是显式常量：右侧栏开关 40 + 三键 40×3 = 160px。
+                // `x: parent.width - self.width` 保证永远贴右缘；窗口再窄也不会缩。
+                win-controls := HorizontalLayout {
+                    x: parent.width - self.width;
+                    y: 0;
+                    width: 160px;
+                    height: parent.height;
                     // (#winbtn-seamless) 三键贴连无间隙:高亮区连成一条整带,
                     // 悬停跨键时不断开(Windows 原生窗口控制样式)。
-                    HorizontalLayout {
-                        spacing: 0;
-                        // (#winbtn-full-height) height 补齐行高(43px):与左侧
-                        // TopbarBtn 同款实例绑定,hover 高亮铺满整行而非只剩
-                        // 图标 preferred 高度(约 16px)。
-                        // Right-sidebar toggle: sits left of the window controls.
-                        // Icon follows state (expand when collapsed / collapse when open).
-                        rb-toggle-ta := TouchArea {
-                            width: 40px;
-                            height: parent.height;
-                            mouse-cursor: default;
-                            clicked => {
-                                root.right-sidebar-collapsed = !root.right-sidebar-collapsed;
-                                root.set-right-sidebar-collapsed(root.right-sidebar-collapsed);
-                            }
-                            Rectangle {
-                                width: 100%; height: 100%;
-                                background: rb-toggle-ta.has-hover ? Theme.bg-hover : transparent;
-                            }
-                            Icon {
-                                width: 16px; height: 16px;
-                                x: (parent.width - self.width) / 2;
-                                y: (parent.height - self.height) / 2;
-                                glyph: root.right-sidebar-collapsed ? "sidebar-right-expand" : "sidebar-right-collapse";
-                                // (#winbtn-tint 同款) 标题栏图标统一前景档；此前用
-                                // text-secondary，比 −/□/✕ 暗 66 级（截图实测）。
-                                tint: Theme.text-primary;
-                            }
+                    spacing: 0;
+                    // (#winbtn-full-height) height 补齐行高(43px):与左侧
+                    // TopbarBtn 同款实例绑定,hover 高亮铺满整行而非只剩
+                    // 图标 preferred 高度(约 16px)。
+                    // Right-sidebar toggle: sits left of the window controls.
+                    // Icon follows state (expand when collapsed / collapse when open).
+                    rb-toggle-ta := TouchArea {
+                        width: 40px;
+                        height: parent.height;
+                        mouse-cursor: default;
+                        clicked => {
+                            root.right-sidebar-collapsed = !root.right-sidebar-collapsed;
+                            root.set-right-sidebar-collapsed(root.right-sidebar-collapsed);
                         }
-                        WinBtn { height: parent.height; icon: "remove"; clicked => { root.win-minimize(); } }
-                        WinBtn {
-                            height: parent.height;
-                            icon: root.window-maximized ? "restore" : "maximize";
-                            clicked => { root.win-maximize-toggle(); }
+                        Rectangle {
+                            width: 100%; height: 100%;
+                            background: rb-toggle-ta.has-hover ? Theme.bg-hover : transparent;
                         }
-                        WinBtn {
-                            height: parent.height;
-                            icon: "close";
-                            danger: true;
-                            // (#winbtn-round-corner) 高亮块贴窗口右上角,圆角随
-                            // 最大化(系统改直角)收放,见组件注释。
-                            round-top-right: !root.window-maximized;
-                            clicked => { root.win-close(); }
+                        Icon {
+                            width: 16px; height: 16px;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            glyph: root.right-sidebar-collapsed ? "sidebar-right-expand" : "sidebar-right-collapse";
+                            // (#winbtn-tint 同款) 标题栏图标统一前景档；此前用
+                            // text-secondary，比 −/□/✕ 暗 66 级（截图实测）。
+                            tint: Theme.text-primary;
                         }
+                    }
+                    WinBtn { height: parent.height; icon: "remove"; clicked => { root.win-minimize(); } }
+                    WinBtn {
+                        height: parent.height;
+                        icon: root.window-maximized ? "restore" : "maximize";
+                        clicked => { root.win-maximize-toggle(); }
+                    }
+                    WinBtn {
+                        height: parent.height;
+                        icon: "close";
+                        danger: true;
+                        // (#winbtn-round-corner) 高亮块贴窗口右上角,圆角随
+                        // 最大化(系统改直角)收放,见组件注释。
+                        round-top-right: !root.window-maximized;
+                        clicked => { root.win-close(); }
                     }
                 }
                 // (#titlebar-underline 2026-10-10) 标题栏底缘分隔线:1px
