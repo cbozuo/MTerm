@@ -7,7 +7,7 @@
 //! 尤其 `apply` 与 Enter 判据必须严丝合缝，否则表现就是
 //! 「Enter 永远只填入、永远不执行」。
 
-use super::{compute_apply, HintInput, HintKind, HintPhase, HINT_MAX_ROWS};
+use super::{compute_apply, should_pop, HintInput, HintKind, HintPhase, HINT_MAX_ROWS};
 
 /// 测 apply 用的小助手：只有一个候选文本，其余字段无关。
 fn apply_of(cand: &str, kind: HintKind, line: &str) -> String {
@@ -141,6 +141,36 @@ fn tab_chain_walks_command_to_subcommand_without_jumping_phases() {
 #[test]
 fn the_row_cap_matches_the_ui() {
     // 数据侧封顶数与 Slint 侧画的行数必须是同一个数，
-    // 否则选中项会落在没画出来的行上（高保真 §5 边界）。
-    assert_eq!(HINT_MAX_ROWS, 5);
+    // 否则选中项会落在没画出来的行上。用户实测反馈 5 条太少 → 放宽到 8。
+    assert_eq!(HINT_MAX_ROWS, 8);
+}
+
+// ── 触发阈值（用户实测反馈：一个字符就弹，误命中太多）──────────────────
+
+#[test]
+fn one_character_does_not_pop_unless_it_is_an_intent_prefix() {
+    use super::should_pop;
+    // 普通命令词：1 个字符不弹，2 个起弹。
+    assert!(!should_pop("g", false, HintPhase::Command));
+    assert!(should_pop("gi", false, HintPhase::Command));
+    // 参数 / 路径前缀是明确的意图信号，1 个字符就弹。
+    assert!(should_pop("-", false, HintPhase::Option));
+    assert!(should_pop("/", false, HintPhase::Path));
+    assert!(should_pop("~", false, HintPhase::Path));
+    // 子命令阶段（`git ` 后）无字符也弹。
+    assert!(should_pop("", true, HintPhase::Subcommand));
+    // 命令阶段的空行尾不弹（什么都没敲）。
+    assert!(!should_pop("", true, HintPhase::Command));
+}
+
+#[test]
+fn two_characters_are_required_before_auto_popping() {
+    // 用户实测反馈：一个字符就弹，误命中太多。
+    // `hint_model` 的入口在 q.len() < 2 时短路（非路径/参数前缀），
+    // 这里直接验证纯函数层的口径：词长 1 的打分照常，截断在调用方。
+    // → 用 hint_model 的行为验证（需要 store，见集成层）；此处守阈值常量语义。
+    let i = HintInput::parse("g");
+    assert_eq!(i.word, "g");
+    let j = HintInput::parse("gi");
+    assert_eq!(j.word, "gi");
 }

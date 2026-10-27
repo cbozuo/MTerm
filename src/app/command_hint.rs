@@ -16,9 +16,10 @@
 
 use super::*;
 
-/// 高保真 §3：候选列表最多 5 行。`ui/command_hint.slint` 的行数是按这个数
-/// 固定排的，两边必须一致，否则选中项会落在看不见的行上。
-pub(super) const HINT_MAX_ROWS: usize = 5;
+/// 候选列表上限（用户实测反馈：5 条太少，放宽到 8 条）。
+/// `ui/command_hint.slint` 的列表行数与可见行数按同一个数排，
+/// 两边必须一致，否则选中项会落在看不见的行上。
+pub(super) const HINT_MAX_ROWS: usize = 8;
 
 /// 内置子命令表（P0 用）。只收**最常用**的几个命令 —— 提示框的价值在
 /// 「常见的补得准」，不在「收全 man page」；收全了反而让候选排序变差。
@@ -299,13 +300,38 @@ impl HintModel {
     }
 }
 
+/// 是否该为这个词弹提示框（触发阈值）。
+///
+/// 用户实测反馈：**一个字符就弹，误命中太多**。所以默认要求 ≥2 字符；
+/// 三类例外（前缀本身就是明确的意图信号，1 个字符就该弹）：
+///   · 路径：`/` `~` 开头（`ls /` 就该列目录）；
+///   · 参数：`-` 开头（`journalctl -` 就该列参数）；
+///   · 子命令阶段已落定一个词（`git ` 空格后要列子命令，无字符可数）。
+pub(super) fn should_pop(word: &str, trailing_space: bool, phase: HintPhase) -> bool {
+    if phase == HintPhase::Subcommand {
+        return true;
+    }
+    if word.starts_with('/') || word.starts_with('~') || word.starts_with('-') {
+        return true;
+    }
+    if trailing_space && phase != HintPhase::Command {
+        return true;
+    }
+    word.chars().count() >= 2
+}
+
 /// 生成提示框数据。
 ///
 /// `context` 是上下文条左侧文案（`user@host : cwd`）。cwd 由 OSC 7 送来，
 /// 拿不到时调用方传空串，UI 只显示用户名那半截。
 ///
-/// 空 query 直接返回 closed —— 高保真 §4：一聚焦就把全部历史刷出来是最糟的
-/// 首帧。`suggest_models()` 现在不短路，所以这个判断必须在这里做。
+/// 两条口径（用户实测反馈后调整）：
+///   · **触发阈值**：正在补的词 ≥ 2 字符才弹（1 个字符误命中太多，噪音大于
+///     价值）；但以 `/` `~` `-` 开头的词不受限 —— 路径/参数的前缀本身就是
+///     明确的意图信号，1 个字符就该弹。
+///   · **排序**：按相关度（前缀命中 > 子串命中，短命令优先），而不是按
+///     存储顺序截断 —— 否则候选永远只是「最早录进去的那几条」，
+///     用户实测反馈：「待选择的命令就只有这几条吗？」
 pub(super) fn hint_model(store: &ConfigStore, line: &str, context: String) -> HintModel {
     let input = HintInput::parse(line);
     // 整行都是空白（或空串）→ 不弹。
@@ -322,34 +348,67 @@ pub(super) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
     let has_subcommands = subcommands_for(first_word).is_some();
     let phase = input.phase(has_subcommands);
 
+    // ★ 触发阈值：正在补的词 ≥ 2 字符才弹（用户实测反馈：一个字符误命中
+    //   太多，噪音大于价值）。但路径/参数前缀不受限 —— `/` `~` `-` 本身
+    //   就是明确的意图信号，1 个字符就该弹。
+    if !should_pop(input.word, input.trailing_space, phase) {
+        return HintModel::closed(context);
+    }
+
     // 子命令阶段：候选来自内置表，而不是「命令名」表。
     if phase == HintPhase::Subcommand {
         return subcommand_hint(store, &input, &q, context);
     }
 
-    // 命令 / 参数 / 路径：快捷命令 → 历史（沿用 #cmdbar-suggest 的先后口径）。
-    let mut rows: Vec<HintRowData> = Vec::new();
-
-    // 命令阶段才把「命令名」短名单端出来；参数/路径阶段只给历史与快捷命令，
-    // 免得在 `git ` 后面列一堆别的命令名。
-    for c in store.quick_commands() {
-        if rows.len() >= HINT_MAX_ROWS {
-            break;
+    // ── 相关度打分（越高越靠前）───────────────────────────────────────
+    //   100 命令名前缀命中（打 `git` → 「git 相关」的快捷命令）
+    //    90 命令前缀命中
+    //    70 名字子串命中
+    //    50 命令子串命中
+    //   历史：在同样规则上 -10（用户更想要「自己配的」排前面，
+    //         但最近敲过的也要能浮上来）
+    fn score_of(text: &str, name: &str, q: &str) -> i32 {
+        if q.is_empty() {
+            return 1;
         }
-        let name_hit = !c.name.trim().is_empty() && c.name.to_lowercase().contains(&q);
-        let cmd_hit = c.command.to_lowercase().contains(&q);
-        // 命令阶段要求命中的是**命令名的开头**，否则打 `g` 会把所有含 g 的长命令
-        // 全列进来（那些应该排在 `git`/`grep` 之后）。
-        if q.is_empty() || name_hit || cmd_hit {
-            // ★ 详情区要有内容：快捷命令的「说明」就是用户自己起的 name
-            //   （命令管理里那张卡的标题），`signature` 用命令原文 ——
-            //   否则详情区只能显示「暂无用法说明」，等于白占 94px。
-            let quick_desc = if c.name.trim().is_empty() {
-                crate::i18n::t("用户自建的快捷命令", "User-defined quick command").to_string()
-            } else {
-                c.name.clone()
-            };
-            rows.push(HintRowData::new(
+        let tl = text.to_lowercase();
+        let nl = name.to_lowercase();
+        if nl.starts_with(q) {
+            return 100;
+        }
+        if tl.starts_with(q) {
+            return 90;
+        }
+        if nl.contains(q) {
+            return 70;
+        }
+        if tl.contains(q) {
+            return 50;
+        }
+        -1 // 不命中
+    }
+
+    // ── 收集全部命中（先不截断，排序后再取前 N）──────────────────────
+    let mut scored: Vec<(i32, HintRowData)> = Vec::new();
+
+    for c in store.quick_commands() {
+        let s = score_of(&c.command, &c.name, &q);
+        if s < 0 {
+            continue;
+        }
+        // 短命令优先：同样命中时 `top` 比 `systemctl list-units …` 更相关。
+        let s = s + (64 - c.command.chars().count().min(63)) as i32 / 8;
+        // ★ 详情区要有内容：快捷命令的「说明」就是用户自己起的 name
+        //   （命令管理里那张卡的标题），`signature` 用命令原文 ——
+        //   否则详情区只能显示「暂无用法说明」，等于白占 94px。
+        let quick_desc = if c.name.trim().is_empty() {
+            crate::i18n::t("用户自建的快捷命令", "User-defined quick command").to_string()
+        } else {
+            c.name.clone()
+        };
+        scored.push((
+            s,
+            HintRowData::new(
                 c.command.clone(),
                 HintKind::Quick,
                 c.name.clone(),
@@ -358,21 +417,23 @@ pub(super) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
                 quick_desc,
                 &input,
                 phase,
-            ));
-        }
+            ),
+        ));
     }
 
     for cmd in store.command_history().iter().rev() {
-        if rows.len() >= HINT_MAX_ROWS {
-            break;
+        let s = score_of(cmd, "", &q);
+        if s < 0 {
+            continue;
         }
-        if q.is_empty() || cmd.to_lowercase().contains(&q) {
-            // 去重：同一条命令既在快捷命令里又在历史里时，只留快捷命令那条。
-            if rows.iter().any(|r| r.text == *cmd) {
-                continue;
-            }
-            // 历史同样要有详情：signature 用命令原文，说明点明来源与动作。
-            rows.push(HintRowData::new(
+        let s = s - 10 + (64 - cmd.chars().count().min(63)) as i32 / 8;
+        // 去重：同一条命令既在快捷命令里又在历史里时，只留快捷命令那条。
+        if scored.iter().any(|(_, r)| r.text == *cmd) {
+            continue;
+        }
+        scored.push((
+            s,
+            HintRowData::new(
                 cmd.clone(),
                 HintKind::History,
                 String::new(),
@@ -385,14 +446,21 @@ pub(super) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
                 .to_string(),
                 &input,
                 phase,
-            ));
-        }
+            ),
+        ));
     }
 
-    let total = rows.len();
-    if rows.is_empty() {
+    // 排序：分数降序；同分时短文本优先（更接近用户想敲的那条）。
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0).then_with(|| a.1.text.chars().count().cmp(&b.1.text.chars().count()))
+    });
+
+    let total = scored.len();
+    if total == 0 {
         return HintModel::closed(context);
     }
+    let rows: Vec<HintRowData> =
+        scored.into_iter().take(HINT_MAX_ROWS).map(|(_, r)| r).collect();
     HintModel {
         open: true,
         phase,

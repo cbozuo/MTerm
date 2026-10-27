@@ -41,7 +41,7 @@ export component CommandHint inherits Rectangle {
     in property <string> phase-label: "";
     // 上下文条左侧：`user@host : cwd`。
     in property <string> context-text: "";
-    // 命中总数（可能 > rows.length，行数仍按 5 封顶）。
+    // 命中总数（可能 > rows.length，行数按 8 封顶）。
     in property <int> total-count: 0;
     // 危险命令命中的模式原文；非空 → 详情区整块换成红色告警条。
     // 复用命令栏既有的 danger 语言（高保真 §3 ③）。
@@ -69,10 +69,10 @@ export component CommandHint inherits Rectangle {
     clip: true;
     visible: root.open;
 
-    // 可见行数 = min(候选数, 5)。高度按它算，所以 1↔5 条之间切换时
+    // 可见行数 = min(候选数, 8)。高度按它算，所以 1↔5 条之间切换时
     // 框会变高，但 **3 条以内不变**（高保真 §4 的「锁 3 行」）。
-    out property <int> shown: min(root.rows.length, 5);
-    out property <int> list-rows: max(3, min(root.shown, 5));
+    out property <int> shown: min(root.rows.length, 8);
+    out property <int> list-rows: max(4, min(root.shown, 8));
     // ★ 自然高度必须**自己算**，不能读 `self.preferred-height`：
     //   根是 Rectangle，Slint 不会从内容反推 Rectangle 的 preferred-height
     //   （实测恒为 0，于是宿主侧的 min(自然高, 可用高) 完全失效，
@@ -121,7 +121,8 @@ export component CommandHint inherits Rectangle {
                 padding-left: 10px;
                 padding-right: 9px;
                 spacing: 8px;
-                alignment: start;
+                // ★ 不写 alignment：上下文文本吃 stretch，胶囊/计数自然靠右；
+                //   写了 start 会把胶囊的宽度约束打乱（pillfalls 坑）。
                 Text {
                     text: root.context-text;
                     color: Theme.text-muted;
@@ -132,9 +133,12 @@ export component CommandHint inherits Rectangle {
                     horizontal-stretch: 1;
                 }
                 // 阶段胶囊。宽度随文案（中英文长度不同），所以不写死。
+                // ★ 高度 16 + y 手动居中：27px 条里固定高度子项默认**顶对齐**
+                //   （pitfalls：交叉轴没有属性可设），用户实测「没有居中显示」。
                 Rectangle {
                     height: 16px;
                     width: phase-tx.preferred-width + 12px;
+                    y: (parent.height - self.height) / 2;
                     border-radius: 8px;
                     background: Theme.accent-soft;
                     border-width: 1px;
@@ -184,7 +188,7 @@ export component CommandHint inherits Rectangle {
                 for r[idx] in root.rows : Rectangle {
                     height: 28px;
                     // 只画前 5 行（数据侧已封顶，这里再兜一层，防越界画到框外）。
-                    visible: idx < 5;
+                    visible: idx < 8;
                     border-radius: Theme.radius-sm;
                     background: idx == root.selected ? Theme.accent-soft
                               : (row-ta.has-hover ? Theme.bg-hover : transparent);
@@ -213,11 +217,12 @@ export component CommandHint inherits Rectangle {
                         padding-left: 8px;
                         padding-right: 7px;
                         spacing: 7px;
-                        alignment: start;
+                        // ★ 别写 alignment: start —— 项目 pitfalls 点名的坑：
+                        //   它会把主轴 flex_grow 全部归零，右侧的来源徽章
+                        //   推不到行尾（用户实测：徽章悬在文本旁边）。
+                        //   右对齐靠末尾的「吸空块」。
 
-                        // 类型图标：快捷命令 bolt / 历史 时钟 / 内置 book。
-                        // kind==1 且 source 是「内置」时也走 book —— 由 Rust 侧的
-                        // source 文案决定，这里只看 kind 与 source 的前缀。
+                        // 类型图标：快捷命令 bolt / 历史 时钟。
                         Icon {
                             glyph: r.kind == 1 ? "bolt" : "command-history";
                             tint: idx == root.selected ? Theme.accent
@@ -228,38 +233,29 @@ export component CommandHint inherits Rectangle {
                             y: (parent.height - self.height) / 2;
                         }
 
-                        // 主文本：等宽（命令原文）。
+                        // 主文本：等宽（命令原文）。占满剩余宽，副标题/徽章靠右。
                         Text {
                             text: r.text;
-                            color: idx == root.selected ? Theme.text-primary : Theme.text-primary;
+                            color: Theme.text-primary;
                             font-family: Theme.font-mono;
                             font-size: Theme.fs-xs;
                             vertical-alignment: center;
                             overflow: elide;
-                            // 副标题在时主文本不吃满，给副标题留位。
-                            horizontal-stretch: r.subtitle == "" ? 1 : 0;
-                            width: r.subtitle == "" ? parent.width : self.preferred-width;
-                        }
-
-                        // 副标题：一句话说明。剩余宽度都给副标题，它先被挤掉。
-                        if r.subtitle != "" : Text {
-                            text: r.subtitle;
-                            color: Theme.text-muted;
-                            font-size: 10.5px;
-                            vertical-alignment: center;
-                            overflow: elide;
+                            wrap: no-wrap;
                             horizontal-stretch: 1;
                         }
 
-                        // 来源标签（只有非历史项才画，历史行画标签是噪音）。
+                        // 来源徽章：**靠右**（吸空块在它后面不行——它自己就是
+                        // 最后一个有宽度的元素，剩余空间由主文本的 stretch 吃掉）。
                         if r.source != "" : Rectangle {
                             height: 15px;
-                            width: src-tx.preferred-width + 8px;
+                            width: min(parent.width - 24px, src-tx.preferred-width + 8px);
                             border-radius: 3px;
                             y: (parent.height - self.height) / 2;
                             background: idx == root.selected ? Theme.accent-soft : transparent;
                             border-width: 1px;
                             border-color: idx == root.selected ? Theme.accent : Theme.border-subtle;
+                            clip: true;
                             src-tx := Text {
                                 text: r.source;
                                 color: idx == root.selected ? Theme.accent : Theme.text-muted;
