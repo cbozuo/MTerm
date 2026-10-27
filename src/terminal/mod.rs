@@ -1,5 +1,7 @@
 #[path = "struct/state.rs"]
 mod state;
+#[path = "struct/find.rs"]
+mod find;
 
 #[path = "impls/input.rs"]
 mod input;
@@ -25,6 +27,8 @@ pub(crate) mod serial;
 pub(crate) mod telnet;
 #[path = "impls/term_buffer.rs"]
 mod term_buffer;
+#[path = "impls/terminal_find.rs"]
+mod terminal_find;
 #[path = "impls/zmodem.rs"]
 pub(crate) mod zmodem;
 
@@ -60,3 +64,4 @@ pub(crate) use state::{
     BuiltScreen, CompiledOutputRule, CsiState, HistSpan, Line, RenderGates, RuleColor,
     TabRenderGate, TermBuffer, TermBufferHandle, TermBuffers,
 };
+pub(crate) use find::{FindHits, FindOptions, FindState};

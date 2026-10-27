@@ -1,0 +1,2634 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MTerm · 发送命令窗口 · 高保真与交互方案（2026-10-27）</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════════
+   色板 = src/theme/palettes.rs 的两套默认主题（不是 theme.slint 里的
+   启动占位值 #1b1d23 / #4a90e2 —— 那组在 Rust 写入前才存在）：
+     mterm-dark  (palettes.rs:97)   root#161619 panel#181A1D palt#1B1D21
+                                    elev#1E2024 hov#22262D act#252A33
+                                    line#232428 lstr#4E5157
+                                    t1#BCBEC4 t2#7A7E85 t3#6F737A
+                                    ac#1FC8B4 ok#73B00A wr#E8A33E dg#F75464
+     mterm-light (palettes.rs:110)  root#F2F0EC panel#FAF8F4 ac#1F766B …
+   派生 token 照抄 ui/theme.slint：bg-hover = accent.darker(.10)@8%、
+   accent-soft = ac@16/12%、field = #191b21 / #f4f5f8、
+   line-2 = #3f444f / #c7c7cc、border-control = #31353e / #dcdce3、
+   danger-strong = #dc4b44（双档同值）、close-btn-hot = #e81123。
+   ═══════════════════════════════════════════════════════════════════ */
+:root{
+  --ff:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  --mono:"JetBrains Mono","Cascadia Mono",Consolas,"Sarasa Mono SC","Microsoft YaHei",monospace;
+  --ease:cubic-bezier(.2,0,0,1);
+  --r-sm:4px; --r-md:6px; --r-lg:10px;
+}
+html[data-theme="dark"]{
+  --page:#0B0C0E; --stage:#0E1013;
+  --root:#161619; --panel:#181A1D; --palt:#1B1D21; --elev:#1E2024;
+  --hov:#22262D; --act:#252A33; --line:#232428; --lstr:#4E5157;
+  --t1:#BCBEC4; --t2:#7A7E85; --t3:#6F737A;
+  --ac:#1FC8B4; --ac-ink:#06201D; --ok:#73B00A; --wr:#E8A33E;
+  --dg:#F75464; --dgs:#F9667A; --dgstr:#DC4B44;
+  --field:#191B21; --line2:#3F444F; --bctl:#31353E;
+  --chA:#548AF7; --chB:#1FC8B4; --chC:#E8A33E; --chD:#C77DBB;
+  --ac-soft:rgba(31,200,180,.16); --ac-tonal:rgba(31,200,180,.10); --ac-line:rgba(31,200,180,.42);
+  --hov-t:rgba(28,180,162,.08);
+  --dg-soft:rgba(247,84,100,.10); --dg-line:rgba(247,84,100,.34);
+  --shadow:0 18px 46px -14px rgba(0,0,0,.80),0 2px 10px -4px rgba(0,0,0,.5);
+}
+html[data-theme="light"]{
+  --page:#EDEBE7; --stage:#F6F4F0;
+  --root:#F2F0EC; --panel:#FAF8F4; --palt:#E9E6DF; --elev:#FFFEFA;
+  --hov:#E8E5E1; --act:#DFDDD9; --line:#E0DEDA; --lstr:#D0CECB;
+  --t1:#33302C; --t2:#7B766F; --t3:#968F85;
+  --ac:#1F766B; --ac-ink:#FFFFFF; --ok:#427213; --wr:#8F631C;
+  --dg:#B0463F; --dgs:#96332D; --dgstr:#DC4B44;
+  --field:#F4F5F8; --line2:#C7C7CC; --bctl:#DCDCE3;
+  --chA:#C2185B; --chB:#1565C0; --chC:#BF360C; --chD:#2E7D32;
+  --ac-soft:rgba(31,118,107,.12); --ac-tonal:rgba(31,118,107,.08); --ac-line:rgba(31,118,107,.38);
+  --hov-t:rgba(28,106,96,.08);
+  --dg-soft:rgba(176,70,63,.10); --dg-line:rgba(176,70,63,.34);
+  --shadow:0 18px 46px -16px rgba(70,60,50,.26),0 2px 10px -4px rgba(70,60,50,.16);
+}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--t1);font-family:var(--ff);font-size:14px;
+  line-height:1.66;-webkit-font-smoothing:antialiased;
+  transition:background .18s var(--ease),color .18s var(--ease)}
+code,.mono{font-family:var(--mono);font-variant-ligatures:none}
+::selection{background:var(--ac-soft)}
+
+/* ── 顶栏 ── */
+header{position:sticky;top:0;z-index:90;background:color-mix(in srgb,var(--page) 88%,transparent);
+  backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
+.hd{max-width:1180px;margin:0 auto;padding:12px 32px;display:flex;align-items:center;gap:14px}
+.hd .brand{font:700 12px/1 var(--mono);letter-spacing:.17em}
+.hd .brand span{color:var(--t3);font-weight:400;letter-spacing:.02em;margin-left:8px;
+  font-family:var(--ff);font-size:12px}
+.hd .gap{flex:1}
+.hd .date{font:500 11px/1 var(--mono);color:var(--t3)}
+.tgl{display:flex;align-items:center;gap:7px;height:28px;padding:0 10px;border-radius:var(--r-md);
+  border:1px solid var(--line);background:var(--panel);color:var(--t2);font-family:inherit;
+  font-size:12px;cursor:pointer;transition:.13s var(--ease)}
+.tgl:hover{border-color:var(--lstr);color:var(--t1)}
+.tgl svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.7;
+  stroke-linecap:round;stroke-linejoin:round}
+
+.wrap{max-width:1180px;margin:0 auto;padding:0 32px 120px}
+
+/* ── hero ── */
+.hero{padding:54px 0 0}
+.hero .kick{font:700 10.5px/1 var(--mono);color:var(--ac);letter-spacing:1.5px;
+  text-transform:uppercase;margin-bottom:16px}
+.hero h1{font-size:33px;line-height:1.28;letter-spacing:-.8px;font-weight:700;margin:0 0 16px}
+.hero .lead{font-size:14px;line-height:2;color:var(--t2);max-width:84ch;margin:0 0 28px}
+.hero .lead b{color:var(--t1);font-weight:700}
+.hero .lead code{font-size:.9em;background:var(--hov);padding:1px 5px;border-radius:var(--r-sm);color:var(--t1)}
+
+.claims{display:grid;grid-template-columns:repeat(3,1fr);gap:11px}
+.claim{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);
+  padding:15px 16px;position:relative;overflow:hidden}
+.claim::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--ac);opacity:.55}
+.claim em{font:700 9.5px/1 var(--mono);font-style:normal;color:var(--ac);letter-spacing:.5px;
+  background:var(--ac-tonal);border:1px solid var(--ac-line);padding:3px 6px;border-radius:var(--r-sm)}
+.claim > b{display:block;font-size:13.5px;margin:11px 0 5px;letter-spacing:.1px}
+.claim span b{display:inline;font-size:inherit;margin:0;letter-spacing:0;color:var(--t1);font-weight:700}
+.claim span{font-size:12px;line-height:1.8;color:var(--t2);display:block}
+
+/* ── 章节 ── */
+h2.sec{font-size:21px;font-weight:700;letter-spacing:-.3px;margin:64px 0 10px;
+  display:flex;align-items:baseline;gap:12px}
+h2.sec .no{font:700 11px/1 var(--mono);color:var(--ac);letter-spacing:.5px}
+p.sub{color:var(--t2);font-size:13px;line-height:1.95;margin:0 0 22px;max-width:92ch}
+p.sub code,td code,li code{font-size:.9em;background:var(--hov);padding:1px 5px;
+  border-radius:var(--r-sm);color:var(--t1)}
+h3.mini{font-size:12px;letter-spacing:1.4px;text-transform:uppercase;color:var(--t3);
+  font-weight:700;margin:34px 0 12px;display:flex;align-items:center;gap:10px}
+h3.mini::after{content:"";flex:1;height:1px;background:var(--line)}
+
+/* ── 舞台 ── */
+.stage{border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;
+  background:var(--stage);display:flex;flex-direction:column;align-items:center;
+  padding:34px 0 26px;position:relative}
+.stage .cap{position:absolute;top:11px;left:15px;font:700 9.5px/1 var(--mono);
+  letter-spacing:1px;color:var(--t3)}
+.bar{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin:0 0 20px;padding:0 20px}
+.chipbtn{height:26px;padding:0 11px;border-radius:13px;border:1px solid var(--line);
+  background:var(--panel);color:var(--t2);font-family:inherit;font-size:11.5px;
+  cursor:pointer;transition:.13s var(--ease);white-space:nowrap}
+.chipbtn:hover{border-color:var(--lstr);color:var(--t1)}
+.chipbtn.on{background:var(--ac-tonal);border-color:var(--ac-line);color:var(--ac);font-weight:700}
+
+/* ══════════════════════════════════════════════════════════════════
+   弹窗本体：1:1 逻辑像素。默认 760×500（提案值，现为 620×420）
+   ══════════════════════════════════════════════════════════════════ */
+.win{
+  position:relative;width:760px;height:500px;display:flex;flex-direction:column;
+  background:var(--panel);border:1px solid var(--lstr);border-radius:8px;
+  box-shadow:var(--shadow);overflow:hidden;
+  font-size:13px;color:var(--t1);
+  transition:width .22s var(--ease);
+}
+.win.narrow{width:620px}
+.win.narrow .side{display:none}
+
+/* 标题栏 46（照抄 send_cmd_window.slint:244） */
+.ttl{flex:0 0 auto;height:46px;display:flex;align-items:center;padding:0 12px 0 14px;
+  gap:8px;border-bottom:1px solid var(--line);position:relative}
+.ttl h4{margin:0;font-size:13px;font-weight:700;letter-spacing:.1px;color:var(--t1);
+  flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tbtn{width:24px;height:24px;display:grid;place-items:center;border:0;border-radius:5px;
+  background:transparent;color:var(--t3);cursor:pointer;transition:.1s var(--ease);flex:0 0 auto}
+.tbtn:hover{background:var(--hov-t);color:var(--t1)}
+.tbtn.on{background:var(--ac-soft);color:var(--ac)}
+.tbtn.close{width:28px;height:28px;border-radius:var(--r-sm)}
+.tbtn.close:hover{background:#e81123;color:#fff}
+.tbtn svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.7;
+  stroke-linecap:round;stroke-linejoin:round}
+.tbtn.close svg{width:15px;height:15px}
+
+/* ── 标题栏按钮的悬浮提示（.tip）──
+   ⚠️ 这套规则曾经跟 .strip 那一段一起被误删（删发射条时整块切掉），
+   结果是「收起侧边栏」六个字以竖排、常显的形式糊在标题栏里（截图实证）。
+   .tip 是**多个组件共用**的基础样式，不能跟着某个功能块一起删。
+   position:absolute 是必需的：缺了它 span 会退回行内流，宽度被挤成一列字。 */
+.tip{position:absolute;z-index:130;pointer-events:none;opacity:0;
+  transform:translateY(2px);transition:opacity .12s var(--ease),transform .12s var(--ease);
+  background:var(--panel);border:1px solid var(--lstr);border-radius:var(--r-md);
+  padding:6px 9px;font-size:11.5px;font-weight:400;line-height:1.55;color:var(--t1);
+  white-space:nowrap;box-shadow:0 10px 26px -8px rgba(0,0,0,.7)}
+/* 标题栏按钮：气泡在按钮下方（标题栏上面没空间） */
+.tbtn .tip{top:calc(100% + 6px);right:0}
+.tbtn:hover .tip{opacity:1;transform:translateY(0)}
+
+/* 主体 */
+.body{flex:1 1 auto;display:flex;min-height:0}
+/* 左栏 232 → 196：命令条目的命令串本来就靠省略号，窄一点换来更宽的正编辑区。
+   （用户反馈「左侧的命令栏是不是可以小些」）
+   ⚠️ min-width:0 + max-width 是**必需**的，不是保险：
+   flex 子项的 min-width 默认是 auto（= 内容最小宽），左栏里的长命令串
+   （mysqldump ... > /backup/app-$(date +%F).sql）会把 min-content 撑到 416px，
+   flex-basis:196px 形同虚设 —— 实测 side:416 / main:342，
+   右栏被挤掉一半（用户截图「右侧输入框有些小」正是这个）。
+   同理 .row/.row .c 上也要 min-width:0，否则省略号不生效、内容继续顶宽。 */
+.side{flex:0 0 196px;width:196px;min-width:196px;max-width:196px;
+  display:flex;flex-direction:column;min-height:0;
+  overflow:hidden}
+/* 拖动时关掉动效：拖拽要跟手，任何 transition 都会让它「追」指针 */
+.body.dragging .side,.body.dragging .main{transition:none}
+.main{flex:1 1 auto;display:flex;min-width:0;position:relative}
+
+/* ── 左右分隔条（可拖动改左栏宽度）──
+   视觉上仍是一条 1px 发丝线（border-subtle），但**命中区是 7px 宽**：
+   1px 的线根本点不中。::before 画那条线（悬停变强调色），
+   ::after 是居中的胶囊手柄（4×40，悬停才出现、且带一圈 panel 色描边
+   把它从列表文字上「抠」出来）—— 手柄才是「这里能拖」的可视信号。 */
+.split{flex:0 0 7px;width:7px;position:relative;cursor:col-resize;
+  background:transparent;z-index:5;touch-action:none}
+.split:focus-visible{outline:2px solid var(--ac-line);outline-offset:-2px}
+.split::before{content:"";position:absolute;top:0;bottom:0;left:50%;
+  width:1px;margin-left:-0.5px;background:var(--line);
+  transition:background .12s var(--ease)}
+.split::after{content:"";position:absolute;top:50%;left:50%;
+  width:4px;height:40px;margin:-20px 0 0 -2px;border-radius:2px;
+  background:var(--t3);opacity:0;transition:opacity .12s var(--ease);
+  box-shadow:0 0 0 1px var(--panel)}
+.split:hover::after,.split.dragging::after{opacity:1;background:var(--ac)}
+/* 拖动期间整窗光标锁成 col-resize，且禁止选中文字（否则会拖出一片蓝） */
+.body.dragging{cursor:col-resize;user-select:none}
+.body.dragging .ed,.body.dragging .list{pointer-events:none}
+
+/* ── 左栏：搜索与草稿解耦（本次最关键的一处） ── */
+.srchwrap{flex:0 0 auto;padding:8px 8px 6px}
+.srch{display:flex;align-items:center;gap:6px;height:28px;padding:0 8px;
+  background:var(--field);border:1px solid var(--line2);border-radius:var(--r-sm);
+  transition:.14s var(--ease);cursor:text}
+.srch:focus-within{border-color:var(--ac-line);box-shadow:0 0 0 3px var(--ac-tonal)}
+.srch svg{width:12px;height:12px;flex:0 0 auto;fill:none;stroke:var(--t3);
+  stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.srch input{flex:1;min-width:0;background:none;border:0;outline:0;color:var(--t1);
+  font-family:inherit;font-size:12px}
+.srch input::placeholder{color:var(--t3)}
+.srch .kbdh{font:700 9px/1 var(--mono);color:var(--t3);border:1px solid var(--line2);
+  border-radius:3px;padding:2px 3px;flex:0 0 auto}
+.srch .clr{width:16px;height:16px;border:0;border-radius:50%;background:none;
+  color:var(--t3);cursor:pointer;display:none;place-items:center;font-size:12px;line-height:1}
+.srch.has .clr{display:grid}
+.srch .clr:hover{background:var(--ac);color:var(--panel)}
+
+.list{flex:1 1 auto;min-width:0;overflow-y:auto;overflow-x:hidden;padding:2px 6px 10px;
+  scrollbar-width:thin;scrollbar-color:var(--lstr) transparent}
+.list::-webkit-scrollbar{width:8px}
+.list::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--t3) 40%,transparent);
+  border-radius:4px;border:2px solid transparent;background-clip:padding-box}
+.list::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb,var(--t3) 70%,transparent);
+  background-clip:padding-box}
+.sec-h{height:26px;display:flex;align-items:center;padding:0 8px;font-size:10px;
+  font-weight:700;letter-spacing:1px;color:var(--t3);text-transform:uppercase;margin-top:2px}
+.cnt{margin-left:auto;font:700 9.5px/1 var(--mono);letter-spacing:0;color:var(--t3);
+  background:var(--hov-t);border-radius:6px;padding:3px 5px}
+/* ⚠️ min-width:0 三处都要（.list / .row / .row .n,.c）：
+   只要链路上有一处是默认的 min-width:auto，长命令串就会把整条链路
+   的 min-content 撑大，省略号永远不触发、左栏继续顶宽。 */
+.row{display:flex;flex-direction:column;justify-content:center;width:100%;
+  min-width:0;min-height:40px;padding:5px 8px;border:0;border-radius:var(--r-md);
+  background:transparent;text-align:left;font-family:inherit;cursor:pointer;
+  transition:.1s var(--ease);position:relative}
+.row:hover{background:var(--hov-t)}
+.row:hover .row-ins{opacity:1}
+.row .n{font-size:12.5px;color:var(--t1);line-height:1.35;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;min-width:0;max-width:100%}
+.row .c{font-family:var(--mono);font-size:11px;color:var(--t3);line-height:1.4;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;max-width:100%}
+.row .row-ins{position:absolute;right:6px;top:50%;transform:translateY(-50%);opacity:0;
+  font:700 9px/1 var(--mono);color:var(--ac);background:var(--panel);
+  border:1px solid var(--ac-line);border-radius:3px;padding:3px 4px;
+  transition:.1s var(--ease);pointer-events:none}
+.row.hist{min-height:30px}
+.row.hist .c{font-size:11px;color:var(--t2)}
+
+/* ── 命令悬浮卡（左栏宽度有限，命令串被省略号截断时的完整查看） ──
+   锚在行右侧、向上/下自适应；用 fixed 定位，逃出 .list 的 overflow 裁剪。 */
+.cmdpop{position:fixed;z-index:120;max-width:520px;pointer-events:none;
+  background:var(--field);border:1px solid var(--lstr);border-radius:8px;
+  padding:8px 10px;box-shadow:0 14px 34px -10px rgba(0,0,0,.72);
+  display:none;flex-direction:column;gap:5px}
+.cmdpop.show{display:flex}
+.cmdpop .pn{font-size:11px;color:var(--t1);font-weight:700;line-height:1.4}
+.cmdpop .pc{font-family:var(--mono);font-size:11.5px;line-height:1.62;color:var(--t2);
+  white-space:pre-wrap;word-break:break-all}
+.cmdpop .ph{font-size:10px;color:var(--t3);line-height:1.5;border-top:1px solid var(--line2);
+  padding-top:5px;margin-top:1px}
+.list-empty{padding:14px 10px;font-size:11.5px;color:var(--t3);line-height:1.7}
+.list-empty b{color:var(--t2);font-weight:700}
+.list-empty .go{display:inline-block;margin-top:8px;font-size:11.5px;color:var(--ac);
+  text-decoration:none;border-bottom:1px dashed var(--ac-line);cursor:pointer}
+.nores{padding:18px 10px;font-size:11.5px;color:var(--t3);line-height:1.7}
+
+/* ── 右栏：行号 + 编辑器 ── */
+/* ⚠️ white-space:pre 是必需的：行号用 textContent 写 "1\n2\n3"，
+   默认 white-space:normal 会把换行折成空格 → 行号变成 "1 2 3" 一行，
+   并且和正文首行重叠（截图实证：编辑器里出现 "1 2 for h in ..."）。 */
+.gut{flex:0 0 40px;overflow:hidden;padding:10px 10px 10px 0;text-align:right;
+  font-family:var(--mono);font-size:13px;line-height:20px;color:var(--t3);
+  white-space:pre;user-select:none;pointer-events:none}
+.gut .cur{color:var(--t2)}
+.edwrap{flex:1 1 auto;min-width:0;position:relative}
+.ed{display:block;width:100%;height:100%;background:transparent;border:0;outline:0;
+  resize:none;padding:10px 14px 10px 0;color:var(--t1);
+  font-family:var(--mono);font-size:13px;line-height:20px;
+  white-space:pre;overflow:auto;tab-size:2;caret-color:var(--ac)}
+.ed::placeholder{color:var(--t3);opacity:0}
+.ed::-webkit-scrollbar{width:8px;height:8px}
+.ed::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--t3) 40%,transparent);
+  border-radius:4px;border:2px solid transparent;background-clip:padding-box}
+.ed::-webkit-scrollbar-corner{background:transparent}
+
+/* 空态引导（叠在编辑器上，不占布局） */
+.ghost{position:absolute;inset:10px 14px 10px 0;pointer-events:none;
+  font-family:var(--mono);font-size:13px;line-height:20px;color:var(--t3);
+  display:flex;flex-direction:column;gap:2px}
+.ghost .l1{display:flex;align-items:center;gap:8px}
+.ghost kbd{font:700 10px/1 var(--mono);color:var(--t2);border:1px solid var(--line2);
+  border-bottom-width:2px;border-radius:4px;padding:3px 5px;background:var(--field)}
+
+/* 范围键（ScopeButton framed 档，照抄 terminal_view.slint:356-366） */
+.scope{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 7px 0 8px;
+  border-radius:var(--r-md);border:1px solid var(--line2);background:transparent;
+  color:var(--t2);font-family:inherit;font-size:13px;cursor:pointer;
+  transition:.11s var(--ease);flex:0 0 auto;white-space:nowrap}
+.scope:hover{border-color:var(--lstr);background:var(--hov-t)}
+.scope.open{background:var(--act);border-color:var(--lstr)}
+.scope .dots{display:flex;align-items:center}
+.scope .dots i{width:7px;height:7px;border-radius:4px;display:block;
+  border:1px solid var(--panel);margin-left:-3px}
+.scope .dots i:first-child{margin-left:0}
+.scope .ct{font-size:11px;color:var(--t3)}
+.scope svg{width:13px;height:13px;fill:none;stroke:var(--t3);stroke-width:1.8;
+  stroke-linecap:round;stroke-linejoin:round}
+
+/* 动作条 54：范围键在左下角、与发送键同行，中间是极简助记 */
+.foot{flex:0 0 auto;height:54px;display:flex;align-items:center;gap:12px;
+  padding:0 12px 0 14px;border-top:1px solid var(--line);background:transparent;
+  /* z-index 保留：范围菜单 / 提示卡都要压在正文之上 */
+  position:relative;z-index:30}
+/* ── 信息区：两个按钮之间的那一整块空档 ──
+   用户要求「两个按钮之间都是展示信息的地方」。所以这块不是一行灰字，
+   而是一个**状态区**：图标 + 状态 + 可点动作。
+   ⚠️ 措辞原则：信息区说「将要发生什么」，发送键说「你要做什么」——
+   两者不重复。危险态阶段 2 的按钮已经写着「再点一次确认」，
+   信息区就不该再写一遍「危险 · 需二次确认」（同一句话说两遍）——
+   它给的是「命中了什么 · 将发往几台」。 */
+.foot-note{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:7px;
+  font-size:11.5px;color:var(--t3);white-space:nowrap;overflow:hidden}
+.foot-note .fn-ico{width:12px;height:12px;flex:0 0 auto;fill:none;stroke:currentColor;
+  stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.foot-note .fn-txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.foot-note.danger{color:var(--dgs)}
+.foot-note.ok{color:var(--ok)}
+.foot-note.bad{color:var(--dgs)}
+.foot-note.warn{color:var(--wr)}
+/* 可点动作（如「查看明细」）：点一下打开并粘住提示卡，方便用鼠标去操作 */
+.foot-note .fn-act{flex:0 0 auto;margin-left:2px;font-size:11px;color:var(--ac);
+  background:none;border:0;padding:0;font-family:inherit;cursor:pointer;
+  border-bottom:1px dashed var(--ac-line);white-space:nowrap}
+.foot-note .fn-act:hover{border-bottom-style:solid}
+.foot-note .fn-act:disabled{color:var(--t3);border-bottom-color:var(--line2);cursor:default}
+.sbtn{height:32px;min-width:64px;padding:0 12px;border:0;border-radius:7px;
+  background:var(--ac);color:#fff;font-family:inherit;font-size:13px;font-weight:400;
+  cursor:pointer;transition:.11s var(--ease);flex:0 0 auto;white-space:nowrap;
+  display:inline-flex;align-items:center;justify-content:center;gap:6px}
+.sbtn:hover{background:color-mix(in srgb,var(--ac) 88%,#fff)}
+.sbtn:disabled{background:var(--elev);color:var(--t3);cursor:default}
+.sbtn.armed{background:var(--dgstr)}
+.sbtn.armed:hover{background:color-mix(in srgb,var(--dgstr) 88%,#fff)}
+.sbtn.armed svg{width:12px;height:12px;fill:none;stroke:#fff;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round}
+
+/* ── 范围键的悬浮提示卡（.tipcard）──
+   ⚠️ 这段也曾在「删发射条」时被整块切掉（发射条与提示卡当时相邻），
+   结果提示卡无样式 → 永远不可见。提示卡是独立组件，别和功能块一起删。
+   用 position:fixed 挂 body：.body/.side/.main 层层 flex+relative，
+   放在 .foot 内部无论怎么调 z-index 都会被左栏列表文字盖住。
+
+   ⚠️ pointer-events:auto 是本轮的要点：原来写的是 none，卡片只能看不能碰。
+   用户要求「鼠标移上去不消失，可以查看、比如复制」——
+   卡片必须能接收鼠标事件，才谈得上「移进去操作」。 */
+.tipcard{position:fixed;z-index:300;pointer-events:auto;
+  min-width:236px;max-width:360px;max-height:320px;overflow-y:auto;
+  overscroll-behavior:contain;
+  background:var(--panel);border:1px solid var(--lstr);border-radius:8px;
+  padding:9px 11px;box-shadow:0 14px 34px -10px rgba(0,0,0,.82);
+  font-size:11.5px;line-height:1.7;color:var(--t2);white-space:normal;text-align:left;
+  /* ⚠️ 只过渡 transform，**不过渡 opacity**。
+     淡入淡出是整层一起变透明 → 过渡期间卡片背景也是半透明的，
+     底下的列表文字会整片透上来（浅色主题尤其明显，截图实证）。
+     改成「位移 + visibility 离散切换」：卡片一出现就是完全不透明的。 */
+  visibility:hidden;transform:translateY(4px);
+  transition:transform .12s var(--ease),visibility 0s .12s}
+.tipcard.show{visibility:visible;transform:translateY(0);
+  transition:transform .12s var(--ease),visibility 0s 0s}
+.tipcard::-webkit-scrollbar{width:8px}
+.tipcard::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--t3) 40%,transparent);
+  border-radius:4px;border:2px solid transparent;background-clip:padding-box}
+.tipcard.danger{border-color:var(--dg-line)}
+.tipcard .th{display:flex;align-items:baseline;gap:8px;font-size:11px;color:var(--t3);
+  font-weight:700;letter-spacing:.6px;margin-bottom:6px;white-space:nowrap}
+.tipcard .th b{color:var(--t1);letter-spacing:0;font-family:var(--mono);font-size:11.5px}
+.tipcard .th .spacer{flex:1}
+/* 卡内动作按钮：复制 / 关闭 */
+.tipcard .tact{flex:0 0 auto;font-size:10.5px;font-family:inherit;color:var(--ac);
+  background:none;border:1px solid transparent;border-radius:4px;padding:2px 5px;
+  cursor:pointer;letter-spacing:0;white-space:nowrap;transition:.1s var(--ease)}
+.tipcard .tact:hover{background:var(--ac-tonal);border-color:var(--ac-line)}
+.tipcard .tact.done{color:var(--ok);border-color:var(--ac-line)}
+.tipcard .tact.x{color:var(--t3)}
+.tipcard .tact.x:hover{background:var(--hov-t);border-color:var(--line2);color:var(--t1)}
+.tipcard .tl{display:flex;align-items:baseline;gap:8px;margin:0 0 2px;
+  border-radius:4px;padding:1px 3px;margin-left:-3px}
+.tipcard .tl.clickable{cursor:pointer}
+.tipcard .tl.clickable:hover{background:var(--hov-t)}
+.tipcard .tl .dot{width:6px;height:6px;border-radius:3px;flex:0 0 auto;
+  transform:translateY(-1px)}
+.tipcard .tl .nm{font-family:var(--mono);font-size:11.5px;color:var(--t1);
+  flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tipcard .tl .st2{font-size:10.5px;flex:0 0 auto;color:var(--t3)}
+.tipcard .tl .st2.ok{color:var(--ok)}
+.tipcard .tl .st2.bad{color:var(--dgs)}
+.tipcard .tr2{margin-top:6px;padding-top:6px;border-top:1px solid var(--line2);
+  font-size:10.5px;color:var(--t3);line-height:1.6}
+.tipcard .tr2 b{color:var(--t2);font-weight:700}
+.tipcard .warnrow{display:flex;align-items:center;gap:6px;color:var(--dgs);
+  font-size:11.5px;font-weight:700;margin-bottom:5px}
+.tipcard .warnrow svg{width:12px;height:12px;flex:0 0 auto;fill:none;
+  stroke:var(--dgs);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+
+/* ── 范围菜单（300 宽 / r9 / hairline / field 底） ── */
+/* 锚在页脚（.foot）内部、bottom:100% 向上弹 —— 不能挂在 .win 上：
+   .win 有 overflow:hidden，菜单会被整块裁掉（首版截图实证）。
+   max-height + 自身滚动：主机关多时菜单会顶穿标题栏、把「当前标签页」
+   那行推出可视区（二次截图实证），必须能自己滚。 */
+.menu{position:absolute;left:14px;bottom:100%;margin-bottom:8px;width:300px;
+  max-height:340px;overflow-y:auto;overscroll-behavior:contain;
+  background:var(--field);border:1px solid var(--lstr);border-radius:9px;
+  padding:6px;z-index:60;box-shadow:0 16px 40px -12px rgba(0,0,0,.7);
+  display:none;flex-direction:column}
+.menu.show{display:flex}
+.menu::-webkit-scrollbar{width:8px}
+.menu::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--t3) 40%,transparent);
+  border-radius:4px;border:2px solid transparent;background-clip:padding-box}
+.mrow{display:flex;align-items:center;gap:9px;height:32px;padding:0 9px;
+  border:0;border-radius:var(--r-md);background:transparent;color:var(--t2);
+  font-family:inherit;font-size:13px;cursor:pointer;text-align:left;width:100%;
+  transition:.1s var(--ease)}
+.mrow:hover{background:var(--hov-t)}
+.mrow.on{background:var(--ac-tonal);color:var(--t1)}
+.mrow .cb{width:15px;height:15px;border-radius:var(--r-sm);border:1px solid var(--bctl);
+  flex:0 0 auto;display:grid;place-items:center;transition:.12s var(--ease)}
+.mrow.on .cb{background:var(--ac);border-color:var(--ac)}
+.mrow .cb svg{width:11px;height:11px;fill:none;stroke:var(--panel);
+  stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round;opacity:0}
+.mrow.on .cb svg{opacity:1}
+.mrow .dtslot{width:8px;flex:0 0 auto;display:grid;place-items:center}
+.mrow .dtslot i{width:8px;height:8px;border-radius:4px;display:block}
+.mrow .lbl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrow .tr{font-size:11px;color:var(--t3);flex:0 0 auto}
+.mrow .tr.off{color:var(--dgs)}
+.msec{height:26px;display:flex;align-items:center;padding:0 9px;font-size:10px;
+  font-weight:700;letter-spacing:1px;color:var(--t3);text-transform:uppercase}
+.mdiv{height:1px;background:var(--line2);margin:2px 0}
+.mfoot{height:34px;display:flex;align-items:center;justify-content:flex-end;padding:0 2px}
+.done{height:28px;padding:0 12px;border-radius:7px;border:1px solid var(--bctl);
+  background:transparent;color:var(--t1);font-family:inherit;font-size:11px;
+  cursor:pointer;transition:.11s var(--ease)}
+.done:hover{background:var(--ac);border-color:var(--ac);color:var(--panel)}
+
+/* ── 结果条（回执） ── */
+.undo{font-size:11px;color:var(--ac);background:none;border:0;cursor:pointer;
+  font-family:inherit;padding:0;border-bottom:1px dashed var(--ac-line);flex:0 0 auto}
+
+/* 页脚提示 & 说明 */
+.hint{display:flex;justify-content:center;gap:18px;flex-wrap:wrap;color:var(--t3);
+  font-size:11.5px;margin:16px 0 0}
+.hint b{color:var(--t2);font-weight:700}
+
+/* ── 表格 ── */
+table{width:100%;border-collapse:collapse;font-size:12.5px;margin:0 0 8px}
+th{text-align:left;font-size:10.5px;letter-spacing:1px;text-transform:uppercase;
+  color:var(--t3);font-weight:700;padding:0 10px 8px;border-bottom:1px solid var(--line)}
+td{padding:9px 10px;border-bottom:1px solid color-mix(in srgb,var(--line) 60%,transparent);
+  color:var(--t2);vertical-align:top;line-height:1.65}
+td b{color:var(--t1);font-weight:700}
+tr:last-child td{border-bottom:0}
+.sev{display:inline-block;font:700 9.5px/1 var(--mono);letter-spacing:.3px;
+  padding:3px 5px;border-radius:3px;white-space:nowrap}
+.sev.hi{color:var(--dgs);background:var(--dg-soft);border:1px solid var(--dg-line)}
+.sev.mid{color:var(--wr);background:color-mix(in srgb,var(--wr) 12%,transparent);
+  border:1px solid color-mix(in srgb,var(--wr) 34%,transparent)}
+.sev.lo{color:var(--t3);background:var(--hov-t);border:1px solid var(--line2)}
+.ev{font-family:var(--mono);font-size:10.5px;color:var(--t3);white-space:nowrap}
+
+/* ── 规则卡 ── */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);
+  padding:15px 16px}
+.card h4{margin:0 0 7px;font-size:13px;font-weight:700;display:flex;
+  align-items:baseline;gap:8px}
+.card h4 .tag{font:700 9px/1 var(--mono);letter-spacing:.4px;color:var(--ac);
+  background:var(--ac-tonal);border:1px solid var(--ac-line);border-radius:3px;
+  padding:3px 5px;font-weight:700}
+.card p{margin:0;font-size:12px;line-height:1.8;color:var(--t2)}
+.card p + p{margin-top:8px}
+.card ul{margin:6px 0 0;padding-left:17px;font-size:12px;color:var(--t2);line-height:1.8}
+.card li::marker{color:var(--t3)}
+.card li b{color:var(--t1);font-weight:700}
+.note{border-left:2px solid var(--ac-line);background:var(--ac-tonal);
+  border-radius:0 var(--r-md) var(--r-md) 0;padding:11px 14px;font-size:12.5px;
+  color:var(--t2);line-height:1.8;margin:14px 0 0}
+.note b{color:var(--t1);font-weight:700}
+.note.warn{border-left-color:var(--dg-line);background:var(--dg-soft)}
+.note.warn b{color:var(--dgs)}
+@media (max-width:900px){
+  .claims,.grid2{grid-template-columns:1fr}
+  .win{width:100%}
+  .win .side{display:none}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hd">
+    <div class="brand">MTERM<span>发送命令窗口 · 交互方案</span></div>
+    <div class="gap"></div>
+    <div class="date">2026-10-27</div>
+    <button class="tgl" id="themeBtn" type="button" aria-label="切换明暗">
+      <svg viewBox="0 0 16 16" id="themeIco"><circle cx="8" cy="8" r="3.4"/><path d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3.1 3.1l1.1 1.1M11.8 11.8l1.1 1.1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1"/></svg>
+      <span id="themeTxt">深色</span>
+    </button>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- ══════════ hero ══════════ -->
+  <section class="hero">
+    <div class="kick">Redesign · 不写代码，只给方案</div>
+    <h1>「发送命令」不是一个输入框，<br>是一台发射台：<em style="font-style:normal;color:var(--ac)">写什么 · 发给谁 · 安不安全 · 落没落</em></h1>
+    <p class="lead">
+      这个窗口被调了 <b>8 轮</b>（<code>#cmdbar-expand-left</code> → <code>#cmd-expand-window</code> → <code>#cmd-expand-fixes</code>
+      → <code>#send-cmd-window</code> → <code>#send-cmd-polish</code> → <code>#send-cmd-round2</code> →
+      <code>#send-cmd-round3</code> → <code>#send-cmd-caret-live</code>），每一轮都在修<b>看得见的像素</b>：
+      中缝线断了一截、下拉框边线太粗、深色面板里立着白色滚动柱、光标类型没跟着变。
+      这些都对，但它们回答的都是「这块画得对不对」。
+    </p>
+    <p class="lead">
+      从没人问过另一个问题：<b>用户在这个窗口里到底要完成什么？</b>
+      用户自己其实说过 —— <code>#cmd-expand-window</code> 那一轮的原话是
+      「发给频道 A，再发给全部标签页是常见用法」。也就是说，这是一个<b>连续对多台机器下命令</b>的地方。
+      可它现在的结构是一条「命令栏 + 一个多行输入框」，四个最关键的问题里只答了一个半。
+    </p>
+
+    <div class="claims">
+      <div class="claim">
+        <em>诊断</em>
+        <b>点第一条第命令，左栏就空了</b>
+        <span>过滤态拿<b>整段草稿</b>当搜索词（<code>:161</code>）。点一条 → 草稿多一行 → 其余条目全不命中 → 高度归零。
+        用户最核心的「挑几条、拼起来、连发」第一步就走不下去。</span>
+      </div>
+      <div class="claim">
+        <em>结构</em>
+        <b>一条命令的四个问题，只答了一个半</b>
+        <span><b>写什么</b>答得不错；<b>发给谁</b>只有字母 + 台数，永远看不到主机名；
+        <b>安不安全</b>只有一句标签，Ctrl+Enter 直接绕过；<b>落没落</b>只有一个 1.4 秒的「已发送」。</span>
+      </div>
+      <div class="claim">
+        <em>提案</em>
+        <b>把答案收进左下角那一个键</b>
+        <span>不再新增常驻行：<b>目标、告警、回执</b>全部长在「发送范围」键的悬浮提示卡里。
+        页脚只留两个控件（范围键 + 发送键），正文区不多被占一行。</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ §01 活沙盘 ══════════ -->
+  <h2 class="sec"><span class="no">01</span>活沙盘：改过的窗口长这样</h2>
+  <p class="sub">
+    下面是 1:1 逻辑像素的可操作原型。<b>直接试</b>：在左栏搜索框里打字（注意：<b>搜索框和草稿是两件事</b>，
+    这是本次第一处改动）；点命令行 → 插入到<b>光标处</b>并独占一行；点右下「当前标签页 ▾」展开目标菜单，
+    能看到<b>真实主机名</b>；敲 <code>rm -rf</code> 看发送键<b>先转红（仍是「发送」）</b>，
+    点一次才变成「再点一次确认」；按 <kbd style="font-family:var(--mono);font-size:11px;border:1px solid var(--line2);border-radius:3px;padding:1px 4px">Ctrl+Enter</kbd>
+    也一样要走那两步。
+  </p>
+
+  <div class="stage">
+    <div class="cap">LIVE · 1:1 逻辑像素 · 760×500（现为 620×420）</div>
+
+    <div class="bar" id="scBar">
+      <button class="chipbtn on" data-sc="safe" type="button">安全命令</button>
+      <button class="chipbtn" data-sc="multi" type="button">多行脚本</button>
+      <button class="chipbtn" data-sc="danger" type="button">危险 rm -rf</button>
+      <button class="chipbtn" data-sc="receipt" type="button">发送回执</button>
+      <button class="chipbtn" data-sc="empty" type="button">空态</button>
+      <button class="chipbtn" data-sc="narrow" type="button">窄窗 620</button>
+      <button class="chipbtn" data-sc="fold" type="button">折叠左栏</button>
+      <button class="chipbtn" data-sc="many" type="button">84 台（多一点）</button>
+    </div>
+
+    <div class="win" id="win">
+      <!-- 标题栏 -->
+      <div class="ttl">
+        <h4>发送命令</h4>
+        <!-- 折叠左栏：复用主界面左上角 BrandLogoBtn 的同款图标
+             （assets/icons/sidebar-left-collapse.svg / -expand.svg，24 网格
+             stroke-width 2，与标题栏其它 TopbarBtn 同为 16px 渲染） -->
+        <button class="tbtn" id="foldBtn" type="button" aria-label="收起侧边栏">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" id="foldIco">
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+            <path d="M9 3v18"/>
+            <path d="m16 15-3-3 3-3"/>
+          </svg>
+          <span class="tip" id="foldTip">收起侧边栏</span>
+        </button>
+        <button class="tbtn" id="pinBtn" type="button" title="置顶（钉住）">
+          <svg viewBox="0 0 16 16"><path d="M6 2h4l-.6 3.2 2.1 2.1v1.4H8.7V13L8 14.2 7.3 13V8.7H4.5V7.3l2.1-2.1z"/></svg>
+        </button>
+        <button class="tbtn close" id="closeBtn" type="button" title="关闭 Esc">
+          <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+
+      <!-- 主体 -->
+      <div class="body">
+        <div class="side" id="side">
+          <div class="srchwrap">
+            <label class="srch" id="srchBox">
+              <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.3"/><path d="M10.2 10.2L14 14"/></svg>
+              <input id="srch" type="text" placeholder="搜索命令…" autocomplete="off"
+                     spellcheck="false" aria-label="搜索快捷命令与历史">
+              <button class="clr" id="srchClr" type="button" aria-label="清空搜索">×</button>
+            </label>
+          </div>
+          <div class="list" id="list"></div>
+        </div>
+
+        <!-- 可拖动分隔条：拖动改左栏宽度（双击复位 196） -->
+        <div class="split" id="split" role="separator" aria-orientation="vertical"
+             aria-label="拖动调整左栏宽度（双击复位）" tabindex="0"
+             title="拖动调整宽度 · 双击复位"></div>
+
+        <div class="main">
+          <div class="gut" id="gut"></div>
+          <div class="edwrap">
+            <textarea class="ed" id="ed" spellcheck="false" autocomplete="off"
+                      autocapitalize="off" wrap="off" aria-label="命令编辑器"
+                      placeholder=""></textarea>
+            <!-- 空态引导：不做快捷键教学（用户明确「不需要快捷键操作」），
+                 只讲鼠标能做的两件事 -->
+            <div class="ghost" id="ghost">
+              <div class="l1"><span style="color:var(--t2)">在这里输入或粘贴命令</span></div>
+              <div class="l1" style="opacity:.72">点左栏任意一条可插入到光标处</div>
+              <div class="l1" style="opacity:.55">范围与发送在窗口底部</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+
+      <!-- 动作条：范围键在**左下角**、与发送键同行。
+           原来中间那条「信息行」已按反馈删除 —— 状态与告警全部收进
+           左下角范围键的悬浮提示气泡；右侧只留一句极简助记。 -->
+      <div class="foot">
+        <button class="scope" id="scopeBtn2" type="button" aria-haspopup="true" aria-expanded="false">
+          <span class="dots" id="scopeDots2"></span>
+          <span id="scopeLbl2">当前标签页</span>
+          <span class="ct" id="scopeCt2"></span>
+          <svg class="chev" viewBox="0 0 16 16"><path d="M4 10l4-4 4 4"/></svg>
+        </button>
+        <span class="foot-note" id="footNote"></span>
+        <button class="sbtn" id="sendBtn" type="button">发送</button>
+
+        <!-- 范围菜单：挂在页脚内部向上弹（.win 有 overflow:hidden，挂外面会被裁掉） -->
+        <div class="menu" id="menu" role="dialog" aria-label="发送范围">
+        <button class="mrow" data-act="tab" type="button">
+          <span class="cb"><svg viewBox="0 0 16 16"><path d="M3.2 8.4l3 3 6.6-6.8"/></svg></span>
+          <span class="dtslot"></span><span class="lbl">当前标签页</span><span class="tr" id="mTabTr"></span>
+        </button>
+        <button class="mrow" data-act="all" type="button">
+          <span class="cb"><svg viewBox="0 0 16 16"><path d="M3.2 8.4l3 3 6.6-6.8"/></svg></span>
+          <span class="dtslot"></span><span class="lbl">全部标签页</span><span class="tr" id="mAllTr"></span>
+        </button>
+        <div class="mdiv"></div>
+        <div class="msec">同步频道</div>
+        <button class="mrow" data-act="ch" data-ch="A" type="button">
+          <span class="cb"><svg viewBox="0 0 16 16"><path d="M3.2 8.4l3 3 6.6-6.8"/></svg></span>
+          <span class="dtslot"><i style="background:var(--chA)"></i></span>
+          <span class="lbl">频道 A</span><span class="tr" id="mA"></span>
+        </button>
+        <button class="mrow" data-act="ch" data-ch="B" type="button">
+          <span class="cb"><svg viewBox="0 0 16 16"><path d="M3.2 8.4l3 3 6.6-6.8"/></svg></span>
+          <span class="dtslot"><i style="background:var(--chB)"></i></span>
+          <span class="lbl">频道 B</span><span class="tr" id="mB"></span>
+        </button>
+        <button class="mrow" data-act="ch" data-ch="C" type="button">
+          <span class="cb"><svg viewBox="0 0 16 16"><path d="M3.2 8.4l3 3 6.6-6.8"/></svg></span>
+          <span class="dtslot"><i style="background:var(--chC)"></i></span>
+          <span class="lbl">频道 C</span><span class="tr" id="mC"></span>
+        </button>
+        <button class="mrow" data-act="ch" data-ch="D" type="button">
+          <span class="cb"><svg viewBox="0 0 16 16"><path d="M3.2 8.4l3 3 6.6-6.8"/></svg></span>
+          <span class="dtslot"><i style="background:var(--chD)"></i></span>
+          <span class="lbl">频道 D</span><span class="tr" id="mD"></span>
+        </button>
+        <div class="mdiv"></div>
+        <div class="msec">或逐个挑选主机</div>
+        <button class="mrow" data-act="host" data-host="web-01" type="button">
+          <span class="cb"><svg viewBox="0 0 16 16"><path d="M3.2 8.4l3 3 6.6-6.8"/></svg></span>
+          <span class="dtslot"><i style="background:var(--chA)"></i></span>
+          <span class="lbl">web-01</span><span class="tr">root · A</span>
+        </button>
+        <button class="mrow" data-act="host" data-host="db-02" type="button">
+          <span class="cb"><svg viewBox="0 0 16 16"><path d="M3.2 8.4l3 3 6.6-6.8"/></svg></span>
+          <span class="dtslot"><i style="background:var(--chB)"></i></span>
+          <span class="lbl">db-02</span><span class="tr">root · B</span>
+        </button>
+        <button class="mrow" data-act="host" data-host="cache-03" type="button">
+          <span class="cb"><svg viewBox="0 0 16 16"><path d="M3.2 8.4l3 3 6.6-6.8"/></svg></span>
+          <span class="dtslot"><i style="background:var(--chA)"></i></span>
+          <span class="lbl">cache-03</span><span class="tr">root · A</span>
+        </button>
+        <button class="mrow" data-act="host" data-host="gw-04" type="button">
+          <span class="cb"><svg viewBox="0 0 16 16"><path d="M3.2 8.4l3 3 6.6-6.8"/></svg></span>
+          <span class="dtslot"><i style="background:var(--chC)"></i></span>
+          <span class="lbl">gw-04</span><span class="tr off">已断开</span>
+        </button>
+        <div class="mfoot"><button class="done" id="menuDone" type="button">完成</button></div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="hint">
+      <span><b>点左栏任意一行</b> → 插入到光标处，不覆盖已写的</span>
+      <span><b>搜索框打字</b> → 只过滤候选，<b>不动草稿</b></span>
+      <span><b>Ctrl+Enter</b> → 走与按钮完全同一套确认状态机</span>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>沙盘里所有状态都是真的在跑</b>：目标集合由「模式 + 频道勾选 + 主机勾选」现算，悬浮卡上的主机名、台数、
+    断开标记都跟着变；危险判定会先剥掉引号内容再匹配，所以 <code>grep shutdown app.log</code> 不会误报，
+    而 <code>rm -rf /data</code> 会。发送后回执里 <code>gw-04</code> 是红的 —— 因为它本来就断开，
+    这正是现在版本<b>静默丢掉</b>的那一台。
+  </div>
+
+  <!-- ══════════ §02 诊断 ══════════ -->
+  <h2 class="sec"><span class="no">02</span>先把账算清：现状的 10 个硬问题</h2>
+  <p class="sub">
+    全部是代码取证，不是感觉。左列「证据」都能点到具体行 —— 想复核任何一条，按行号去看就行。
+  </p>
+
+  <table>
+    <thead><tr><th style="width:26%">问题</th><th style="width:20%">证据</th><th>用户实际会遇到什么</th><th style="width:64px">严重度</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>点第一条第命令，左栏自我清空</b></td>
+        <td class="ev">send_cmd_window.slint:161<br>166-176 · 397-399</td>
+        <td>过滤态用<b>整段草稿</b>当搜索词。点「df -h」→ 草稿变 <code>df -h</code> → 其余命令的 name/command 都不含这三个字 → 高度全部归零。想再点第二条，必须先把编辑器清空。注释里写的「不至于瞬间清空」只对被点中的那一条成立。</td>
+        <td><span class="sev hi">高</span></td>
+      </tr>
+      <tr>
+        <td><b>追加式插入，没有光标插入、没有撤销</b></td>
+        <td class="ev">:425-427 · :489-490</td>
+        <td>草稿里已有 <code>ls -la</code>，光标停在 <code>ls</code> 后面想补参数：只能被追加到<b>行末第二行</b>。连点同一行 = 重复堆行，且没有 Ctrl+Z 可以退回去。</td>
+        <td><span class="sev hi">高</span></td>
+      </tr>
+      <tr>
+        <td><b>危险命令没有真正的门槛</b></td>
+        <td class="ev">:147-152 · :812-814<br>:660-670</td>
+        <td>敲 <code>rm -rf /data</code>：红条出现、按钮变红写「仍然发送」—— 但 <b>Ctrl+Enter 直接发出</b>，一步都不多。所谓二次确认只是一个标签和一种配色。而且默认档（当前标签页）永远不显示「将发往 N 台」。</td>
+        <td><span class="sev hi">高</span></td>
+      </tr>
+      <tr>
+        <td><b>目标永远是字母 + 台数，看不到主机名</b></td>
+        <td class="ev">terminal_view.slint:60-64</td>
+        <td><code>SendScope</code> 结构里只有 <code>letter / color / count</code> —— 不是「没画」，是<b>数据本身就不存在</b>。想把命令发给 3 台机器前核对一下是哪 3 台？没有这个可能，只能凭记忆。</td>
+        <td><span class="sev hi">高</span></td>
+      </tr>
+      <tr>
+        <td><b>没有逐目标回执，失败静默</b></td>
+        <td class="ev">app.rs:10672-10676<br>:852-856</td>
+        <td>20 台里 5 台已断开：按钮照常闪 1.4 秒「已发送」，5 台被静默跳过。用户以为全发了，直到某台机器状态不对才发现。<code>h.get(id)</code> 取不到就直接 continue，连日志都没有。</td>
+        <td><span class="sev hi">高</span></td>
+      </tr>
+      <tr>
+        <td><b>多行命令的语义是「整段 raw 写 + 一个 \n」</b></td>
+        <td class="ev">input.rs:54-60</td>
+        <td>不逐行转义、不套 bracketed paste。<b>未闭合引号 / <code>for</code> / heredoc</b> 会吞掉后面所有行，远端停在续行提示符，界面完全无感。<code>sudo</code> 要密码时第二行会被当密码喂进去。<code>trim_end</code> 还会削掉续行反斜杠。</td>
+        <td><span class="sev hi">高</span></td>
+      </tr>
+      <tr>
+        <td>命令栏 ↗ 带来的草稿被静默丢弃</td>
+        <td class="ev">app.rs:2548-2551</td>
+        <td>命令栏里写好命令点 ↗，窗口早开着（还停着上次的内容）→ 什么都没变、没有任何反馈。用户会以为按钮坏了，或者命令丢了。</td>
+        <td><span class="sev mid">中高</span></td>
+      </tr>
+      <tr>
+        <td>Esc 只在编辑器持焦时有效；菜单开着时反而关整窗</td>
+        <td class="ev">:660-670</td>
+        <td>全窗口唯一的 <code>key-pressed</code> 挂在编辑器上。点过「完成」或图钉后焦点不在编辑器：按 Esc 没反应。反之菜单开着时 Esc 直接关掉整个窗口，而不是先收菜单。</td>
+        <td><span class="sev mid">中高</span></td>
+      </tr>
+      <tr>
+        <td>行号写死 30 行；历史只搜最后 8 条</td>
+        <td class="ev">:617 · :479 · :482-483</td>
+        <td>粘 40 行部署脚本，第 31 行往后行号是空白。想找回上周那条 <code>mysqldump</code>：滚到底也只有 8 条。而命令栏补全搜的是全量历史 —— 同一个应用两套语义。</td>
+        <td><span class="sev mid">中</span></td>
+      </tr>
+      <tr>
+        <td>224px 左栏在最小宽度下吃掉 43%，空态还是死区</td>
+        <td class="ev">:331 · :379-390 · :91-93</td>
+        <td>窗口最小 520 时左栏占 224。新装用户打开：两行灰字「暂无快捷命令 / 暂无历史」，没有一个可点的东西 —— 管理入口上一轮按用户要求删掉了。</td>
+        <td><span class="sev mid">中</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="note warn">
+    <b>最该先修的不是视觉的。</b>上面 10 条里，前 6 条都是「用户做不到某件事」或「做错了没人告诉他」。
+    第 6 条（多行语义）是唯一一条<b>会造成真实事故</b>的：一段没闭合引号的脚本发下去，后面几行会被远端 shell 当成
+    续行吃掉，而界面上一切正常。像素问题最多不好看，这条会出事。
+  </div>
+
+  <!-- ══════════ §03 结构 ══════════ -->
+  <h2 class="sec"><span class="no">03</span>重构：一条命令其实是四个问题</h2>
+  <p class="sub">
+    现在这个窗口只完整回答了第一个。把四个问题摊开，每个都要有一个<b>看得见的答案</b>，
+    而且答案要能在同一处、不跳变地出现 —— 最终落点是<b>左下角那个「发送范围」键的悬浮提示卡</b>。
+  </p>
+
+  <div class="grid2">
+    <div class="card">
+      <h4><span class="tag">01</span>写什么</h4>
+      <p>答案在编辑器。现状不缺，但缺<b>辅助方式</b>：点候选应该插到光标处、独占一行、能撤销；
+      候选列表应该由<b>搜索框</b>过滤，不该由草稿过滤。</p>
+      <p style="color:var(--t3);font-size:11.5px">对应改动：搜索与草稿解耦 · 光标插入 · Ctrl+Z · 行号按需</p>
+    </div>
+    <div class="card">
+      <h4><span class="tag">02</span>发给谁</h4>
+      <p>答案必须在<b>发送之前</b>就看得见，而且是<b>主机名</b>不是字母。字母是内部编号，
+      用户脑子里记的是 <code>web-01</code> / <code>db-02</code>。</p>
+      <p style="color:var(--t3);font-size:11.5px">对应改动：悬浮卡列出真实主机名 · 菜单里可逐个勾主机 · 断开的机器标出来</p>
+    </div>
+    <div class="card">
+      <h4><span class="tag">03</span>安不安全</h4>
+      <p>两个独立的危险源：<b>命令危险</b>（rm -rf）和<b>语义危险</b>（多行会被当续行吃掉）。
+      现在只识别前者，而且识别了也拦不住。</p>
+      <p style="color:var(--t3);font-size:11.5px">对应改动：两步确认（Ctrl+Enter 同路径）· 多行语义检测 + 粘贴模式切换</p>
+    </div>
+    <div class="card">
+      <h4><span class="tag">04</span>落没落</h4>
+      <p>发送是<b>一对多</b>的，回执也必须是一对多的。一个「已发送」把 20 台压成一句话，
+      等于告诉用户「别问了」。</p>
+      <p style="color:var(--t3);font-size:11.5px">对应改动：悬浮卡里逐台回执（失败优先）· 常驻到下次编辑 · 失败可单独重试</p>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>为什么四件事都挂在「发送范围」这一个键上</b>：因为它们是同一条时间线上的四个瞬间 ——
+    写的时候在这里看目标，发之前在这里核对，发之后在这里看结果。
+    用户要核对时鼠标本来就要移到这个键上，<b>不需要额外去别处找信息</b>。
+    现在版本里那条 28px 的「危险告警预留槽」是反面教材：它只在危险时才<b>有内容</b>，
+    却永远占着高度，平时就是一条空白 —— 而且它位于代码和发送键之间，用户看不到它时也想不到它存在。
+  </div>
+  <div class="note warn" style="margin-top:10px">
+    <b>（修订）常驻信息行后来也被删掉了。</b>最初设想是在页脚加一条常显的「发射条」，
+    但实际跑起来它是<b>自我重复</b>的：左边写「等 84 台」、右边又写「84 台 · 4 台已断开」，
+    同一份明细悬浮卡里还有一遍。于是整条删除，正文区多出 46px 高度。
+    结论：<b>信息只在「用户正在看的地方」出现一次就够</b>，常驻行往往是在替自己解决不存在的问题。
+  </div>
+
+  <!-- ══════════ §04 逐条改动 ══════════ -->
+  <h2 class="sec"><span class="no">04</span>八处改动，逐条说清「为什么」</h2>
+
+  <h3 class="mini">① 搜索与草稿解耦 —— 一处改动救活整条主流程</h3>
+  <p class="sub">
+    这是本次<b>性价比最高</b>的一处。现在 <code>filtering = (text != "")</code>，草稿即是搜索词。
+    改成一个<b>独立的搜索框</b>（左栏顶部，28 高，<code>field</code> 底 + <code>line-2</code> 边，聚焦转 accent：
+    与命令管理弹框的搜索框同一套），草稿再怎么长都不影响候选。
+  </p>
+  <div class="note">
+    <b>顺带解决三件事</b>：<br>
+    ① 「连发第二条」这条路通了 —— 点完第一条，其余条目还在原地；<br>
+    ② 历史不再只搜最后 8 条（搜索框走全量，列表懒滚）；<br>
+    ③ 草稿里已有大段脚本时，左栏依旧可用（现在的实现里这种状态下列表是空的）。
+  </div>
+
+  <h3 class="mini">② 点候选 = 插入到光标处 + 独占一行 + 可撤销</h3>
+  <p class="sub">
+    现在的 <code>root.text = text + "\n" + cmd</code> 是无条件追加到末尾。改成：
+    读编辑器选区 → 在光标处插入 → <b>若光标两侧不在行首/行尾则自动补换行</b>（新命令独占一行，不把上一行截断）→
+    光标落到插入内容之后 → 焦点留在编辑器。再配 <code>Ctrl+Z</code>。
+  </p>
+
+  <h3 class="mini">③ 目标可见：悬浮卡里的真实主机名</h3>
+  <p class="sub">
+    这需要<b>动数据</b>，不只是画法：<code>SendScope</code> 结构要从
+    <code>{ letter, color, count }</code> 扩成带主机列表（或另开一个
+    <code>[SendTarget]</code> 模型，由 Rust 按「已打开且 kind == terminal」的标签页现算）。
+    悬浮卡里逐台列出：<b>频道色点 + 用户@主机名 + 频道/在线状态</b>，超过 8 台收成「…还有 N 台」。
+    断开的机器用虚线边 + 降透明度 —— 明确告诉你「这台也会算进目标，但大概率发不到」。
+  </p>
+
+  <h3 class="mini">④ 危险：真正的两步确认，且 Ctrl+Enter 无法绕过</h3>
+  <p class="sub">
+    现在 <code>send-now()</code> 无条件调用 <code>root.send()</code>，危险态只改了文案和底色。
+    改成共享一个 <code>armed</code> 状态：
+  </p>
+  <div class="card" style="margin-bottom:12px">
+    <ul>
+      <li><b>危险命中（阶段 1）</b> → 按钮变<b>实心红</b>，但文案仍是<b>「发送」</b>。
+          红色本身就是「这条命令危险」的信号，<b>不改变点击语义</b>；</li>
+      <li><b>第一次触发</b>（点击或 Ctrl+Enter）→ <code>armed = true</code>，<b>不发送</b>，
+          文案才变成<b>「⚠ 再点一次确认」</b>，3 秒后自动解除；</li>
+      <li><b>第二次触发</b> → 真正发送。改任何一个字符 → <code>armed</code> 立即归零，回到阶段 1；</li>
+      <li>键盘与鼠标走<b>同一个函数</b>，物理上不存在「绕过」这条路。</li>
+    </ul>
+  </div>
+  <div class="note warn" style="margin-bottom:12px">
+    <b>为什么「阶段 1」必须还是「发送」</b>：早先的写法是危险一命中就把按钮改成「再点一次确认」——
+    等于把<b>第一次点击这个动作从界面上抹掉了</b>，用户第一眼看到的是个「已经要确认」的按钮，
+    只会困惑「怎么一上来就要确认」。两段式的关键是：<b>红色负责警告，文案负责语义</b>，
+    两者不抢同一件事。
+  </div>
+  <p class="sub">
+    同时把危险词表从写死的 8 个 token 换成<b>单一出处</b>（现在 <code>send_cmd_window.slint:106-120</code> 和
+    <code>terminal_view.slint:1112-1130</code> 是两份，注释自己都承认「被抄了第三遍」），并先剥掉引号内容再匹配，
+    这样 <code>grep shutdown app.log</code> 不再误报。
+  </p>
+
+  <h3 class="mini">⑤ 多行语义：把「会出事的那个」显式化</h3>
+  <p class="sub">
+    这是最容易被忽略、后果最重的一条。现在多行文本被 <code>trim_end()</code> 后原样写进 PTY 再加一个 <code>\n</code>。
+    普通多行命令能跑，但下面三种情况会静默出错：
+  </p>
+  <div class="grid2" style="margin-bottom:12px">
+    <div class="card">
+      <h4>会被远端吃成续行</h4>
+      <ul>
+        <li>引号未闭合：<code>echo "deploy</code></li>
+        <li>块结构：<code>for</code> / <code>while</code> / <code>if</code> / <code>case</code></li>
+        <li>here-doc：<code>cat &lt;&lt;EOF</code></li>
+      </ul>
+      <p style="margin-top:8px">表现：远端停在 <code>&gt;</code> 提示符，后续行全部被吞，界面无感。</p>
+    </div>
+    <div class="card">
+      <h4>提案：两个显式模式</h4>
+      <ul>
+        <li><b>逐行执行</b>（默认）：每行各自回车，等于人工逐行敲；</li>
+        <li><b>整段粘贴</b>：用 bracketed paste 包裹（<code>\e[200~ … \e[201~</code>），
+            <code>for</code> / heredoc / 未闭合引号才安全。</li>
+      </ul>
+      <p style="margin-top:8px">检测到续行风险时自动切到「整段粘贴」，并在悬浮卡首行说明原因。</p>
+    </div>
+  </div>
+  <div class="note warn">
+    <b>还需要一起修的三处</b>：<code>trim_end()</code> 会削掉末尾反斜杠（破坏 <code>\</code> 续行）；
+    第二行起在 <code>sudo</code> 场景会被当密码喂进去，应在多行 + sudo 时提示；
+    超宽命令行现在<b>既不可见也不可横向平移</b>（<code>wrap: no-wrap</code> +
+    <code>content-width: self.visible-width</code> + 两条滚动条 <code>always-off</code>），编辑器要开横向滚动。
+  </div>
+
+  <h3 class="mini">⑥ 回执：悬浮卡里的逐台结果</h3>
+  <p class="sub">
+    发送后悬浮卡的标题从 <code>将发往</code> 变成 <code>结果</code>，内容换成逐台结果；
+    每台主机 chip 从灰色变成<b>绿（成功）/ 红（失败 + 原因）/ 黄（超时）</b>；
+    右侧汇总 <code>4 台 · 3 成功 · 1 失败</code>；失败的可单独「重试」。
+    回执<b>常驻</b>到下一次编辑（不是 1.4 秒就消失）。
+  </p>
+  <div class="note">
+    这需要 <code>on_send</code> 从「无返回值」变成「返回每目标的投递结果」。
+    <code>send_raw</code> 现在 <code>let _ = commands.send(...)</code> 把错误吞掉了，
+    至少要拿到「该 tab 的 handle 是否存在 / 通道是否还活着」这两个事实。
+    这是本方案里<b>唯一必须改 Rust 侧语义</b>的一条，也是最能提升信任感的一条。
+  </div>
+
+  <h3 class="mini">⑦ 布局：760 宽、左栏收窄到 196、可折叠、行号按需</h3>
+  <p class="sub">
+    现为 620×420（最小 520×340），左栏固定 224 —— 最小宽度下占 43%。提案：
+  </p>
+  <ul style="font-size:12.5px;color:var(--t2);line-height:1.9;max-width:92ch;padding-left:20px">
+    <li>默认 <b>760×500</b>，最小 <b>620×420</b>；</li>
+    <li><b>左栏 224 → 最终 196</b>：左栏放的是「名称 + 命令串」两行，命令串本来就靠省略号收尾，
+        收窄只牺牲几个字符，却把宽度让给了真正要写字的编辑区。<b>代价用悬浮卡补</b>（见 §08 ②）；</li>
+    <li><b>⚠️ 收窄必须配 <code>min-width:0</code></b>：只写 <code>flex:0 0 196px</code> 是<b>无效</b>的 ——
+        flex 子项的 <code>min-width</code> 默认是 <code>auto</code>（= 内容最小宽），
+        左栏里那条 <code>mysqldump ... &gt; /backup/app-$(date +%F).sql</code> 会把 min-content 撑到
+        <b>416px</b>，实测 <code>side:416 / main:342</code>，右栏被挤掉一半。
+        现在 <code>.side</code> 上 width/min-width/max-width 三值都钉死 196，
+        并在 <code>.list / .row / .row .n,.c</code> 上补 <code>min-width:0</code> 让省略号真正生效。
+        实测结果：<code>side:196 / main:562 / 编辑器 302→522px</code>；</li>
+    <li><b>左栏宽度可拖（本轮新增）</b>：默认 196，<b>拖动两栏之间的分隔条</b>可在
+        <b>150 ~ min(420, 窗口宽×0.55)</b> 之间调整。双击复位 196；
+        键盘 <code>←</code>/<code>→</code> 步进 16px、<code>Shift</code> 加速到 64px、<code>Home</code> 复位。
+        <b>命中区 7px</b>（1px 的线根本点不中），视觉仍是 1px 发丝线，悬停才出胶囊手柄；</li>
+    <li>左栏可折叠：标题栏按钮，图标<b>复用主界面左上角 <code>BrandLogoBtn</code> 的同款 SVG</b>
+        （<code>assets/icons/sidebar-left-collapse.svg</code> /
+        <code>sidebar-left-expand.svg</code>，24 网格、stroke-width 2、16px 渲染），
+        悬停出「收起/展开侧边栏」提示；<b>窗口宽 &lt; 700 时自动折叠</b>；</li>
+    <li>行号列：按实际行数动态生成（不再写死 30 行），且<b>单行时整列隐藏</b>；</li>
+    <li>编辑器开横向滚动，超宽命令行可平移核对。</li>
+  </ul>
+
+  <h3 class="mini">⑧ 草稿、焦点与 Esc 的分层</h3>
+  <p class="sub">
+    现在的 <code>is_visible()</code> 分支会把命令栏 ↗ 带进来的草稿静默丢掉；关闭窗口 = <code>hide()</code>，
+    草稿随之消失；Esc 只在编辑器持焦时有效。提案：
+  </p>
+  <ul style="font-size:12.5px;color:var(--t2);line-height:1.9;max-width:92ch;padding-left:20px">
+    <li>窗口开着时再从命令栏 ↗ 打开：<b>替换草稿但给 3 秒「撤销」</b>（不弹确认框，弹框更烦）；</li>
+    <li>关闭（hide）<b>保留草稿</b>，下次打开恢复；只有发送成功或手动清空才丢；</li>
+    <li>Esc <b>分层</b>：菜单开着 → 只收菜单；否则关窗口（草稿已保留，不再需要「确认丢弃」）；</li>
+    <li>键盘处理提到窗口根节点（不再只挂在编辑器上），范围键 / 发送键进焦点链并补
+        <code>accessible-role</code> / <code>accessible-label</code>（现在全窗口 0 处）。</li>
+  </ul>
+
+  <!-- ══════════ §05 键盘 ══════════ -->
+  <h2 class="sec"><span class="no">05</span>键盘契约：只保留真正需要的三个</h2>
+  <p class="sub">
+    <b>按反馈收敛</b>：这个窗口不以键盘操作为主，搜索框里那枚 <code>Ctrl K</code> 提示和对应的快捷键一并<b>删除</b>
+    （不再教用户按快捷键，一切靠鼠标点得到）。只留三个「没有就真的会出事」的键 ——
+    少而确定，比列满一张表更像一个桌面工具。
+  </p>
+  <table>
+    <thead><tr><th style="width:150px">按键</th><th style="width:150px">作用域</th><th>行为</th></tr></thead>
+    <tbody>
+      <tr><td class="ev">Ctrl+Enter</td><td>全窗口</td><td>发送。<b>危险态下第一次只 arm，第二次才真发</b> —— 与点击完全同一路径。</td></tr>
+      <tr><td class="ev">Esc</td><td>全窗口（分层）</td><td>菜单开着 → 收菜单；否则关窗口并<b>保留草稿</b>。</td></tr>
+      <tr><td class="ev">Ctrl+Z</td><td>编辑器</td><td>撤销。点左栏插入的那一次必须能退回去（这是唯一必须有的编辑键）。</td></tr>
+      <tr><td class="ev">Ctrl+A / C / V</td><td>编辑器</td><td>系统级文本编辑，由原生输入框自带，不需要自己实现。</td></tr>
+    </tbody>
+  </table>
+  <div class="note">
+    <b>删掉的那些为什么不遗憾</b>：<code>Ctrl+K</code>（聚焦搜索）、<code>Ctrl+B</code>（折叠左栏）这两个键的价值
+    在于「省一次鼠标移动」；而本窗口的搜索框和折叠键本来就在最显眼的位置，鼠标一步就到。
+    为它们维护快捷键、还必须在界面上教育用户，成本高于收益 —— 用户的原话是「不需要快捷键操作」。
+  </div>
+
+  <!-- ══════════ §06 落地分期 ══════════ -->
+  <h2 class="sec"><span class="no">06</span>落地分期：哪些是纯 UI，哪些必须动 Rust</h2>
+  <p class="sub">
+    这份稿子刻意标出改动面，是因为其中三处不是「画一下」能完成的 —— 它们要改数据结构和回调语义。
+    按「收益 ÷ 改动面」排，第一期就能拿掉最痛的三个。
+  </p>
+  <table>
+    <thead><tr><th style="width:60px">期</th><th style="width:34%">内容</th><th>改动面</th><th style="width:70px">收益</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>P0</b></td>
+        <td><b>搜索与草稿解耦</b>；插入到光标处 + 撤销；行号动态化；Esc 分层；键盘提到根节点</td>
+        <td>纯 <code>send_cmd_window.slint</code> + 少量 <code>app.rs</code> 回调。不新增模型、不改数据结构。</td>
+        <td>★★★★★</td>
+      </tr>
+      <tr>
+        <td><b>P1</b></td>
+        <td><b>危险两步确认</b>（Ctrl+Enter 同路径）；危险词表单一出处 + 剥引号；多行语义检测 +「整段粘贴」模式；<code>trim_end</code> 修正</td>
+        <td><code>send_cmd_window.slint</code> + <code>terminal_view.slint</code>（共用词表）+ <code>input.rs</code>（粘贴编码）。</td>
+        <td>★★★★★</td>
+      </tr>
+      <tr>
+        <td><b>P2</b></td>
+        <td><b>目标可视化</b>：<code>SendScope</code> 扩主机列表 / 新增 <code>[SendTarget]</code> 模型；悬浮卡 + 菜单逐台勾选</td>
+        <td><b>动 Rust 模型</b>：<code>app.rs:170-190</code> 的 scopes 构建、<code>terminal_view.slint:60-64</code> 的结构定义。</td>
+        <td>★★★★☆</td>
+      </tr>
+      <tr>
+        <td><b>P3</b></td>
+        <td><b>逐台回执</b>：<code>on_send</code> 返回每目标结果；<code>send_raw</code> 不再吞错；失败可重试</td>
+        <td><b>动 Rust 语义</b>：<code>app.rs:2578-2592</code> 回调签名 + <code>ssh/struct/event.rs:141-143</code>。</td>
+        <td>★★★★★</td>
+      </tr>
+      <tr>
+        <td><b>P4</b></td>
+        <td>760 宽 + 左栏折叠 + 窄窗自适应；空态指路；草稿持久化；无障碍标签</td>
+        <td>纯 UI + 一处 <code>resource_ui.rs</code> 的尺寸常量（现在关闭重开会把 620×420 重新居中写死）。</td>
+        <td>★★★☆☆</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="note">
+    <b>建议顺序 P0 → P1 → P3 → P2 → P4</b>，与表里编号不同：P3（回执）虽然要动 Rust，但它解决的是「用户不知道发没发到」，
+    信任成本最高；P2（主机名）要先扩数据结构，可以放到回执之后 —— 回执本来就带主机名，两件事一起改反而省一次结构迁移。
+  </div>
+
+  <!-- ══════════ §07b 本轮反馈落地 ══════════ -->
+  <h2 class="sec"><span class="no">07</span>第二轮五条反馈：逐条落地</h2>
+  <p class="sub">
+    这五条都来自实际看稿后的直觉判断，每一条背后其实都有一个具体的失效场景。
+    下面不但给出改法，也交代「为什么原来那样不行」。
+  </p>
+
+  <div class="grid2">
+    <div class="card">
+      <h4><span class="tag">①</span>折叠图标：用主界面同款</h4>
+      <p>原来手绘了一个 16 网格的方框图标，几何随意、描边权重和标题栏其它图标不一致。</p>
+      <p><b>改法</b>：直接引用 <code>assets/icons/sidebar-left-collapse.svg</code> 与
+      <code>sidebar-left-expand.svg</code> —— 就是主界面左上角 <code>BrandLogoBtn</code> 悬停时
+      淡入的那两个图标（24 网格、<code>stroke-width 2</code>、<code>stroke-linecap/linejoin: round</code>）。
+      收起时用 collapse，展开时用 expand，连同「收起/展开侧边栏」的提示文案一起搬。</p>
+    </div>
+    <div class="card">
+      <h4><span class="tag">②</span>左栏收窄 + 命令悬浮卡</h4>
+      <p>224px 的左栏要放「名称 + 命令串」两行，长命令全靠省略号；而右边真正写字的区域被挤。</p>
+      <p><b>改法</b>：收窄到 <b>196px</b>（让出的 28px 全部给编辑区），
+      同时补一张<b>悬浮卡</b>：鼠标停在被截断的行上 → 弹完整命令（等宽、<code>pre-wrap</code>、可读多行），
+      并注明「点击插入到光标处 · 独占一行」。</p>
+      <p style="color:var(--t3);font-size:11.5px">只有<b>真的被截断</b>才弹 —— 没截断就弹卡是噪音。</p>
+    </div>
+    <div class="card">
+      <h4><span class="tag">③</span>删掉搜索框里的快捷键提示</h4>
+      <p>搜索框右侧原本挂了一枚 <code>Ctrl K</code> 键帽，还配了 <code>Ctrl+K</code> / <code>Ctrl+B</code>
+      两个全局快捷键与一张键盘契约表。</p>
+      <p><b>改法</b>：键帽、快捷键、教学文案、契约表里的对应行<b>全部删除</b>。
+      搜索框和折叠键都在最显眼的位置，鼠标一步就到 —— 为省这一次移动去维护快捷键并教育用户，
+      成本高于收益。空态引导也一并改成「讲鼠标能做什么」。</p>
+    </div>
+    <div class="card">
+      <h4><span class="tag">④</span>「将发往」机器很多怎么办</h4>
+      <p>原稿把每台机器画成一枚 chip。84 台就是一整屏 chip，既放不下也读不完 ——
+      这是「把明细当摘要用」的典型错位。</p>
+      <p><b>改法</b>：这一行改成<b>一句话摘要</b>：
+      <code>web-01、db-02、cache-03 等 84 台</code> + 右侧汇总 <code>84 台 · 3 台已断开</code>。
+      首三台给「身份」，数量给「规模」。<b>要明细就悬浮</b>：信息区展开逐台气泡（最多 60 行 + 「还有 N 台」）。</p>
+    </div>
+  </div>
+
+  <h3 class="mini">⑤ 范围键移到左下角，与发送键同行；信息行删除</h3>
+  <p class="sub">
+    范围键从「独占一整条发射条的右侧」移到<b>页脚左下角、与发送键同一行</b>，
+    视线不用再上下跳两次才能完成「看发给谁 → 点发送」。
+  </p>
+  <p class="sub">
+    <b>并且按反馈把中间那条「信息行」整条删掉</b>：状态、告警、回执摘要<b>全部收进范围键的悬浮提示卡</b>。
+    页脚因此从「三区」简化成「两个控件 + 一句极简助记」，不再有一条常年显示「就绪」之类废话的常驻行。
+  </p>
+
+  <div class="stage" style="padding:26px 20px 22px">
+    <div class="cap">页脚布局 · 简化后（1:1）</div>
+    <div style="width:100%;max-width:560px">
+      <div style="display:flex;align-items:center;gap:12px;height:54px;padding:0 12px 0 14px;
+                  background:var(--panel);border:1px solid var(--line);border-radius:8px">
+        <span class="scope" style="position:static">
+          <span class="dots"><i style="background:var(--chA)"></i><i style="background:var(--chB)"></i></span>
+          2 个频道<span class="ct">3</span>
+        </span>
+        <span style="flex:1;font-size:11px;color:var(--t3);text-align:right">危险 · 需二次确认</span>
+        <span class="sbtn armed" style="position:static">再点一次确认</span>
+      </div>
+      <div style="display:flex;gap:0;margin-top:10px;font-size:10.5px;color:var(--t3);
+                  font-family:var(--mono)">
+        <span style="flex:0 0 128px">← 范围（悬停出提示卡）</span>
+        <span style="flex:1;text-align:center">极简助记（可空）</span>
+        <span style="flex:0 0 120px;text-align:right">发送 →</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>为什么状态搬进「范围键」的悬浮卡而不是别处</b>：要回答的三个问题——发给谁、安不安全、落没落——
+    全部<b>围绕这一个键</b>展开：它是选目标的键，所以「目标是哪几台」最该长在它身上。
+    用户要核对时，鼠标本来就要移到这个键上；<b>不需要额外去别处找信息</b>。
+    这也顺带解决了原来那条 28px 危险告警槽的失败原因：它在，但用户想不起来看。
+  </div>
+  <div class="note" style="margin-top:10px">
+    <b>提示卡三种形态，同一张卡</b>：常态（逐台主机名 + 频道 + 在线状态）、
+    危险态（红描边 + 警告行 + 「再点一次才真正发送」）、回执态（<b>失败优先</b>排序 + 成功/失败汇总）。
+    机器多时只列前 8 台 + 「…还有 N 台」，卡片自身限高 320px 可滚动。
+  </div>
+  <div class="note" style="margin-top:10px">
+    <b>实现要点（给落地的人）</b>：提示卡用 <code>position:fixed</code> 挂到 <code>body</code>，
+    <b>不要</b>放进 <code>.foot</code> 里向上弹 —— <code>.body/.side/.main</code> 层层是 flex + relative，
+    多个层叠上下文叠加，卡放在里面无论怎么调 <code>z-index</code> 都会被左栏列表文字盖住（两轮截图 + 涂绿诊断实证）。
+    这是本稿唯一一处「看起来能靠 z-index 解决、实际不行」的坑。
+  </div>
+
+  <!-- ══════════ §11 第三轮反馈 ══════════ -->
+  <h2 class="sec"><span class="no">08</span>第三轮两条：点开菜单时收起提示卡 · 左栏宽度真 bug</h2>
+
+  <div class="grid2">
+    <div class="card">
+      <h4><span class="tag">①</span>点击时不要再弹提示卡</h4>
+      <p>提示卡本来是给「没点开菜单时」用的：鼠标划过范围键，先看一眼将发往哪几台。
+      但点开菜单后，<b>菜单本身已经把目标、频道、台数全列出来了</b>，
+      再压一张卡上去就是纯遮挡（截图里卡正好盖住「web-01 / db-02」那几行）。</p>
+      <p><b>改法</b>：<code>showTipCard()</code> 开头加一道 <code>if (S.menuOpen) return</code>；
+      点击范围键 / 点菜单项 / 点「完成」/ 点外部关菜单，<b>四处</b>都调 <code>hideTipCard()</code>。
+      鼠标仍停在按钮上时，由 <code>mousemove</code> 在菜单关掉后把卡唤回 —— 不会「划走再划回来」才有。</p>
+    </div>
+    <div class="card">
+      <h4><span class="tag">②</span>左栏太宽 —— 是 flex 的 min-width 陷阱</h4>
+      <p>上一轮把左栏从 232 改到 196，但<b>实际渲染出来是 416px</b>，右栏只剩 342。
+      用户看到的是「左侧命令栏有些宽，右侧输入框有些小」。</p>
+      <p><b>根因</b>：flex 子项的 <code>min-width</code> 默认 <code>auto</code>，
+      等于<b>内容的最小宽度</b>。左栏里那条
+      <code>mysqldump --single-transaction app &gt; /backup/app-$(date +%F).sql</code>
+      把 min-content 顶到 416px —— <code>flex:0 0 196px</code> 的 basis 形同虚设。</p>
+      <p><b>改法</b>：<code>.side</code> 三值钉死（width/min-width/max-width 全 196），
+      并给 <code>.list / .row / .row .n,.c</code> 补 <code>min-width:0</code>，
+      让省略号真正生效。实测 <b>side 416→196、编辑器 302→522px（+73%）</b>。</p>
+    </div>
+  </div>
+
+  <div class="note warn">
+    <b>这条 bug 值得记住，因为它「看起来已经改过了」</b>：上一轮的 changelog 里明明白白写着
+    「左栏 232 → 196」，代码里也确实是 <code>flex:0 0 196px</code> —— 但渲染结果完全没变。
+    这类问题<b>只读代码看不出来</b>，必须实测 <code>getBoundingClientRect()</code>。
+    本轮是先用无头浏览器量出 <code>side:416 / main:342</code> 才定位的，
+    改完再量一次 <code>side:196 / main:562</code> 作为验收 —— 不靠「改完看一眼觉得对了」。
+  </div>
+
+  <!-- ══════════ § 本轮：删掉常驻信息行 ══════════ -->
+  <h2 class="sec"><span class="no">09</span>把那条常驻信息行整条删掉</h2>
+  <p class="sub">
+    截图里那一行是 <code>将发往 ●●● web-01、web-02、web-03 等 84 台&nbsp;&nbsp;|&nbsp;&nbsp;84 台 · 4 台已断开</code>。
+    看着挺有用，实际上它在<b>自己重复自己</b>，而且三处都在说同一件事。
+  </p>
+
+  <div class="grid2">
+    <div class="card">
+      <h4><span class="tag">问题</span>三重冗余</h4>
+      <ul>
+        <li><b>行内自重复</b>：左边已经写了「等 <b>84</b> 台」，右边又写「<b>84</b> 台 · 4 台已断开」——
+            同一个数字在一行里出现两次。</li>
+        <li><b>与悬浮卡重复</b>：逐台主机名、频道、在线状态，左下角那张卡里<b>全都有</b>，而且更完整。</li>
+        <li><b>占着高度不说话</b>：常态下它就是 46px 高的一行字，为了偶尔看一眼让正文区永久矮一截。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4><span class="tag">改法</span>整条删除</h4>
+      <p>删掉这一行后，页脚直接贴到正文下方：<b>正文区多出 46px</b>（实测 <code>body: 352 → 398</code>）。</p>
+      <p>目标信息全部由<b>左下角「发送范围」键</b>承担：
+      键本身显示当前范围（<code>全部标签页 84</code>），悬停出提示卡看逐台明细。
+      页脚右侧只保留一句极简助记（多数时候是空的），比如「1 台失败 · 悬停左下角看明细」。</p>
+      <p style="color:var(--t3);font-size:11.5px">结论：信息只在<b>用户正在看的地方</b>出现一次就够。</p>
+    </div>
+  </div>
+
+  <div class="note warn">
+    <b>删除时踩了一个坑，值得记下来</b>：发射条那段 CSS 和 <code>.tip</code>（标题栏悬浮提示）、
+    <code>.tipcard</code>（范围键提示卡）、<code>.foot-note</code> 在文件里是<b>相邻</b>的，
+    整块切掉时把它们一起带走了。表现是：
+    ①「收起侧边栏」六个字<b>竖排、常显</b>糊在标题栏里（<code>.tip</code> 丢了 <code>position:absolute</code>，
+    span 退回行内流被挤成一列字）；② 提示卡<b>完全不显示</b>（<code>.tipcard</code> 无样式）。
+    教训：<b>删除功能块前，先确认 CSS 块的边界</b>——共享基础样式（<code>.tip</code>）不能跟着功能一起删。
+    两处现已恢复，并在各自规则上方留了注释。
+  </div>
+
+  <!-- ══════════ § 本轮：危险键两段式 ══════════ -->
+  <h2 class="sec"><span class="no">10</span>本轮：危险命令的发送键改成两段式</h2>
+  <p class="sub">
+    用户指出的问题很具体：<b>危险命令一出现，按钮就已经是「再点一次确认」了</b> ——
+    等于把第一次点击这个动作从界面上抹掉了。正确的时间线应该是
+    <b>「发送」→ 点一次（只警告）→「再点一次确认」→ 点第二次（真发）</b>。
+  </p>
+
+  <div class="grid2">
+    <div class="card">
+      <h4><span class="tag">阶段 1</span>刚命中危险</h4>
+      <p>按钮<b>变实心红</b>，但文案仍是<b>「发送」</b>。</p>
+      <p>红色是「这条命令危险」的信号，但<b>不改变点击语义</b> ——
+      用户以为自己点的是普通发送，实际只触发警告。</p>
+      <p style="color:var(--t3);font-size:11.5px">信息区同时说明「检测到 rm -rf · 将发往 3 台」。</p>
+    </div>
+    <div class="card">
+      <h4><span class="tag">阶段 2</span>点过一次之后</h4>
+      <p>文案才变成 <b>「⚠ 再点一次确认」</b>，图标出现。</p>
+      <p>这一下<b>真的发出去</b>。3 秒内没有第二次动作 → 自动退回阶段 1；
+      改任何一个字符 → 也退回阶段 1。</p>
+      <p style="color:var(--t3);font-size:11.5px">Ctrl+Enter 与鼠标点击走同一个函数，无法绕过。</p>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>设计原则：红色负责警告，文案负责语义</b>。两者不该抢同一件事 ——
+    早先那版让红色和文案同时表达「危险」，结果文案把「还没点过」这个事实吞掉了。
+    现在的分工是：<b>颜色说「注意」，文字说「现在点会发生什么」</b>。
+  </div>
+
+  <div class="note warn" style="margin-top:10px">
+    <b>验证时踩到一个陷阱：截图看不到红色。</b>
+    按钮有 <code>transition:.11s</code>，而 headless 截图会把过渡的计算值
+    <b>冻在起点</b> —— 实测危险态按钮本该是 <code>#DC4B44</code>，
+    截出来却永远是 <code>#1FC8B4</code>（暗色主题的强调色）。
+    一度误判成「红色没生效」，逐一排查了类名、CSS 变量、规则优先级都不对，
+    最后<b>注入 <code>transition:none</code> 后重测得到 <code>rgb(220,75,68)</code></b> 才确认样式本身是好的。
+    结论：<b>截图验证前先关动效</b>，否则量到的是中间态。
+  </div>
+
+  <!-- ══════════ § 上一轮：分隔条 ══════════ -->
+  <h2 class="sec"><span class="no">11</span>上一轮：两栏之间那条竖线可以拖了</h2>
+  <p class="sub">
+    用户要求「这个竖线支持拖动」。左栏宽度从写死的 196 改成<b>可调</b> ——
+    命令名长短因人而异，固定宽度对谁都只合适一半。
+  </p>
+
+  <div class="grid2">
+    <div class="card">
+      <h4><span class="tag">①</span>三个入口，同一套钳制</h4>
+      <ul>
+        <li><b>鼠标拖动</b>：拿住分隔条左右拖，实时跟手；</li>
+        <li><b>双击</b>：复位到 196（拖歪了不用猜原值）；</li>
+        <li><b>键盘</b>：<code>←</code>/<code>→</code> 步进 16px，<code>Shift</code> 加速 64px，<code>Home</code> 复位。</li>
+      </ul>
+      <p style="margin-top:8px">范围：<b>150 ~ min(420, 窗口宽×0.55)</b>。
+      下限保证搜索框和命令名不折行；上限保证编辑区永远拿到一半以上。</p>
+    </div>
+    <div class="card">
+      <h4><span class="tag">②</span>线看不见，手柄才看得见</h4>
+      <p>1px 的发丝线<b>没人点得中</b>，所以命中区放到 <b>7px</b>（透明，不影响观感）。</p>
+      <p>悬停时露出<b>胶囊手柄</b>（4×40，强调色，带一圈 panel 色描边把它从列表文字上「抠」出来）+ 竖线转强调色 ——
+      手柄才是「这里能拖」的信号，光标也同步变成 <code>col-resize</code>。</p>
+      <p style="color:var(--t3);font-size:11.5px">首版手柄做的 3×26 且无描边，截图里几乎看不见，已加粗加深。</p>
+    </div>
+  </div>
+
+  <div class="note warn">
+    <b>踩到的坑：窗口宽度取 0 时，拖动会「拖不动」。</b>
+    上限算法是 <code>min(420, 窗口宽×0.55)</code>。如果 <code>#win</code> 还没布局
+    （首帧 / 离屏渲染 / 测试环境），宽度读到 0 → 上限算成 0 → 再被 <code>max(150, …)</code>
+    兜成 150 → 它和下限相等，<b>调用方传什么都被钳到 150</b>，表现为「拖了没反应」。
+    修法：宽度无效时上限直接退回 420，不要拿 0 去算。
+    这个 bug 在真实浏览器里很难撞到（窗口总是有宽度），但<b>测试环境一撞一个准</b> ——
+    也正因为它，最初的拖动断言全红，反而把问题提前暴露了。
+  </div>
+  <div class="note" style="margin-top:10px">
+    <b>两个实现细节</b>：
+    ① 拖动时在 <code>document</code> 上监听 <code>mousemove</code>，不是挂在分隔条上 ——
+    指针拖快了会离开那 7px 宽的条，挂在条上会中途丢事件；
+    ② 写宽度时要同时写 <code>flex-basis / width / min-width / max-width</code> 四个值，
+    只写其中一个会被其余几个夹住（这正是「改了 196 却渲染 416」的同一个坑）。
+  </div>
+
+  <!-- ══════════ § 上一轮：信息区 + 可交互提示卡 ══════════ -->
+  <h2 class="sec"><span class="no">12</span>信息区做成状态区，提示卡做成能操作的</h2>
+  <p class="sub">
+    两条反馈指向同一件事：<b>信息现在只能「看」，不能「用」</b>。
+    一是页脚中间那块只能显示一行灰字，二是悬浮提示卡是 <code>pointer-events:none</code> 的
+    —— 鼠标一碰就消失，想复制个主机名都做不到。
+  </p>
+
+  <div class="grid2">
+    <div class="card">
+      <h4><span class="tag">①</span>信息区 = 状态区，不是灰字行</h4>
+      <p>用户要求「两个按钮之间都是展示信息的地方」。所以这块升级成
+      <b>图标 + 状态 + 可点动作</b>三件套，四种状态各有自己的图标与颜色。</p>
+      <p><b>关键取舍：信息区说「将要发生什么」，发送键说「你要做什么」</b>。
+      危险态下按钮已经写着「再点一次确认」，信息区就<b>不该</b>再写一遍
+      「危险 · 需二次确认」—— 同一句话说两遍就是白占位置。
+      改后信息区给的是：<b>命中了什么 · 将发往几台 · 有几台断了</b>。</p>
+      <p style="color:var(--t3);font-size:11.5px">「台数」和「断开台数」是<b>两个</b>事实，
+      早先写成 if(offN) 只报断线数，把「将发往几台」挤没了；现在两者同行并存。</p>
+    </div>
+    <div class="card">
+      <h4><span class="tag">②</span>提示卡可交互：移进去不消失、能操作</h4>
+      <p><b>移进去不消失</b>：原来离开按钮就立刻收。改成延迟 260ms 收起，
+      卡片 <code>mouseenter</code> 取消这次延迟 —— 指针从按钮划到卡片的那 8px 空隙来得及走完。</p>
+      <p><b>进了卡片就粘住</b>：指针一旦进过卡片（或在里面点过任何东西），
+      卡片不再自动消失，只有<b>关闭 / Esc / 点空白</b>才收。
+      早先这里做的是一个<b>「钉住」按钮</b>，后来删了 —— 原因见下方。</p>
+      <p><b>能操作</b>：<code>pointer-events:auto</code> 之后，卡片里可以：
+      <b>复制名单</b>（每行一台，带频道与在线状态）、<b>复制结果</b>、
+      <b>点单台主机名</b>复制它。</p>
+    </div>
+  </div>
+
+  <div class="note warn">
+    <b>删掉的两种「帮倒忙」文案</b>（都是我自己加的，后来判断是纯噪音）：<br>
+    ① <b>「点击选择发送范围（当前页 / 全部 / 频道 / 逐个挑）。」</b> ——
+    范围键就在卡片正下方、还带个下拉箭头，这句话在<b>教用户已经看得懂的东西</b>。
+    现在改成：只有真有断开主机时才出一句「N 台已断开，发送时会跳过」，其余情况那行留白。<br>
+    ② <b>「点主机名可复制 · 单击主机名不会改变目标」</b> ——
+    前半句是操作提示，但主机行本身悬停就有反馈；后半句在解释一个<b>不存在的问题</b>
+    （本来就没有「点主机名会选中它」这个功能）。<br>
+    ③ 另有一个 <b>「钉住 / 已钉住」按钮</b>：它要求用户先理解一个概念、再点一下，
+    而「延迟收起 + 移入保持」已经解决了同一件事。删掉后改成<b>自动粘住</b> ——
+    用户伸手进来操作本身就是「我要看」的信号，不必再确认一次。
+  </div>
+
+  <div class="note warn">
+    <b>做这一轮时挖出一个隐蔽 bug：淡入动画让卡片背景变半透明。</b>
+    <code>transition:opacity</code> 是<b>整层一起</b>变透明 —— 过渡期间卡片自己的背景也是半透明的，
+    底下的列表文字整片透上来。深色主题下几乎看不出来（卡片底色和面板底色都接近），
+    <b>浅色主题下一眼就露馅</b>（截图实证）。
+    改法：<b>只过渡 transform，不过渡 opacity</b>，显隐用 <code>visibility</code> 离散切换 ——
+    卡片一出现就是完全不透明的。改完实测 <code>getComputedStyle().opacity = 1</code>。
+  </div>
+  <div class="note" style="margin-top:10px">
+    <b>还有一个真 bug：复制结果用错了转义。</b>
+    文件里写的是 <code>join("\\n")</code> —— 在 JS 里这是「反斜杠 + n」两个字符，
+    不是换行，复制出来会挤成一行。改成 <code>join("\n")</code>。
+    这类错<b>肉眼极难发现</b>（要真的复制出来粘到别处才看得出），
+    所以补了一条断言：<code>targetListText 不得含字面量 \\n</code>。
+  </div>
+
+  <!-- ══════════ §08 上一轮 ══════════ -->
+  <h2 class="sec"><span class="no">13</span>上一轮：一个漏调用导致按钮名称不跟随</h2>
+  <p class="sub">
+    同期还有一处布局取舍（删掉那条常驻信息行，已并入 §09），
+    以及一个<b>真 bug</b> —— 而且是被这一版原型自己暴露出来的。
+  </p>
+
+  <div class="grid2">
+    <div class="card">
+      <h4><span class="tag">A</span>按钮名称没跟着选择变</h4>
+      <p>选择「全部标签页 / 频道 A / 自选主机」后，左下角按钮仍显示「当前标签页」。</p>
+      <p><b>根因</b>：<code>render()</code> 里调了 <code>renderList / renderMenu / renderFoot</code>，
+      <b>唯独漏了 <code>renderScope()</code></b>。它只在菜单开关那两处被调到，
+      所以标签只在「点开菜单」的瞬间才刷新，选完反而停在旧值。</p>
+      <p><b>改法</b>：① 把 <code>renderScope()</code> 补进 <code>render()</code>；
+      ② 把 5 种状态的文案统一收进一个 <code>scopeLabel()</code> 纯函数，杜绝「各处自己拼文案」；
+      ③ 加回归断言：6 种选择逐一切换，必须渲染出对应文案。</p>
+    </div>
+    <div class="card">
+      <h4><span class="tag">B</span>同一轮的连带修正</h4>
+      <p>把范围键移到页脚左下角、删掉常驻信息行之后，<b>状态的唯一去处</b>就成了左下角那张提示卡 ——
+      于是「点开菜单时不要弹卡」「卡片要能移进去操作」这两条都必须满足（见 §10）。</p>
+      <p style="color:var(--t3);font-size:11.5px">教训：删掉一个常驻区域之前，
+      先确认它的信息<b>已经搬到了别处</b>，否则就是直接丢信息。</p>
+    </div>
+  </div>
+
+  <div class="note warn">
+    <b>这个 bug 值得单独说，因为它有典型性</b>：五个渲染函数排成一排，漏掉第六个 ——
+    这种错<b>不会报错、不会崩</b>，只是某个区域「偶尔不更新」。人工点几下很容易刚好错过
+    （只在「不打开菜单直接改状态」的路径上复现）。所以本轮补了 6 条标签断言，
+    而不是改完看一眼就算数。
+  </div>
+
+  <!-- ══════════ §07 token 对照 ══════════ -->
+  <h2 class="sec"><span class="no">14</span>像素对照：每个值都来自产品 token</h2>
+  <p class="sub">
+    这份稿子的颜色<b>没有一个是新造的</b>。左边是稿子里的用法，右边是它对应的 token 与来源。
+    特别提醒：<code>theme.slint:31-48</code> 里那组 <code>slot-*</code> 字面值（#1b1d23 / #4a90e2）
+    是 Rust 写入前的<b>启动占位</b>，不是真主题 —— 对着它取色必错，真值在 <code>palettes.rs</code>。
+  </p>
+  <table>
+    <thead><tr><th style="width:34%">稿子里的用法</th><th style="width:34%">token</th><th>暗 / 亮</th></tr></thead>
+    <tbody>
+      <tr><td>弹窗底色</td><td class="ev">Theme.popup-bg → slot-panel</td><td class="ev">#181A1D / #FAF8F4</td></tr>
+      <tr><td>标题栏下沿、页脚上沿、左侧栏分隔</td><td class="ev">border-subtle → slot-line</td><td class="ev">#232428 / #E0DEDA</td></tr>
+      <tr><td>外框、菜单外框、控件常态描边</td><td class="ev">border-strong / line-2</td><td class="ev">#4E5157 · #3F444F / #D0CECB · #C7C7CC</td></tr>
+      <tr><td>搜索框底 / 菜单底</td><td class="ev">Theme.field</td><td class="ev">#191B21 / #F4F5F8</td></tr>
+      <tr><td>列表行悬停</td><td class="ev">bg-hover = accent.darker(.10)@8%</td><td class="ev">rgba(28,180,162,.08) / rgba(28,106,96,.08)</td></tr>
+      <tr><td>勾选行、当前主机 chip</td><td class="ev">accent-soft / chip</td><td class="ev">ac@16% · ac@22% / ac@12% · ac@14%</td></tr>
+      <tr><td>发送键、复选框实底</td><td class="ev">accent-solid → slot-ac</td><td class="ev">#1FC8B4 / #1F766B</td></tr>
+      <tr><td>危险：按钮实底</td><td class="ev">danger-strong（双档同值）</td><td class="ev">#DC4B44</td></tr>
+      <tr><td>危险：文字 / 图标 / 虚线</td><td class="ev">slot-dg</td><td class="ev">#F75464 / #B0463F</td></tr>
+      <tr><td>成功回执点</td><td class="ev">slot-ok</td><td class="ev">#73B00A / #427213</td></tr>
+      <tr><td>频道 A / B / C / D 色点</td><td class="ev">palettes.rs channel[4]</td><td class="ev">#548AF7 #1FC8B4 #E8A33E #C77DBB<br>#C2185B #1565C0 #BF360C #2E7D32</td></tr>
+      <tr><td>主文字 / 次文字 / 弱文字</td><td class="ev">text-primary / secondary / muted</td><td class="ev">#BCBEC4 / #7A7E85 / #6F737A</td></tr>
+      <tr><td>关闭键悬停</td><td class="ev">close-btn-hot</td><td class="ev">#E81123（双档同值）</td></tr>
+    </tbody>
+  </table>
+  <p class="sub" style="margin-top:14px">
+    几何也照抄：标题栏 <b>46</b>、页脚 <b>54</b>（现 56）、左栏 <b>232</b>（现 224，多 8 放搜索框）、
+    编辑器行高 <b>20</b>、字号 <b>13</b> 等宽、行号列 <b>40</b>（现 34，容三位数）、
+    发送键高 <b>32</b> / 圆角 <b>7</b> / 最少宽 <b>64</b>、范围键高 <b>32</b> / 圆角 <b>6</b>、
+    菜单宽 <b>300</b> / 圆角 <b>9</b> / 内衬 <b>6</b>、勾选框 <b>15×15</b> / 圆角 <b>4</b>、
+    色点 <b>7~8px</b>。全部沿用现有档位，<b>没有新增任何尺寸</b>（常驻发射条删除后，页脚仍是原来的 54 高）。
+  </p>
+
+  <div class="note">
+    <b>两条实现细节，写稿时特意保留</b>：<br>
+    ① 所有 1px 线在真机上应当是 <code>Theme.hairline()</code>（= 1 设备像素，200% 屏下是 0.5 逻辑像素），
+    并且位置要 <code>snap-to-device</code> —— 这是 <code>#send-cmd-round2</code> 那轮的教训，稿子里固定 1px 只是浏览器呈现；<br>
+    ② 窗口里大量尺寸（46/232/54/40/32/300…）<b>不随 ui-scale 缩放</b>，只有读
+    <code>Theme.fs-*</code> / <code>radius-*</code> / <code>hairline()</code> 的才缩放。改稿时别把这两类混了。
+  </div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ═════════════ 数据（模拟 Rust 侧模型） ═════════════ */
+  var TABS = [
+    { id: "web-01",   user: "root",  ch: "A", online: true  },
+    { id: "db-02",    user: "root",  ch: "B", online: true  },
+    { id: "cache-03", user: "root",  ch: "A", online: true  },
+    { id: "gw-04",    user: "admin", ch: "C", online: false }
+  ];
+  var CUR = "web-01";
+  /* 默认窗口清单的快照：「84 台」场景会改写 TABS，切走时靠它还原 */
+  var BASE_TABS = TABS.slice();
+
+  var QUICK = [
+    { g: "容器", items: [
+      { n: "容器列表", c: "docker ps -a" },
+      { n: "容器状态", c: "docker compose ps" },
+      { n: "清理悬空镜像", c: "docker image prune -f" }
+    ]},
+    { g: "磁盘与内存", items: [
+      { n: "磁盘占用", c: "df -h" },
+      { n: "目录排行", c: "du -sh /var/* | sort -h" },
+      { n: "内存快照", c: "free -m && cat /proc/loadavg" }
+    ]},
+    { g: "服务与日志", items: [
+      { n: "重启 nginx", c: "systemctl restart nginx" },
+      { n: "查看错误日志", c: "tail -f /var/log/nginx/error.log" },
+      { n: "最近 200 行", c: "journalctl -u nginx -n 200 --no-pager" }
+    ]}
+  ];
+  var HIST = [
+    "journalctl -u nginx -n 200 --no-pager",
+    "mysqldump --single-transaction app > /backup/app-$(date +%F).sql",
+    "top",
+    "iftop -i eth0",
+    "uptime && who",
+    "systemctl status sshd --no-pager",
+    "ss -lntp",
+    "netstat -an | awk '/LISTEN/{print $4}'",
+    "curl -sI https://api.internal/health | head -1",
+    "rsync -avz /srv/app/ deploy@web-01:/srv/app/"
+  ];
+
+  /* 危险词表：① 先剥掉引号内容（避免 echo "rm -rf ..." 误报）；
+     ② 再按命令分隔符切段，只在**段首**匹配（避免 grep shutdown app.log
+     把 shutdown 当危险命令 —— 它是参数，不是被执行的程序）。 */
+  var RULES = [
+    { re: /^rm\s+(-[A-Za-z]*[rR][A-Za-z]*[fF]|-[A-Za-z]*[fF][A-Za-z]*[rR])\b/, name: "rm -rf" },
+    { re: /^mkfs(\.[a-z0-9]+)?\b/i,        name: "mkfs" },
+    { re: /^dd\s+if=/,                     name: "dd if=" },
+    { re: /^(shutdown|reboot|poweroff|halt)\b/, name: "shutdown" },
+    { re: /^init\s+0\b/,                   name: "init 0" },
+    { re: /^chmod\s+-R\s+[0-7]*7{3}\b/,    name: "chmod -R 777" },
+    { re: /^:\s*\(\s*\)\s*\{/,             name: "fork bomb" },
+    { re: /^(?:[^>]*\s)?>\s*\/dev\/sd[a-z]/, name: "> /dev/sdX" },
+    { re: /^iptables\s+-F\b/,              name: "iptables -F" },
+    { re: /^kill\s+-9\s+1\b/,              name: "kill -9 1" }
+  ];
+  /* 段首可能有的前缀，剥掉再匹配 */
+  var PREFIX = /^\s*(?:sudo|env|time|nohup|exec|\\)\s+/;
+
+  /* ═════════════ 状态 ═════════════ */
+  var S = {
+    draft: "",
+    search: "",
+    mode: "tab",            // tab | all | channels | custom
+    chans: { A: true, B: false, C: false, D: false },
+    custom: {},             // host id -> true
+    armed: false,
+    receipt: null,          // [{id,user,ch,online,ok}] after send
+    menuOpen: false,
+    pinned: false,
+    folded: false,
+    narrow: false,
+    scenario: "safe",
+    sideW: 196,         // 左栏宽度（拖动分隔条改变，双击复位）
+    tipSticky: false,   // 鼠标进过提示卡 → 不再自动消失（代替原来的「钉住」）
+    tipHideT: null      // 延迟收起的定时器
+  };
+
+  var armTimer = null;
+
+  /* ═════════════ 工具 ═════════════ */
+  function $(id) { return document.getElementById(id); }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  function tabById(id) {
+    for (var i = 0; i < TABS.length; i++) { if (TABS[i].id === id) { return TABS[i]; } }
+    return null;
+  }
+  function chColor(ch) {
+    return { A: "var(--chA)", B: "var(--chB)", C: "var(--chC)", D: "var(--chD)" }[ch] || "var(--t3)";
+  }
+
+  /* 剥掉引号内容后按命令分隔符切段，只按段首匹配危险词 */
+  function dangerToken(text) {
+    if (!text) { return ""; }
+    var stripped = text.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
+    // 按 ; & | 换行 切段（保留 && || 的语义：两段都要检查）
+    var segs = stripped.split(/[;\n]|&&|\|\||\|/);
+    for (var s = 0; s < segs.length; s++) {
+      var seg = segs[s];
+      var prev = null;
+      while (prev !== seg) { prev = seg; seg = seg.replace(PREFIX, ""); }
+      for (var i = 0; i < RULES.length; i++) {
+        if (RULES[i].re.test(seg)) { return RULES[i].name; }
+      }
+    }
+    return "";
+  }
+
+  /* 多行语义：会不会被远端吃成续行。
+     ⚠️ 引号/块结构不要求「多行」才检查 —— 单行未闭合引号一样会把
+     后续所有输入吃掉，正是最该警告的情况。 */
+  function continuationRisk(text) {
+    if (!text) { return ""; }
+    var lines = text.split("\n");
+    var multi = lines.length > 1;
+
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i];
+      if (!L.trim()) { continue; }
+      // 引号奇偶：两条线都要查（单行也要）
+      var dq = (L.match(/"/g) || []).length;
+      if (dq % 2 === 1) { return "引号未闭合"; }
+      var sq = (L.match(/'/g) || []).length;
+      if (sq % 2 === 1) { return "单引号未闭合"; }
+      if (/<<-?\s*['"]?[A-Za-z_]/.test(L)) { return "here-doc"; }
+    }
+
+    if (!multi) { return ""; }
+
+    for (var j = 0; j < lines.length; j++) {
+      var T = lines[j].trim();
+      if (!T) { continue; }
+      var opens = /(^|[;&|(])\s*(for|while|until|if|case|select)\b/.test(T);
+      if (opens && !/\b(done|fi|esac)\b/.test(text)) { return "块结构未闭合"; }
+      if (/\\\s*$/.test(T)) { return "续行反斜杠"; }
+    }
+    return "";
+  }
+
+  function targets() {
+    if (S.mode === "tab") { return TABS.filter(function (t) { return t.id === CUR; }); }
+    if (S.mode === "all") { return TABS.slice(); }
+    if (S.mode === "channels") {
+      var any = S.chans.A || S.chans.B || S.chans.C || S.chans.D;
+      if (!any) { return TABS.filter(function (t) { return t.id === CUR; }); }
+      return TABS.filter(function (t) { return !!S.chans[t.ch]; });
+    }
+    var out = [];
+    for (var i = 0; i < TABS.length; i++) { if (S.custom[TABS[i].id]) { out.push(TABS[i]); } }
+    return out.length ? out : TABS.filter(function (t) { return t.id === CUR; });
+  }
+
+  function appliedChannels() {
+    return ["A", "B", "C", "D"].filter(function (k) { return S.chans[k]; });
+  }
+
+  /* ═════════════ 左栏：搜索过滤（与草稿无关） ═════════════ */
+  function matches(text) {
+    if (!S.search) { return true; }
+    return text.toLowerCase().indexOf(S.search.toLowerCase()) >= 0;
+  }
+
+  function renderList() {
+    var list = $("list");
+    var html = "";
+    var total = 0;
+
+    if (S.scenario === "empty") {
+      html = '<div class="list-empty">' +
+        '<b>还没有快捷命令</b><br>' +
+        '把这个窗口当成临时工作台也可以 —— 直接往右边写，或从下面的历史里挑。' +
+        '<br><span class="go" id="goMgr">去「命令管理」添加 →</span>' +
+        '</div>' +
+        '<div class="sec-h">最近</div>' +
+        '<div class="list-empty" style="padding-top:6px">暂无历史</div>';
+      list.innerHTML = html;
+      return;
+    }
+
+    var anyQuick = false;
+    for (var g = 0; g < QUICK.length; g++) {
+      var rows = QUICK[g].items.filter(function (it) {
+        return matches(it.n) || matches(it.c);
+      });
+      if (!rows.length) { continue; }
+      anyQuick = true;
+      total += rows.length;
+      if (!S.search) { html += '<div class="sec-h">' + esc(QUICK[g].g) + '</div>'; }
+      for (var r = 0; r < rows.length; r++) {
+        html += '<button class="row" type="button" data-cmd="' + esc(rows[r].c) + '">' +
+          '<span class="n">' + esc(rows[r].n) + '</span>' +
+          '<span class="c">' + esc(rows[r].c) + '</span>' +
+          '<span class="row-ins">↵ 插入</span></button>';
+      }
+    }
+
+    if (!anyQuick && !S.search) {
+      html += '<div class="sec-h">快捷命令</div><div class="list-empty" style="padding-top:6px">暂无快捷命令</div>';
+    }
+
+    var hrows = HIST.filter(function (h) { return matches(h); });
+    total += hrows.length;
+    if (!S.search) { html += '<div class="sec-h">最近</div>'; }
+    if (hrows.length) {
+      for (var i = 0; i < hrows.length; i++) {
+        html += '<button class="row hist" type="button" data-cmd="' + esc(hrows[i]) + '">' +
+          '<span class="c">' + esc(hrows[i]) + '</span>' +
+          '<span class="row-ins">↵ 插入</span></button>';
+      }
+    } else if (!S.search) {
+      html += '<div class="list-empty" style="padding-top:6px">暂无历史</div>';
+    }
+
+    if (S.search && total === 0) {
+      html = '<div class="nores">没有匹配 <b style="color:var(--t2)">' + esc(S.search) + '</b> 的命令' +
+        '<br>换个词，或直接往右边写。</div>';
+    }
+    if (S.search && total > 0) {
+      html = '<div class="sec-h" style="margin-top:0">匹配结果<span class="cnt">' + total + '</span></div>' + html;
+    }
+
+    list.innerHTML = html;
+    list.scrollTop = 0;
+  }
+
+  /* ═════════════ 行号（动态，不再写死 30 行） ═════════════ */
+  function renderGutter() {
+    var gut = $("gut");
+    var n = S.draft === "" ? 1 : S.draft.split("\n").length;
+    if (n <= 1 && S.draft === "") { gut.innerHTML = ""; gut.style.display = "none"; return; }
+    gut.style.display = "block";
+    var h = "";
+    for (var i = 1; i <= n; i++) { h += i + "\n"; }
+    gut.textContent = h;
+    gut.scrollTop = $("ed").scrollTop;
+  }
+
+  /* ═════════════ 范围键：标签必须跟着选择变 ═════════════
+     用户反馈「选择不是当前页签，这个按钮的名称没有跟随变动」——
+     根因是 render() 里漏了 renderScope()，只有菜单开关时才刷。
+     这里把它做进 render()，并且把 5 种状态的文案全部铺开：
+       tab      → 当前标签页        (+ 主机名)
+       all      → 全部标签页        (+ 台数)
+       1 频道   → 频道 A            (+ 台数)
+       多频道   → 2 个频道          (+ 台数)
+       自选主机 → 3 台主机          (+ 台数) */
+  function scopeLabel() {
+    if (S.mode === "tab") { return { text: "当前标签页", ct: CUR }; }
+    if (S.mode === "all") { return { text: "全部标签页", ct: String(TABS.length) }; }
+    if (S.mode === "channels") {
+      var chs = appliedChannels();
+      if (!chs.length) { return { text: "当前标签页", ct: CUR }; }
+      return {
+        text: chs.length === 1 ? "频道 " + chs[0] : chs.length + " 个频道",
+        ct: String(targets().length)
+      };
+    }
+    var cs = Object.keys(S.custom).filter(function (k) { return S.custom[k]; });
+    if (!cs.length) { return { text: "当前标签页", ct: CUR }; }
+    return {
+      text: cs.length === 1 ? cs[0] : cs.length + " 台主机",
+      ct: String(targets().length)
+    };
+  }
+
+  function renderScope() {
+    var info = scopeLabel();
+    $("scopeLbl2").textContent = info.text;
+    $("scopeCt2").textContent = info.ct;
+
+    /* 色点：频道/全部才画（当前页签与自选主机没有频道身份） */
+    var d = "";
+    if (S.mode === "channels") {
+      var chs = appliedChannels();
+      for (var i = 0; i < Math.min(3, chs.length); i++) {
+        d += '<i style="background:' + chColor(chs[i]) + '"></i>';
+      }
+    } else if (S.mode === "all") {
+      d = '<i style="background:var(--chA)"></i><i style="background:var(--chB)"></i>' +
+          '<i style="background:var(--chC)"></i>';
+    }
+    $("scopeDots2").innerHTML = d;
+
+    var btn = $("scopeBtn2");
+    btn.classList.toggle("open", S.menuOpen);
+
+    /* 悬浮提示卡：把原来那条「信息行」的全部内容搬进这里 */
+    renderScopeTip();
+    /* 右侧极简助记（不再是信息行，只一句话） */
+    renderFootNote();
+  }
+
+  /* ── 悬浮提示卡：目标 + 状态 + 危险/结果 ──
+     卡片挂在 body 上（position:fixed），由 scopeBtn2 的 hover 控制显隐。
+     本轮起卡片**可交互**：鼠标从按钮移进卡片不会消失，还能点「复制」、
+     点单台主机名复制。 */
+  function tipCard() {
+    var el = document.getElementById("tipcard");
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "tipcard";
+      el.id = "tipcard";
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+
+  /* 复制到剪贴板。navigator.clipboard 在 file:// 下常不可用，
+     退回到 execCommand 的老办法。 */
+  function copyText(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (e) { /* 落到下面的兜底 */ }
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand && document.execCommand("copy");
+      document.body.removeChild(ta);
+      return !!ok;
+    } catch (e) { return false; }
+  }
+
+  /* 复制后的短暂反馈：按钮文字换成「已复制」再换回来 */
+  var copyT = null;
+  function flashCopied(btn, label) {
+    if (!btn) { return; }
+    btn.classList.add("done");
+    btn.textContent = "已复制";
+    if (copyT) { clearTimeout(copyT); }
+    copyT = setTimeout(function () {
+      btn.classList.remove("done");
+      btn.textContent = label;
+    }, 1400);
+  }
+
+  /* 目标清单文本（复制用）：每行一台 */
+  function targetListText() {
+    var list = targets();
+    return list.map(function (t) {
+      return t.user + "@" + t.id + "\t频道 " + t.ch + (t.online ? "" : "\t已断开");
+    }).join("\n");
+  }
+
+  function renderScopeTip() {
+    var card = tipCard();
+    var list = targets();
+    var danger = dangerToken(S.draft);
+    var risk = continuationRisk(S.draft);
+    var offN = list.filter(function (x) { return !x.online; }).length;
+    var h = "";
+
+    var warnSvg = '<svg viewBox="0 0 16 16"><path d="M8 2.6L14.2 13.4H1.8z"/>' +
+      '<path d="M8 6.4v3.1M8 11.6v.1"/></svg>';
+
+    card.classList.toggle("danger", !!(danger || risk));
+
+    if (S.receipt) {
+      var bad = S.receipt.filter(function (t) { return !t.ok; });
+      var okN = S.receipt.length - bad.length;
+      h += '<div class="th">结果 · <b>' + S.receipt.length + '</b> 台' +
+        '<span class="spacer"></span>' +
+        '<button class="tact" data-act="copy-result">复制结果</button></div>';
+      /* 失败优先：回执要回答「哪几台没到」 */
+      var ordered = bad.concat(S.receipt.filter(function (t) { return t.ok; }));
+      var lim = Math.min(ordered.length, 10);
+      for (var i = 0; i < lim; i++) {
+        var t = ordered[i];
+        h += '<div class="tl clickable" data-copy="' + esc(t.id) + '" title="点击复制这台主机名">' +
+          '<i class="dot" style="background:' + (t.ok ? "var(--ok)" : "var(--dg)") + '"></i>' +
+          '<span class="nm">' + esc(t.id) + '</span>' +
+          '<span class="st2 ' + (t.ok ? "ok" : "bad") + '">' +
+          (t.ok ? "已送达" : "连接已断开") + "</span></div>";
+      }
+      if (ordered.length > lim) {
+        h += '<div class="tl"><span class="nm" style="color:var(--t3)">…还有 ' +
+          (ordered.length - lim) + " 台</span></div>";
+      }
+      h += '<div class="tr2"><b style="color:var(--ok)">' + okN + " 台成功</b>" +
+        (bad.length ? ' · <span style="color:var(--dgs)">' + bad.length + " 失败</span>" +
+          "<br>断开的主机没收到，可重连后单独重发。" : "") +
+        "</div>";
+    } else if (danger || risk) {
+      h += '<div class="warnrow">' + warnSvg +
+        (danger ? "检测到 " + esc(danger) : esc(risk)) + "</div>";
+      h += '<div class="th">将发往 <b>' + list.length + "</b> 台" +
+        (offN ? ' · <span style="color:var(--dgs)">' + offN + " 台已断开</span>" : "") +
+        '<span class="spacer"></span>' +
+        '<button class="tact" data-act="copy-list">复制名单</button></div>';
+      var dm = Math.min(list.length, 8);
+      for (var j = 0; j < dm; j++) {
+        h += '<div class="tl clickable" data-copy="' + esc(list[j].id) + '" title="点击复制这台主机名">' +
+          '<i class="dot" style="background:' + chColor(list[j].ch) + '"></i>' +
+          '<span class="nm">' + esc(list[j].id) + '</span>' +
+          '<span class="st2' + (list[j].online ? "" : " bad") + '">' +
+          (list[j].online ? "频道 " + list[j].ch : "已断开") + "</span></div>";
+      }
+      if (list.length > dm) {
+        h += '<div class="tl"><span class="nm" style="color:var(--t3)">…还有 ' +
+          (list.length - dm) + " 台</span></div>";
+      }
+      h += '<div class="tr2" style="color:var(--dgs)">再点一次才真正发送。</div>';
+    } else {
+      h += '<div class="th">将发往 <b>' + list.length + "</b> 台" +
+        '<span class="spacer"></span>' +
+        '<button class="tact" data-act="copy-list">复制名单</button></div>';
+      var lm = Math.min(list.length, 8);
+      for (var k = 0; k < lm; k++) {
+        var x = list[k];
+        h += '<div class="tl clickable" data-copy="' + esc(x.id) + '" title="点击复制这台主机名">' +
+          '<i class="dot" style="background:' + chColor(x.ch) + '"></i>' +
+          '<span class="nm">' + esc(x.user) + "@" + esc(x.id) + '</span>' +
+          '<span class="st2' + (x.online ? "" : " bad") + '">' +
+          (x.online ? "频道 " + x.ch : "已断开") + "</span></div>";
+      }
+      if (list.length > lm) {
+        h += '<div class="tl"><span class="nm" style="color:var(--t3)">…还有 ' +
+          (list.length - lm) + " 台</span></div>";
+      }
+      /* 只在真有断开主机时才提示一句 —— 其余情况这行留白，
+         不放「点击选择发送范围…」这种解释性文字：
+         范围键就在卡片正下方，带下拉箭头，那句话是在教用户已经看得懂的东西。 */
+      if (offN) {
+        h += '<div class="tr2"><span style="color:var(--dgs)">' + offN +
+          " 台已断开，发送时会跳过。</span></div>";
+      }
+    }
+
+    /* 底部只留一个「关闭」：卡片的退出路径是 关闭 / Esc / 点空白，
+       不需要「钉住」——鼠标进来就自动粘住了。 */
+    h += '<div class="tr2" style="display:flex;justify-content:flex-end;margin-top:8px">' +
+      '<button class="tact x" data-act="close">关闭</button>' +
+      "</div>";
+
+    card.innerHTML = h;
+  }
+
+  /* 卡片定位：贴在范围键正上方（fixed，不受任何祖先裁剪）。
+     ⚠️ 不要在这里切 visibility 来量尺寸 —— 卡片现在是 visibility 切换显隐的，
+     手动改会跟 CSS 打架。visibility:hidden 的元素**照样有布局**，
+     offsetWidth/offsetHeight 直接读就是准的。 */
+  function placeTipCard() {
+    var card = document.getElementById("tipcard");
+    var btn = $("scopeBtn2");
+    if (!card || !btn) { return; }
+    var r = btn.getBoundingClientRect();
+    var w = card.offsetWidth || 260;
+    var h = card.offsetHeight || 120;
+    var left = Math.min(r.left, window.innerWidth - w - 12);
+    if (left < 12) { left = 12; }
+    var top = r.top - h - 8;
+    if (top < 12) { top = r.bottom + 8; }
+    card.style.left = left + "px";
+    card.style.top = top + "px";
+  }
+
+  /* 显示条件：只在「没点开菜单」时给悬浮提示。
+     用户反馈「点击的时候就不需要有悬浮提示信息框了」—— 菜单本身已经把
+     目标、频道、台数全列出来了，再压一张提示卡在上面纯属遮挡。
+     所以菜单一开就收起，关菜单后若鼠标仍在按钮上再由 mousemove 唤回。
+
+     鼠标**移进卡片**不消失：离开按钮不立刻收，而是 scheduleHideTip() 延迟 260ms；
+     卡片的 mouseenter 取消这次延迟。指针从按钮划到卡片的那 8px 空隙
+     来得及走完，进了卡片就停住，卡片可点、可复制。
+
+     ★ 移进卡片后即「粘住」（sticky）：不再自动消失，直到点「关闭」/ 按 Esc /
+       点页面空白处。**不需要用户理解「钉住」这个概念** —— 用户已经伸手去操作了，
+       说明他想看；这时候让卡片自己跑掉才是意外。 */
+  function showTipCard() {
+    if (S.menuOpen) { return; }
+    if (S.tipHideT) { clearTimeout(S.tipHideT); S.tipHideT = null; }
+    var card = tipCard();
+    renderScopeTip();
+    placeTipCard();
+    card.classList.add("show");
+  }
+
+  /* 延迟收起：给指针「从按钮走到卡片」留出时间。
+     指针一旦进过卡片，S.tipSticky 就立住 —— 不再自动收。 */
+  function scheduleHideTip() {
+    if (S.tipSticky) { return; }
+    if (S.tipHideT) { clearTimeout(S.tipHideT); }
+    S.tipHideT = setTimeout(function () {
+      S.tipHideT = null;
+      var card = document.getElementById("tipcard");
+      if (card) { card.classList.remove("show"); }
+    }, 260);
+  }
+
+  function hideTipCard() {
+    if (S.tipHideT) { clearTimeout(S.tipHideT); S.tipHideT = null; }
+    S.tipSticky = false;
+    var card = document.getElementById("tipcard");
+    if (card) { card.classList.remove("show"); }
+  }
+
+  /* 粘住：鼠标进过卡片 / 在卡片里点过任何东西之后，卡片不再自动消失。
+     这替代了原先那个「钉住 / 已钉住」按钮 —— 用户不必先理解一个概念再点一下，
+     伸手去操作本身就是「我要看」的信号。退出靠：关闭 / Esc / 点空白。 */
+  function stickTipCard() {
+    S.tipSticky = true;
+    if (S.tipHideT) { clearTimeout(S.tipHideT); S.tipHideT = null; }
+  }
+
+  /* ═════════════ 信息区：两个按钮之间那一整块 ═════════════
+     措辞原则：**信息区说「将要发生什么」，发送键说「你要做什么」**。
+     危险态下按钮已经写着「再点一次确认」，信息区就不该再写一遍
+     「危险 · 需二次确认」（同一句话说两遍 = 白占位置）。
+     所以这里给的是：命中了什么 + 将发往几台 + 有几台断了。 */
+  function renderFootNote() {
+    var note = $("footNote");
+    if (!note) { return; }
+    var list = targets();
+    var offN = list.filter(function (x) { return !x.online; }).length;
+    var danger = dangerToken(S.draft);
+    var risk = continuationRisk(S.draft);
+    var warnSvg = '<svg class="fn-ico" viewBox="0 0 16 16">' +
+      '<path d="M8 2.6L14.2 13.4H1.8z"/><path d="M8 6.4v3.1M8 11.6v.1"/></svg>';
+    var okSvg = '<svg class="fn-ico" viewBox="0 0 16 16"><path d="M3.2 8.4l3 3 6.6-6.8"/></svg>';
+    var infoSvg = '<svg class="fn-ico" viewBox="0 0 16 16">' +
+      '<circle cx="8" cy="8" r="6.2"/><path d="M8 7.2v4M8 4.9v.1"/></svg>';
+
+    var cls = "", ico = "", txt = "", act = "";
+
+    if (S.receipt) {
+      var bad = S.receipt.filter(function (t) { return !t.ok; }).length;
+      if (bad) {
+        cls = "bad"; ico = warnSvg;
+        txt = bad + " 台失败 · " + (S.receipt.length - bad) + " 台成功";
+        act = '<button class="fn-act" data-fn="detail">查看明细</button>';
+      } else {
+        cls = "ok"; ico = okSvg;
+        txt = S.receipt.length + " 台全部送达";
+        act = '<button class="fn-act" data-fn="detail">查看明细</button>';
+      }
+    } else if (danger) {
+      cls = "danger"; ico = warnSvg;
+      txt = "检测到 " + danger + " · 将发往 " + list.length + " 台" +
+        (offN ? " · " + offN + " 台已断开" : "");
+      act = '<button class="fn-act" data-fn="detail">查看明细</button>';
+    } else if (risk) {
+      cls = "danger"; ico = warnSvg;
+      txt = risk + " · 远端会当成续行";
+      act = '<button class="fn-act" data-fn="detail">查看明细</button>';
+    } else if (S.draft.trim() !== "") {
+      /* ⚠️ 「台数」与「断开台数」是**两个**事实，不要互相顶掉 ——
+         早先写成 if(offN) 只报断线数，就把「将发往几台」挤没了。
+         现在两件事都留在一行里，断线那截用警示色。 */
+      cls = offN ? "warn" : "";
+      ico = offN ? infoSvg : okSvg;
+      txt = "将发往 " + list.length + " 台" +
+        (offN ? " · " + offN + " 台已断开" : "");
+      act = '<button class="fn-act" data-fn="detail">查看明细</button>';
+    }
+
+    note.className = "foot-note " + cls;
+    note.innerHTML = txt
+      ? ico + '<span class="fn-txt">' + esc(txt) + "</span>" + act
+      : "";
+  }
+
+  /* 菜单里的勾选态 */
+  function renderMenu() {
+    $("menu").classList.toggle("show", S.menuOpen);
+
+    $("mTabTr").textContent = CUR;
+    $("mAllTr").textContent = TABS.length + " 台";
+
+    var rows = $("menu").querySelectorAll("[data-act]");
+    for (var i = 0; i < rows.length; i++) {
+      var el = rows[i], act = el.getAttribute("data-act"), on = false;
+      if (act === "tab") { on = S.mode === "tab"; }
+      else if (act === "all") { on = S.mode === "all"; }
+      else if (act === "ch") { on = S.mode === "channels" && !!S.chans[el.getAttribute("data-ch")]; }
+      else if (act === "host") { on = S.mode === "custom" && !!S.custom[el.getAttribute("data-host")]; }
+      el.classList.toggle("on", on);
+    }
+    ["A", "B", "C", "D"].forEach(function (k) {
+      var c = TABS.filter(function (t) { return t.ch === k; }).length;
+      var el = $("m" + k);
+      if (el) { el.textContent = c ? c + " 台" : "0 台"; }
+    });
+  }
+
+  /* ═════════════ 动作条：只管按钮状态 ═════════════ */
+  function renderFoot() {
+    var danger = dangerToken(S.draft);
+    var risk = continuationRisk(S.draft);
+    var btn = $("sendBtn");
+
+    var warnSvg = '<svg viewBox="0 0 16 16" style="width:12px;height:12px;flex:0 0 auto;' +
+      'fill:none;stroke:#fff;stroke-width:1.8;stroke-linecap:round;' +
+      'stroke-linejoin:round"><path d="M8 2.6L14.2 13.4H1.8z"/>' +
+      '<path d="M8 6.4v3.1M8 11.6v.1"/></svg>';
+
+    btn.classList.remove("armed");
+    if (S.draft.trim() === "") {
+      btn.disabled = true;
+      btn.textContent = "发送";
+    } else if (danger || risk) {
+      /* ⚠️ 危险态的按钮有**两个阶段**，不能一命中就直接是确认态：
+           阶段 1（S.armed === false）：还是「发送」，但已经转红 ——
+             红底本身就是「这条命令危险」的信号，不改变点击语义；
+           阶段 2（点过一次之后 S.armed === true）：文案变「再点一次确认」，
+             这一下真的发出去。
+         早先写成一命中就 add("armed") + 直接显示「再点一次确认」，
+         等于把「第一次点击」这个动作从界面上抹掉了 —— 用户看到的第一眼
+         就是个已经要确认的按钮，会以为「怎么一上来就要确认」。 */
+      btn.disabled = false;
+      btn.classList.add("armed");            // 红色底：危险信号，两阶段都在
+      if (S.armed) {
+        btn.innerHTML = warnSvg + "<span>再点一次确认</span>";
+      } else {
+        // 阶段 1：保持「发送」四个字，危险由红色与信息区说明
+        btn.textContent = "发送";
+      }
+    } else {
+      btn.disabled = false;
+      btn.textContent = S.receipt ? "再发一次" : "发送";
+    }
+  }
+
+  /* ═════════════ 总渲染 ═════════════ */
+  function render() {
+    renderList();
+    renderGutter();
+    renderScope();   /* ← 漏掉这一行就是「标签不跟变」的根因 */
+    renderMenu();
+    renderFoot();
+    var ed = $("ed");
+    $("ghost").style.display = (S.draft === "" && !ed.value) ? "flex" : "none";
+  }
+
+  /* ═════════════ 编辑区 ═════════════ */
+  function syncDraft() {
+    var ed = $("ed");
+    if (ed.value !== S.draft) { S.draft = ed.value; }
+    S.receipt = null;
+    disarm();
+    render();
+  }
+
+  function disarm() {
+    S.armed = false;
+    if (armTimer) { clearTimeout(armTimer); armTimer = null; }
+  }
+
+  /* 插入到光标处。光标**在行中间**时也独占一行 —— 但绝不能把用户
+     正在写的这一行劈成两半（首版实测 "ls -la" 光标在 2 → 变成
+     "ls\n新命令\n -la"，把命令劈开是比"追加到末尾"更糟的体验）。
+     规则：把候选插到**光标所在行的行尾之后**，光标同步落到新命令末尾。 */
+  function insertCmd(text) {
+    var ed = $("ed");
+    var s = ed.value;
+    var a = (typeof ed.selectionStart === "number") ? ed.selectionStart : s.length;
+    var b = (typeof ed.selectionEnd === "number") ? ed.selectionEnd : a;
+
+    // 选区非空：直接替换选区（用户明确选了一段，意图就是替换）
+    if (b > a) {
+      ed.value = s.slice(0, a) + text + s.slice(b);
+      var p0 = (s.slice(0, a) + text).length;
+      ed.setSelectionRange(p0, p0);
+      ed.focus();
+      S.draft = ed.value; S.receipt = null; disarm(); render();
+      return;
+    }
+
+    // 光标所在行的行尾
+    var lineEnd = s.indexOf("\n", a);
+    if (lineEnd < 0) { lineEnd = s.length; }
+
+    var before = s.slice(0, lineEnd);
+    var after = s.slice(lineEnd);
+    var ins = (before !== "" ? "\n" : "") + text;
+    if (after !== "" && after.charAt(0) !== "\n") { ins += "\n"; }
+
+    ed.value = before + ins + after;
+    var pos = (before + ins).length;
+    ed.setSelectionRange(pos, pos);
+    ed.focus();
+
+    S.draft = ed.value;
+    S.receipt = null;
+    disarm();
+    render();
+  }
+
+  /* ═════════════ 发送（唯一入口：按钮与 Ctrl+Enter 共用） ═════════════ */
+  function trySend() {
+    if (S.draft.trim() === "") { return; }
+    var danger = dangerToken(S.draft);
+    var risk = continuationRisk(S.draft);
+
+    if ((danger || risk) && !S.armed) {
+      S.armed = true;
+      renderFoot();
+      if (armTimer) { clearTimeout(armTimer); }
+      armTimer = setTimeout(function () { S.armed = false; renderFoot(); }, 3000);
+      return;
+    }
+
+    doSend();
+  }
+
+  function doSend() {
+    disarm();
+    S.receipt = targets().map(function (t) {
+      return { id: t.id, user: t.user, ch: t.ch, online: t.online, ok: t.online };
+    });
+    render();
+  }
+
+  /* ═════════════ 事件绑定 ═════════════ */
+  function bind() {
+    // 编辑器
+    var ed = $("ed");
+    ed.addEventListener("input", syncDraft);
+    ed.addEventListener("scroll", function () { $("gut").scrollTop = ed.scrollTop; });
+
+    ed.addEventListener("keydown", function (e) {
+      var k = e.key;
+      if (k === "Enter" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (e.shiftKey) {
+          // 只填充：不发（提示落在右下角助记位，不再有独立信息行）
+          flashNote("已填充到终端，未执行");
+        } else {
+          trySend();
+        }
+        return;
+      }
+      if (k === "Escape") {
+        e.preventDefault();
+        if (S.menuOpen) { S.menuOpen = false; render(); }
+        else { flashClose(); }
+        return;
+      }
+      if (k === "k" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $("srch").focus(); $("srch").select(); }
+      if (k === "b" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); toggleFold(); }
+    });
+
+    // 左栏行点击 → 插入
+    $("list").addEventListener("click", function (e) {
+      var row = e.target.closest ? e.target.closest("[data-cmd]") : null;
+      if (row) { insertCmd(row.getAttribute("data-cmd")); return; }
+      var go = e.target.closest ? e.target.closest("#goMgr") : null;
+      if (go) { flashMsg("命令管理在主窗侧栏 / 设置里，这个窗口不再重复做一套增删改"); }
+    });
+
+    // 搜索
+    var srch = $("srch");
+    srch.addEventListener("input", function () {
+      S.search = srch.value;
+      $("srchBox").classList.toggle("has", S.search !== "");
+      renderList();
+    });
+    srch.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        var first = $("list").querySelector("[data-cmd]");
+        if (first) { insertCmd(first.getAttribute("data-cmd")); srch.value = ""; S.search = ""; render(); }
+      }
+      if (e.key === "Escape") { srch.blur(); }
+    });
+    $("srchClr").addEventListener("click", function () {
+      srch.value = ""; S.search = "";
+      $("srchBox").classList.remove("has");
+      renderList(); srch.focus();
+    });
+
+    // 发送
+    $("sendBtn").addEventListener("click", trySend);
+
+    // 范围键悬浮 → 提示卡（信息行的替代：目标 / 状态 / 危险 / 结果都在这）
+    // ⚠️ 菜单开着时不出提示卡（见 showTipCard 的注释）：点开范围键是为了
+    //    选目标，此刻再压一张卡上去只会挡住菜单。
+    var scopeEl = $("scopeBtn2");
+    scopeEl.addEventListener("mouseenter", showTipCard);
+    scopeEl.addEventListener("mousemove", showTipCard);   // 关菜单后鼠标仍停着 → 唤回
+    scopeEl.addEventListener("mouseleave", scheduleHideTip);  // ← 延迟收，不立刻收
+    scopeEl.addEventListener("blur", scheduleHideTip);
+    window.addEventListener("scroll", hideTipCard, true);
+    // 点击范围键 = 打开/收起菜单，先收掉提示卡
+    scopeEl.addEventListener("click", hideTipCard);
+
+    // ★ 提示卡可交互：鼠标移进去不消失，还能点（复制 / 关闭）
+    var cardEl = tipCard();
+    cardEl.addEventListener("mouseenter", function () {
+      if (S.tipHideT) { clearTimeout(S.tipHideT); S.tipHideT = null; }
+      // 进了卡片就粘住 —— 用户伸手来操作了，这时候让它弹走是意外
+      stickTipCard();
+    });
+    cardEl.addEventListener("mouseleave", scheduleHideTip);
+    cardEl.addEventListener("click", function (e) {
+      var act = e.target.closest ? e.target.closest("[data-act]") : null;
+      if (act) {
+        var a = act.getAttribute("data-act");
+        if (a === "copy-list") {
+          copyText(targetListText());
+          flashCopied(act, "复制名单");
+        } else if (a === "copy-result") {
+          copyText((S.receipt || []).map(function (t) {
+            return t.id + "\t" + (t.ok ? "已送达" : "连接已断开");
+          }).join("\n"));
+          flashCopied(act, "复制结果");
+        } else if (a === "close") {
+          hideTipCard();
+        }
+        e.stopPropagation();
+        return;
+      }
+      // 点主机名 = 复制这台
+      var row = e.target.closest ? e.target.closest("[data-copy]") : null;
+      if (row) {
+        copyText(row.getAttribute("data-copy"));
+        stickTipCard();
+        e.stopPropagation();
+      }
+    });
+    // 点页面别处 = 关掉粘住的卡
+    document.addEventListener("click", function (e) {
+      var card = document.getElementById("tipcard");
+      if (!card || !S.tipSticky) { return; }
+      if (card.contains && card.contains(e.target)) { return; }
+      if (e.target && e.target.closest && e.target.closest("#scopeBtn2")) { return; }
+      hideTipCard();
+    });
+
+    // 信息区的「查看明细」= 打开并粘住提示卡
+    $("footNote").addEventListener("click", function (e) {
+      var act = e.target.closest ? e.target.closest("[data-fn]") : null;
+      if (!act) { return; }
+      e.stopPropagation();
+      if (act.getAttribute("data-fn") === "detail") {
+        showTipCard();
+        stickTipCard();
+      }
+    });
+    // 悬停信息区也提示「这里有明细」，但**不**弹卡（卡的锚点是范围键，
+    // 从信息区弹出来位置对不上）
+    $("footNote").addEventListener("mouseenter", function () {
+      var n = $("footNote");
+      if (n) { n.style.cursor = "pointer"; }
+    });
+
+    // Esc 关掉粘住的卡
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && S.tipSticky) {
+        hideTipCard();
+      }
+    });
+
+    // 左栏命令行悬浮 → 完整命令卡（宽度有限，长命令被省略号截断）
+    var pop = document.createElement("div");
+    pop.className = "cmdpop";
+    pop.id = "cmdpop";
+    document.body.appendChild(pop);
+
+    $("list").addEventListener("mouseover", function (e) {
+      var row = e.target.closest ? e.target.closest("[data-cmd]") : null;
+      if (!row) { return; }
+      var full = row.getAttribute("data-cmd") || "";
+      var nameEl = row.querySelector(".n");
+      var name = nameEl ? nameEl.textContent : "";
+      // 只有真的被截断才弹 —— 不截断时弹卡是噪音
+      var cd = row.querySelector(".c");
+      var truncated = false;
+      if (cd && cd.scrollWidth > cd.clientWidth + 1) { truncated = true; }
+      if (nameEl && nameEl.scrollWidth > nameEl.clientWidth + 1) { truncated = true; }
+      if (!truncated) { pop.classList.remove("show"); return; }
+
+      var h = "";
+      if (name) { h += '<div class="pn">' + esc(name) + "</div>"; }
+      h += '<div class="pc">' + esc(full) + "</div>";
+      h += '<div class="ph">点击插入到光标处 · 独占一行</div>';
+      pop.innerHTML = h;
+      pop.classList.add("show");
+
+      var r = row.getBoundingClientRect();
+      var pw = Math.min(520, Math.max(260, pop.offsetWidth || 320));
+      var left = r.right + 10;
+      if (left + pw > window.innerWidth - 12) { left = Math.max(12, r.left - pw - 10); }
+      var top = r.top - 4;
+      var ph = pop.offsetHeight || 70;
+      if (top + ph > window.innerHeight - 12) { top = Math.max(12, window.innerHeight - ph - 12); }
+      pop.style.left = left + "px";
+      pop.style.top = top + "px";
+    });
+    $("list").addEventListener("mouseleave", function () {
+      pop.classList.remove("show");
+    });
+    $("list").addEventListener("scroll", function () {
+      pop.classList.remove("show");
+    });
+
+    // 范围菜单开关
+    $("scopeBtn2").addEventListener("click", function (e) {
+      e.stopPropagation();
+      hideTipCard();                 // 点开菜单 = 收起提示卡（用户要求）
+      S.menuOpen = !S.menuOpen;
+      render();
+    });
+    $("menuDone").addEventListener("click", function (e) {
+      e.stopPropagation();
+      S.menuOpen = false;
+      hideTipCard();
+      render();
+    });
+    $("menu").addEventListener("click", function (e) {
+      e.stopPropagation();
+      var el = e.target.closest ? e.target.closest("[data-act]") : null;
+      if (!el) { return; }
+      var act = el.getAttribute("data-act");
+      if (act === "tab") {
+        S.mode = "tab"; S.menuOpen = false;
+      } else if (act === "all") {
+        S.mode = "all"; S.menuOpen = false;
+      } else if (act === "ch") {
+        var ch = el.getAttribute("data-ch");
+        S.chans[ch] = !S.chans[ch];
+        var any = S.chans.A || S.chans.B || S.chans.C || S.chans.D;
+        S.mode = any ? "channels" : "tab";
+      } else if (act === "host") {
+        var hid = el.getAttribute("data-host");
+        S.custom[hid] = !S.custom[hid];
+        var anyH = Object.keys(S.custom).some(function (k) { return S.custom[k]; });
+        S.mode = anyH ? "custom" : "tab";
+      }
+      S.receipt = null;
+      hideTipCard();
+      render();
+    });
+    document.addEventListener("click", function () {
+      if (S.menuOpen) { S.menuOpen = false; hideTipCard(); render(); }
+    });
+
+    // 标题栏
+    $("pinBtn").addEventListener("click", function () {
+      S.pinned = !S.pinned;
+      $("pinBtn").classList.toggle("on", S.pinned);
+      flashMsg(S.pinned ? "已钉住：窗口保持置顶" : "已取消置顶");
+    });
+    $("foldBtn").addEventListener("click", toggleFold);
+    $("closeBtn").addEventListener("click", flashClose);
+
+    // 全局快捷键（不依赖编辑器焦点）
+    document.addEventListener("keydown", function (e) {
+      if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) { return; }
+      if (e.key === "Escape" && S.menuOpen) { S.menuOpen = false; render(); }
+    });
+
+    // 场景切换
+    $("scBar").addEventListener("click", function (e) {
+      var b = e.target.closest ? e.target.closest("[data-sc]") : null;
+      if (!b) { return; }
+      var sc = b.getAttribute("data-sc");
+      var chips = $("scBar").querySelectorAll("[data-sc]");
+      for (var i = 0; i < chips.length; i++) { chips[i].classList.remove("on"); }
+      b.classList.add("on");
+      applyScenario(sc);
+    });
+
+    // 主题
+    $("themeBtn").addEventListener("click", function () {
+      var html = document.documentElement;
+      var next = html.getAttribute("data-theme") === "dark" ? "light" : "dark";
+      html.setAttribute("data-theme", next);
+      $("themeTxt").textContent = next === "dark" ? "深色" : "亮色";
+    });
+  }
+
+  function toggleFold() {
+    S.folded = !S.folded;
+    var side = $("side");
+    side.style.display = S.folded ? "none" : "flex";
+    $("foldBtn").classList.toggle("on", S.folded);
+    // 图标与文案随目标状态切换：与主界面 BrandLogoBtn 完全同一套语义
+    // （assets/icons/sidebar-left-collapse.svg ↔ sidebar-left-expand.svg）
+    var ico = $("foldIco");
+    if (ico) {
+      ico.innerHTML = S.folded
+        ? '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m14 15 3-3-3-3"/>'
+        : '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/>';
+    }
+    var tip = $("foldTip");
+    if (tip) { tip.textContent = S.folded ? "展开侧边栏" : "收起侧边栏"; }
+    $("foldBtn").setAttribute("aria-label", S.folded ? "展开侧边栏" : "收起侧边栏");
+  }
+
+  /* ═════════════ 左右分隔条：拖动改左栏宽度 ═════════════
+     边界：最小 150（再窄搜索框和命令名就折行了）、最大 min(420, 窗口宽×0.55)
+     —— 留一半以上给编辑区，否则拖过头会把正文挤没。
+     三个入口同一套 applySideWidth()：鼠标拖 / 键盘左右键 / 双击复位。 */
+  var SIDE_MIN = 150;
+  var SIDE_DEFAULT = 196;
+
+  function sideMax() {
+    var win = document.getElementById("win");
+    var r = win ? win.getBoundingClientRect() : null;
+    var w = (r && r.width > 0) ? r.width : 0;
+    /* ⚠️ 窗口还没布局（width 为 0，例如首帧或离屏渲染）时必须退回默认宽度，
+       不能把 0×0.55=0 当成上限 —— 那样 max 会和 min 一样是 150，
+       调用方传什么都被钳到 150（拖动会「拖不动」，实测踩过）。 */
+    if (!w) { return 420; }
+    return Math.max(SIDE_MIN, Math.min(420, Math.round(w * 0.55)));
+  }
+
+  function applySideWidth(px) {
+    var w = Math.round(Math.max(SIDE_MIN, Math.min(sideMax(), px)));
+    S.sideW = w;
+    var side = $("side");
+    if (side) {
+      /* 四个值一起写：只写 flex-basis 会被 .side 的 min/max-width 夹住不生效 */
+      side.style.flex = "0 0 " + w + "px";
+      side.style.width = w + "px";
+      side.style.minWidth = w + "px";
+      side.style.maxWidth = w + "px";
+    }
+    var sp = $("split");
+    if (sp) { sp.setAttribute("aria-valuenow", String(w)); }
+    return w;
+  }
+
+  function beginSideDrag(e) {
+    var sp = $("split");
+    var body = document.querySelector(".body");
+    if (!sp || !body) { return; }
+    /* 起点 = 指针 x 与当时左栏宽度的差，这样抓在分隔条任意位置都不会跳 */
+    var startX = e.clientX;
+    var startW = S.sideW;
+    sp.classList.add("dragging");
+    body.classList.add("dragging");
+    /* 拖动期间要在整窗上监听：指针快速移动时会离开 7px 的分隔条，
+       只挂在分隔条上会丢事件（拖到一半就断）。 */
+    function onMove(ev) {
+      applySideWidth(startW + (ev.clientX - startX));
+      if (ev.preventDefault) { ev.preventDefault(); }
+    }
+    function onUp() {
+      sp.classList.remove("dragging");
+      body.classList.remove("dragging");
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    if (e.preventDefault) { e.preventDefault(); }
+  }
+
+  function initSplit() {
+    var sp = $("split");
+    if (!sp) { return; }
+    sp.addEventListener("mousedown", function (e) {
+      if (e.button !== undefined && e.button !== 0) { return; }
+      beginSideDrag(e);
+    });
+    /* 双击复位 —— 拖歪了不用去猜原来的宽度 */
+    sp.addEventListener("dblclick", function (e) {
+      if (e.preventDefault) { e.preventDefault(); }
+      applySideWidth(SIDE_DEFAULT);
+    });
+    /* 键盘：左右各 16px，Shift 加速到 64px；Home 复位 */
+    sp.addEventListener("keydown", function (e) {
+      var step = e.shiftKey ? 64 : 16;
+      if (e.key === "ArrowLeft") { applySideWidth(S.sideW - step); }
+      else if (e.key === "ArrowRight") { applySideWidth(S.sideW + step); }
+      else if (e.key === "Home") { applySideWidth(SIDE_DEFAULT); }
+      else { return; }
+      if (e.preventDefault) { e.preventDefault(); }
+    });
+    applySideWidth(S.sideW);
+  }
+
+  /* ═════════════ 反馈小工具 ═════════════ */
+  var flashT = null;
+  /* 瞬时提示落在右下角助记位（不再有独立信息行） */
+  function flashMsg(text) {
+    var note = $("footNote");
+    if (!note) { return; }
+    note.textContent = text;
+    if (flashT) { clearTimeout(flashT); }
+    flashT = setTimeout(function () { renderFootNote(); }, 2200);
+  }
+  function flashNote(text) { flashMsg(text); }
+  function flashClose() {
+    flashMsg("已关闭。草稿保留 —— 下次打开会原样恢复");
+  }
+
+  /* ═════════════ 场景 ═════════════ */
+  function applyScenario(sc) {
+    S.scenario = sc;
+    S.receipt = null;
+    disarm();
+    S.menuOpen = false;
+    S.folded = false;
+    S.narrow = false;
+    $("side").style.display = "flex";
+    $("win").classList.remove("narrow");
+    $("srch").value = "";
+    S.search = "";
+    $("srchBox").classList.remove("has");
+    S.mode = "tab";
+    S.chans = { A: true, B: false, C: false, D: false };
+    S.custom = {};
+
+    /* 「84 台」场景会改写 TABS —— 切走时先还原成默认 4 台，
+       否则其它场景全都顶着 84 台渲染（且台数断言会错）。 */
+    if (BASE_TABS.length !== TABS.length && sc !== "many") {
+      TABS.length = 0;
+      for (var bt = 0; bt < BASE_TABS.length; bt++) { TABS.push(BASE_TABS[bt]); }
+    }
+
+    var ed = $("ed");
+    if (sc === "safe") {
+      S.draft = "df -h && free -m";
+    } else if (sc === "multi") {
+      S.draft = 'for h in web-01 db-02; do\n  ssh $h "systemctl restart nginx"\ndone';
+      S.mode = "all";
+    } else if (sc === "danger") {
+      S.draft = "rm -rf /var/log/*";
+      S.mode = "channels";
+      S.chans = { A: true, B: true, C: false, D: false };
+    } else if (sc === "receipt") {
+      S.draft = "systemctl restart nginx";
+      S.mode = "all";
+    } else if (sc === "empty") {
+      S.draft = "";
+      S.mode = "tab";
+    } else if (sc === "narrow") {
+      S.draft = "journalctl -u nginx -n 200 --no-pager";
+      S.narrow = true;
+      $("win").classList.add("narrow");
+    } else if (sc === "fold") {
+      S.draft = "tail -f /var/log/nginx/error.log";
+      S.folded = true;
+      $("side").style.display = "none";
+      $("foldBtn").classList.add("on");
+    } else if (sc === "many") {
+      /* 用户问的核心场景：机器很多时这行怎么展示。
+         做法 = 一句话摘要 + 汇总，不铺 chips。 */
+      var many = [];
+      for (var k = 1; k <= 84; k++) {
+        many.push({ id: "web-" + (k < 10 ? "0" + k : k), user: "root",
+                    ch: "ABCD"[k % 4], online: k % 17 !== 0 });
+      }
+      TABS.length = 0;
+      for (var q = 0; q < many.length; q++) { TABS.push(many[q]); }
+      S.mode = "all";
+      S.draft = "systemctl restart nginx";
+    }
+    ed.value = S.draft;
+    render();
+    if (sc === "receipt") { doSend(); }
+  }
+
+  /* ═════════════ 启动 ═════════════ */
+  bind();
+  initSplit();
+  applyScenario("safe");
+  // 焦点不抢：让用户先看到整体，点编辑器再进入写字状态
+})();
+</script>
+</body>
+</html>

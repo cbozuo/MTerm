@@ -19,7 +19,7 @@ fn make_buf(
     parser.process(live_lines.join("\r\n").as_bytes());
     TermBuffer {
         parser,
-        find_query: String::new(),
+        find: crate::terminal::FindState::default(),
         is_dark: false,
         palette: crate::theme::palette_or_default("", false),
         highlight_rules: Vec::new(),
@@ -76,6 +76,7 @@ fn releasing_scrollback_drops_retained_history_and_replay_bytes() {
 
 mod charset;
 mod colors;
+mod find;
 mod protocol;
 mod selection;
 mod sftp_sorting;

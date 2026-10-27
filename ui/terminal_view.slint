@@ -2,6 +2,7 @@ import { Icon } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { CommandHint, HintRow } from "command_hint.slint";
+import { FindBar } from "find_bar.slint";
 import { SftpPanel, SftpEntry, SftpTreeNode, TunnelInfo } from "sftp_panel.slint";
 import { TabInfo } from "tabs.slint";
 import { DialogClose, DockExpandButton, ToolStrip } from "widgets.slint";
@@ -831,6 +832,12 @@ export component TerminalView inherits Rectangle {
     in property <bool>   is-alt-screen;
     in property <bool>   mouse-tracked;   // remote app wants mouse events (btop/htop/mc)
     in property <[TermMatch]> find-matches; // search-highlight rectangles
+    // (#find-bar v3.6) 当前匹配矩形（主题色档）+ 计数 + 正则无效标志。
+    in property <[TermMatch]> find-current;
+    in property <int> find-total: 0;
+    in property <int> find-current-no: 0;
+    in property <bool> find-invalid-regex: false;
+    in property <bool> lang-zh: true;   // 占位符/计数文案用（Theme.lang 现无此闸，宿主传）
     in property <[TermMatch]> selection;    // drag-selection highlight rectangles
 
     in property <string>  sftp-path: "/";
@@ -907,7 +914,7 @@ export component TerminalView inherits Rectangle {
     in property <[HintRow]> hint-rows;
     in property <string> hint-phase: "";       // 阶段胶囊文案（Rust 已本地化）
     in property <string> hint-context: "";     // 上下文条：`user@host : cwd`
-    in property <int> hint-total: 0;           // 命中总数（行数仍按 5 封顶）
+    in property <int> hint-total: 0;           // 命中总数（行数按 8 封顶）
     // 危险命令告警由**本文件自己算**（danger-token() 就在下面几百行处），
     // 所以这里没有 in 属性；组件读的是 out property hint-danger-token。
     // (#cmd-hint-p1 2026-10-27) **终端内联**提示框（高保真 §7 P1）。
@@ -1046,10 +1053,10 @@ export component TerminalView inherits Rectangle {
     // 高保真 §5。核心原则：**提示框只在打开时接管按键，关闭时一个键都不多占**；
     // 边界要「穿透」回 shell，而不是把方向键吞掉。
 
-    // 可见行数 = min(候选数, 5)。选中项只允许在这几条里循环 —— 数据侧也按 5
+    // 可见行数 = min(候选数, 8)。选中项只允许在这几条里循环 —— 数据侧也按 8
     // 封顶，两边取同一个数，选中项不可能落在没画出来的行上（高保真 §5 边界）。
     function hint-count() -> int {
-        return min(root.hint-rows.length, 5);
+        return min(root.hint-rows.length, 8);
     }
     // 命中的那一条「填进命令行之后**整行**长什么样」。
     //
@@ -1256,7 +1263,11 @@ export component TerminalView inherits Rectangle {
     callback paste-from-clipboard();
     callback copy-terminal-text();
     callback clear-terminal();              // wipe this session's screen buffer
-    callback find-query-changed(string);    // recompute search highlights
+    callback find-query-changed(string);    // (v3.6) debounced query → full-buffer rescan
+    // (#find-bar v3.6) 查找栏回调族：开关 / 步进 / 点高亮。历史回调待 P2 接线。
+    callback find-options-changed(string, bool, bool); // (query, match-case, use-regex)
+    callback find-step(int) -> bool;        // ±1 → 已居中滚动 = true / 滚不动 = false（让位判定）
+    callback find-pick-hit(int, int);       // 点击高亮 (vis-row, col) → 设为当前匹配
     callback terminal-scroll(float);         // scroll history by fractional lines (+ = up); Rust keeps the sub-line remainder so momentum decays smoothly
     // Wheel inside an alt-screen app (tmux/less/vim): forward to the program so it
     // scrolls, instead of doing nothing (#170). dir = +1 up / -1 down; col/row =
@@ -1279,6 +1290,13 @@ export component TerminalView inherits Rectangle {
     property <length> ctx-x;
     property <length> ctx-y;
     property <bool> find-active: false;
+    // (#find-bar v3.6) 面板打开序号：每次打开 +1 → FindBar 内部延迟聚焦
+    // （#343 同款：init 同步 focus 在 Windows 上会撞 IME/无障碍管线）。
+    property <int> find-open-seq: 0;
+    // (v3.6 §04 打开行) Ctrl+F 再按一次 → 全选查询词。
+    property <int> find-select-all-seq: 0;
+    // §03② 下移让位：滚不动且当前匹配压在锚位下时，宿主把让位高度传给面板。
+    property <length> find-yield-y: 0px;
     // A context-menu click creates the conditional find bar while Slint is
     // still dispatching the popup event. Focusing its TextInput synchronously
     // can re-enter the Windows IME/accessibility plumbing and panic (#343).
@@ -1699,6 +1717,19 @@ export component TerminalView inherits Rectangle {
                             border-radius: 2px;
                         }
 
+                        // (#find-bar v3.6) 当前匹配（§01 ⑥/§02 有结果态）：
+                        // 主题色档 + 同色描边，压在琥珀之上。
+                        for m in root.find-current : Rectangle {
+                            x: m.col * root.cell-w;
+                            y: m.row * root.cell-h;
+                            width: m.len * root.cell-w;
+                            height: root.cell-h;
+                            background: Theme.accent-solid.with-alpha(0.38);
+                            border-width: 1px;
+                            border-color: Theme.accent-solid;
+                            border-radius: 2px;
+                        }
+
                         // Each span = a background fill (transparent for the
                         // default bg) with its text on top.  Wrapping the Text in
                         // the bg Rectangle keeps one element per span and renders
@@ -1918,7 +1949,10 @@ export component TerminalView inherits Rectangle {
                                     }
                                     MenuItem {
                                         icon: "search"; label: @tr("Find");
-                                        clicked => { root.find-active = true; }
+                                        clicked => {
+                                            root.find-active = true;
+                                            root.find-open-seq += 1;
+                                        }
                                     }
                                 }
                             }
@@ -1996,10 +2030,17 @@ export component TerminalView inherits Rectangle {
                         root.cycle-tab(event.modifiers.shift || event.text == Key.Backtab);
                         accept
                     // ── Find: ⌘F / Ctrl+F (mirrors right-click → Find) ──
+                    // (v3.6 §04 打开行) 再按一次 = 全选已有查询词（由
+                    // select-all-seq 递增通知 FindBar 内部 select()）。
                     } else if (event.modifiers.control && !event.modifiers.shift
                             && (event.text == "f" || event.text == "F"
                                 || event.text == "\u{0006}")) {
-                        root.find-active = true;
+                        if (root.find-active) {
+                            root.find-select-all-seq += 1;
+                        } else {
+                            root.find-active = true;
+                            root.find-open-seq += 1;
+                        }
                         accept
                     // ── Jump to command-history search: ⌘⇧R / Ctrl+Shift+R (#140) ──
                     } else if (event.modifiers.control && event.modifiers.shift
@@ -2088,20 +2129,14 @@ export component TerminalView inherits Rectangle {
                         //   而且首项再按 ↑ 会关闭浮层并把这次按键交给 shell
                         //   （见下面的分支撑透），用户「一路往上翻到历史」的手感不变。
                         if (event.text == Key.UpArrow) {
-                            if (root.term-hint-selected <= 0) {
-                                // 穿透：收起浮层，并把**这一次** ↑ 原样交给 shell 历史。
-                                // 用 suppress 标记到「本行下一帧」：Rust 侧下一帧会
-                                // 重新算 open，这一帧先把上游的 ↑ 发出去。
-                                root.term-hint-suppressed = true;
-                                root.send-key(Key.UpArrow, false, false, false);
-                                // 立即解除抑制（这次只为让这一个键穿透），
-                                // 真正的「Esc 抑制」由 Esc 分支建立。
-                                root.term-hint-suppressed = false;
-                            } else {
-                                root.term-hint-selected -= 1;
-                            }
+                            // ★ 始终在候选里**循环**（用户实测反馈：穿透会把行
+                            //   换成历史命令，选择状态一下就乱，没法继续选）。
+                            //   想要 shell 历史 → 按 Esc 关掉浮层，↑↓ 立刻交还。
+                            let n = min(root.term-hint-rows.length, 8);
+                            root.term-hint-selected = root.term-hint-selected <= 0
+                                ? n - 1 : root.term-hint-selected - 1;
                         } else {
-                            let n = min(root.term-hint-rows.length, 5);
+                            let n = min(root.term-hint-rows.length, 8);
                             root.term-hint-selected = root.term-hint-selected >= n - 1
                                 ? 0 : root.term-hint-selected + 1;
                         }
@@ -2111,6 +2146,17 @@ export component TerminalView inherits Rectangle {
                             && event.text == Key.Tab && !event.modifiers.shift) {
                         // (#cmd-hint-p1) Tab 把选中候选写进 PTY。
                         // 只在这一帧有可见候选时接管；0 候选时放行给 shell 原生补全。
+                        root.term-hint-accept(root.term-hint-selected);
+                        accept
+                    } else if (root.term-hint-open && !root.term-hint-suppressed
+                            && root.term-hint-rows.length > 0
+                            && (event.text == Key.Return)) {
+                        // ★ 用户定稿：「Tab、回车**都是填入**，不需要执行」。
+                        //   终端里回车本来是「把整行交给 shell 执行」，但浮层打开时
+                        //   用户按回车的意图是**确认补全**，而不是把半截命令跑掉。
+                        //   与 Tab 同语义：填入选中候选（追加尾巴），不执行。
+                        //   想执行 → 再按一次回车（那时浮层已因行变化重算/关闭，
+                        //   或候选已并入行内，回车透传执行）。
                         root.term-hint-accept(root.term-hint-selected);
                         accept
                     } else if (root.term-hint-open && event.text == Key.Escape) {
@@ -2208,7 +2254,7 @@ export component TerminalView inherits Rectangle {
                 //   不会从内容反推 Rectangle 的 preferred-height（实测恒 0）。
                 //   也**不跨组件读** out 属性 —— 同一帧里可能还没求值。
                 //   直接在宿主侧按规格算，行数公式与组件内部保持同一个。
-                property <int> hint-rows-shown: max(3, min(root.term-hint-rows.length, 5));
+                property <int> hint-rows-shown: max(4, min(root.term-hint-rows.length, 8));
                 property <length> box-h: 27px + (self.hint-rows-shown * 28px + 6px) + 94px + 23px;
                 // ★ 可用空间要按**终端输出区**算，不能拿 root.height：
                 //   root 还含标签栏（32）与命令栏（48），按它算会多出 ~80px，
@@ -2260,98 +2306,29 @@ export component TerminalView inherits Rectangle {
                 }
             }
 
-            if root.find-active : Rectangle {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: 34px;
-                background: Theme.popup-bg;
-                border-width: 1px;
-                border-color: Theme.border-strong;
-                border-radius: Theme.radius-sm;
-
-                // Let the popup click and the conditional component's first
-                // layout pass finish before asking the platform for focus.
-                find-focus-timer := Timer {
-                    interval: 0ms;
-                    running: root.find-focus-pending;
-                    triggered => {
-                        root.find-focus-pending = false;
-                        if (root.find-active) { find-input.focus(); }
-                    }
-                }
-
-                HorizontalLayout {
-                    padding: 6px;
-                    spacing: 6px;
-                    Icon {
-    glyph: "search";
-    tint: Theme.text-primary;
-    size: Theme.fs-sm;
-}
-                    Rectangle {
-                        background: Theme.bg-root;
-                        border-radius: 3px;
-                        horizontal-stretch: 1;
-                        find-input := TextInput {
-                            x: 6px;
-                            width: parent.width - 12px;
-                            height: parent.height;
-                            color: Theme.text-primary;
-                            font-family: Theme.ui-font-family; // CJK-capable (#54)
-                            font-size: Theme.fs-md;
-                            vertical-alignment: center;
-                            single-line: true;
-                            // Defer focus until popup event dispatch and layout
-                            // have completed; synchronous focus crashes on
-                            // Windows when opened from right-click (#343).
-                            init => { root.find-focus-pending = true; }
-                            edited => { root.find-query-changed(self.text); }
-                            key-pressed(e) => {
-                                if (e.text == "\u{001b}") {       // Esc closes find
-                                    root.find-active = false;
-                                    root.find-query-changed("");
-                                    self.text = "";
-                                    ime-input.focus();
-                                    accept
-                                } else {
-                                    reject
-                                }
-                            }
-                        }
-                    }
-                    Rectangle {
-                        width: 24px;
-                        // (#find-clear-accent 2026-10-21) 裸图标提亮 → 与侧栏搜索清空
-                        // 同语言（accent 实心圆 + 底色 × 镂空），16px 紧凑档：查找栏
-                        // 内高 22px（34 − 2×6 padding），语义同为「清空输入」。
-                        // 命中区维持 24px 槽位。
-                        background: transparent;
-                        close-ta := TouchArea {
-                            mouse-cursor: default;
-                            clicked => {
-                                root.find-active = false;
-                                root.find-query-changed("");
-                                find-input.text = "";
-                                ime-input.focus();
-                            }
-                        }
-                        Rectangle {
-                            width: 16px; height: 16px;
-                            x: (parent.width - self.width) / 2;
-                            y: (parent.height - self.height) / 2;
-                            border-radius: parent.width / 2;
-                            background: close-ta.has-hover ? Theme.accent : transparent;
-                            animate background { duration: 100ms; }
-                            accessible-role: button;
-                            accessible-label: @tr("Clear search");
-                            Icon {
-                                glyph: "close";
-                                tint: close-ta.has-hover ? Theme.popup-bg : Theme.text-secondary;
-                                size: Theme.fs-xs;
-                            }
-                        }
-                    }
+            // (#find-bar 2026-10-27 v3.6) 查找栏 = 右上浮层（组件见 find_bar.slint，
+            // 数据侧见 src/terminal/impls/terminal_find.rs）。旧 34px 顶部通栏退役。
+            // 滚动位置归宿主：§06⑧ 关闭（Esc/✕）时**留在原地**，不回 live bottom。
+            if root.find-active : FindBar {
+                x: 0; y: 0;
+                width: parent.width; height: parent.height;
+                tab-id: root.tab-id;
+                find-total: root.find-total;
+                find-current-no: root.find-current-no;
+                find-invalid-regex: root.find-invalid-regex;
+                is-alt-screen: root.is-alt-screen;
+                lang-en: !root.lang-zh;
+                open-seq: root.find-open-seq;
+                select-all-seq: root.find-select-all-seq;
+                query-changed(q) => { root.find-query-changed(q); }
+                options-changed(q, aa, rx) => { root.find-options-changed(q, aa, rx); }
+                step(dir) => { root.find-step(dir); }
+                pick-hit(r, c) => { root.find-pick-hit(r, c); }
+                closed() => {
+                    root.find-active = false;
+                    root.find-yield-y = 0px;
+                    // §06⑧：不回 live bottom——只把焦点还给终端。
+                    ime-input.focus();
                 }
             }
         }

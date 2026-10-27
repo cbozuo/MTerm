@@ -299,7 +299,7 @@ use crate::ssh::{
 #[cfg(windows)]
 use crate::terminal::c0_letter_key_down;
 use crate::terminal::{
-    bare_ctrl_marker_workaround_enabled, cell_prefix, compile_highlight_rules,
+    bare_ctrl_marker_workaround_enabled, compile_highlight_rules,
     encode_command_bar_input, encode_mouse_event, encode_pasted_text, is_terminal_interrupt,
     key_to_pty_bytes, paste_requires_large_review, rainbow_parens_enabled,
     should_drop_bare_ctrl_marker, terminal_uses_bracketed_paste, CsiState, RenderGates,
@@ -10046,6 +10046,10 @@ fn wire_session_callbacks(
                 is_alt_screen: false,
                 mouse_tracked: false,
                 find_matches: ModelRc::from(std::rc::Rc::new(VecModel::<TermMatch>::default())),
+                find_current: ModelRc::from(std::rc::Rc::new(VecModel::<TermMatch>::default())),
+                find_total: 0,
+                find_current_no: 0,
+                find_invalid_regex: false,
                 selection: ModelRc::from(std::rc::Rc::new(VecModel::<TermMatch>::default())),
                 sftp_path: "/".into(),
                 sftp_entries: ModelRc::from(std::rc::Rc::new(VecModel::<SftpEntry>::default())),
@@ -10102,7 +10106,7 @@ fn wire_session_callbacks(
                 tab_id.clone(),
                 Arc::new(Mutex::new(TermBuffer {
                     parser: vt100::Parser::new(24, 80, 5000),
-                    find_query: String::new(),
+                    find: crate::terminal::FindState::default(),
                     is_dark: is_dark_now,
                     // (#theme-split) 新建 tab 继承当前主题的色表（ANSI/默认
                     // 前景背景随主题走；apply_theme 切主题时统一刷新）。
@@ -11481,7 +11485,15 @@ fn wire_key_input(
                             .entry(tab_id.to_string())
                             .or_default()
                             .on_submit();
-                        // (#cmd-hint-p1) 本行结束 → 解除 Slint 侧的 Esc 抑制。
+                        // (#cmd-hint-p1) ★ 回车后**立刻清掉浮层**：
+                        //   此时远端还没回显新提示符，紧接着的观测读到的仍是
+                        //   旧行，若不清，浮层会一直挂着（用户实测：「选择命令，
+                        //   执行完毕，这个提示框还存在」）。
+                        //   这里先隐藏；等新提示符回显、用户再敲字时，下面的
+                        //   observe 流程会用新行重新算出候选。
+                        let hidden = command_hint::HintModel::hidden(String::new());
+                        command_hint::apply_terminal_hint_model(&w_ob, &hidden);
+                        // 本行结束 → 解除 Slint 侧的 Esc 抑制。
                         // ★ 抑制是 Slint 的局部状态（用户按 Esc 建立），但
                         //   「本行什么时候结束」只有 Rust 知道（它读网格）。
                         //   用自增令牌：连续两次回车各要解一次，bool 变 false
@@ -11589,9 +11601,6 @@ fn wire_key_input(
         let handles = handles.clone();
         let bufs = bufs.clone();
         let weak = window.as_weak();
-        let _unused_obs = Arc::new(Mutex::new(
-            HashMap::<String, crate::app::terminal_hint::HintObserver>::new(),
-        ));
         window.on_term_hint_accept(move |i: i32| {
             let Some(w) = weak.upgrade() else { return };
             let tab_id = w.get_active_tab_id().to_string();
@@ -11836,35 +11845,112 @@ fn wire_key_input(
         });
     }
 
-    // Context menu → 查找: store the query and recompute highlight rectangles.
+    // (#find-bar v3.6) 查找栏回调族。匹配/扫描/步进全在 terminal 域
+    // （impls/terminal_find.rs），这里只做「取参数 → 委托 → 刷新显示」。
+    //
+    // on_find_query_changed：输入去抖后的落点（UI 侧 200ms Timer）。
+    // 全缓冲扫描；正则无效 → 保旧状态，仅把 invalid 标志刷给 UI。
+    // 起始当前匹配 = 离视口最近命中（最近命中口径在 find_set_query 内）。
     {
         let bufs_find = bufs.clone();
         let weak = window.as_weak();
         window.on_find_query_changed(move |tab_id: SharedString, query: SharedString| {
+            find_apply_query(&bufs_find, &weak, &tab_id, &query, crate::terminal::FindOptions::default());
+        });
+    }
+
+    // on_find_set_options：Aa / (.·)* 开关（§04 切换规则）。规则变化走同一条
+    // 重扫路径；§06⑥ 的「原位置附近最近命中」在 find_set_query 内处理。
+    {
+        let bufs_fopt = bufs.clone();
+        let weak = window.as_weak();
+        window.on_find_options_changed(
+            move |tab_id: SharedString, query: SharedString, match_case: bool, use_regex: bool| {
+                find_apply_query(
+                    &bufs_fopt,
+                    &weak,
+                    &tab_id,
+                    &query,
+                    crate::terminal::FindOptions { match_case, use_regex },
+                );
+            },
+        );
+    }
+
+    // on_find_step：Enter / ↑↓ / 按钮（§03②）。步进 + 居中滚动 + 刷新；
+    // 居中滚不动（顶端/alt 屏）时返回 false → UI 据皮下移让位（200ms）。
+    {
+        let bufs_step = bufs.clone();
+        let weak = window.as_weak();
+        window.on_find_step(move |tab_id: SharedString, dir: i32| -> bool {
             let tid = tab_id.to_string();
-            let q = query.to_string();
-            let (matches, jumped) = with_term_buf(&bufs_find, &tid, |buf| {
-                buf.find_query = q.clone();
-                let mut matches = compute_find_matches(&buf.displayed_text, &q);
-                let jumped = matches.is_empty() && buf.scroll_to_first_find_match(&q);
-                if jumped {
-                    buf.render();
-                    matches = compute_find_matches(&buf.displayed_text, &q);
+            let moved = with_term_buf(&bufs_step, &tid, |buf| buf.find_step(dir)).flatten();
+            let Some(win) = weak.upgrade() else { return false };
+            if moved.is_none() {
+                return false;
+            }
+            let target = with_term_buf(&bufs_step, &tid, |buf| buf.find_center_scroll_target())
+                .flatten();
+            match target {
+                Some(offset) => {
+                    with_term_buf(&bufs_step, &tid, |buf| {
+                        buf.view_offset = offset;
+                    });
+                    rebuild_tab_display(&win, &bufs_step, &tid);
+                    true
                 }
-                (matches, jumped)
-            })
-            .unwrap_or_default();
-            if let Some(win) = weak.upgrade() {
-                if jumped {
-                    rebuild_tab_display(&win, &bufs_find, &tid);
-                    return;
+                None => {
+                    // 滚不动：当前匹配可能被面板压住，刷新矩形让 UI 让位。
+                    rebuild_tab_display(&win, &bufs_step, &tid);
+                    false
                 }
-                let model = ModelRc::from(Rc::new(VecModel::from(matches)));
-                set_terminal_row(&win, &tid, |row| {
-                    row.find_matches = model.clone();
-                });
             }
         });
+    }
+
+    // on_find_pick_hit：点高亮成为当前匹配（§03⑤）。UI 传可视 row/col，
+    // 这里换算绝对行号后落指针；不滚动（那一行本来就可见）。
+    {
+        let bufs_pick = bufs.clone();
+        let weak = window.as_weak();
+        window.on_find_pick_hit(move |tab_id: SharedString, vis_row: i32, col: i32| {
+            let tid = tab_id.to_string();
+            if let Some(win) = weak.upgrade() {
+                let picked = with_term_buf(&bufs_pick, &tid, |buf| {
+                    let abs = buf.vis_to_abs(vis_row.max(0) as u16);
+                    buf.find_set_current_at(abs, col)
+                })
+                .unwrap_or(false);
+                if picked {
+                    rebuild_tab_display(&win, &bufs_pick, &tid);
+                }
+            }
+        });
+    }
+
+    // (#find-bar v3.6) query 与 options 两条回调共用这条应用路径：
+    // 正则无效 → 保旧命中、只刷 invalid 标志；否则全量重建显示。
+    fn find_apply_query(
+        bufs: &TermBuffers,
+        weak: &slint::Weak<AppWindow>,
+        tab_id: &str,
+        query: &str,
+        opts: crate::terminal::FindOptions,
+    ) {
+        let tid = tab_id.to_string();
+        let ok = with_term_buf(bufs, &tid, |buf| buf.find_set_query(query, opts))
+            .unwrap_or(true);
+        if let Some(win) = weak.upgrade() {
+            if !ok {
+                let invalid =
+                    with_term_buf(bufs, &tid, |buf| buf.find_invalid_regex()).unwrap_or(false);
+                set_terminal_row(&win, &tid, |row| {
+                    row.find_invalid_regex = invalid;
+                });
+                return;
+            }
+            rebuild_tab_display(&win, bufs, &tid);
+        }
     }
 
     // Mouse-wheel → scroll the scrollback history.

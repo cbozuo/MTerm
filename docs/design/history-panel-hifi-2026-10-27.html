@@ -1,0 +1,2816 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MTerm · 历史命令弹框 · 重构高保真与交互方案（2026-10-27）</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════════
+   色板 = src/theme/palettes.rs 的两套 MTerm 官方主题（与同族稿
+   terminal-command-hint-hifi / send-command-hifi 同一取样口径）：
+     mterm-dark  root#161619 panel#181A1D palt#1B1D21 elev#1E2024
+                 hov#22262D  act#252A33  line#232428 lstr#4E5157
+                 t1#BCBEC4   t2#7A7E85   t3#6F737A   ac#1FC8B4  dg#F75464
+     mterm-light root#F2F0EC panel#FAF8F4 palt#E9E6DF elev#FFFEFA
+                 t1#33302C   t2#7B766F   t3#968F85   ac#1F766B  dg#B0463F
+   派生 token 照抄 ui/theme.slint：accent-soft = ac@16%/12%、
+   field = #191B21 / #F4F5F8、line-2 = #3F444F / #C7C7CC、
+   danger-strong = #DC4B44（双档同值）、close-btn-hot = #E81123。
+
+   ★ 本案最关键的一条：面板压在**终端区**上，不能用 popup-bg。
+     popup-bg = slot-panel，而终端底 = slot-tbg，两套主题里这两个值
+     完全相同（#181A1D / #FAF8F4）→ 框会「消失」，只剩一圈边框。
+     必须升到 slot-elev + border-strong 描边 + 投影。与
+     terminal-command-hint-hifi §2 ④ 是同一条约束，不是新规矩。
+   ═══════════════════════════════════════════════════════════════════ */
+:root{
+  --ff:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  --mono:"JetBrains Mono","Cascadia Mono",Consolas,"Sarasa Mono SC","Microsoft YaHei",monospace;
+  --ease:cubic-bezier(.2,0,0,1);
+  --r-sm:4px; --r-md:6px; --r-lg:10px;
+}
+html[data-theme="dark"]{
+  --page:#0B0C0E; --stage:#0E1013;
+  --root:#161619; --panel:#181A1D; --palt:#1B1D21; --elev:#1E2024;
+  --hov:#22262D; --act:#252A33; --line:#232428; --lstr:#4E5157;
+  --t1:#BCBEC4; --t2:#7A7E85; --t3:#6F737A;
+  --tbg:#181A1D; --tfg:#BCBEC4;
+  --ac:#1FC8B4; --ac-ink:#06201D; --ok:#73B00A; --wr:#E8A33E; --dg:#F75464;
+  --field:#191B21; --line2:#3F444F;
+  --ac-soft:rgba(31,200,180,.16); --ac-tonal:rgba(31,200,180,.10); --ac-line:rgba(31,200,180,.42);
+  --dg-soft:rgba(247,84,100,.13); --dg-line:rgba(247,84,100,.45);
+  --shadow:0 18px 44px -12px rgba(0,0,0,.78), 0 2px 8px -3px rgba(0,0,0,.5);
+}
+html[data-theme="light"]{
+  --page:#EDEBE7; --stage:#F6F4F0;
+  --root:#F2F0EC; --panel:#FAF8F4; --palt:#E9E6DF; --elev:#FFFEFA;
+  --hov:#E8E5E1; --act:#DFDDD9; --line:#E0DEDA; --lstr:#D0CECB;
+  --t1:#33302C; --t2:#7B766F; --t3:#968F85;
+  --tbg:#FAF8F4; --tfg:#33302C;
+  --ac:#1F766B; --ac-ink:#FFFFFF; --ok:#427213; --wr:#8F631C; --dg:#B0463F;
+  --field:#F4F5F8; --line2:#C7C7CC;
+  --ac-soft:rgba(31,118,107,.12); --ac-tonal:rgba(31,118,107,.08); --ac-line:rgba(31,118,107,.38);
+  --dg-soft:rgba(176,70,63,.10); --dg-line:rgba(176,70,63,.40);
+  --shadow:0 18px 44px -14px rgba(70,60,50,.28), 0 2px 8px -4px rgba(70,60,50,.18);
+}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--t1);font-family:var(--ff);font-size:14px;line-height:1.66;
+  -webkit-font-smoothing:antialiased;transition:background .18s var(--ease),color .18s var(--ease)}
+code,.mono{font-family:var(--mono);font-variant-ligatures:none}
+::selection{background:var(--ac-soft)}
+
+/* ── 顶栏 ── */
+header{position:sticky;top:0;z-index:90;background:color-mix(in srgb,var(--page) 88%,transparent);
+  backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
+.hd{max-width:1180px;margin:0 auto;padding:12px 32px;display:flex;align-items:center;gap:14px}
+.hd .brand{font:700 12px/1 var(--mono);letter-spacing:.17em}
+.hd .brand span{color:var(--t3);font-weight:400;letter-spacing:.02em;margin-left:8px;font-family:var(--ff);font-size:12px}
+.hd .gap{flex:1}
+.hd .date{font:500 11px/1 var(--mono);color:var(--t3)}
+.tgl{display:flex;align-items:center;gap:7px;height:28px;padding:0 10px;border-radius:var(--r-md);
+  border:1px solid var(--line);background:var(--panel);color:var(--t2);font-family:inherit;font-size:12px;
+  cursor:pointer;transition:.13s var(--ease)}
+.tgl:hover{border-color:var(--lstr);color:var(--t1)}
+.tgl svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+
+.wrap{max-width:1180px;margin:0 auto;padding:0 32px 120px}
+
+/* ── hero ── */
+.hero{padding:54px 0 0}
+.hero .kick{font:700 10.5px/1 var(--mono);color:var(--ac);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:16px}
+.hero h1{font-size:33px;line-height:1.28;letter-spacing:-.8px;font-weight:680;margin:0 0 16px}
+.hero .lead{font-size:14px;line-height:2;color:var(--t2);max-width:84ch;margin:0 0 28px}
+.hero .lead b{color:var(--t1);font-weight:600}
+.hero .lead code{font-size:.9em;background:var(--hov);padding:1px 5px;border-radius:var(--r-sm);color:var(--t1)}
+
+.claims{display:grid;grid-template-columns:repeat(2,1fr);gap:11px}
+.claim{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:15px 16px;position:relative;overflow:hidden}
+.claim::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--ac);opacity:.55}
+.claim em{font:700 9.5px/1 var(--mono);font-style:normal;color:var(--ac);letter-spacing:.5px;
+  background:var(--ac-tonal);border:1px solid var(--ac-line);padding:3px 6px;border-radius:var(--r-sm)}
+.claim > b{display:block;font-size:13.5px;margin:11px 0 5px;letter-spacing:.1px}
+.claim span{font-size:12px;line-height:1.8;color:var(--t2);display:block}
+.claim span b{display:inline;font-size:inherit;margin:0;letter-spacing:0;color:var(--t1);font-weight:600}
+
+/* ── 章节 ── */
+h2.sec{font-size:21px;font-weight:680;letter-spacing:-.3px;margin:64px 0 10px;display:flex;align-items:baseline;gap:12px}
+h2.sec .no{font:700 11px/1 var(--mono);color:var(--ac);letter-spacing:.5px}
+p.sub{color:var(--t2);font-size:13px;line-height:1.95;margin:0 0 22px;max-width:92ch}
+p.sub code,td code,li code{font-size:.9em;background:var(--hov);padding:1px 5px;border-radius:var(--r-sm);color:var(--t1)}
+h3.mini{font-size:12px;letter-spacing:1.4px;text-transform:uppercase;color:var(--t3);font-weight:680;
+  margin:34px 0 12px;display:flex;align-items:center;gap:10px}
+h3.mini::after{content:"";flex:1;height:1px;background:var(--line)}
+
+/* ── 舞台 / 沙盘 ── */
+.stage{border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;background:var(--stage);
+  display:flex;flex-direction:column;align-items:center;padding:26px 0 22px;position:relative}
+.stage .cap{position:absolute;top:11px;left:15px;font:700 9.5px/1 var(--mono);letter-spacing:1px;color:var(--t3)}
+.bar{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin:0 0 18px;padding:0 20px}
+.chip{height:26px;padding:0 11px;border-radius:13px;border:1px solid var(--line);background:var(--panel);
+  color:var(--t2);font-family:inherit;font-size:11.5px;cursor:pointer;transition:.13s var(--ease);white-space:nowrap}
+.chip:hover{border-color:var(--lstr);color:var(--t1)}
+.chip.on{background:var(--ac-tonal);border-color:var(--ac-line);color:var(--ac);font-weight:600}
+
+/* ── 模拟终端窗 ── */
+.term{width:100%;max-width:940px;border:1px solid var(--lstr);border-radius:var(--r-md);overflow:hidden;
+  background:var(--tbg);box-shadow:var(--shadow);display:flex;flex-direction:column}
+.term-tabs{height:32px;display:flex;align-items:center;background:var(--palt);border-bottom:1px solid var(--line);
+  font-size:11.5px;color:var(--t2)}
+.term-tabs .tb{height:32px;padding:0 13px;display:flex;align-items:center;gap:7px;border-right:1px solid var(--line);
+  position:relative;color:var(--t2)}
+.term-tabs .tb.on{background:var(--tbg);color:var(--t1)}
+.term-tabs .tb.on::before{content:"";position:absolute;left:0;right:0;top:0;height:2px;background:var(--ac)}
+.term-tabs .tb i{width:6px;height:6px;border-radius:3px;background:var(--ok);display:block}
+.term-tabs .gap{flex:1}
+.term-tabs .knob{font-family:var(--mono);font-size:10.5px;color:var(--t3);padding:0 12px}
+
+/* 视口 = 定位上下文 */
+.tview{position:relative;height:470px;padding:10px 0 0;overflow:hidden;background:var(--tbg);
+  font-family:var(--mono);font-size:12.5px;line-height:1.62;color:var(--tfg);
+  transition:height .2s var(--ease)}
+.tbody{padding:0 14px;width:100%;overflow:hidden}
+.tl{white-space:pre;min-height:1.62em;color:var(--tfg);overflow:hidden;text-overflow:ellipsis}
+.tl .dim{color:var(--t3)}
+.tl .grn{color:#8CCF15}
+.tl .cyn{color:#45C8E0}
+.tl .yel{color:#E8A33E}
+.tl .red{color:#F75464}
+html[data-theme="light"] .tl .grn{color:#3D6B36}
+html[data-theme="light"] .tl .cyn{color:#19617C}
+html[data-theme="light"] .tl .yel{color:#7A5311}
+html[data-theme="light"] .tl .red{color:#A33F36}
+
+/* 命令栏（48px，照抄 terminal_view.slint:2336） */
+.cbar{position:absolute;left:0;right:0;bottom:0;height:48px;background:var(--palt);
+  border-top:1px solid var(--line);display:flex;align-items:center;gap:10px;padding:0 10px}
+.cbar .box{flex:1 1 auto;min-width:0;height:34px;border:1px solid var(--line2);border-radius:var(--r-sm);
+  background:var(--root);display:flex;align-items:center;gap:0;position:relative;padding:0 6px 0 0}
+.cbar .box.focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-tonal)}
+.cbar .ps1{color:var(--ac);font-family:var(--mono);font-size:13px;width:26px;text-align:center;flex:0 0 auto}
+.cbar input{flex:1 1 auto;min-width:0;background:none;border:0;outline:0;color:var(--t1);
+  font-family:var(--ff);font-size:13px;padding:0}
+.cbar input::placeholder{color:var(--t3)}
+.ibtn{width:26px;height:26px;border-radius:5px;border:0;background:transparent;display:grid;place-items:center;
+  cursor:pointer;color:var(--t2);transition:.11s var(--ease);flex:0 0 auto;position:relative}
+.ibtn:hover{background:var(--hov);color:var(--t1)}
+.ibtn.on{background:var(--ac-tonal);color:var(--ac)}
+.ibtn svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.ibtn.sm svg{width:13px;height:13px}
+.cbar .send{height:34px;padding:0 14px;border:0;border-radius:7px;background:var(--ac);color:var(--ac-ink);
+  font-family:inherit;font-size:13px;font-weight:600;cursor:pointer;flex:0 0 auto}
+.cbar .scope{height:34px;padding:0 9px;border:1px solid transparent;border-radius:6px;background:transparent;
+  color:var(--t2);font-family:inherit;font-size:12px;cursor:pointer;display:flex;align-items:center;gap:6px;flex:0 0 auto}
+.cbar .scope:hover{background:var(--hov);color:var(--t1)}
+
+/* ══════════════════════════════════════════════════════════════════
+   ★ 面板本体 —— 1:1 逻辑像素
+   ══════════════════════════════════════════════════════════════════ */
+.panel{
+  position:absolute;right:10px;bottom:54px;width:560px;z-index:40;
+  display:flex;flex-direction:column;
+  background:var(--elev);                 /* ★ 不是 popup-bg：压终端上会「消失」 */
+  border:1px solid var(--lstr);           /* border-strong，唯一的分隔手段 */
+  border-radius:var(--r-lg);
+  box-shadow:var(--shadow);
+  overflow:hidden;
+  opacity:0;transform:translateY(6px) scale(.995);pointer-events:none;
+  transition:opacity .11s var(--ease),transform .11s var(--ease);
+}
+.panel.show{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}
+
+/* ① 工具栏 46px：搜索吃余量 + 过滤胶囊 */
+.pb-top{flex:0 0 auto;height:46px;display:flex;align-items:center;gap:8px;padding:0 10px;
+  background:var(--panel);border-bottom:1px solid var(--line)}
+.pb-srch{position:relative;display:flex;align-items:center;gap:6px;height:28px;padding:0 8px;
+  flex:1 1 auto;min-width:0;max-width:300px;
+  background:var(--field);border:1px solid var(--line2);border-radius:var(--r-sm);cursor:text;
+  transition:border-color .14s var(--ease),box-shadow .14s var(--ease)}
+.pb-srch:focus-within{border-color:var(--ac-line);box-shadow:0 0 0 3px var(--ac-tonal)}
+.pb-srch > svg{width:12px;height:12px;flex:0 0 auto;fill:none;stroke:var(--t3);stroke-width:1.8;
+  stroke-linecap:round;stroke-linejoin:round}
+.pb-srch input{flex:1 1 auto;min-width:0;background:none;border:0;outline:0;color:var(--t1);
+  font-family:var(--ff);font-size:12px}
+.pb-srch input::placeholder{color:var(--t3)}
+.pb-srch .clr{width:16px;height:16px;border:0;border-radius:50%;background:none;color:var(--t3);
+  cursor:pointer;display:none;place-items:center;flex:0 0 auto;padding:0;line-height:1}
+.pb-srch.has .clr{display:grid}
+.pb-srch .clr:hover{background:var(--ac);color:var(--panel)}
+.pb-srch .clr svg{width:9px;height:9px;stroke:currentColor;stroke-width:2;fill:none}
+.pb-pills{display:flex;align-items:center;gap:4px;flex:0 0 auto;margin-left:auto}
+/* 排序分段：与过滤胶囊分开 —— 一个是「看哪些」，一个是「按什么排」 */
+.pb-sort{display:flex;align-items:center;gap:0;flex:0 0 auto;padding:2px;
+  border:1px solid var(--line);border-radius:12px;background:var(--root)}
+.pb-sort button{height:18px;padding:0 7px;border:0;border-radius:10px;background:transparent;
+  color:var(--t3);font-family:inherit;font-size:10.5px;cursor:pointer;transition:.12s var(--ease);
+  white-space:nowrap}
+.pb-sort button:hover{color:var(--t1)}
+.pb-sort button.on{background:var(--ac-tonal);color:var(--ac);font-weight:600}
+.pill{height:24px;padding:0 9px;border-radius:12px;border:1px solid var(--line);background:transparent;
+  color:var(--t2);font-family:inherit;font-size:11px;cursor:pointer;transition:.12s var(--ease);white-space:nowrap}
+.pill:hover{border-color:var(--lstr);color:var(--t1)}
+.pill.on{background:var(--ac-tonal);border-color:var(--ac-line);color:var(--ac);font-weight:600}
+
+/* ② 列表：高度锁死 = 行数 × 38 + 8 */
+.pb-list{flex:0 0 auto;padding:4px;overflow-y:auto;overflow-x:hidden;background:transparent;
+  scrollbar-width:thin;scrollbar-color:var(--lstr) transparent}
+.pb-list::-webkit-scrollbar{width:8px}
+.pb-list::-webkit-scrollbar-thumb{background:var(--lstr);border-radius:4px;
+  border:2px solid transparent;background-clip:padding-box}
+.pb-row{position:relative;display:flex;align-items:center;gap:8px;height:38px;
+  padding:0 10px 0 12px;border-radius:var(--r-sm);cursor:pointer;
+  transition:background .1s var(--ease)}
+.pb-row:hover{background:var(--hov)}
+.pb-row.on{background:var(--ac-tonal)}
+/* 解剖图里要把「悬停态」定格出来，所以给选中行也摆出动作键 */
+.anat .pb-row.on .pb-acts{opacity:1;pointer-events:auto}
+.anat .pb-row.on .meta{opacity:0}
+.pb-row.on::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:2px;
+  border-radius:1px;background:var(--ac)}
+.pb-row .pin{width:12px;height:12px;flex:0 0 auto;display:none}
+.pb-row.pinned .pin{display:block}
+.pb-row .pin svg{width:12px;height:12px;fill:none;stroke:var(--ac);stroke-width:1.7;
+  stroke-linecap:round;stroke-linejoin:round}
+.pb-row .cmd{flex:1 1 auto;min-width:0;font-family:var(--mono);font-size:12.5px;line-height:1.35;
+  color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pb-row .cmd mark{background:transparent;color:var(--ac);font-weight:700}
+.pb-row .meta{flex:0 0 auto;font-family:var(--mono);font-size:10.5px;color:var(--t3);
+  white-space:nowrap;transition:opacity .1s var(--ease)}
+/* ★ 「次数」在默认（最近）档下压到更弱一档，「时间」保持常规 ——
+   视觉权重直接说明「这一刻按什么排」。用户上一版把次数当成了排序键
+   （因为它和另一列一样亮），这条就是冲着那个误读来的。
+   切到「常用」档时 .pb-list 加 .by-freq，两者权重对调。 */
+.pb-row .meta .u{color:var(--t3);opacity:.55}
+.pb-row .meta .t{color:var(--t3)}
+.pb-list.by-freq .pb-row .meta .u{color:var(--ac);opacity:1;font-weight:600}
+.pb-list.by-freq .pb-row .meta .t{opacity:.6}
+/* ── 行内元信息 ──
+   ★ 这里曾经有一个「来源色点」（5px，青=命令栏 / 绿=终端敲的），已删除：
+     它必须配图例才看得懂（用户第一反应是「这个横条是干啥的」），
+     而它依赖的 src 字段在存储里根本不存在 —— 为一个讲不清的信号去动
+     两条写入路径不划算。元信息只留「次数 · 时间」两个真正会被读的数字。 */
+/* ★ 动作键与元信息的交换**只由 hover 触发**，不由「选中」触发。
+   选中项默认停在第 1 行 —— 如果选中也淡出元信息，用户一打开面板，
+   最新那条的次数/时间就永远看不见。键盘用户不需要这排键：Del 就是删除。 */
+.pb-row:hover .meta{opacity:0}
+.pb-acts{position:absolute;right:6px;top:7px;height:24px;display:flex;align-items:center;gap:2px;
+  opacity:0;pointer-events:none;transition:opacity .1s var(--ease)}
+.pb-row:hover .pb-acts{opacity:1;pointer-events:auto}
+.pb-acts::before{content:"";position:absolute;left:-16px;top:0;width:16px;height:24px;
+  background:linear-gradient(90deg,transparent,var(--hov) 78%)}
+.pb-row.on .pb-acts::before{background:linear-gradient(90deg,transparent,
+  color-mix(in srgb,var(--ac) 10%,var(--hov)) 78%)}
+.pb-act{width:24px;height:24px;border:0;border-radius:var(--r-sm);background:transparent;
+  display:grid;place-items:center;cursor:pointer;color:var(--t2);padding:0;
+  transition:.1s var(--ease);position:relative;z-index:1}
+.pb-act:hover{background:var(--hov);color:var(--t1)}
+.pb-act.danger:hover{background:var(--dg-soft);color:var(--dg)}
+.pb-act.pinned-on{color:var(--ac)}
+.pb-act svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.7;
+  stroke-linecap:round;stroke-linejoin:round}
+
+/* 空态：高度与列表一致，面板不跳 */
+.pb-empty{display:none;flex:0 0 auto;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  padding:0 24px;text-align:center}
+.pb-empty.show{display:flex}
+.pb-empty .ico{width:26px;height:26px;opacity:.5;margin-bottom:2px}
+.pb-empty .ico svg{width:26px;height:26px;fill:none;stroke:var(--t3);stroke-width:1.5;
+  stroke-linecap:round;stroke-linejoin:round}
+.pb-empty b{font-size:12.5px;font-weight:600;color:var(--t2)}
+.pb-empty span{font-size:11.5px;color:var(--t3);line-height:1.7;max-width:44ch}
+.pb-empty .link{margin-top:2px;font-size:11.5px;color:var(--ac);cursor:pointer;
+  border-bottom:1px dashed var(--ac-line);background:none;border-left:0;border-right:0;border-top:0;
+  padding:0 0 1px;font-family:inherit}
+
+/* ③ 页脚 28px：键盘契约常驻 */
+.pb-foot{flex:0 0 auto;height:28px;display:flex;align-items:center;gap:9px;padding:0 10px;
+  background:var(--panel);border-top:1px solid var(--line);
+  font-size:10px;color:var(--t3);white-space:nowrap;overflow:hidden}
+.pb-foot .k{display:inline-flex;align-items:center;gap:3px}
+.pb-foot kbd{font-family:var(--mono);font-size:9.5px;color:var(--t2);border:1px solid var(--lstr);
+  border-bottom-width:2px;border-radius:3px;padding:0 2.5px;line-height:1.25}
+.pb-foot .gap{flex:1}
+.pb-foot .cnt{font-family:var(--mono);font-size:10px;color:var(--t3)}
+/* 页脚里的「清空历史」入口：低权重文字钮，常态不抢戏。
+   它离 hand-off 很远（在最右端、cnt 之后），不会被误点。 */
+.pb-foot .clear-all{height:18px;padding:0 6px;border:0;border-radius:3px;background:transparent;
+  color:var(--t3);font-family:inherit;font-size:10px;cursor:pointer;
+  transition:.12s var(--ease);flex:0 0 auto}
+.pb-foot .clear-all:hover{background:var(--dg-soft);color:var(--dg)}
+
+/* ══════════ 危险区：清空历史的确认层 ══════════
+   ★ 不是「点一下就清」。三层理由见 §10：不可逆、影响全局、且用户
+     攒了 200 条命令是长期资产。项目里「删文件」走 ConfirmDialog、
+     「清空传输记录」直接清 —— 历史介于两者之间，取前者。
+   ★ 但**不弹系统级模态框**：面板本身就是浮层，再套模态会出现
+     「遮罩套遮罩」，而且面板随时会被点外部关掉，模态的焦点栈会打架。
+     所以确认做在**面板内部**，替换列表区，保持面板尺寸不变。
+   ★ 排版：**整体水平+垂直居中**。左对齐时右侧会甩出一大片空白，
+     而且「警告/说明/按钮」三块散在左上角，读起来像没排完版。 */
+.pb-confirm{display:none;flex:0 0 auto;flex-direction:column;align-items:center;
+  justify-content:center;padding:0 30px;gap:5px;text-align:center}
+.pb-confirm.show{display:flex}
+/* 标题行：图标 + 文字，作为整体居中 */
+.pb-confirm .warn{display:flex;align-items:center;gap:7px;font-size:13px;
+  font-weight:650;color:var(--dg);line-height:1.25;letter-spacing:.1px}
+.pb-confirm .warn svg{width:16px;height:16px;flex:0 0 auto;fill:none;stroke:var(--dg);
+  stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+/* 主说明：被删数量是这一屏最该被看见的数字，单独提亮 */
+.pb-confirm .l1{font-size:12px;color:var(--t2);line-height:1.5}
+.pb-confirm .l1 b{color:var(--t1);font-weight:700;font-family:var(--mono);font-size:12.5px}
+/* 副说明：安抚信息（置顶保留）/ 第二步提示。两态切换，见 JS */
+.pb-confirm .l2{font-size:11.5px;color:var(--t3);line-height:1.5;
+  min-height:16px;transition:color .12s var(--ease)}
+.pb-confirm .l2 b{color:var(--t1);font-weight:600}
+/* 解锁后：副说明变危险色，明确「还要再点一次」 */
+.pb-confirm .l2.armed-hint{color:var(--dg);font-weight:600}
+.pb-confirm .rows{display:flex;align-items:center;justify-content:center;gap:8px;
+  margin-top:7px}
+.btn-cancel{height:27px;padding:0 14px;border:1px solid var(--line);border-radius:var(--r-sm);
+  background:transparent;color:var(--t2);font-family:inherit;font-size:11.5px;cursor:pointer;
+  transition:.12s var(--ease);min-width:62px}
+.btn-cancel:hover{border-color:var(--lstr);color:var(--t1);background:var(--hov)}
+/* 危险键：实心红。项目里 DangerButton 同语言。 */
+.btn-danger{height:27px;padding:0 14px;border:0;border-radius:var(--r-sm);
+  background:var(--dg);color:#fff;font-family:inherit;font-size:11.5px;font-weight:600;
+  cursor:pointer;transition:.12s var(--ease);min-width:62px}
+.btn-danger:hover{filter:brightness(1.10)}
+/* 第一态：描边空心。点一下才变实心「确认清空」，再点才真删。 */
+.btn-danger.armed{background:transparent;border:1px solid var(--dg-line);color:var(--dg)}
+.btn-danger.armed:hover{background:var(--dg-soft);border-color:var(--dg)}
+/* 键盘焦点：确认层只有两枚键，焦点必须看得见（Tab / ←→ 在两者间走） */
+.pb-confirm button:focus-visible{outline:2px solid var(--ac-line);outline-offset:1px}
+
+/* ── 页脚两套契约 ──
+   ★ 确认态下「↑↓ 选择 / ↵ 执行 / Tab 填入 / Del 删除」**全部失效**，
+     还挂在页脚就是纯误导（用户会去按 Del 以为能取消）。
+     所以整行换一套：只留 Esc 取消 + 第二步提示；「清空」入口也收起来。 */
+.pb-foot .cf-keys{display:none}
+.pb-foot.in-confirm .list-keys{display:none}
+.pb-foot.in-confirm .cf-keys{display:inline-flex}
+.pb-foot.in-confirm .clear-all{display:none}
+.pb-foot.in-confirm .cnt{color:var(--t3)}
+
+/* 撤销浮条：压在最上面，5s 进度条 */
+.pb-toast{position:absolute;left:50%;transform:translate(-50%,8px);bottom:34px;z-index:5;
+  display:flex;align-items:center;gap:9px;height:30px;padding:0 6px 0 11px;
+  background:var(--field);border:1px solid var(--lstr);border-radius:var(--r-md);
+  box-shadow:0 10px 26px -8px rgba(0,0,0,.66);
+  font-size:11.5px;color:var(--t2);white-space:nowrap;
+  opacity:0;pointer-events:none;transition:opacity .13s var(--ease),transform .13s var(--ease)}
+.pb-toast.show{opacity:1;transform:translate(-50%,0);pointer-events:auto}
+.pb-toast b{color:var(--t1);font-weight:600}
+.pb-toast .undo{height:22px;padding:0 8px;border:1px solid var(--ac-line);border-radius:var(--r-sm);
+  background:var(--ac-tonal);color:var(--ac);font-family:inherit;font-size:11px;font-weight:600;cursor:pointer}
+.pb-toast .undo:hover{background:var(--ac);color:var(--ac-ink)}
+.pb-toast .prog{position:absolute;left:0;bottom:0;height:2px;background:var(--ac);
+  border-radius:0 0 var(--r-md) var(--r-md);width:100%;transform-origin:left center}
+
+/* 长命令悬浮卡（行内放不下时的全文查看；fixed 逃出 .pb-list 裁剪） */
+.cmdpop{position:fixed;z-index:120;max-width:520px;pointer-events:none;
+  background:var(--field);border:1px solid var(--lstr);border-radius:var(--r-md);
+  padding:7px 9px;box-shadow:0 14px 34px -10px rgba(0,0,0,.72);
+  font-family:var(--mono);font-size:11.5px;line-height:1.6;color:var(--t2);
+  white-space:pre-wrap;word-break:break-all;display:none}
+.cmdpop.show{display:block}
+
+/* 读数条 */
+.readout{margin-top:16px;width:100%;max-width:940px;display:flex;flex-wrap:wrap;gap:6px 16px;
+  font-family:var(--mono);font-size:10.5px;color:var(--t3);padding:0 2px}
+.readout b{color:var(--t2);font-weight:500}
+.readout .k{color:var(--t3);opacity:.75}
+.readout .hi{color:var(--ac)}
+
+/* ── 表格 ── */
+table{width:100%;border-collapse:collapse;font-size:12.5px;margin:6px 0 0}
+th{text-align:left;font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--t3);
+  font-weight:680;padding:0 10px 8px;border-bottom:1px solid var(--lstr);white-space:nowrap}
+td{padding:9px 10px;border-bottom:1px solid var(--line);color:var(--t2);vertical-align:top;line-height:1.7}
+td b,th b{color:var(--t1);font-weight:600}
+tr:last-child td{border-bottom:0}
+td.ev{font-family:var(--mono);font-size:10.5px;color:var(--t3);white-space:nowrap}
+.tnum{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.pilltag{display:inline-block;font-family:var(--mono);font-size:9.5px;letter-spacing:.3px;padding:1.5px 5px;
+  border-radius:3px;border:1px solid var(--line);color:var(--t3);white-space:nowrap}
+.pilltag.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 42%,transparent);
+  background:color-mix(in srgb,var(--ok) 10%,transparent)}
+.pilltag.new{color:var(--ac);border-color:var(--ac-line);background:var(--ac-tonal)}
+.pilltag.warn{color:var(--wr);border-color:color-mix(in srgb,var(--wr) 45%,transparent);
+  background:color-mix(in srgb,var(--wr) 10%,transparent)}
+.pilltag.bad{color:var(--dg);border-color:var(--dg-line);background:var(--dg-soft)}
+.sev{display:inline-block;font:700 9.5px/1 var(--mono);padding:3px 5px;border-radius:3px}
+.sev.hi{color:var(--dg);background:var(--dg-soft);border:1px solid var(--dg-line)}
+.sev.mid{color:var(--wr);background:color-mix(in srgb,var(--wr) 10%,transparent);
+  border:1px solid color-mix(in srgb,var(--wr) 45%,transparent)}
+
+/* ── 解剖图 ── */
+.anat{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:26px;align-items:start;
+  border:1px solid var(--line);border-radius:var(--r-lg);background:var(--stage);padding:26px 24px}
+.anat .figwrap{position:relative;padding:6px}
+.anat .panel{position:relative;right:auto;bottom:auto;width:100%;opacity:1;transform:none;
+  pointer-events:auto}
+.badge{position:absolute;width:17px;height:17px;border-radius:50%;display:grid;place-items:center;
+  font:700 9.5px/1 var(--mono);background:var(--ac);color:var(--ac-ink);z-index:5;
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--stage) 90%,transparent)}
+.b1{left:-9px;top:9px} .b2{left:-9px;top:64px} .b3{left:-9px;bottom:58px} .b4{left:-9px;bottom:12px}
+.anat ol{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:13px}
+.anat li{display:flex;gap:10px;font-size:12px;line-height:1.75;color:var(--t2)}
+.anat li i{flex:0 0 auto;width:17px;height:17px;border-radius:50%;display:grid;place-items:center;
+  font:700 9.5px/1 var(--mono);font-style:normal;background:var(--ac-tonal);color:var(--ac);
+  border:1px solid var(--ac-line);margin-top:1px}
+.anat li b{color:var(--t1);display:block;font-size:12.5px;margin-bottom:1px}
+.anat li code{font-size:.88em;background:var(--hov);padding:0 4px;border-radius:3px;color:var(--t1)}
+
+/* ── 状态机 ── */
+.sm{display:flex;flex-wrap:wrap;gap:9px;align-items:stretch}
+.node{flex:1 1 0;min-width:150px;border:1px solid var(--line);border-radius:var(--r-lg);
+  background:var(--panel);padding:11px 12px}
+.node.hi{border-color:var(--ac-line);background:var(--ac-tonal)}
+.node.bad{border-color:var(--dg-line);background:var(--dg-soft)}
+.node b{font-size:12px;display:block;margin-bottom:4px}
+.node b code{font-family:var(--mono);font-size:11px}
+.node span{font-size:10.5px;color:var(--t2);line-height:1.65;display:block}
+.node span em{font-style:normal;color:var(--t3);font-family:var(--mono);font-size:9.5px}
+.arrow{display:grid;place-items:center;color:var(--t3);font-size:14px;flex:0 0 auto}
+
+/* ── 决策卡 ── */
+.dec{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.dcard{border:1px solid var(--line);border-radius:var(--r-lg);background:var(--panel);overflow:hidden}
+.dcard .dh{display:flex;align-items:center;gap:8px;padding:10px 13px;border-bottom:1px solid var(--line)}
+.dcard .dh .n{font:700 9.5px/1 var(--mono);color:var(--ac);background:var(--ac-tonal);
+  border:1px solid var(--ac-line);border-radius:3px;padding:3px 5px}
+.dcard .dh b{font-size:12.5px}
+.dcard .db{padding:11px 13px;font-size:11.5px;line-height:1.78;color:var(--t2)}
+.dcard .db .row{display:flex;gap:7px;margin:0 0 7px}
+.dcard .db .row:last-child{margin:0}
+.dcard .db .tag{flex:0 0 auto;font:700 9px/1.5 var(--mono);border-radius:3px;padding:1px 4px;height:15px}
+.dcard .db .tag.y{color:var(--ok);border:1px solid color-mix(in srgb,var(--ok) 45%,transparent);
+  background:color-mix(in srgb,var(--ok) 10%,transparent)}
+.dcard .db .tag.n{color:var(--dg);border:1px solid var(--dg-line);background:var(--dg-soft)}
+.dcard .db code{font-size:.9em;background:var(--hov);padding:0 4px;border-radius:3px;color:var(--t1)}
+
+/* ── 提示 / 注意 ── */
+.note{border-left:2px solid var(--ac);background:var(--ac-tonal);border-radius:0 var(--r-md) var(--r-md) 0;
+  padding:12px 15px;font-size:12.5px;line-height:1.85;color:var(--t2);margin:18px 0}
+.note b{color:var(--t1)}
+.note.dg{border-left-color:var(--dg);background:var(--dg-soft)}
+.note.dg b{color:var(--dg)}
+.note.wr{border-left-color:var(--wr);background:color-mix(in srgb,var(--wr) 9%,transparent)}
+.note.wr b{color:var(--wr)}
+.note code{font-size:.9em;background:var(--hov);padding:1px 5px;border-radius:var(--r-sm);color:var(--t1)}
+.kbd{font-family:var(--mono);font-size:10.5px;border:1px solid var(--lstr);border-bottom-width:2px;
+  border-radius:3px;padding:1px 4px;color:var(--t1);white-space:nowrap;background:var(--panel)}
+
+/* ── 现状复现舞台 ── */
+.repro{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:22px;align-items:start;
+  border:1px solid var(--line);border-radius:var(--r-lg);background:var(--stage);padding:22px 20px}
+.repro .figwrap{position:relative}
+.repro .tview{height:220px;border:1px solid var(--lstr);border-radius:var(--r-md);overflow:hidden}
+.repro .cbar{height:44px}
+.repro .cbar .box{height:30px}
+.ghostlayer{position:absolute;left:0;right:0;top:0;height:calc(100% - 44px);z-index:30;
+  background:rgba(247,84,100,.10);border:1px dashed var(--dg);display:none;
+  align-items:flex-start;justify-content:center;padding-top:10px;
+  font:600 10.5px/1.4 var(--mono);color:var(--dg);text-align:center;cursor:crosshair}
+.ghostlayer.show{display:flex}
+.repro .ro{font-family:var(--mono);font-size:10.5px;line-height:2;color:var(--t3)}
+.repro .ro b{color:var(--t2);font-weight:500}
+.repro .ro .hi{color:var(--ac)}
+.repro .ro .bad{color:var(--dg)}
+.repro h4{margin:0 0 8px;font-size:12.5px;font-weight:680;color:var(--t1)}
+.repro .btnrow{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 0}
+
+/* 数据模型对照 */
+.dm{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.dmbox{border:1px solid var(--line);border-radius:var(--r-lg);background:var(--stage);overflow:hidden}
+.dmbox .h{height:30px;display:flex;align-items:center;gap:7px;padding:0 12px;
+  border-bottom:1px solid var(--line);font:700 9.5px/1 var(--mono);letter-spacing:.6px;color:var(--t3)}
+.dmbox .h .t{color:var(--t2)}
+.dmbox pre{margin:0;padding:12px 13px;font-family:var(--mono);font-size:11px;line-height:1.85;
+  color:var(--t2);overflow-x:auto;white-space:pre}
+.dmbox pre .c{color:var(--t3)}
+.dmbox pre .k{color:var(--ac)}
+.dmbox pre .w{color:var(--wr)}
+.dmbox pre .d{color:var(--dg)}
+.dmbox .f{padding:8px 13px;border-top:1px solid var(--line);font-size:11px;color:var(--t3);line-height:1.7}
+
+@media (max-width:1040px){
+  .claims{grid-template-columns:1fr}
+  .anat,.repro{grid-template-columns:1fr;gap:20px}
+  .dec,.dm{grid-template-columns:1fr}
+  .wrap,.hd{padding-left:18px;padding-right:18px}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hd">
+    <div class="brand">MTERM<span>历史命令弹框 · 重构方案</span></div>
+    <div class="gap"></div>
+    <span class="date">2026-10-27</span>
+    <button class="tgl" id="themeBtn" type="button">
+      <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.2"/><path d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3 3l1.1 1.1M11.9 11.9L13 13M13 3l-1.1 1.1M4.1 11.9L3 13"/></svg>
+      <span id="themeTxt">浅色</span>
+    </button>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <section class="hero">
+    <div class="kick">Interaction spec · 不动代码，只定口径</div>
+    <h1>这个弹框<b>已经不是「不好用」，<br>而是画不出来了</b> —— 只剩一台空转的状态机。</h1>
+    <p class="lead">
+      先说结论，因为它决定了这次要做的是「重构」还是「重建」：<code>history-view</code> 这组数据今天
+      <b>没有任何一处把它画成行</b>。点命令栏那枚 🕘（或按 <code>Ctrl+R</code>）会置
+      <code>history-open = true</code>，于是「点外面关闭」的遮罩层被点亮、图标变强调色 ——
+      <b>但面板本身没有绘制代码</b>。用户看到的是：点了没反应，然后再点终端一次，第一次点击还被吃掉。
+      下面 §1 是可交互的复现，§2 是重构判断，§3 是能直接打字/按键的活沙盘，§4–§9 是解剖、状态机、
+      键盘契约、争议决策与<b>业务代码改动清单</b>，<b>§10 单独定「清空历史」</b> ——
+      那是整个面板里唯一不可逆的操作，不能用「单条删除」那套口子。
+      <br><br>
+      <b>关于排序</b>，先给结论，因为它决定了这套改动到底要动多少代码：<b>存储顺序本身就已经是「最近使用序」</b> ——
+      <code>push_command_history</code> 每次把命令移到末尾，末元素恒为最近用过。所以面板的「新→旧」显示
+      <b>只是把这根轴反过来</b>，默认档不需要任何排序算法。而 CHANGELOG #331 早就写了「历史命令弹窗改为从新到旧显示」，
+      这条承诺<b>至今没落地</b>（<code>terminal_ui.rs:198</code> 原样返回存储序）。§2 ④ 给了完整的四档规则。
+    </p>
+
+    <div class="claims">
+      <div class="claim">
+        <em>现状</em>
+        <b>面板绘制代码已丢失，状态机还在跑</b>
+        <span><code>hist-popup-visible</code> 仍然驱动遮罩层（<code>:2364</code>）与图标高亮（<code>:2702</code>），
+        但没有任何 <code>for h in history-view</code>。所以「点了没反应 + 白吃一次点击」。</span>
+      </div>
+      <div class="claim">
+        <em>数据</em>
+        <b>只有一串裸字符串，没有时间 / 次数</b>
+        <span>存储是 <code>Vec&lt;String&gt;</code>（<code>config_file.rs:449</code>），去重 + 上限 200。
+        想画「4 次 · 2 小时前」或「只删这一条」都缺字段，所以重构<b>必然动 Rust 侧</b>。</span>
+      </div>
+      <div class="claim">
+        <em>排序</em>
+        <b>存储序就是「最近使用序」</b>
+        <span><code>push_command_history</code> 每次把命令 <code>retain+push</code> 移到末尾，所以
+        <b>末元素恒为最近使用</b>。面板的「新→旧」显示<b>只是把这根轴反过来</b>，默认档零排序成本 ——
+        而 CHANGELOG #331 定的「新→旧」至今<b>没实现</b>。</span>
+      </div>
+      <div class="claim">
+        <em>形态</em>
+        <b>一个组件、两个宿主</b>
+        <span>命令栏浮层与「发送命令」窗左栏的「最近」是同一件事的两份实现
+        （后者还只有 8 条、无搜索、无删除）。抽 <code>ui/history_panel.slint</code>，宿主只传锚点与数据。</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════ §1 现状取证 ══════════ -->
+  <h2 class="sec"><span class="no">01</span>现状取证：弹框去哪了</h2>
+  <p class="sub">
+    这一节全是代码取证，每条都能点到具体行。左边是这个 bug 的<b>可交互复现</b> ——
+    它按 <code>ui/terminal_view.slint</code> 里现存的状态机原样复刻，不是画的示意图。
+  </p>
+
+  <div class="repro">
+    <div class="figwrap">
+      <div class="tview" id="rpView">
+        <div class="tbody" id="rpBody">
+          <div class="tl dim">Last login: Mon Oct 27 09:14:02 2026 from 192.168.100.7</div>
+          <div class="tl"><span class="grn">root@web-01</span>:<span class="cyn">/var/log</span>$ df -h | head -3</div>
+          <div class="tl dim">Filesystem      Size  Used Avail Use% Mounted on</div>
+          <div class="tl dim">/dev/vda1        79G   41G   35G  55% /</div>
+        </div>
+        <div class="ghostlayer" id="rpGhost">
+          这一层就是 <span style="color:var(--dg)">hist-popup-visible</span> 点亮的遮罩<br>
+          它 2000px 高、看不见、但吃点击 —— 点一下试试（计数 +1）
+        </div>
+        <div class="cbar" id="rpBar">
+          <div class="box"><span class="ps1">$</span><input id="rpInput" placeholder="输入命令，回车发送" readonly></div>
+          <button class="ibtn" id="rpClock" type="button" title="历史命令">
+            <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.6"/><path d="M8 4.6v3.4l2.2 1.4"/></svg>
+          </button>
+          <button class="send" type="button">发送</button>
+        </div>
+      </div>
+    </div>
+    <div>
+      <h4>状态读数（点 🕘 看）</h4>
+      <div class="ro" id="rpReadout">
+        <div><span class="k">history-open</span> <b id="roOpen">false</b></div>
+        <div><span class="k">history-autocomplete</span> <b id="roAuto">false</b></div>
+        <div><span class="k">hist-popup-visible</span> <b id="roVis">false</b></div>
+        <div><span class="k">画出来的行数</span> <b class="bad" id="roRows">0</b></div>
+        <div><span class="k">被吃掉的点击</span> <b id="roEat">0</b></div>
+      </div>
+      <div class="btnrow">
+        <button class="chip" id="rpReset" type="button">重置</button>
+      </div>
+      <p style="font-size:11px;line-height:1.75;color:var(--t3);margin:12px 0 0">
+        图标变强调色 + 遮罩点亮 + <code>history-view</code> 有 42 条数据，<b>但屏幕上没有框</b>。
+        这就是今天用户按 <span class="kbd">Ctrl+R</span> 的全部反馈。
+      </p>
+    </div>
+  </div>
+
+  <table style="margin-top:22px">
+    <thead><tr><th style="width:23%">取证点</th><th style="width:15%">位置</th><th>说明</th><th style="width:52px">严重度</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>面板没有绘制代码</b></td>
+        <td class="ev">terminal_view.slint<br>:3212-3254</td>
+        <td>唯一渲染出来的浮层是 <code>CommandHint</code>，条件是 <code>hist-popup-visible && history-autocomplete</code>。而 <code>open_history_panel()</code> 恰恰把 <code>history-autocomplete</code> 置 <b>false</b> —— 所以这条分支永远走不到。全仓 <code>for h in history-view</code> 命中 0 处。</td>
+        <td><span class="sev hi">高</span></td>
+      </tr>
+      <tr>
+        <td><b>遮罩还在，吃一次点击</b></td>
+        <td class="ev">:2364-2371</td>
+        <td><code>if quick-open || hist-popup-visible || scope-open : TouchArea { x:0; y:-2000px; height:2000px }</code>。面板不画，但这层照画 → 用户第一次点终端被静默吞掉。</td>
+        <td><span class="sev hi">高</span></td>
+      </tr>
+      <tr>
+        <td><b>图标假装打开了</b></td>
+        <td class="ev">:2696-2726</td>
+        <td><code>hin-btn</code> 的底色/图标色绑 <code>hist-panel-open</code>（= <code>history-open && !history-autocomplete</code>）。框没有，按钮却亮 —— 这是最误导的一处。</td>
+        <td><span class="sev hi">高</span></td>
+      </tr>
+      <tr>
+        <td><b>快捷键说明还在教用户按</b></td>
+        <td class="ev">app.slint:7430</td>
+        <td>快捷键面板写着「<code>Ctrl+R</code> 搜索命令历史（↑↓ 选择，回车执行，Esc 关闭）」。功能不存在，文档还在承诺。</td>
+        <td><span class="sev mid">中</span></td>
+      </tr>
+      <tr>
+        <td><b>两套候选数据源并存</b></td>
+        <td class="ev">:894-900<br>:1024-1030</td>
+        <td><code>suggest-view/suggest-kind</code> 与 <code>hint-rows</code> 是同一件事的两代实现；<code>suggest_count()/suggest_at()</code> 只服务已死的那条分支。<code>history_kind_at()</code> 也是死的。</td>
+        <td><span class="sev mid">中</span></td>
+      </tr>
+      <tr>
+        <td><b>一个索引被两个面板共用</b></td>
+        <td class="ev">:994 / :3241</td>
+        <td><code>history-selected</code> 既给四段式提示框当选中项，又给历史面板当选中项。两个面板互相污染（提示框里选到第 3 条，关掉再开历史面板，索引还停在第 3）。</td>
+        <td><span class="sev mid">中</span></td>
+      </tr>
+      <tr>
+        <td><b>删除是「立刻、不可撤销」</b></td>
+        <td class="ev">app.rs:10796-10814</td>
+        <td><code>on_delete_history_cmd</code> 里 <code>remove</code> + <code>save</code> 一步到位，没有撤销窗口。历史是用户自己攒出来的资产，误删一条不可恢复。</td>
+        <td><span class="sev mid">中</span></td>
+      </tr>
+      <tr>
+        <td><b>数据里没有任何时间/次数</b></td>
+        <td class="ev">config_file.rs:449<br>config.rs:1913-1926</td>
+        <td><code>command_history: Vec&lt;String&gt;</code>；<code>push_command_history</code> 只做「去重 + 移到末尾 + 截断 200」。想按时间排序、显示频次、做「今天」筛选，字段全缺。</td>
+        <td><span class="sev hi">高</span></td>
+      </tr>
+      <tr>
+        <td><b>两份实现：命令栏 vs 发送窗</b></td>
+        <td class="ev">send_cmd_window.slint<br>:455-505</td>
+        <td>发送窗左栏的「最近」是另一份历史列表：只列最后 8 条、无搜索、无删除、无复制，且过滤词是<b>整段草稿</b>（#send-cmd-round3 记过这个坑）。同一份数据两种体验。</td>
+        <td><span class="sev mid">中</span></td>
+      </tr>
+      <tr>
+        <td><b>「从新到旧显示」从未实现</b></td>
+        <td class="ev">CHANGELOG #331<br>terminal_ui.rs:198</td>
+        <td>#331 写明「历史命令弹窗改为从新到旧显示」，但 <code>history_view_rows</code> 原样返回存储序（<b>最旧在前</b>），
+          至今没变。唯一实现了新→旧的是 <code>command_hint.rs:357</code> 的 <code>.iter().rev()</code> ——
+          那是<b>提示框</b>，不是历史面板。<br>所以 #331 是个<b>没落地的承诺</b>；默认选中也跟着错：
+          <code>terminal_view.slint:1393</code> 取 <code>length-1</code>（因为列表最旧在前），
+          <code>:2511</code> 取 <code>0</code>，两处默认值方向相反。</td>
+        <td><span class="sev mid">中</span></td>
+      </tr>
+      <tr>
+        <td><b>零回归测试</b></td>
+        <td class="ev">tests/</td>
+        <td><code>tests/app/command_history/mod.rs</code> 只有 1 条用例（<code>history_view_rows</code> 的过滤），面板本身没有任何离屏像素断言 —— 所以它整块消失也没人发现。</td>
+        <td><span class="sev hi">高</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="note dg">
+    <b>为什么值得单独写一段</b>：这不是「重构一个难用的弹框」，而是「把一块已经丢了的东西按新规格重建」。
+    两者的验收口径完全不同 —— 重建必须<b>先补测试</b>（§9 的 8 条离屏断言），否则下一次改动还会静默丢掉它。
+    这也是本方案把「回归测试」排进 P0 而不是 P2 的原因。
+  </div>
+
+  <!-- ══════════ §2 重构判断 ══════════ -->
+  <h2 class="sec"><span class="no">02</span>重构判断：一个组件、两个宿主、一条有结构的数据</h2>
+  <p class="sub">
+    三条判断决定了后面所有细节。每条都先说「不这么做会怎样」，再说选它。
+  </p>
+
+  <h3 class="mini">① 形态：不是下拉，是「向上展开的检索面板」</h3>
+  <p class="sub">
+    老实现是个 300px 宽的窄下拉（只有「文本 + 类型」两列）。它装不下这次要的三样东西：
+    <b>搜索框、过滤胶囊、行内动作</b>。而历史面板和四段式提示框的性质不同 —— 提示框是「我正在补什么」，
+    面板是「我以前干过什么」，后者本质是个<b>检索界面</b>，所以按 560×386 的面板做，向上展开、
+    右边缘对齐命令栏内距。
+  </p>
+
+  <h3 class="mini">② 结构：四段，但第二段是「列表」，第三段是「页脚」——没有详情区</h3>
+  <p class="sub">
+    四段式提示框有 94px 详情区（语法签名 + 说明），因为命令需要解释。<b>历史条目不需要解释，它需要「看清全文」</b>
+    —— 长命令（<code>journalctl -u nginx -n 100 --no-pager</code>）在 560 宽里必然被省略号截断。
+    所以这里用<b>悬停全文卡</b>（复用「发送命令」窗已有的 <code>.cmdpop</code> 机制），
+    而不是固定详情区：不占高度、不推动布局、鼠标不动就不用看见它。
+  </p>
+
+  <h3 class="mini">③ 数据：从 <code>Vec&lt;String&gt;</code> 升到 <code>Vec&lt;HistoryEntry&gt;</code></h3>
+
+  <div class="dm">
+    <div class="dmbox">
+      <div class="h"><span class="t">现在</span><span style="margin-left:auto;color:var(--dg)">config_file.rs:449</span></div>
+      <pre><span class="c">/// Recent commands sent from the command box,</span>
+<span class="c">/// oldest first, capped (#55).</span>
+<span class="k">pub</span> command_history: <span class="w">Vec&lt;String&gt;</span>,
+
+<span class="c">// 去重靠 retain + push（config.rs:1913）</span>
+<span class="c">// 上限 CAP = 200</span>
+<span class="c">// 顺序 = 最旧在前（↑ 回溯要这个顺序）</span></pre>
+      <div class="f">缺：<b>时间</b>（无法排序/分组/显示「2 小时前」）、<b>频次</b>（无法做「常用」）、<b>置顶</b>。</div>
+    </div>
+    <div class="dmbox">
+      <div class="h"><span class="t">提案</span><span style="margin-left:auto;color:var(--ac)">defaults_rev 10</span></div>
+      <pre><span class="k">pub struct</span> HistoryEntry {
+  <span class="k">pub</span> cmd: String,
+  <span class="k">pub</span> last_used: i64,   <span class="c">// unix 秒</span>
+  <span class="k">pub</span> uses: u32,        <span class="c">// 去重命中 +1</span>
+  <span class="k">pub</span> pinned: bool,
+}
+
+<span class="c">// 旧字段保留一个版本，只读不写</span>
+<span class="c">// （rev 10 迁移时读它、写进新字段）</span></pre>
+      <div class="f">顺序仍存「最旧在前」。<b>但这已经就是「最近使用序」</b> ——
+        因为 <code>push_command_history</code> 每次把该命令 <code>retain</code> + <code>push</code> 移到末尾
+        （<code>config.rs:1919</code>），末元素恒为最近使用。所以面板的「新→旧」显示
+        <b>就是把这根轴反过来</b>，不需要排序算法。</div>
+    </div>
+  </div>
+
+  <div class="note wr">
+    <b>先纠正一个常见误解</b>：上一版稿子写「存储顺序 = ↑ 回溯语义，显示顺序 = 检索语义，两者不共用一根轴」——
+    <b>这句话是错的</b>。回溯轴本身就是 recency 轴：<code>config.rs:1913-1926</code> 的
+    <code>retain + push</code> 让「最近用过」永远在末尾，所以 <code>↑</code> 从末尾往回走，
+    走到的正是「越来越久以前」。两根轴是<b>同一根</b>，只是方向相反。
+    <br><br>
+    这个事实把「排序」这件事的代价降到了最低：默认档不需要排序，<code>.iter().rev()</code> 即可。
+    真正需要排序的只有「常用」档（按次数）。
+  </div>
+
+  <div class="note dg">
+    <b>硬规则：默认档禁止按 <code>last_used</code> 排序，必须反转存储序</b>（这条在原型里真实踩过）。
+    <br><br>
+    乍一看「按最近使用排」=「按 <code>last_used</code> 降序排序」，两者是同一件事 —— <b>不是</b>。
+    时间戳有精度上限，并列必然发生：
+    <br>· 原型里 <code>ago</code> 是整数分钟 —— 连续执行 3 条命令后它们<b>全是 ago=0</b>，
+      稳定排序遇并列会保持数组顺序，而数组是存储序（最旧在前），<b>于是最早执行的那条排第一</b>，
+      和用户预期正好相反；
+    <br>· 真实实现里 <code>last_used</code> 是 unix <b>秒</b> —— 同一秒内连发多条（脚本、补全回车）照样撞车。
+    <br><br>
+    而存储序没有这个问题：<code>push_command_history</code> 每次「摘掉 + push 到末尾」，
+    「谁最新」在<b>数组位置</b>里是精确的、无并列的。所以正确的实现是
+    <b>先过滤、再 <code>reverse()</code>（Rust 侧 <code>.iter().rev()</code>）</b>；
+    只有「常用」档（按次数，真有并列需求）才写比较器，且破平键用存储位置而不是时间戳。
+  </div>
+
+  <h3 class="mini">排序规则：四档，两个维度不混</h3>
+  <p class="sub">
+    <b>过滤</b>回答「看哪些」，<b>排序</b>回答「按什么排」，是两个独立维度。所以工具栏上它们是两组控件，
+    不挤在一排胶囊里。过滤有三档（改变<b>集合</b>），排序有两档（改变<b>顺序</b>）。
+  </p>
+
+  <table>
+    <thead><tr><th style="width:16%">档</th><th style="width:26%">规则</th><th style="width:22%">实现代价</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>全部</b><br><span class="pilltag ok">默认</span></td>
+        <td>最近使用优先（<b>存储序反转</b>，不是按 <code>last_used</code> 排序 —— 见上方硬规则）</td>
+        <td class="tnum"><code>.iter().rev()</code></td>
+        <td>不需要排序 —— 存储序反转即可。默认选中 = <b>第 1 行</b>（最近用过的那条）。</td>
+      </tr>
+      <tr>
+        <td><b>置顶</b></td>
+        <td>同「全部」，只列置顶项</td>
+        <td class="tnum">filter + rev</td>
+        <td>置顶项<b>不改变在「全部」里的位置</b>（§7 决策 04），只多一枚图钉。集中列出靠这一档。</td>
+      </tr>
+      <tr>
+        <td><b>今天</b></td>
+        <td>同「全部」，只留 24h 内</td>
+        <td class="tnum">filter + rev</td>
+        <td>只依赖 <code>last_used</code>，不新增存储字段。</td>
+      </tr>
+      <tr>
+        <td><b>常用</b><br><span class="pilltag warn">次选</span></td>
+        <td>使用次数降序，次数相同按最近使用降序</td>
+        <td class="tnum">真排序</td>
+        <td>唯一需要 <code>sort</code> 的一档。破平规则不能省，否则次数相同的条目顺序会随实现漂移。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="note wr">
+    <b>一个必须写下来的前提：执行完要回写历史。</b>
+    面板里执行一条命令之后，必须走一次 <code>push_command_history</code>（<code>config.rs:1913</code>）：
+    <b>次数 +1、<code>last_used</code> 刷新、该条摘掉后 push 到存储末尾</b>。少这一步，
+    「最近使用优先」就失效了 —— 用户执行完再打开面板，那条还停在原地，
+    <b>看起来就像排序坏了</b>。
+    <br><br>
+    命令栏里敲一条<b>没执行过</b>的命令也一样要进历史（<code>uses = 1</code>），
+    所以这条逻辑有两个分支，不是「只更新已有的」。
+    <br><br>
+    这也是沙盘上一版的真实失真：<code>doRun()</code> 只往终端写回显、没回写历史，
+    于是「次数」不涨、时间不归零、条目不动 —— 排序规则本身是对的，但<b>看不到它生效</b>。
+  </div>
+
+  <h3 class="mini">「次数」不是排序键 —— 视觉权重必须说清这件事</h3>
+  <p class="sub">
+    默认档按<b>时间</b>排，但列表右侧同时显示「7 次 · 4 分钟前」两列。如果两列一样亮，
+    用户会自然地拿「次数」去核对顺序，然后发现「12、9、6、7、4」是乱的 ——
+    <b>这是显示层制造出来的误读，不是排序错</b>。
+  </p>
+  <table>
+    <thead><tr><th style="width:18%">排序档</th><th style="width:28%">「N 次」的视觉</th><th>「时间」的视觉</th></tr></thead>
+    <tbody>
+      <tr><td><b>最近</b>（默认）</td><td><span class="tnum" style="opacity:.5">7 次</span></td><td>常规 <code>text-muted</code> —— 它是排序键，读起来最自然</td></tr>
+      <tr><td><b>常用</b></td><td><b><span class="tnum" style="color:var(--ac)">12 次</span></b>（accent + 加粗）</td><td>压暗到 <code>.6</code> —— 退为次要信息</td></tr>
+    </tbody>
+  </table>
+  <p class="sub">
+    这是<b>高保真的表达力</b>：同一个界面，切换排序时让「谁是排序键」在视觉上直接可读，
+    用户不需要去回忆刚才点了哪个按钮。实现上只是给 <code>.pb-list</code> 挂一个
+    <code>by-freq</code> 类，切换两段的 <code>color/opacity</code>。
+  </p>
+
+  <div class="note dg">
+    <b>不做字母序</b>。面板是「回忆我敲过什么」，不是「查字典」；而且「按名字找」已经由搜索框承担
+    （键入即过滤，实时命中高亮）。再加一档字母序，等于给同一个意图两条路径，还要让用户选。
+    <br><br>
+    <b>置顶不参与排序</b> —— 这一条容易做错。如果置顶项被强行提到最前，「最近用过的那条」就不在第 1 行了，
+    而用户 <span class="kbd">Ctrl+R</span> 十次有九次是来找刚敲过的那条。置顶的价值是
+    <b>标记 + 单独一档 + 不被 CAP 200 淘汰</b>，不是插队。
+    淘汰规则要跟着改：<code>config.rs:1920-1925</code> 现在是 <code>drain(0..len-CAP)</code>（直接砍最旧的），
+    必须改成「<b>从队首找第一个非置顶的删</b>」—— 否则置顶项会被后续执行悄悄挤掉。
+  </div>
+
+  <div class="note">
+    <b>实现时顺带修掉两处现存矛盾</b>（本次重构的附带收益）：
+    <br>① <b>显示序</b>：CHANGELOG #331 定的「从新到旧显示」在代码里<b>从未实现</b> ——
+      <code>terminal_ui.rs:198</code> 的 <code>history_view_rows</code> 原样返回存储序（最旧在前）。
+      面板要新→旧，得在<b>视图层</b>反转，别再去改存储序（会砸掉 ↑ 回溯）。
+    <br>② <b>默认选中</b>：<code>terminal_view.slint:1393</code> 取 <code>length-1</code>（因为列表最旧在前），
+      而 <code>:2511</code> 取 <code>0</code>。新方案下列表是新→旧，<b>默认选中一律是 0</b> ——
+      一个数，不用再写「取最后一个」这种反直觉补丁。
+  </div>
+
+  <h3 class="mini">⑤ 两处宿主：命令栏浮层 + 发送命令窗左栏</h3>
+  <p class="sub">
+    <code>send_cmd_window.slint:455-505</code> 的「最近」和命令栏面板是同一件事。抽成组件后，
+    发送窗白拿搜索、置顶、删除、全文卡；命令栏白拿「插入到光标处」的能力（发送窗已有）。
+    这是 <code>command_hint.slint</code> 已经验证过的做法 —— 那次抽组件就是为了「别再长出第二份实现」。
+    两处共用组件时，<b>排序规则也共用</b>（§2 ④ 的四档）—— 同一个用户在两处看到不同的顺序会以为数据有问题。  </p>
+
+  <!-- ══════════ §3 活沙盘 ══════════ -->
+  <h2 class="sec"><span class="no">03</span>活沙盘：真的能打字、能按键</h2>
+  <p class="sub">
+    点 🕘 打开（或直接点命令栏输入框后按 <span class="kbd">Ctrl</span>+<span class="kbd">R</span>）。
+    搜索框<b>默认持焦</b>：直接打字即过滤，<span class="kbd">↑</span><span class="kbd">↓</span> 仍然换选中项 ——
+    这是这套交互最关键的一条（见 §6）。<span class="kbd">↵</span> 执行、<span class="kbd">Tab</span> 填入命令栏、
+    <span class="kbd">Del</span> 删除并弹出撤销、<span class="kbd">Esc</span> 关闭。
+    悬停某一行会浮出三个动作键；悬停被省略号截断的行会浮出全文卡。
+    <br><br>
+    <b>工具栏右端有两组控件</b>：过滤胶囊（全部 / 置顶 / 今天）改变<b>看哪些</b>，排序分段（最近 / 常用）改变<b>按什么排</b>。
+    点「常用」看排序怎么变 —— 沙盘里的数据是<b>存储序</b>（最旧在前，和 <code>config.rs</code> 一致），
+    显示序由代码真算出来，不是数组碰巧排好的。
+    <br><br>
+    <b>页脚最右端还有一枚「清空」</b>：点它进确认层，要再点一次红色的「确认清空」才真删，
+    而且<b>置顶项会被保留</b>（§10）。场景条里的「清空确认」可以直达那一屏。
+  </p>
+
+  <div class="stage">
+    <div class="cap">LIVE · 交互沙盘（1:1 逻辑像素）</div>
+
+    <div class="bar" id="scenarios">
+      <button class="chip on" data-sc="default" type="button">默认（42 条）</button>
+      <button class="chip" data-sc="long" type="button">长命令</button>
+      <button class="chip" data-sc="empty" type="button">无历史</button>
+      <button class="chip" data-sc="many" type="button">很多条（滚动）</button>
+      <button class="chip" data-sc="narrow" type="button">窄窗 460</button>
+      <button class="chip" data-sc="short" type="button">矮窗（缩行数）</button>
+      <button class="chip" data-sc="confirm" type="button">清空确认</button>
+    </div>
+
+    <div class="term">
+      <div class="term-tabs">
+        <div class="tb on"><i></i>web-01</div>
+        <div class="tb"><i style="background:var(--t3)"></i>db-02</div>
+        <div class="gap"></div>
+        <span class="knob">96×28</span>
+      </div>
+
+      <div class="tview" id="pane">
+        <div class="tbody" id="paneBody">
+          <div class="tl dim">Last login: Mon Oct 27 09:14:02 2026 from 192.168.100.7</div>
+          <div class="tl"><span class="grn">root@web-01</span>:<span class="cyn">/var/log</span>$ df -h | head -3</div>
+          <div class="tl dim">Filesystem      Size  Used Avail Use% Mounted on</div>
+          <div class="tl dim">/dev/vda1        79G   41G   35G  55% /</div>
+          <div class="tl dim">/dev/vdb1       197G  112G   76G  60% /data</div>
+          <div class="tl">&nbsp;</div>
+        </div>
+
+        <!-- ★ 面板本体：唯一实例，两种宿主共用 -->
+        <div class="panel" id="panel" role="dialog" aria-label="命令历史">
+          <!-- ① 工具栏 -->
+          <div class="pb-top">
+            <label class="pb-srch" id="srchBox">
+              <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.3"/><path d="M10.2 10.2L14 14"/></svg>
+              <input id="srch" type="text" placeholder="键入即搜索…" autocomplete="off"
+                     spellcheck="false" aria-label="搜索命令历史">
+              <button class="clr" id="srchClr" type="button" aria-label="清空搜索">
+                <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+              </button>
+            </label>
+            <div class="pb-pills">
+              <button class="pill on" data-f="all" type="button">全部</button>
+              <button class="pill" data-f="pinned" type="button">置顶</button>
+              <button class="pill" data-f="today" type="button">今天</button>
+            </div>
+            <!-- 排序：与过滤分开。看哪些 vs 按什么排，是两件事 -->
+            <div class="pb-sort" id="pbSort" role="group" aria-label="排序方式">
+              <button class="on" data-s="recent" type="button" title="按最近使用排序">最近</button>
+              <button data-s="freq" type="button" title="按使用次数排序">常用</button>
+            </div>
+          </div>
+
+          <!-- ② 列表（高度锁死） -->
+          <div class="pb-list" id="list"></div>
+
+          <!-- 空态：与列表同高 -->
+          <div class="pb-empty" id="empty">
+            <div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M12 7v5.2l3.4 2"/></svg></div>
+            <b id="emptyTitle">还没有命令历史</b>
+            <span id="emptyDesc">在命令栏敲一条命令、或直接在终端里执行 —— 都会记在这里。</span>
+            <button class="link" id="emptyAct" type="button" style="display:none">清除搜索</button>
+          </div>
+
+          <!-- 确认层：替换列表区，内容居中（见 §10） -->
+          <div class="pb-confirm" id="confirmBox">
+            <div class="warn">
+              <svg viewBox="0 0 24 24"><path d="M12 3.2L21.5 20.4H2.5z"/><path d="M12 9.4v4.6M12 16.9v.1"/></svg>
+              <span>清空全部命令历史？</span>
+            </div>
+            <div class="l1" id="cfL1">将删除 <b>40</b> 条记录</div>
+            <div class="l2" id="cfL2">这 2 条置顶命令会保留</div>
+            <div class="rows">
+              <button class="btn-cancel" id="cfCancel" type="button">取消</button>
+              <button class="btn-danger armed" id="cfOk" type="button">清空</button>
+            </div>
+          </div>
+
+          <!-- ③ 页脚 -->
+          <div class="pb-foot" id="pbFoot">
+            <!-- 列表态键盘契约 -->
+            <span class="list-keys" style="display:contents">
+              <span class="k"><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
+              <span class="k"><kbd>↵</kbd> 执行</span>
+              <span class="k"><kbd>Tab</kbd> 填入</span>
+              <span class="k"><kbd>Del</kbd> 删除</span>
+              <span class="k"><kbd>Esc</kbd> 关闭</span>
+            </span>
+            <!-- 确认态只有这两个键真的有用 -->
+            <span class="cf-keys">
+              <span class="k"><kbd>Esc</kbd> 取消</span>
+              <span class="k"><kbd>Tab</kbd> 切换 · <kbd>↵</kbd> 选中</span>
+            </span>
+            <span class="gap"></span>
+            <span class="cnt" id="footCnt">共 42 条</span>
+            <button class="clear-all" id="clearAllBtn" type="button" title="清空全部命令历史">清空</button>
+          </div>
+
+          <!-- 撤销浮条 -->
+          <div class="pb-toast" id="toast">
+            <span id="toastTxt">已删除 1 条</span>
+            <button class="undo" id="toastUndo" type="button">撤销</button>
+            <div class="prog" id="toastProg"></div>
+          </div>
+        </div>
+
+        <!-- 命令栏 48px -->
+        <div class="cbar" id="cbar">
+          <div class="box" id="cmdBox">
+            <span class="ps1">$</span>
+            <input id="cmdInput" placeholder="输入命令，回车发送" autocomplete="off" spellcheck="false">
+            <button class="ibtn sm" id="clearBtn" type="button" title="清空" style="display:none">
+              <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+            </button>
+            <button class="ibtn" id="boltBtn" type="button" title="快捷命令">
+              <svg viewBox="0 0 16 16"><path d="M9 2L4.5 9H8l-1 5 4.5-7H8l1-5z"/></svg>
+            </button>
+            <button class="ibtn" id="clockBtn" type="button" title="历史命令 Ctrl+R">
+              <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.6"/><path d="M8 4.6v3.4l2.2 1.4"/></svg>
+            </button>
+          </div>
+          <button class="scope" type="button">当前标签页</button>
+          <button class="send" type="button" id="sendBtn">发送</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="readout" id="readout">
+      <span><span class="k">state</span> <b id="roState">idle</b></span>
+      <span><span class="k">anchor</span> <b id="roAnchor">—</b></span>
+      <span><span class="k">size</span> <b id="roSize">—</b></span>
+      <span><span class="k">rows</span> <b id="roRowN">—</b></span>
+      <span><span class="k">sel</span> <b id="roSel">—</b></span>
+      <span><span class="k">filter</span> <b id="roFilter">all</b></span>
+      <span><span class="k">sort</span> <b id="roSort">最近</b></span>
+      <span><span class="k">hits</span> <b id="roHits">—</b></span>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>沙盘里所有数字都是真算的</b>：面板宽 <code>min(560, 窗格宽 − 24)</code>、右边缘贴命令栏内距 10、
+    底边贴命令栏上沿 6；行数按可用高 <code>floor((可用高 − 46 − 28 − 8) / 38)</code> 夹在 3–8，
+    所以「矮窗」场景会自己减行、面板总高跟着变 —— 这正是实现时要抄的那段算术（§4 给了公式）。
+  </div>
+
+  <!-- ══════════ §4 解剖 ══════════ -->
+  <h2 class="sec"><span class="no">04</span>解剖：四段，每一段都能说出「为什么有它」</h2>
+  <p class="sub">
+    面板总高 = 46（工具栏）+ 列表 + 28（页脚）。<b>列表高度锁死</b>：行数 × 38 + 8，
+    行数在 3–8 之间按可用高取整。锁死是这套设计的核心 —— 搜索、删除、切过滤时面板不会抽动，
+    眼睛不需要重新找位置。
+  </p>
+
+  <div class="anat">
+    <div class="figwrap">
+      <span class="badge b1">1</span>
+      <span class="badge b2">2</span>
+      <span class="badge b3">3</span>
+      <span class="badge b4">4</span>
+      <div class="panel" id="anatPanel">
+        <div class="pb-top">
+          <label class="pb-srch has">
+            <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.3"/><path d="M10.2 10.2L14 14"/></svg>
+            <input value="git" readonly aria-label="搜索" tabindex="-1">
+            <button class="clr" type="button" style="display:grid" aria-label="清空" tabindex="-1">
+              <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+            </button>
+          </label>
+          <div class="pb-pills">
+            <button class="pill on" type="button" tabindex="-1">全部</button>
+            <button class="pill" type="button" tabindex="-1">置顶</button>
+            <button class="pill" type="button" tabindex="-1">今天</button>
+          </div>
+          <div class="pb-sort">
+            <button class="on" type="button" tabindex="-1">最近</button>
+            <button type="button" tabindex="-1">常用</button>
+          </div>
+        </div>
+        <div class="pb-list" style="height:122px">
+          <div class="pb-row on pinned">
+            <span class="pin"><svg viewBox="0 0 16 16"><path d="M9.4 2.2l4.4 4.4-1.6.5-2.2 2.2.3 2.9-1.1 1.1-5.8-5.8 1.1-1.1 2.9.3 2.2-2.2z"/><path d="M4.6 11.4L2.2 13.8"/></svg></span>
+            <span class="cmd"><mark>git</mark> commit -m "fix: nginx upstream timeout"</span>
+            <span class="meta"><span class="u">7 次</span><span class="t"> · 4 分钟前</span></span>
+            <div class="pb-acts">
+              <button class="pb-act" type="button" title="执行"><svg viewBox="0 0 16 16"><path d="M5 3.4l7 4.6-7 4.6z"/></svg></button>
+              <button class="pb-act" type="button" title="复制"><svg viewBox="0 0 16 16"><rect x="5.6" y="5.6" width="7" height="7" rx="1.4"/><path d="M10.4 5.6V4.2A1.2 1.2 0 009.2 3H4.2A1.2 1.2 0 003 4.2v5a1.2 1.2 0 001.2 1.2h1.4"/></svg></button>
+              <button class="pb-act danger" type="button" title="删除"><svg viewBox="0 0 16 16"><path d="M3.4 4.6h9.2M6.4 4.6V3.4h3.2v1.2M4.6 4.6l.6 8.2h5.6l.6-8.2"/></svg></button>
+            </div>
+          </div>
+          <div class="pb-row">
+            <span class="cmd"><mark>git</mark> status</span>
+            <span class="meta"><span class="u">3 次</span><span class="t"> · 21 分钟前</span></span>
+          </div>
+          <div class="pb-row">
+            <span class="cmd"><mark>git</mark> log --oneline -20</span>
+            <span class="meta"><span class="u">1 次</span><span class="t"> · 2 小时前</span></span>
+          </div>
+        </div>
+        <div class="pb-foot">
+          <span class="k"><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
+          <span class="k"><kbd>↵</kbd> 执行</span>
+          <span class="k"><kbd>Tab</kbd> 填入</span>
+          <span class="k"><kbd>Del</kbd> 删除</span>
+          <span class="gap"></span>
+          <span class="cnt">共 3 条</span>
+        </div>
+      </div>
+    </div>
+
+    <ol>
+      <li><i>1</i><div><b>工具栏（46px）</b>：搜索框吃余量（<code>max-width:300</code>），右侧<b>两组</b>控件 ——
+        过滤胶囊（全部 / 置顶 / 今天）与排序分段（最近 / 常用）。<b>分两组是因为它们是两个维度</b>：
+        过滤改「看哪些」，排序改「按什么排」（§2 ④ / §7 决策 05）。
+        搜索框在<b>顶部</b>而不是底部 —— 这是推翻 #131 的一处，理由见 §7 决策 ①。
+        清空键沿用全应用统一的「16px accent 实心圆 + 镂空 ×」。</div></li>
+      <li><i>2</i><div><b>候选行（38px，锁 3–8 行）</b>：一行两段信息 —— 等宽命令原文（命中片段 accent 高亮，不用底色块）+
+        右端元信息（次数 · 相对时间）。<b>只有鼠标悬停那一行</b>元信息淡出、三个动作键浮出（绝对定位，<b>不推动文字</b>）。
+        选中态<b>不</b>淡出元信息 —— 选中项默认停在第 1 行，若选中也淡出，用户一打开面板就永远看不见最新那条的时间。
+        置顶项在最左多一枚 accent 图钉槽（左图是把悬停态定格在选中行上的样子）。</div></li>
+      <li><i>3</i><div><b>页脚（28px）</b>：五个动作常驻，右端是当前命中数。
+        它同时是「这个框是给键盘用的」的声明 —— 与四段式提示框的脚注同语言。</div></li>
+      <li><i>4</i><div><b>撤销浮条（30px，压在页脚上方）</b>：删除后 5 秒内可撤销，底部一条 accent 进度条。
+        只保留最近一次删除（单条撤销栈），不做「批量恢复」—— 那会让这个框变成第二个命令管理器。</div></li>
+    </ol>
+  </div>
+
+  <h3 class="mini">像素与 token 对照（实现时逐个抄，不要目测）</h3>
+  <table>
+    <thead><tr><th style="width:22%">部件</th><th style="width:26%">尺寸 / 值</th><th>来源 token（ui/theme.slint · palettes.rs）</th></tr></thead>
+    <tbody>
+      <tr><td>面板宽</td><td class="tnum"><code>min(560px, 窗格宽 − 24px)</code></td><td>新值；与四段式提示框 472 同一套「先按内容定上限、再按窗格夹」</td></tr>
+      <tr><td>面板高</td><td class="tnum"><code>46 + (rows×38+8) + 28</code></td><td>新值；<code>rows = clamp(floor((可用高−82)/38), 3, 8)</code></td></tr>
+      <tr><td>面板底</td><td class="tnum"><code>bg-elevated</code></td><td><code>slot-elev</code>（#1E2024 / #FFFEFA）<b>不是</b> <code>popup-bg</code></td></tr>
+      <tr><td>面板描边</td><td class="tnum"><code>1phx</code> · <code>border-strong</code></td><td><code>slot-lstr</code>（#4E5157 / #D0CECB）—— 压终端上唯一的分隔手段</td></tr>
+      <tr><td>圆角</td><td class="tnum"><code>Theme.radius-lg</code></td><td>10px × ui-scale</td></tr>
+      <tr><td>工具栏底 / 页脚底</td><td class="tnum"><code>bg-panel</code></td><td><code>slot-panel</code>；两条 1phx 分隔线 <code>border-subtle</code></td></tr>
+      <tr><td>工具栏总宽</td><td class="tnum">560 − 20 = 540</td><td>搜索 <code>max-width:300</code> + 间隙 8 + 过滤胶囊 3×~44 + 间隙 8 + 排序分段 ~76 ≈ 520，留 20 余量</td></tr>
+      <tr><td>搜索框</td><td class="tnum">h 28 · r 4 · <code>Theme.field</code></td><td>边框 <code>line-2</code>；聚焦 <code>accent-line</code> + 3px <code>accent-tonal</code> 光环</td></tr>
+      <tr><td>过滤胶囊</td><td class="tnum">h 24 · r 12 · 11px</td><td>选中 <code>accent-tonal</code> 底 + <code>accent-line</code> 边 + <code>accent</code> 字</td></tr>
+      <tr><td>排序分段</td><td class="tnum">h 24 · r 12 · 内高 18 · 10.5px</td><td>与过滤胶囊<b>分两组</b>（一个看哪些、一个按什么排）；底 <code>Theme.field</code>，选中项 <code>accent-tonal</code> 底</td></tr>
+      <tr><td>行高 / 行圆角</td><td class="tnum">38px / <code>radius-sm</code></td><td>新值；行距 0（不留缝，选中块连成一片才有「列表」感）</td></tr>
+      <tr><td>行悬停 / 选中</td><td class="tnum"><code>bg-hover</code> / <code>accent-tonal</code></td><td>选中另加左缘 2×26 accent 竖条（<code>:6</code> 上下各留 6）。<b>动作键只跟 hover 走</b>，不跟选中走。</td></tr>
+      <tr><td>命令原文</td><td class="tnum"><code>font-mono</code> · 12.5px · <code>text-primary</code></td><td>命中片段 <code>accent</code> + <code>fw-strong</code>，不加底色</td></tr>
+      <tr><td>元信息</td><td class="tnum"><code>font-mono</code> · 10.5px · <code>text-muted</code></td><td>只有「<code>7 次 · 4 分钟前</code>」两段，<b>不画来源色点</b>（需配图例才看得懂，见 §4 注）</td></tr>
+      <tr><td>动作键</td><td class="tnum">24×24 · r 4 · 13px 图标</td><td>与命令栏内嵌钮同一档（<code>qin-btn</code>/<code>hin-btn</code> 的 26 是栏内档，面板里收一档）</td></tr>
+      <tr><td>页脚字</td><td class="tnum">10px · <code>text-muted</code></td><td><code>kbd</code>：<code>font-mono</code> 9.5px + <code>border-strong</code> + 底边 2px</td></tr>
+      <tr><td>撤销浮条</td><td class="tnum">h 30 · <code>Theme.field</code> 底</td><td>阴影 <code>0 10px 26px -8px rgba(0,0,0,.66)</code>；进度条 2px <code>accent</code></td></tr>
+      <tr><td>投影</td><td class="tnum"><code>0 18px 44px -12px</code></td><td>与四段式提示框的 <code>drop-shadow-blur: 14px</code> 同量级（面板更大，稍重）</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ══════════ §5 状态机 ══════════ -->
+  <h2 class="sec"><span class="no">05</span>状态机：六个状态，每条退出路径都有明确触发</h2>
+  <p class="sub">
+    状态少是刻意的。注意 <code>Empty</code> 有两个变体（无历史 / 无匹配），它们<b>共用同一个高度</b> ——
+    面板高度不随状态变化，这是「不跳」的第二层保证（第一层是行数锁）。
+  </p>
+
+  <div class="sm">
+    <div class="node"><b><code>Closed</code></b><span>无面板。命令栏正常可用。<em>点 🕘 / Ctrl+R → Opening</em></span></div>
+    <div class="arrow">→</div>
+    <div class="node hi"><b><code>Open</code></b><span>面板可见、搜索框持焦、有列表。<em>键入 / ↑↓ / ↵ Tab Del Esc</em></span></div>
+    <div class="arrow">→</div>
+    <div class="node"><b><code>Open(Filtered)</code></b><span>搜索非空或过滤≠全部；页脚计数变「命中 / 总数」。<em>清空 → Open</em></span></div>
+    <div class="arrow">→</div>
+    <div class="node"><b><code>Empty</code></b><span>两种文案、同一高度：<b>没有历史</b> / <b>没有匹配</b>。<em>Esc / 点外部 → Closed</em></span></div>
+    <div class="arrow">→</div>
+    <div class="node"><b><code>Undo</code></b><span>删除后 5s 内浮条在场（可与 Open 并存）。<em>撤销 / 超时 / 再删一条 → 回落</em></span></div>
+    <div class="arrow">→</div>
+    <div class="node bad"><b><code>Executing</code></b><span><b>瞬态</b>：先关面板，再发命令 —— 顺序是硬约束。<em>不落状态字段</em></span></div>
+  </div>
+
+  <div class="note dg">
+    <b>「先关框，再发键」是硬顺序，不是风格。</b> 反过来的话，PTY 回显和面板重绘抢同一帧，
+    视觉上就是「命令已经跑了，框还挂在屏幕上」—— 四段式提示框稿里已经为这条踩过一次。
+  </div>
+
+  <div class="note wr">
+    <b>撤销状态要和面板同生共死</b>：面板关掉时撤销栈必须一起清（否则用户关掉面板、再打开，
+    看到一个指向「上一轮」的撤销按钮）。实现上把 <code>undo</code> 放在组件的私有 property 里，
+    <code>changed open => { if (!open) { clear-undo() } }</code> —— 别放 Rust 侧当全局状态。
+  </div>
+
+  <!-- ══════════ §6 键盘 ══════════ -->
+  <h2 class="sec"><span class="no">06</span>键盘契约：搜索框持焦，方向键照样能用</h2>
+  <p class="sub">
+    这是整套交互最容易做错的一处。历史面板一旦把焦点交给搜索框，<span class="kbd">↑</span><span class="kbd">↓</span>
+    就被 TextInput 吃掉（光标在文本里移动）—— 用户会以为「选中项坏了」。
+    解法是<b>在搜索框的 <code>key-pressed</code> 里先拦方向键</b>，而不是另设一个「列表焦点态」。
+    这样只有一个焦点、一套键位、没有模式切换。
+  </p>
+
+  <table>
+    <thead><tr><th style="width:20%">按键</th><th style="width:34%">面板打开时</th><th>边界 / 说明</th></tr></thead>
+    <tbody>
+      <tr><td><span class="kbd">↑</span> / <span class="kbd">↓</span></td><td>移动选中项（在<b>可见行</b>内循环）</td><td>选中项只能在画出来的行里循环 —— 数据 42 条、只画 8 行，用 <code>rows.length</code> 取模会选到屏幕外的一条（四段式稿里踩过）。</td></tr>
+      <tr><td><span class="kbd">Home</span> / <span class="kbd">End</span></td><td>首 / 末条</td><td>列表是<b>新→旧</b>（§2 ④），所以 <code>Home</code> = 最近用过的那条（默认选中项），<code>End</code> = 最久远的那条。列表很长时的快速跳转。</td></tr>
+      <tr><td><span class="kbd">PgUp</span> / <span class="kbd">PgDn</span></td><td>± 一屏（8 行）</td><td>夹在 <code>[0, len-1]</code>，不循环。</td></tr>
+      <tr><td><span class="kbd">↵</span></td><td><b>执行</b>选中项</td><td>先关面板再发键（§5）。空态时 <code>↵</code> 不做事，不放行给命令栏 —— 避免「在面板里回车把半截命令发出去了」。</td></tr>
+      <tr><td><span class="kbd">Tab</span></td><td><b>填入</b>命令栏，不执行，并关面板</td><td>填完把光标放末尾。与「命令栏 ↑ 回溯」同一个结果，只是这条更明确。</td></tr>
+      <tr><td><span class="kbd">Del</span></td><td>删除选中项 + 弹撤销</td><td><b>只在搜索框为空时接管</b>；搜索框有字时 <code>Del</code> 必须是「删掉光标右边那个字符」—— 这是最容易误伤的一处。</td></tr>
+      <tr><td><span class="kbd">Ctrl</span>+<span class="kbd">Z</span></td><td>撤销上一次删除</td><td>与系统撤销语义一致；没有可撤销项时放行。</td></tr>
+      <tr><td><span class="kbd">Esc</span></td><td>关面板（搜索框有字时<b>先清搜索</b>）</td><td>两段式：第一次清空搜索，第二次关闭。这是所有检索界面的通行手感，也避免「打了半天字，一按 Esc 全没了」。</td></tr>
+      <tr><td>直接打字</td><td>进搜索框并过滤</td><td>因为搜索框默认持焦，不需要额外处理；如果将来焦点跑掉（比如点了行），<code>key-pressed</code> 在面板层兜底把可打印字符塞回搜索框。</td></tr>
+      <tr><td>鼠标点行</td><td>选中 + 执行</td><td>单击执行（这是「挑一条就发」的界面）；想只填入不执行，点行内 <span class="kbd">Tab</span> 或用键盘 <code>Tab</code>。悬停只高亮、不改选中。</td></tr>
+      <tr><td>点面板外</td><td>关闭</td><td>遮罩层必须<b>真的存在且只盖到命令栏上沿</b>；今天那层 2000px 的隐形遮罩是 bug 源头，新实现要绑到面板可见性上（<code>open</code> 而不是 <code>hist-popup-visible</code>）。</td></tr>
+    </tbody>
+  </table>
+
+  <div class="note">
+    <b>为什么不做「两个焦点区」</b>（搜索框一个、列表一个，<span class="kbd">Tab</span> 切换）：那套模式需要用户先理解
+    「我现在在哪个区」，而且 <span class="kbd">Tab</span> 已经被「填入命令栏」占用了。Raycast / VS Code 命令面板
+    都选了「单焦点 + 方向键拦截」，这是同一个理由。
+  </div>
+
+  <!-- ══════════ §7 争议决策 ══════════ -->
+  <h2 class="sec"><span class="no">07</span>四个争议点：选了什么、不选什么、为什么</h2>
+  <p class="sub">
+    这几条都会推翻或修改既有决策，所以单独列出来。实现时如果只记得结论、不记得理由，很容易「优化」回去。
+  </p>
+
+  <div class="dec">
+    <div class="dcard">
+      <div class="dh"><span class="n">01</span><b>搜索框放顶部（推翻 #131）</b></div>
+      <div class="db">
+        <div class="row"><span class="tag y">选</span><span>顶部，与过滤胶囊同一行，构成一条工具栏。</span></div>
+        <div class="row"><span class="tag n">不选</span><span>底部（#131 的定案：「原先在顶部、位置随历史条数上下浮动、不好找」）。</span></div>
+        <div class="row"><span class="tag y">理由</span><span>#131 的病根是<b>面板高度随内容变</b>，不是搜索框的位置。这次高度锁死（§4），搜索框放顶部也不会漂。而顶部搜索 + 过滤是一整套「检索界面」的心智模型，底部会让人以为是「输入命令的地方」。</span></div>
+        <div class="row"><span class="tag y">回归</span><span><code>search_field_sits_above_the_list</code>：采样搜索框边框 y 必须小于首行 y。</span></div>
+      </div>
+    </div>
+
+    <div class="dcard">
+      <div class="dh"><span class="n">02</span><b>行内动作键，不做右键菜单</b></div>
+      <div class="db">
+        <div class="row"><span class="tag y">选</span><span>悬停/选中时右侧浮出 ▶ ⧉ ⌫ 三个 24px 键。</span></div>
+        <div class="row"><span class="tag n">不选</span><span>右键菜单（命令栏的快捷命令已经占了右键，且不可发现）。</span></div>
+        <div class="row"><span class="tag y">理由</span><span>历史面板的核心动作只有三个，且都是「对单条」的。三个图标键的发现成本远低于右键；用绝对定位 + 元信息淡出，<b>不推动文字</b>（否则悬停时整行文字会横跳）。</span></div>
+        <div class="row"><span class="tag y">回归</span><span><code>hover_actions_do_not_shift_the_command_text</code>：悬停前后命令文本 x 不变。</span></div>
+      </div>
+    </div>
+
+    <div class="dcard">
+      <div class="dh"><span class="n">03</span><b>删除可撤销，不做二次确认</b></div>
+      <div class="db">
+        <div class="row"><span class="tag y">选</span><span>立即删除 + 5s 撤销浮条（单条撤销栈）。</span></div>
+        <div class="row"><span class="tag n">不选</span><span>确认对话框（打断、且删除是高频微操作）；也不选「批量恢复」（会把面板变成命令管理器）。</span></div>
+        <div class="row"><span class="tag y">理由</span><span>误删一条历史是<b>低频、低损失、可重放</b>的操作 —— 用户重敲一次就回来了。为它弹模态框的代价远大于收益。但「立刻落盘不可恢复」（今天的实现）也不可接受，撤销是最小代价的兜底。</span></div>
+        <div class="row"><span class="tag y">回归</span><span><code>delete_shows_undo_toast_and_restores_on_undo</code>。</span></div>
+      </div>
+    </div>
+
+    <div class="dcard">
+      <div class="dh"><span class="n">04</span><b>置顶不改列表顺序</b></div>
+      <div class="db">
+        <div class="row"><span class="tag y">选</span><span>置顶项在「全部」里<b>保持原位置</b>，只多一枚图钉；「置顶」过滤里才只列它们。</span></div>
+        <div class="row"><span class="tag n">不选</span><span>置顶项强制排到最前。</span></div>
+        <div class="row"><span class="tag y">理由</span><span>强制置顶会让「最新一条」不再是最上面那条 —— 而 <span class="kbd">Ctrl+R</span> 十次有九次是找刚敲过的那条。顺序一变，肌肉记忆全废。想要「常用的」有「常用」排序档，想要「固定的」有「置顶」过滤档。</span></div>
+        <div class="row"><span class="tag y">回归</span><span><code>pinning_does_not_reorder_the_all_view</code>。</span></div>
+      </div>
+    </div>
+
+    <div class="dcard">
+      <div class="dh"><span class="n">05</span><b>排序与过滤分成两组控件</b></div>
+      <div class="db">
+        <div class="row"><span class="tag y">选</span><span>工具栏右侧两组：过滤胶囊（全部/置顶/今天）+ 排序分段（最近/常用）。</span></div>
+        <div class="row"><span class="tag n">不选</span><span>把「常用」「今天」混在同一排胶囊里，当成同一维度。</span></div>
+        <div class="row"><span class="tag y">理由</span><span>过滤回答<b>「看哪些」</b>，排序回答<b>「按什么排」b>。混在一排，用户点「常用」时不知道会<b>改变集合</b>还是<b>改变顺序</b> —— 而这两件事的视觉结果完全不同（一个是少了行，一个是行换了位置）。</span></div>
+        <div class="row"><span class="tag y">回归</span><span>视觉分组：两组控件之间有可见间隔/底色差，不是同一排胶囊。</span></div>
+      </div>
+    </div>
+
+    <div class="dcard">
+      <div class="dh"><span class="n">06</span><b>默认排序 = 最近使用，不做字母序</b></div>
+      <div class="db">
+        <div class="row"><span class="tag y">选</span><span>默认「最近」；因为存储序本身就是 recency 序，<b>默认档根本不需要排序</b>（<code>.iter().rev()</code>）。</span></div>
+        <div class="row"><span class="tag n">不选</span><span>字母序；也不做「按最后使用时间」以外的任何默认排序。</span></div>
+        <div class="row"><span class="tag y">理由</span><span>面板是「回忆我敲过什么」，不是「查字典」；「按名字找」已经由<b>搜索框</b>承担（键入即过滤、实时高亮）。再加字母序等于给同一意图两条路径，还要让用户选。<br>更实际的理由：<code>push_command_history</code> 每次 <code>retain+push</code> 移到末尾，<b>存储序 = recency 序</b>，所以默认档零成本 —— 而字母序要额外排一次。</span></div>
+        <div class="row"><span class="tag y">回归</span><span><code>default_order_is_most_recent_first</code>：首行 = 最近使用的那条。</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ §8 业务代码改动 ══════════ -->
+  <h2 class="sec"><span class="no">08</span>业务代码改动清单：哪些必须动 Rust</h2>
+  <p class="sub">
+    这节是给实现用的。<b>「纯 UI」是不成立的</b> —— 元信息（时间/次数）、置顶、撤销后回填位置
+    这三样都要存储层配合。下面按「必须改 / 可以不改」分开列，并标出风险点。
+  </p>
+
+  <h3 class="mini">A. 必须改（缺一样设计就残）</h3>
+  <table>
+    <thead><tr><th style="width:26%">文件</th><th style="width:34%">改什么</th><th>为什么 / 风险</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>src/config/struct/config_file.rs</code><br><span class="ev">:447-449</span></td>
+        <td>新增 <code>pub command_history_v2: Vec&lt;HistoryEntry&gt;</code>（<code>#[serde(default)]</code>）；
+          新增 <code>HistoryEntry { cmd, last_used, uses, pinned }</code> 结构（<code>Serialize/Deserialize/Clone/PartialEq</code>）。
+          <b>旧 <code>command_history</code> 字段保留一个版本</b>，只读。</td>
+        <td>直接改旧字段的类型会让老配置文件反序列化失败（<code>Vec&lt;String&gt;</code> → <code>Vec&lt;Struct&gt;</code> 不兼容）。
+          保留旧字段 + 迁移是项目已有的惯例（<code>appearance_dark/light</code> 仅老配置回落）。</td>
+      </tr>
+      <tr>
+        <td><code>src/config/impls/config.rs</code><br><span class="ev">:84-280 · :1906-1933</span></td>
+        <td><code>migrate_defaults</code> 加 <code>defaults_rev &lt; 10</code> 一段：把 <code>command_history</code> 逐条转成
+          <code>HistoryEntry</code>（<code>last_used</code> 用「越靠后越新」的等差估算、<code>uses = 1</code>、<code>pinned = false</code>），
+          清空旧字段。<br>
+          <code>push_command_history(cmd)</code> 改为维护 <code>uses += 1</code> + <code>last_used = now</code> + 重新 push 到末尾。<br>
+          新增 <code>pin_command_history(cmd, on)</code>、<code>restore_command_history(entry, at)</code>（撤销用）。<br>
+          <b>CAP 淘汰要跳过置顶项</b>（<code>:1920-1925</code> 的 <code>drain(0..len-CAP)</code>
+          改成「从队首找第一个非置顶的删」）—— 否则用户精心置顶的命令会被后续执行挤掉，
+          「置顶」这个功能就不可信了。</td>
+        <td><b>迁移只能跑一次</b>：<code>DEFAULTS_REV</code> 从 9 → 10，别写成「每次启动都迁移」。<br>
+          <code>last_used</code> 对老数据只能估，别假装是真的（UI 上老条目显示「较早」而不是假时间戳）。</td>
+      </tr>
+      <tr>
+        <td><code>src/app/terminal_ui.rs</code><br><span class="ev">:195-212</span></td>
+        <td><code>history_view_rows(entries, query, filter, sort)</code> → 返回<b>新→旧</b>；
+          每行带 <code>hit_start / hit_len</code>（Slint 1.18 的 string 没有 <code>trim/find/substr</code>，
+          高亮位置必须在 Rust 侧算好，不能在 UI 里用 <code>replace-all</code> 硬凑）。<br>
+          新增 <code>history_row_model(store, query, filter, sort) -&gt; ModelRc&lt;HistoryRow&gt;</code>。</td>
+        <td>返回结构体而不是裸字符串，是这次改动的关键：UI 只负责画，不负责算。
+          <code>HistoryRow { cmd, hit-start, hit-len, meta, pinned }</code>。<br>
+          <b>排序在这一层做，且只做一次</b>：<code>sort == Recent</code> 走
+          <code>entries.iter().rev()</code>（零成本，存储序即 recency 序）——
+          <b>禁止写成 <code>sort_by(|a,b| b.last_used.cmp(&amp;a.last_used))</code></b>，
+          时间戳有精度上限（同一秒连发多条就并列），并列一退回存储序就变成
+          「最早的排第一」；存储序反转<b>零并列</b>，永远精确。
+          <code>sort == Freq</code> 才 <code>sort_by</code>，破平键用<b>存储位置</b>（越靠后越近），
+          同样不要用 <code>last_used</code>。<b>不要在 Slint 侧排</b> —— 那边没有 sort 能力，
+          手写比较器既慢又容易和 Rust 侧算出两套顺序。</td>
+      </tr>
+      <tr>
+        <td><code>src/app.rs</code><br><span class="ev">:10697-10814</span><br><span class="ev">:10679-10686</span></td>
+        <td>删掉 <code>on_delete_history(int)</code>（索引式，已无人调用）；
+          <code>on_delete_history_cmd</code> 改为「返回被删的 entry」以便 UI 做撤销；
+          新增 <code>on_pin_history(cmd, on)</code>、<code>on_restore_history(cmd)</code>。
+          每个写操作后统一刷 <code>history-rows</code>（一个入口，别散落三处 set）。<br>
+          <b>★ 面板里「执行」一条历史命令之后，也必须走 <code>push_command_history</code></b>
+          （<code>:10679-10686</code> 已经是这个位置）—— 次数 +1、<code>last_used</code> 刷新、
+          该条摘掉后 push 到末尾。<b>少这一步，「最近使用优先」直接失效</b>，
+          用户执行完再开面板看到那条还在原地，会以为排序坏了。</td>
+        <td>撤销要能「原位置插回」：<code>restore</code> 按 <code>last_used</code> 排序插回即可，不必记索引。
+          <br>⚠️ <code>push_command_history</code> 有<b>两个分支</b>：已存在的更新、不存在的按
+          <code>uses = 1</code> 新插。命令栏里敲一条没执行过的命令也要进历史。</td>
+      </tr>
+      <tr>
+        <td><code>src/app/session_event.rs</code><br><span class="ev">:501-515</span></td>
+        <td><b>不用改了。</b>终端捕获的命令（shell 钩子 <code>CommandRan</code>）继续走同一个
+          <code>push_command_history(cmd)</code>，与命令栏那条路径合并到一处。</td>
+        <td>本条原计划传一个 <code>SRC_*</code> 常量来区分「命令栏敲的 / 终端里敲的」，
+          用来画行内来源色点。<b>那个色点已从设计里删掉</b>（需配图例才看得懂，
+          而用户第一反应是「这个横条是干啥的」），所以这里不需要任何改动 ——
+          少动一处写入路径，就少一处回归风险。</td>
+      </tr>
+      <tr>
+        <td><code>ui/history_panel.slint</code><br><span class="new">新增 ~420 行</span></td>
+        <td>组件：<code>rows</code> / <code>open</code> / <code>query</code> / <code>filter</code> / <code>selected</code> 入参，
+          <code>run / fill / copy / delete / pin / search / close</code> 回调。
+          撤销栈、选中项、焦点全部在组件内部（<b>不要</b>提到 TerminalView 根上 —— 那正是今天
+          <code>history-selected</code> 被两个面板共用的原因）。</td>
+        <td>组件不认识命令栏也不认识终端：宿主算锚点、传数据。与 <code>command_hint.slint</code> 同一套职责划分。</td>
+      </tr>
+      <tr>
+        <td><code>ui/terminal_view.slint</code><br><span class="ev">:961-994 · :1111-1123<br>:1389-1398 · :3212-3254</span></td>
+        <td>删：<code>history-view</code>、<code>suggest-view/kind</code>、<code>suggest_count/at</code>、<code>history_kind_at</code>、
+          <code>history-search-focus-pending</code>、<code>delete-history(int)</code>、<code>history-selected</code>（下沉进组件）。
+          <br>改：<code>hist-popup-visible</code> 拆成「补全态」（hint-rows）与「面板态」（history-panel-open）两个变量；
+          <b>遮罩层的条件从 <code>hist-popup-visible</code> 换成真实的 <code>history-panel-open</code></b>（这条是今天 bug 的根）。
+          <br>留：<code>history-cursor</code>（命令栏 ↑ 回溯用，与面板无关）。</td>
+        <td>⚠️ 动这个文件后<b>必须 <code>touch build.rs</code></b> 才会重编 Slint（全量 4–5 分钟）。<br>
+          ⚠️ 别整仓 <code>cargo fmt</code>（CI 无 fmt 门禁，会污染 diff）。</td>
+      </tr>
+      <tr>
+        <td><code>ui/app.slint</code><br><span class="ev">:1195-1230 · :3482-3508</span></td>
+        <td>透传 <code>history-rows</code> + 新回调；删 <code>history-view</code> / <code>suggest-*</code> 的声明与绑定。</td>
+        <td>保持「根只做搬运」的既有写法。</td>
+      </tr>
+      <tr>
+        <td><code>lang/{zh,en}/LC_MESSAGES/mterm.po</code></td>
+        <td>新增约 11 个 msgid（见下表）。zh 文件的格式是 <code>msgid "X"</code> + <code>msgstr "Y"</code> 成对，
+          与 en 文件（两者相同）不同 —— 照 <code>:450-457</code> 附近那几条的写法。</td>
+        <td>已有可复用：<code>No history yet</code>（暂无历史）、<code>Search history</code>（搜索历史）、<code>No match</code>（无匹配）。</td>
+      </tr>
+      <tr>
+        <td><code>tests/history_panel.rs</code><br><span class="new">新增 8 条</span></td>
+        <td>离屏像素断言，脚手架照抄 <code>tests/command_hint_ui.rs</code>（已跑通的那套）：
+          <b>①</b> 1 条与 8 条时面板总高相同；<b>②</b> 空态与列表同高；<b>③</b> 搜索框在列表上方；
+          <b>④</b> 悬停动作键不推文字；<b>⑤</b> 选中行左缘 2px accent；<b>⑥</b> 删除→撤销浮条→撤销恢复；
+          <b>⑦</b> 面板右边缘贴命令栏内距；<b>⑧</b> 面板底色 ≠ 终端底色（压终端不消失）。</td>
+        <td>⚠️ 探针定位<b>别按「窗口居中」算</b>：面板锚在命令栏右端，要按「命令栏矩形 + 10 内距」反推。
+          这条在 <code>cmd_expand_polish</code> 上已经踩过（差 48px 读到遮罩）。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 class="mini">B. 可以不改（但建议顺手收掉）</h3>
+  <table>
+    <thead><tr><th style="width:26%">项</th><th style="width:34%">现状</th><th>建议</th></tr></thead>
+    <tbody>
+      <tr><td><code>send_cmd_window.slint:455-505</code>「最近」</td>
+        <td>第二份历史列表：只 8 条、无搜索、无删除、过滤词用整段草稿。</td>
+        <td>P1 换成同一组件（<code>compact: true</code> 档：无过滤胶囊、4 行、点行 = 插入到光标处）。</td></tr>
+      <tr><td><code>ui/app.slint:7430</code> 快捷键说明</td>
+        <td>写着「Ctrl+R 搜索命令历史」。</td>
+        <td>P0 一并更新为「Ctrl+R 打开命令历史（键入即搜索）」。</td></tr>
+      <tr><td><code>command_history</code> 上限 200</td>
+        <td><code>CAP = 200</code>，去重全局。</td>
+        <td>建议保持 200。面板有了搜索和过滤后，200 条完全够用；提高上限会让配置文件膨胀。</td></tr>
+      <tr><td>危险命令判定 <code>danger-token()</code></td>
+        <td>命令栏与发送窗各写一份（四段式稿 §7 已列为待收编）。</td>
+        <td>与本案无关，但历史面板「执行」走的是同一条 <code>run-command</code>，所以危险告警会自动继承 —— 不需要新写。</td></tr>
+    </tbody>
+  </table>
+
+  <h3 class="mini">C. 新增 i18n 键（zh 文件需要补 msgstr）</h3>
+  <table>
+    <thead><tr><th style="width:34%">msgid</th><th style="width:30%">zh</th><th>用途</th></tr></thead>
+    <tbody>
+      <tr><td><code>Command history</code></td><td>命令历史</td><td>面板无障碍标签 / 图标 tooltip</td></tr>
+      <tr><td><code>Type to search</code></td><td>键入即搜索</td><td>搜索框占位</td></tr>
+      <tr><td><code>All</code></td><td>全部</td><td>过滤胶囊</td></tr>
+      <tr><td><code>Pinned</code></td><td>置顶</td><td>过滤胶囊 / 图钉 tooltip</td></tr>
+      <tr><td><code>This host</code> → <code>Today</code></td><td>今天</td><td>过滤胶囊（「本机」需 host 字段，历史里没有 → 换「今天」，只依赖 <code>last_used</code>）</td></tr>
+      <tr><td><code>Run</code></td><td>执行</td><td>行内动作</td></tr>
+      <tr><td><code>Copy</code></td><td>复制</td><td>行内动作（已有同名键，确认可复用）</td></tr>
+      <tr><td><code>Delete</code></td><td>删除</td><td>行内动作（已有同名键）</td></tr>
+      <tr><td><code>Pin</code> / <code>Unpin</code></td><td>置顶 / 取消置顶</td><td>行内动作</td></tr>
+      <tr><td><code>Undo</code></td><td>撤销</td><td>撤销浮条</td></tr>
+      <tr><td><code>Deleted 1 entry</code></td><td>已删除 1 条</td><td>撤销浮条</td></tr>
+      <tr><td><code>No matching commands</code></td><td>没有匹配的命令</td><td>空态（<code>No match</code> 太短，这里是整句）</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ══════════ §9 落地 ══════════ -->
+  <h2 class="sec"><span class="no">09</span>落地分期：三步，每步都能单独验收</h2>
+  <p class="sub">
+    切分的标准是「每一步结束时，用户能不能看到完整可用的东西」。P0 之所以把数据改造也包进来，
+    是因为元信息是设计的一半 —— 先做纯 UI 会得到一个「看起来对、但每行右边是空的」的中间态。
+  </p>
+
+  <table>
+    <thead><tr><th style="width:8%">阶段</th><th style="width:30%">范围</th><th style="width:26%">文件</th><th>验收</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>P0</b><br><span class="pilltag new">重建</span></td>
+        <td>数据模型 + 迁移 + <code>HistoryEntry</code>；<code>ui/history_panel.slint</code> 全量（搜索 / 过滤 / 键盘 / 动作 / 撤销）；
+          命令栏宿主接上；<b>删掉死状态机</b>与隐形遮罩；8 条离屏回归。</td>
+        <td><code>config_file.rs</code><br><code>config.rs</code><br><code>terminal_ui.rs</code><br><code>app.rs</code><br><code>session_event.rs</code><br><code>history_panel.slint</code>（新）<br><code>terminal_view.slint</code><br><code>app.slint</code><br><code>mterm.po</code> ×2<br><code>tests/history_panel.rs</code>（新）</td>
+        <td>点 🕘 / <code>Ctrl+R</code> 出面板；打字即过滤；↑↓↵Tab Del Esc 全通；删除可撤销；<code>cargo test</code> 全绿；
+          <code>touch build.rs</code> 后重编通过。</td>
+      </tr>
+      <tr>
+        <td><b>P1</b><br><span class="pilltag ok">统一</span></td>
+        <td>发送命令窗左栏「最近」换成同一组件（compact 档：4 行、无胶囊、点行 = 插入光标处）；
+          删掉第二份实现与它的草稿过滤逻辑。</td>
+        <td><code>send_cmd_window.slint</code><br><code>app.rs</code>（镜像 <code>history-rows</code>）</td>
+        <td>发送窗里也能搜索 / 置顶 / 删除；两处行为一致；<code>tests/cmd_expand_polish.rs</code> 现有 9 条仍绿。</td>
+      </tr>
+      <tr>
+        <td><b>P2</b><br><span class="pilltag warn">增值</span></td>
+        <td>「常用」（<code>uses ≥ 3</code>）与「今天」过滤；导出为文本。</td>
+        <td><code>history_panel.slint</code>（加胶囊）<br><code>terminal_ui.rs</code>（多一个 filter 分支）</td>
+        <td>依赖 P0 的 <code>last_used / uses</code> 字段；不加存储字段，只加视图分支。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 class="mini">验收清单（实现完逐条打勾）</h3>
+  <table>
+    <thead><tr><th style="width:52%">项</th><th>判定方式</th></tr></thead>
+    <tbody>
+      <tr><td>点 🕘 面板真的出现（不是只亮图标）</td><td>肉眼 + <code>tests/history_panel.rs</code> ⑧</td></tr>
+      <tr><td>点面板外关闭，且<b>不吞</b>那次点击</td><td>点终端 → 面板关；再点一次终端 → 正常聚焦</td></tr>
+      <tr><td>搜索框持焦时 ↑↓ 仍能换选中项</td><td>打开后直接按 ↓，选中块跟着走</td></tr>
+      <tr><td>1 条 / 8 条 / 空态三种情况面板高度一致</td><td><code>tests/history_panel.rs</code> ①②</td></tr>
+      <tr><td>长命令被省略号截断时，悬停能看到全文</td><td>沙盘「长命令」场景</td></tr>
+      <tr><td>删除后 5s 内能撤销，撤销后回到原位</td><td><code>tests/history_panel.rs</code> ⑥</td></tr>
+      <tr><td>置顶项在「全部」里不改变位置</td><td><code>pinning_does_not_reorder_the_all_view</code></td></tr>
+      <tr><td><b>默认序 = 最近使用优先，首行就是刚敲过的那条</b></td><td><code>default_order_is_most_recent_first</code></td></tr>
+      <tr><td><b>★ 连续执行多条后，最后执行的那条排第一</b>（并列场景，上一次实现的真 bug）</td>
+        <td><code>consecutive_runs_order_by_recency_not_by_tie</code>：连发 A、B、C 三条，
+          断言首行 = C 而不是 A。</td></tr>
+      <tr><td><b>面板里执行一条 → 它跳到第 1 行、次数 +1、时间变「刚刚」</b></td>
+        <td><code>running_an_entry_moves_it_to_the_top</code>：执行后重开面板断言首行。</td></tr>
+      <tr><td>置顶项不会被 CAP 200 淘汰</td>
+        <td><code>cap_eviction_skips_pinned</code>：灌满 201 条，断言置顶项仍在。</td></tr>
+      <tr><td>切到「常用」后按次数降序，次数相同按最近使用降序</td><td><code>freq_order_breaks_ties_by_recency</code>：构造两条同次数、不同时间的条目，断言先后</td></tr>
+      <tr><td>换排序后选中项重新落在合法范围（不指向屏幕外的行）</td><td>切排序后 <code>selected</code> 必须 ∈ <code>[0, min(rows, cap))</code></td></tr>
+      <tr><td>老配置文件（<code>command_history: ["a","b"]</code>）能正常升级</td><td><code>config.rs</code> 里补一条迁移用例，<code>defaults_rev = 9</code> 起</td></tr>
+      <tr><td><code>Ctrl+R</code> 从终端焦点也能打开（#140 的原始诉求）</td><td>终端里按 <code>Ctrl+R</code></td></tr>
+      <tr><td>删干净：<code>suggest-view</code> / <code>history-view</code> / <code>delete-history(int)</code> 全仓 0 命中</td><td><code>grep</code> 三个词</td></tr>
+      <tr><td><b>清空：一次点击不删数据，两次才删</b></td><td><code>clear_confirm_requires_two_clicks</code></td></tr>
+      <tr><td><b>清空保留置顶项，回执数字对得上</b></td><td><code>clear_all_keeps_pinned_entries</code></td></tr>
+      <tr><td>确认态下 <span class="kbd">Esc</span> 回到列表且<b>一条都没删</b></td><td><code>clear_confirm_escape_returns_to_list_without_clearing</code></td></tr>
+      <tr><td>确认态能从五条路退出（Esc / 取消 / 关面板 / 切场景 / 点外部）</td><td>任一路径后 <code>confirming == false</code> 且列表正常绘制</td></tr>
+      <tr><td><b>确认层内容居中</b>（不是贴左上角、右侧留空）</td><td>离屏采样：内容块左右留白大致相等；<code>align-items:center</code> + <code>text-align:center</code> 都在</td></tr>
+      <tr><td><b>确认态页脚不显示列表键</b>（<code>↑↓ 选择</code> / <code>Del 删除</code> 必须消失）</td><td>确认态截帧里搜不到这几个字；退出确认后恢复</td></tr>
+    </tbody>
+  </table>
+
+  <div class="note wr">
+    <b>实现时最容易踩的四个坑</b>（都是这个仓库已经踩过的）：
+    <br>① <b>Slint <code>TextInput</code> 被用户编辑后 <code>text</code> 与外部绑定断开</b> —— 程序里改属性不会刷新输入框，
+      必须在组件内用 0ms Timer 直接写 <code>.text</code>（<code>#cmd-expand-fixes</code> 踩过两次）。
+    <br>② <b>1phx 落在半像素上会被抗锯齿摊成两行淡影</b> —— 面板边线要 <code>snap-to-device(absolute-position + offset) − absolute-position</code>，
+      光把 <code>height</code> 改成 hairline 不够。
+    <br>③ <b>布局子项的 <code>width</code> 绑定 = min = max</b> —— 面板宽要「先算好再写死」，别让 box layout 均摊
+      （<code>cmd_manager_card_grid</code> 的教训）。
+    <br>④ <b>探针定位靠扫描顶边</b>，别按窗口居中算 —— 面板锚在命令栏右端，坐标算错会读到遮罩或命令栏。
+  </div>
+
+  <!-- ══════════ §10 清空历史 ══════════ -->
+  <h2 class="sec"><span class="no">10</span>清空历史：这是整个面板里唯一的「不可逆」操作</h2>
+  <p class="sub">
+    单条删除有撤销兜底，所以敢做成「点了就删」。<b>清空不能照抄这一套</b> ——
+    它一次抹掉的是用户几个月攒下来的全部命令，没有回收站。这节把档位、形态、键盘和置顶保护四件事定死。
+  </p>
+
+  <h3 class="mini">① 先定档位：项目里本来就有三层确认语言</h3>
+  <p class="sub">
+    这个仓库对破坏性操作的规格不是随口定的，三档并存、各有归属。看代码就能取到口径：
+  </p>
+
+  <table>
+    <thead><tr><th style="width:22%">档</th><th style="width:26%">先例</th><th style="width:22%">证据</th><th>为什么这一档</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>直接执行</b><br><span class="pilltag ok">最轻</span></td>
+        <td>清空传输记录</td>
+        <td class="ev">app.slint:5706-5716<br>app.rs:5688</td>
+        <td>传输记录是<b>过程日志</b>，不是资产；清掉不影响任何后续操作。</td>
+      </tr>
+      <tr>
+        <td><b>行内二段式</b><br><span class="pilltag warn">中</span></td>
+        <td>删单条命令 / 删分组</td>
+        <td class="ev">command_manager.slint:543-561<br>group_manager.slint:1717</td>
+        <td>单条、可重建、高频。弹模态太重，但「按下去就没了」又太轻 ——
+          按钮<b>原地变红「确认」</b>，同一次点击不解锁。</td>
+      </tr>
+      <tr>
+        <td><b>模态确认</b><br><span class="pilltag bad">最重</span></td>
+        <td>删文件（含批量）</td>
+        <td class="ev">app.slint:7643-7664</td>
+        <td>删了就没了，且可能一次删很多。文案里明写「此操作不可撤销」。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="note dg">
+    <b>「清空历史」落在最重那一档</b>，理由三条：
+    <br>① <b>不可逆</b> —— 历史是用户几个月敲出来的资产，删了只能重敲；
+    <br>② <b>影响全局</b> —— 不是「删当前搜索结果」，是把整个库清掉；
+    <br>③ <b>没有局部性</b> —— 单条删除时用户看得见自己删的是哪一条，清空时看不见自己失去了什么。
+    <br><br>
+    换句话说：<b>破坏范围越大，确认要越强</b>。这条和「单条删除不弹框」并不矛盾 ——
+    单条有 5s 撤销兜底，清空没有（也不该有：撤销 200 条等于把清空做成开关）。
+  </div>
+
+  <h3 class="mini">② 形态：不弹系统模态框，确认做在面板内部</h3>
+  <p class="sub">
+    档位定了「最重」，但**不等于**要复用 <code>ConfirmDialog</code>。这里有个具体的工程理由：
+    面板本身就是一个浮层，再套一层带遮罩的模态会出现<b>遮罩套遮罩</b>；
+    而且面板随时会被「点外部」关掉，模态的焦点栈要跟着一起收，容易漏（项目里
+    <code>confirm-close-open</code> 与 <code>paste-confirm-open</code> 的 <code>covered</code> 互斥就是在处理这类问题）。
+  </p>
+  <p class="sub">
+    所以确认层<b>替换列表区</b>、面板外框尺寸不变 —— 视觉上像「列表翻了个面」，
+    用户不会觉得突然跳出来一个新窗口，也不会失去「我在历史面板里」的上下文。
+  </p>
+
+  <div class="anat">
+    <div class="figwrap">
+      <div class="panel">
+        <div class="pb-top">
+          <label class="pb-srch">
+            <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.3"/><path d="M10.2 10.2L14 14"/></svg>
+            <input placeholder="键入即搜索…" readonly tabindex="-1" aria-label="搜索">
+          </label>
+          <div class="pb-pills">
+            <button class="pill on" type="button" tabindex="-1">全部</button>
+            <button class="pill" type="button" tabindex="-1">置顶</button>
+            <button class="pill" type="button" tabindex="-1">今天</button>
+          </div>
+          <div class="pb-sort">
+            <button class="on" type="button" tabindex="-1">最近</button>
+            <button type="button" tabindex="-1">常用</button>
+          </div>
+        </div>
+        <!-- 确认层：替换列表区，内容整体居中 -->
+        <div class="pb-confirm show" style="height:150px">
+          <div class="warn">
+            <svg viewBox="0 0 24 24"><path d="M12 3.2L21.5 20.4H2.5z"/><path d="M12 9.4v4.6M12 16.9v.1"/></svg>
+            <span>清空全部命令历史？</span>
+          </div>
+          <div class="l1">将删除 <b>40</b> 条记录 · 无法撤销</div>
+          <div class="l2">这 <b>2</b> 条置顶命令会保留</div>
+          <div class="rows">
+            <button class="btn-cancel" type="button" tabindex="-1">取消</button>
+            <button class="btn-danger armed" type="button" tabindex="-1">清空</button>
+          </div>
+        </div>
+        <div class="pb-foot in-confirm">
+          <span class="cf-keys">
+            <span class="k"><kbd>Esc</kbd> 取消</span>
+            <span class="k"><kbd>Tab</kbd> 切换 · <kbd>↵</kbd> 选中</span>
+          </span>
+          <span class="gap"></span>
+          <span class="cnt">共 42 条</span>
+        </div>
+      </div>
+    </div>
+    <ol>
+      <li><i>1</i><div><b>入口在页脚最右端</b>：一枚 10px 的低权重文字钮，常态 <code>text-muted</code>，
+        悬停才铺 <code>danger-soft</code> 底 + 变红。位置离主操作（执行/删除）最远，<b>不会被手滑点到</b>。
+        没有可清空的条目时压暗禁用。</div></li>
+      <li><i>2</i><div><b>确认层替换列表，内容整体居中</b>：竖排「警告图标 + 标题 → 主行 → 副行 → 两个按钮」，
+        <b>水平与垂直都居中</b>。⚠️ 早期版本是左对齐 + <code>justify-content:center</code>：
+        三块内容全挤在左上角，右侧甩出一大片空白，看着像没排完版（见 §10 末尾的踩坑记录）。
+        居中后整块是一个视觉单元，视线落在正中。</div></li>
+      <li><i>3</i><div><b>三行文案，每行只说一件事</b>（居中排版要求短句）：
+        标题「清空全部命令历史？」→ 主行「将删除 <b>40</b> 条记录 · 无法撤销」
+        → 副行「这 <b>2</b> 条置顶命令会保留」。
+        数字用等宽体单独提亮 —— 它是这一屏唯一该被精确读到的东西。</div></li>
+      <li><i>4</i><div><b>「取消」在左、「清空」在右</b>：与项目所有弹框的页脚顺序一致
+        （<code>GhostButton</code> 然后 <code>DangerButton</code>，见 <code>confirm_dialog.slint:220-231</code>）。
+        默认焦点在<b>取消</b>上 —— 出事时按回车的后果必须是「什么都没发生」。</div></li>
+      <li><i>5</i><div><b>红色键二次解锁 + 副行变红</b>：第一态是<b>描边空心</b>的 <code>.armed</code>（写着「清空」），
+        点一下才变实心红「确认清空」，<b>同时副行换成红字「再点一次即永久删除」</b> ——
+        光变按钮颜色不够，用户会以为自己已经点完了。和命令管理的行内二段式<b>同一套手感</b>。</div></li>
+      <li><i>6</i><div><b>页脚整行换契约</b>：确认态下列表那组键（<code>↑↓ 选择</code> / <code>↵ 执行</code> /
+        <code>Tab 填入</code> / <code>Del 删除</code>）<b>全部失效</b>，还挂在页脚就是纯误导 ——
+        用户会去按 <code>Del</code> 以为能取消。所以整行换成「<kbd>Esc</kbd> 取消 + <kbd>Tab</kbd> 切换」，
+        「清空」入口也一并收起。</div></li>
+    </ol>
+  </div>
+
+  <h3 class="mini">③ 键盘：Esc 只退确认，回车不许一步到底</h3>
+  <table>
+    <thead><tr><th style="width:20%">按键</th><th style="width:34%">确认态下</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><span class="kbd">Esc</span></td><td><b>退出确认，回到列表</b></td><td>不关整个面板 —— 用户只是反悔了，不是想离开。这把 Esc 的<b>两段式</b>从「清搜索 → 关面板」延长成三档：
+        确认态下先退确认。</td></tr>
+      <tr><td><span class="kbd">←</span> <span class="kbd">→</span> <span class="kbd">Tab</span></td><td>在「取消 / 清空」之间切换焦点</td><td>只有两个键，来回切即可。</td></tr>
+      <tr><td><span class="kbd">↵</span></td><td>等价于「点一下确认键」，<b>但不会一步清空</b></td><td><b>抄项目里的一条明文规定</b>：
+        <code>confirm_dialog.slint:43-45</code> ——
+        <i>destructive confirmations must not become keyboard-confirmable merely because they share this component</i>。
+        回车是最容易误触的键（手还停在输入上），破坏性操作不能靠它确认。</td></tr>
+      <tr><td>其他任何键</td><td><b>吞掉</b></td><td>不能让字符穿透到搜索框去改过滤词 —— 那会让用户以为「确认层消失回列表了」。</td></tr>
+    </tbody>
+  </table>
+
+  <h3 class="mini">④ 置顶保护：清空不删置顶项</h3>
+  <p class="sub">
+    这是本次唯一一个「技术上可以不做、但做了才讲得通」的决定。
+  </p>
+  <div class="note">
+    <b>置顶 = 用户明确说过「这条我要长期留着」。</b>清空时把它一起删掉，
+    等于把用户刚表达过的意图反着执行一遍 —— 而且他很可能就是因为知道会被清掉，才专门去置顶的。
+    <br><br>
+    这也和 CAP 淘汰的规则对齐：<b>置顶项永不被自动移除</b>（§2 已定，<code>config.rs</code> 的
+    <code>drain(0..len-CAP)</code> 要改成「从队首找第一个非置顶的删」）。清空是同一个语义的极端情形。
+    <br><br>
+    确认层文案必须<b>把这件事说出来</b>并给出精确数字：「将删除 <b>40</b> 条记录 · 无法撤销 /
+    这 <b>2</b> 条置顶命令会保留」。如果一条置顶都没有，就顺势教一手：「（置顶的命令可以保留）」。
+  </div>
+
+  <div class="note dg">
+    <b>排版踩坑记录（第一版做成左对齐，被截图打回）</b>
+    <br><br>
+    初版给 <code>.pb-confirm</code> 写了 <code>flex-direction:column; justify-content:center;
+    padding:0 20px</code> —— 我以为这样就「居中」了。实际渲染出来是：<b>三块内容全贴在左上角，
+    右侧甩出三分之二宽度的空白</b>，读起来像页面加载到一半。
+    <br><br>
+    <b>根因</b>：<code>justify-content</code> 只管<b>主轴</b>（这里因为是 column，主轴是<b>竖向</b>），
+    所以它把三块内容在竖直方向居中了；但<b>横向</b>（交叉轴）没设 <code>align-items</code>，
+    子项默认 <code>stretch</code>，而块级文字又从左边开始排 —— 于是每一行都左对齐、
+    且宽度撑满，中间那个「居中」的错觉完全不存在。
+    <br><br>
+    <b>修法三件套</b>：
+    <br>① <code>align-items:center</code> —— 补上交叉轴居中（这才是「横向居中」）；
+    <br>② <code>text-align:center</code> —— 多行文字在各自的块内也居中；
+    <br>③ <b>文案从「一句长句」拆成三行短句</b> —— 居中排版的宽容度远低于左对齐：
+      左对齐时句子长一点只是行宽变大，居中时一行太长会显得头重脚轻。
+      拆成「标题 / 主行（删几条）/ 副行（置顶保留）」之后，三行都是 12~16 个字符，
+      视觉上正好组成一个居中的方块。
+    <br><br>
+    <b>顺带修掉的第二处</b>：页脚原本一直挂着 <code>↑↓ 选择 / ↵ 执行 / Tab 填入 / Del 删除</code>，
+    但这些键在确认态下<b>全部失效</b>。用户会去按 <code>Del</code> 以为能取消 —— 这是实打实的误导。
+    现在整行换契约（见上方第 ⑥ 条）。
+  </div>
+
+  <h3 class="mini">⑤ 与单条删除的语义必须分开</h3>
+  <table>
+    <thead><tr><th style="width:18%"></th><th style="width:41%">单条删除（<span class="kbd">Del</span> / 行内 ⌫）</th><th>清空（页脚「清空」）</th></tr></thead>
+    <tbody>
+      <tr><td><b>确认</b></td><td>无，直接删</td><td><b>面板内确认层 + 二次解锁</b></td></tr>
+      <tr><td><b>撤销</b></td><td><b>有</b>，5s 浮条 + <span class="kbd">Ctrl+Z</span></td><td><b>无</b> —— 撤销 200 条等于把清空做成开关</td></tr>
+      <tr><td><b>置顶项</b></td><td>可以删（用户明确点的这一条）</td><td><b>不删</b>（保护明确意图）</td></tr>
+      <tr><td><b>落盘</b></td><td>删完立刻 <code>save()</code></td><td>同左，没有「暂存待确认」态</td></tr>
+      <tr><td><b>成功后</b></td><td>撤销浮条</td><td>回执浮条「已清空 40 条，保留 2 条置顶」，<b>不带撤销键</b></td></tr>
+    </tbody>
+  </table>
+
+  <div class="note wr">
+    <b>实现时容易漏的两点</b>：
+    <br>① <b>确认态要能从任何入口退出</b>：Esc、取消、关面板、切换场景、
+      点外部 —— 五条路都要把 <code>confirming</code> 复位。漏一条就会卡在「列表画不出来」
+      （<code>render()</code> 在确认态提前 return）。
+    <br>② <b>先判空再置确认态</b>：一条可删的都没有时直接不进确认层，
+      否则 <code>confirming</code> 卡 true、面板永久白屏。
+  </div>
+
+  <h3 class="mini">⑥ 需要动的代码</h3>
+  <table>
+    <thead><tr><th style="width:26%">文件</th><th style="width:38%">改什么</th><th>注意</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>src/config/impls/config.rs</code></td>
+        <td>新增 <code>clear_command_history(&amp;self, keep_pinned: bool) -&gt; usize</code>（返回删了几条）；
+          <b>内部必须保留置顶项</b>，返回真实删除数供 UI 回执。</td>
+        <td>不要写成 <code>command_history.clear()</code> —— 那会把置顶一起清掉，
+          与 §2 的「置顶永不被自动移除」直接冲突。</td>
+      </tr>
+      <tr>
+        <td><code>src/app.rs</code></td>
+        <td>新增 <code>on_clear_history()</code>：调上面的方法 → <code>save()</code> → 刷
+          <code>command-history</code> / <code>history-rows</code> 两个模型 → 回一条「删了几条」给 UI 做回执。</td>
+        <td>刷新入口要和单条删除<b>共用同一个函数</b>，别再散落三处 <code>set</code>。</td>
+      </tr>
+      <tr>
+        <td><code>src/config/struct/config_file.rs</code></td>
+        <td><b>不用改</b> —— 清空不涉及新字段。</td>
+        <td>但如果做「清空前自动备份一份到 <code>command_history.bak</code>」，这里要加路径常量。
+          本期不做，理由见下。</td>
+      </tr>
+      <tr>
+        <td><code>ui/history_panel.slint</code></td>
+        <td>加 <code>confirming</code> 私有 property、确认层子树、<code>clear-all</code> 回调；
+          键盘分支持处理确认态。</td>
+        <td><code>confirming</code> 必须<b>住在组件内部</b>，别提到宿主根上 ——
+          否则两个宿主（命令栏 / 发送窗）会互相干扰确认态。</td>
+      </tr>
+      <tr>
+        <td><code>lang/{zh,en}/LC_MESSAGES/mterm.po</code></td>
+        <td>新增：<code>Clear history</code>（清空历史）、<code>Clear all command history?</code>（清空全部命令历史？）、
+          <code>This cannot be undone.</code>（无法撤销）、<code>pinned entries are kept</code>（置顶条目保留）、
+          <code>Cleared {0} entries</code>（已清空 {0} 条）。</td>
+        <td>文案里<b>不要</b>写「Are you sure?」这类空话 —— 用户要看到的是
+          <b>删几条</b>、<b>能不能撤</b>、<b>保不保留置顶</b>三个具体事实。</td>
+      </tr>
+      <tr>
+        <td><code>tests/history_panel.rs</code></td>
+        <td>3 条：<code>clear_all_keeps_pinned_entries</code> /
+          <code>clear_confirm_requires_two_clicks</code> /
+          <code>clear_confirm_escape_returns_to_list_without_clearing</code>。</td>
+        <td>第二条是重点：断言<b>一次点击后数据仍在</b> —— 这条能防住「以后有人图省事把 armed 去掉」。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 class="mini">⑦ 想过但没做的三件事</h3>
+  <table>
+    <thead><tr><th style="width:26%">方案</th><th style="width:12%">结论</th><th>为什么</th></tr></thead>
+    <tbody>
+      <tr><td>清空前自动备份到 <code>.bak</code> 文件</td><td><span class="pilltag warn">不做</span></td>
+        <td>听着稳妥，但用户<b>永远找不到</b>那个文件，等于没备份；真要做就该做成「回收站」界面，
+          那是另一个功能模块。本期用「置顶保护 + 二次确认」覆盖 90% 的误操作。</td></tr>
+      <tr><td>只清空当前搜索结果</td><td><span class="pilltag new">做成第二档</span></td>
+        <td>当搜索框有内容时，入口文案变成「清空这 <code>N</code> 条」，删的是<b>当前过滤结果</b>。
+          这是很自然的诉求（「这个项目的命令我不想要了」），但<b>不能和全量清空共用一个按钮</b> ——
+          文案必须跟着变。P1 再做，P0 只做全量。</td></tr>
+      <tr><td>清空后弹撤销浮条</td><td><span class="pilltag bad">不做</span></td>
+        <td>撤销 200 条需要把整库暂存在内存里并支持回滚，复杂度不亚于再做一份回收站；
+          而且和「置顶保护」叠加后语义会变模糊（撤销时要不要恢复置顶？）。
+          <b>不可逆就是不可逆</b>，用确认层挡住，不给假的安全感。</td></tr>
+    </tbody>
+  </table>
+
+  <div class="note" style="margin-top:34px">
+    <b>一句话总结</b>：先把「点 🕘 什么都不发生、还白吃一次点击」这个 bug 认下来（面板绘制代码已丢），
+    然后按<b>一个组件（<code>history_panel.slint</code>）、两个宿主（命令栏 / 发送窗）、一条有结构的数据
+    （<code>HistoryEntry</code> + rev 10 迁移）</b>重建：56 高的工具栏 + 锁 3–8 行的列表 + 28 页脚 + 可撤销删除，
+    键盘<b>单焦点、搜索框持焦、方向键拦截</b>；唯一不可逆的<b>清空</b>走面板内确认层 + 二次解锁 + 置顶保护。
+    这份稿子可以直接作为 <code>tests/history_panel.rs</code> 的验收基准。
+  </div>
+
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════
+   沙盘逻辑。★ 只有一份面板实例：宿主（命令栏形态）只负责算锚点与
+   传数据 —— 与方案 §2 ⑤「两处宿主共用一组件」一致。
+   ═══════════════════════════════════════════════════════════════════ */
+(function () {
+  'use strict';
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  /* ── 数据 ──
+     ★ 这个数组**故意是「存储序」：最旧在前、最新在后** ——
+       和 config.rs 的 command_history 完全一致（push_command_history 每次
+       把命令 retain+push 移到末尾，所以末元素 = 最近使用）。
+       沙盘里再由 visible() 把它翻成「新→旧」显示 —— 这样才能验证
+       「显示序 = 存储序反转」这条规则真的成立，而不是数组碰巧已经排好。
+     字段只有四个：
+       cmd   命令原文
+       uses  用过几次（存储侧 uses）
+       ago   多少分钟前（存储侧 last_used 算出来的）
+       pin   是否置顶
+     没有 src（来源）—— 那个色点已从设计里删掉，见 §4 的注。 */
+  var ALL = [
+    { cmd: 'sudo systemctl restart docker', uses: 1, ago: 4200, pin: false },
+    { cmd: 'who', uses: 1, ago: 3900, pin: false },
+    { cmd: 'uptime', uses: 2, ago: 3600, pin: false },
+    { cmd: 'awk "{print $1}" access.log | sort | uniq -c', uses: 1, ago: 3300, pin: false },
+    { cmd: 'sed -n "1,40p" /etc/hosts', uses: 1, ago: 3000, pin: false },
+    { cmd: 'journalctl -f -u sshd', uses: 3, ago: 2700, pin: false },
+    { cmd: 'tar -xzf release.tar.gz -C /opt/app', uses: 2, ago: 2400, pin: false },
+    { cmd: 'ssh-keygen -R 10.0.0.9', uses: 1, ago: 2160, pin: false },
+    { cmd: 'systemctl daemon-reload', uses: 1, ago: 1980, pin: false },
+    { cmd: 'docker logs -f --tail 100 api', uses: 2, ago: 1800, pin: false },
+    { cmd: 'npm run build', uses: 4, ago: 1620, pin: false },
+    { cmd: 'git diff --stat HEAD~1', uses: 3, ago: 1500, pin: false },
+    { cmd: 'systemctl list-units --failed', uses: 2, ago: 1360, pin: false },
+    { cmd: 'ls -lah /var/log/nginx', uses: 6, ago: 1240, pin: false },
+    { cmd: 'echo $PATH', uses: 1, ago: 1120, pin: false },
+    { cmd: 'netstat -tunlp | grep 8080', uses: 1, ago: 1010, pin: false },
+    { cmd: 'top -b -n 1 | head -20', uses: 3, ago: 900, pin: false },
+    { cmd: 'scp -r dist/* root@10.0.0.7:/var/www/', uses: 2, ago: 810, pin: false },
+    { cmd: 'find / -name "*.log" -mtime -1 2>/dev/null', uses: 1, ago: 700, pin: false },
+    { cmd: 'df -i', uses: 1, ago: 640, pin: false },
+    { cmd: 'systemctl restart nginx', uses: 8, ago: 512, pin: false },
+    { cmd: 'grep -rn "timeout" /etc/nginx/', uses: 4, ago: 470, pin: false },
+    { cmd: 'less /etc/nginx/nginx.conf', uses: 2, ago: 402, pin: false },
+    { cmd: 'curl -sSL https://127.0.0.1:8080/health', uses: 3, ago: 330, pin: false },
+    { cmd: 'iptables -L -n -v', uses: 1, ago: 288, pin: false },
+    { cmd: 'crontab -l', uses: 2, ago: 240, pin: false },
+    { cmd: 'chmod -R 755 /var/www/html', uses: 1, ago: 203, pin: false },
+    { cmd: 'rsync -av /data/ backup@10.0.0.9:/data/', uses: 1, ago: 175, pin: false },
+    { cmd: 'kubectl get pods -n prod', uses: 5, ago: 148, pin: false },
+    { cmd: 'git log --oneline -20', uses: 2, ago: 121, pin: false },
+    { cmd: 'tar -czf backup.tar.gz /var/log', uses: 1, ago: 96, pin: false },
+    { cmd: 'ps -ef | grep java', uses: 3, ago: 74, pin: false },
+    { cmd: 'free -h', uses: 2, ago: 58, pin: false },
+    { cmd: 'du -sh /var/log/* | sort -rh | head -10', uses: 4, ago: 47, pin: false },
+    { cmd: 'ss -lntp', uses: 2, ago: 33, pin: false },
+    { cmd: 'git status', uses: 3, ago: 26, pin: false },
+    { cmd: 'tail -n 200 /var/log/nginx/error.log', uses: 5, ago: 21, pin: false },
+    { cmd: 'docker ps -a', uses: 4, ago: 14, pin: false },
+    { cmd: 'git commit -m "fix: nginx upstream timeout"', uses: 7, ago: 9, pin: true },
+    { cmd: 'journalctl -u nginx -n 100 --no-pager', uses: 6, ago: 6, pin: false },
+    { cmd: 'systemctl status nginx', uses: 9, ago: 2, pin: true },
+    { cmd: 'df -h | head -4', uses: 12, ago: 1, pin: false }
+  ];
+
+  var LONG = [
+    { cmd: 'openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /etc/ssl/private/self.key -out /etc/ssl/certs/self.crt -subj "/CN=internal.local"', uses: 1, ago: 2400, pin: false },
+    { cmd: 'kubectl rollout restart deployment/api -n prod && kubectl rollout status deployment/api -n prod --timeout=180s', uses: 1, ago: 1500, pin: false },
+    { cmd: 'rsync -avz --delete --exclude "node_modules" --exclude ".git" -e "ssh -p 2222" ./ deploy@10.0.0.7:/srv/app/', uses: 3, ago: 700, pin: false },
+    { cmd: 'find /var/log -type f -name "*.log" -mtime +7 -exec gzip -9 {} \\; -print', uses: 1, ago: 260, pin: false },
+    { cmd: 'journalctl -u nginx --since "2026-10-26 00:00:00" --until "2026-10-27 00:00:00" -o json-pretty | jq -r ".MESSAGE" | head -50', uses: 2, ago: 40, pin: false },
+    { cmd: 'docker run --rm -it --network host -v /data/app:/app -w /app --env-file .env node:20-alpine sh -c "npm ci && npm run migrate && npm start"', uses: 1, ago: 3, pin: false }
+  ];
+
+  /* ── 状态 ── */
+  var S = {
+    open: false,
+    q: '',
+    filter: 'all',
+    sort: 'recent',        // 'recent' | 'freq'  —— 见 visible() 的排序注释
+    sel: 0,
+    /* ★ 深拷贝（逐条 Object.assign），不能用 ALL.slice()：
+       slice 只拷数组壳，元素还是 ALL 里那几个对象 —— recordUse 一改
+       uses/ago 就把模板数据污染了，切走再切回「默认」场景会带着脏数据。 */
+    data: ALL.map(function (e) { return Object.assign({}, e); }),
+    undo: null,        // { entry, index }
+    undoTimer: 0,
+    scene: 'default'
+  };
+
+  var pane = $('pane'), panel = $('panel'), list = $('list'), empty = $('empty');
+  var srch = $('srch'), srchBox = $('srchBox'), cmdInput = $('cmdInput');
+  var toast = $('toast'), toastProg = $('toastProg');
+  var pop = null;
+
+  var MIN_ROWS = 3, MAX_ROWS = 8, ROW_H = 38, LIST_PAD = 8;
+  var TOP_H = 46, FOOT_H = 28, BAR_H = 48;
+
+  /* ── 工具 ── */
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function agoText(m) {
+    if (m < 1) { return '刚刚'; }
+    if (m < 60) { return m + ' 分钟前'; }
+    if (m < 1440) { return Math.round(m / 60) + ' 小时前'; }
+    var d = Math.round(m / 1440);
+    return d + ' 天前';
+  }
+
+  /* ── 过滤 + 排序 ──
+     ★ 排序是**算出来的**，不是数组顺序碰巧对：
+       ① 存储序（最旧在前）→ 显示序（最近在前）＝ 反转
+          因为 push_command_history 每次 retain+push 移到末尾，
+          存储序本身就是 recency 序 —— 所以「按最近使用排」不需要排序算法。
+       ② 「常用」档才需要真排序：uses 降序，相同则最近使用优先。
+     ★ 置顶**不参与排序**：只加图钉标记 + 「置顶」档单独列出（§7 决策 04）。
+       否则「最近的一条」会被顶到中间，用户 ↑ 一按就找不到刚敲过的命令。 */
+  function visible() {
+    var q = S.q.trim().toLowerCase();
+    var out = [];
+    for (var i = 0; i < S.data.length; i++) {
+      var e = S.data[i];
+      if (S.filter === 'pinned' && !e.pin) { continue; }
+      if (S.filter === 'today' && e.ago > 1440) { continue; }
+      if (q && e.cmd.toLowerCase().indexOf(q) < 0) { continue; }
+      out.push(e);
+    }
+    /* ★「最近」档 = **存储序反转**，不是按时间戳排序。
+       ★ 为什么不能用 ago/last_used 排序（已踩过）：
+         ago 是整数分钟，用户连续执行几条命令后它们全是 ago=0 —— 并列。
+         稳定排序遇到并列会保持原数组顺序，而原数组是存储序（最旧在前），
+         于是「最早执行的那条」反而排第一。真实实现里 last_used 是 unix 秒，
+         同一秒内连发多条同样会撞车 —— 时间戳天生有精度上限。
+       ★ 存储序没有这个问题：recordUse 每次「摘掉 + push 到末尾」，
+         「谁最新」在数组位置里是精确的、无并列的。过滤后 out 仍是存储序，
+         所以 reverse() 一下就是严格的新→旧。 */
+    if (S.sort === 'freq') {
+      /* 「常用」档才需要真排序；并列（同次数）按存储位置破——
+         位置越靠后 = 越近使用。位置用一张索引表查，别在比较器里 indexOf。 */
+      var pos = new Map();
+      for (var k = 0; k < S.data.length; k++) { pos.set(S.data[k], k); }
+      out.sort(function (a, b) {
+        return (b.uses - a.uses) || (pos.get(b) - pos.get(a));
+      });
+    } else {
+      out.reverse();   /* 存储序（最旧在前）→ 显示序（最新在前），零并列 */
+    }
+    return out;
+  }
+
+  /* ══════════ 清空历史（§10）══════════
+     交互：页脚右端「清空」→ 面板内确认层 → 再点一次红色的「清空」才真删。
+     ★ 为什么不是「点一下就清」：
+       ① 不可逆（历史是用户几个月攒的资产，删了只能重敲）；
+       ② 影响全局（不限于当前搜索结果）；
+       ③ 项目里「删文件」走 ConfirmDialog，「清空传输记录」直接清 ——
+          历史介于两者之间，取重的那一档。
+     ★ 为什么不做成系统模态框：
+       面板本身是浮层，再套模态会「遮罩套遮罩」，且点外部关面板时
+       模态的焦点栈要跟着收，容易漏。确认就做在面板内部，替换列表区。
+     ★ 为什么置顶项不删：
+       置顶 = 用户明确说「这条我要长期留着」。清空时把它一起删掉，
+       等于把用户刚表达过的意图反着执行。而且这跟 CAP 淘汰的规则一致
+       （置顶项永不被自动移除）。 */
+
+  var confirming = false;
+
+  function enterConfirm() {
+    /* ★ 先判空再置 confirming —— 否则空历史时 confirming 卡在 true，
+       render() 会永久提前 return，列表再也画不出来。 */
+    var victims0 = S.data.filter(function (e) { return !e.pin; }).length;
+    if (victims0 === 0) { return; }
+
+    confirming = true;
+    /* 只统计**会被删掉的**条数（置顶项不算），否则用户以为置顶也没了 */
+    var victims = victims0;
+    var pinned = S.data.length - victims;
+
+    /* 三行文案，各说一件事（左对齐改成居中后，行数要少、每行要短）：
+       ① 标题：问什么
+       ② 主行：删几条 —— 唯一的数字，单独提亮
+       ③ 副行：置顶保留 / 或第二步提示（随解锁态切换，见 armOk） */
+    $('cfL1').innerHTML = '将删除 <b>' + victims + '</b> 条记录 · 无法撤销';
+    if (pinned > 0) {
+      $('cfL2').innerHTML = '这 <b>' + pinned + '</b> 条置顶命令会保留';
+    } else {
+      $('cfL2').textContent = '（置顶的命令可以保留）';
+    }
+    $('cfL2').classList.remove('armed-hint');
+
+    /* 列表/空态让位给确认层，但**面板总高不变**（行数照旧算） */
+    list.style.display = 'none';
+    empty.classList.remove('show');
+    $('confirmBox').classList.add('show');
+    $('confirmBox').style.height = (rowCount() * ROW_H + LIST_PAD) + 'px';
+    /* 页脚换一套键盘契约 —— 列表那组键在确认态下全是无效的 */
+    $('pbFoot').classList.add('in-confirm');
+    /* 危险键先进 armed 态：一次点击不解锁 */
+    $('cfOk').classList.add('armed');
+    $('cfOk').textContent = '清空';
+    $('cfCancel').focus();
+  }
+
+  /* 第一态 → 第二态：按钮变实心红「确认清空」，副行改成红字提醒再点一次 */
+  function armOk() {
+    var btn = $('cfOk');
+    btn.classList.remove('armed');
+    btn.textContent = '确认清空';
+    $('cfL2').innerHTML = '再点一次即永久删除';
+    $('cfL2').classList.add('armed-hint');
+    btn.focus();
+  }
+
+  function exitConfirm() {
+    confirming = false;
+    $('confirmBox').classList.remove('show');
+    /* 页脚换回列表态契约 */
+    $('pbFoot').classList.remove('in-confirm');
+    render();
+    srch.focus();
+  }
+
+  function doClearAll() {
+    /* 保护置顶项：只删非置顶 */
+    var before = S.data.length;
+    S.data = S.data.filter(function (e) { return e.pin; });
+    var removed = before - S.data.length;
+    var kept = S.data.length;
+    confirming = false;
+    $('confirmBox').classList.remove('show');
+    $('pbFoot').classList.remove('in-confirm');
+    S.undo = null;          /* 批量清空不可撤销 —— 与单条删除的语义必须区分开 */
+    S.sel = 0;
+    render();
+    toastMsg('已清空 ' + removed + ' 条' + (kept ? '，保留 ' + kept + ' 条置顶' : ''));
+  }
+
+  /* ── 行数：按可用高算，夹在 3..8 ── */
+  function rowCount() {
+    var avail = pane.clientHeight - BAR_H - 12;
+    var n = Math.floor((avail - TOP_H - FOOT_H - LIST_PAD) / ROW_H);
+    return Math.max(MIN_ROWS, Math.min(MAX_ROWS, n));
+  }
+
+  /* ── 定位：右边缘贴命令栏内距 10，底边贴命令栏上沿 6 ── */
+  function place() {
+    var pw = pane.clientWidth;
+    var w = Math.min(560, pw - 24);
+    panel.style.width = w + 'px';
+    panel.style.left = Math.max(8, pw - w - 10) + 'px';
+    panel.style.right = 'auto';
+    panel.style.bottom = (BAR_H + 6) + 'px';
+    var rows = rowCount();
+    var h = rows * ROW_H + LIST_PAD;
+    list.style.height = h + 'px';
+    empty.style.height = h + 'px';
+    panel.setAttribute('data-rows', String(rows));
+    return { w: w, rows: rows, h: TOP_H + h + FOOT_H };
+  }
+
+  /* ── 渲染 ── */
+  function render() {
+    var rows = visible();
+    var cap = rowCount();
+
+    /* 确认态：列表区被确认层占用，不要重画列表（否则会覆盖 display:none） */
+    if (confirming) { return; }
+
+    /* 选中项夹进可见范围 */
+    if (S.sel >= Math.min(rows.length, cap)) { S.sel = 0; }
+    if (S.sel < 0) { S.sel = 0; }
+
+    list.innerHTML = '';
+    /* 排序档 → 视觉档：让「此刻按什么排」在界面上自解释（见 CSS 注） */
+    list.classList.toggle('by-freq', S.sort === 'freq');
+    for (var i = 0; i < Math.min(rows.length, cap); i++) {
+      list.appendChild(makeRow(rows[i], i));
+    }
+
+    /* 空态 */
+    var isEmpty = rows.length === 0;
+    list.style.display = isEmpty ? 'none' : 'block';
+    empty.classList.toggle('show', isEmpty);
+    if (isEmpty) {
+      var noData = S.data.length === 0;
+      $('emptyTitle').textContent = noData ? '还没有命令历史' : '没有匹配的命令';
+      $('emptyDesc').textContent = noData
+        ? '在命令栏敲一条命令、或直接在终端里执行 —— 都会记在这里。'
+        : '换个关键词，或把过滤切回「全部」。历史不会因为搜索而消失。';
+      $('emptyAct').style.display = noData ? 'none' : 'inline-block';
+    }
+
+    /* 「清空」入口：没东西可清时压暗禁用（避免点了进确认层又发现是空的） */
+    var clearBtn = $('clearAllBtn');
+    var nothingToClear = S.data.filter(function (e) { return !e.pin; }).length === 0;
+    clearBtn.disabled = nothingToClear;
+    clearBtn.style.opacity = nothingToClear ? '.4' : '1';
+    clearBtn.style.cursor = nothingToClear ? 'default' : 'pointer';
+    clearBtn.title = nothingToClear
+      ? (S.data.length ? '只剩置顶命令，没有可清空的历史' : '还没有命令历史')
+      : '清空全部命令历史（置顶命令保留）';
+
+    /* 计数 */
+    var total = S.data.length;
+    $('footCnt').textContent = (rows.length === total)
+      ? '共 ' + total + ' 条'
+      : rows.length + ' / ' + total + ' 条';
+
+    /* 搜索框清空键。★ 只在真的不一致时才写 value —— 在 input 事件里回写
+       value 会把光标顶到末尾（用户连着打字时光标会自己跑）。 */
+    srchBox.classList.toggle('has', S.q !== '');
+    if (srch.value !== S.q) { srch.value = S.q; }
+
+    /* 读数 */
+    var sz = place();
+    $('roState').textContent = !S.open ? 'closed'
+      : (isEmpty ? 'open · empty' : (S.q || S.filter !== 'all' ? 'open · filtered' : 'open'));
+    $('roAnchor').textContent = 'bar.right − 10';
+    $('roSize').textContent = sz.w + ' × ' + sz.h;
+    $('roRowN').textContent = Math.min(rows.length, cap) + ' / ' + cap;
+    $('roSel').textContent = isEmpty ? '—' : (S.sel + 1) + ' / ' + Math.min(rows.length, cap);
+    $('roFilter').textContent = S.filter;
+    $('roSort').textContent = S.sort === 'freq' ? '常用' : '最近';
+    $('roHits').textContent = rows.length;
+  }
+
+  function makeRow(e, i) {
+    var row = document.createElement('div');
+    row.className = 'pb-row' + (i === S.sel ? ' on' : '') + (e.pin ? ' pinned' : '');
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', i === S.sel ? 'true' : 'false');
+
+    /* 图钉槽 */
+    var pin = document.createElement('span');
+    pin.className = 'pin';
+    pin.innerHTML = '<svg viewBox="0 0 16 16"><path d="M9.4 2.2l4.4 4.4-1.6.5-2.2 2.2.3 2.9-1.1 1.1-5.8-5.8 1.1-1.1 2.9.3 2.2-2.2z"/><path d="M4.6 11.4L2.2 13.8"/></svg>';
+    row.appendChild(pin);
+
+    /* 命令（命中高亮） */
+    var cmd = document.createElement('span');
+    cmd.className = 'cmd';
+    var q = S.q.trim();
+    if (q) {
+      var at = e.cmd.toLowerCase().indexOf(q.toLowerCase());
+      if (at >= 0) {
+        cmd.appendChild(document.createTextNode(e.cmd.slice(0, at)));
+        var mk = document.createElement('mark');
+        mk.textContent = e.cmd.slice(at, at + q.length);
+        cmd.appendChild(mk);
+        cmd.appendChild(document.createTextNode(e.cmd.slice(at + q.length)));
+      } else {
+        cmd.textContent = e.cmd;
+      }
+    } else {
+      cmd.textContent = e.cmd;
+    }
+    row.appendChild(cmd);
+
+    /* 元信息：两段分开包，「次数」与「时间」的视觉权重随排序档对调
+       （见 CSS 里 .pb-list.by-freq 的注释）—— 让用户一眼看出
+       「这一刻是按什么排的」，而不是拿两列里更显眼的那列去猜。 */
+    var meta = document.createElement('span');
+    meta.className = 'meta';
+    var u = document.createElement('span');
+    u.className = 'u';
+    u.textContent = e.uses + ' 次';
+    var t = document.createElement('span');
+    t.className = 't';
+    t.textContent = ' · ' + agoText(e.ago);
+    meta.appendChild(u);
+    meta.appendChild(t);
+    row.appendChild(meta);
+
+    /* 动作键 */
+    var acts = document.createElement('div');
+    acts.className = 'pb-acts';
+    acts.appendChild(actBtn('run', '执行', '<path d="M5 3.4l7 4.6-7 4.6z"/>', false, function (ev) {
+      ev.stopPropagation(); doRun(e);
+    }));
+    acts.appendChild(actBtn('copy', '复制', '<rect x="5.6" y="5.6" width="7" height="7" rx="1.4"/><path d="M10.4 5.6V4.2A1.2 1.2 0 009.2 3H4.2A1.2 1.2 0 003 4.2v5a1.2 1.2 0 001.2 1.2h1.4"/>', false, function (ev) {
+      ev.stopPropagation(); doCopy(e);
+    }));
+    acts.appendChild(actBtn('pin', e.pin ? '取消置顶' : '置顶', '<path d="M9.4 2.2l4.4 4.4-1.6.5-2.2 2.2.3 2.9-1.1 1.1-5.8-5.8 1.1-1.1 2.9.3 2.2-2.2z"/><path d="M4.6 11.4L2.2 13.8"/>', e.pin, function (ev) {
+      ev.stopPropagation(); doPin(e);
+    }));
+    acts.appendChild(actBtn('del', '删除', '<path d="M3.4 4.6h9.2M6.4 4.6V3.4h3.2v1.2M4.6 4.6l.6 8.2h5.6l.6-8.2"/>', false, function (ev) {
+      ev.stopPropagation(); doDelete(e);
+    }));
+    row.appendChild(acts);
+
+    /* ★ 选中只换 class，**不重建列表**。
+       重建会让 mousedown 里那个元素从 DOM 上摘掉，浏览器随后不再派发 click
+       → 表现成「点一行只高亮、不执行」。这类 bug 在真机上极难看出来。 */
+    row.addEventListener('mousedown', function (ev) {
+      if (ev.target.closest && ev.target.closest('.pb-act')) { return; }
+      ev.preventDefault();          // 保住搜索框焦点
+      S.sel = i;
+      applySelection();
+    });
+    row.addEventListener('click', function (ev) {
+      if (ev.target.closest && ev.target.closest('.pb-act')) { return; }
+      doRun(e);
+    });
+    /* 悬停全文卡（只在被截断时） */
+    row.addEventListener('mouseenter', function () {
+      var over = cmd.scrollWidth > cmd.clientWidth + 1;
+      showPop(over ? e.cmd : '', row);
+    });
+    row.addEventListener('mouseleave', function () { showPop('', null); });
+
+    return row;
+  }
+
+  /* 只换选中态的 class（不重建 DOM —— 见 makeRow 里 mousedown 的注释）。
+     ★ 滚动用**手算 scrollTop**，不用 scrollIntoView：后者会连带滚动所有祖先
+     滚动容器（含整个页面），用户在页面中部点 ↓ 会看到页面自己跳一下。 */
+  function applySelection() {
+    var nodes = list.children;
+    for (var i = 0; i < nodes.length; i++) {
+      var on = (i === S.sel);
+      nodes[i].classList.toggle('on', on);
+      nodes[i].setAttribute('aria-selected', on ? 'true' : 'false');
+    }
+    var rows = visible();
+    var n = Math.min(rows.length, rowCount());
+    $('roSel').textContent = n ? (S.sel + 1) + ' / ' + n : '—';
+    var cur = nodes[S.sel];
+    if (cur) {
+      var top = cur.offsetTop - list.offsetTop;
+      var bottom = top + cur.offsetHeight;
+      if (top < list.scrollTop) {
+        list.scrollTop = top;
+      } else if (bottom > list.scrollTop + list.clientHeight) {
+        list.scrollTop = bottom - list.clientHeight;
+      }
+    }
+  }
+
+  function actBtn(kind, tip, svg, on, fn) {
+    var b = document.createElement('button');
+    b.className = 'pb-act' + (kind === 'del' ? ' danger' : '') + (on ? ' pinned-on' : '');
+    b.type = 'button';
+    b.title = tip;
+    b.setAttribute('aria-label', tip);
+    b.innerHTML = '<svg viewBox="0 0 16 16">' + svg + '</svg>';
+    b.addEventListener('click', fn);
+    return b;
+  }
+
+  /* ── 全文悬浮卡 ── */
+  function showPop(text, row) {
+    if (!text) { if (pop) { pop.classList.remove('show'); } return; }
+    if (!pop) {
+      pop = document.createElement('div');
+      pop.className = 'cmdpop';
+      document.body.appendChild(pop);
+    }
+    pop.textContent = text;
+    pop.classList.add('show');
+    var r = row.getBoundingClientRect();
+    var pw = Math.min(520, window.innerWidth - 24);
+    pop.style.maxWidth = pw + 'px';
+    var w = pop.offsetWidth;
+    var x = Math.min(r.left + 12, window.innerWidth - w - 12);
+    var y = r.bottom + 6;
+    if (y + pop.offsetHeight > window.innerHeight - 12) { y = r.top - pop.offsetHeight - 6; }
+    pop.style.left = Math.max(12, x) + 'px';
+    pop.style.top = Math.max(12, y) + 'px';
+  }
+
+  /* ── 动作 ── */
+  function doRun(e) {
+    closePanel();          /* ★ 先关框，再发键（§5 的硬顺序） */
+    var line = document.createElement('div');
+    line.className = 'tl';
+    line.innerHTML = '<span class="grn">root@web-01</span>:<span class="cyn">/var/log</span>$ ' + esc(e.cmd);
+    var body = $('paneBody');
+    body.appendChild(line);
+    var out = document.createElement('div');
+    out.className = 'tl dim';
+    out.textContent = '… (命令已发往当前标签页)';
+    body.appendChild(out);
+    cmdInput.value = '';
+    cmdInput.focus();
+    /* ★ 执行完必须回写历史记录 —— 这是沙盘上一版最大的失真：
+       少了这一步，「次数」不涨、「时间」不归零、该条也不移到存储末尾，
+       于是用户执行完再打开面板，那条还停在原地，看起来像「排序没生效」。
+       真实实现走 config.rs:1913 的 push_command_history（retain + push）。 */
+    recordUse(e);
+  }
+
+  /* 镜像 config.rs::push_command_history 的语义（:1913-1926）：
+     · 已在历史里 → uses += 1、last_used 刷新、摘掉后 push 到末尾（去重 + 移到最近）
+     · 不在历史里 → 作为新条目追加到末尾（uses = 1）
+     两条分支都要有：命令栏里敲一条没执行过的命令，同样会进历史。
+     注意：这里改的是「存储序」，显示序仍由 visible() 现算 ——
+     两者必须分开，否则「排序」就成了摆设。 */
+  function recordUse(e) {
+    /* 命令栏敲出来的裸对象只有 cmd，没有元信息 —— 先看它是不是已经在历史里 */
+    var existing = null;
+    for (var i = 0; i < S.data.length; i++) {
+      if (S.data[i].cmd === e.cmd) { existing = S.data[i]; break; }
+    }
+    if (existing) {
+      existing.uses += 1;
+      existing.ago = 0;
+      var at = S.data.indexOf(existing);
+      if (at >= 0) { S.data.splice(at, 1); }
+      S.data.push(existing);
+    } else {
+      S.data.push({ cmd: e.cmd, uses: 1, ago: 0, pin: false });
+    }
+    /* CAP = 200，与 config.rs:1920 同值。淘汰规则本次有改动：
+       ★ 从队首往后找**第一个非置顶**的删，置顶项永不被 CAP 挤掉。
+         否则用户精心置顶的命令会被后续执行悄悄淘汰，「置顶」就不可信了。 */
+    while (S.data.length > 200) {
+      var victim = -1;
+      for (var j = 0; j < S.data.length; j++) {
+        if (!S.data[j].pin) { victim = j; break; }
+      }
+      if (victim < 0) { break; }   /* 全是置顶项：不淘汰，宁可超限 */
+      S.data.splice(victim, 1);
+    }
+  }
+
+  function doCopy(e) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(e.cmd).catch(function () {});
+    }
+    toastMsg('已复制到剪贴板');
+  }
+
+  function doPin(e) {
+    e.pin = !e.pin;
+    render();
+    toastMsg(e.pin ? '已置顶' : '已取消置顶');
+  }
+
+  function doDelete(e) {
+    var idx = S.data.indexOf(e);
+    if (idx < 0) { return; }
+    /* ★ 选中项要按**显示位置**夹，不能按存储索引。
+       存储索引 = 排序前的位置，显示索引 = 排序后的位置，两者在「常用」档下
+       完全不同。用存储索引去夹，选中项会莫名跳到另一条命令上。
+       正确手感：删掉第 3 行 → 原来的第 4 行顶上来被选中。 */
+    var vis = visible();
+    var visIdx = vis.indexOf(e);
+    S.data.splice(idx, 1);
+    /* 撤销权：记录 + 截止时刻。连删两条只有最后一条可撤（单条撤销栈）。 */
+    S.undo = { entry: e, index: idx, deadline: Date.now() + TOAST_MS };
+    if (visIdx >= 0) {
+      /* 顶上来那条占据原位；删的是最后一条则退到倒数第二个 */
+      var after = visible();
+      S.sel = Math.min(visIdx, Math.max(0, after.length - 1));
+    }
+    render();
+    toastMsg('已删除 1 条');
+  }
+
+  function undoDelete() {
+    if (!S.undo) { return; }
+    var u = S.undo;
+    S.data.splice(Math.min(u.index, S.data.length), 0, u.entry);
+    S.undo = null;
+    hideToast();
+    /* 恢复的那条回到原位 —— 选中它，用户能看到「撤销确实生效了」 */
+    var vis = visible();
+    var at = vis.indexOf(u.entry);
+    S.sel = at >= 0 ? at : 0;
+    render();
+  }
+
+  /* ── 撤销浮条 ──
+     ★ 模型：撤销权属于 S.undo（一条记录 + 截止时刻），**不属于浮条**。
+       浮条只是它的显示器 —— 复制回执 / 置顶回执也能复用同一条浮条，
+       但绝不会把撤销权顶掉（否则「删一条 → 顺手复制一条 → 撤销按钮没了」）。 */
+  var TOAST_MS = 5000;
+  var tickTimer = 0;
+
+  function startTicker() {
+    clearInterval(tickTimer);
+    tickTimer = setInterval(function () {
+      var now = Date.now();
+      if (S.undo) {
+        var left = (S.undo.deadline - now) / TOAST_MS;
+        if (left <= 0) {
+          S.undo = null;
+          hideToast();
+          return;
+        }
+        toastProg.style.transform = 'scaleX(' + Math.max(0, left) + ')';
+      }
+    }, 60);
+  }
+
+  /* 所有回执都走这一个出口。文案 + 是否带撤销按钮，由 S.undo 决定。 */
+  function toastMsg(txt) {
+    var hasUndo = !!S.undo;
+    $('toastTxt').textContent = txt;
+    $('toastUndo').style.display = hasUndo ? 'inline-block' : 'none';
+    toastProg.style.display = hasUndo ? 'block' : 'none';
+    if (hasUndo) {
+      toastProg.style.transition = 'none';
+      toastProg.style.transform = 'scaleX(1)';
+    }
+    toast.classList.add('show');
+    startTicker();
+    /* 无撤销权的回执 2.2s 自动收；有撤销权的活到 deadline（由 ticker 收） */
+    clearTimeout(toastHideTimer);
+    if (!hasUndo) {
+      toastHideTimer = setTimeout(hideToast, 2200);
+    }
+  }
+
+  var toastHideTimer = 0;
+  function hideToast() {
+    toast.classList.remove('show');
+    clearInterval(tickTimer);
+    clearTimeout(toastHideTimer);
+  }
+  /* 关面板 / 切换场景时连撤销权一起清 */
+  function toastOff() {
+    S.undo = null;
+    hideToast();
+  }
+
+  /* ── 开 / 关 ── */
+  function openPanel() {
+    if (S.open) { closePanel(); return; }
+    S.open = true;
+    S.sel = 0;
+    /* 每次打开都清过滤 —— 与今天 changed history-open 的行为一致：
+       上次的搜索词不该留给下一次（用户会以为历史里真的只有那几条）。 */
+    S.q = '';
+    S.filter = 'all';
+    S.sort = 'recent';
+    srch.value = '';
+    syncPills();
+    syncSort();
+    toastOff();
+    /* 确认态不跨「打开」留存：上次没确认的清空，重开面板要重新走一遍 */
+    confirming = false;
+    $('confirmBox').classList.remove('show');
+    $('pbFoot').classList.remove('in-confirm');
+    panel.classList.add('show');
+    $('clockBtn').classList.add('on');
+    place();
+    render();
+    /* 下一帧再 focus：同步 focus 会撞上 Windows 的 IME/无障碍管线（#349） */
+    setTimeout(function () { srch.focus(); }, 0);
+  }
+
+  function closePanel() {
+    if (!S.open) { return; }
+    S.open = false;
+    /* 关面板 = 放弃这次清空（确认态一起收掉） */
+    confirming = false;
+    $('confirmBox').classList.remove('show');
+    $('pbFoot').classList.remove('in-confirm');
+    panel.classList.remove('show');
+    $('clockBtn').classList.remove('on');
+    toastOff();
+    showPop('', null);
+    render();
+    cmdInput.focus();
+  }
+
+  /* ── 键盘契约 ── */
+  function keyHandler(ev) {
+    if (!S.open) { return; }
+
+    /* ── 确认态：只认 Esc（退出确认）、Tab/方向键（在取消/确认间走）。
+       ★ 刻意**不认 Enter**：confirm_dialog.slint:43-45 有明文规定 ——
+         「destructive confirmations must not become keyboard-confirmable
+          merely because they share this component」。清空历史同理：
+         回车是最容易误触的键，破坏性操作不能靠它确认。 */
+    if (confirming) {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        exitConfirm();
+        return;
+      }
+      if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight' ||
+          ev.key === 'Tab') {
+        ev.preventDefault();
+        /* 只有两个键，来回切焦点 */
+        var onOk = document.activeElement === $('cfOk');
+        (onOk ? $('cfCancel') : $('cfOk')).focus();
+        return;
+      }
+      /* 其余按键全部吞掉，避免穿透到搜索框去改过滤词 */
+      if (ev.key !== 'Shift' && ev.key !== 'Control' && ev.key !== 'Alt' && ev.key !== 'Meta') {
+        ev.preventDefault();
+        if (ev.key === 'Enter') {
+          /* 回车也照「两段式」走：等于点一下确认键，但**仍不解锁**，
+             必须再按一次才真删 —— 保持与鼠标完全同一套状态机。 */
+          $('cfOk').click();
+        }
+        return;
+      }
+      return;
+    }
+
+    var rows = visible();
+    var cap = rowCount();
+    var n = Math.min(rows.length, cap);
+    var k = ev.key;
+
+    /* 组合键先判，别被裸方向键吃掉 */
+    if ((ev.ctrlKey || ev.metaKey) && (k === 'z' || k === 'Z')) {
+      if (S.undo) { ev.preventDefault(); undoDelete(); }
+      return;
+    }
+
+    if (k === 'ArrowDown') {
+      ev.preventDefault();
+      if (n > 0) { S.sel = (S.sel + 1) % n; applySelection(); }
+      return;
+    }
+    if (k === 'ArrowUp') {
+      ev.preventDefault();
+      if (n > 0) { S.sel = (S.sel - 1 + n) % n; applySelection(); }
+      return;
+    }
+    if (k === 'Home') {
+      ev.preventDefault(); S.sel = 0; applySelection(); return;
+    }
+    if (k === 'End') {
+      ev.preventDefault(); S.sel = Math.max(0, n - 1); applySelection(); return;
+    }
+    if (k === 'PageDown') {
+      ev.preventDefault(); S.sel = Math.min(Math.max(0, n - 1), S.sel + MAX_ROWS); applySelection(); return;
+    }
+    if (k === 'PageUp') {
+      ev.preventDefault(); S.sel = Math.max(0, S.sel - MAX_ROWS); applySelection(); return;
+    }
+    if (k === 'Enter') {
+      ev.preventDefault();
+      if (n > 0) { doRun(rows[S.sel]); }
+      return;
+    }
+    if (k === 'Tab') {
+      ev.preventDefault();
+      if (n > 0) {
+        cmdInput.value = rows[S.sel].cmd;
+        closePanel();
+        cmdInput.focus();
+        cmdInput.setSelectionRange(cmdInput.value.length, cmdInput.value.length);
+      }
+      return;
+    }
+    /* ★ Del / Ctrl+Backspace 只在**搜索框为空**时接管。
+       搜索框有字时 Del 必须是「删掉光标右边那个字符」—— 否则用户在搜索框里
+       按一下 Del，删掉的是历史里的一条命令。这条和 Backspace 同一条规则。 */
+    if (k === 'Delete' && S.q === '') {
+      ev.preventDefault();
+      if (n > 0) { doDelete(rows[S.sel]); }
+      return;
+    }
+    if (k === 'Backspace' && (ev.ctrlKey || ev.metaKey) && S.q === '') {
+      ev.preventDefault();
+      if (n > 0) { doDelete(rows[S.sel]); }
+      return;
+    }
+    if (k === 'Escape') {
+      ev.preventDefault();
+      if (S.q !== '') {
+        S.q = '';
+        S.sel = 0;
+        render();
+      } else {
+        closePanel();
+      }
+      return;
+    }
+  }
+
+  /* ── 绑定 ── */
+  srch.addEventListener('input', function () {
+    S.q = srch.value;
+    S.sel = 0;
+    render();
+  });
+  /* ★ 只绑在 panel 上：搜索框是 panel 的子节点，keydown 会冒泡上来。
+     两边都绑 = 一次按键跑两遍 keyHandler（方向键会跳两格、Esc 直接关到底）。 */
+  panel.addEventListener('keydown', keyHandler);
+
+  $('srchClr').addEventListener('click', function (ev) {
+    ev.stopPropagation();
+    S.q = '';
+    S.sel = 0;
+    srch.value = '';
+    render();
+    srch.focus();
+  });
+  $('emptyAct').addEventListener('click', function () {
+    S.q = '';
+    S.filter = 'all';
+    S.sel = 0;
+    srch.value = '';
+    syncPills();
+    render();
+    srch.focus();
+  });
+
+  /* ★ 选择器必须限定在 #panel 里：§4 的解剖图用的是同一套 class，
+     全局选 .pb-pills .pill 会把那三枚静态样例也绑上事件（点一下活面板就变）。 */
+  var pills = document.querySelectorAll('#panel .pb-pills .pill');
+  for (var pi = 0; pi < pills.length; pi++) {
+    pills[pi].addEventListener('click', function (ev) {
+      var f = ev.currentTarget.getAttribute('data-f');
+      S.filter = f;
+      S.sel = 0;
+      syncPills();
+      render();
+      srch.focus();
+    });
+  }
+  function syncPills() {
+    for (var i = 0; i < pills.length; i++) {
+      pills[i].classList.toggle('on', pills[i].getAttribute('data-f') === S.filter);
+    }
+  }
+
+  /* 排序分段。★ 换排序后选中项要重新夹回范围 —— 排序一变，
+     第 N 行已经不是刚才那条命令了，index 必须重新落到合法范围。 */
+  var sortBtns = document.querySelectorAll('#panel #pbSort button');
+  for (var bi = 0; bi < sortBtns.length; bi++) {
+    sortBtns[bi].addEventListener('click', function (ev) {
+      var s = ev.currentTarget.getAttribute('data-s');
+      S.sort = s;
+      S.sel = 0;
+      for (var i = 0; i < sortBtns.length; i++) {
+        sortBtns[i].classList.toggle('on', sortBtns[i].getAttribute('data-s') === S.sort);
+      }
+      render();
+      srch.focus();
+    });
+  }
+  function syncSort() {
+    for (var i = 0; i < sortBtns.length; i++) {
+      sortBtns[i].classList.toggle('on', sortBtns[i].getAttribute('data-s') === S.sort);
+    }
+  }
+
+  $('toastUndo').addEventListener('click', function (ev) {
+    ev.stopPropagation();
+    undoDelete();
+  });
+
+  /* ── 清空历史：入口 → 确认层 → 二次点确认 ── */
+  $('clearAllBtn').addEventListener('click', function (ev) {
+    ev.stopPropagation();
+    enterConfirm();
+  });
+  $('cfCancel').addEventListener('click', function (ev) {
+    ev.stopPropagation();
+    exitConfirm();
+  });
+  /* ★ 二次确认：第一次点只是解锁（按钮变实心 + 副行红字），第二次点才真删。
+     这样「手滑点一下」不可能清空 —— 与命令管理的行内二段式同一个手感。 */
+  $('cfOk').addEventListener('click', function (ev) {
+    ev.stopPropagation();
+    if ($('cfOk').classList.contains('armed')) {
+      armOk();
+      return;
+    }
+    doClearAll();
+  });
+
+  $('clockBtn').addEventListener('click', function (ev) {
+    ev.stopPropagation();
+    openPanel();
+  });
+
+  $('cmdBox').addEventListener('click', function () { cmdInput.focus(); });
+  cmdInput.addEventListener('focus', function () { $('cmdBox').classList.add('focus'); });
+  cmdInput.addEventListener('blur', function () { $('cmdBox').classList.remove('focus'); });
+  cmdInput.addEventListener('input', function () {
+    $('clearBtn').style.display = cmdInput.value ? 'grid' : 'none';
+  });
+  cmdInput.addEventListener('keydown', function (ev) {
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'r' || ev.key === 'R')) {
+      ev.preventDefault();
+      openPanel();
+      return;
+    }
+    if (ev.key === 'Enter' && cmdInput.value.trim() !== '') {
+      ev.preventDefault();
+      var e = { cmd: cmdInput.value.trim() };
+      doRun(e);
+    }
+    if (ev.key === 'Escape') { closePanel(); }
+  });
+  $('clearBtn').addEventListener('click', function (ev) {
+    ev.stopPropagation();
+    cmdInput.value = '';
+    $('clearBtn').style.display = 'none';
+    cmdInput.focus();
+  });
+  $('sendBtn').addEventListener('click', function () {
+    if (cmdInput.value.trim() !== '') { doRun({ cmd: cmdInput.value.trim() }); }
+  });
+
+  /* 点面板外关闭（只在面板真的开着时存在这层 —— 今天的 bug 是它一直存在） */
+  pane.addEventListener('mousedown', function (ev) {
+    if (!S.open) { return; }
+    if (panel.contains(ev.target)) { return; }
+    if ($('cbar').contains(ev.target)) { return; }
+    closePanel();
+  });
+
+  /* ── 场景 ── */
+  var SCEN = {
+    default: { data: ALL, h: 470 },
+    long: { data: LONG, h: 470 },
+    empty: { data: [], h: 470 },
+    many: { data: ALL.concat(ALL.slice(0, 20).map(function (e, i) {
+      var c = Object.assign({}, e);
+      c.cmd = e.cmd + '   # ' + (i + 1);
+      return c;
+    })), h: 470 },
+    narrow: { data: ALL, h: 470, w: 460 },
+    short: { data: ALL, h: 300 },
+    /* 清空确认：直接进确认态，方便评审这一屏 */
+    confirm: { data: ALL, h: 470, confirm: true }
+  };
+
+  function setScene(key) {
+    var s = SCEN[key];
+    if (!s) { return; }
+    S.scene = key;
+    S.data = s.data.map(function (e) { return Object.assign({}, e); });
+    S.q = '';
+    S.filter = 'all';
+    S.sort = 'recent';
+    S.sel = 0;
+    S.undo = null;
+    srch.value = '';
+    syncPills();
+    syncSort();
+    toastOff();
+    pane.style.height = s.h + 'px';
+    var term = pane.parentNode;
+    if (s.w) { term.style.maxWidth = s.w + 'px'; } else { term.style.maxWidth = '940px'; }
+    /* 确认态要先退出，否则 render() 会提前 return（它跳过列表重画） */
+    confirming = false;
+    $('confirmBox').classList.remove('show');
+    $('pbFoot').classList.remove('in-confirm');
+    place();
+    render();
+    /* 该场景要求直接落在确认态 */
+    if (s.confirm) { enterConfirm(); }
+    cmdInput.focus();
+  }
+
+  var scChips = document.querySelectorAll('#scenarios .chip');
+  for (var si = 0; si < scChips.length; si++) {
+    scChips[si].addEventListener('click', function (ev) {
+      var b = ev.currentTarget;
+      for (var j = 0; j < scChips.length; j++) { scChips[j].classList.remove('on'); }
+      b.classList.add('on');
+      setScene(b.getAttribute('data-sc'));
+      if (!S.open) { openPanel(); }
+    });
+  }
+
+  /* ══════════ §1 现状复现 ══════════ */
+  var R = { open: false, eaten: 0 };
+  function rpRender() {
+    $('roOpen').textContent = R.open ? 'true' : 'false';
+    $('roAuto').textContent = 'false';
+    $('roVis').textContent = R.open ? 'true' : 'false';
+    $('roRows').textContent = '0';
+    $('roEat').textContent = String(R.eaten);
+    $('rpGhost').classList.toggle('show', R.open);
+    $('rpClock').classList.toggle('on', R.open);
+  }
+  $('rpClock').addEventListener('click', function (ev) {
+    ev.stopPropagation();
+    R.open = !R.open;
+    rpRender();
+  });
+  /* 点遮罩/终端 = 被吃掉的那一次点击。只绑 rpView 的 mousedown 一处 ——
+     遮罩是它的子节点，事件会冒上来；再给遮罩单独绑一次会重复计数。 */
+  $('rpView').addEventListener('mousedown', function (ev) {
+    if (!R.open) { return; }
+    if ($('rpBar').contains(ev.target)) { return; }
+    R.eaten += 1;
+    R.open = false;
+    rpRender();
+  });
+  $('rpReset').addEventListener('click', function () {
+    R.open = false;
+    R.eaten = 0;
+    rpRender();
+  });
+
+  /* ── 主题 ── */
+  $('themeBtn').addEventListener('click', function () {
+    var html = document.documentElement;
+    var next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    html.setAttribute('data-theme', next);
+    $('themeTxt').textContent = next === 'dark' ? '浅色' : '深色';
+    if (S.open) { place(); }
+  });
+
+  window.addEventListener('resize', function () { if (S.open) { place(); } });
+
+  /* ── 初始化 ── */
+  place();
+  render();
+  rpRender();
+  setTimeout(function () { cmdInput.focus(); }, 60);
+
+  /* 暴露给冒烟测试 */
+  window.__hp = {
+    state: S,
+    visible: visible,
+    rowCount: rowCount,
+    place: place,
+    openPanel: openPanel,
+    closePanel: closePanel,
+    doDelete: doDelete,
+    undoDelete: undoDelete,
+    setScene: setScene,
+    render: render
+  };
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,468 @@
+// (#find-bar 2026-10-27) 终端查找栏 —— 高保真 v3.6 右上浮层。
+//
+// 高保真稿：docs/design/find-bar-hifi-2026-10-23.html（v3.6）
+// 数据侧：src/terminal/impls/terminal_find.rs（匹配/扫描/步进）
+// 宿主接线：ui/terminal_view.slint（`if root.find-active : FindBar`）
+//
+// ★ 组件**只画和响应**：匹配、计数、步进都委托给宿主回调；本文件不认识
+//   「终端网格」——这是 cmd-hint 的同一纪律（两处宿主不长第二份实现）。
+//
+// v3.6 落进本文件的口径：
+//   · 定位：右上角 8px，宽 430（窄面板按 §06① 降级）；
+//   · 聚焦光环：1px accent + 3px accent-soft（项目惯例，dialog-buttons-v2）；
+//   · Esc 两段式（§04 关闭行）：有词先清词，无词才关；
+//   · Alt C/X/↓ 仅本输入框持焦时接管（§04），焦点在终端时不经这里；
+//   · 手柄拖动 + 四角磁吸 ≤12px + 双击复位（§03 拖动细则）；
+//   · 下移让位：owner-y 由宿主传入的占用高度驱动，200ms 动画（§03②）；
+//   · 关闭（Esc/✕）不回 live bottom —— 面板关掉即止，滚动位置归宿主管。
+
+import { Icon } from "icons.slint";
+import { Theme } from "theme.slint";
+
+// 一条查询历史（§04 历史行 / §06⑦）。
+export struct FindHistItem {
+    query: string,
+    match-case: bool,
+    use-regex: bool,
+}
+
+export component FindBar inherits Rectangle {
+    // ── 数据（宿主 = TerminalView 转发 TermRow）────────────────────────
+    in property <string> tab-id;
+    in property <int> find-total: 0;
+    in property <int> find-current-no: 0;
+    in property <bool> find-invalid-regex: false;
+    in property <bool> is-alt-screen: false;
+    // 终端可视行数（居中跳转的「行数/2」在 Rust 侧算，这里只透传）。
+    in property <[FindHistItem]> history: [];
+
+    // ── 回调（宿主转发给 Rust）─────────────────────────────────────────
+    callback query-changed(string);            // 200ms 去抖后的词
+    callback options-changed(string, bool, bool); // (query, aa, regex)
+    callback step(int);                        // +1 下一个 / -1 上一个 → returns 滚动了
+    callback pick-hit(int, int);               // 点击高亮 (vis-row, col)
+    callback closed();                         // 面板关闭（宿主收焦点回终端）
+    callback history-restore(string, bool, bool); // 选中历史 → 回填+重查
+
+    // ── 面板局部状态 ───────────────────────────────────────────────────
+    property <bool> match-case: false;
+    property <bool> use-regex: false;
+    property <string> query: "";
+    property <bool> hist-open: false;
+    // 下移让位后的 y 偏移（§03②）：0 = 锚位；>0 = 让位到匹配行下方。
+    property <length> yield-y: 0px;
+    // 手柄拖动状态（§03 拖动细则）：会话内记忆，不持久化。
+    property <length> pin-x: -1px;
+    property <length> pin-y: -1px;
+    property <bool> dragging: false;
+    // 输入去抖（§04 默认行为行：200ms）。
+    property <bool> debounce-pending: false;
+
+    // 面板宽（§06① 窄面板降级：<360 计数缩字，<300 只留输入+清空+关闭）。
+    property <length> panel-w: root.width < 420px ? max(240px, root.width - 16px) : 430px;
+    property <bool> compact: self.panel-w < 360px;
+    property <bool> mini: self.panel-w < 300px;
+
+    // 锚位（§03 v3.6：钉过用钉住位，没钉用右上默认）。
+    property <length> anchor-x: root.width - self.panel-w - 8px;
+    property <length> anchor-y: 8px;
+
+    Timer {
+        interval: 200ms;
+        running: root.debounce-pending;
+        triggered => {
+            root.debounce-pending = false;
+            root.query-changed(root.query);
+        }
+    }
+
+    // ── 面板本体（y = 锚位 + 让位偏移；拖动时直接用 pin-*）──────────────
+    x: self.dragging ? self.pin-x : self.anchor-x;
+    y: self.dragging ? self.pin-y : self.anchor-y + self.yield-y;
+    width: self.panel-w;
+    height: 34px;
+    background: Theme.popup-bg;
+    border-width: 1px;
+    border-color: self.find-invalid-regex ? Theme.danger : Theme.border-strong;
+    border-radius: Theme.radius-lg;
+    drop-shadow-blur: 26px;
+    drop-shadow-color: #0000008C;
+
+    animate yield-y { duration: 200ms; easing: ease-out; }
+
+    HorizontalLayout {
+        padding-left: 0px; padding-right: 6px;
+        spacing: 6px;
+
+        // ── 手柄 ⠿（§03 拖动细则）：贴左缘、与面板等高热区 ──────────────
+        Rectangle {
+            width: 18px;
+            grip-ta := TouchArea {
+                mouse-cursor: self.pressed ? grabbing : grab;
+                // 拖动：Slint TouchArea 无 press-x/y 增量原语（项目先例是
+                // absolute-position 差分，见 sftp splitter）。这里用
+                // 「绝对鼠标位 − 上帧绝对鼠标位」累加到位移上。
+                property <length> last-abs-x;
+                property <length> last-abs-y;
+                moved => {
+                    if (self.pressed) {
+                        root.dragging = true;
+                        if (root.pin-x < 0px) {
+                            root.pin-x = root.anchor-x;
+                            root.pin-y = root.anchor-y + root.yield-y;
+                            self.last-abs-x = self.absolute-position.x + self.mouse-x;
+                            self.last-abs-y = self.absolute-position.y + self.mouse-y;
+                        }
+                        let ax = self.absolute-position.x + self.mouse-x;
+                        let ay = self.absolute-position.y + self.mouse-y;
+                        let nx = root.pin-x + (ax - self.last-abs-x);
+                        let ny = root.pin-y + (ay - self.last-abs-y);
+                        // clamp 在终端区内（§03「范围」行）。
+                        let cx = clamp(nx, 4px, max(4px, root.width - self.width - 4px));
+                        let cy = clamp(ny, 4px, max(4px, root.height - 34px - 4px));
+                        // 四角磁吸 ≤12px（§03）：Slint 无 if 表达式 → 嵌套三元。
+                        root.pin-x = cx < 12px ? 8px
+                            : (root.width - cx - self.width < 12px
+                                ? root.width - self.width - 8px
+                                : cx);
+                        root.pin-y = cy < 12px ? 8px
+                            : (root.height - cy - 34px < 12px
+                                ? root.height - 34px - 8px
+                                : cy);
+                        self.last-abs-x = ax;
+                        self.last-abs-y = ay;
+                    }
+                }
+                clicked => { }
+                double-clicked => {
+                    // 双击复位（项目惯例）：清钉位 + 清让位。
+                    root.dragging = false;
+                    root.pin-x = -1px;
+                    root.pin-y = -1px;
+                    root.yield-y = 0px;
+                }
+            }
+            Icon {
+                glyph: "drag-grip";
+                tint: root.dragging ? Theme.accent-solid
+                    : grip-ta.has-hover ? Theme.text-primary : Theme.text-muted;
+                width: 12px; height: 20px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+        }
+
+        // ── 输入场（fgroup）：光环 = 1px accent + 3px accent-soft ─────────
+        Rectangle {
+            HorizontalLayout {
+                padding-left: 9px; padding-right: 5px;
+                padding-top: 0px; padding-bottom: 0px;
+                spacing: 3px;
+                Icon { glyph: "search"; tint: Theme.text-muted; width: 14px; y: (parent.height - self.height)/2; }
+                // 输入 + 占位（Slint TextInput 无 placeholder-text，叠层实现）。
+                Rectangle {
+                    horizontal-stretch: 1;
+                    fb-input := TextInput {
+                        width: parent.width;
+                        height: parent.height;
+                        vertical-alignment: center;
+                        single-line: true;
+                        font-family: Theme.ui-font-family;
+                        font-size: Theme.fs-sm;
+                        color: Theme.text-primary;
+                        init => { root.focus-pending = true; }
+                        edited => {
+                            root.query = self.text;
+                            root.debounce-pending = true;
+                            root.hist-open = false;
+                        }
+                        key-pressed(e) => {
+                            if (e.text == "\u{001b}") {
+                                // Esc 两段式（§04 关闭行）：有词先清词。
+                                if (root.query != "") {
+                                    root.query = "";
+                                    self.text = "";
+                                    root.query-changed("");
+                                    accept;
+                                } else {
+                                    root.closed();
+                                    accept;
+                                }
+                            } else if (e.text == Key.Return) {
+                                // Enter = 下一个（§04 跳转行）。
+                                if (root.query != "") { root.step(1); }
+                                accept;
+                            } else if (e.modifiers.alt && (e.text == "c" || e.text == "C")) {
+                                // Alt C/X/↓：仅本框持焦时接管（§04 切换规则行）。
+                                root.match-case = !root.match-case;
+                                root.options-changed(root.query, root.match-case, root.use-regex);
+                                accept;
+                            } else if (e.modifiers.alt && (e.text == "x" || e.text == "X")) {
+                                root.use-regex = !root.use-regex;
+                                root.options-changed(root.query, root.match-case, root.use-regex);
+                                accept;
+                            } else if (e.modifiers.alt && e.text == Key.DownArrow) {
+                                root.hist-open = !root.hist-open;
+                                accept;
+                            } else {
+                                reject;
+                            }
+                        }
+                    }
+                    if (fb-input.text == "" && !fb-input.has-focus) : Text {
+                        text: root.lang-en ? "Find (Ctrl+F)" : "查找 (Ctrl+F)";
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-sm;
+                        font-family: Theme.ui-font-family;
+                        x: 0; y: (parent.height - self.height)/2;
+                    }
+                }
+                // ── 内嵌按钮组：清空 × / 历史 ↩ / Aa / 正则（§01 2-5）────────
+                if (fb-input.text != "") : Rectangle {
+                    width: 22px;
+                    fb-clr-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.query = "";
+                            fb-input.text = "";
+                            root.query-changed("");
+                            fb-input.focus();
+                        }
+                    }
+                    Rectangle {
+                        width: 16px; height: 16px;
+                        x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+                        border-radius: self.width / 2;
+                        background: fb-clr-ta.has-hover ? Theme.accent-solid : transparent;
+                        animate background { duration: 90ms; }
+                        Icon {
+                            glyph: "close";
+                            tint: fb-clr-ta.has-hover ? Theme.term-bg : Theme.text-muted;
+                            width: 10px; height: 10px;
+                            x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+                        }
+                    }
+                }
+                // 历史 ↩（§01 ③）：command-history glyph；Alt ↓ 同键。
+                if (!root.compact) : Rectangle {
+                    width: 24px;
+                    border-radius: Theme.radius-sm;
+                    background: hist-ta.has-hover ? Theme.bg-hover
+                        : root.hist-open ? Theme.accent-soft : transparent;
+                    hist-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.hist-open = !root.hist-open; }
+                    }
+                    Icon {
+                        glyph: "command-history";
+                        tint: root.hist-open ? Theme.accent-solid
+                            : hist-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        width: 14px; height: 14px;
+                        x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+                    }
+                }
+                // Aa（§01 ④）：match-case.svg；开启态 accent 淡染描边（§02 开关态）。
+                if (!root.compact) : Rectangle {
+                    width: 24px;
+                    property <bool> on: root.match-case;
+                    border-radius: Theme.radius-sm;
+                    background: self.on ? Theme.accent-soft
+                        : aa-ta.has-hover ? Theme.bg-hover : transparent;
+                    aa-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.match-case = !root.match-case;
+                            root.options-changed(root.query, root.match-case, root.use-regex);
+                        }
+                    }
+                    Icon {
+                        glyph: "match-case";
+                        tint: parent.on ? Theme.accent-solid
+                            : aa-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        width: 15px; height: 15px;
+                        x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+                    }
+                }
+                // (.·)* 正则（§01 ⑤）：regex.svg；写错时计数位红字（数据侧保旧结果）。
+                if (!root.compact) : Rectangle {
+                    width: 24px;
+                    property <bool> on: root.use-regex;
+                    border-radius: Theme.radius-sm;
+                    background: self.on ? Theme.accent-soft
+                        : rx-ta.has-hover ? Theme.bg-hover : transparent;
+                    rx-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.use-regex = !root.use-regex;
+                            root.options-changed(root.query, root.match-case, root.use-regex);
+                        }
+                    }
+                    Icon {
+                        glyph: "regex";
+                        tint: parent.on ? Theme.accent-solid
+                            : rx-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        width: 15px; height: 15px;
+                        x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+                    }
+                }
+            }
+            background: Theme.field;
+            border-width: 1px;
+            border-color: fb-input.has-focus ? Theme.accent-solid
+                : root.find-invalid-regex ? Theme.danger : Theme.border-subtle;
+            border-radius: Theme.radius-md;
+            // 聚焦光环（v3.6 B2：项目惯例）。
+            if (fb-input.has-focus) : Rectangle {
+                x: -3px; y: -3px;
+                width: parent.width + 6px; height: parent.height + 6px;
+                border-radius: Theme.radius-md + 2px;
+                border-width: 3px;
+                border-color: Theme.accent-soft;
+            }
+        }
+
+        // ── 计数（§01 ⑥）：「当前 / 总数」；0 结果红；正则无效红字 ────────
+        if (!root.mini) : Text {
+            width: root.compact ? 30px : 56px;
+            text: root.find-invalid-regex
+                ? (root.lang-en ? "bad rx" : "正则无效")
+                : root.find-total == 0 && root.query != ""
+                    ? (root.lang-en ? "0 results" : "0 个结果")
+                    : root.query == "" ? "" : root.find-current-no + " / " + root.find-total;
+            color: (root.find-invalid-regex || (root.find-total == 0 && root.query != ""))
+                ? Theme.danger-strong : Theme.text-secondary;
+            font-size: root.compact ? Theme.fs-2xs : Theme.fs-xs;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+
+        // ── ↑↓（§01 ⑦）：expand-less / expand-more（IconImages 已注册）────
+        if (!root.mini) : HorizontalLayout {
+            spacing: 2px;
+            Rectangle {
+                width: 24px;
+                property <bool> en: root.find-total > 0;
+                border-radius: Theme.radius-sm;
+                background: prev-ta.has-hover && self.en ? Theme.bg-hover : transparent;
+                prev-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    enabled: parent.en;
+                    clicked => { root.step(-1); }
+                }
+                Icon { glyph: "expand-less"; tint: parent.en ? Theme.text-secondary : Theme.text-muted; width: 14px; height: 14px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
+            }
+            Rectangle {
+                width: 24px;
+                property <bool> en: root.find-total > 0;
+                border-radius: Theme.radius-sm;
+                background: next-ta.has-hover && self.en ? Theme.bg-hover : transparent;
+                next-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    enabled: parent.en;
+                    clicked => { root.step(1); }
+                }
+                Icon { glyph: "expand-more"; tint: parent.en ? Theme.text-secondary : Theme.text-muted; width: 14px; height: 14px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
+            }
+        }
+
+        // ── 关闭 ✕（§01 ⑧）：清高亮 + 焦点回终端（由宿主 closed() 做）────
+        Rectangle {
+            width: 24px;
+            fb-close-ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    root.query = "";
+                    fb-input.text = "";
+                    root.closed();
+                }
+            }
+            Icon {
+                glyph: "close";
+                tint: fb-close-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                width: 13px; height: 13px;
+                x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+            }
+        }
+    }
+
+    // ── 历史下拉（§04 历史行 / §06⑦）：最近 10 条，选中即重查 ────────────
+    // Alt ↓ / ↩ 打开；点条目 → 连开关一起恢复（history-restore 回调）。
+    if (root.hist-open && root.history.length > 0) : Rectangle {
+        x: 18px;                     // 手柄右侧起
+        y: parent.height + 4px;
+        width: parent.width - 26px;
+        height: min(root.history.length * 26px + 8px, 268px);
+        background: Theme.popup-bg;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        border-radius: Theme.radius-md;
+        drop-shadow-blur: 18px;
+        drop-shadow-color: #00000066;
+        clip: true;
+        VerticalLayout {
+            padding: 4px;
+            spacing: 1px;
+            for it[i] in root.history : Rectangle {
+                height: 25px;
+                border-radius: Theme.radius-sm;
+                background: hit-ta.has-hover ? Theme.bg-hover : transparent;
+                hit-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.hist-open = false;
+                        root.match-case = it.match-case;
+                        root.use-regex = it.use-regex;
+                        root.query = it.query;
+                        fb-input.text = it.query;
+                        // 选中即重查（§04）；开关已同步，走 options 通道一次到位。
+                        root.options-changed(it.query, it.match-case, it.use-regex);
+                        root.history-restore(it.query, it.match-case, it.use-regex);
+                        fb-input.focus();
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 8px; padding-right: 8px;
+                    Text {
+                        text: it.query;
+                        color: Theme.text-primary;
+                        font-family: Theme.ui-font-family;
+                        font-size: Theme.fs-sm;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Rectangle { width: 4px; }
+                    if (it.match-case) : Text {
+                        text: "Aa"; color: Theme.text-muted;
+                        font-size: Theme.fs-2xs; vertical-alignment: center;
+                        width: 18px;
+                    }
+                    if (it.use-regex) : Text {
+                        text: ".*"; color: Theme.text-muted;
+                        font-family: Theme.ui-font-family;
+                        font-size: Theme.fs-2xs; vertical-alignment: center;
+                        width: 18px;
+                    }
+                }
+            }
+        }
+    }
+
+    // 宿主注入：语言开关。延迟聚焦（#343 同款：init 同步 focus 会崩）走
+    // 组件内 Timer；宿主打开面板后置 open-seq 自增即触发。
+    // select-all-seq：Ctrl+F 再按一次 → 全选查询词（§04 打开行）。
+    in property <bool> lang-en: false;
+    in property <int> open-seq: 0;
+    in property <int> select-all-seq: 0;
+    property <bool> focus-pending: false;
+    changed open-seq => { root.focus-pending = true; }
+    changed select-all-seq => { fb-input.select-all(); fb-input.focus(); }
+    Timer {
+        interval: 0ms;
+        running: root.focus-pending;
+        triggered => {
+            root.focus-pending = false;
+            fb-input.focus();
+        }
+    }
+}

@@ -2,6 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::terminal::charset::CharsetTracker;
+use crate::terminal::find::FindState;
 use crate::ui::TermSpan;
 
 #[cfg(any(target_os = "windows", test))]
@@ -14,7 +15,9 @@ pub(crate) enum CtrlKeySide {
 /// Per-terminal state used by normal and alternate-screen rendering.
 pub(crate) struct TermBuffer {
     pub(crate) parser: vt100::Parser,
-    pub(crate) find_query: String,
+    /// (#find-bar 2026-10-27) 查找栏全部状态（词 / Aa / 正则 / 全缓冲命中 /
+    /// 当前匹配）。替代原裸 `find_query: String`。
+    pub(crate) find: FindState,
     pub(crate) is_dark: bool,
     /// 当前主题的色表（#theme-split）：ANSI 16 色与默认前景/背景按它查表——
     /// 换主题时 UI 与终端同源换装（presentation.rs 的 render_term_span 读它）。

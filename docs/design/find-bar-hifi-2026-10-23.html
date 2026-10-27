@@ -4,12 +4,25 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MTerm · 终端查找栏 · 清晰版高保真</title>
-<!-- #find-bar-hifi 2026-10-23 · v3.3
+<!-- #find-bar-hifi 2026-10-23 · v3.6
      v3.3 反馈：首行被挡怎么办 → 兜底从「降透明」升级为「面板下移让位」：
      滚不动（回滚区顶端 / alt 屏）且匹配与锚位相交时，面板 200ms 下移到匹配行
      下方（几何上永远可行），匹配变化重新判定、不相交回锚位；降透明退役。
      三层心智：跳转居中（内容挪给你看）→ 下移让位（面板挪开）→ 拖动手柄
-     （用户手动钉位，可选第四层）。其余定稿口径不变。 -->
+     （用户手动钉位，可选第四层）。
+     v3.6 口径修订（评审后，逐条见 §03 汇总与 §06）：
+     ① 起始当前匹配 = 离视口最近的命中，逐键不重跳——替换现网
+       scroll_to_first_find_match「跳全缓冲第一个」的兜底，否则配合循环查找
+       会把打字的人拽到回滚区顶端；
+     ② 锚位 = 用户钉住的位置（未拖过 = 右上默认），让位复位同源，钉位不被跳转清掉；
+     ③ Alt C / X / ↓ 仅查找框持焦时接管，焦点在终端时照常透传 PTY；
+     ④ 点高亮设当前匹配只在非 mouse-tracked 应用（htop/btop 点击照常转发远端）；
+     ⑤ 全缓冲匹配改为新增项（compute_find_matches 现只扫视口），新输出用绝对行号补偿；
+     ⑥ Esc 两段式，对齐 history-panel-hifi（10-27）；
+     ⑦ 聚焦光环统一项目惯例 1px accent + 3px accent-soft；
+     ⑧ ↑↓ / 历史 / 手柄图标复用 expand-less / expand-more / command-history /
+       drag-grip，已注册进 IconImages，零新增资产；
+     ⑨ 新增 §06 边界口径。 -->
 <style>
 :root{
   --ease: cubic-bezier(.2,0,0,1);
@@ -85,8 +98,11 @@ header.intro .verdict{ color:var(--ok); font-weight:700; }
 .fgroup{
   display:flex; align-items:center; gap:3px; flex:1 1 0; min-width:0; height:36px;
   padding:0 6px 0 12px;
-  background:var(--field); border:1.5px solid rgba(31,200,180,.75); border-radius:9px;
-  box-shadow:0 0 0 4px rgba(31,200,180,.12);
+  background:var(--field); border:1px solid var(--ac); border-radius:9px;
+  /* (#find-bar-focus v3.6) 聚焦光环统一项目惯例：1px accent 边 + 3px accent-soft
+     外环（dialog-buttons-hifi-v2 定的「输入框、搜索框、命令栏同款」）。
+     旧 1.5px @.75 + 4px @.12 与现网语言不一致，退役。 */
+  box-shadow:0 0 0 3px var(--ac-soft);
 }
 .fgroup .lens{ color:var(--t3); display:flex; flex:0 0 auto; }
 .fgroup .lens svg *{ fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; }
@@ -166,7 +182,7 @@ header.intro .verdict{ color:var(--ok); font-weight:700; }
   background:#191C23F7; border:1px solid #3A3F4A; border-radius:9px;
   box-shadow:0 10px 26px rgba(0,0,0,.5); font-size:12px;
 }
-.strip .p1 .fgroup{ height:24px; border-radius:6px; border-width:1px; box-shadow:0 0 0 2.5px rgba(31,200,180,.10); padding:0 4px 0 9px; }
+.strip .p1 .fgroup{ height:24px; border-radius:6px; border-width:1px; box-shadow:0 0 0 3px var(--ac-soft); padding:0 4px 0 9px; }
 .strip .p1 .fgroup .query{ font-size:12.5px; }
 .strip .p1 .ib{ width:24px; height:24px; border-radius:6px; }
 .strip .p1 .ib svg{ width:15px; height:15px; }
@@ -194,7 +210,7 @@ header.intro .verdict{ color:var(--ok); font-weight:700; }
   box-shadow:0 10px 24px rgba(0,0,0,.5); font-size:12px;
   transition:opacity 300ms var(--ease);
 }
-.mini .p2 .fgroup{ height:26px; border-radius:6px; border-width:1px; box-shadow:0 0 0 2.5px rgba(31,200,180,.10); padding:0 4px 0 8px; }
+.mini .p2 .fgroup{ height:26px; border-radius:6px; border-width:1px; box-shadow:0 0 0 3px var(--ac-soft); padding:0 4px 0 8px; }
 .mini .p2 .fgroup .query{ font-size:12px; }
 .mini .p2 .ib{ width:24px; height:24px; border-radius:6px; }
 .mini .p2 .ib svg{ width:14px; height:14px; }
@@ -340,14 +356,14 @@ table.spec tr:last-child td{ border-bottom:0; }
 <div class="top">
   <div class="brand">MTERM<span>设计稿 · 终端查找栏</span></div>
   <div class="gap"></div>
-  <div class="hint">2026-10-23 · v3.5 右上浮层 + 三层遮挡解法 · 无选项菜单 · 仅高保真，未动代码</div>
+  <div class="hint">2026-10-23 · v3.6 右上浮层 + 三层遮挡 + §06 边界口径 · 仅高保真，未动代码</div>
 </div>
 
 <div class="wrap">
 
 <header class="intro">
   <h1>终端查找栏</h1>
-  <p><span class="verdict">可以实现</span>——底层全文搜索已有（<b>compute_find_matches</b>），本稿补的是 IDEA 那套「看得清」的操作层。<b>定稿口径</b>：浮层锚在<b>终端区右上角</b>；Ctrl+F 打开即聚焦，输入框亮 accent 描边；匹配规则只有 <b>Aa / 正则</b> 两个，与清空 ×、历史 ↩ 一起收在输入框内；清空按钮沿用现网样式。匹配行被浮层挡住的解法见 <b>§03</b>（跳转居中 + 下移让位 + 拖动手柄）。</p>
+  <p><span class="verdict">可以实现</span>——底层全文搜索已有（<b>compute_find_matches</b>），本稿补的是 IDEA 那套「看得清」的操作层。<b>定稿口径</b>：浮层锚在<b>终端区右上角</b>；Ctrl+F 打开即聚焦，输入框亮 accent 描边；匹配规则只有 <b>Aa / 正则</b> 两个，与清空 ×、历史 ↩ 一起收在输入框内；清空按钮沿用现网样式。匹配行被浮层挡住的解法见 <b>§03</b>（跳转居中 + 下移让位 + 拖动手柄）。<b>(v3.6)</b> 起始当前匹配 = 离视口最近的命中（逐键不重跳）；锚位跟随用户钉位；Alt 快捷键仅查找框持焦时接管；Esc 两段式；边界口径集中见 <b>§06</b>。</p>
 </header>
 
 <!-- ════════════════ 01 解剖图 ════════════════ -->
@@ -374,14 +390,14 @@ drwxr-xr-x  root root 4.0 KB  Fri Sep 20 14:53:01  .ssh
           <span class="lens"><svg viewBox="0 0 16 16" width="18" height="18"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 L13.6 13.6"/></svg></span>
           <span class="query">java</span>
           <span class="aw"><button class="clr" title="清空"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button><span class="ct">2</span></span>
-          <span class="aw"><button class="ib" title="历史"><svg viewBox="0 0 16 16"><path d="M3 8 a5 5 0 1 1 1.5 3.5"/><path d="M3 12.5 V8.5 H7"/><path d="M8 5.5 V8 L10 9.5"/></svg></button><span class="ct">3</span></span>
+          <span class="aw"><button class="ib" title="历史"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></button><span class="ct">3</span></span>
           <span class="aw"><button class="ib" title="区分大小写"><svg viewBox="0 0 24 24"><path d="M2.2 17.8 6.2 6.5l4 11.3"/><path d="M4 14.7h4.4"/><circle cx="16.3" cy="14.6" r="3.3"/><path d="M19.6 11.1v6.9"/></svg></button><span class="ct">4</span></span>
           <span class="aw"><button class="ib" title="正则"><svg viewBox="0 0 24 24"><path d="M6.4 6.4C4 9.4 4 14.6 6.4 17.6"/><circle cx="9" cy="15.4" r="1.1" fill="currentColor" stroke="none"/><path d="M13.4 8.4v5.6"/><path d="m10.9 9.9 5 2.6"/><path d="m15.9 9.9-5 2.6"/><path d="M17.6 6.4c2.4 3 2.4 8.2 0 11.2"/></svg></button><span class="ct">5</span></span>
         </div>
         <span class="aw"><span class="count">6 / 23</span><span class="ct">6</span></span>
         <span class="aw"><span class="nav">
-          <button class="ib" title="上一个"><svg viewBox="0 0 16 16"><path d="M3.5 9.5 L8 5 L12.5 9.5"/></svg></button>
-          <button class="ib" title="下一个"><svg viewBox="0 0 16 16"><path d="M3.5 6.5 L8 11 L12.5 6.5"/></svg></button>
+          <button class="ib" title="上一个"><svg viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></svg></button>
+          <button class="ib" title="下一个"><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
         </span><span class="ct">7</span></span>
         <button class="ib" title="关闭"><svg viewBox="0 0 16 16"><path d="M4.5 4.5 L11.5 11.5 M11.5 4.5 L4.5 11.5"/></svg><span class="ct" style="left:50%; transform:translateX(-50%); top:-13px; position:absolute">8</span></button>
       </div>
@@ -413,7 +429,7 @@ drwxr-xr-x  root root 4.0 KB  Fri Sep 20 14:53:01  .ssh
           <div class="cap2"><b>(.*) · 正则表达式</b><span>括号内「点 + 星」= .*（星号三臂等长，16px 下不糊成团）；Alt+X；写错时计数位「正则无效」</span></div>
         </div>
       </div>
-      <p class="n4">路径与 <code>assets/icons/match-case.svg</code> / <code>regex.svg</code> 逐段一致（24 网格、描边 2、圆角端点），稿里不另绘、也不放大：行内与同组图标共用 19px 盒，所以它比 16 网格的 × / ↩ 小一圈、笔画细一档 —— 与实机按 16px 渲染这两个 SVG 的观感相同；规格图 56px。颜色 idle 跟随前景灰、开启跟随主题强调色。</p>
+      <p class="n4">路径与 <code>assets/icons/match-case.svg</code> / <code>regex.svg</code> 逐段一致（24 网格、描边 2、圆角端点），稿里不另绘、也不放大：行内与同组图标共用 19px 盒，所以它比 16 网格的 × / ↩ 小一圈、笔画细一档 —— 与实机按 16px 渲染这两个 SVG 的观感相同；规格图 56px。颜色 idle 跟随前景灰、开启跟随主题强调色。<b>(v3.6)</b> 上下导航与历史不再自绘 16 网格小图：↑ = <code>expand-less.svg</code>、↓ = <code>expand-more.svg</code>、历史 ↩ = <code>command-history.svg</code>，三者均已注册进 <code>IconImages</code>（icons.slint），实机 <code>Icon { glyph: ... }</code> 直接可用，零新增资产；手柄 ⠿ 同理复用 <code>drag-grip.svg</code>。24 网格图标同盒渲染比 16 网格小一圈，与 Aa / 正则的观感规则一致。</p>
     </div>
 
     <div class="strip" style="height:170px">
@@ -429,14 +445,14 @@ drwxr-xr-x  root root 4.0 KB  Thu Oct 22 14:30:13  .</pre>
           <span class="lens"><svg viewBox="0 0 16 16" width="14" height="14"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 L13.6 13.6"/></svg></span>
           <span class="query">java</span>
           <button class="clr"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
-          <button class="ib"><svg viewBox="0 0 16 16"><path d="M3 8 a5 5 0 1 1 1.5 3.5"/><path d="M3 12.5 V8.5 H7"/><path d="M8 5.5 V8 L10 9.5"/></svg></button>
+          <button class="ib"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></button>
           <button class="ib"><svg viewBox="0 0 24 24"><path d="M2.2 17.8 6.2 6.5l4 11.3"/><path d="M4 14.7h4.4"/><circle cx="16.3" cy="14.6" r="3.3"/><path d="M19.6 11.1v6.9"/></svg></button>
           <button class="ib"><svg viewBox="0 0 24 24"><path d="M6.4 6.4C4 9.4 4 14.6 6.4 17.6"/><circle cx="9" cy="15.4" r="1.1" fill="currentColor" stroke="none"/><path d="M13.4 8.4v5.6"/><path d="m10.9 9.9 5 2.6"/><path d="m15.9 9.9-5 2.6"/><path d="M17.6 6.4c2.4 3 2.4 8.2 0 11.2"/></svg></button>
         </div>
         <span class="count">6 / 23</span>
         <span class="nav">
-          <button class="ib"><svg viewBox="0 0 16 16"><path d="M3.5 9.5 L8 5 L12.5 9.5"/></svg></button>
-          <button class="ib"><svg viewBox="0 0 16 16"><path d="M3.5 6.5 L8 11 L12.5 6.5"/></svg></button>
+          <button class="ib"><svg viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></svg></button>
+          <button class="ib"><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
         </span>
         <button class="ib"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
       </div>
@@ -474,14 +490,14 @@ drwxr-xr-x  root root 4.0 KB  Thu Oct 22 14:30:13  .</pre>
               <span class="lens"><svg viewBox="0 0 16 16" width="18" height="18"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 L13.6 13.6"/></svg></span>
               <span class="query">java</span>
               <button class="clr"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
-              <button class="ib"><svg viewBox="0 0 16 16"><path d="M3 8 a5 5 0 1 1 1.5 3.5"/><path d="M3 12.5 V8.5 H7"/><path d="M8 5.5 V8 L10 9.5"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></button>
               <button class="ib"><svg viewBox="0 0 24 24"><path d="M2.2 17.8 6.2 6.5l4 11.3"/><path d="M4 14.7h4.4"/><circle cx="16.3" cy="14.6" r="3.3"/><path d="M19.6 11.1v6.9"/></svg></button>
               <button class="ib"><svg viewBox="0 0 24 24"><path d="M6.4 6.4C4 9.4 4 14.6 6.4 17.6"/><circle cx="9" cy="15.4" r="1.1" fill="currentColor" stroke="none"/><path d="M13.4 8.4v5.6"/><path d="m10.9 9.9 5 2.6"/><path d="m15.9 9.9-5 2.6"/><path d="M17.6 6.4c2.4 3 2.4 8.2 0 11.2"/></svg></button>
             </div>
             <span class="count">6 / 23</span>
             <span class="nav">
-              <button class="ib"><svg viewBox="0 0 16 16"><path d="M3.5 9.5 L8 5 L12.5 9.5"/></svg></button>
-              <button class="ib"><svg viewBox="0 0 16 16"><path d="M3.5 6.5 L8 11 L12.5 6.5"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
             </span>
             <button class="ib"><svg viewBox="0 0 16 16"><path d="M4.5 4.5 L11.5 11.5 M11.5 4.5 L4.5 11.5"/></svg></button>
           </div>
@@ -493,11 +509,11 @@ drwxr-xr-x  root root 4.0 KB  Thu Oct 22 14:30:13  .</pre>
         <div class="bandwrap">
           <div class="panel">
             <span class="grip" title="拖动浮层（双击回右上角）"><svg viewBox="0 0 9 15"><circle cx="2" cy="2.5" r="1.3"/><circle cx="7" cy="2.5" r="1.3"/><circle cx="2" cy="7.5" r="1.3"/><circle cx="7" cy="7.5" r="1.3"/><circle cx="2" cy="12.5" r="1.3"/><circle cx="7" cy="12.5" r="1.3"/></svg></span>
-            <div class="fgroup" style="border-color:rgba(224,106,95,.7); box-shadow:0 0 0 4px rgba(209,69,59,.10)">
+            <div class="fgroup" style="border-color:rgba(224,106,95,.7); box-shadow:0 0 0 3px rgba(209,69,59,.16)">
               <span class="lens" style="color:var(--dg-hi)"><svg viewBox="0 0 16 16" width="18" height="18"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 L13.6 13.6"/></svg></span>
               <span class="query">zheshigenbenbucunzai</span>
               <button class="clr"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
-              <button class="ib"><svg viewBox="0 0 16 16"><path d="M3 8 a5 5 0 1 1 1.5 3.5"/><path d="M3 12.5 V8.5 H7"/><path d="M8 5.5 V8 L10 9.5"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></button>
               <button class="ib"><svg viewBox="0 0 24 24"><path d="M2.2 17.8 6.2 6.5l4 11.3"/><path d="M4 14.7h4.4"/><circle cx="16.3" cy="14.6" r="3.3"/><path d="M19.6 11.1v6.9"/></svg></button>
               <button class="ib"><svg viewBox="0 0 24 24"><path d="M6.4 6.4C4 9.4 4 14.6 6.4 17.6"/><circle cx="9" cy="15.4" r="1.1" fill="currentColor" stroke="none"/><path d="M13.4 8.4v5.6"/><path d="m10.9 9.9 5 2.6"/><path d="m15.9 9.9-5 2.6"/><path d="M17.6 6.4c2.4 3 2.4 8.2 0 11.2"/></svg></button>
             </div>
@@ -515,14 +531,14 @@ drwxr-xr-x  root root 4.0 KB  Thu Oct 22 14:30:13  .</pre>
               <span class="lens"><svg viewBox="0 0 16 16" width="18" height="18"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 L13.6 13.6"/></svg></span>
               <span class="query" style="font-family:var(--mono)">^root@.*java</span>
               <button class="clr"><svg viewBox="0 0 16 16"><path d="M4 4 L12 12 M12 4 L4 12"/></svg></button>
-              <button class="ib"><svg viewBox="0 0 16 16"><path d="M3 8 a5 5 0 1 1 1.5 3.5"/><path d="M3 12.5 V8.5 H7"/><path d="M8 5.5 V8 L10 9.5"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></button>
               <button class="ib on"><svg viewBox="0 0 24 24"><path d="M2.2 17.8 6.2 6.5l4 11.3"/><path d="M4 14.7h4.4"/><circle cx="16.3" cy="14.6" r="3.3"/><path d="M19.6 11.1v6.9"/></svg></button>
               <button class="ib on"><svg viewBox="0 0 24 24"><path d="M6.4 6.4C4 9.4 4 14.6 6.4 17.6"/><circle cx="9" cy="15.4" r="1.1" fill="currentColor" stroke="none"/><path d="M13.4 8.4v5.6"/><path d="m10.9 9.9 5 2.6"/><path d="m15.9 9.9-5 2.6"/><path d="M17.6 6.4c2.4 3 2.4 8.2 0 11.2"/></svg></button>
             </div>
             <span class="count">1 / 4</span>
             <span class="nav">
-              <button class="ib"><svg viewBox="0 0 16 16"><path d="M3.5 9.5 L8 5 L12.5 9.5"/></svg></button>
-              <button class="ib"><svg viewBox="0 0 16 16"><path d="M3.5 6.5 L8 11 L12.5 6.5"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></svg></button>
+              <button class="ib"><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
             </span>
           </div>
         </div>
@@ -538,7 +554,7 @@ drwxr-xr-x  root root 4.0 KB  Thu Oct 22 14:30:13  .</pre>
   <div class="sc-head">
     <span class="no">03</span><h2>匹配行被浮层挡住怎么办</h2><span class="sub">跳转居中 + 滚不动时下移让位 + 拖动手柄（手动钉位）</span>
   </div>
-  <p class="sc-note" style="margin:0 0 14px; font-size:13px; color:var(--t3)">Enter/↑↓ 跳转时把<b style="color:var(--t2)">当前匹配行滚到视口中部</b>（IDEA/VS Code 同款），从根上不落在浮层底下；仅当滚不动（匹配在回滚区顶端，或 alt 屏无回滚——首行是典型）时，面板<b style="color:var(--t2)">自动下移到匹配行下方让位</b>，匹配变化重新判定、不相交即回锚位。</p>
+  <p class="sc-note" style="margin:0 0 14px; font-size:13px; color:var(--t3)">Enter/↑↓ 跳转时把<b style="color:var(--t2)">当前匹配行滚到视口中部</b>（IDEA/VS Code 同款），从根上不落在浮层底下；仅当滚不动（匹配在回滚区顶端，或 alt 屏无回滚——首行是典型）时，面板<b style="color:var(--t2)">自动下移到匹配行下方让位</b>，匹配变化重新判定、不相交即回锚位。<b style="color:var(--t2)">(v3.6)</b> 锚位 = <b style="color:var(--t2)">用户钉住的位置</b>：没拖过手柄时是右上默认锚位，拖过之后「回锚位」回到钉住处——跳转永远不把面板送回右上角，否则钉位被第一次跳转就清掉，等于白钉。</p>
 
   <div class="stage">
     <div class="duel">
@@ -668,7 +684,7 @@ drwxr-xr-x  root root 4.0 KB  Fri Sep 20 14:53:01  .ssh
           </div>
           <div class="vt info"><span class="m">③</span>匹配变化 → 不再相交，回锚位</div>
         </div>
-        <div class="cap"><b>回锚位</b>：Enter 到下一匹配（可视中部）→ 面板回到右上角默认位置。</div>
+        <div class="cap"><b>回锚位</b>：Enter 到下一匹配（可视中部）→ 面板回到<b>锚位</b>——钉过手柄就回钉住处，没钉过才是右上默认。<b>(v3.6)</b></div>
       </div>
     </div>
 
@@ -712,7 +728,7 @@ drwxr-xr-x  root root 4.0 KB  Fri Sep 20 14:53:01  .ssh
           </div>
           <p><b>手柄</b>：面板最左 ⠿，贴左缘、与输入框等高的热区（左右留白对称且最小）；光标悬停 = 张开手（grab），按住拖动 = 握拳（grabbing）；高亮跟随<b>主题强调色</b>（悬停淡染 / 按住 accent 描边）。拖动中输入框保持焦点，松手直接继续打字。</p>
           <p><b>范围</b>：自由拖动，clamp 在终端区矩形内——不会拖上侧栏 / 状态栏。</p>
-          <p><b>磁吸与复位</b>：靠近四角 ≤12px 自动贴角；<b>双击手柄</b>回右上默认锚位（双击复位是项目惯例）。</p>
+          <p><b>磁吸与复位</b>：靠近四角 ≤12px 自动贴角；<b>双击手柄</b>回右上默认锚位（双击复位是项目惯例）。<b>(v3.6)</b> 「回锚位」（§03 ④）与「复位」是两件事：前者回到钉住的位置，后者清除钉位回右上默认。</p>
           <p><b>记忆</b>：位置只记本次查找会话，Esc / ✕ 关闭即复位，不持久化——避免「上次拖到角落，这次凭空在那」。</p>
           <p class="n4">量级 S：TouchArea.moved 更新面板 x/y。项目先例齐全：滚动条拖拽、分组跨栏拖动、#settings-drag-ghost 像素对齐。</p>
         </div>
@@ -720,11 +736,12 @@ drwxr-xr-x  root root 4.0 KB  Fri Sep 20 14:53:01  .ssh
     </div>
 
     <div class="sumcard">
-      <h3>规则汇总</h3>
-      <p>① Enter / ↑↓ / 输入首个匹配 → 滚动目标 = <b>匹配行 − 行数/2</b>（能滚就居中）。</p>
-      <p>② 滚不动（回滚区顶端 / alt 屏）且匹配与锚位相交 → <b>面板下移到匹配行下方</b>（200ms 动画，200ms 去抖；输出流刷屏不触发位移）。</p>
-      <p>③ 匹配变化后重新判定，不再相交 → <b>回右上锚位</b>。</p>
-      <p>④ 点击高亮成为当前匹配 → 不滚动（那一行本来就可见）。</p>
+      <h3>规则汇总（v3.6）</h3>
+      <p>① 起始当前匹配 = <b>离当前视口最近的命中</b>：视口内有 → 视口内第一个；没有 → 从视口向下找最近的；再没有才向上回卷。逐键输入<b>不重跳</b>——只在「当前视口内一个命中都没有」时才移动视图；敲第二个词不再跳动。<b>(v3.6)</b> 这条替换现网 <code>scroll_to_first_find_match</code>「无可见匹配 → 跳全缓冲第一个」的兜底：配合默认循环查找，那个口径会把正在打字的人拽到回滚区顶端。</p>
+      <p>② Enter / ↑↓ / 手动跳转 → 滚动目标 = <b>匹配行 − 行数/2</b>（能滚就居中）。</p>
+      <p>③ 滚不动（回滚区顶端 / alt 屏）且匹配与锚位相交 → <b>面板下移到匹配行下方</b>（200ms 动画，200ms 去抖；输出流刷屏不触发位移）。</p>
+      <p>④ 匹配变化后重新判定，不再相交 → <b>回锚位</b>。<b>(v3.6)</b> 锚位 = 用户钉住的位置（未拖过 = 右上默认），不是永远右上角。</p>
+      <p>⑤ 点击高亮成为当前匹配 → 不滚动（那一行本来就可见）。<b>(v3.6)</b> 仲裁：<b>单击、未拖动、且当前会话未开鼠标跟踪</b>（或 Shift+单击）时才生效；mouse-tracked 应用（htop/btop/mc）与拖拽选区照旧，双击选词不受影响。</p>
       <p class="n4">三层心智：内容挪给你看（居中）→ 面板挪开（下移让位）→ 用户手动钉位（拖动手柄，见上）。降透明方案退役；三项都是 S 级改动。</p>
     </div>
   </div>
@@ -738,14 +755,14 @@ drwxr-xr-x  root root 4.0 KB  Fri Sep 20 14:53:01  .ssh
   <div class="stage">
     <div class="rules">
       <div class="rl"><span class="k">打开</span><span><kbd>Ctrl F</kbd> 打开并聚焦；再按一次全选已有查询词</span></div>
-      <div class="rl"><span class="k">跳转</span><span><kbd>Enter</kbd> 下一个 / <kbd>Shift Enter</kbd> 上一个；匹配行滚到视口中部</span></div>
-      <div class="rl"><span class="k">关闭</span><span><kbd>Esc</kbd> 或浮层 ✕；清掉高亮，焦点回终端</span></div>
-      <div class="rl"><span class="k">切换规则</span><span><kbd>Alt C</kbd> 大小写 · <kbd>Alt X</kbd> 正则，按钮同步点亮</span></div>
-      <div class="rl"><span class="k">被挡住</span><span>滚不动还压着 → 面板下移到匹配行下方，匹配变化后回锚位（§03）</span></div>
+      <div class="rl"><span class="k">跳转</span><span><kbd>Enter</kbd> 下一个 / <kbd>Shift Enter</kbd> 上一个；匹配行滚到视口中部；起点 = 离视口最近的命中（§03 ①）</span></div>
+      <div class="rl"><span class="k">关闭</span><span><kbd>Esc</kbd> 两段式（对齐 history-panel-hifi）：有词先清词、无词才关闭；浮层 ✕ 同样先清后关。清掉高亮，焦点回终端</span></div>
+      <div class="rl"><span class="k">切换规则</span><span><kbd>Alt C</kbd> 大小写 · <kbd>Alt X</kbd> 正则，按钮同步点亮。<b>(v3.6)</b> 仅<b>查找框持焦</b>时接管；焦点在终端时这些 Alt 序列照常透传 PTY（Meta 键不能被全局吃掉）</span></div>
+      <div class="rl"><span class="k">被挡住</span><span>滚不动还压着 → 面板下移到匹配行下方，匹配变化后回<b>锚位</b>（钉住处；§03）</span></div>
       <div class="rl"><span class="k">拖动</span><span>按住面板最左 ⠿ 拖动；双击回右上角；位置本次查找会话内记忆</span></div>
-      <div class="rl"><span class="k">历史</span><span><kbd>Alt ↓</kbd> 或 ↩：最近 10 条，选中即重查；带 Aa / .* 标记的连开关一起恢复</span></div>
-      <div class="rl"><span class="k">点高亮</span><span>终端里点某个匹配矩形 → 它成为当前匹配</span></div>
-      <div class="rl"><span class="k">新输出</span><span>输出滚来时当前匹配不动；即时搜索在停顿 200ms 后静默重算</span></div>
+      <div class="rl"><span class="k">历史</span><span><kbd>Alt ↓</kbd> 或 ↩：最近 10 条，选中即重查；带 Aa / .* 标记的连开关一起恢复。接管范围同上（仅查找框持焦）</span></div>
+      <div class="rl"><span class="k">点高亮</span><span>终端里点某个匹配矩形 → 它成为当前匹配。<b>(v3.6)</b> 仅单击、未拖动、非 mouse-tracked（或 Shift+单击）；htop/btop 的点击照常转发远端，双击选词照旧</span></div>
+      <div class="rl"><span class="k">新输出</span><span>输出滚来时当前匹配不动（按绝对行号锚定，历史增长时补偿偏移）；即时搜索在停顿 200ms 后静默重算</span></div>
       <div class="rl"><span class="k">默认行为</span><span>循环查找（到头卷回）· 全部琥珀 + 当前主题色 · 输入即时搜索（200ms 去抖）——固定默认，无开关</span></div>
     </div>
   </div>
@@ -760,17 +777,47 @@ drwxr-xr-x  root root 4.0 KB  Fri Sep 20 14:53:01  .ssh
     <table class="spec">
       <tr><th style="width:64px">状态</th><th style="width:210px">设计件</th><th>对应现有代码 / 落点</th><th style="width:90px">量级</th></tr>
       <tr><td><span class="badge have">已有</span></td><td><b>浮层骨架 / 输入框 / 清空 ×</b></td><td><code>find-active</code> overlay 复用；位置改右上角（边距 + 固定宽度 + 圆角描边阴影）；<code>find-input</code>、<code>close-ta</code>（#find-clear-accent，跟随主题色）原样保留</td><td class="m">S</td></tr>
-      <tr><td><span class="badge have">已有</span></td><td><b>全文搜索 + 高亮</b></td><td><code>compute_find_matches</code> 全量匹配 + CJK 列宽对齐（#132）</td><td class="m">—</td></tr>
-      <tr><td><span class="badge add">新增</span></td><td><b>计数 / 0 个结果</b></td><td>匹配本就全量算出，把总数 + 当前序号回传 UI 即可</td><td class="m">S</td></tr>
-      <tr><td><span class="badge add">新增</span></td><td><b>当前匹配 + 跳转</b></td><td>记当前索引；跳行复用 <code>terminal-scroll-to</code>，目标 = 匹配行 − 行数/2（居中）；当前匹配矩形换主题色档</td><td class="m">S~M</td></tr>
-      <tr><td><span class="badge add">新增</span></td><td><b>遮挡解法（§03）</b></td><td>居中滚动即跳转目标偏移；滚不动且相交 → 面板 y 下移至匹配行下方（200ms 动画、200ms 去抖），匹配变化重新判定、不相交回锚位（降透明方案退役）</td><td class="m">S</td></tr>
-      <tr><td><span class="badge add">新增</span></td><td><b>拖动手柄（§03）</b></td><td>TouchArea.moved 更新浮层 x/y（clamp + 四角磁吸 ≤12px），双击回锚位；会话内记忆不持久化。先例：滚动条拖拽 / 分组跨栏拖 / #settings-drag-ghost</td><td class="m">S</td></tr>
-      <tr><td><span class="badge add">新增</span></td><td><b>Aa 大小写</b></td><td><code>compute_find_matches</code> 加 case 参数（现在写死小写化）</td><td class="m">S</td></tr>
-      <tr><td><span class="badge add">新增</span></td><td><b>正则 (.·)*</b></td><td>regex crate 已是依赖（Cargo.toml:46）；按行换 regex 匹配，列位映射复用 cell_prefix</td><td class="m">S~M</td></tr>
-      <tr><td><span class="badge add">新增</span></td><td><b>历史 ↩</b></td><td>复用命令历史下拉模式（#101）+ ConfigStore 存最近 10 条</td><td class="m">M</td></tr>
+      <tr><td><span class="badge have">已有</span></td><td><b>全文搜索 + 高亮（视口）</b></td><td><code>compute_find_matches</code> 视口内匹配 + CJK 列宽对齐（#132）。<b>(v3.6 勘误)</b> 它只吃 <code>displayed_text</code>（当前视口行），并不是全量——「全缓冲」单列在下</td><td class="m">—</td></tr>
+      <tr><td><span class="badge add">新增</span></td><td><b>全缓冲匹配</b></td><td><b>(v3.6)</b> history + live 一次遍历（<code>scroll_to_first_find_match</code> 已有现成扫法）；视口外只计数 / 可跳、不画矩形；顺带<b>退役</b>现网「无可见匹配 → 跳全缓冲第一个」的兜底，改走 §03 ① 的最近命中口径</td><td class="m">S~M</td></tr>
+      <tr><td><span class="badge add">新增</span></td><td><b>计数 / 0 个结果</b></td><td>总数来自全缓冲匹配；当前序号 + 总数回传 UI（TermMatch 需补 index/is-current 或独立属性）</td><td class="m">S</td></tr>
+      <tr><td><span class="badge add">新增</span></td><td><b>当前匹配 + 跳转</b></td><td>记当前索引（起始 = 离视口最近命中，§03 ①）；跳行复用 <code>terminal-scroll-to</code>，目标 = 匹配行 − 行数/2（居中）；当前匹配矩形换主题色档</td><td class="m">S~M</td></tr>
+      <tr><td><span class="badge add">新增</span></td><td><b>遮挡解法（§03）</b></td><td>居中滚动即跳转目标偏移；滚不动且相交 → 面板 y 下移至匹配行下方（200ms 动画、200ms 去抖），匹配变化重新判定、不相交回<b>锚位（钉住处）</b>（降透明方案退役）</td><td class="m">S</td></tr>
+      <tr><td><span class="badge add">新增</span></td><td><b>拖动手柄（§03）</b></td><td>TouchArea.moved 更新浮层 x/y（clamp + 四角磁吸 ≤12px），双击复位右上；会话内记忆不持久化。先例：滚动条拖拽 / 分组跨栏拖 / #settings-drag-ghost</td><td class="m">S</td></tr>
+      <tr><td><span class="badge add">新增</span></td><td><b>Aa 大小写</b></td><td><code>compute_find_matches</code> 加 case 参数（现在写死小写化，且仅 ASCII）</td><td class="m">S</td></tr>
+      <tr><td><span class="badge add">新增</span></td><td><b>正则 (.·)*</b></td><td>regex crate 已是依赖（Cargo.toml:46）；按行换 regex 匹配，列位映射复用 cell_prefix；写错保旧结果 + 计数位「正则无效」</td><td class="m">S~M</td></tr>
+      <tr><td><span class="badge add">新增</span></td><td><b>历史 ↩</b></td><td>复用命令历史下拉模式（#101）+ ConfigStore 存最近 10 条（查询词 + Aa / .* 标记；Enter 或带词关闭时写入，去重、最近在前）</td><td class="m">M</td></tr>
       <tr><td><span class="badge risk">注意</span></td><td><b>alt 屏 / 大回滚正则 / IME</b></td><td>vim/tmux 下计数跳转限当前屏（is-alt-screen 已有），遮挡由下移让位兜底；即时搜索 200ms 去抖（#163 先例）；中文输入走 ui-font-family（#54 已解决）</td><td class="m">低风险</td></tr>
     </table>
-    <p class="foot-note">实现顺序：① 计数 + 当前匹配 + 跳转（含居中）→ ② 遮挡兜底下移让位 → ③ Aa / 正则 → ④ 历史。循环 / 高亮全部 / 即时搜索为固定默认，无选项菜单。输入框、清空按钮原样复用，浮层只动定位与外形（S）。</p>
+    <p class="foot-note">实现顺序：<b>(v3.6)</b> ① 全缓冲匹配 + 计数 + 当前匹配 + 跳转（含居中、最近命中起点）→ ② 遮挡兜底下移让位 → ③ Aa / 正则 → ④ 历史 → ⑤ 拖动手柄。循环 / 高亮全部 / 即时搜索为固定默认，无选项菜单。输入框、清空按钮原样复用，浮层只动定位与外形（S）。</p>
+    <div class="sumcard" style="margin-top:16px">
+      <h3>色值 → token 映射（v3.6 · B3）</h3>
+      <p>稿内演示色值一律落到 <code>Theme</code> token，不写死：<b>面板底</b> <code>#191C23F7</code> → <code>Theme.popup-bg</code>；<b>面板边</b> <code>#3A3F4A</code> → <code>Theme.border-strong</code>；<b>输入场底</b> <code>field</code> → <code>Theme.field</code>；<b>聚焦光环</b> → <code>1px Theme.accent + 3px Theme.accent-soft</code>（项目惯例）；<b>琥珀高亮</b> <code>--hl</code> → <code>Theme.warning.with-alpha(0.45)</code>（现网已用）；<b>当前匹配</b> → <code>Theme.accent</code> 档；<b>0 结果红 / 正则无效 / 描边转红</b> → <code>Theme.danger</code> 档。浅色主题（mterm-light）下琥珀与 accent 描边需过 3:1 图形对比度验收，实现时用实机四态截图复验。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════ 06 边界口径（v3.6） ════════════════ -->
+<section class="screen">
+  <div class="sc-head">
+    <span class="no">06</span><h2>边界口径</h2><span class="sub">评审补全 · 一条一句话，实现时不再临场发挥</span>
+  </div>
+  <div class="stage">
+    <div class="sumcard" style="margin-top:0">
+      <h3>布局与降级</h3>
+      <p><b>① 窄面板降级</b>：面板宽 &lt; 360px 时计数文字缩为「n」，&lt; 280px 时隐藏 Aa / 正则 / 历史（键盘仍可用），只留 输入 + 清空 + 关闭 + 手柄；断点只砍展示，不改行为。</p>
+      <p><b>② 滚动条共存</b>：右上锚位 right:8~10px 会压住右缘滚动条顶部（滚动条贴右缘 10px、宽 8px）——接受此遮挡（查找是临时态），不为它挪锚位。</p>
+      <p><b>③ 下移让位的死角</b>：alt 屏 + 匹配在末行 + 面板钉在底部时「下移」放不下 → 允许<b>上移到匹配行上方</b>（同一套判定，方向相反）。</p>
+      <h3>匹配与数据</h3>
+      <p><b>④ 跨软换行</b>：首版只做<b>行内</b>匹配；被终端软换行截断的词不算命中（现网口径一致），写进验收防止误报。</p>
+      <p><b>⑤ 正则无效时</b>：保留上一次有效结果的计数与高亮，计数位红字「正则无效」；修正后恢复。</p>
+      <p><b>⑥ 切 Aa / 正则后</b>：当前匹配重置为<b>原位置附近的最近命中</b>（优先视口内），不跳回开头。</p>
+      <p><b>⑦ 查询入历史</b>：Enter 或「带词关闭」时写入最近 10 条；去重、最近在前；带 Aa / .* 标记。</p>
+      <h3>状态与生命周期</h3>
+      <p><b>⑧ 关闭后的滚动位置</b>：Esc / ✕ 关闭时<b>留在原地</b>，不回 live bottom——用户经常是顺着查找读日志的，被弹回底部等于丢位置。</p>
+      <p><b>⑨ 重开回填</b>：再次打开时回填上次的查询词（含开关状态）但<b>不自动滚动</b>；仅当视口内无命中才按 §03 ① 跳最近命中。</p>
+      <p><b>⑩ 多标签 / 分屏</b>：查找状态按 tab 隔离（现网即如此）；切 tab 时面板保持打开并显示该 tab 的词，各自独立的高亮与当前匹配。</p>
+      <p><b>⑪ 可及性</b>：↑↓ / Aa / 正则 / 历史 / 手柄补 <code>accessible-role: button</code> + <code>accessible-label</code>；清空键已有先例（@tr("Clear search")），同套走 i18n。</p>
+    </div>
   </div>
 </section>
 

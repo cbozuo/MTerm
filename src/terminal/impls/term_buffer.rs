@@ -1,7 +1,7 @@
 use crate::terminal::{
     build_row, cell_prefix, char_after_cell_end, char_at_cell_start, detect_scroll,
-    highlight_plain_output, render_term_span, BuiltScreen, CsiState, Line, TermBuffer, MAX_HISTORY,
-    RAW_CAP,
+    find::FindState, highlight_plain_output, render_term_span, BuiltScreen, CsiState, Line,
+    TermBuffer, MAX_HISTORY, RAW_CAP,
 };
 use crate::ui::TermMatch;
 
@@ -30,7 +30,7 @@ impl TermBuffer {
     pub(crate) fn release_scrollback(&mut self) {
         let (rows, cols) = self.parser.screen().size();
         self.parser = vt100::Parser::new(rows, cols, 5000);
-        self.find_query.clear();
+        self.find = FindState::default();
         self.history = std::collections::VecDeque::new();
         self.prev = Vec::new();
         self.view_offset = 0;
@@ -52,7 +52,7 @@ impl TermBuffer {
     // top index depends on whether we're at the live bottom or scrolled up.
 
     /// Live screen rows plus the count of non-blank ones at the top.
-    fn live_rows(&self) -> (Vec<Line>, usize) {
+    pub(crate) fn live_rows(&self) -> (Vec<Line>, usize) {
         let s = self.parser.screen();
         let (rows, cols) = s.size();
         let live: Vec<Line> = (0..rows).map(|r| build_row(s, r, cols)).collect();
@@ -65,7 +65,7 @@ impl TermBuffer {
     }
 
     /// Absolute combined-row index of the top visible row for the current view.
-    fn view_top_abs(&self, _live_used: usize) -> usize {
+    pub(crate) fn view_top_abs(&self, _live_used: usize) -> usize {
         let rows = self.parser.screen().size().0 as usize;
         let hist_len = self.history.len();
         if self.view_offset == 0 {
@@ -137,35 +137,10 @@ impl TermBuffer {
         out
     }
 
-    /// If the current find query is outside the visible window, jump to the
-    /// first matching row in scrollback/live content so old serial output can be
-    /// found without manually scrolling back first (#233).
-    pub(crate) fn scroll_to_first_find_match(&mut self, query: &str) -> bool {
-        if query.is_empty() || self.parser.screen().alternate_screen() {
-            return false;
-        }
-        let q = query.to_lowercase();
-        let (live, _) = self.live_rows();
-        let rows = self.parser.screen().size().0 as usize;
-        let hist_len = self.history.len();
-        let combined_len = hist_len + live.len();
-        let Some(match_idx) = self
-            .history
-            .iter()
-            .map(|line| &line.0)
-            .chain(live.iter().map(|line| &line.0))
-            .position(|line| line.to_lowercase().contains(&q))
-        else {
-            return false;
-        };
-        let top = match_idx.min(combined_len.saturating_sub(rows));
-        let new_offset = combined_len.saturating_sub(rows + top);
-        if self.view_offset == new_offset {
-            return false;
-        }
-        self.view_offset = new_offset;
-        true
-    }
+    /// (#find-bar 2026-10-27 v3.6) 已由 `impls/terminal_find.rs` 的
+    /// `find_set_query`（最近命中起点 + 全缓冲扫描）替代。
+    /// 旧「无可见匹配 → 跳全缓冲第一个」的兜底退役：配合循环查找会把
+    /// 打字的人拽到回滚区顶端（高保真 §03① 勘误）。
 
     /// Extract the selected text from the combined buffer (whole selection,
     /// even the parts currently scrolled out of view).

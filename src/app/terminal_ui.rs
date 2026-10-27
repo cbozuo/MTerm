@@ -251,40 +251,9 @@ pub(super) fn suggest_models(
 #[path = "../../tests/app/command_history/mod.rs"]
 mod history_view_tests;
 
-/// Find every (case-insensitive) occurrence of `query` across the currently
-/// displayed rows and return highlight rectangles in GRID-COLUMN space (wide
-/// CJK glyphs count as two columns, so highlights line up over the text #132).
-pub(super) fn compute_find_matches(rows: &[String], query: &str) -> Vec<TermMatch> {
-    let mut out: Vec<TermMatch> = Vec::new();
-    if query.is_empty() {
-        return out;
-    }
-    let q: Vec<char> = query.chars().map(|c| c.to_ascii_lowercase()).collect();
-    if q.is_empty() {
-        return out;
-    }
-    for (r, line) in rows.iter().enumerate() {
-        let chars: Vec<char> = line.chars().collect();
-        let lower: Vec<char> = chars.iter().map(|c| c.to_ascii_lowercase()).collect();
-        let prefix = cell_prefix(&chars);
-        let mut i = 0usize;
-        while i + q.len() <= lower.len() {
-            if lower[i..i + q.len()] == q[..] {
-                let col = prefix[i] as i32;
-                let len = (prefix[i + q.len()] - prefix[i]) as i32;
-                out.push(TermMatch {
-                    row: r as i32,
-                    col,
-                    len,
-                });
-                i += q.len();
-            } else {
-                i += 1;
-            }
-        }
-    }
-    out
-}
+/// (#find-bar 2026-10-27 v3.6) 视口内文本匹配已由 terminal 域的
+/// `TermBuffer::find_scan_all` / `find_visible_rects` 替代（全缓冲 + case/regex）。
+/// 本函数退役删除；列位对齐回归由 `tests/app/terminal_rendering/find` 覆盖。
 
 /// Apply a settled terminal size to the PTY + vt100 grid. Factored out of the
 /// resize callback so that callback can debounce — a layout reflow can briefly
@@ -332,15 +301,23 @@ pub(super) fn rebuild_tab_display(win: &AppWindow, bufs: &TermBuffers, tab_id: &
     let data = with_term_buf(bufs, tab_id, |buf| {
         let cols = buf.parser.screen().size().1;
         let b = buf.render(); // also refreshes buf.displayed_text
-        let matches = compute_find_matches(&buf.displayed_text, &buf.find_query);
+        // (#find-bar v3.6) 高亮 = 全缓冲命中 ∩ 当前视口；当前匹配另发一条，
+        // UI 给它换主题色。新输出/滚动不改 current（绝对行号锚定），
+        // 只有指针失效才重定锚（最近命中）。
+        buf.find_reanchor_if_needed();
+        let matches = buf.find_visible_rects(&buf.find);
+        let current = buf.find_current_rect(&buf.find);
+        let (total, cur1) = buf.find_counts();
+        let invalid = buf.find_invalid_regex();
         let sel = buf.selection_rects_visible(cols);
-        (b, matches, sel)
+        (b, matches, current, total, cur1, invalid, sel)
     });
-    let Some((b, matches, sel)) = data else {
+    let Some((b, matches, current, total, cur1, invalid, sel)) = data else {
         return;
     };
     let spans = ModelRc::from(Rc::new(VecModel::from(b.spans)));
     let fm = ModelRc::from(Rc::new(VecModel::from(matches)));
+    let cm = ModelRc::from(Rc::new(VecModel::from(current.into_iter().collect::<Vec<_>>())));
     let sm = ModelRc::from(Rc::new(VecModel::from(sel)));
     let (cr, cc, ru, alt) = (b.cursor_row, b.cursor_col, b.rows_used, b.is_alt);
     let (smax, soff) = (b.scroll_max, b.scroll_offset);
@@ -352,6 +329,10 @@ pub(super) fn rebuild_tab_display(win: &AppWindow, bufs: &TermBuffers, tab_id: &
         row.is_alt_screen = alt;
         row.mouse_tracked = b.mouse_tracked;
         row.find_matches = fm.clone();
+        row.find_current = cm.clone();
+        row.find_total = total as i32;
+        row.find_current_no = cur1.unwrap_or(0) as i32;
+        row.find_invalid_regex = invalid;
         row.selection = sm.clone();
         row.scroll_max = smax;
         row.scroll_offset = soff;

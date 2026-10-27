@@ -94,6 +94,10 @@ export struct TerminalState {
     is-alt-screen: bool,
     mouse-tracked: bool,     // remote app wants mouse events (btop/htop/mc)
     find-matches: [TermMatch], // search-highlight rectangles
+    find-current: [TermMatch], // (#find-bar v3.6) the current match rect (accent color)
+    find-total: int,           // (#find-bar v3.6) total match count across the buffer
+    find-current-no: int,      // (#find-bar v3.6) 1-based current match, 0 = none
+    find-invalid-regex: bool,  // (#find-bar v3.6) regex failed to compile → keep old hits
     selection: [TermMatch],    // drag-selection highlight rectangles
 
     // SFTP panel state
@@ -2191,6 +2195,10 @@ export component AppWindow inherits Window {
     callback clear-terminal(string /* tab-id */);
     // Recompute search highlights for a session's visible screen.
     callback find-query-changed(string /* tab-id */, string /* query */);
+    // (#find-bar v3.6) 查找栏回调族。
+    callback find-options-changed(string /* tab-id */, string /* query */, bool /* aa */, bool /* regex */);
+    callback find-step(string /* tab-id */, int /* dir */) -> bool;
+    callback find-pick-hit(string /* tab-id */, int /* vis-row */, int /* col */);
     // Scroll a session's scrollback history by N lines (+ = up/older).
     callback terminal-scroll(string /* tab-id */, float /* delta-lines (fractional, momentum-aware) */);
     // Wheel forwarded to an alt-screen program (#170): tab-id, dir (+1 up/-1 down), col, row.
@@ -3447,6 +3455,16 @@ export component AppWindow inherits Window {
                         is-alt-screen: term.is-alt-screen;
                         mouse-tracked: term.mouse-tracked;
                         find-matches: term.find-matches;
+                        // (#find-bar v3.6) 当前匹配 + 计数 + 正则无效标志。
+                        find-current: term.find-current;
+                        find-total: term.find-total;
+                        find-current-no: term.find-current-no;
+                        find-invalid-regex: term.find-invalid-regex;
+                        lang-zh: !root.lang-en;
+                        find-query-changed(q) => { root.find-query-changed(term.id, q); }
+                        find-options-changed(q, aa, rx) => { root.find-options-changed(term.id, q, aa, rx); }
+                        find-step(dir) => { root.find-step(term.id, dir); }
+                        find-pick-hit(r, c) => { root.find-pick-hit(term.id, r, c); }
                         selection: term.selection;
                         sftp-panel-height: term.sftp-panel-height;
                         set-sftp-panel-height(v) => { root.set-pane-sftp-height(term.id, v); }
@@ -3630,7 +3648,6 @@ export component AppWindow inherits Window {
                         paste-from-clipboard() => { root.paste-from-clipboard(term.id); }
                         copy-terminal-text() => { root.copy-terminal-text(term.id); }
                         clear-terminal() => { root.clear-terminal(term.id); }
-                        find-query-changed(q) => { root.find-query-changed(term.id, q); }
                         terminal-scroll(d) => { root.terminal-scroll(term.id, d); }
                         terminal-wheel(d, c, r) => { root.terminal-wheel(term.id, d, c, r); }
                         terminal-scroll-to(o) => { root.terminal-scroll-to(term.id, o); }
