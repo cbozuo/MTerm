@@ -910,6 +910,22 @@ export component TerminalView inherits Rectangle {
     in property <int> hint-total: 0;           // 命中总数（行数仍按 5 封顶）
     // 危险命令告警由**本文件自己算**（danger-token() 就在下面几百行处），
     // 所以这里没有 in 属性；组件读的是 out property hint-danger-token。
+    // (#cmd-hint-p1 2026-10-27) **终端内联**提示框（高保真 §7 P1）。
+    // 数据由 Rust 侧的行缓冲（src/app/terminal_hint.rs）产出：
+    // 它读 vt100 网格里「命令起点..光标」的文本，而不是按键记账。
+    // ★ 与命令栏那组 hint-* 完全分开：终端里敲字时弹这个，命令栏里敲字时
+    //   弹那个，两者互不顶掉。
+    in property <[HintRow]> term-hint-rows;
+    in property <string> term-hint-phase: "";
+    in property <string> term-hint-context: "";
+    in property <int> term-hint-total: 0;
+    in property <bool> term-hint-open: false;
+    // 终端内联提示框的选中项（↑↓ 在候选里走）。
+    property <int> term-hint-selected: 0;
+    // 用户按 Esc 关掉后，本行不再自动弹（高保真 §4 抑制表的 Esc 行）。
+    // 只有「行被清空 / 回车提交」才解除 —— 打字不清除。
+    property <bool> term-hint-suppressed: false;
+    property <string> term-hint-line-tag: "";   // 记住抑制时那一行，变了才解除
     // (#cmdbar-scope 2026-10-23) 可送达的同步频道（Rust 按本窗口已打开标签页算）。
     in property <[SendScope]> send-scopes;
     // 「全部标签页」后面 / 「全部」档的台数：只数 kind == "terminal" 的标签页
@@ -1181,6 +1197,10 @@ export component TerminalView inherits Rectangle {
     // (#cmd-hint 2026-10-27) 按当前命令行文本重算提示框四段数据。
     // Rust 侧同步回调（与 search-history 同一套模式），返回时 hint-* 已是最新值。
     callback hint-query(string /* line */);
+    // (#cmd-hint-p1 2026-10-27) 终端内联：把第 i 条候选**写进 PTY**。
+    // 与命令栏的 hint-accept 不同 —— 这里不能改「输入框文本」（终端没有输入框），
+    // 只能把候选对应的字节发给 shell：通常是「补全剩余部分 + 一个空格」。
+    callback term-hint-accept(int /* index */);
 
     callback send-key(string, bool, bool, bool);
     // Temporary on-device diagnostics for #312. Rust redacts printable text.
@@ -2050,7 +2070,47 @@ export component TerminalView inherits Rectangle {
                     // The control flag is the *physical* Ctrl key: `meta` on macOS,
                     // `control` elsewhere, so ^X/^C reach the PTY everywhere (#158).
                     // Return `accept` for everything: `reject` would drop the char.
+                    } else if (root.term-hint-open && !root.term-hint-suppressed
+                            && root.term-hint-rows.length > 0
+                            && (event.text == Key.UpArrow || event.text == Key.DownArrow)) {
+                        // (#cmd-hint-p1) 终端内联浮层打开时，↑↓ 先在候选里走。
+                        // ★ 这**是**对 shell 历史的抢占，但只在浮层可见时发生；
+                        //   而且首项再按 ↑ 会关闭浮层并把这次按键交给 shell
+                        //   （见下面的分支撑透），用户「一路往上翻到历史」的手感不变。
+                        if (event.text == Key.UpArrow) {
+                            if (root.term-hint-selected <= 0) {
+                                // 穿透：收起浮层，并把**这一次** ↑ 原样交给 shell 历史。
+                                // 用 suppress 标记到「本行下一帧」：Rust 侧下一帧会
+                                // 重新算 open，这一帧先把上游的 ↑ 发出去。
+                                root.term-hint-suppressed = true;
+                                root.send-key(Key.UpArrow, false, false, false);
+                                // 立即解除抑制（这次只为让这一个键穿透），
+                                // 真正的「Esc 抑制」由 Esc 分支建立。
+                                root.term-hint-suppressed = false;
+                            } else {
+                                root.term-hint-selected -= 1;
+                            }
+                        } else {
+                            let n = min(root.term-hint-rows.length, 5);
+                            root.term-hint-selected = root.term-hint-selected >= n - 1
+                                ? 0 : root.term-hint-selected + 1;
+                        }
+                        accept
+                    } else if (root.term-hint-open && !root.term-hint-suppressed
+                            && root.term-hint-rows.length > 0
+                            && event.text == Key.Tab && !event.modifiers.shift) {
+                        // (#cmd-hint-p1) Tab 把选中候选写进 PTY。
+                        // 只在这一帧有可见候选时接管；0 候选时放行给 shell 原生补全。
+                        root.term-hint-accept(root.term-hint-selected);
+                        accept
+                    } else if (root.term-hint-open && event.text == Key.Escape) {
+                        // (#cmd-hint-p1) Esc 关掉并抑制**本行**（高保真 §4）。
+                        // 抑制只由 Esc 建立；行被清空 / 回车提交时才解除（见 Rust 侧）。
+                        root.term-hint-suppressed = true;
+                        accept
                     } else {
+                        // 任何其它按键 → 关掉「Esc 抑制」吗？不。
+                        // 高保真 §4 明确「抑制一直持续到本行结束」，打字不清除它。
                         root.send-key(event.text,
                                       Theme.is-mac ? event.modifiers.meta : event.modifiers.control,
                                       event.modifiers.alt, event.modifiers.shift);
@@ -2101,6 +2161,92 @@ export component TerminalView inherits Rectangle {
                         ? Theme.text-secondary : Theme.border-strong;
                     border-radius: 3px;
                     animate background { duration: 100ms; }
+                }
+            }
+
+            // --- (#cmd-hint-p1 2026-10-27) 终端内联命令提示框 ---------------
+            // 高保真 §2 的位置规则在这里落地：
+            //   ① 锚点 = 光标那一格（不是窗口中心、不是输入框）；
+            //   ② 下方放不下整盒就向上翻；
+            //   ③ 横向左对齐光标并夹进终端可视区（左右各留 8）。
+            //
+            // 坐标系：终端网格从 (10, 8) 开始铺，一格 cell-w × cell-h；
+            // 光标格由 cursor-row / cursor-col 给出（回滚时 cursor-row = -1，
+            // 那种情况直接不画 —— 用户在看历史，不该弹补全）。
+            //
+            // 可见性还有三条闸（高保真 §4 抑制表）：
+            //   · term-hint-open —— Rust 侧行缓冲判定「有可信命令行」；
+            //   · !is-alt-screen —— vim/htop 里没有 shell 行；
+            //   · !term-hint-suppressed —— 用户按过 Esc。
+            //
+            // ★ 再加一条几何闸：光标必须落在终端**可视行数内**。
+            //   判据用已有的 `term-rows`（可视行数 = floor(可视高/cell-h)），
+            //   与终端网格渲染用的是同一个数 —— 不要另起一个 root.height 估算，
+            //   之前那样算会把「光标在屏外」误判成「在屏内」（浮层悬空），
+            //   或反过来误杀（离屏实测 row=33 被挡住）。
+            if root.term-hint-open && !root.is-alt-screen
+                    && root.cursor-row >= 0 && root.cursor-row < root.term-rows
+                    && !root.term-hint-suppressed && root.term-hint-rows.length > 0 : Rectangle {
+                // 高保真 §3：472 上限，窄窗按可视区收。
+                width: min(472px, root.width - 16px);
+
+                property <length> caret-x: 10px + max(0, root.cursor-col) * root.cell-w;
+                property <length> caret-top: 8px + root.cursor-row * root.cell-h;
+                property <length> caret-bottom: self.caret-top + root.cell-h;
+                // 自然高：四段固定尺寸之和（高保真 §3）。
+                // ★ 不读 `CommandHint.preferred-height`：根是 Rectangle，Slint
+                //   不会从内容反推 Rectangle 的 preferred-height（实测恒 0）。
+                //   也**不跨组件读** out 属性 —— 同一帧里可能还没求值。
+                //   直接在宿主侧按规格算，行数公式与组件内部保持同一个。
+                property <int> hint-rows-shown: max(3, min(root.term-hint-rows.length, 5));
+                property <length> box-h: 27px + (self.hint-rows-shown * 28px + 6px) + 94px + 23px;
+                // ★ 可用空间要按**终端输出区**算，不能拿 root.height：
+                //   root 还含标签栏（32）与命令栏（48），按它算会多出 ~80px，
+                //   于是「下方够放」判成立、浮层却压在命令栏上。
+                //   这里减掉两块 chrome，再留 8 的安全边距。
+                property <length> term-area-bottom: root.height - 48px - 32px;
+                // 下方剩余空间（扣掉 8 的安全边距）。≥ 盒高就向下，否则向上翻。
+                property <length> space-below: self.term-area-bottom - self.caret-bottom - 8px;
+                property <bool> flip-up: self.space-below < self.box-h;
+                // 两边都不够时压高度，至少留出四段里最要紧的部分。
+                property <length> avail: max(160px,
+                    self.flip-up ? self.caret-top - 8px : self.space-below);
+
+                x: clamp(self.caret-x, 8px, max(8px, root.width - self.width - 8px));
+                // ★ 翻上去时底边贴光标格上沿（-6），向下时顶边贴光标格下沿（+6）。
+                //
+                // ★ 夹紧只在「翻转后仍然出界」时兜底，**不能反过来盖掉翻转**：
+                //   第一版把 y 统一 clamp 到 [8, term-area-bottom - height - 8]，
+                //   结果光标贴底时翻转算出的 y 又被这个上界拉回底部
+                //   （离屏实测 4 个光标行都停在 255px，翻转等于没做）。
+                //   现在两条路各夹各的：
+                //     · 向下 → 顶边不许超过「终端区底 - 盒高 - 8」；
+                //     · 向上 → 顶边不许小于 8（不越过标签栏）。
+                height: min(self.box-h, self.avail);
+                y: self.flip-up
+                    ? max(8px, self.caret-top - self.height - 6px)
+                    : min(self.caret-bottom + 6px,
+                          max(8px, self.term-area-bottom - self.height - 8px));
+
+                term-hint-inner := CommandHint {
+                    width: parent.width;
+                    height: parent.height;
+                    open: true;
+                    rows: root.term-hint-rows;
+                    selected: root.term-hint-selected;
+                    phase-label: root.term-hint-phase;
+                    context-text: root.term-hint-context;
+                    total-count: root.term-hint-total;
+                    // 终端内联不做危险告警：告警已经在命令栏那条浮出条上讲了，
+                    // 这里再画一遍会变成「同一个警告出现两次」。
+                    danger-token: "";
+                    danger-why: "";
+                    // 鼠标点击＝填入命令行（把选中项写进 PTY），由 Rust 侧处理。
+                    picked(i) => {
+                        root.term-hint-selected = i;
+                        root.term-hint-accept(i);
+                    }
+                    hovered(i) => { }
                 }
             }
 
@@ -3102,7 +3248,7 @@ export component TerminalView inherits Rectangle {
                 //   ⚠ 不能把 `self.y` 写进 height 的表达式 —— 会与
                 //   `y: -self.height` 构成绑定循环（实测直接被 Slint 拒绝）。
                 //   这里用「窗口高 - 命令栏高 - 边距」这个与 y 无关的量来夹。
-                height: min(hint-inner.preferred-height,
+                height: min(hint-inner.natural-height,
                             max(160px, root.height - 48px - 16px));
                 y: -self.height - 2px;
 

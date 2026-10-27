@@ -71,6 +71,13 @@ export component CommandHint inherits Rectangle {
     // 框会变高，但 **3 条以内不变**（高保真 §4 的「锁 3 行」）。
     out property <int> shown: min(root.rows.length, 5);
     out property <int> list-rows: max(3, min(root.shown, 5));
+    // ★ 自然高度必须**自己算**，不能读 `self.preferred-height`：
+    //   根是 Rectangle，Slint 不会从内容反推 Rectangle 的 preferred-height
+    //   （实测恒为 0，于是宿主侧的 min(自然高, 可用高) 完全失效，
+    //   浮层在离屏里恒为 257px、翻转判据也跟着错）。
+    //   四段是固定尺寸，直接按规格加起来 —— 这也是高保真 §3 的设计前提。
+    //     上下文条 27 + 列表(list-rows*28+6) + 详情 94 + 脚注 23
+    out property <length> natural-height: 27px + (root.list-rows * 28px + 6px) + 94px + 23px;
     // 有没有详情可显示：危险告警，或选中项带 signature。
     out property <bool> has-detail: root.danger-token != "" || root.sel-signature() != "";
 
@@ -88,6 +95,11 @@ export component CommandHint inherits Rectangle {
     }
 
     VerticalLayout {
+        // ★ 必须显式填满父级：不写这两行时布局按**内容**撑开父 Rectangle，
+        //   宿主设置的 height（含「可用空间不够时压高度」）会被内容顶掉 ——
+        //   离屏实测浮层恒为内容高 257px，翻转与夹紧判据全部失效。
+        width: parent.width;
+        height: parent.height;
         spacing: 0px;
         alignment: start;
 

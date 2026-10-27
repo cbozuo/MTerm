@@ -289,6 +289,14 @@ impl HintModel {
             rows: Vec::new(),
         }
     }
+
+    /// 明确「不弹」：密码输入 / 全屏程序 / 空提示符（P1 用）。
+    ///
+    /// 与 `closed()` 的区别只在语义：`hidden` 表示「判定为不该弹」，
+    /// 调用方据此清掉终端内联浮层。两者产出相同，但分开命名让调用点自解释。
+    pub(super) fn hidden(context: String) -> Self {
+        Self::closed(context)
+    }
 }
 
 /// 生成提示框数据。
@@ -446,12 +454,33 @@ fn subcommand_hint(
     }
 }
 
-/// 把 `HintModel` 写成 Slint 侧那一组属性。
+/// 把 `HintModel` 写成**终端内联**那一组属性（P1）。
+///
+/// 与 `apply_hint_model`（命令栏）互不干扰：命令栏读 `hint-*`，
+/// 终端内联读 `term-hint-*`。两处可以同时存在（终端里敲字 + 命令栏里也有
+/// 半行草稿），但浮层只有当前聚焦的那个会真正显示。
+pub(super) fn apply_terminal_hint_model(win: &AppWindow, model: &HintModel) {
+    let rows = hint_rows_model(model);
+    win.set_term_hint_rows(rows);
+    win.set_term_hint_phase(model.phase.label().into());
+    win.set_term_hint_context(model.context.clone().into());
+    win.set_term_hint_total(model.total as i32);
+    win.set_term_hint_open(model.open);
+}
+
+/// 把 `HintModel` 写成命令栏那一组属性（P0）。
 ///
 /// 单点写入：hint-* 六列必须**一起**更新，否则会出现「列表换了、阶段胶囊还是
 /// 上一次的」这种半新半旧的一帧。所有调用点都走这里。
 pub(super) fn apply_hint_model(win: &AppWindow, model: &HintModel) {
-    use slint::Model as _;
+    win.set_hint_rows(hint_rows_model(model));
+    win.set_hint_phase(model.phase.label().into());
+    win.set_hint_context(model.context.clone().into());
+    win.set_hint_total(model.total as i32);
+}
+
+/// `HintModel.rows` → Slint 模型。两个 apply 共用，避免字段名抄两遍。
+fn hint_rows_model(model: &HintModel) -> ModelRc<HintRow> {
     let rows: Vec<HintRow> = model
         .rows
         .iter()
@@ -465,10 +494,7 @@ pub(super) fn apply_hint_model(win: &AppWindow, model: &HintModel) {
             apply: r.apply.clone().into(),
         })
         .collect();
-    win.set_hint_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
-    win.set_hint_phase(model.phase.label().into());
-    win.set_hint_context(model.context.clone().into());
-    win.set_hint_total(model.total as i32);
+    ModelRc::from(Rc::new(VecModel::from(rows)))
 }
 
 #[cfg(test)]

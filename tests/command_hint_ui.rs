@@ -23,7 +23,7 @@ use slint::platform::software_renderer::{
     MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
 };
 use slint::platform::{PointerEventButton, WindowAdapter, WindowEvent};
-use slint::{ComponentHandle, LogicalPosition, LogicalSize, ModelRc, VecModel};
+use slint::{ComponentHandle, LogicalPosition, LogicalSize, Model, ModelRc, VecModel};
 use std::rc::Rc;
 
 const W: usize = 1200;
@@ -376,4 +376,110 @@ fn count_red_row(f: &Frame, y: usize, _top: usize) -> usize {
         }
     }
     n
+}
+
+// ── (#cmd-hint-p1 2026-10-27) 终端内联 ──────────────────────────────────
+
+/// 终端内联浮层的可见性完全由 `term-hint-*` 决定（Rust 侧行缓冲产出），
+/// 所以这里直接灌那组属性 —— 不需要像命令栏那样靠打字触发 `edited`。
+///
+/// ★ 光标行必须**每个用例单独建一个 AppWindow**：`set_row_data` 改
+///   `cursor_row` 在同一个 window 上连续改两次时，Slint 的增量更新只会
+///   保留最后一次，于是「靠上 / 贴底」两种情形量到同一个位置
+///   （实测量出 139 / 272 完全反了，白调一轮）。
+fn render_term_hint(ui: &AppWindow, row_count: usize, cursor_row: i32) -> Frame {
+    let model = ui.get_terminals();
+    if let Some(m) = model.as_any().downcast_ref::<VecModel<TerminalState>>() {
+        if let Some(mut row0) = m.row_data(0) {
+            row0.cursor_row = cursor_row;
+            row0.cursor_col = 12;
+            row0.rows_used = 40;
+            m.set_row_data(0, row0);
+        }
+    }
+    ui.set_term_hint_rows(rows(row_count));
+    ui.set_term_hint_phase("命令".into());
+    ui.set_term_hint_context("root@web-01 : /var/log".into());
+    ui.set_term_hint_total(row_count as i32);
+    ui.set_term_hint_open(true);
+
+    let mut f = Frame::new();
+    for _ in 0..5 {
+        f.grab(ui);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    f.grab(ui);
+    f
+}
+
+#[test]
+fn the_inline_hint_appears_over_the_terminal() {
+    // (#cmd-hint-p1) 终端里敲字时，浮层要真的画在终端区里。
+    let ui = setup();
+    let elev = elevated_of(&ui);
+    let f = render_term_hint(&ui, 3, 6);
+    maybe_dump(&f, "term-hint-3rows");
+    let (top, bottom) = find_overlay(&f, elev).expect("终端内联浮层没画出来");
+    assert!(bottom > top, "终端内联浮层高度为 0");
+}
+
+#[test]
+fn the_inline_hint_is_hidden_when_the_buffer_says_so() {
+    // (#cmd-hint-p1) 行缓冲判定「不该弹」（密码 / 全屏 / 空提示符）时，
+    // `term-hint-open = false`，浮层必须一块像素都不画。
+    let ui = setup();
+    let elev = elevated_of(&ui);
+    ui.set_term_hint_open(false);
+    ui.set_term_hint_rows(rows(3));
+    let mut f = Frame::new();
+    for _ in 0..4 {
+        f.grab(&ui);
+        std::thread::sleep(std::time::Duration::from_millis(90));
+    }
+    f.grab(&ui);
+    // 注意：pgrep 面板等界面也可能用 bg-elevated，所以这里断言的是
+    // 「终端区中部没有大片浮层」而不是「全屏没有 elevated」。
+    let mut rows_hit = 0;
+    for y in 120..(PANE_H - 120) {
+        let mut n = 0;
+        for x in SIDE_LEFT..(SIDE_LEFT + PANE_W).min(W) {
+            if close(f.rgb(x, y), elev, 4) {
+                n += 1;
+            }
+        }
+        if n > 200 {
+            rows_hit += 1;
+        }
+    }
+    assert_eq!(rows_hit, 0, "term-hint-open=false 时不该画出浮层");
+}
+
+#[test]
+fn the_inline_hint_never_overflows_the_terminal_area() {
+    // ★ 高保真 §2 ②③：无论光标在哪一行，浮层都必须留在终端可视区内。
+    //
+    // ★ 为什么**不**在这里断言「翻转方向」：离屏探针没有真实字体，
+    //   `cell-probe.preferred-height` 退化成 ~4.4px（真实运行 ~16px），
+    //   于是 cell-h 极小、几乎任何光标行都在「向下弹」区，翻转极难触发；
+    //   而字号调大又会让光标行轻易超出可视区（触发几何闸 → 整个不画）。
+    //   用像素断言翻转方向是在跟一个退化值搏斗，不可靠。
+    //   翻转的**公式**（`flip-up = space-below < box-h`）在 Slint 里写死，
+    //   这里改守两条与 cell-h 无关的硬不变量：
+    //     ① 光标在可视区内时浮层**必须画**（几何闸不误杀）；
+    //     ② 浮层**底边永不超过终端区底**（翻转 + 夹紧的共同结果）。
+    let ui = setup();
+    let elev = elevated_of(&ui);
+
+    // 光标行 1 到 30 各测一次，浮层都要能画且不越界。
+    for row in [1i32, 3, 5, 10, 20, 30] {
+        let ui_r = setup();
+        let f = render_term_hint(&ui_r, 5, row);
+        let (top, bottom) = find_overlay(&f, elev)
+            .unwrap_or_else(|| panic!("光标行 {row} 时没画浮层（几何闸误杀？）"));
+        assert!(
+            bottom < PANE_H,
+            "光标行 {row}：浮层底边 {bottom}px 越过终端区底 {PANE_H}px"
+        );
+        assert!(top >= 8, "光标行 {row}：浮层顶边 {top}px 越过终端区顶");
+    }
 }

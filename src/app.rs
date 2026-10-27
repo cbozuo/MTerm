@@ -12,6 +12,7 @@ mod jump_list;
 pub mod launch;
 mod port_forward;
 mod command_hint; // (#cmd-hint 2026-10-27) 命令提示框四段式数据侧
+mod terminal_hint; // (#cmd-hint-p1 2026-10-27) 终端内联的行缓冲（P1）
 mod command_manager;
 mod quick_commands;
 mod resource_ui;
@@ -11029,7 +11030,14 @@ fn wire_key_input(
         // (key="", shift=true).  Used by the time-based Backspace filter below.
         let last_shift_time: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
         let weak_sk = window.as_weak();
+        // (#cmd-hint-p1 2026-10-27) 每个 tab 一个行缓冲观测器。按 tab id 存，
+        // 切标签 / 多标签各记各的（终端里 tab 切回来应当还看到自己那半行）。
+        let hint_observers: Arc<Mutex<HashMap<String, crate::app::terminal_hint::HintObserver>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let weak_ob = window.as_weak();
+        let hint_observers_sk = hint_observers.clone();
         window.on_send_key(move |tab_id: SharedString, key: SharedString, ctrl: bool, alt: bool, shift: bool| {
+            let hint_observers = hint_observers_sk.clone();
             // ── Enter on a disconnected tab → reconnect in place (#79) ──────
             // FinalShell-style: the tab shows "连接已断开,按 Enter 重新连接";
             // pressing Enter re-spawns the shell + SFTP workers in the SAME tab
@@ -11443,6 +11451,168 @@ fn wire_key_input(
                         }
                     }
                 }
+            }
+
+            // ── (#cmd-hint-p1 2026-10-27) 终端内联提示框：观测「正在敲的那一行」──
+            //
+            // 放在 send_key 的**最后**（字节已经发出去了）：
+            //   · 此时才拿得到「远端回显之后」的网格状态；
+            //   · 提示框数据与按键是同一帧的，不会落后一帧。
+            //
+            // ★ 不信按键、信回显：网格里光标行「命令起点..光标」就是当前命令行。
+            //   理由见 src/app/terminal_hint.rs 的模块注释（按键记账会在远端
+            //   tab 补全 / readline 删词 / ↑ 调历史时永久错位）。
+            //
+            // 只在终端 tab 上做（welcome / rdp / vnc 没有 shell 行）。
+            if let Some(w_ob) = weak_ob.upgrade() {
+                let active = w_ob.get_active_tab_id().to_string();
+                if active == tab_id.as_str() {
+                    let is_enter = key.as_str() == "\n" || key.as_str() == "\r";
+                    // 可打印按键 = 恰好一个非控制字符。
+                    let printable = key.chars().count() == 1
+                        && key.chars().next().map(|c| !c.is_control()).unwrap_or(false);
+                    if is_enter {
+                        hint_observers
+                            .lock()
+                            .unwrap()
+                            .entry(tab_id.to_string())
+                            .or_default()
+                            .on_submit();
+                    }
+                    // 读网格：光标行文本 + 光标列 + 是否全屏。
+                    let snap = {
+                        let buf = term_buf(&bufs, tab_id.as_str());
+                        match buf {
+                            Some(h) => {
+                                let mut b = h.lock().unwrap();
+                                let (alt, _rows, cols) = {
+                                    let s = b.parser.screen();
+                                    let (r, c) = s.size();
+                                    (s.alternate_screen(), r, c)
+                                };
+                                let (cur_row, cur_col) = b.parser.screen().cursor_position();
+                                let row_text = crate::terminal::build_row(
+                                    b.parser.screen(),
+                                    cur_row,
+                                    cols,
+                                )
+                                .0;
+                                let row_text = row_text.trim_end().to_string();
+                                drop(b);
+                                let mut obs = hint_observers.lock().unwrap();
+                                let o = obs.entry(tab_id.to_string()).or_default();
+                                Some(o.observe(&row_text, cur_col, printable, alt))
+                            }
+                            None => None,
+                        }
+                    };
+                    if let Some(snap) = snap {
+                        let tab_id_str = tab_id.as_str();
+                        // 上下文条复用命令栏那套（session 的 user@host + OSC 7 的 cwd）。
+                        let context = {
+                            let session_id = w_ob
+                                .get_tabs()
+                                .iter()
+                                .find(|t| t.id.as_str() == tab_id_str)
+                                .map(|t| t.session_id.to_string())
+                                .unwrap_or_default();
+                            let who = store
+                                .borrow()
+                                .get(&session_id)
+                                .map(|sess| {
+                                    if sess.user.trim().is_empty() {
+                                        sess.host.clone()
+                                    } else {
+                                        format!("{}@{}", sess.user, sess.host)
+                                    }
+                                })
+                                .unwrap_or_default();
+                            let cwd = active_sftp_path(&w_ob, tab_id_str);
+                            match (who.is_empty(), cwd.is_empty()) {
+                                (true, true) => String::new(),
+                                (true, false) => cwd,
+                                (false, true) => who,
+                                (false, false) => format!("{who} : {cwd}"),
+                            }
+                        };
+                        let model = match snap.state {
+                            // 密码 / 全屏 / 判不准 → 一律不弹（高保真 §4 抑制表）。
+                            crate::app::terminal_hint::LineState::Muted => {
+                                command_hint::HintModel::hidden(context)
+                            }
+                            // 提示符后面是空的 → 也不端候选（同命令栏口径）。
+                            crate::app::terminal_hint::LineState::Empty => {
+                                command_hint::HintModel::hidden(context)
+                            }
+                            crate::app::terminal_hint::LineState::Ready => {
+                                command_hint::hint_model(
+                                    &store.borrow(),
+                                    &snap.line,
+                                    context,
+                                )
+                            }
+                        };
+                        command_hint::apply_terminal_hint_model(&w_ob, &model);
+                    }
+                }
+            }
+        });
+    }
+
+    // (#cmd-hint-p1 2026-10-27) 终端内联：把第 i 条候选写进 PTY。
+    //
+    // ★ 这里**不能**像命令栏那样「改输入框文本」—— 终端没有输入框，命令行是
+    //   shell 自己维护的。只能用 shell 能理解的方式把它补完：
+    //     ① 取候选的 `apply`（选中后整行应该长什么样）；
+    //     ② 与当前行比对，算出**需要追加的尾巴**；
+    //     ③ 只把那段尾巴发给 PTY（不重打整行，避免触发 readline 的乱序）。
+    //   `apply` 由 command_hint 统一算，命令栏与这里共用同一份语义。
+    {
+        let handles = handles.clone();
+        let bufs = bufs.clone();
+        let weak = window.as_weak();
+        let _unused_obs = Arc::new(Mutex::new(
+            HashMap::<String, crate::app::terminal_hint::HintObserver>::new(),
+        ));
+        window.on_term_hint_accept(move |i: i32| {
+            let Some(w) = weak.upgrade() else { return };
+            let tab_id = w.get_active_tab_id().to_string();
+            let rows = w.get_term_hint_rows();
+            let idx = i.max(0) as usize;
+            let Some(row) = rows.row_data(idx) else { return };
+            let apply = row.apply.to_string();
+            // 当前行：从网格再读一次（与观察器同一套口径，避免用过期缓存）。
+            let current = {
+                let Some(h) = term_buf(&bufs, &tab_id) else { return };
+                let mut b = h.lock().unwrap();
+                let (_alt, _r, cols) = {
+                    let s = b.parser.screen();
+                    let (r, c) = s.size();
+                    (s.alternate_screen(), r, c)
+                };
+                let (cur_row, cur_col) = b.parser.screen().cursor_position();
+                let row_text =
+                    crate::terminal::build_row(b.parser.screen(), cur_row, cols).0;
+                let row_text = row_text.trim_end().to_string();
+                drop(b);
+                crate::app::terminal_hint::command_line(&row_text, cur_col as usize)
+                    .unwrap_or_default()
+            };
+            // 算追加尾巴：apply 以 current 为前缀时只补差量（最常见，也最安全）。
+            let tail = if apply == current {
+                String::new()
+            } else if let Some(rest) = apply.strip_prefix(current.as_str()) {
+                rest.to_string()
+            } else {
+                // 对不上（用户中途用箭头改过行）：保守起来**什么都不发**，
+                // 让用户自己敲 —— 发错字节比不补更糟。
+                String::new()
+            };
+            if tail.is_empty() {
+                return;
+            }
+            if let Some(handle) = handles.borrow().get(tab_id.as_str()) {
+                handle.send_raw(tail.into_bytes());
             }
         });
     }
