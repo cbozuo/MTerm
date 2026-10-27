@@ -926,6 +926,16 @@ export component TerminalView inherits Rectangle {
     // 只有「行被清空 / 回车提交」才解除 —— 打字不清除。
     property <bool> term-hint-suppressed: false;
     property <string> term-hint-line-tag: "";   // 记住抑制时那一行，变了才解除
+    // (#cmd-hint-p1) 抑制解除令牌：Rust 在「回车提交 / 行被清空」时自增，
+    // 下面 changed 监听把它翻译成「清除 suppressed」。
+    in property <int> term-hint-reset-token: 0;
+    // 令牌一变就解锁（高保真 §4：抑制持续到**本行结束**，不是永久）。
+    // ★ 之前缺了这段监听，于是按过 Esc 之后提示框再也不弹 ——
+    //   用户实测反馈：「按过 ESC 后，就没有提示框了」。
+    changed term-hint-reset-token => {
+        root.term-hint-suppressed = false;
+        root.term-hint-selected = 0;
+    }
     // (#cmdbar-scope 2026-10-23) 可送达的同步频道（Rust 按本窗口已打开标签页算）。
     in property <[SendScope]> send-scopes;
     // 「全部标签页」后面 / 「全部」档的台数：只数 kind == "terminal" 的标签页
@@ -3242,14 +3252,14 @@ export component TerminalView inherits Rectangle {
                         max(8px, parent.width - self.width - 8px));
                 // 向上弹：命令栏在最底，浮层只能往上长；底边贴住栏上沿。
                 //
-                // ★ 高度必须**再夹一次可用空间**。命令栏贴窗口底、浮层只能向上
-                //   长，窗口一矮就会溢出到窗口外被裁掉（离屏实测：640 高窗口里
-                //   5 条候选的框只露出 186px）。
+                // ★ 高度必须夹进**终端区可用高**，不能只夹 root.height：
+                //   root 还含标签栏(32) 与命令栏(48)，按它算会多出 80px，
+                //   于是浮层底边被命令栏盖住一截（离屏证据图里可见：
+                //   最后一行「Esc 关闭」被切掉）。
                 //   ⚠ 不能把 `self.y` 写进 height 的表达式 —— 会与
-                //   `y: -self.height` 构成绑定循环（实测直接被 Slint 拒绝）。
-                //   这里用「窗口高 - 命令栏高 - 边距」这个与 y 无关的量来夹。
+                //   `y: -self.height` 构成绑定循环（Slint 直接拒绝）。
                 height: min(hint-inner.natural-height,
-                            max(160px, root.height - 48px - 16px));
+                            max(160px, root.height - 48px - 32px - 12px));
                 y: -self.height - 2px;
 
                 hint-inner := CommandHint {

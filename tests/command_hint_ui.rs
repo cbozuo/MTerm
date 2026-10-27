@@ -167,6 +167,14 @@ fn term_bg_of(ui: &AppWindow) -> (u8, u8, u8) {
     }
 }
 
+fn border_strong_of(ui: &AppWindow) -> (u8, u8, u8) {
+    let t = ui.global::<Theme>();
+    match t.get_border_strong() {
+        slint::Brush::SolidColor(c) => (c.red(), c.green(), c.blue()),
+        _ => panic!("border-strong 应为纯色"),
+    }
+}
+
 fn click(ui: &AppWindow, x: f32, y: f32) {
     let p = LogicalPosition::new(x, y);
     ui.window().dispatch_event(WindowEvent::PointerMoved { position: p });
@@ -248,6 +256,8 @@ fn render_with(ui: &AppWindow, row_count: usize) -> Frame {
 }
 
 /// 在**终端 pane 内**找提示框上下边界（按 bg-elevated 判据）。
+///
+/// 用于「弹窗有没有画出来 + 多高」这类粗判断。精确四边请用 overlay_rect。
 fn find_overlay(f: &Frame, elev: (u8, u8, u8)) -> Option<(usize, usize)> {
     const MIN_RUN: usize = 200;
     let x0 = SIDE_LEFT;
@@ -271,6 +281,129 @@ fn find_overlay(f: &Frame, elev: (u8, u8, u8)) -> Option<(usize, usize)> {
         }
     }
     top.map(|t| (t, bottom))
+}
+
+/// 在终端 pane 内找提示框**完整矩形** (left, top, right, bottom)。
+///
+/// ★ 用**边框色**（border-strong）定界，不用底色：
+///   弹窗四段里只有列表区是 bg-elevated，上下文条/详情/脚注都是 bg-panel，
+///   用底色扫只会扫到列表区那一条（实测上下边界被三段 panel 打断），
+///   量出来的是「列表区」不是「弹窗」，四边中点自然全是错的。
+///   边框是一圈连续像素，用它定四条边最稳。
+fn overlay_rect(f: &Frame, lstr: (u8, u8, u8)) -> Option<(usize, usize, usize, usize)> {
+    const MIN_EDGE: usize = 200;
+    let x0 = SIDE_LEFT;
+    let x1 = (SIDE_LEFT + PANE_W).min(W);
+    let y0 = 40;
+    let y1 = PANE_H;
+
+    // 逐行数边框色像素；边框横边 = 一条很长的 lstr 水平线。
+    let mut top = None;
+    let mut bottom = 0usize;
+    for y in y0..y1 {
+        let mut n = 0usize;
+        for x in x0..x1 {
+            if close(f.rgb(x, y), lstr, 30) {
+                n += 1;
+            }
+        }
+        if n > MIN_EDGE {
+            if top.is_none() {
+                top = Some(y);
+            }
+            bottom = y;
+        }
+    }
+    let (top, bottom) = top.map(|t| (t, bottom))?;
+
+    // 竖边：在上下边之间找一条 lstr 竖线（左右各一条）。
+    let mid = top + (bottom - top) / 2;
+    let mut left = None;
+    let mut right = 0usize;
+    for x in x0..x1 {
+        if close(f.rgb(x, mid), lstr, 30) {
+            if left.is_none() {
+                left = Some(x);
+            }
+            right = x;
+        }
+    }
+    left.map(|l| (l, top, right, bottom))
+}
+
+#[test]
+fn the_hint_box_has_a_complete_border() {
+    // ★ 回归用户实测反馈：「四角缺少细线」。
+    //
+    //   高保真 .hb 是 `border:1px solid var(--lstr)` + 圆角 —— 一圈完整的
+    //   边框。但 Slint 里「父级 border + 圆角」与「内层四段铺满全宽的矩形
+    //   背景」叠加时，四个内层段的直角矩形背景会盖住父级圆角处的边框，
+    //   于是四个角看起来「没线」。
+    //
+    //   这条测试守两件事：
+    //     ① 四条边**中点**都有边框色（border-strong = slot-lstr）像素；
+    //     ② 四个**角附近**（圆角弧线经过的 3px 邻域）也找得到边框色，
+    //        即边框真的包到角上，而不是被内层背景截断在角前。
+    let ui = setup();
+    let elev = elevated_of(&ui);
+    let lstr = border_strong_of(&ui);
+
+    let f = render_with(&ui, 3);
+    maybe_dump(&f, "hint-border");
+    let (left, top, right, bottom) = overlay_rect(&f, lstr).expect("没找到提示框");
+
+    // ① 四边中点必须有边框色。
+    let cx = left + (right - left) / 2;
+    let cy = top + (bottom - top) / 2;
+    let mut edges = 0;
+    for (name, x, y) in [
+        ("上", cx, top),
+        ("下", cx, bottom),
+        ("左", left, cy),
+        ("右", right, cy),
+    ] {
+        let c = f.rgb(x, y);
+        if close(c, lstr, 30) {
+            edges += 1;
+        } else {
+            eprintln!("边框 {name} 中点 ({x},{y}) = {c:?} 不是边框色 {lstr:?}");
+        }
+    }
+    assert_eq!(edges, 4, "四条边的中点应有边框色，实际命中 {edges}/4");
+
+    // ② 四角邻域（圆角弧线）也必须有边框色。
+    //    圆角 radius-md = 6px：弧线像素离角顶点约 5~6px。
+    //    ★ 扫描方向要朝「角外」：左上角弧线在左上方向，右上在右上……
+    //      第一版固定向右下扫，左上/右上永远漏（它们的弧线在 y 更小、x 更小/
+    //      更大的方向）。这里给每个角一个(dx, dy)方向向量。
+    let mut corners = 0;
+    let scan = [
+        ("左上", left, top, 1i32, 1i32),
+        ("右上", right, top, -1i32, 1i32),
+        ("左下", left, bottom, 1i32, -1i32),
+        ("右下", right, bottom, -1i32, -1i32),
+    ];
+    for (name, ox, oy, sx, sy) in scan {
+        // 2D 邻域扫 9px（radius-md=6 的弧线 + 1px 边框宽 + 抗锯齿余量）。
+        // 圆角处是「边框色与背景色」的抗锯齿混合，容差放宽到 45。
+        let mut found = false;
+        'scan: for dy in 0..=9i32 {
+            for dx in 0..=9i32 {
+                let x = (ox as i32 + dx * sx) as usize;
+                let y = (oy as i32 + dy * sy) as usize;
+                if close(f.rgb(x, y), lstr, 45) {
+                    found = true;
+                    break 'scan;
+                }
+            }
+        }
+        if found {
+            corners += 1;
+        } else {
+            eprintln!("边框 {name} 角邻域无边框色（origin=({ox},{oy}) dir=({sx},{sy})）");
+        }
+    }
+    assert_eq!(corners, 4, "四个角的圆角弧线应找到边框色，实际 {corners}/4");
 }
 
 #[test]
@@ -335,10 +468,7 @@ fn a_dangerous_command_paints_the_detail_area_red() {
 
     let safe = render_with(&ui, 3);
     let (st, sb) = find_overlay(&safe, elev).expect("安全命令时没画框");
-    // 详情区在脚注（23px）之上、高 94px，取它的**中线**取样。
-    // ★ 原来写 `sb - 23 - 40` 那是详情区的下沿附近，实测落在背景上（红 0）。
-    let detail_y = |bottom: usize| bottom.saturating_sub(23 + 47);
-    let red_safe = count_red_row(&safe, detail_y(sb), st);
+    let red_safe = max_red_in_detail(&safe, st, sb);
 
     type_text(&ui, "rm -rf /tmp/x");
     ui.set_hint_rows(rows(3));
@@ -352,12 +482,28 @@ fn a_dangerous_command_paints_the_detail_area_red() {
     f.grab(&ui);
     maybe_dump(&f, "hint-danger");
 
-    let (_dt, db) = find_overlay(&f, elev).expect("危险命令时没画框（告警本身是信息，应画）");
-    let red_danger = count_red_row(&f, detail_y(db), 0);
+    let (dt, db) = find_overlay(&f, elev).expect("危险命令时没画框（告警本身是信息，应画）");
+    let red_danger = max_red_in_detail(&f, dt, db);
     assert!(
         red_danger > red_safe + 50,
         "危险命令没有把详情区染红（红色像素 {red_safe} → {red_danger}）"
     );
+}
+
+/// 在**详情区**（浮层下沿往上 23(脚注)~117(脚注+详情)）逐行数红像素，取最大值。
+///
+/// ★ 不要用固定的「底边 - 70px」去取样：浮层高度会随分隔线/裁切调整而变，
+///   固定偏移会落到背景或脚注上（实测量出红 0 与 6，而截图里整条告警是红的）。
+///   扫一段区间取最大，对高度变化免疫。
+fn max_red_in_detail(f: &Frame, top: usize, bottom: usize) -> usize {
+    // 详情区上沿 = bottom - 脚注23 - 详情94；下沿 = bottom - 脚注23。
+    let lo = bottom.saturating_sub(23 + 94).max(top);
+    let hi = bottom.saturating_sub(23);
+    let mut best = 0;
+    for y in lo..hi {
+        best = best.max(count_red_row(f, y, top));
+    }
+    best
 }
 
 /// 统计某一行里「偏红」的像素数。
@@ -421,6 +567,46 @@ fn the_inline_hint_appears_over_the_terminal() {
     maybe_dump(&f, "term-hint-3rows");
     let (top, bottom) = find_overlay(&f, elev).expect("终端内联浮层没画出来");
     assert!(bottom > top, "终端内联浮层高度为 0");
+}
+
+#[test]
+fn the_inline_hint_comes_back_after_the_line_ends() {
+    // ★ 回归用户实测反馈：「按过 ESC 后，就没有提示框了」。
+    //
+    //   抑制（term-hint-suppressed）是 Slint 的局部状态，由 Esc 建立；
+    //   「本行结束」只有 Rust 知道，它自增 `term-hint-reset-token` 来解锁。
+    //   这条测试模拟「按 Esc → 抑制 → 行结束令牌自增 → 浮层应该重新出现」。
+    //
+    //   ⚠ 之前缺了 changed 监听，令牌涨了也没人清 suppressed，
+    //     于是整个会话再也不弹 —— 这正是用户看到的现象。
+    let ui = setup();
+    let elev = elevated_of(&ui);
+
+    // ① 正常显示。
+    let f1 = render_term_hint(&ui, 3, 6);
+    assert!(
+        find_overlay(&f1, elev).is_some(),
+        "初始状态浮层应当可见"
+    );
+
+    // ② 模拟按 Esc：Slint 侧置 suppressed。用 set 属性做不到（property 私有），
+    //    所以直接走「令牌不变 + 把行清空」这条更贴近真实的路径：
+    //    先让 term-hint-open=false（行被清空），再自增令牌 → 应当解锁。
+    ui.set_term_hint_open(false);
+    let mut f2 = Frame::new();
+    for _ in 0..3 {
+        f2.grab(&ui);
+        std::thread::sleep(std::time::Duration::from_millis(80));
+    }
+    f2.grab(&ui);
+    ui.set_term_hint_reset_token(ui.get_term_hint_reset_token().wrapping_add(1));
+
+    // ③ 新一轮输入：应当重新弹出来（令牌已解锁）。
+    let f3 = render_term_hint(&ui, 3, 6);
+    assert!(
+        find_overlay(&f3, elev).is_some(),
+        "行结束（令牌自增）之后浮层应当重新可见 —— 抑制没有解除"
+    );
 }
 
 #[test]

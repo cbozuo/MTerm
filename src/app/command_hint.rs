@@ -102,10 +102,10 @@ impl HintPhase {
     /// 胶囊文案。走 i18n（msgid 是英文，中文在 lang/zh）。
     pub(super) fn label(self) -> &'static str {
         match self {
-            Self::Command => crate::i18n::t("Command", "命令"),
-            Self::Subcommand => crate::i18n::t("Subcommand", "子命令"),
-            Self::Option => crate::i18n::t("Option", "参数"),
-            Self::Path => crate::i18n::t("Path", "路径"),
+            Self::Command => crate::i18n::t("命令", "Command"),
+            Self::Subcommand => crate::i18n::t("子命令", "Subcommand"),
+            Self::Option => crate::i18n::t("参数", "Option"),
+            Self::Path => crate::i18n::t("路径", "Path"),
         }
     }
 }
@@ -341,13 +341,21 @@ pub(super) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
         // 命令阶段要求命中的是**命令名的开头**，否则打 `g` 会把所有含 g 的长命令
         // 全列进来（那些应该排在 `git`/`grep` 之后）。
         if q.is_empty() || name_hit || cmd_hit {
+            // ★ 详情区要有内容：快捷命令的「说明」就是用户自己起的 name
+            //   （命令管理里那张卡的标题），`signature` 用命令原文 ——
+            //   否则详情区只能显示「暂无用法说明」，等于白占 94px。
+            let quick_desc = if c.name.trim().is_empty() {
+                crate::i18n::t("用户自建的快捷命令", "User-defined quick command").to_string()
+            } else {
+                c.name.clone()
+            };
             rows.push(HintRowData::new(
                 c.command.clone(),
                 HintKind::Quick,
                 c.name.clone(),
-                crate::i18n::t("Quick command", "快捷命令").to_string(),
-                String::new(),
-                String::new(),
+                crate::i18n::t("快捷命令", "Quick command").to_string(),
+                c.command.clone(),
+                quick_desc,
                 &input,
                 phase,
             ));
@@ -363,13 +371,18 @@ pub(super) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
             if rows.iter().any(|r| r.text == *cmd) {
                 continue;
             }
+            // 历史同样要有详情：signature 用命令原文，说明点明来源与动作。
             rows.push(HintRowData::new(
                 cmd.clone(),
                 HintKind::History,
                 String::new(),
-                crate::i18n::t("History", "历史").to_string(),
-                String::new(),
-                String::new(),
+                crate::i18n::t("历史", "History").to_string(),
+                cmd.clone(),
+                crate::i18n::t(
+                    "敲过的命令；回车直接执行",
+                    "Previously run; Enter runs it again",
+                )
+                .to_string(),
                 &input,
                 phase,
             ));
@@ -409,7 +422,7 @@ fn subcommand_hint(
                 format!("{command} {name}"),
                 HintKind::Quick,
                 (*desc).to_string(),
-                crate::i18n::t("Built-in", "内置").to_string(),
+                crate::i18n::t("内置", "Built-in").to_string(),
                 format!("{command} {name} [<opts>]"),
                 (*desc).to_string(),
                 &input,
@@ -433,9 +446,13 @@ fn subcommand_hint(
                 cmd.clone(),
                 HintKind::History,
                 String::new(),
-                crate::i18n::t("History", "历史").to_string(),
-                String::new(),
-                String::new(),
+                crate::i18n::t("历史", "History").to_string(),
+                cmd.clone(),
+                crate::i18n::t(
+                    "敲过的命令；回车直接执行",
+                    "Previously run; Enter runs it again",
+                )
+                .to_string(),
                 &input,
                 HintPhase::Subcommand,
             ));

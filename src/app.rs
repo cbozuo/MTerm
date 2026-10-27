@@ -11036,8 +11036,11 @@ fn wire_key_input(
             Arc::new(Mutex::new(HashMap::new()));
         let weak_ob = window.as_weak();
         let hint_observers_sk = hint_observers.clone();
+        // 上一步的观测是不是「空提示符」——用于「行被清空 → 解除 Esc 抑制」只递增一次。
+        let term_hint_was_empty = Arc::new(std::sync::atomic::AtomicBool::new(false));
         window.on_send_key(move |tab_id: SharedString, key: SharedString, ctrl: bool, alt: bool, shift: bool| {
             let hint_observers = hint_observers_sk.clone();
+            let term_hint_was_empty = term_hint_was_empty.clone();
             // ── Enter on a disconnected tab → reconnect in place (#79) ──────
             // FinalShell-style: the tab shows "连接已断开,按 Enter 重新连接";
             // pressing Enter re-spawns the shell + SFTP workers in the SAME tab
@@ -11478,6 +11481,13 @@ fn wire_key_input(
                             .entry(tab_id.to_string())
                             .or_default()
                             .on_submit();
+                        // (#cmd-hint-p1) 本行结束 → 解除 Slint 侧的 Esc 抑制。
+                        // ★ 抑制是 Slint 的局部状态（用户按 Esc 建立），但
+                        //   「本行什么时候结束」只有 Rust 知道（它读网格）。
+                        //   用自增令牌：连续两次回车各要解一次，bool 变 false
+                        //   不会触发 changed。
+                        let tok = w_ob.get_term_hint_reset_token().wrapping_add(1);
+                        w_ob.set_term_hint_reset_token(tok);
                     }
                     // 读网格：光标行文本 + 光标列 + 是否全屏。
                     let snap = {
@@ -11541,10 +11551,18 @@ fn wire_key_input(
                                 command_hint::HintModel::hidden(context)
                             }
                             // 提示符后面是空的 → 也不端候选（同命令栏口径）。
+                            // ★ 同时解除 Esc 抑制：行被清空 = 新一轮。
                             crate::app::terminal_hint::LineState::Empty => {
+                                // 只在「之前不是空」时才递增，避免每帧都 +1。
+                                if !term_hint_was_empty.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                                    let tok = w_ob.get_term_hint_reset_token().wrapping_add(1);
+                                    w_ob.set_term_hint_reset_token(tok);
+                                }
                                 command_hint::HintModel::hidden(context)
                             }
                             crate::app::terminal_hint::LineState::Ready => {
+                                term_hint_was_empty
+                                    .store(false, std::sync::atomic::Ordering::Relaxed);
                                 command_hint::hint_model(
                                     &store.borrow(),
                                     &snap.line,
