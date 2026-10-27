@@ -1,0 +1,424 @@
+// (#cmd-hint 2026-10-27) 命令提示框 —— 高保真四段式浮层。
+//
+// 高保真稿：docs/design/terminal-command-hint-hifi-2026-10-27.html
+// 数据侧：src/app/command_hint.rs
+//
+// ★ 这个组件**只负责画和响应**，不认识「命令栏」也不认识「终端」：
+//   两处宿主（命令栏 / 终端内联）各算自己的锚点，传进来即可。这是高保真
+//   §7 最后一条「两处宿主共用一组件」的落地方式 —— 别再长出第二份实现
+//   （send_cmd_window 已经踩过这个坑）。
+//
+// 四段的结构与尺寸都锁死，理由见高保真 §3：
+//   ① 上下文条 27px  ② 候选列表 3–5 行  ③ 详情区 94px  ④ 键盘脚注 23px
+//   ②③ 的高度不随候选数量/选中项变化 —— 「换一条候选整个框跳一下」是这类
+//   浮层最刺眼的毛病。
+
+import { Icon } from "icons.slint";
+import { Theme } from "theme.slint";
+
+// 一条候选。字段与 `HintRowData`（Rust）一一对应。
+export struct HintRow {
+    text: string,
+    kind: int,          // 1 = 快捷命令(bolt) / 0 = 历史(时钟)
+    subtitle: string,   // 一句话副标题；空则不占位
+    source: string,     // 来源标签：「快捷命令」/「历史」/「内置」
+    signature: string,  // 详情区语法签名；空 = 无 spec
+    description: string,// 详情区说明
+    // ★ 选中这一条后，命令行**整行**应该变成什么。
+    //   由 Rust 侧算好（`HintInput` 已经知道怎么拆词，UI 侧 Slint 1.18 的
+    //   string 没有 trim-end/rfind/substr，拼不出来）。两个用途：
+    //     ① Tab / 鼠标点击 → 直接写进输入框；
+    //     ② Enter 两段式 → 拿它跟当前整行比，相等就执行、不等就先填入。
+    apply: string,
+}
+
+export component CommandHint inherits Rectangle {
+    // ── 数据 ────────────────────────────────────────────────────────────
+    in property <[HintRow]> rows;
+    in property <int> selected: 0;
+    in property <bool> open: false;
+    // 阶段胶囊文案（Rust 侧已按语言定好）。
+    in property <string> phase-label: "";
+    // 上下文条左侧：`user@host : cwd`。
+    in property <string> context-text: "";
+    // 命中总数（可能 > rows.length，行数仍按 5 封顶）。
+    in property <int> total-count: 0;
+    // 危险命令命中的模式原文；非空 → 详情区整块换成红色告警条。
+    // 复用命令栏既有的 danger 语言（高保真 §3 ③）。
+    in property <string> danger-token: "";
+    in property <string> danger-why: "";
+
+    // ── 回调 ────────────────────────────────────────────────────────────
+    // 用户点了某一行（单击填入，不执行 —— 高保真 §5 鼠标行）。
+    callback picked(int);
+    // 悬停某一行（只高亮，不改选中 —— 避免列表跟鼠标抖）。
+    callback hovered(int);
+
+    // ★ 压终端上**不能用 popup-bg**：高保真 §2 ④ 实测
+    //   popup-bg(= slot-panel) 与终端底 term-bg(= slot-tbg) 在 MTerm 两套
+    //   主题里是**同一个值**（深 #181A1D / 亮 #FAF8F4），压上去框会「消失」，
+    //   只剩一圈边框。必须升到 slot-elev + border-strong 描边。
+    background: Theme.bg-elevated;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border-strong;
+    drop-shadow-blur: 14px;
+    drop-shadow-color: #00000066;
+    clip: true;
+    visible: root.open;
+
+    // 可见行数 = min(候选数, 5)。高度按它算，所以 1↔5 条之间切换时
+    // 框会变高，但 **3 条以内不变**（高保真 §4 的「锁 3 行」）。
+    out property <int> shown: min(root.rows.length, 5);
+    out property <int> list-rows: max(3, min(root.shown, 5));
+    // 有没有详情可显示：危险告警，或选中项带 signature。
+    out property <bool> has-detail: root.danger-token != "" || root.sel-signature() != "";
+
+    pure function sel-signature() -> string {
+        return root.selected >= 0 && root.selected < root.rows.length
+            ? root.rows[root.selected].signature : "";
+    }
+    pure function sel-description() -> string {
+        return root.selected >= 0 && root.selected < root.rows.length
+            ? root.rows[root.selected].description : "";
+    }
+    pure function sel-source() -> string {
+        return root.selected >= 0 && root.selected < root.rows.length
+            ? root.rows[root.selected].source : "";
+    }
+
+    VerticalLayout {
+        spacing: 0px;
+        alignment: start;
+
+        // ── ① 上下文条 27px ─────────────────────────────────────────────
+        Rectangle {
+            height: 27px;
+            width: parent.width;
+            background: Theme.bg-panel;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 9px;
+                spacing: 8px;
+                alignment: start;
+                Text {
+                    text: root.context-text;
+                    color: Theme.text-muted;
+                    font-size: Theme.fs-2xs;
+                    font-family: Theme.font-mono;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                // 阶段胶囊。宽度随文案（中英文长度不同），所以不写死。
+                Rectangle {
+                    height: 16px;
+                    width: phase-tx.preferred-width + 12px;
+                    border-radius: 8px;
+                    background: Theme.accent-soft;
+                    border-width: 1px;
+                    border-color: Theme.accent;
+                    phase-tx := Text {
+                        text: root.phase-label;
+                        color: Theme.accent;
+                        font-size: 9.5px;
+                        font-weight: Theme.fw-strong;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                        width: parent.width;
+                        height: parent.height;
+                    }
+                }
+                Text {
+                    text: root.total-count + "";
+                    color: Theme.text-muted;
+                    font-size: 10px;
+                    font-family: Theme.font-mono;
+                    vertical-alignment: center;
+                }
+            }
+            // 底部分隔线：1phx（高保真 §3，别用 border —— 四边都会画）
+            Rectangle {
+                y: parent.height - 1phx;
+                width: parent.width;
+                height: 1phx;
+                background: Theme.border-subtle;
+            }
+        }
+
+        // ── ② 候选列表（3–5 行）─────────────────────────────────────────
+        Rectangle {
+            // 高保真 §4：候选 1→3 条时高度锁定在 3 行，超过才长高。
+            // 28px 行高 + 上下 3px 内衬。
+            height: root.list-rows * 28px + 6px;
+            width: parent.width;
+            background: transparent;
+            clip: true;
+
+            VerticalLayout {
+                padding: 3px;
+                spacing: 0px;
+                alignment: start;
+
+                for r[idx] in root.rows : Rectangle {
+                    height: 28px;
+                    // 只画前 5 行（数据侧已封顶，这里再兜一层，防越界画到框外）。
+                    visible: idx < 5;
+                    border-radius: Theme.radius-sm;
+                    background: idx == root.selected ? Theme.accent-soft
+                              : (row-ta.has-hover ? Theme.bg-hover : transparent);
+
+                    // 选中项左侧 2px 竖条（高保真 .hb-row.on::before）。
+                    if idx == root.selected : Rectangle {
+                        x: 0px;
+                        y: 4px;
+                        width: 2px;
+                        height: parent.height - 8px;
+                        border-radius: 1px;
+                        background: Theme.accent;
+                    }
+
+                    row-ta := TouchArea {
+                        // 悬停只发信号，不改选中 —— 鼠标扫过时列表不该自己跳。
+                        pointer-event(e) => {
+                            if (e.kind == PointerEventKind.move) {
+                                root.hovered(idx);
+                            }
+                        }
+                        clicked => { root.picked(idx); }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 7px;
+                        spacing: 7px;
+                        alignment: start;
+
+                        // 类型图标：快捷命令 bolt / 历史 时钟 / 内置 book。
+                        // kind==1 且 source 是「内置」时也走 book —— 由 Rust 侧的
+                        // source 文案决定，这里只看 kind 与 source 的前缀。
+                        Icon {
+                            glyph: r.kind == 1 ? "bolt" : "command-history";
+                            tint: idx == root.selected ? Theme.accent
+                                : (r.kind == 1 ? Theme.accent : Theme.text-muted);
+                            size: 12px;
+                            width: 12px;
+                            height: 12px;
+                            y: (parent.height - self.height) / 2;
+                        }
+
+                        // 主文本：等宽（命令原文）。
+                        Text {
+                            text: r.text;
+                            color: idx == root.selected ? Theme.text-primary : Theme.text-primary;
+                            font-family: Theme.font-mono;
+                            font-size: Theme.fs-xs;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            // 副标题在时主文本不吃满，给副标题留位。
+                            horizontal-stretch: r.subtitle == "" ? 1 : 0;
+                            width: r.subtitle == "" ? parent.width : self.preferred-width;
+                        }
+
+                        // 副标题：一句话说明。剩余宽度都给副标题，它先被挤掉。
+                        if r.subtitle != "" : Text {
+                            text: r.subtitle;
+                            color: Theme.text-muted;
+                            font-size: 10.5px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+
+                        // 来源标签（只有非历史项才画，历史行画标签是噪音）。
+                        if r.source != "" : Rectangle {
+                            height: 15px;
+                            width: src-tx.preferred-width + 8px;
+                            border-radius: 3px;
+                            y: (parent.height - self.height) / 2;
+                            background: idx == root.selected ? Theme.accent-soft : transparent;
+                            border-width: 1px;
+                            border-color: idx == root.selected ? Theme.accent : Theme.border-subtle;
+                            src-tx := Text {
+                                text: r.source;
+                                color: idx == root.selected ? Theme.accent : Theme.text-muted;
+                                font-size: 9px;
+                                font-family: Theme.font-mono;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                                width: parent.width;
+                                height: parent.height;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── ③ 详情区 94px（固定）────────────────────────────────────────
+        Rectangle {
+            height: 94px;
+            width: parent.width;
+            clip: true;
+
+            // 危险告警接管：整块换成红色，复用命令栏既有 danger 语言。
+            if root.danger-token != "" : Rectangle {
+                width: parent.width;
+                height: parent.height;
+                background: Theme.danger.with-alpha(0.13);
+
+                Rectangle {
+                    y: 0px;
+                    width: parent.width;
+                    height: 1phx;
+                    background: Theme.danger.with-alpha(0.42);
+                }
+
+                HorizontalLayout {
+                    padding-left: 11px;
+                    padding-right: 11px;
+                    spacing: 8px;
+                    alignment: start;
+
+                    Icon {
+                        glyph: "warning";
+                        tint: Theme.danger-strong;
+                        size: 14px;
+                        width: 14px;
+                        height: 14px;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: @tr("Dangerous command") + " · " + root.danger-token;
+                            color: Theme.danger-strong;
+                            font-size: Theme.fs-xs;
+                            font-weight: Theme.fw-strong;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: root.danger-why;
+                            color: Theme.text-secondary;
+                            font-size: 10.5px;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+
+            // 正常详情：语法签名 + 说明 + 元信息。
+            if root.danger-token == "" : Rectangle {
+                width: parent.width;
+                height: parent.height;
+                background: Theme.bg-panel;
+
+                Rectangle {
+                    y: 0px;
+                    width: parent.width;
+                    height: 1phx;
+                    background: Theme.border-subtle;
+                }
+
+                VerticalLayout {
+                    padding-top: 8px;
+                    padding-left: 11px;
+                    padding-right: 11px;
+                    padding-bottom: 7px;
+                    spacing: 4px;
+                    alignment: start;
+
+                    Text {
+                        text: root.sel-signature() != "" ? root.sel-signature()
+                            : @tr("No usage info for this command");
+                        color: root.sel-signature() != "" ? Theme.text-primary : Theme.text-muted;
+                        font-family: Theme.font-mono;
+                        font-size: 11.5px;
+                        overflow: elide;
+                        // 技能：签名只有一行，不参与弹性分配。
+                        height: 17px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.sel-description();
+                        color: Theme.text-secondary;
+                        font-size: 11.5px;
+                        wrap: word-wrap;
+                        overflow: elide;
+                        vertical-stretch: 1;
+                    }
+                    // 元信息行：来源 + 频次 + 展开提示。
+                    HorizontalLayout {
+                        height: 16px;
+                        spacing: 6px;
+                        alignment: start;
+                        Text {
+                            text: root.sel-source();
+                            color: Theme.text-muted;
+                            font-size: 10px;
+                            font-family: Theme.font-mono;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        Text {
+                            text: "Ctrl+↑/↓";
+                            color: Theme.text-muted;
+                            font-size: 10px;
+                            font-family: Theme.font-mono;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── ④ 键盘脚注 23px ─────────────────────────────────────────────
+        Rectangle {
+            height: 23px;
+            width: parent.width;
+            background: Theme.bg-panel;
+
+            Rectangle {
+                y: 0px;
+                width: parent.width;
+                height: 1phx;
+                background: Theme.border-subtle;
+            }
+
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 9px;
+                alignment: start;
+                Text {
+                    text: "↑↓ " + @tr("Select");
+                    color: Theme.text-muted;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "Tab " + @tr("Insert");
+                    color: Theme.text-muted;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "↵ " + @tr("Run");
+                    color: Theme.text-muted;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "Esc " + @tr("Close");
+                    color: Theme.text-muted;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+    }
+}

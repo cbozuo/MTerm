@@ -1,6 +1,7 @@
 import { Icon } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
+import { CommandHint, HintRow } from "command_hint.slint";
 import { SftpPanel, SftpEntry, SftpTreeNode, TunnelInfo } from "sftp_panel.slint";
 import { TabInfo } from "tabs.slint";
 import { DialogClose, DockExpandButton, ToolStrip } from "widgets.slint";
@@ -897,6 +898,18 @@ export component TerminalView inherits Rectangle {
     // suggest-kind 与 suggest-view 等长：1 = 快捷命令（画 bolt）、0 = 历史。
     in property <[string]> suggest-view;
     in property <[int]> suggest-kind;
+    // (#cmd-hint 2026-10-27) 四段式提示框（高保真稿
+    // docs/design/terminal-command-hint-hifi-2026-10-27.html）。
+    // ★ 它**取代**了原来那个「只有文本 + 类型两列」的窄列表（300px）：
+    //   高保真的四段结构（上下文 / 候选 / 详情 / 键盘脚注）在 300px 里排版
+    //   不下，详情区尤其需要宽度。suggest-* 仍保留 —— 完整历史面板和
+    //   send_cmd_window 还在用同一套数据。
+    in property <[HintRow]> hint-rows;
+    in property <string> hint-phase: "";       // 阶段胶囊文案（Rust 已本地化）
+    in property <string> hint-context: "";     // 上下文条：`user@host : cwd`
+    in property <int> hint-total: 0;           // 命中总数（行数仍按 5 封顶）
+    // 危险命令告警由**本文件自己算**（danger-token() 就在下面几百行处），
+    // 所以这里没有 in 属性；组件读的是 out property hint-danger-token。
     // (#cmdbar-scope 2026-10-23) 可送达的同步频道（Rust 按本窗口已打开标签页算）。
     in property <[SendScope]> send-scopes;
     // 「全部标签页」后面 / 「全部」档的台数：只数 kind == "terminal" 的标签页
@@ -938,8 +951,15 @@ export component TerminalView inherits Rectangle {
     // （空列表就是个只有「无匹配」三个字的空壳，挡终端没信息量）；完整面板照旧
     // （它本来就要用「无匹配 + 搜索框」回话）。backdrop 跟这个同一口径，
     // 否则会留一层看不见却吃点击的遮罩。
+    //
+    // (#cmd-hint 2026-10-27) 补全态改判 **hint-rows**：四段式提示框的数据源已经
+    // 换成 `hint-rows`（Rust 按整行算出来的四列），不再是旧的 suggest-view。
+    // 还按 suggest_count() 判的话，hint-rows 有内容也永远画不出来。
+    // 危险命令例外：0 候选也要亮框，因为告警本身是信息（高保真 §3 ③）。
     property <bool> hist-popup-visible: root.history-open
-        && (!root.history-autocomplete || root.suggest_count() > 0);
+        && (!root.history-autocomplete
+            || root.hint-rows.length > 0
+            || root.danger-now != "");
     property <bool> history-autocomplete: false; // live suggestions from command input (#349)
     property <int> history-cursor: -1;         // ↑/↓ recall index (-1 = live input)
     // (#cmdbar-caret-anchor 2026-10-23) 光标的横向位置（相对命令栏输入框的文字起点），
@@ -996,6 +1016,82 @@ export component TerminalView inherits Rectangle {
     // 关键是从**补全态升级**的那条路：此时 history-open 已经是 true，再赋 true
     // 不触发 `changed history-open`，过滤就不会被清掉 —— 面板里剩下的还是
     // 「按命令栏那几个字过滤过的」历史。所以这里显式 search-history("") 并重置选中。
+    // ── (#cmd-hint 2026-10-27) 四段式提示框的键盘契约 ────────────────────
+    // 高保真 §5。核心原则：**提示框只在打开时接管按键，关闭时一个键都不多占**；
+    // 边界要「穿透」回 shell，而不是把方向键吞掉。
+
+    // 可见行数 = min(候选数, 5)。选中项只允许在这几条里循环 —— 数据侧也按 5
+    // 封顶，两边取同一个数，选中项不可能落在没画出来的行上（高保真 §5 边界）。
+    function hint-count() -> int {
+        return min(root.hint-rows.length, 5);
+    }
+    // 命中的那一条「填进命令行之后**整行**长什么样」。
+    //
+    // ★ 高保真 §5 最容易写错的一条：判据不能拿单词跟整行比。
+    //   子命令阶段候选是「git commit」整条、参数阶段是「-u」这种单词，
+    //   拿 `candidate == line` 去比，前者永远不等、后者几乎永远不等，
+    //   结果就是「永远只填入、永远不执行」。
+    //   这里的口径：把候选**应用到当前行**，得到目标整行，再比。
+    // 命中项「填进命令行之后**整行**长什么样」。
+    //
+    // ★ 高保真 §5 最容易写错的一条：判据不能拿单词跟整行比。
+    //   子命令阶段候选是「git commit」整条、参数阶段是「-u」这种单词，
+    //   拿 `candidate == line` 去比，前者永远不等、后者几乎永远不等，
+    //   结果就是「永远只填入、永远不执行」。
+    //
+    // ★ 这个整行由 **Rust 侧算好**（HintRow.apply）：Slint 1.18 的 string
+    //   没有 trim-end / rfind / substr，在 UI 里拼路径/替换词只能靠
+    //   replace-all 硬凑，重复片段一多就出错。Rust 那边拆分词的逻辑已经在
+    //   `HintInput` 里，顺带产出 apply 只有一个来源。
+    function hint-target(idx: int) -> string {
+        if (idx < 0 || idx >= root.hint-rows.length) { return cmd-input.text; }
+        return root.hint-rows[idx].apply;
+    }
+
+    // 把选中项填入命令行（不执行）。返回是否真的改了文本。
+    function hint-accept() -> bool {
+        let idx = root.history-selected;
+        if (idx < 0 || idx >= root.hint-count()) { return false; }
+        let before = cmd-input.text;
+        let target = root.hint-target(idx);
+        // 命令名/子命令后面补一个空格，好接着打下一个词；
+        // 以 `/` 结尾的路径不补（用户还要继续补下一级）。
+        if (!target.ends-with(" ") && !target.ends-with("/")) {
+            cmd-input.text = target + " ";
+        } else {
+            cmd-input.text = target;
+        }
+        root.history-selected = 0;
+        // ★ #cmdbar-focus：填入后要让输入框重新持有焦点与光标。
+        cmd-input.focus();
+        root.hint-refresh();
+        return cmd-input.text != before;
+    }
+
+    // 鼠标悬停：高保真 §5 要求「悬停只高亮、不选中」，避免列表跟着鼠标抖。
+    // Slint 侧高亮由 TouchArea.has-hover 自带，所以这里不改 selected。
+    function hint-hover(idx: int) {
+        // 故意留空。保留这个出口是为了将来接「悬停预览详情」，
+        // 且让组件回调有明确归属（不要在这里改 selected）。
+    }
+
+    // Enter 的两段式（高保真 §5）：行尾**不是空格** = 这个词还在补 → 先填入；
+    // 行尾是空格 = 已落定 → 执行。这样 Enter 永远只走两步，不会无限套娃。
+    //
+    // ★ 比的是 `cmd-input.text` 与 Rust 侧算好的 `row.apply`（见 hint-target）：
+    //   相等 → 执行；不等 → 先填入。绝不能用「候选单词 == 整行」去比 ——
+    //   子命令阶段候选是「git commit」整条、参数阶段是「-u」单词，那样比
+    //   永远不相等，结果就是「永远只填入、永远不执行」。
+    function hint-enter-runs() -> bool {
+        if (root.hint-count() <= 0) { return true; }
+        return cmd-input.text == root.hint-target(root.history-selected);
+    }
+
+    // 重新算一次提示框数据（Rust 侧按当前输入重算四列）。
+    function hint-refresh() {
+        root.hint-query(cmd-input.text);
+    }
+
     function open_history_panel() {
         root.quick-open = false;
         root.scope-open = false;
@@ -1033,6 +1129,22 @@ export component TerminalView inherits Rectangle {
         return "";
     }
     property <string> danger-now: root.danger-token(cmd-input.text);
+    // (#cmd-hint 2026-10-27) 提示框详情区的告警**读同一份** danger-token()。
+    // 高保真 §7 点名过「危险模式表被抄了第三遍」，所以这里不新增查表，
+    // 直接把本节算出来的值下发给组件；tag 用命令原文（不翻译），
+    // 说明按命中模式给一句人话。
+    out property <string> hint-danger-token: root.danger-now;
+    pure function danger-why(tok: string) -> string {
+        if (tok == "rm -rf") { return @tr("Recursive force delete: nothing goes to a recycle bin."); }
+        if (tok == "mkfs") { return @tr("Formatting overwrites every byte on the target device."); }
+        if (tok == "dd if=") { return @tr("Block-level copy: a wrong of= wipes the whole disk."); }
+        if (tok == "shutdown") { return @tr("Takes the remote host down; all sessions drop."); }
+        if (tok == "reboot") { return @tr("Reboots the remote host; all sessions drop."); }
+        if (tok == "chmod -R 777") { return @tr("Grants write access to everyone."); }
+        if (tok == "init 0") { return @tr("Switches to the power-off runlevel."); }
+        return "";
+    }
+    out property <string> hint-danger-why: root.danger-why(root.danger-now);
     // 「将发往 N 台」：当前标签页档没有台数概念（返回 0 = 不显示这一句）。
     // ScopeButton 组件内部也有同一张查表，但那是组件私有作用域，这里要自己算。
     function scope-count-in(letter: string) -> int {
@@ -1066,6 +1178,9 @@ export component TerminalView inherits Rectangle {
     callback delete-history(int /* index */);  // remove a history entry (#96)
     callback delete-history-cmd(string /* cmd */); // remove a history entry by command (#101)
     callback search-history(string /* query */);   // filter the history dropdown (#101)
+    // (#cmd-hint 2026-10-27) 按当前命令行文本重算提示框四段数据。
+    // Rust 侧同步回调（与 search-history 同一套模式），返回时 hint-* 已是最新值。
+    callback hint-query(string /* line */);
 
     callback send-key(string, bool, bool, bool);
     // Temporary on-device diagnostics for #312. Rust redacts printable text.
@@ -2251,19 +2366,38 @@ export component TerminalView inherits Rectangle {
                                     root.quick-open = false;
                                     root.history-autocomplete = self.text != "";
                                     root.search-history(self.text);
-                                    // (#cmdbar-suggest-empty 2026-10-24) 一条都没匹上
-                                    // 就别把框亮出来：原来会弹一个只有「无匹配」三个字
-                                    // 的空壳，挡终端又没有任何信息（用户截图）。
-                                    // search-history 是同步回调，此刻 suggest-view 已是
-                                    // 这次输入的结果，读长度就是最新值。
+                                    // (#cmd-hint 2026-10-27) 四段式提示框的数据**由
+                                    // Rust 侧按整行重算**（阶段判定、子命令表、危险
+                                    // 命令都在那边，Slint 拿不到那些表）。这是同步
+                                    // 回调：返回时 hint-* 已是这次输入的结果。
+                                    root.hint-query(self.text);
+                                    // (#cmdbar-suggest-empty 2026-10-24 / #cmd-hint)
+                                    // 一条都没匹上就别把框亮出来 —— 只有「无匹配」
+                                    // 三个字的空壳挡终端又没有信息量。危险命令例外：
+                                    // 它的告警本身是必须传达的信息，所以即使 0 候选
+                                    // 也要把框亮出来（高保真 §3 ③）。
                                     root.history-open = root.history-autocomplete
-                                        && root.suggest_count() > 0;
-                                    // Oldest→newest list: default-select the newest match.
-                                    root.history-selected = root.suggest_count() > 0
-                                        ? root.suggest_count() - 1 : 0;
+                                        && (root.hint-rows.length > 0
+                                            || root.danger-now != "");
+                                    // 选中项默认停在第一条（最相关），不是最后一条：
+                                    // 四段式列表是「按相关度排好」的，第一条就是最佳。
+                                    root.history-selected = 0;
                                 }
                                 key-pressed(e) => {
                                     if (e.text == Key.Return && !e.modifiers.shift) {
+                                        // (#cmd-hint 2026-10-27) Enter 的两段式：
+                                        // 行尾不是空格 = 这个词还在补 → 先填入；
+                                        // 行尾是空格 = 已落定 → 执行。
+                                        // 判据见 hint-enter-runs() 的注释（拿单词比
+                                        // 整行会导致「永远只填入、永远不执行」）。
+                                        if (root.hist-popup-visible
+                                                && root.history-autocomplete
+                                                && root.hint-count() > 0
+                                                && !root.hint-enter-runs()) {
+                                            root.hint-accept();
+                                            root.focus-pending = true;
+                                            accept
+                                        }
                                         root.run-command(self.text, root.scope-spec());
                                         self.text = "";
                                         root.history-open = false;
@@ -2293,7 +2427,20 @@ export component TerminalView inherits Rectangle {
                                         else { ime-input.focus(); }   // back to the terminal
                                         accept
                                     } else if (e.text == Key.UpArrow) {
-                                        if (root.history-autocomplete && root.suggest_count() > 0) {
+                                        // (#cmd-hint) 提示框打开时 ↑↓ 在**可见行**里循环；
+                                        // 在首项再按 ↑ 就穿透回 shell 历史（高保真 §5）。
+                                        if (root.history-autocomplete && root.hint-count() > 0) {
+                                            if (root.history-selected <= 0) {
+                                                // 穿透：收起提示框，改走历史回溯。
+                                                root.history-open = false;
+                                                if (root.command-history.length > 0) {
+                                                    root.history-cursor = root.command-history.length - 1;
+                                                    self.text = root.command-history[root.history-cursor];
+                                                }
+                                            } else {
+                                                root.history-selected -= 1;
+                                            }
+                                        } else if (root.history-autocomplete && root.suggest_count() > 0) {
                                             root.history-selected = root.history-selected <= 0
                                                 ? root.suggest_count() - 1
                                                 : root.history-selected - 1;
@@ -2309,7 +2456,10 @@ export component TerminalView inherits Rectangle {
                                         }
                                         accept
                                     } else if (e.text == Key.DownArrow) {
-                                        if (root.history-autocomplete && root.suggest_count() > 0) {
+                                        if (root.history-autocomplete && root.hint-count() > 0) {
+                                            root.history-selected = root.history-selected >= root.hint-count() - 1
+                                                ? 0 : root.history-selected + 1;
+                                        } else if (root.history-autocomplete && root.suggest_count() > 0) {
                                             root.history-selected = root.history-selected >= root.suggest_count() - 1
                                                 ? 0 : root.history-selected + 1;
                                         } else {
@@ -2326,12 +2476,12 @@ export component TerminalView inherits Rectangle {
                                         }
                                         accept
                                     } else if (e.text == Key.Tab && root.history-autocomplete) {
-                                        if (root.suggest_count() > 0
-                                                && root.history-selected < root.suggest_count()) {
-                                            self.text = root.suggest_at(root.history-selected);
-                                            self.set-selection-offsets(1000000, 1000000);
+                                        // (#cmd-hint) Tab 只在**有可见候选**时接管；
+                                        // 0 候选时放行给 shell 的原生补全（高保真 §5）。
+                                        // 填入后**保持提示框打开**，继续补下一个词。
+                                        if (root.hint-count() > 0) {
+                                            root.hint-accept();
                                         }
-                                        root.history-open = false;
                                         accept
                                     // --- readline line-editing keys (#103) ---
                                     // Ctrl+A / Cmd+A selects all text in this GUI input.
@@ -2932,232 +3082,47 @@ export component TerminalView inherits Rectangle {
                 }
             }
 
-            // --- History popup (opens upward, anchored to the caret) --------
-            if root.hist-popup-visible : Rectangle {
-                // (#cmdbar-caret-anchor 2026-10-23) 横向跟着光标走：原来钉死在
-                // `parent.width - 308px`（命令栏右端），光标在左半边打字时列表
-                // 飘到整行另一头（用户反馈「不协调」）。
-                // 锚点 = 输入框文字起点 + 光标 x（cmd-box.x 已在布局里算好，
-                // 26 是 ScrollView 的缩进、2 是 TextInput 的内缩），再 clamp 进
-                // 命令栏：左边留 8，右边也留 8，光标贴到极右时不至于出界。
-                // 纵向仍是「贴命令栏上沿向上弹」：浮层底边一旦落到输入框上沿
-                // 以下就会遮住正在编辑的文字，而输入框只有 34 高，没有跟光标
-                // 垂直走的余量。
-                width: 300px;
-                // 两种来源两个锚点：
-                //  · 打字触发的补全框 → 贴光标右侧（#cmdbar-caret-anchor）；
-                //  · 点 🕘 打开的完整面板 → 以时钟钮**中心**为中心（用户反馈：
-                //    它是「历史」这个按钮的下拉，跟着光标跑反而像跑错地方）。
-                // 🕘 槽位 x = cmd-box.width - 67、宽 26 → 中心在 -54；面板宽 300，
-                // 半宽 150，两者相加 204 就是「让面板中心落在按钮中心」的左偏移。
-                x: root.history-autocomplete
-                    ? clamp(cmd-box.x + 28px + root.cmd-caret-x, 8px,
-                            max(8px, parent.width - 300px - 8px))
-                    : clamp(cmd-box.x + cmd-box.width - 204px, 8px,
-                            max(8px, parent.width - 300px - 8px));
-                height: root.history-autocomplete
-                    ? min(180px, max(36px, h-col.preferred-height + 8px))
-                    : min(296px, 46px + max(28px, min(228px, h-col.preferred-height + 8px)));
+            // --- Command hint popup (#cmd-hint 2026-10-27) ----------------------
+            // 高保真四段式提示框（docs/design/terminal-command-hint-hifi-2026-10-27.html）。
+            //
+            // 只有「打字触发的补全态」走新组件；点 🕘 打开的**完整历史面板**（带
+            // 搜索框、可删可复制）保持原实现 —— 那是另一个动作（翻/搜历史），
+            // 高保真 §2 也明确没动它。两者靠 history-autocomplete 分开。
+            if root.hist-popup-visible && root.history-autocomplete : Rectangle {
+                // 锚点：贴光标（与旧实现同一套横向口径），宽度按高保真 §3 取 472，
+                // 但不超过命令栏可用宽。x 再 clamp 进栏内，光标贴右时不至于出界。
+                width: min(472px, parent.width - 16px);
+                x: clamp(cmd-box.x + 28px + root.cmd-caret-x, 8px,
+                        max(8px, parent.width - self.width - 8px));
+                // 向上弹：命令栏在最底，浮层只能往上长；底边贴住栏上沿。
+                //
+                // ★ 高度必须**再夹一次可用空间**。命令栏贴窗口底、浮层只能向上
+                //   长，窗口一矮就会溢出到窗口外被裁掉（离屏实测：640 高窗口里
+                //   5 条候选的框只露出 186px）。
+                //   ⚠ 不能把 `self.y` 写进 height 的表达式 —— 会与
+                //   `y: -self.height` 构成绑定循环（实测直接被 Slint 拒绝）。
+                //   这里用「窗口高 - 命令栏高 - 边距」这个与 y 无关的量来夹。
+                height: min(hint-inner.preferred-height,
+                            max(160px, root.height - 48px - 16px));
                 y: -self.height - 2px;
-                background: Theme.popup-bg;
-                border-radius: Theme.radius-md;
-                border-width: 1px;
-                border-color: Theme.border-strong;
-                drop-shadow-blur: 16px;
-                drop-shadow-color: transparent;
-                TouchArea {}
-                VerticalLayout {
-                    padding: 4px;
-                    spacing: 4px;
-                    // History list fills the popup; the search box is pinned at the
-                    // bottom (next to the command input) so it stays in a fixed,
-                    // easy-to-find spot no matter how tall the list is (#131).
-                    Flickable {
-                    vertical-stretch: 1;
-                    content-width: self.width;
-                    content-height: max(self.height, h-col.preferred-height);
-                    h-col := VerticalLayout {
-                        padding: 4px;
-                        alignment: start;
-                        if root.suggest_count() == 0 : Text {
-                            text: root.command-history.length == 0 ? @tr("No history yet") : @tr("No match");
-                            color: Theme.text-muted; font-size: Theme.fs-xs;
-                            horizontal-alignment: center;
-                            height: 32px; vertical-alignment: center;
-                        }
-                        // (#cmdbar-suggest 2026-10-24) 数据源按来源切换：补全态
-                        // 读 suggest-*（自定义指令集 + 历史），完整面板读
-                        // history-view（只有历史）。三元选数组，行结构仍是同一份。
-                        for h[idx] in (root.history-autocomplete ? root.suggest-view : root.history-view) : Rectangle {
-                            height: 28px;
-                            border-radius: Theme.radius-sm;
-                            background: idx == root.history-selected ? Theme.bg-active
-                                      : (h-item-ta.has-hover ? Theme.bg-hover : transparent);
-                            // Row body click recalls the command into the input box.
-                            h-item-ta := TouchArea {
-                                mouse-cursor: default;
-                                clicked => {
-                                    cmd-input.text = h;
-                                    root.history-open = false;
-                                    cmd-input.focus();
-                                }
-                            }
-                            HorizontalLayout {
-                                padding-left: 8px; padding-right: 4px; spacing: 4px;
-                                // 补全态才画类型图标（完整面板全是历史，图标是噪音）：
-                                // bolt = 自己配的快捷命令，command-history = 敲过的命令。
-                                if root.history-autocomplete : Icon {
-                                    glyph: root.history_kind_at(idx) == 1 ? "bolt" : "command-history";
-                                    tint: root.history_kind_at(idx) == 1 ? Theme.accent : Theme.text-muted;
-                                    size: 12px;
-                                }
-                                Text {
-                                    text: h;
-                                    color: Theme.text-secondary;
-                                    font-size: Theme.fs-sm;
-                                    font-family: Theme.ui-font-family;
-                                    vertical-alignment: center;
-                                    horizontal-stretch: 1;
-                                    overflow: elide;
-                                }
-                                // Run (▶) — execute immediately, on this tab.
-                                Rectangle {
-                                    width: 24px; y: (parent.height - self.height) / 2; height: 24px;
-                                    border-radius: Theme.radius-sm;
-                                    background: hrun.has-hover ? Theme.accent.with-alpha(0.25) : transparent;
-                                    hrun := TouchArea {
-                                        mouse-cursor: default;
-                                        clicked => {
-                                            root.run-command(h, root.scope-spec());
-                                            root.history-open = false;
-                                            root.focus-pending = true;
-                                        }
-                                    }
-                                    Icon {
-    glyph: "play";
-    tint: Theme.text-primary;
-    size: Theme.fs-md;
-}
-                                }
-                                // Copy (⧉) — to clipboard, keep the popup open.
-                                Rectangle {
-                                    width: 24px; y: (parent.height - self.height) / 2; height: 24px;
-                                    border-radius: Theme.radius-sm;
-                                    background: hcopy.has-hover ? Theme.bg-elevated : transparent;
-                                    hcopy := TouchArea {
-                                        mouse-cursor: default;
-                                        clicked => { root.copy-text(h); }
-                                    }
-                                    Icon {
-    glyph: "copy";
-    tint: Theme.text-primary;
-    size: Theme.fs-md;
-}
-                                }
-                                // Delete (×) — remove this entry.
-                                Rectangle {
-                                    width: 24px; y: (parent.height - self.height) / 2; height: 24px;
-                                    border-radius: Theme.radius-sm;
-                                    background: hdel.has-hover ? Theme.danger.with-alpha(0.18) : transparent;
-                                    hdel := TouchArea {
-                                        mouse-cursor: default;
-                                        clicked => { root.delete-history-cmd(h); }
-                                    }
-                                    Icon {
-    glyph: "delete";
-    tint: Theme.text-primary;
-    size: Theme.fs-md;
-}
-                                }
-                            }
-                        }
+
+                hint-inner := CommandHint {
+                    width: parent.width;
+                    height: parent.height;
+                    open: true;
+                    rows: root.hint-rows;
+                    selected: root.history-selected;
+                    phase-label: root.hint-phase;
+                    context-text: root.hint-context;
+                    total-count: root.hint-total;
+                    danger-token: root.hint-danger-token;
+                    danger-why: root.hint-danger-why;
+                    // 鼠标：单击填入（不执行）。悬停只发信号，不改选中。
+                    picked(i) => {
+                        root.history-selected = i;
+                        root.hint-accept();
                     }
-                    }
-                    // Search box (#101) pinned at the bottom, right above the
-                    // command input, so it stays in a fixed, easy-to-find spot no
-                    // matter how tall the list is — like FinalShell (#131).
-                    if !root.history-autocomplete : Rectangle {
-                        height: 30px;
-                        border-radius: Theme.radius-sm;
-                        background: Theme.bg-root;
-                        border-width: 1px;
-                        border-color: hist-search.has-focus ? Theme.zone-sidebar-accent : Theme.zone-sidebar-line;
-                        // Defer focus to the next event-loop tick (see init below).
-                        history-search-focus-timer := Timer {
-                            interval: 0ms;
-                            running: root.history-search-focus-pending;
-                            triggered => {
-                                root.history-search-focus-pending = false;
-                                if (root.history-open) { hist-search.focus(); }
-                            }
-                        }
-                        HorizontalLayout {
-                            padding-left: 8px; padding-right: 8px; spacing: 4px;
-                            Icon {
-    glyph: "search";
-    tint: Theme.text-primary;
-    size: Theme.fs-md;
-}
-                            Rectangle {
-                                horizontal-stretch: 1;
-                                hist-search := TextInput {
-                                    width: 100%; height: 100%;
-                                    vertical-alignment: center;
-                                    color: Theme.text-primary;
-                                    font-family: Theme.ui-font-family;
-                                    font-size: Theme.fs-sm;
-                                    single-line: true;
-                                    // Auto-focus so Ctrl+R lands you typing (#140).
-                                    // Defer to the next event-loop tick: focusing
-                                    // synchronously while the popup's first layout
-                                    // pass is still running re-enters the Windows
-                                    // IME/accessibility plumbing and reads the
-                                    // half-built layout, panicking with "Recursion
-                                    // detected" (#349 / #343).
-                                    init => { root.history-search-focus-pending = true; }
-                                    edited => { root.search-history(self.text); root.history-selected = root.history-view.length > 0 ? root.history-view.length - 1 : 0; }
-                                    // ↑/↓ move the selection, Enter runs it, Esc
-                                    // closes and returns focus to the terminal (#140).
-                                    key-pressed(e) => {
-                                        if (e.text == Key.Escape) {
-                                            root.history-open = false;
-                                            ime-input.focus();
-                                            accept
-                                        } else if (e.text == Key.UpArrow) {
-                                            if (root.history-view.length > 0) {
-                                                root.history-selected = root.history-selected <= 0
-                                                    ? root.history-view.length - 1
-                                                    : root.history-selected - 1;
-                                            }
-                                            accept
-                                        } else if (e.text == Key.DownArrow) {
-                                            if (root.history-view.length > 0) {
-                                                root.history-selected = root.history-selected >= root.history-view.length - 1
-                                                    ? 0
-                                                    : root.history-selected + 1;
-                                            }
-                                            accept
-                                        } else if (e.text == Key.Return) {
-                                            if (root.history-view.length > 0
-                                                    && root.history-selected < root.history-view.length) {
-                                                root.run-command(root.history-view[root.history-selected], root.scope-spec());
-                                                root.history-open = false;
-                                                root.focus-pending = true;
-                                            }
-                                            accept
-                                        } else {
-                                            reject   // let typing filter the list
-                                        }
-                                    }
-                                }
-                                if hist-search.text == "" : Text {
-                                    text: @tr("Search history");
-                                    color: Theme.text-muted; font-size: Theme.fs-sm;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
-                    }
+                    hovered(i) => { root.hint-hover(i); }
                 }
             }
         }

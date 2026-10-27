@@ -48,6 +48,7 @@ import { SessionDialog, SessionDraft, PortFwd, TriggerDraft, GroupEntry, JumpEnt
 import { ConfirmDialog } from "confirm_dialog.slint";
 import { LabeledInput, PrimaryButton, GhostButton, DockExpandButton, IconButton, ToolStrip, Scrim, DialogClose } from "widgets.slint";
 import { TerminalView, TermSpan, TermMatch, QuickCmd, QuickDockPanel, SendScope } from "terminal_view.slint";
+import { HintRow } from "command_hint.slint";
 import { RemoteDesktopView } from "remote_desktop_view.slint";
 import { SftpEntry, SftpTreeNode, TunnelInfo } from "sftp_panel.slint";
 import { ProcWindow, ProcRow } from "proc_window.slint";
@@ -1197,6 +1198,14 @@ export component AppWindow inherits Window {
     // 与 history-view 分开（完整历史面板只列历史）。kind 与 view 等长。
     in property <[string]> suggest-view;
     in property <[int]> suggest-kind;
+    // (#cmd-hint 2026-10-27) 四段式命令提示框的数据（高保真稿
+    // docs/design/terminal-command-hint-hifi-2026-10-27.html）。
+    // Rust 在 hint-query 回调里按整行重算四列后写回；阶段判定、子命令表、
+    // 危险命令都在 Rust 侧，Slint 这边只负责画与按键。
+    in property <[HintRow]> hint-rows;
+    in property <string> hint-phase: "";
+    in property <string> hint-context: "";
+    in property <int> hint-total: 0;
     // (#cmdbar-scope 2026-10-23) 命令栏发送范围：可送达的同步频道 + 打开的
     // 标签页总数（Rust 按本窗口统计，「全部标签页」的台数用它）。
     // (#cmdbar-scope-count 2026-10-23) 名字从 open-tab-count 改成 sendable-tabs：
@@ -1211,6 +1220,8 @@ export component AppWindow inherits Window {
     callback delete-history(int /* index */);   // remove a history entry (#96)
     callback delete-history-cmd(string /* cmd */);   // remove a history entry by command (#101)
     callback search-history(string /* query */);     // filter the history dropdown (#101)
+    // (#cmd-hint 2026-10-27) 按当前命令行整行重算提示框四段数据（同步回调）。
+    callback hint-query(string /* line */);
     in-out property <bool> quick-cmd-manage-open: false;  // manage dialog（cm 组件的 open 镜像）
     callback open-command-manager();                // 打开命令管理（重置视图/搜索/勾选）
     // 命令管理弹框（#quick-cmd-manager 2026-10-24 高保真）——数据与逻辑见
@@ -3462,6 +3473,11 @@ export component AppWindow inherits Window {
                         history-view: root.history-view;
                         suggest-view: root.suggest-view;
                         suggest-kind: root.suggest-kind;
+                        // (#cmd-hint 2026-10-27) 四段式提示框的四段数据
+                        hint-rows: root.hint-rows;
+                        hint-phase: root.hint-phase;
+                        hint-context: root.hint-context;
+                        hint-total: root.hint-total;
                         send-scopes: root.send-scopes;
                         open-tab-count: root.sendable-tabs;
                         run-command(cmd, scope) => { root.run-command(term.id, cmd, scope); }
@@ -3471,6 +3487,8 @@ export component AppWindow inherits Window {
                         delete-history(i) => { root.delete-history(i); }
                         delete-history-cmd(c) => { root.delete-history-cmd(c); }
                         search-history(q) => { root.search-history(q); }
+                        // (#cmd-hint 2026-10-27) 按整行重算提示框数据（同步回调）
+                        hint-query(line) => { root.hint-query(line); }
                         manage-quick-commands() => {
                             root.open-command-manager();
                         }

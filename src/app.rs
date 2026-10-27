@@ -11,6 +11,7 @@ pub(crate) mod core;
 mod jump_list;
 pub mod launch;
 mod port_forward;
+mod command_hint; // (#cmd-hint 2026-10-27) 命令提示框四段式数据侧
 mod command_manager;
 mod quick_commands;
 mod resource_ui;
@@ -10730,6 +10731,59 @@ fn wire_key_input(
                 w.set_suggest_view(view);
                 w.set_suggest_kind(kind);
             }
+        });
+    }
+    // (#cmd-hint 2026-10-27) 四段式命令提示框：按**整行**重算四段数据。
+    //
+    // 和 `on_search_history` 分开是刻意的：那个回调的入参是「过滤词」，语义是
+    // 「在历史里筛」；这里的入参是**命令行整行**，语义是「我现在在补什么」。
+    // 阶段（命令/子命令/参数/路径）、子命令表、危险命令都只有 Rust 侧知道，
+    // 所以判定不能在 Slint 里做。
+    //
+    // 同步回调：Slint 的 `edited` 紧接着就要读 `hint-rows` 决定弹不弹，
+    // 异步化会让第一帧拿到空列表（然后就不弹了，用户觉得「没反应」）。
+    {
+        let store_rc = store.clone();
+        let weak = window.as_weak();
+        window.on_hint_query(move |line: SharedString| {
+            let Some(w) = weak.upgrade() else { return };
+            let s = store_rc.borrow();
+            // 上下文条：`user@host : cwd`。
+            //   · host/user 从当前 tab 的 session 取（title 是 UI 展示名，可能是
+            //     用户自己改的别名，不适合当上下文）；
+            //   · cwd 走 OSC 7 已经送到 SFTP 面板那个字段（`sftp_path`），
+            //     这里直接复用，不另开一条通路（高保真 §3「数据现成」）。
+            let tab_id = w.get_active_tab_id().to_string();
+            let session_id = w
+                .get_tabs()
+                .as_any()
+                .downcast_ref::<VecModel<TabInfo>>()
+                .and_then(|m| {
+                    (0..m.row_count())
+                        .filter_map(|i| m.row_data(i))
+                        .find(|t| t.id.as_str() == tab_id)
+                        .map(|t| t.session_id.to_string())
+                })
+                .unwrap_or_default();
+            let who = s
+                .get(&session_id)
+                .map(|sess| {
+                    if sess.user.trim().is_empty() {
+                        sess.host.clone()
+                    } else {
+                        format!("{}@{}", sess.user, sess.host)
+                    }
+                })
+                .unwrap_or_default();
+            let cwd = active_sftp_path(&w, &tab_id);
+            let context = match (who.is_empty(), cwd.is_empty()) {
+                (true, true) => String::new(),
+                (true, false) => cwd,
+                (false, true) => who,
+                (false, false) => format!("{who} : {cwd}"),
+            };
+            let model = command_hint::hint_model(&s, line.as_str(), context);
+            command_hint::apply_hint_model(&w, &model);
         });
     }
     // Delete a history entry by its command text (#101) — index-free so it works
