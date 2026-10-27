@@ -484,8 +484,9 @@ mod tests {
 
     #[test]
     fn a_corrupt_file_loads_as_nothing_trusted_rather_than_failing() {
-        let dir = std::env::temp_dir().join("mterm-trust-test");
-        let _ = std::fs::create_dir_all(&dir);
+        // `crate::test_tmp_dir`: `%TEMP%` 在受限环境可读不可写，直接用它会让
+        // 这条测试红在建目录上，看起来像 TrustStore::load 坏了。
+        let dir = crate::test_tmp_dir("mterm-trust-test");
         let path = dir.join("broken.json");
         std::fs::write(&path, "{ not json").unwrap();
         let store = TrustStore::load(&path);

@@ -300,7 +300,9 @@ Host scheme
 
     #[test]
     fn expands_relative_globbed_includes_and_ignores_cycles() {
-        let home = std::env::temp_dir().join(format!("mterm-ssh-config-{}", uuid::Uuid::new_v4()));
+        // `crate::test_tmp_dir`: `%TEMP%` 在受限环境可读不可写，直接用它会让
+        // 这条测试红在建目录上，看起来像 include 展开坏了。
+        let home = crate::test_tmp_dir("mterm-ssh-config");
         let ssh = home.join(".ssh");
         let config_d = ssh.join("config.d");
         std::fs::create_dir_all(&config_d).unwrap();

@@ -7,9 +7,15 @@ use std::sync::mpsc;
 /// deterministic. The pre-remove also guards against a stale file from an
 /// earlier run under a reused pid. This is a unix-socket path on unix and a
 /// TCP port-file path on Windows (see `single_instance` module docs).
+///
+/// `crate::test_tmp_root` rather than `std::env::temp_dir()`: `%TEMP%` is
+/// readable but **not writable** in restricted environments (sandboxes,
+/// policy-locked service accounts), where `create_dir_all` fails with
+/// `PermissionDenied` and every test in this file goes red for a reason that
+/// has nothing to do with the single-instance handshake.
 fn temp_socket_path(test_name: &str) -> std::path::PathBuf {
     let n = std::process::id();
-    let dir = std::env::temp_dir().join(format!("mterm-si-{n}"));
+    let dir = crate::test_tmp_root().join(format!("mterm-si-{n}"));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("ipc-{test_name}.sock"));
     let _ = std::fs::remove_file(&path);

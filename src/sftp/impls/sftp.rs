@@ -2983,8 +2983,10 @@ mod sanitize_tests {
 
     #[test]
     fn keep_both_uses_the_first_available_numbered_name() {
-        let dir = std::env::temp_dir().join(format!("mterm-download-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        // `crate::test_tmp_dir`: `%TEMP%` 在受限环境可读不可写（沙箱 / 受限服务
+        // 账户），直接用 `temp_dir()` 会让这条测试红在"建目录"上，看起来像
+        // `available_download_path` 坏了。
+        let dir = crate::test_tmp_dir("mterm-download-test");
         let requested = download_target_path("/remote/report.txt", dir.to_str().unwrap());
         std::fs::write(&requested, b"old").unwrap();
         std::fs::write(dir.join("report (1).txt"), b"older").unwrap();

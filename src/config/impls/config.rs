@@ -2673,7 +2673,10 @@ mod tests {
     use super::*;
 
     fn temp_store() -> ConfigStore {
-        let path = std::env::temp_dir().join(format!("ms-test-{}.json", Uuid::new_v4()));
+        // `crate::test_tmp_dir`: `%TEMP%` 在受限环境（沙箱 / 服务账户）可读不可写，
+        // 用它会让所有 store 测试一起红，且失败信息看起来像加解密坏了。
+        let dir = crate::test_tmp_dir("ms-test");
+        let path = dir.join("config.json");
         ConfigStore {
             path,
             cache: ConfigFile::default(),
@@ -3874,7 +3877,7 @@ mod tests {
             ..Session::new_empty()
         });
 
-        let export_path = std::env::temp_dir().join(format!("ms-exp-{}.json", Uuid::new_v4()));
+        let export_path = crate::test_tmp_dir("ms-exp").join("export.json");
         assert_eq!(a.export_to(&export_path).unwrap(), 1);
 
         // The file keeps host/user plaintext but the password is obfuscated.
