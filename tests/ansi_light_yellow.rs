@@ -121,8 +121,19 @@ fn fixed_light_themes_bright_yellow_is_deeper_than_normal() {
     }
 }
 
-/// 这次修正只许动亮色档 —— 暗色档的黄是配深底调的，压暗反而看不清。
-/// 快照取自 #ansi-yellow-fix 之前的 palettes.rs（git HEAD）。
+/// (#ansi-dark-yellow-4_5 2026-10-27) 暗色档槽 3 / 槽 11 的两处**例外**，都是从
+/// "官方上游原色" 提回达标值的：
+///
+/// * `flexoki-dark` 槽 3 `#AD8301` → `#B28701`（4.28 → 4.52:1）；
+/// * `solarized-dark` 槽 11 `#657B83` → `#7C929A`（3.37 → 4.60:1）—— 后者正是
+///   `53ba7f0` 之前的值，那次提交为了对上官方 brightYellow 把它改了回来，
+///   同时把这一槽从达标改成了不达标。
+///
+/// 起因：`_meta.ansi_check` 要求 12 个彩槽明暗档全部 ≥4.5:1，
+/// `theme::tests::ansi_batch3_contrast_and_decoupling_hold` 就按这条断言。
+/// `53ba7f0` 为了让本快照变绿而改色，等于用快照换掉了可达性标准 ——
+/// 现在反过来：色值补齐到 4.5，快照记录新值并单独复查这两槽。
+/// 真源 `scripts/_ansi-group.json` 同步修正，不是只改生成物。
 #[test]
 fn dark_themes_ansi_yellow_was_left_alone() {
     const BEFORE: &[(&str, u32, u32)] = &[
@@ -137,8 +148,10 @@ fn dark_themes_ansi_yellow_was_left_alone() {
         ("kanagawa-wave", 0xC0A36E, 0xE6C384),
         ("gruvbox-material-dark", 0xD8A657, 0xDEB472),
         ("ayu-mirage", 0xFDCC60, 0xFFD165),
-        ("flexoki-dark", 0xAD8301, 0xD0A215),
-        ("solarized-dark", 0xB58900, 0x657B83),
+        // 例外一：见上方文档。
+        ("flexoki-dark", 0xB28701, 0xD0A215),
+        // 例外二：见上方文档（恢复 53ba7f0 之前的值）。
+        ("solarized-dark", 0xB58900, 0x7C929A),
         ("darcula-dark", 0xC2C300, 0xFFFF00),
     ];
     assert_eq!(BEFORE.len(), 14, "暗色套数变了，色表可能增删了套");
@@ -153,6 +166,19 @@ fn dark_themes_ansi_yellow_was_left_alone() {
             p.ansi16[SLOT_BRIGHT_YELLOW], *by,
             "{id} 的 dark brightYellow 被改动了 —— #ansi-yellow-fix 只许动亮色档"
         );
+        // 锁定两处例外本身：改完必须真的达标，否则这次修正就白做了。
+        if matches!(*id, "flexoki-dark" | "solarized-dark") {
+            for (slot, name) in [
+                (SLOT_YELLOW, "yellow"),
+                (SLOT_BRIGHT_YELLOW, "brightYellow"),
+            ] {
+                let c = contrast(p.ansi16[slot], p.tbg);
+                assert!(
+                    c >= MIN,
+                    "{id} 的 {name} 仍只有 {c:.2}:1（< {MIN}）—— 修正没生效"
+                );
+            }
+        }
     }
 }
 
