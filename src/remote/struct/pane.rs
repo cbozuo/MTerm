@@ -39,6 +39,18 @@ pub enum RemoteEvent {
     /// `Authenticating` until the UI answers through
     /// [`RemoteHandle::resolve_trust`].
     TrustRequest(TrustRequest),
+    /// The session's own picture size changed — an RDP desktop resize (asked
+    /// for with [`RemoteHandle::resize`], or forced onto the session by a
+    /// reconnect at a new size).
+    ///
+    /// It has to travel on its own because `Frame` carries the pixels and no
+    /// owner: the driver drops its last picture the moment it asks for a
+    /// resize, and the frame that follows carries the new size anyway. This
+    /// event is what keeps the row's `frame-w`/`frame-h` — and therefore the
+    /// view's letterbox and its pointer mapping — truthful during that gap,
+    /// while the tab is stopped on "reconnect…" and no frame will arrive for
+    /// a while (#rdp-resize-drop 2026-10-27).
+    Size { width: u16, height: u16 },
     /// The remote clipboard changed (VNC's server-cut-text).
     Clipboard(String),
 }
@@ -90,6 +102,11 @@ impl RemoteProtocol {
 ///
 /// Cheap to clone: it is only a set of channel senders plus a few atomics, and
 /// the callbacks capture clones.
+///
+/// The driver thread is **not** per-clone: it lives behind an `Arc<Mutex<…>>`
+/// and exactly one clone — the one the window keeps in its handle map — will ever
+/// take it, which is what [`RemoteHandle::wait_for_driver`] documents. Cloning
+/// therefore copies a handle to the same session, never a second session.
 #[derive(Clone)]
 pub struct RemoteHandle {
     tab_id: String,
@@ -105,6 +122,16 @@ pub struct RemoteHandle {
     last_size: Arc<std::sync::Mutex<(u16, u16)>>,
     /// Whether the remote desktop should track the tab size (P0-9).
     follow_tab_size: bool,
+    /// Whether the driver thread is still running, and — once it has finished —
+    /// the thread itself, so [`RemoteHandle::wait_for_driver`] can wait for the
+    /// session to be really gone (#remote-close-leftover 2026-10-27).
+    ///
+    /// `None` until the session starter attaches it. That is also the shape a
+    /// handle has when there is no thread to wait for at all (the driver was
+    /// never spawned, or a test built the handle directly), and
+    /// [`RemoteHandle::wait_for_driver`] treats the two alike: nothing to wait
+    /// for.
+    driver: Arc<std::sync::Mutex<Option<crate::remote::session::DriverThread>>>,
 }
 
 impl RemoteHandle {
@@ -130,7 +157,52 @@ impl RemoteHandle {
             trust_tx,
             last_size: Arc::new(std::sync::Mutex::new((0, 0))),
             follow_tab_size,
+            driver: Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    /// Hand over the thread that drives this session.
+    ///
+    /// Exactly once, from the starter that spawned it. The handle cannot take it
+    /// as a constructor argument because the thread is spawned *after* the
+    /// handle exists (the driver is handed clones of its senders).
+    pub fn with_driver(self, driver: crate::remote::session::DriverThread) -> Self {
+        if let Ok(mut slot) = self.driver.lock() {
+            *slot = Some(driver);
+        }
+        self
+    }
+
+    /// Wait (up to `timeout`) for the driver thread to finish, and report
+    /// whether it has.
+    ///
+    /// `true` also means "there was nothing to wait for": a session that has
+    /// already ended has no thread left, and treating that as a timeout would
+    /// turn the ordinary close of a dead tab into a warning.
+    ///
+    /// The thread is taken rather than borrowed, because joining consumes it —
+    /// and because this is the only place that will ever look at it again. A
+    /// driver that is *still* running when the bound expires is deliberately
+    /// **not** joined: that would block this UI-thread path for as long as the
+    /// server takes to acknowledge the close, which is exactly what the bound
+    /// exists to prevent. Its own `Drop` then stops it, and it notices `closed`
+    /// on its own.
+    pub fn wait_for_driver(&self, timeout: std::time::Duration) -> bool {
+        let driver = self.driver.lock().ok().and_then(|mut slot| slot.take());
+        let Some(mut driver) = driver else {
+            return true;
+        };
+        let deadline = std::time::Instant::now() + timeout;
+        while driver.is_alive() {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // The driver has finished, so joining cannot block for long — and it
+        // makes "the tab is closed" mean its sockets are closed with it.
+        driver.join();
+        true
     }
 
     pub fn tab_id(&self) -> &str {

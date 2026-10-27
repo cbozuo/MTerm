@@ -176,20 +176,29 @@ pub(super) fn wire_tab_callbacks(
             // own handle table and its own route table; both must go when the
             // tab closes, or the protocol task keeps rendering frames into a
             // pane row nobody is drawing.
+            //
+            // (#remote-close-leftover 2026-10-27) The route goes **before** the
+            // session is stopped, not after: the driver's last events (its final
+            // state, the frames it already had) are addressed by tab id, and a
+            // route that is still published until the close has finished is a
+            // route the pump keeps delivering over — into a row that `close` has
+            // already removed. Closing with no route left is also what makes the
+            // pump return once the channel empties, instead of waiting to hop
+            // onto the event loop for a tab that no longer exists.
             let remote_handles = core_close
                 .window_states
                 .borrow()
                 .get(&window_id)
                 .map(|state| state.remote_handles.clone());
+            if let Ok(mut routes) = core_close.remote_routes.lock() {
+                routes.remove(&id);
+            }
             if let Some(remote) = remote_handles.and_then(|handles| handles.borrow_mut().remove(&id)) {
                 if let Some(panes) = crate::remote::registry::panes_of(window_id) {
                     crate::remote::close_session(&remote, &panes);
                 } else {
                     remote.close();
                 }
-            }
-            if let Ok(mut routes) = core_close.remote_routes.lock() {
-                routes.remove(&id);
             }
 
             // Remove from tabs + terminals models.

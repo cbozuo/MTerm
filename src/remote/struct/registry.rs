@@ -42,6 +42,13 @@ pub struct RemotePanes {
     /// rather than in the Slint row because the view has no use for it — only
     /// the Rust-side decide handler does, and that handler runs on this thread.
     trust_requests: RefCell<HashMap<String, u64>>,
+    /// Tab id → the last desktop size the view asked for.
+    ///
+    /// Written by the same callback that drives `RemoteHandle::resize`, and read
+    /// only when a session has to be brought back to the size the tab is at
+    /// (a reconnect): the handle cannot remember it across sessions, and the
+    /// view only reports on *change* (#rdp-resize-drop 2026-10-27).
+    reported: RefCell<HashMap<String, (u16, u16)>>,
 }
 
 impl RemotePanes {
@@ -51,6 +58,7 @@ impl RemotePanes {
             rows,
             finished: RefCell::new(std::collections::HashSet::new()),
             trust_requests: RefCell::new(HashMap::new()),
+            reported: RefCell::new(HashMap::new()),
         }
     }
 
@@ -190,6 +198,18 @@ impl RemotePanes {
                 row.frame_w = i32::from(w.min(u32::from(u16::MAX)) as u16);
                 row.frame_h = i32::from(h.min(u32::from(u16::MAX)) as u16);
             }
+            RemoteEvent::Size { width, height } => {
+                // (#rdp-resize-drop 2026-10-27) The desktop size the session is
+                // moving to, before the first frame of that size exists. Only
+                // the geometry changes: the picture stays exactly as it was
+                // until the server's next frame replaces it, and `apply` writes
+                // the whole row back, so dropping the image here would be the
+                // same "frozen until reconnect" hole the driver just closed.
+                if width > 0 && height > 0 {
+                    row.frame_w = i32::from(width);
+                    row.frame_h = i32::from(height);
+                }
+            }
             RemoteEvent::State { state, message } => {
                 // The status object is the driver's own view; the event carries
                 // the snapshot it published, so the UI reads that rather than
@@ -247,6 +267,7 @@ impl RemotePanes {
     pub fn close(&self, tab_id: &str) {
         self.finished.borrow_mut().remove(tab_id);
         self.trust_requests.borrow_mut().remove(tab_id);
+        self.reported.borrow_mut().remove(tab_id);
         if let Some(index) = self.index_of(tab_id) {
             self.rows.remove(index);
         }
@@ -289,9 +310,45 @@ impl RemotePanes {
         }
     }
 
+    /// The last desktop size the view asked for, so a reconnected session can be
+    /// brought to the size the tab is at now.
+    ///
+    /// The view reports its size on every size/state change, but it de-duplicates
+    /// per handle (`RemoteHandle::resize`) and only talks to the *current*
+    /// session — after a reconnect the new handle starts with nothing, and a tab
+    /// that has not changed size since will never report again. This is the row's
+    /// copy, written by [`RemotePanes::remember_size`] from that same callback.
+    pub fn reported_size(&self, tab_id: &str) -> Option<(u16, u16)> {
+        self.reported.borrow().get(tab_id).copied()
+    }
+
+    /// Record the size the view asked this tab's session for.
+    pub fn remember_size(&self, tab_id: &str, width: u16, height: u16) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        self.reported
+            .borrow_mut()
+            .insert(tab_id.to_string(), (width, height));
+    }
+
     /// Whether the session has ended, so the view can offer a reconnect.
     pub fn is_finished(&self, tab_id: &str) -> bool {
         self.finished.borrow().contains(tab_id)
+    }
+
+    /// Forget every tab at once, for a window that is going away.
+    ///
+    /// The per-tab [`RemotePanes::close`] is what a closing *tab* calls; a
+    /// closing window has no tab events left to receive. What must not outlive
+    /// it is the three maps, which are keyed by tab id: a tab id reused after a
+    /// reconnect would otherwise find a stale prompt id or size, and
+    /// `is_finished` would answer for a session that no longer exists.
+    pub fn close_all(&self) {
+        self.finished.borrow_mut().clear();
+        self.trust_requests.borrow_mut().clear();
+        self.reported.borrow_mut().clear();
+        self.rows.set_vec(Vec::new());
     }
 }
 
@@ -438,6 +495,29 @@ mod tests {
         // able to resolve the new session's prompt.
         panes.restart("tab-1");
         assert_eq!(panes.trust_request_id("tab-1"), None);
+    }
+
+    #[test]
+    fn a_frame_size_is_known_before_the_first_bite_of_the_new_desktop() {
+        // (#rdp-resize-drop 2026-10-27) The driver reports the size it is
+        // moving to as soon as it asks for it, because the next frame may be a
+        // whole reconnect away. The old picture stays: a blank tab in between is
+        // the symptom being fixed.
+        let panes = RemotePanes::new(Rc::new(VecModel::default()));
+        panes.open("tab-1", "host", "rdp", false);
+        panes.apply(RemoteEvent::Frame(image::RgbaImage::new(1280, 720)), "tab-1");
+        panes.apply(RemoteEvent::Size { width: 2560, height: 1400 }, "tab-1");
+        let row = panes.rows.row_data(0).expect("the pane is there");
+        assert_eq!((row.frame_w, row.frame_h), (2560, 1400));
+        assert!(
+            row.image.size().width > 0,
+            "the previous picture must survive until a new frame replaces it"
+        );
+        // A degenerate size (a collapsed tab on the way through) changes
+        // nothing: it would make the pointer mapping divide by zero.
+        panes.apply(RemoteEvent::Size { width: 0, height: 0 }, "tab-1");
+        let row = panes.rows.row_data(0).expect("the pane is there");
+        assert_eq!((row.frame_w, row.frame_h), (2560, 1400));
     }
 
     #[test]

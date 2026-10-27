@@ -313,6 +313,11 @@ use crate::terminal::{windows_process_ctrl_release, CtrlKeySide};
 use crate::ui::*;
 use crate::webdav::WebDavAcceptAnyCertVerifier;
 
+/// The remote-desktop pane table, imported by name because `app` reaches for it
+/// from handlers, and a fully qualified path at each of them would bury the one
+/// thing the line is doing.
+use crate::remote::registry::panes_of;
+
 /// Open a tab for a built-in RDP or VNC session and start its client.
 ///
 /// Deliberately a separate function from `on_connect_session`'s terminal path
@@ -348,8 +353,14 @@ fn connect_remote_tab(
     let tab_title = session.name.clone();
     let kind = crate::remote::tab_kind(session);
 
+    // (#remote-close-leftover 2026-10-27) The starter registers the route
+    // before it spawns the pump, so the driver's first state cannot be lost in
+    // the gap between "the session exists" and "the tab exists". What it cannot
+    // do is create the pane row — that needs the tab — so an early state is
+    // remembered here and re-announced once the row is there.
     let ctx = crate::remote::session::StartCtx {
         routes: remote_routes.clone(),
+        window_id: Some(window_id),
     };
     let handle = match crate::remote::start(session, &tab_id, &ctx) {
         Ok(handle) => handle,
@@ -366,14 +377,6 @@ fn connect_remote_tab(
         }
     };
 
-    // The route has to exist before the pump's first event, which is why it is
-    // registered here rather than by the session starter.
-    if let Ok(mut routes) = remote_routes.lock() {
-        routes.insert(
-            tab_id.clone(),
-            Arc::new(Mutex::new(crate::remote::pump::RemoteRoute { window_id })),
-        );
-    }
     remote_panes.open(&tab_id, &tab_title, kind, session.vnc_view_only);
     remote_handles
         .borrow_mut()
@@ -470,8 +473,18 @@ fn respawn_remote_tab(
     // Stop the old session first, so its driver stops reading input and its
     // pump stops delivering. `close()` is idempotent, so a session that ended
     // on its own — the usual case here — is not disturbed by it.
+    //
+    // (#remote-close-leftover 2026-10-27) It is then **waited for**, not merely
+    // asked: a reconnect that starts while the old TCP session is still closing
+    // is how a single-session Windows box ends up answering "用户的另一个会话被阻止
+    // 并且通知了本地会话管理器" — the old session is still registered when the new
+    // logon arrives. `wait_for_driver` is bounded, and returns at once for the
+    // usual case (the session already ended on its own).
     if let Some(previous) = remote_handles.borrow_mut().remove(tab_id) {
         previous.close();
+        if !previous.wait_for_driver(std::time::Duration::from_secs(2)) {
+            tracing::warn!("previous remote desktop for {tab_id} is still stopping; reconnecting anyway");
+        }
     }
     // Re-inserted rather than assumed: a tab dragged to another window since it
     // connected has had this entry rewritten, and the new pump has to deliver
@@ -484,12 +497,30 @@ fn respawn_remote_tab(
     }
     remote_panes.restart(tab_id);
 
+    // The route is already registered, so the starter can publish at once; a
+    // second registration of the same (tab, window) pair is a no-op.
     let ctx = crate::remote::session::StartCtx {
         routes: remote_routes.clone(),
+        window_id: Some(window_id),
     };
     match crate::remote::start(session, tab_id, &ctx) {
         Ok(handle) => {
-            remote_handles.borrow_mut().insert(tab_id.to_string(), handle);
+            remote_handles
+                .borrow_mut()
+                .insert(tab_id.to_string(), handle.clone());
+            // A restart is a fresh connection, and the window may have been
+            // resized while the session was dead. The tab's own reported size is
+            // de-duplicated per handle, so a new handle would start from zero
+            // and — more importantly — the session would connect at the size it
+            // was told once, not at the size the tab is now. The pane row knows
+            // the last size the view reported; asking for it again before the
+            // session is up is safe because the driver holds a resize until the
+            // desktop exists (#rdp-resize-drop 2026-10-27).
+            if let Some((w, h)) = panes_of(window_id)
+                .and_then(|panes| panes.reported_size(tab_id))
+            {
+                handle.resize(w, h);
+            }
         }
         Err(reason) => {
             // Same contract as the first connect: a session that cannot start
@@ -700,6 +731,14 @@ impl WindowCloser {
         }
         // 先让所有 worker 停下再拆运行时/事件循环;清空映射也让后续重复的
         // 关闭请求看到「没有活动会话」而直接放行。
+        let remotes = self
+            .core
+            .window_states
+            .borrow()
+            .get(&self.window_id)
+            .map(|st| st.remote_handles.clone())
+            .unwrap_or_default();
+        let panes = panes_of(self.window_id);
         teardown_window(
             self.window_id,
             &self.handles,
@@ -707,6 +746,9 @@ impl WindowCloser {
             &self.proc_weak,
             &self.sys_weak,
             &self.editor_weak,
+            &remotes,
+            &self.core.remote_routes,
+            panes.as_ref(),
         );
         // (#window-isolation 2026-10-12) 关闭隔离：关一个窗口只收尾该窗口，
         // 其余窗口继续存活（用户反馈：关一个不该把整个应用带走）。仅当最后
@@ -1582,6 +1624,9 @@ fn teardown_window(
     proc_weak: &slint::Weak<ProcWindow>,
     sys_weak: &slint::Weak<SystemInfoWindow>,
     editor_weak: &slint::Weak<EditorWindow>,
+    remote_handles: &Rc<RefCell<HashMap<String, crate::remote::RemoteHandle>>>,
+    remote_routes: &crate::remote::pump::RemoteRoutes,
+    remote_panes: Option<&Rc<crate::remote::RemotePanes>>,
 ) {
     abort_window_prompts(window_id);
     {
@@ -1596,6 +1641,28 @@ fn teardown_window(
             handle.close();
         }
         sftp.clear();
+    }
+    // (#remote-close-leftover 2026-10-27) Built-in remote desktops are neither
+    // `handles` nor `sftp_handles`: they live in their own map, keyed by tab id.
+    // Nothing used to touch that map here, so closing a window dropped the map
+    // (and with it the senders) while the RDP/VNC driver threads kept running —
+    // one thread, runtime and TCP session per tab, each only noticing when its
+    // next send failed. Closing the handles first is what makes the driver take
+    // its graceful path (disconnect PDU) instead of waiting to be dropped.
+    let remote_tab_ids: Vec<String> = remote_handles.borrow().keys().cloned().collect();
+    remote_handles.borrow_mut().clear();
+    if let Ok(mut routes) = remote_routes.lock() {
+        // The rows are gone with the window, and so is every `RemoteEvent` that
+        // was still queued for them: a pump that kept a route would hop onto the
+        // event loop for a tab nobody can see. A tab dragged to another window
+        // last had its route rewritten, and that entry is not this window's —
+        // hence the id list from this window's own handles, not the routes.
+        for id in remote_tab_ids {
+            routes.remove(&id);
+        }
+    }
+    if let Some(panes) = remote_panes {
+        panes.close_all();
     }
     if let Some(w) = proc_weak.upgrade() {
         let _ = w.hide();
@@ -5853,6 +5920,16 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
         let ev_registry = registry.clone();
         let ev_core = core.clone();
         let ev_window_size_tracking_ready = window_size_tracking_ready.clone();
+        // (#remote-close-leftover 2026-10-27) 内置远程桌面的层：关窗时它们的
+        // 句柄/路由/行也必须跟着走，否则 RDP/VNC 驱动线程会一直活着。
+        let ev_remote_handles = ev_core
+            .window_states
+            .borrow()
+            .get(&window_id)
+            .map(|st| st.remote_handles.clone())
+            .unwrap_or_default();
+        let ev_remote_routes = ev_core.remote_routes.clone();
+        let ev_remote_panes = panes_of(window_id);
         let ev_pending_window_size_restore = pending_window_size_restore.clone();
         let ev_position_pinned = window_position_pinned.clone();
         // (#close-behavior) 原生关闭请求要填确认卡的会话清单,需拿到标签模型。
@@ -6315,6 +6392,9 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
                             &ev_proc_weak,
                             &ev_sys_weak,
                             &ev_editor_weak,
+                            &ev_remote_handles,
+                            &ev_remote_routes,
+                            ev_remote_panes.as_ref(),
                         );
                         // (#window-isolation 2026-10-12) 关闭隔离：仅最后一个
                         // 窗口关闭才退出整个应用；其余窗口刷新标题。
@@ -11962,6 +12042,13 @@ fn wire_key_input(
                 let (Ok(width), Ok(height)) = (u16::try_from(width), u16::try_from(height)) else {
                     return;
                 };
+                // (#rdp-resize-drop 2026-10-27) Kept on the row as well as sent:
+                // after a reconnect the tab reports its size only if it *changes*,
+                // so the new session would otherwise never learn the size the tab
+                // is at. The pane table is where a reconnect can still find it.
+                if let Some(panes) = panes_of(window_id) {
+                    panes.remember_size(&id, width, height);
+                }
                 handle.resize(width, height);
             });
         }
@@ -11988,7 +12075,7 @@ fn wire_key_input(
                 let Some(session) = store.borrow().get(&session_id).cloned() else {
                     return;
                 };
-                let Some(panes) = crate::remote::registry::panes_of(window_id) else {
+                let Some(panes) = panes_of(window_id) else {
                     return;
                 };
                 // A tab only ever hosts what its mode says it hosts; a session
@@ -12024,7 +12111,7 @@ fn wire_key_input(
                     // silently fail to remember the certificate. The id is read
                     // from the pane table rather than carried through the view,
                     // which has no use for it.
-                    let Some(panes) = crate::remote::registry::panes_of(window_id) else {
+                    let Some(panes) = panes_of(window_id) else {
                         return;
                     };
                     let Some(request_id) = panes.trust_request_id(&id) else {

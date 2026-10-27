@@ -534,6 +534,7 @@ pub(super) fn close_window_now(core: &Rc<AppCore>, window_id: u64) {
     if let Some(win) = st.weak.upgrade() {
         save_layout(&win, &core.store);
         clear_zen_on_close(&win, &core.store);
+        let panes = crate::remote::registry::panes_of(window_id);
         teardown_window(
             window_id,
             &st.handles,
@@ -541,6 +542,9 @@ pub(super) fn close_window_now(core: &Rc<AppCore>, window_id: u64) {
             &st.proc_weak,
             &st.sys_weak,
             &st.editor_win.as_weak(),
+            &st.remote_handles,
+            &core.remote_routes,
+            panes.as_ref(),
         );
         let _ = win.hide();
     }

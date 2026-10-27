@@ -508,6 +508,34 @@ pub struct ArboardClipboard;                   // 生产实现（Linux 带 wayla
 ```
 协议侧的 cliprdr 事件仍由 ironrdp 的 `cliprdr` feature 处理，`ClipboardPort` 只做 MTerm ↔ ironrdp 的胶水。剪贴板操作必须**切回 UI 线程**（`invoke_from_event_loop`），arboard 的 X11/Wayland 后端在非 UI 线程不安全。
 
+### 3.8 窗口最大化 / 关 Tab 的两个坑（#rdp-resize-drop、#remote-close-leftover，2026-10-27）
+
+这两条是实测出来的，不是推测；改 `impls/client.rs` 或 `impls/session.rs` 前先读。
+
+**最大化触发断开。** `RdpClient::run` 处理 `RdpInputEvent::Resize` 有两条路：在活动会话里做
+Deactivate-Reactivation（`encode_resize` 成功时），或者 —— 服务端不接受时 ——
+**结束活动会话、带着新尺寸重跑整个连接循环**（`RdpControlFlow::ReconnectWithNewSize`）。
+第二条路不会发 `Terminated`，驱动只能看到一段"安静"。旧驱动在这里犯了三个错：
+
+1. **拿到 resize 就先丢掉帧缓冲**。重连要走完整握手，这期间不会有任何帧，于是 Tab 白屏直到重连成功；网络一差看起来就是"断开了"。
+2. **窗口最大化一口气发来两次 resize**（尺寸变化 + DPI 变化），驱动全部写进 ironrdp 的 input 队列；而连接阶段与 Deactivate-Reactivation 阶段这个队列**根本没人读**，两条 resize 会在重激活之后一起执行 —— 于是又重启一次会话。
+3. **`size` 同时表示"UI 想要的尺寸"和"会话实际尺寸"**。resize 失败后 `size` 已经是新值，回到原尺寸的请求被当成 no-op 丢掉，会话从此卡在错误的分辨率上，重连也救不回来。
+
+现在：帧缓冲只在收到新帧时替换；`applied_size`（由每一帧的尺寸回写）与 `size`（UI 想要）分开；
+resize 在途期间**输入全部延后**（不是丢弃），resize 完成（收到帧）或 45s 超时才放行；
+请求的尺寸先以 `RemoteEvent::Size` 发给 UI，让指针映射在像素到达前就是对的。
+
+**关 Tab 退不干净。** `close()` 只是一个原子标志。驱动看到它才发 `Close`（graceful shutdown），
+最多等 400ms 服务端应答，然后 drop 客户端、关 socket、返回。而 Tab 侧在置标志后立刻删行、
+删路由 —— 驱动线程、它自己的 current-thread runtime、以及那条 TCP 连接都还在。后果有两个：
+再连时服务端还挂着旧会话（单会话策略下弹「用户的另一个会话被阻止并且通知了本地会话管理器」），
+以及关窗路径根本没人去关这些会话（`handles` / `sftp_handles` 里没有它们）。
+
+现在：驱动线程被 `DriverThread` 收着（存活标志 + `JoinHandle`），`close_session` 会
+**等**它收尾（上限 2s，已结束的会话立即返回）；`respawn_remote_tab` 重连前也等旧的走完；
+关窗路径（`teardown_window`）会一并清掉句柄、路由和窗格行；Tab 关闭时先删路由再停会话，
+这样最后的 `State`/`Frame` 事件不会往已删除的窗格里投。
+
 ---
 
 ## 4. 数据模型
