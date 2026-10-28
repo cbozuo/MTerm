@@ -30,12 +30,13 @@ import { Icon } from "icons.slint";
 //   Slint 1.18 的 string 没有 find/substr，高亮位置只能在 Rust 算（高保真 §8）。
 //   hit 为空 = 无搜索命中，行内直接画 cmd 整串。
 export struct HistoryRow {
-    cmd: string,        // 命令原文（run / copy / delete / 全文卡用它）
+    cmd: string,        // 命令原文（run / fill / copy / delete / pin 都用它，多行原样）
+    display: string,    // 单行化展示版（\r\n 压成空格，Rust 侧算好；行内 Text 只画它）
     pre: string,        // 命中前的片段
     hit: string,        // 命中片段（accent + 加粗，不加底色块）
     post: string,       // 命中后的片段
-    uses-label: string, // 「7 次」
-    time-label: string, // 「 · 4 分钟前」（分隔符在 Rust 侧拼好）
+    uses-label: string, // 「7 次」（对齐列：右对齐，个位成竖线）
+    time-label: string, // 「 · 4 分钟前」（分隔符在 Rust 侧拼好；对齐列：左对齐）
     pinned: bool,
 }
 
@@ -149,6 +150,10 @@ component HistVerb inherits Text {
 component HistSortBtn inherits Rectangle {
     in property <string> label;
     in property <bool> on: false;
+    // 自身内容的准确宽（文字 + 左右 7 内衬）：外层分段盒按两枚之和收宽。
+    // ★ 不能用 preferred-width —— 它只算文字自然宽，不含 width 绑定里的
+    //   内衬，盒会比按钮总宽窄 28px、按钮溢出。
+    out property <length> pref-w: lbl.preferred-width + 14px;
     callback clicked();
 
     height: 18px;
@@ -195,8 +200,8 @@ export component HistoryPanel inherits Rectangle {
     callback search(string);
     callback filter-changed(int);
     callback sort-changed(int);
-    callback run(string);
-    callback fill(string);
+    callback run(string);   // 立即执行（行尾 ▶ / 回车）：发往终端
+    callback fill(string);  // 填入命令栏（点行 / Tab）：不执行
     callback copy(string);
     callback delete(string);
     callback pin(string, bool);
@@ -426,7 +431,8 @@ export component HistoryPanel inherits Rectangle {
                                         root.selected = Math.max(0, root.selected - 8);
                                         accept
                                     } else if (e.text == Key.Return) {
-                                        // 空态时 ↵ 不做事也不放行——避免把半截命令发出去
+                                        // 回车 = 立即执行选中项（发往终端）；填入
+                                        // 用 Tab 或点行 —— 两个动作必须分开。
                                         if (root.visible-count() > 0) {
                                             root.run(root.rows[root.selected].cmd);
                                         }
@@ -507,15 +513,19 @@ export component HistoryPanel inherits Rectangle {
                     }
                 }
 
-                // 过滤胶囊（「看哪些」）：槽撑满高，槽内垂直居中胶囊排（铁律 ③）
+                // 过滤胶囊（「看哪些」）：槽撑满高（铁律 ③）。
+                // ★ 槽必须给显式宽 = 胶囊排的 preferred：槽里只有 y 定位的
+                //   绝对定位子元素不算 preferred，布局会把槽压成 0 宽、胶囊
+                //   靠自身宽溢出画 —— 和排序分段一起把行末控件顶出面板
+                //   （实测「最近/常用」被裁成半个「近」字）。
                 Rectangle {
                     height: parent.height;
+                    width: pill-row.preferred-width;
                     horizontal-stretch: 0;
 
-                    HorizontalLayout {
+                    pill-row := HorizontalLayout {
                         y: (parent.height - self.height) / 2;
                         height: 24px;
-                        width: parent.width;
                         spacing: 4px;
 
                         HistChip {
@@ -539,14 +549,18 @@ export component HistoryPanel inherits Rectangle {
                 Rectangle { height: parent.height; horizontal-stretch: 1; }
 
                 // 排序分段（「按什么排」——与过滤分两组是高保真 §7 决策 05）。
-                // 槽撑满高，槽内垂直居中 24px 的分段盒（铁律 ③）。
+                // 分段盒宽 = 两枚段钮 pref-w 之和 + padding 4（高保真 .pb-sort
+                // 是 flex:0 0 auto 收内容宽 —— ★ 不能写 width: parent.width：
+                // 循环引用塌成 0 宽，段钮溢出被面板 clip 裁成「半圆」）。
+                // 槽同样给显式宽（同过滤胶囊的坑）。
                 Rectangle {
                     height: parent.height;
+                    width: sort-box.preferred-width;
                     horizontal-stretch: 0;
 
-                    Rectangle {
+                    sort-box := Rectangle {
                         y: (parent.height - self.height) / 2;
-                        width: parent.width;
+                        width: sort-recent.pref-w + sort-freq.pref-w + 4px;
                         height: 24px;
                         border-radius: 12px;
                         border-width: 1px;
@@ -559,12 +573,12 @@ export component HistoryPanel inherits Rectangle {
                             padding: 2px;
                             spacing: 0px;
 
-                            HistSortBtn {
+                            sort-recent := HistSortBtn {
                                 label: @tr("Recent");
                                 on: root.sort == 0;
                                 clicked => { root.sort = 0; root.sort-changed(0); root.selected = 0; }
                             }
-                            HistSortBtn {
+                            sort-freq := HistSortBtn {
                                 label: @tr("Most used");
                                 on: root.sort == 1;
                                 clicked => { root.sort = 1; root.sort-changed(1); root.selected = 0; }
@@ -669,9 +683,16 @@ export component HistoryPanel inherits Rectangle {
                         height: idx < root.list-rows ? root.row-h : 0px;
                         visible: idx < root.list-rows;
                         border-radius: Theme.radius-sm;
+                        // ★ 行悬停 ≠ 只看行自己的 TouchArea：动作键（ HistAct 的
+                        //   TouchArea）盖在行 TouchArea 上面，鼠标一进按钮行的
+                        //   has-hover 就翻 false —— 不并入的话鼠标挪到键上，
+                        //   行背景当场消失、「次数 · 时间」透出来（用户截图）。
+                        //   HistAct.hovering 已为此暴露（见组件注释）。
+                        property <bool> row-hover: r-ta.has-hover || a-run.hovering
+                            || a-copy.hovering || a-pin.hovering || a-del.hovering;
                         background: idx == root.selected
                             ? Theme.accent-soft
-                            : (r-ta.has-hover ? Theme.bg-hover : transparent);
+                            : (row-hover ? Theme.bg-hover : transparent);
                         animate background { duration: 100ms; }
 
                         // 选中态左缘 2px accent 竖条（上下各留 6）
@@ -686,12 +707,18 @@ export component HistoryPanel inherits Rectangle {
 
                         r-ta := TouchArea {
                             mouse-cursor: default;
+                            // 点行 = 把命令填进命令栏（**不执行**）；立即执行走
+                            // 行尾 ▶ 或回车 —— 面板是命令栏的附件，点了命令应
+                            // 该先回到命令栏里（用户口径 2026-10-28）。
                             clicked => {
                                 root.selected = idx;
-                                root.run(r.cmd);
+                                root.fill(r.cmd);
                             }
                             changed has-hover => {
-                                // 悬停全文卡：只在被省略号截断的行上出现（§2 ②）
+                                // 悬停全文卡：只在被省略号截断的行上出现（§2 ②）。
+                                // ★ 判 row-hover 不判 has-hover：鼠标从命令区挪到
+                                //   动作键上行的 has-hover 会翻 false，卡片不能因此
+                                //   闪没（row-hover 已并入按钮 hover）。
                                 if (self.has-hover && row-clip) {
                                     root.hover-pop-idx = idx;
                                     root.hover-pop-text = r.cmd;
@@ -717,12 +744,14 @@ export component HistoryPanel inherits Rectangle {
                             }
 
                             // 命令原文：等宽 12.5px；命中段 accent + 加粗（无底色块）。
+                            // ★ 只画 r.display（单行化展示版，Rust 侧压平）——
+                            //   画原文的话多行命令会把 38px 行盒撑爆。
                             // 吃掉全部剩余宽度 → 元信息被推到最右。
                             cmd-box := HorizontalLayout {
                                 horizontal-stretch: 1;
                                 spacing: 0px;
                                 if r.hit == "" : Text {
-                                    text: r.cmd;
+                                    text: r.display;
                                     color: Theme.text-primary;
                                     font-family: Theme.font-mono;
                                     font-size: 12.5px;
@@ -756,35 +785,58 @@ export component HistoryPanel inherits Rectangle {
                                 }
                             }
 
-                            // 元信息两段：「次数」与「时间」的视觉权重随排序档对调
-                            // （高保真 §4 —— 让「这一刻按什么排」在界面上自解释）；
+                            // 元信息两列（高保真 §4：次数/时间的视觉权重随排序档
+                            // 对调）—— 实际落地加一条用户口径（2026-10-29）：
+                            // **跨行对齐**。设计稿按内容流排，每行「次数」宽窄
+                            // 不一、「 · 时间」起点也参差；落地改成两列定宽槽：
+                            // uses 列右对齐（个位对齐成竖线），time 列左对齐
+                            //（「·」连成一条竖线）。槽宽 44/78 容下
+                            //「999 次 · 99 天前」，超出概率低且 elide 兜底。
                             // 悬停时整段淡出给动作键让位。stretch 钉在 0，
                             // 才会贴在行右缘而不是分走剩余宽度。
-                            Text {
-                                text: r.uses-label;
-                                color: root.sort == 1
-                                    ? Theme.accent-solid
-                                    : Theme.text-muted.with-alpha(0.55);
-                                font-family: Theme.font-mono;
-                                font-size: 10.5px;
-                                font-weight: root.sort == 1 ? Theme.fw-strong : Theme.fw-regular;
-                                vertical-alignment: center;
+                            Rectangle {
+                                width: 44px;
+                                height: parent.height;
                                 horizontal-stretch: 0;
-                                opacity: r-ta.has-hover ? 0 : 1;
+                                opacity: row-hover ? 0 : 1;
                                 animate opacity { duration: 100ms; }
+
+                                Text {
+                                    text: r.uses-label;
+                                    color: root.sort == 1
+                                        ? Theme.accent-solid
+                                        : Theme.text-muted.with-alpha(0.55);
+                                    font-family: Theme.font-mono;
+                                    font-size: 10.5px;
+                                    font-weight: root.sort == 1 ? Theme.fw-strong : Theme.fw-regular;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: right;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    overflow: elide;
+                                }
                             }
 
-                            Text {
-                                text: r.time-label;
-                                color: root.sort == 1
-                                    ? Theme.text-muted.with-alpha(0.6)
-                                    : Theme.text-muted;
-                                font-family: Theme.font-mono;
-                                font-size: 10.5px;
-                                vertical-alignment: center;
+                            Rectangle {
+                                width: 78px;
+                                height: parent.height;
                                 horizontal-stretch: 0;
-                                opacity: r-ta.has-hover ? 0 : 1;
+                                opacity: row-hover ? 0 : 1;
                                 animate opacity { duration: 100ms; }
+
+                                Text {
+                                    text: r.time-label;
+                                    color: root.sort == 1
+                                        ? Theme.text-muted.with-alpha(0.6)
+                                        : Theme.text-muted;
+                                    font-family: Theme.font-mono;
+                                    font-size: 10.5px;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: left;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    overflow: elide;
+                                }
                             }
                         }
 
@@ -794,13 +846,15 @@ export component HistoryPanel inherits Rectangle {
                         probe := Text {
                             visible: false;
                             height: 0px;
-                            text: r.cmd;
+                            text: r.display;
                             font-family: Theme.font-mono;
                             font-size: 12.5px;
                         }
 
                         // 悬停动作键：右缘 6 / 垂直居中一条 24px，四枚键 + 2px 缝
-                        //（▶ 执行 · ⧉ 复制 · 图钉 · ⌫ 删除；绝对定位，不推动文字）。
+                        //（▶ 立即执行 · ⧉ 复制 · 图钉 · ⌫ 删除；绝对定位，不推动文字）。
+                        // ★ 点行只填入命令栏（见 r-ta），「立即运行」就是这枚 ▶
+                        //   和回车 —— 两个动作在界面上各有其位（用户口径）。
                         // ★ 动作键只跟 hover 走，不跟选中走（§4 ②）；透明度 100ms
                         //   淡入淡出（高保真 .pb-acts transition），不放 if 里硬切。
                         //   不可见态不会误收点击：点进这 102px 必然先 hover 到行。
@@ -809,11 +863,9 @@ export component HistoryPanel inherits Rectangle {
                             y: (parent.height - self.height) / 2;
                             width: 102px;
                             height: 24px;
-                            // 显隐 = 行 hover ∪ 任一动作键 hover：鼠标挪到按钮上时
-                            // 行的 has-hover 会翻 false（按钮的 TouchArea 在上层），
-                            // 不并入按钮的话整条键会当场消失（用户实测踩过）。
-                            opacity: (r-ta.has-hover || a-run.hovering || a-copy.hovering
-                                || a-pin.hovering || a-del.hovering) ? 1 : 0;
+                            // 显隐走 row-hover（行 hover ∪ 任一动作键 hover），
+                            // 与行背景/meta 淡出同一条件 —— 三者必须同步。
+                            opacity: row-hover ? 1 : 0;
                             animate opacity { duration: 100ms; }
 
                             HorizontalLayout {
@@ -894,7 +946,11 @@ export component HistoryPanel inherits Rectangle {
                         }
                         HorizontalLayout {
                             spacing: 3px;
-                            HistKey { label: "↵"; }
+                            // （#hist-keycap-enter 2026-10-29）键帽字用 Theme.font-mono
+                            //（0xProto 等），链里没有 ↵（U+21B5）字形 → 渲染成
+                            // 竖条 fallback（用户截图）。↑↓ 同链却正常（多数等宽
+                            // 字体收了箭头没收回车符）。改用「Enter」文字键帽。
+                            HistKey { label: "Enter"; }
                             HistVerb { label: @tr("Run"); }
                         }
                         HorizontalLayout {
@@ -932,7 +988,7 @@ export component HistoryPanel inherits Rectangle {
                             spacing: 3px;
                             HistKey { label: "Tab"; }
                             HistVerb { label: @tr("Toggle"); }
-                            HistKey { label: "↵"; }
+                            HistKey { label: "Enter"; }
                             HistVerb { label: @tr("OK"); }
                         }
                     }
@@ -954,14 +1010,16 @@ export component HistoryPanel inherits Rectangle {
 
                 // 清空入口：低权重文字钮，悬停才铺 danger（§10 ①）；
                 // 没有可清空条目（只剩置顶 / 空历史）时压暗禁用。
-                // 槽撑满高，槽内垂直居中 18px 钮（铁律 ③）。
+                // 宽 = 文字自然宽 + 左右 6（高保真 .clear-all padding）——
+                // ★ 不能写 width: parent.width：槽没有 own preferred 宽，
+                //   绑回自身 = 循环塌成 0 宽，按钮整个看不见（用户截图）。
                 if !root.confirming : Rectangle {
                     height: parent.height;
                     horizontal-stretch: 0;
 
                     Rectangle {
                         y: (parent.height - self.height) / 2;
-                        width: parent.width;
+                        width: clr-lbl.preferred-width + 12px;
                         height: 18px;
                         border-radius: 3px;
                         opacity: root.total-count > root.pinned-count ? 1.0 : 0.4;
@@ -1028,6 +1086,8 @@ export component HistoryPanel inherits Rectangle {
     }
 
     // ── ⑤ 撤销/回执浮条（压在页脚上方，不占布局）──────────────────────
+    // 用户口径（2026-10-29）：文字与撤销钮在条内**居中**排（左 11/右 6 的
+    // 不对称内衬是高保真稿的排版残留，按钮明显偏右）；浮条横向居中于面板。
     if root.undo-visible : Rectangle {
         x: (parent.width - self.width) / 2;
         y: parent.height - 28px - 36px;
@@ -1044,8 +1104,7 @@ export component HistoryPanel inherits Rectangle {
         undo-row := HorizontalLayout {
             width: parent.width;
             height: parent.height;
-            padding-left: 11px;
-            padding-right: 6px;
+            alignment: center;
             spacing: 9px;
 
             Text {

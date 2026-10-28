@@ -2868,6 +2868,17 @@ export component TerminalView inherits Rectangle {
                 }
             }
 
+            // (#hist-outside-close 2026-10-28) 命令栏自身的「点外关闭」层：
+            // 上面的 backdrop 只盖终端区，面板开着时点命令栏（输入框/空白/
+            // 按钮）会穿进控件而不是关面板（用户反馈①）。放在 HorizontalLayout
+            // 之后（z 序盖过输入框与按钮），第一次点击只负责关闭 —— 与点
+            // 终端区同款手感；面板上点搜索框不受影响（面板是独立实例，
+            // 不在这层下面）。
+            if root.hist-open : TouchArea {
+                x: 0; y: 0; width: parent.width; height: parent.height;
+                clicked => { root.hist-open = false; }
+            }
+
             // ── (#cmd-history-panel 2026-10-27) 历史命令面板 ──────────────
             // 向上展开、右缘贴命令栏内距 10、底边贴栏上沿 6。宽度上限 560
             // （装得下搜索框 + 两组控件 + 行内动作），窄窗按栏宽收。
@@ -2897,7 +2908,11 @@ export component TerminalView inherits Rectangle {
                     root.focus-pending = true;
                 }
                 fill(cmd) => {
+                    // 点行/Tab = 填入命令栏并**收起面板**：用户口径「点击命令，
+                    // 应该在命令栏里面显示」—— 填完回到命令栏继续编辑。
+                    // 历史游标一并复位，免得下一次 ↑ 从半路开始。
                     cmd-input.text = cmd;
+                    root.history-cursor = -1;
                     root.hist-open = false;
                     cmd-input.focus();
                 }

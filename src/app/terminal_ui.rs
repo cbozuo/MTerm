@@ -95,6 +95,8 @@ fn split_hit(cmd: &str, q: &str) -> (String, String, String) {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct HistoryRowData {
     pub cmd: String,
+    /// 单行化展示版（`\r`/`\n` 压成空格）：只给行内 Text 画，动作全走 cmd 原文。
+    pub display: String,
     /// 命中高亮三段：pre + hit + post 拼回 = cmd（hit 为空 = 无搜索命中）。
     pub pre: String,
     pub hit: String,
@@ -143,14 +145,20 @@ pub(super) fn history_rows(
     picked
         .into_iter()
         .map(|(_, e)| {
-            // 无命中时 pre/hit/post 全空，UI 直接画 cmd 整串（省一个 Text 三重奏）。
+            // 展示版单行化：行高 38px 锁死（高保真 §4），命令若带换行（heredoc/
+            // 多行粘贴），Text 遇 `\n` 会画出多行把行盒撑爆、叠到下一行（用户
+            // 截图）。Text 只画 display；**cmd 保留原文**，执行/填入/删除/
+            // 复制/置顶全部用原文 —— 否则填进命令栏的 heredoc 会被压扁。
+            let display = e.cmd.replace(['\r', '\n'], " ");
+            // 无命中时 pre/hit/post 全空，UI 直接画 display 整串（省一个 Text 三重奏）。
             let (pre, hit, post) = if q.is_empty() {
                 (String::new(), String::new(), String::new())
             } else {
-                split_hit(&e.cmd, &q)
+                split_hit(&display, &q)
             };
             HistoryRowData {
                 cmd: e.cmd.clone(),
+                display,
                 pre,
                 hit,
                 post,
@@ -177,6 +185,7 @@ pub(super) fn history_row_model(
         .into_iter()
         .map(|r| crate::ui::HistoryRow {
             cmd: r.cmd.into(),
+            display: r.display.into(),
             pre: r.pre.into(),
             hit: r.hit.into(),
             post: r.post.into(),

@@ -146,6 +146,7 @@ fn hist_rows(specs: &[(&str, u32, bool)]) -> ModelRc<HistoryRow> {
         .iter()
         .map(|(cmd, uses, pinned)| HistoryRow {
             cmd: (*cmd).into(),
+            display: (*cmd).into(),
             pre: "".into(),
             hit: "".into(),
             post: "".into(),
@@ -633,6 +634,7 @@ fn only_visible_rows_are_drawn() {
         .iter()
         .map(|(cmd, uses, pinned)| HistoryRow {
             cmd: cmd.clone().into(),
+            display: cmd.clone().into(),
             pre: "".into(),
             hit: "".into(),
             post: "".into(),
