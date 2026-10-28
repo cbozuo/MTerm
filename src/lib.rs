@@ -8,6 +8,8 @@ pub mod allocator;
 pub mod app;
 pub mod automation;
 pub mod cli;
+// (#cmd-hint 2026-10-27) 命令提示框领域层（阶段判定 / 候选生成 / 内置命令表）。
+pub mod command_hint;
 pub mod config;
 pub mod datastore;
 pub mod i18n;

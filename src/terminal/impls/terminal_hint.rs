@@ -6,7 +6,7 @@
 //!
 //! P1 要回答的问题只有一个：**「用户现在在提示符后面敲了什么」**。
 //! MTerm 原来完全没有这个信息 —— 按键在 `send-key` 里逐字节发往 PTY，
-//! `ime-input` 用完即清（`ui/terminal_view.slint:1938-1954`），也没有
+//! `ime-input` 用完即清（`ui/terminal_view.slint`），也没有
 //! OSC 133 这种行边界标记（只有命令**跑完**才回来的 OSC 697）。
 //!
 //! ## 做法：不信按键，信回显
@@ -35,6 +35,8 @@
 //! `passwd` 的密码提示就是这种）。此时立刻把状态标成 `Muted`，并让调用方
 //! 清空提示框 —— 绝不在密码旁边显示历史命令。
 
+use super::line::{LineSnapshot, LineState};
+
 /// 提示符终止符。收得比较全但不含中文全角符号（那些在 CJK 提示符里位置不定）。
 const PROMPT_TERMINATORS: &[char] = &['$', '#', '%', '>', '❯', '➜', 'λ', '→'];
 
@@ -60,41 +62,13 @@ fn looks_like_password_prompt(row_text: &str) -> bool {
     PASSWORD_WORDS.iter().any(|w| lower.contains(w))
 }
 
-/// 行缓冲的状态机。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum LineState {
-    /// 有可用的命令行文本（`line` 字段有效）。
-    Ready,
-    /// 提示符后面什么都没有 —— 不弹框（高保真 §4：空输入不端出候选）。
-    Empty,
-    /// 判定不可靠（密码输入 / 全屏程序 / 无法定位命令起点）—— 不弹框。
-    Muted,
-}
-
-/// 一次按键之后，终端里「用户正在敲的那一行」是什么。
-#[derive(Debug, Clone)]
-pub(super) struct LineSnapshot {
-    pub(super) state: LineState,
-    /// 命令起点到光标之间的文本。`Muted` 时为空。
-    pub(super) line: String,
-}
-
-impl LineSnapshot {
-    fn muted() -> Self {
-        Self { state: LineState::Muted, line: String::new() }
-    }
-    fn empty() -> Self {
-        Self { state: LineState::Empty, line: String::new() }
-    }
-}
-
 /// 从一整行网格文本里，截出「光标所在命令行」。
 ///
 /// `row_text` 是光标所在行的完整文本（右侧补空格已由调用方 `trim_end`），
 /// `cursor_col` 是光标在该行的**字符**列（不是显示格，CJK 已在调用方换算）。
 ///
 /// 返回 `None` 表示定位不出命令起点 —— 调用方应视为 `Muted`。
-pub(super) fn command_line(row_text: &str, cursor_col: usize) -> Option<String> {
+pub(crate) fn command_line(row_text: &str, cursor_col: usize) -> Option<String> {
     // 光标之后的内容不参与（readline 允许光标停在行中间）。
     let chars: Vec<char> = row_text.chars().collect();
     if cursor_col > chars.len() {
@@ -141,7 +115,7 @@ pub(super) fn command_line(row_text: &str, cursor_col: usize) -> Option<String> 
 ///
 /// 它**不做按键记账**（理由见模块注释），只在每次按键后读一次网格。
 #[derive(Debug, Default)]
-pub(super) struct HintObserver {
+pub(crate) struct HintObserver {
     /// 上一次观测到的光标行文本，用于判「远端有没有回显」。
     last_row: String,
     /// 上一次观测到的光标列。
@@ -163,7 +137,7 @@ impl HintObserver {
     /// * `cursor_col` —— 光标列
     /// * `printable_keystroke` —— 这次按键是否是可打印字符（用于密码判定）
     /// * `alt_screen` —— 是否在全屏程序里（vim/htop：直接 `Muted`）
-    pub(super) fn observe(
+    pub(crate) fn observe(
         &mut self,
         row_text: &str,
         cursor_col: u16,
@@ -218,7 +192,7 @@ impl HintObserver {
     }
 
     /// 用户按了回车（命令被提交）→ 行结束，密码静默状态解除。
-    pub(super) fn on_submit(&mut self) {
+    pub(crate) fn on_submit(&mut self) {
         self.last_row.clear();
         self.last_col = 0;
         self.silent_keystrokes = 0;

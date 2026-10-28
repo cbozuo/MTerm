@@ -11,8 +11,10 @@ pub(crate) mod core;
 mod jump_list;
 pub mod launch;
 mod port_forward;
-mod command_hint; // (#cmd-hint 2026-10-27) 命令提示框四段式数据侧
-mod terminal_hint; // (#cmd-hint-p1 2026-10-27) 终端内联的行缓冲（P1）
+// (#cmd-hint 2026-10-27) 命令提示框的 **Slint 宿主桥**。
+// 领域规则（阶段/打分/排序/候选生成）在 `crate::command_hint`；
+// 终端行缓冲在 `crate::terminal::{HintObserver, command_line}`。
+mod command_hint_ui;
 mod command_manager;
 mod quick_commands;
 mod resource_ui;
@@ -10787,8 +10789,8 @@ fn wire_key_input(
                 (false, true) => who,
                 (false, false) => format!("{who} : {cwd}"),
             };
-            let model = command_hint::hint_model(&s, line.as_str(), context);
-            command_hint::apply_hint_model(&w, &model);
+            let model = crate::command_hint::hint_model(&s, line.as_str(), context);
+            command_hint_ui::apply_hint_model(&w, &model);
         });
     }
     // Delete a history entry by its command text (#101) — index-free so it works
@@ -11036,7 +11038,7 @@ fn wire_key_input(
         let weak_sk = window.as_weak();
         // (#cmd-hint-p1 2026-10-27) 每个 tab 一个行缓冲观测器。按 tab id 存，
         // 切标签 / 多标签各记各的（终端里 tab 切回来应当还看到自己那半行）。
-        let hint_observers: Arc<Mutex<HashMap<String, crate::app::terminal_hint::HintObserver>>> =
+        let hint_observers: Arc<Mutex<HashMap<String, crate::terminal::HintObserver>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let weak_ob = window.as_weak();
         let hint_observers_sk = hint_observers.clone();
@@ -11491,8 +11493,8 @@ fn wire_key_input(
                         //   执行完毕，这个提示框还存在」）。
                         //   这里先隐藏；等新提示符回显、用户再敲字时，下面的
                         //   observe 流程会用新行重新算出候选。
-                        let hidden = command_hint::HintModel::hidden(String::new());
-                        command_hint::apply_terminal_hint_model(&w_ob, &hidden);
+                        let hidden = crate::command_hint::HintModel::hidden(String::new());
+                        command_hint_ui::apply_terminal_hint_model(&w_ob, &hidden);
                         // 本行结束 → 解除 Slint 侧的 Esc 抑制。
                         // ★ 抑制是 Slint 的局部状态（用户按 Esc 建立），但
                         //   「本行什么时候结束」只有 Rust 知道（它读网格）。
@@ -11559,30 +11561,30 @@ fn wire_key_input(
                         };
                         let model = match snap.state {
                             // 密码 / 全屏 / 判不准 → 一律不弹（高保真 §4 抑制表）。
-                            crate::app::terminal_hint::LineState::Muted => {
-                                command_hint::HintModel::hidden(context)
+                            crate::terminal::LineState::Muted => {
+                                crate::command_hint::HintModel::hidden(context)
                             }
                             // 提示符后面是空的 → 也不端候选（同命令栏口径）。
                             // ★ 同时解除 Esc 抑制：行被清空 = 新一轮。
-                            crate::app::terminal_hint::LineState::Empty => {
+                            crate::terminal::LineState::Empty => {
                                 // 只在「之前不是空」时才递增，避免每帧都 +1。
                                 if !term_hint_was_empty.swap(true, std::sync::atomic::Ordering::Relaxed) {
                                     let tok = w_ob.get_term_hint_reset_token().wrapping_add(1);
                                     w_ob.set_term_hint_reset_token(tok);
                                 }
-                                command_hint::HintModel::hidden(context)
+                                crate::command_hint::HintModel::hidden(context)
                             }
-                            crate::app::terminal_hint::LineState::Ready => {
+                            crate::terminal::LineState::Ready => {
                                 term_hint_was_empty
                                     .store(false, std::sync::atomic::Ordering::Relaxed);
-                                command_hint::hint_model(
+                                crate::command_hint::hint_model(
                                     &store.borrow(),
                                     &snap.line,
                                     context,
                                 )
                             }
                         };
-                        command_hint::apply_terminal_hint_model(&w_ob, &model);
+                        command_hint_ui::apply_terminal_hint_model(&w_ob, &model);
                     }
                 }
             }
@@ -11622,7 +11624,7 @@ fn wire_key_input(
                     crate::terminal::build_row(b.parser.screen(), cur_row, cols).0;
                 let row_text = row_text.trim_end().to_string();
                 drop(b);
-                crate::app::terminal_hint::command_line(&row_text, cur_col as usize)
+                crate::terminal::command_line(&row_text, cur_col as usize)
                     .unwrap_or_default()
             };
             // 算追加尾巴：apply 以 current 为前缀时只补差量（最常见，也最安全）。

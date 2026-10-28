@@ -2,6 +2,9 @@
 mod state;
 #[path = "struct/find.rs"]
 mod find;
+// (#cmd-hint-p1) 终端行缓冲的状态类型（LineState / LineSnapshot）。
+#[path = "struct/line.rs"]
+mod line;
 
 #[path = "impls/input.rs"]
 mod input;
@@ -29,6 +32,9 @@ pub(crate) mod telnet;
 mod term_buffer;
 #[path = "impls/terminal_find.rs"]
 mod terminal_find;
+// (#cmd-hint-p1) 终端内联提示框的行缓冲（不信按键、信回显）。
+#[path = "impls/terminal_hint.rs"]
+mod terminal_hint;
 #[path = "impls/zmodem.rs"]
 pub(crate) mod zmodem;
 
@@ -65,3 +71,8 @@ pub(crate) use state::{
     TabRenderGate, TermBuffer, TermBufferHandle, TermBuffers,
 };
 pub(crate) use find::{FindHits, FindOptions, FindState};
+// (#cmd-hint-p1) 终端行缓冲：状态类型 + 观测器 + 命令起点定位。
+// `LineSnapshot` 是 `observe()` 的返回类型，调用方只用值不命名类型，
+// 所以不必再导出（导出它反而会得到 unused import 警告）。
+pub(crate) use line::LineState;
+pub(crate) use terminal_hint::{command_line, HintObserver};
