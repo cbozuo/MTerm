@@ -7,7 +7,7 @@
 //! 尤其 `apply` 与 Enter 判据必须严丝合缝，否则表现就是
 //! 「Enter 永远只填入、永远不执行」。
 
-use super::{compute_apply, should_pop, HintInput, HintKind, HintPhase, HINT_MAX_ROWS};
+use super::{compute_apply, HintInput, HintKind, HintPhase, HINT_MAX_ROWS};
 
 /// 测 apply 用的小助手：只有一个候选文本，其余字段无关。
 fn apply_of(cand: &str, kind: HintKind, line: &str) -> String {

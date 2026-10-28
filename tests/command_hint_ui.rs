@@ -345,7 +345,6 @@ fn the_hint_box_has_a_complete_border() {
     //     ② 四个**角附近**（圆角弧线经过的 3px 邻域）也找得到边框色，
     //        即边框真的包到角上，而不是被内层背景截断在角前。
     let ui = setup();
-    let elev = elevated_of(&ui);
     let lstr = border_strong_of(&ui);
 
     let f = render_with(&ui, 3);

@@ -90,17 +90,7 @@ pub(super) enum HintPhase {
 }
 
 impl HintPhase {
-    /// Slint 侧用 int 传（enum 过桥要额外导出，收益不抵成本）。
-    pub(super) fn as_code(self) -> i32 {
-        match self {
-            Self::Command => 0,
-            Self::Subcommand => 1,
-            Self::Option => 2,
-            Self::Path => 3,
-        }
-    }
-
-    /// 胶囊文案。走 i18n（msgid 是英文，中文在 lang/zh）。
+    /// 胶囊文案。走 i18n（签名是 `t(zh, en)`，中文在前）。
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Command => crate::i18n::t("命令", "Command"),
