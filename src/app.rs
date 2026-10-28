@@ -209,6 +209,93 @@ fn term_buf(bufs: &TermBuffers, tab_id: &str) -> Option<TermBufferHandle> {
     bufs.lock().unwrap().get(tab_id).cloned()
 }
 
+/// (#cmd-hint-p1) 读一次终端网格里的命令行，算出提示框数据并写进 Slint。
+///
+/// ★ 为什么这个函数会被**调用两次**（发送后立刻 + 120ms 后再一次）：
+///   `on_send_key` 里字节刚发出去时，远端还没回显，此刻读到的网格是**按键
+///   之前**的内容 —— 于是浮层永远慢一个按键。用户实测反馈：
+///   「输入两个字母删除一个触发」正是这个现象：打到 2 个字符时读到的还是
+///   1 个字符（不弹），按退格那一刻读到上一帧的 `fr`（2 字符）反而弹了。
+///   所以发送后再排一次延迟重读，拿回显之后的真实行重算。
+///
+/// `printable` 只影响密码判定的「连续无回显」兜底计数；延迟重读时传 `false`
+/// （那一次没有对应的按键事件）。
+fn refresh_terminal_hint(
+    w_ob: &AppWindow,
+    bufs: &TermBuffers,
+    store: &Rc<RefCell<ConfigStore>>,
+    obs_all: &Arc<Mutex<HashMap<String, crate::terminal::HintObserver>>>,
+    was_empty: &Arc<std::sync::atomic::AtomicBool>,
+    tab_id: &str,
+    printable: bool,
+) {
+    // 读网格：光标行文本 + 光标列 + 是否全屏。
+    let snap = {
+        let Some(h) = term_buf(bufs, tab_id) else { return };
+        let mut b = h.lock().unwrap();
+        let (alt, _rows, cols) = {
+            let s = b.parser.screen();
+            let (r, c) = s.size();
+            (s.alternate_screen(), r, c)
+        };
+        let (cur_row, cur_col) = b.parser.screen().cursor_position();
+        let row_text = crate::terminal::build_row(b.parser.screen(), cur_row, cols).0;
+        let row_text = row_text.trim_end().to_string();
+        drop(b);
+        let mut obs = obs_all.lock().unwrap();
+        let o = obs.entry(tab_id.to_string()).or_default();
+        o.observe(&row_text, cur_col, printable, alt)
+    };
+
+    // 上下文条复用命令栏那套（session 的 user@host + OSC 7 的 cwd）。
+    let context = {
+        let session_id = w_ob
+            .get_tabs()
+            .iter()
+            .find(|t| t.id.as_str() == tab_id)
+            .map(|t| t.session_id.to_string())
+            .unwrap_or_default();
+        let who = store
+            .borrow()
+            .get(&session_id)
+            .map(|sess| {
+                if sess.user.trim().is_empty() {
+                    sess.host.clone()
+                } else {
+                    format!("{}@{}", sess.user, sess.host)
+                }
+            })
+            .unwrap_or_default();
+        let cwd = active_sftp_path(w_ob, tab_id);
+        match (who.is_empty(), cwd.is_empty()) {
+            (true, true) => String::new(),
+            (true, false) => cwd,
+            (false, true) => who,
+            (false, false) => format!("{who} : {cwd}"),
+        }
+    };
+
+    let model = match snap.state {
+        // 密码 / 全屏 / 判不准 → 一律不弹（高保真 §4 抑制表）。
+        crate::terminal::LineState::Muted => crate::command_hint::HintModel::hidden(context),
+        // 提示符后面是空的 → 也不端候选（同命令栏口径）。
+        // ★ 同时解除 Esc 抑制：行被清空 = 新一轮。
+        crate::terminal::LineState::Empty => {
+            // 只在「之前不是空」时才递增，避免每帧都 +1。
+            if !was_empty.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                let tok = w_ob.get_term_hint_reset_token().wrapping_add(1);
+                w_ob.set_term_hint_reset_token(tok);
+            }
+            crate::command_hint::HintModel::hidden(context)
+        }
+        crate::terminal::LineState::Ready => {
+            was_empty.store(false, std::sync::atomic::Ordering::Relaxed);
+            crate::command_hint::hint_model(&store.borrow(), &snap.line, context)
+        }
+    };
+    command_hint_ui::apply_terminal_hint_model(w_ob, &model);
+}
+
 fn tab_render_interval(bufs: &TermBuffers, tab_id: &str) -> std::time::Duration {
     let Some(handle) = term_buf(bufs, tab_id) else {
         return RENDER_MIN_INTERVAL;
@@ -11502,89 +11589,49 @@ fn wire_key_input(
                         //   不会触发 changed。
                         let tok = w_ob.get_term_hint_reset_token().wrapping_add(1);
                         w_ob.set_term_hint_reset_token(tok);
+                        // ★ 这里是 send_key 的最后一段，直接返回：不再往下读网格。
+                        //   否则紧接着的观测读到的还是**回车之前**的旧行，会把
+                        //   刚隐藏的浮层按旧候选项又画回来（长命令尤其明显）。
+                        return;
                     }
-                    // 读网格：光标行文本 + 光标列 + 是否全屏。
-                    let snap = {
-                        let buf = term_buf(&bufs, tab_id.as_str());
-                        match buf {
-                            Some(h) => {
-                                let mut b = h.lock().unwrap();
-                                let (alt, _rows, cols) = {
-                                    let s = b.parser.screen();
-                                    let (r, c) = s.size();
-                                    (s.alternate_screen(), r, c)
-                                };
-                                let (cur_row, cur_col) = b.parser.screen().cursor_position();
-                                let row_text = crate::terminal::build_row(
-                                    b.parser.screen(),
-                                    cur_row,
-                                    cols,
-                                )
-                                .0;
-                                let row_text = row_text.trim_end().to_string();
-                                drop(b);
-                                let mut obs = hint_observers.lock().unwrap();
-                                let o = obs.entry(tab_id.to_string()).or_default();
-                                Some(o.observe(&row_text, cur_col, printable, alt))
-                            }
-                            None => None,
-                        }
-                    };
-                    if let Some(snap) = snap {
-                        let tab_id_str = tab_id.as_str();
-                        // 上下文条复用命令栏那套（session 的 user@host + OSC 7 的 cwd）。
-                        let context = {
-                            let session_id = w_ob
-                                .get_tabs()
-                                .iter()
-                                .find(|t| t.id.as_str() == tab_id_str)
-                                .map(|t| t.session_id.to_string())
-                                .unwrap_or_default();
-                            let who = store
-                                .borrow()
-                                .get(&session_id)
-                                .map(|sess| {
-                                    if sess.user.trim().is_empty() {
-                                        sess.host.clone()
-                                    } else {
-                                        format!("{}@{}", sess.user, sess.host)
-                                    }
-                                })
-                                .unwrap_or_default();
-                            let cwd = active_sftp_path(&w_ob, tab_id_str);
-                            match (who.is_empty(), cwd.is_empty()) {
-                                (true, true) => String::new(),
-                                (true, false) => cwd,
-                                (false, true) => who,
-                                (false, false) => format!("{who} : {cwd}"),
-                            }
-                        };
-                        let model = match snap.state {
-                            // 密码 / 全屏 / 判不准 → 一律不弹（高保真 §4 抑制表）。
-                            crate::terminal::LineState::Muted => {
-                                crate::command_hint::HintModel::hidden(context)
-                            }
-                            // 提示符后面是空的 → 也不端候选（同命令栏口径）。
-                            // ★ 同时解除 Esc 抑制：行被清空 = 新一轮。
-                            crate::terminal::LineState::Empty => {
-                                // 只在「之前不是空」时才递增，避免每帧都 +1。
-                                if !term_hint_was_empty.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                                    let tok = w_ob.get_term_hint_reset_token().wrapping_add(1);
-                                    w_ob.set_term_hint_reset_token(tok);
+                    // 立刻读一次（响应快），再排一次 120ms 后的重读（等远端回显）。
+                    // 只读一次会永远慢一个按键 —— 用户实测：「输入两个字母删除
+                    // 一个触发」。
+                    refresh_terminal_hint(
+                        &w_ob,
+                        &bufs,
+                        &store,
+                        &hint_observers,
+                        &term_hint_was_empty,
+                        tab_id.as_str(),
+                        printable,
+                    );
+                    {
+                        let w2 = w_ob.as_weak();
+                        let bufs2 = bufs.clone();
+                        let store2 = store.clone();
+                        let obs2 = hint_observers.clone();
+                        let was_empty2 = term_hint_was_empty.clone();
+                        let tab2 = tab_id.to_string();
+                        slint::Timer::single_shot(
+                            std::time::Duration::from_millis(120),
+                            move || {
+                                let Some(w) = w2.upgrade() else { return };
+                                // tab 切走了就别刷（否则会把别的 tab 的浮层写脏）。
+                                if w.get_active_tab_id().as_str() != tab2.as_str() {
+                                    return;
                                 }
-                                crate::command_hint::HintModel::hidden(context)
-                            }
-                            crate::terminal::LineState::Ready => {
-                                term_hint_was_empty
-                                    .store(false, std::sync::atomic::Ordering::Relaxed);
-                                crate::command_hint::hint_model(
-                                    &store.borrow(),
-                                    &snap.line,
-                                    context,
-                                )
-                            }
-                        };
-                        command_hint_ui::apply_terminal_hint_model(&w_ob, &model);
+                                refresh_terminal_hint(
+                                    &w,
+                                    &bufs2,
+                                    &store2,
+                                    &obs2,
+                                    &was_empty2,
+                                    tab2.as_str(),
+                                    false,
+                                );
+                            },
+                        );
                     }
                 }
             }
