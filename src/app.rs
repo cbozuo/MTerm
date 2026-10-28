@@ -11597,6 +11597,12 @@ fn wire_key_input(
                     // 立刻读一次（响应快），再排一次 120ms 后的重读（等远端回显）。
                     // 只读一次会永远慢一个按键 —— 用户实测：「输入两个字母删除
                     // 一个触发」。
+                    //
+                    // ⚠ 这里**不要**自增 `term-hint-reset-token`：那个令牌的
+                    //   changed 监听会顺带把 `term-hint-selected` 归零，而
+                    //   send_key 每键都跑 —— 结果是「上下键选了立刻被重置」。
+                    //   Esc 抑制由 Slint 侧在按键分支里就地清掉（见
+                    //   terminal_view.slint 的最后 else 分支）。
                     refresh_terminal_hint(
                         &w_ob,
                         &bufs,

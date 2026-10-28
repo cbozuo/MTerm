@@ -461,6 +461,28 @@ fn the_box_height_is_locked_between_one_and_three_rows() {
 }
 
 #[test]
+fn many_candidates_keep_the_height_and_scroll() {
+    // ★ 用户定稿：「候选数再提一些，信息框的高度不变，支持滚动翻找」。
+    //   6 条封顶视口，再多的候选进 Flickable 滚动，框高不许再长。
+    let ui = setup();
+    let elev = elevated_of(&ui);
+
+    let f6 = render_with(&ui, 6);
+    let (t6, b6) = find_overlay(&f6, elev).expect("6 条候选时没画框");
+    let h6 = b6 - t6;
+
+    let f20 = render_with(&ui, 20);
+    maybe_dump(&f20, "hint-20rows");
+    let (t20, b20) = find_overlay(&f20, elev).expect("20 条候选时没画框");
+    let h20 = b20 - t20;
+
+    assert!(
+        h6.abs_diff(h20) <= 2,
+        "候选 6 条高 {h6}px、20 条高 {h20}px —— 超过视口后高度不该变（应滚动）"
+    );
+}
+
+#[test]
 fn the_three_sections_stack_in_the_designed_order() {
     // ★ 用户实测改规格：原来第四段「详情区 94px」常驻，普通命令根本没人看，
     //   却把浮层撑得很长（「感觉有些太长了」）。现在详情块只在**危险命令**时

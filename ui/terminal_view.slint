@@ -929,16 +929,26 @@ export component TerminalView inherits Rectangle {
     in property <bool> term-hint-open: false;
     // 终端内联提示框的选中项（↑↓ 在候选里走）。
     property <int> term-hint-selected: 0;
-    // 用户按 Esc 关掉后，本行不再自动弹（高保真 §4 抑制表的 Esc 行）。
-    // 只有「行被清空 / 回车提交」才解除 —— 打字不清除。
+    // ★ 候选集合变了就把选中项夹回有效范围。
+    //   否则会残留一个越界索引：回车 / 点击取 `row_data(idx)` 拿到 None，
+    //   表现为「选过一次之后回车就选不中了」（用户实测反馈）。
+    changed term-hint-rows => {
+        if (root.term-hint-selected >= root.term-hint-rows.length) {
+            root.term-hint-selected = max(0, root.term-hint-rows.length - 1);
+        }
+    }
+    // 用户按 Esc 关掉后，本行不再自动弹（主流交互：Esc 只关当前这次）。
     property <bool> term-hint-suppressed: false;
     property <string> term-hint-line-tag: "";   // 记住抑制时那一行，变了才解除
-    // (#cmd-hint-p1) 抑制解除令牌：Rust 在「回车提交 / 行被清空」时自增，
-    // 下面 changed 监听把它翻译成「清除 suppressed」。
+    // (#cmd-hint-p1) 抑制解除令牌：Rust 在「回车提交 / 行被清空 / **任意普通按键**」
+    // 时自增，下面 changed 监听把它翻译成「清除 suppressed」。
     in property <int> term-hint-reset-token: 0;
-    // 令牌一变就解锁（高保真 §4：抑制持续到**本行结束**，不是永久）。
-    // ★ 之前缺了这段监听，于是按过 Esc 之后提示框再也不弹 ——
-    //   用户实测反馈：「按过 ESC 后，就没有提示框了」。
+    // 令牌一变就解锁。
+    //
+    // ★ 交互口径（对齐主流：VS Code / fish / zsh-autosuggestions / IDE 补全）：
+    //   **Esc 只关掉「这一次」建议，继续输入就重新出现** —— 不是永久封杀到
+    //   行尾。早先实现成「抑制持续到本行结束」，用户实测反馈「按了 Esc 之后
+    //   再怎么输入也不会出现」，这是反主流的，已改。
     changed term-hint-reset-token => {
         root.term-hint-suppressed = false;
         root.term-hint-selected = 0;
@@ -1053,10 +1063,10 @@ export component TerminalView inherits Rectangle {
     // 高保真 §5。核心原则：**提示框只在打开时接管按键，关闭时一个键都不多占**；
     // 边界要「穿透」回 shell，而不是把方向键吞掉。
 
-    // 可见行数 = min(候选数, 8)。选中项只允许在这几条里循环 —— 数据侧也按 8
+    // 可见行数 = min(候选数, 6)（视口）；选中项可在**全部**候选里循环（滚动跟随）
     // 封顶，两边取同一个数，选中项不可能落在没画出来的行上（高保真 §5 边界）。
     function hint-count() -> int {
-        return min(root.hint-rows.length, 6);
+        return root.hint-rows.length;
     }
     // 命中的那一条「填进命令行之后**整行**长什么样」。
     //
@@ -2132,11 +2142,11 @@ export component TerminalView inherits Rectangle {
                             // ★ 始终在候选里**循环**（用户实测反馈：穿透会把行
                             //   换成历史命令，选择状态一下就乱，没法继续选）。
                             //   想要 shell 历史 → 按 Esc 关掉浮层，↑↓ 立刻交还。
-                            let n = min(root.term-hint-rows.length, 6);
+                            let n = root.term-hint-rows.length;
                             root.term-hint-selected = root.term-hint-selected <= 0
                                 ? n - 1 : root.term-hint-selected - 1;
                         } else {
-                            let n = min(root.term-hint-rows.length, 6);
+                            let n = root.term-hint-rows.length;
                             root.term-hint-selected = root.term-hint-selected >= n - 1
                                 ? 0 : root.term-hint-selected + 1;
                         }
@@ -2146,7 +2156,7 @@ export component TerminalView inherits Rectangle {
                             && event.text == Key.Tab && !event.modifiers.shift) {
                         // (#cmd-hint-p1) Tab 把选中候选写进 PTY。
                         // 只在这一帧有可见候选时接管；0 候选时放行给 shell 原生补全。
-                        root.term-hint-accept(root.term-hint-selected);
+                        root.term-hint-accept(max(0, min(root.term-hint-selected, root.term-hint-rows.length - 1)));
                         accept
                     } else if (root.term-hint-open && !root.term-hint-suppressed
                             && root.term-hint-rows.length > 0
@@ -2157,7 +2167,7 @@ export component TerminalView inherits Rectangle {
                         //   与 Tab 同语义：填入选中候选（追加尾巴），不执行。
                         //   想执行 → 再按一次回车（那时浮层已因行变化重算/关闭，
                         //   或候选已并入行内，回车透传执行）。
-                        root.term-hint-accept(root.term-hint-selected);
+                        root.term-hint-accept(max(0, min(root.term-hint-selected, root.term-hint-rows.length - 1)));
                         accept
                     } else if (root.term-hint-open && event.text == Key.Escape) {
                         // (#cmd-hint-p1) Esc 关掉并抑制**本行**（高保真 §4）。
@@ -2165,8 +2175,15 @@ export component TerminalView inherits Rectangle {
                         root.term-hint-suppressed = true;
                         accept
                     } else {
-                        // 任何其它按键 → 关掉「Esc 抑制」吗？不。
-                        // 高保真 §4 明确「抑制一直持续到本行结束」，打字不清除它。
+                        // ★ 任何普通按键都解除 Esc 抑制 —— 主流交互（VS Code /
+                        //   fish / zsh-autosuggestions）：Esc 只关掉**这一次**
+                        //   建议，继续输入就重新出现。
+                        //   早先这里是「抑制持续到本行结束，打字不清除」，用户
+                        //   实测：「按了 Esc 后，后续再怎么输入也不会出现」。
+                        //   ⚠ 只清 suppressed，**不动 selected** —— 早先把解锁
+                        //   挂在 reset-token 上，而 token 每键都涨，于是
+                        //   「上下键选不中」（选完立刻被重置回 0）。
+                        root.term-hint-suppressed = false;
                         root.send-key(event.text,
                                       Theme.is-mac ? event.modifiers.meta : event.modifiers.control,
                                       event.modifiers.alt, event.modifiers.shift);
@@ -2319,6 +2336,10 @@ export component TerminalView inherits Rectangle {
                     picked(i) => {
                         root.term-hint-selected = i;
                         root.term-hint-accept(i);
+                        // ★ 点完把焦点还给终端输入：浮层的 TouchArea 会抢走焦点，
+                        //   不还回去的话「鼠标选过一次之后键盘就不好使了」
+                        //   （用户实测反馈）。
+                        ime-input.focus();
                     }
                     hovered(i) => { }
                 }

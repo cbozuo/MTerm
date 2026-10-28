@@ -72,10 +72,27 @@ export component CommandHint inherits Rectangle {
     clip: true;
     visible: root.open;
 
+    // ★ 键盘上下选择时把选中行滚进视口；鼠标滚轮仍可自由滚（Flickable 自己处理）。
+    changed selected => {
+        if (root.selected >= 0) {
+            let cur = list-flick.viewport-y;
+            let row-top = root.selected * 28px;
+            let row-bottom = row-top + 28px;
+            let target = row-top < cur
+                ? row-top
+                : (row-bottom > cur + list-flick.height ? row-bottom - list-flick.height : cur);
+            let max-y = max(0px, root.rows.length * 28px + 6px - list-flick.height);
+            list-flick.viewport-y = clamp(target, 0px, max-y);
+        }
+    }
+
     // 可见行数 = min(候选数, 8)。高度按它算，所以 1↔5 条之间切换时
     // 框会变高，但 **3 条以内不变**（高保真 §4 的「锁 3 行」）。
-    out property <int> shown: min(root.rows.length, 6);
-    out property <int> list-rows: max(3, min(root.shown, 6));
+    // 数据侧可能给到几十条（见 HINT_MAX_ROWS），视图只开固定视口。
+    out property <int> shown: min(root.rows.length, 50);
+    // ★ 视口行数：1–3 条锁定 3 行；3–6 条跟着长；**超过 6 条不再长高**，
+    //   改为滚动（用户定稿：「信息框的高度不变，支持滚动翻找」）。
+    out property <int> list-rows: min(max(3, root.shown), 6);
     // ★ 自然高度必须**自己算**，不能读 `self.preferred-height`：
     //   根是 Rectangle，Slint 不会从内容反推 Rectangle 的 preferred-height
     //   （实测恒为 0，于是宿主侧的 min(自然高, 可用高) 完全失效，
@@ -171,6 +188,15 @@ export component CommandHint inherits Rectangle {
             background: transparent;
             clip: true;
 
+            // ★ 固定视口 + 滚动：候选可以很多，框高不变。
+            list-flick := Flickable {
+                width: parent.width;
+                height: parent.height;
+                viewport-width: self.width;
+                // 内容高 = 全部候选；不足一屏时也不留空白。
+                viewport-height: max(self.height, root.rows.length * 28px + 6px);
+                interactive: true;
+
             VerticalLayout {
                 padding: 3px;
                 spacing: 0px;
@@ -178,8 +204,6 @@ export component CommandHint inherits Rectangle {
 
                 for r[idx] in root.rows : Rectangle {
                     height: 28px;
-                    // 只画前 5 行（数据侧已封顶，这里再兜一层，防越界画到框外）。
-                    visible: idx < 6;
                     border-radius: Theme.radius-sm;
                     background: idx == root.selected ? Theme.accent-soft
                               : (row-ta.has-hover ? Theme.bg-hover : transparent);
@@ -260,6 +284,7 @@ export component CommandHint inherits Rectangle {
                         }
                     }
                 }
+            }
             }
         }
 
