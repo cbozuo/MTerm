@@ -2,6 +2,7 @@ import { Icon } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { CommandHint, HintRow } from "command_hint.slint";
+import { HistoryPanel, HistoryRow } from "history_panel.slint";
 import { FindBar } from "find_bar.slint";
 import { SftpPanel, SftpEntry, SftpTreeNode, TunnelInfo } from "sftp_panel.slint";
 import { TabInfo } from "tabs.slint";
@@ -898,19 +899,16 @@ export component TerminalView inherits Rectangle {
     //   · 发送范围从死文字变成下拉（全部标签页 / 各同步频道）。
     in property <[QuickCmd]> quick-commands;
     in property <[string]> command-history;   // oldest first (newest last, #113)
-    in property <[string]> history-view;       // filtered dropdown, oldest first (newest last, #101)
-    // (#cmdbar-suggest 2026-10-24) 打字时补全框的候选 = 自定义指令集（在前）+ 历史
-    // 匹配（在后）。和 history-view 分开：点时钟打开的完整面板只列历史，而补全态
-    // 是「我想执行什么」，自己配的指令集也该被找出来（用户反馈）。
-    // suggest-kind 与 suggest-view 等长：1 = 快捷命令（画 bolt）、0 = 历史。
-    in property <[string]> suggest-view;
-    in property <[int]> suggest-kind;
+    // (#cmd-history-panel 2026-10-27) 历史面板的行（已过滤、已排序、文案已算好）。
+    // 数据由 `terminal_ui::history_row_model` 产出；UI 只负责画。
+    in property <[HistoryRow]> history-rows;
+    in property <int> history-total: 0;
+    in property <int> history-pinned: 0;
     // (#cmd-hint 2026-10-27) 四段式提示框（高保真稿
     // docs/design/terminal-command-hint-hifi-2026-10-27.html）。
     // ★ 它**取代**了原来那个「只有文本 + 类型两列」的窄列表（300px）：
     //   高保真的四段结构（上下文 / 候选 / 详情 / 键盘脚注）在 300px 里排版
-    //   不下，详情区尤其需要宽度。suggest-* 仍保留 —— 完整历史面板和
-    //   send_cmd_window 还在用同一套数据。
+    //   不下，详情区尤其需要宽度。完整历史面板改用独立组件 history_panel.slint。
     in property <[HintRow]> hint-rows;
     in property <string> hint-phase: "";       // 阶段胶囊文案（Rust 已本地化）
     in property <string> hint-context: "";     // 上下文条：`user@host : cwd`
@@ -985,24 +983,16 @@ export component TerminalView inherits Rectangle {
     // else the window/global size (Theme.term-font-size).
     in property <float> term-font-size-px: Theme.term-font-size / 1px;
     property <bool> quick-open: false;         // quick-command popup visibility
-    property <bool> history-open: false;       // history dropdown visibility
-    // (#cmdbar-suggest 2026-10-24) 「完整历史面板」= 点 🕘 / Ctrl+R 打开的那个。
-    // 打字触发的补全框也复用 history-open，但它不是「历史」这个动作 ——
-    // 时钟钮不该跟着亮（用户反馈：输入时图标亮着，像点了历史）。
-    property <bool> hist-panel-open: root.history-open && !root.history-autocomplete;
-    // (#cmdbar-suggest-empty 2026-10-24) 浮层到底画不画：补全态要求至少一条候选
-    // （空列表就是个只有「无匹配」三个字的空壳，挡终端没信息量）；完整面板照旧
-    // （它本来就要用「无匹配 + 搜索框」回话）。backdrop 跟这个同一口径，
-    // 否则会留一层看不见却吃点击的遮罩。
-    //
-    // (#cmd-hint 2026-10-27) 补全态改判 **hint-rows**：四段式提示框的数据源已经
-    // 换成 `hint-rows`（Rust 按整行算出来的四列），不再是旧的 suggest-view。
-    // 还按 suggest_count() 判的话，hint-rows 有内容也永远画不出来。
-    // 危险命令例外：0 候选也要亮框，因为告警本身是信息（高保真 §3 ③）。
+    property <bool> history-open: false;       // 打字补全框（四段式提示）可见性
+    // (#cmd-history-panel 2026-10-27) 完整历史面板（点 🕘 / Ctrl+R）的可见性。
+    // ★ 与 history-open **分开**：老实现用一个 `history-open` 同时表示两种动作，
+    //   再靠 `history-autocomplete` 反推；于是「点了时钟什么都不画、遮罩却还在吃
+    //   点击」的 bug 有了生存空间 —— 面板绘制分支的条件永远不成立。两个动作两个状态。
+    property <bool> hist-open: false;
+    // 补全框到底画不画：有候选才画；危险命令例外（0 候选也要亮框，因为
+    // 告警本身是信息，高保真 §3 ③）。
     property <bool> hist-popup-visible: root.history-open
-        && (!root.history-autocomplete
-            || root.hint-rows.length > 0
-            || root.danger-now != "");
+        && (root.hint-rows.length > 0 || root.danger-now != "");
     property <bool> history-autocomplete: false; // live suggestions from command input (#349)
     property <int> history-cursor: -1;         // ↑/↓ recall index (-1 = live input)
     // (#cmdbar-caret-anchor 2026-10-23) 光标的横向位置（相对命令栏输入框的文字起点），
@@ -1010,15 +1000,14 @@ export component TerminalView inherits Rectangle {
     // 命令栏右端：光标在左半边打字时，列表飘在整行另一头（用户截图反馈「不协调」）。
     // 缓存值：TextInput 只给 cursor-position-changed 回调，没有可读的 cursor 属性。
     property <length> cmd-caret-x: 0px;
-    // The history dropdown is created by the key-press / click handlers while
-    // Slint is still dispatching the event. Focusing its search TextInput
-    // synchronously in `init` can re-enter the Windows IME/accessibility
-    // plumbing and read the popup's half-built layout, panicking with
-    // "Recursion detected" (#349 / #343-style). Defer focus to next tick.
-    property <bool> history-search-focus-pending: false;
-    // Keyboard-driven selection in the open history dropdown (#140): ↑/↓ move it,
-    // Enter runs history-view[history-selected].
+    // ↑/↓ 在**提示框候选**里的选中项（只服务补全框；历史面板的选中在组件内部）。
     property <int> history-selected: 0;
+    // (#cmd-history-panel) 历史面板可见行数：按命令栏上方可用高算，夹在 3–8。
+    // 高保真 §4 公式：avail = 视口高 − 命令栏48 − 下缝12；行数 = ⌊(avail − 46 − 28 − 8) / 38⌋。
+    property <int> hist-list-rows: min(8, max(3,
+        Math.floor((root.height - 48px - 12px - 46px - 28px - 8px) / 38px)));
+    property <length> hist-panel-h: 46px + root.hist-list-rows * 38px + 8px + 28px;
+
     // 第二参数从 bool(to-all) 换成范围串："" = 当前标签页 / "*" = 全部 /
     // "A,C" = 勾选的一组频道（见 scope-spec）。
     callback run-command(string /* cmd */, string /* scope */);
@@ -1039,27 +1028,7 @@ export component TerminalView inherits Rectangle {
         return (root.scope-ch-a ? "A," : "") + (root.scope-ch-b ? "B," : "")
              + (root.scope-ch-c ? "C," : "") + (root.scope-ch-d ? "D," : "");
     }
-    // (#cmdbar-suggest 2026-10-24) 补全候选的类型：1 = 快捷命令，0 = 历史。
-    // 带越界保护 —— Rust 侧是两次 set（view / kind），理论上会有一帧长度不齐。
-    function history_kind_at(idx: int) -> int {
-        return idx >= 0 && idx < root.suggest-kind.length ? root.suggest-kind[idx] : 0;
-    }
-    // (#cmdbar-suggest 2026-10-24) 当前候选列表的长度 / 第 idx 条：补全态读
-    // suggest-view，完整面板读 history-view。↑↓ 选择、Tab 补全、空态判断都走
-    // 这两个函数，省得每个分支各写一遍三元。
-    function suggest_count() -> int {
-        return root.history-autocomplete ? root.suggest-view.length : root.history-view.length;
-    }
-    function suggest_at(idx: int) -> string {
-        return root.history-autocomplete
-            ? (idx >= 0 && idx < root.suggest-view.length ? root.suggest-view[idx] : "")
-            : (idx >= 0 && idx < root.history-view.length ? root.history-view[idx] : "");
-    }
-    // (#cmdbar-suggest 2026-10-24) 打开「完整历史面板」：点 🕘 与 Ctrl+R 都走这里。
-    // 关键是从**补全态升级**的那条路：此时 history-open 已经是 true，再赋 true
-    // 不触发 `changed history-open`，过滤就不会被清掉 —— 面板里剩下的还是
-    // 「按命令栏那几个字过滤过的」历史。所以这里显式 search-history("") 并重置选中。
-    // ── (#cmd-hint 2026-10-27) 四段式提示框的键盘契约 ────────────────────
+    // (#cmd-hint 2026-10-27) 四段式提示框的键盘契约 ────────────────────
     // 高保真 §5。核心原则：**提示框只在打开时接管按键，关闭时一个键都不多占**；
     // 边界要「穿透」回 shell，而不是把方向键吞掉。
 
@@ -1138,15 +1107,15 @@ export component TerminalView inherits Rectangle {
     function open_history_panel() {
         root.quick-open = false;
         root.scope-open = false;
-        if (root.history-open && root.history-autocomplete) {
-            root.history-autocomplete = false;
-            root.search-history("");
-            root.history-selected = root.history-view.length > 0
-                ? root.history-view.length - 1 : 0;
-        } else {
-            root.history-autocomplete = false;
-            root.history-open = true;
-        }
+        /* 打开完整面板：先把补全框收掉（两个浮层不能同时挂着），再清过滤。
+           过滤词/过滤档/排序档的真值都在 Rust 侧，这里一次性发空让它们复位 ——
+           上次的「置顶/常用」不该留给下一次（高保真 openPanel 的行为）。 */
+        root.history-open = false;
+        root.history-autocomplete = false;
+        root.history-search("");
+        root.history-filter(0);
+        root.history-sort(0);
+        root.hist-open = true;
     }
 
     // ── 危险命令（#cmdbar-danger 2026-10-23，高保真屏 05/07）───────────
@@ -1218,11 +1187,17 @@ export component TerminalView inherits Rectangle {
     callback rename-quick-group(string /* group */);
     callback delete-quick-group(string /* group */);
     callback copy-text(string);                // copy a history command to clipboard (#96)
-    callback delete-history(int /* index */);  // remove a history entry (#96)
-    callback delete-history-cmd(string /* cmd */); // remove a history entry by command (#101)
-    callback search-history(string /* query */);   // filter the history dropdown (#101)
+    // (#cmd-history-panel 2026-10-27) 历史面板的七个回调。
+    // 视图状态（过滤词 / 过滤档 / 排序档）由 Rust 侧持有，UI 只发意图。
+    callback history-search(string /* query */);
+    callback history-filter(int /* 0 全部 / 1 置顶 / 2 今天 */);
+    callback history-sort(int /* 0 最近 / 1 常用 */);
+    callback history-delete(string /* cmd */);
+    callback history-pin(string /* cmd */, bool /* pinned */);
+    callback history-restore();
+    callback history-clear();
     // (#cmd-hint 2026-10-27) 按当前命令行文本重算提示框四段数据。
-    // Rust 侧同步回调（与 search-history 同一套模式），返回时 hint-* 已是最新值。
+    // Rust 侧同步回调，返回时 hint-* 已是最新值。
     callback hint-query(string /* line */);
     // (#cmd-hint-p1 2026-10-27) 终端内联：把第 i 条候选**写进 PTY**。
     // 与命令栏的 hint-accept 不同 —— 这里不能改「输入框文本」（终端没有输入框），
@@ -1422,15 +1397,9 @@ export component TerminalView inherits Rectangle {
 
     // Bottom-pinning / alt-screen alignment is handled declaratively by
     // scroll-clip.view-y; nothing to sync imperatively here anymore.
-    // Reset the history filter whenever the dropdown opens; the search box itself
-    // is recreated empty because the `if` subtree is destroyed on close (#101).
+    // 补全框关闭时把状态复位（完整面板走自己的 hist-open，与这里无关）。
     changed history-open => {
-        if (root.history-open) {
-            if (!root.history-autocomplete) { root.search-history(""); }
-            // List is oldest→newest (#101): default-select the newest entry.
-            root.history-selected = root.history-view.length > 0
-                ? root.history-view.length - 1 : 0;
-        } else {
+        if (!root.history-open) {
             root.history-autocomplete = false;
         }
     }
@@ -2406,11 +2375,12 @@ export component TerminalView inherits Rectangle {
 
             // Outside-click backdrop: covers the terminal above so clicking
             // anywhere out of an open popup dismisses it.
-            if root.quick-open || root.hist-popup-visible || root.scope-open : TouchArea {
+            if root.quick-open || root.hist-popup-visible || root.hist-open || root.scope-open : TouchArea {
                 x: 0; y: -2000px; width: parent.width; height: 2000px;
                 clicked => {
                     root.quick-open = false;
                     root.history-open = false;
+                    root.hist-open = false;
                     root.scope-open = false;
                 }
             }
@@ -2537,7 +2507,6 @@ export component TerminalView inherits Rectangle {
                                     root.history-cursor = -1;
                                     root.quick-open = false;
                                     root.history-autocomplete = self.text != "";
-                                    root.search-history(self.text);
                                     // (#cmd-hint 2026-10-27) 四段式提示框的数据**由
                                     // Rust 侧按整行重算**（阶段判定、子命令表、危险
                                     // 命令都在那边，Slint 拿不到那些表）。这是同步
@@ -2595,8 +2564,10 @@ export component TerminalView inherits Rectangle {
                                         // 用「浮层真的画着」判断，而不是 history-open：
                                         // 补全到 0 条时状态还是 true 但框已经不画了，
                                         // 按第一次 Esc 不该白吃掉一次。
-                                        if (root.hist-popup-visible) { root.history-open = false; }
-                                        else { ime-input.focus(); }   // back to the terminal
+                                        // 三档 Esc：先收历史面板，再收补全框，最后回终端。
+                                        if (root.hist-open) { root.hist-open = false; }
+                                        else if (root.hist-popup-visible) { root.history-open = false; }
+                                        else { ime-input.focus(); }
                                         accept
                                     } else if (e.text == Key.UpArrow) {
                                         // (#cmd-hint) 提示框打开时 ↑↓ 在**可见行**里循环；
@@ -2612,10 +2583,6 @@ export component TerminalView inherits Rectangle {
                                             } else {
                                                 root.history-selected -= 1;
                                             }
-                                        } else if (root.history-autocomplete && root.suggest_count() > 0) {
-                                            root.history-selected = root.history-selected <= 0
-                                                ? root.suggest_count() - 1
-                                                : root.history-selected - 1;
                                         } else {
                                             // Model is oldest→newest (#113): first ↑ jumps
                                             // to newest, then steps toward older entries.
@@ -2630,9 +2597,6 @@ export component TerminalView inherits Rectangle {
                                     } else if (e.text == Key.DownArrow) {
                                         if (root.history-autocomplete && root.hint-count() > 0) {
                                             root.history-selected = root.history-selected >= root.hint-count() - 1
-                                                ? 0 : root.history-selected + 1;
-                                        } else if (root.history-autocomplete && root.suggest_count() > 0) {
-                                            root.history-selected = root.history-selected >= root.suggest_count() - 1
                                                 ? 0 : root.history-selected + 1;
                                         } else {
                                             // ↓ steps toward newer; past newest → live input.
@@ -2744,16 +2708,16 @@ export component TerminalView inherits Rectangle {
                             width: 26px;
                             height: 26px;
                             border-radius: 5px;
-                            background: root.hist-panel-open
+                            background: root.hist-open
                                 ? Theme.accent.with-alpha(0.14)
                                 : (hin-ta.has-hover ? Theme.bg-hover : transparent);
                             animate background { duration: 110ms; }
                             hin-ta := TouchArea {
                                 mouse-cursor: default;
-                                // 完整面板已开 → 再点关闭；否则（含补全态）→ 打开/升级。
+                                // 面板已开 → 再点关闭；否则打开（顺带收掉补全框）。
                                 clicked => {
-                                    if (root.hist-panel-open) {
-                                        root.history-open = false;
+                                    if (root.hist-open) {
+                                        root.hist-open = false;
                                     } else {
                                         root.open_history_panel();
                                     }
@@ -2761,7 +2725,7 @@ export component TerminalView inherits Rectangle {
                             }
                             Icon {
                                 glyph: "command-history";
-                                tint: root.hist-panel-open
+                                tint: root.hist-open
                                     ? Theme.accent-solid
                                     : (hin-ta.has-hover ? Theme.text-primary : Theme.text-secondary);
                                 // (#cmdbar-hist-icon 2026-10-20) 圆只占 24 网格的
@@ -2902,6 +2866,47 @@ export component TerminalView inherits Rectangle {
                         }
                     }
                 }
+            }
+
+            // ── (#cmd-history-panel 2026-10-27) 历史命令面板 ──────────────
+            // 向上展开、右缘贴命令栏内距 10、底边贴栏上沿 6。宽度上限 560
+            // （装得下搜索框 + 两组控件 + 行内动作），窄窗按栏宽收。
+            // 高度由 `hist-list-rows`（3–8 行）反推，面板总高恒定，
+            // 搜索/过滤/删除时不会抽动。
+            if root.hist-open : HistoryPanel {
+                // 落点/宽度都 snap 到设备网格：面板描边是 Theme.hairline()
+                //（1 物理像素），坐标带半像素时发丝线会被抗锯齿摊成两行淡影
+                //（高保真 §9 ②，window_frame 的四条边线同款处理）。
+                width: Theme.snap-to-device(min(560px, parent.width - 24px));
+                x: Theme.snap-to-device(parent.width - self.width - 10px);
+                y: Theme.snap-to-device(-self.height - 6px);
+                height: root.hist-panel-h;
+                open: true;
+                rows: root.history-rows;
+                total-count: root.history-total;
+                pinned-count: root.history-pinned;
+                list-rows: root.hist-list-rows;
+                search(q) => { root.history-search(q); }
+                filter-changed(f) => { root.history-filter(f); }
+                sort-changed(s) => { root.history-sort(s); }
+                run(cmd) => {
+                    // ★ 先关框、再发键（高保真 §5 的硬顺序）：反过来会让
+                    //   PTY 回显和面板重绘抢同一帧，看着像「命令跑了框还挂着」。
+                    root.hist-open = false;
+                    root.run-command(cmd, root.scope-spec());
+                    root.focus-pending = true;
+                }
+                fill(cmd) => {
+                    cmd-input.text = cmd;
+                    root.hist-open = false;
+                    cmd-input.focus();
+                }
+                copy(cmd) => { root.copy-text(cmd); }
+                delete(cmd) => { root.history-delete(cmd); }
+                pin(cmd, on) => { root.history-pin(cmd, on); }
+                restore() => { root.history-restore(); }
+                clear-all() => { root.history-clear(); }
+                close() => { root.hist-open = false; root.focus-pending = true; }
             }
 
             // (#cmdbar-danger 2026-10-23) 危险命令告警条：从命令栏**上边缘浮出**

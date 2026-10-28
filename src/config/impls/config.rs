@@ -274,6 +274,22 @@ fn migrate_defaults(cfg: &mut ConfigFile) -> bool {
     if cfg.defaults_rev < 9 {
         super::preset_commands::regroup_legacy_presets(cfg);
     }
+    // rev 10 (#cmd-history-panel 2026-10-27): 历史命令从裸字符串升级为带
+    // 元信息的 HistoryEntry（次数 / 最近使用 / 置顶）。只搬一次；老数据没有
+    // 时间戳可考，`last_used = 0`（UI 显示「较早」，不编假时间）。
+    // 旧字段 **不清空** —— 保留一个版本，方便回退时还能看到一份快照。
+    if cfg.defaults_rev < 10 && cfg.history_entries.is_empty() && !cfg.command_history.is_empty() {
+        cfg.history_entries = cfg
+            .command_history
+            .iter()
+            .map(|cmd| HistoryEntry {
+                cmd: cmd.clone(),
+                last_used: 0,
+                uses: 1,
+                pinned: false,
+            })
+            .collect();
+    }
     cfg.defaults_rev = DEFAULTS_REV;
     true
 }
@@ -297,6 +313,18 @@ pub(crate) fn normalize_highlight_color(color: &str) -> String {
         _ => "#F75464", // red 与一切无法识别的值
     };
     legacy.to_string()
+}
+
+/// Command-history cap (#55/#113). Pinned entries are exempt from eviction.
+pub(crate) const HISTORY_CAP: usize = 200;
+
+/// 当前 unix 秒。`HistoryEntry.last_used` 用它刷新；取不到系统时间时退 0
+/// （UI 会把 0 当「未知 / 较早」，不会显示成 1970 年）。
+fn now_unix_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Remove duplicate entries in place, keeping the *last* (most recent)
@@ -1902,34 +1930,102 @@ impl ConfigStore {
         }
     }
 
-    /// Recent command-box history, oldest first (#55).
-    pub fn command_history(&self) -> &[String] {
-        &self.cache.command_history
+    /// Recent command-box history as plain strings, **oldest first** (#55).
+    /// Derived from `history_entries` so the legacy consumers (command-bar ↑
+    /// recall, send-command window) keep working without their own storage.
+    pub fn command_history(&self) -> Vec<String> {
+        self.cache.history_entries.iter().map(|e| e.cmd.clone()).collect()
+    }
+
+    /// Structured command history, oldest first (rev 10, #cmd-history-panel).
+    pub fn history_entries(&self) -> &[HistoryEntry] {
+        &self.cache.history_entries
     }
 
     /// Append a command to the history: skips blanks, de-duplicates globally so
     /// each command appears once, and re-appends at the end so the most-recently
     /// used command is always last. Capped so it can't grow without bound (#113).
+    ///
+    /// rev 10: keeps `uses` and `last_used` up to date; the *position* in
+    /// `history_entries` is what encodes recency (see the note on
+    /// [`Self::command_history`]) — do not rely on `last_used` alone for
+    /// ordering, it has second granularity and ties are common.
     pub fn push_command_history(&mut self, cmd: String) {
         if cmd.trim().is_empty() {
             return;
         }
-        // Drop any earlier occurrence, then push → no duplicates and "last used"
-        // moves to the end (bash `HISTCONTROL=erasedups` semantics).
-        self.cache.command_history.retain(|c| c != &cmd);
-        const CAP: usize = 200;
-        self.cache.command_history.push(cmd);
-        let len = self.cache.command_history.len();
-        if len > CAP {
-            self.cache.command_history.drain(0..len - CAP);
+        let now = now_unix_secs();
+        if let Some(pos) = self.cache.history_entries.iter().position(|e| e.cmd == cmd) {
+            let mut entry = self.cache.history_entries.remove(pos);
+            entry.uses = entry.uses.saturating_add(1);
+            entry.last_used = now;
+            self.cache.history_entries.push(entry);
+        } else {
+            self.cache.history_entries.push(HistoryEntry {
+                cmd,
+                last_used: now,
+                uses: 1,
+                pinned: false,
+            });
+        }
+        self.trim_command_history();
+    }
+
+    /// Drop oldest **non-pinned** entries beyond [`HISTORY_CAP`].
+    /// Pinned entries are never evicted by the cap — if literally everything is
+    /// pinned we let the list grow rather than delete a deliberate choice.
+    fn trim_command_history(&mut self) {
+        while self.cache.history_entries.len() > HISTORY_CAP {
+            let Some(pos) = self
+                .cache
+                .history_entries
+                .iter()
+                .position(|e| !e.pinned)
+            else {
+                break;
+            };
+            self.cache.history_entries.remove(pos);
         }
     }
 
-    /// Remove a single command-history entry by storage index (#96).
-    pub fn remove_command_history(&mut self, index: usize) {
-        if index < self.cache.command_history.len() {
-            self.cache.command_history.remove(index);
+    /// Remove one entry by command text, returning it plus its storage index so
+    /// the UI can offer undo. Index-free on purpose: the filtered view's row
+    /// index is not the storage index (#101).
+    pub fn remove_history_entry(&mut self, cmd: &str) -> Option<(HistoryEntry, usize)> {
+        let pos = self.cache.history_entries.iter().position(|e| e.cmd == cmd)?;
+        Some((self.cache.history_entries.remove(pos), pos))
+    }
+
+    /// Put a removed entry back where it was (undo of a single delete).
+    pub fn restore_history_entry(&mut self, entry: HistoryEntry, index: usize) {
+        let at = index.min(self.cache.history_entries.len());
+        self.cache.history_entries.insert(at, entry);
+        self.trim_command_history();
+    }
+
+    /// Toggle the pinned flag. Returns `true` when the value actually changed.
+    pub fn set_history_pinned(&mut self, cmd: &str, pinned: bool) -> bool {
+        if let Some(entry) = self
+            .cache
+            .history_entries
+            .iter_mut()
+            .find(|e| e.cmd == cmd)
+        {
+            if entry.pinned != pinned {
+                entry.pinned = pinned;
+                return true;
+            }
         }
+        false
+    }
+
+    /// Wipe the history while **keeping pinned entries**. Returns how many were
+    /// removed (for the UI receipt). Deliberately not `clear()`: pinned is the
+    /// user's explicit "keep this" and must survive (#cmd-history-panel §10).
+    pub fn clear_command_history(&mut self) -> usize {
+        let before = self.cache.history_entries.len();
+        self.cache.history_entries.retain(|e| e.pinned);
+        before - self.cache.history_entries.len()
     }
 
     /// Collapse the resource sidebar on startup (default false) (#78).

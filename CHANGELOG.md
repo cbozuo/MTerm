@@ -6,6 +6,40 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **历史命令弹框·布局与交互修复（#cmd-history-panel）。** 第二轮实测抓出的问题：
+  - **布局三连**：`alignment: start` 把 `horizontal-stretch` 归零（行内「次数 · 时间」不贴右、页脚计数不贴右、排序分段不贴右）；布局缺显式 `width/height: parent`（整行缩在 preferred 宽、固定高子项顶对齐）。全部按「去 alignment + 显式撑满 + 固定高槽内居中」重写，并把这三条写进文件头注释当铁律。
+  - **边线框**：面板/全文卡/撤销浮条描边改 `Theme.hairline()`（1 物理像素，与主窗框线、高亮设置弹框同规格）；逻辑 1px 在 DPR 1.25 下渲染成 2 物理像素所以看着粗。宿主落点/宽度 `snap-to-device`，防发丝线摊成两行淡影。
+  - **悬停动作键消失**：按钮的 TouchArea 盖在行 TouchArea 上面，鼠标挪到按钮上时行的 `has-hover` 翻 false、整条键当场淡出点不到。显隐改为「行 hover ∪ 四键 hover」并集，`HistAct` 暴露 `hovering`。
+  - **i18n**：相对时间/次数文案走 `i18n::t`；命中高亮三段（pre/hit/post）在 Rust 侧按字符边界拆好；行内动作四键；长命令悬停全文卡；清空确认层主行数字提亮、二次解锁副行变红。
+  - **回归**：新增 `tests/history_panel_ui.rs` 离屏像素断言 8 条（边框可见/工具栏居中/行内贴右/行文字居中/悬停不推文字/锁高/页脚贴右/只画可见行；hover 一条标 `ignore`，离屏脚手架驱动不了，已真机验证）。
+- **Command-history panel · layout & hover fixes (#cmd-history-panel).** Second-round fixes caught in real-world testing: layout rewritten without `alignment: start` (which zeroes `horizontal-stretch`), explicit fill sizing, and fixed-height slots centering their content; frame lines switched to `Theme.hairline()` (1 device pixel, matching the window frame and highlight dialog) with device-grid snapping; hover action keys no longer vanish when the pointer moves onto them (visibility is now row-hover ∪ any-button-hover); i18n via `i18n::t`; per-hit highlight segments computed in Rust; a hover full-text card for elided commands; and 8 new offscreen pixel assertions in `tests/history_panel_ui.rs` (the hover one is `ignore`d — the offscreen scaffold cannot drive hover; verified on a live window instead).
+
+- **历史命令弹框·首测修复（#cmd-history-panel）。** 用户实测抓出四件事，全部修掉：
+  - **点面板就消失**：面板上所有非交互区域（搜索图标、工具栏空隙、列表空白）的点击会穿透到命令栏的隐形遮罩，触发关闭 —— 高保真原型里 `if (panel.contains(ev.target)) return;` 这层保护漏移植了。现在面板第一个子元素是一层吞点击 TouchArea，搜索框 / 行 / 胶囊都压在它上面，交互不受影响。
+  - **键盘全废**：搜索框从没拿到过焦点（↑↓/↵/Tab/Del/Esc 都注册在它的 key-pressed 里），而且 `changed open` 对「带初值创建」的条件实例不触发。改为 `init` + 0ms Timer 延迟聚焦（#349 的 IME 递归坑同款规避）。
+  - **删除状态闪没**：回执条 2.4s 自动收、撤销窗 5s 后收，中间 2.6s 界面上没有任何「已删除」状态。统一成一条 5s 浮条：有可撤销内容时带「撤销」钮，纯回执（已清空/已撤销）不带钮。
+  - **页脚键位**：从一整段文本改成高保真 §6 的描边键帽（`HistKey` 小组件），确认态只剩 Esc 键帽 + 取消。
+- **Command-history panel · first-run fixes (#cmd-history-panel).** Four issues caught in the first real-world test, all fixed:
+  - **Clicking anywhere closed the panel**: clicks on non-interactive areas of the panel (search icon, toolbar gaps, empty list space) fell through to the command bar's invisible backdrop and closed it — the hi-fi prototype's `if (panel.contains(ev.target)) return;` guard had not been ported. The panel's first child is now a click-swallowing TouchArea; the search box, rows, and pills sit on top of it and keep working.
+  - **Keyboard completely dead**: the search input never received focus (all key handling lives in its `key-pressed`), and `changed open` never fires for a conditional instance created with its initial value. Now `init` + a 0ms Timer focus it deferred (same IME-recursion workaround as #349).
+  - **Delete state vanished too early**: the receipt bar auto-hid at 2.4s while the undo window stayed open for 5s, leaving 2.6s with no "deleted" indication on screen. Unified into one 5-second bar: with an Undo button when something is undoable, without one for plain receipts (cleared / restored).
+  - **Footer keycaps**: the single text line is now hi-fi §6 bordered keycaps (new `HistKey` component); the confirm state shows only an Esc keycap + Cancel.
+
+- **历史命令弹框重构（#cmd-history-panel）。**
+  - **面板恢复绘制**：旧实现只剩状态机 —— 点 🕘 / `Ctrl+R` 只把图标点亮、并留下一层 2000px 高的隐形遮罩吃掉一次点击，面板本身没有任何绘制代码。新增 `ui/history_panel.slint`（工具栏 / 列表 / 页脚 / 浮层四段），命令栏上方向上展开，右缘贴内距 10。
+  - **数据升级**：历史从裸 `Vec<String>` 升为 `HistoryEntry { cmd, last_used, uses, pinned }`（`config_file.rs`），旧字段保留一版只读；`defaults_rev` 9 → 10 做一次性迁移，老条目 `last_used = 0`，界面显示「较早」而不是编造时间。
+  - **排序口径**：默认「最近使用」= **存储序反转**（`push_command_history` 每次移到末尾，位置本身编码 recency，零并列）。**不要**改成按 `last_used` 排序 —— 秒级时间戳会并列，稳定排序退回存储序后会变成「最早执行的那条排第一」。「常用」档才真排序，破平键用存储位置。
+  - **搜索 / 过滤 / 行内动作**：键入即过滤（大小写不敏感子串）；过滤三档（全部 / 置顶 / 今天）；行内 ▶ 运行、⧉ 复制、📌 置顶、⌫ 删除；单条删除 5s 内可撤销（`Ctrl+Z`）。
+  - **清空历史**：页脚入口 → 面板内确认层 → 二次解锁才真删；**置顶项永不删除**。确认层刻意不吃回车（沿用 `ConfirmDialog` 的破坏性操作口径）。
+  - **连带修复**：CAP 200 淘汰改为「跳过置顶项」；`history-selected` 不再被两个浮层共用（补全框保留自己的，面板的选中下沉进组件）。
+- **Command-history panel rebuild (#cmd-history-panel).**
+  - **The panel draws again**: the old implementation had only the state machine left — clicking 🕘 / `Ctrl+R` lit the icon and left an invisible 2000px click-eating backdrop, while the panel itself had no drawing code. New `ui/history_panel.slint` (toolbar / list / footer / overlays) opens upward from the command bar, right edge inset 10.
+  - **Data upgrade**: history moves from a bare `Vec<String>` to `HistoryEntry { cmd, last_used, uses, pinned }` (`config_file.rs`); the legacy field stays read-only for one release; `defaults_rev` 9 → 10 migrates once. Migrated entries keep `last_used = 0` and show "earlier" instead of a fabricated time.
+  - **Sorting contract**: the default "Recent" order is **the storage order reversed** (`push_command_history` always moves the used entry to the end, so position itself encodes recency — no ties). Do **not** switch it to sorting by `last_used`: second-granularity timestamps tie, and a stable sort then falls back to storage order, making the *oldest* command appear first. Only "Most used" really sorts, breaking ties by storage position.
+  - **Search / filter / row actions**: type-to-filter (case-insensitive substring); three filters (All / Pinned / Today); hover actions run, copy, pin, delete; single deletes are undoable for 5s (`Ctrl+Z`).
+  - **Clear history**: footer entry → in-panel confirmation → second click to confirm; **pinned entries are never deleted**. The confirmation deliberately ignores Enter (same rule as `ConfirmDialog` for destructive actions).
+  - **Related fixes**: CAP-200 eviction now skips pinned entries; `history-selected` is no longer shared by two overlays (the hint keeps its own, the panel's selection lives inside the component).
+
 - **光标类型在发送命令窗口真正生效（#send-cmd-caret-live）。**
   - **下划线档有形状了**：之前下划线退化成 2px 竖线（和「竖线」档无法区分，用户反馈「设置了光标类型没跟着变」）。TextInput 的内建光标是一根全行高矩形，画不出行底短横线 —— 下划线档把内建光标宽设 0，在 `cursor-position-changed` 缓存的光标像素位置自绘一条 2px 横条（宽度 = 一个字符宽，行高用行号列量出的行距，第几行都对齐），闪烁与内建光标同拍（530ms）、失焦即隐藏。
   - **改设置即时跟随**：光标类型原先只在发送窗打开时镜像一次 —— 窗口开着时去设置里改，得关掉重开才生效。现在 `on_set_term_cursor_style` 落盘后同步到已开的发送窗（进程级单例句柄现成）。

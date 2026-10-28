@@ -42,7 +42,30 @@ fn default_wallpaper() -> String {
 /// rev 8 = #preset-commands（预置快捷命令：仅注入快捷命令表为空的存量用户）。
 /// rev 9 = #preset-groups（预置命令按用途拆成 4 个分类组；rev 8 那种单
 ///         「预设」大组按命令原文回填分类，旧组清空即删）。
-pub const DEFAULTS_REV: u32 = 9;
+/// rev 10 = #cmd-history-panel（历史命令从裸 `Vec<String>` 升级为带元信息的
+///         `HistoryEntry`：次数 / 最近使用 / 置顶。旧字段保留一个版本只读）。
+pub const DEFAULTS_REV: u32 = 10;
+
+/// 一条历史命令记录（rev 10）。存储序是**最旧在前**；屏幕上的「最新在前」
+/// 由视图层反转得到（见 `config::impls::config::command_history` 的注释）。
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    pub cmd: String,
+    /// 最近一次使用的 unix 秒。`0` = 无从考证（从旧 `Vec<String>` 迁移来的
+    /// 条目）—— UI 显示「较早」，绝不编一个假时间戳。
+    #[serde(default)]
+    pub last_used: i64,
+    /// 用过几次。新命令从 1 起，再次执行 +1。
+    #[serde(default = "default_history_uses")]
+    pub uses: u32,
+    /// 置顶：永不被 200 条上限淘汰，也不被「清空历史」删掉。
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+fn default_history_uses() -> u32 {
+    1
+}
 
 pub(crate) const PREVIOUS_DEFAULT_WALLPAPER_TRANSPARENCY: f32 = 0.38;
 pub(crate) const PREVIOUS_DEFAULT_WALLPAPER_OVERLAY: f32 =
@@ -445,8 +468,14 @@ pub struct ConfigFile {
     #[serde(default)]
     pub quick_panel_dock: String,
     /// Recent commands sent from the command box, oldest first, capped (#55).
+    /// **Legacy** since rev 10: kept for one release so a downgrade still sees a
+    /// snapshot; nothing writes to it any more — `history_entries` is the source
+    /// of truth.
     #[serde(default)]
     pub command_history: Vec<String>,
+    /// Structured command history (rev 10), oldest first — the source of truth.
+    #[serde(default)]
+    pub history_entries: Vec<HistoryEntry>,
     /// Collapse the left resource sidebar on startup (#78).
     #[serde(default)]
     pub collapse_right_sidebar_default: bool,

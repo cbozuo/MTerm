@@ -128,7 +128,8 @@ pub(crate) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
         ));
     }
 
-    for cmd in store.command_history().iter().rev() {
+    let history = store.command_history();
+    for cmd in history.iter().rev() {
         let s = score_of(cmd, "", &q);
         if s < 0 {
             continue;
@@ -210,7 +211,8 @@ fn subcommand_hint(
         }
     }
     // 子命令表里没有的，退回到历史里以 `command ` 开头且命中子命令的条目。
-    for cmd in store.command_history().iter().rev() {
+    let history = store.command_history();
+    for cmd in history.iter().rev() {
         if rows.len() >= HINT_MAX_ROWS {
             break;
         }

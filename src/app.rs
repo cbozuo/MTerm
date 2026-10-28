@@ -369,7 +369,7 @@ use tokio::runtime::Runtime;
 
 use crate::app::core::{AppCore, TabRoute, TabRoutes, WindowRegistry, WindowState};
 use crate::config::{
-    is_reserved_session_group, AuthMethod, ConfigStore, OutputHighlightRule,
+    is_reserved_session_group, AuthMethod, ConfigStore, HistoryEntry, OutputHighlightRule,
     Secret, Session, SessionKind,
 };
 use crate::i18n::t;
@@ -3011,11 +3011,18 @@ fn open_window(
         &all_quick_group_names(&store.borrow()),
     ));
     window.set_command_history(history_model(&store.borrow()));
-    window.set_history_view(history_view_model(&store.borrow(), "")); // #101
-    // (#cmdbar-suggest 2026-10-24) 打字补全候选（快捷命令 + 历史），空 query 只留历史。
-    let (suggest_view, suggest_kind) = suggest_models(&store.borrow(), "");
-    window.set_suggest_view(suggest_view);
-    window.set_suggest_kind(suggest_kind);
+    {
+        let s = store.borrow();
+        let (total, pinned) = history_counts(&s);
+        window.set_history_total(total);
+        window.set_history_pinned(pinned);
+        window.set_history_rows(history_row_model(
+            s.history_entries(),
+            "",
+            HIST_FILTER_ALL,
+            HIST_SORT_RECENT,
+        ));
+    }
 
     // Interface setting: SFTP follows the terminal's cd. The shell event pumps
     // read this AtomicBool on every CwdChanged, so toggling applies live to
@@ -10787,44 +10794,123 @@ fn wire_key_input(
             std::thread::spawn(move || clipboard_set_text(t));
         });
     }
-    // Delete a history entry (#96). The command-history model remains in
-    // storage order, so this legacy row index still maps straight through.
-    {
+    // ── 历史命令面板 (#cmd-history-panel 2026-10-27) ─────────────────────
+    // 视图状态（过滤词 / 过滤档 / 排序档）由 Rust 侧持有；任何一次写操作之后
+    // 都走同一个 `refresh_history`，避免散落多处 set 把几个模型刷成不同步。
+    #[derive(Clone)]
+    struct HistViewState {
+        query: String,
+        filter: i32,
+        sort: i32,
+    }
+    let hist_view = Rc::new(RefCell::new(HistViewState {
+        query: String::new(),
+        filter: HIST_FILTER_ALL,
+        sort: HIST_SORT_RECENT,
+    }));
+    // 单条删除的撤销位：删的时候把 (条目, 原索引) 存下来，撤销时原样插回。
+    let last_deleted: Rc<RefCell<Option<(HistoryEntry, usize)>>> = Rc::new(RefCell::new(None));
+
+    let refresh_history: Rc<dyn Fn()> = {
         let store_rc = store.clone();
         let weak = window.as_weak();
-        window.on_delete_history(move |i: i32| {
+        let hist_view = hist_view.clone();
+        Rc::new(move || {
+            let Some(w) = weak.upgrade() else { return };
+            let s = store_rc.borrow();
+            let v = hist_view.borrow();
+            w.set_history_rows(history_row_model(
+                s.history_entries(),
+                &v.query,
+                v.filter,
+                v.sort,
+            ));
+            let (total, pinned) = history_counts(&s);
+            w.set_history_total(total);
+            w.set_history_pinned(pinned);
+            // 旧模型继续喂：命令栏 ↑ 回溯与「发送命令」窗左栏还在用它。
+            w.set_command_history(history_model(&s));
+        })
+    };
+
+    {
+        let hist_view = hist_view.clone();
+        let refresh = refresh_history.clone();
+        window.on_history_search(move |query: SharedString| {
+            hist_view.borrow_mut().query = query.to_string();
+            refresh();
+        });
+    }
+    {
+        let hist_view = hist_view.clone();
+        let refresh = refresh_history.clone();
+        window.on_history_filter(move |filter: i32| {
+            hist_view.borrow_mut().filter = filter;
+            refresh();
+        });
+    }
+    {
+        let hist_view = hist_view.clone();
+        let refresh = refresh_history.clone();
+        window.on_history_sort(move |sort: i32| {
+            hist_view.borrow_mut().sort = sort;
+            refresh();
+        });
+    }
+    {
+        let store_rc = store.clone();
+        let refresh = refresh_history.clone();
+        let last_deleted = last_deleted.clone();
+        window.on_history_delete(move |cmd: SharedString| {
             {
                 let mut s = store_rc.borrow_mut();
-                let idx = i as usize;
-                if idx < s.command_history().len() {
-                    s.remove_command_history(idx);
+                if let Some(slot) = s.remove_history_entry(cmd.as_str()) {
+                    *last_deleted.borrow_mut() = Some(slot);
                     let _ = s.save();
                 }
             }
-            if let Some(w) = weak.upgrade() {
-                w.set_command_history(history_model(&store_rc.borrow()));
-            }
+            refresh();
         });
     }
-    // History search (#101): filter the dropdown by a case-insensitive substring.
-    // The current query is shared so a delete from a filtered view re-filters.
-    let hist_query: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
     {
         let store_rc = store.clone();
-        let weak = window.as_weak();
-        let hist_query = hist_query.clone();
-        window.on_search_history(move |query: SharedString| {
-            *hist_query.borrow_mut() = query.to_string();
-            if let Some(w) = weak.upgrade() {
-                let s = store_rc.borrow();
-                w.set_history_view(history_view_model(&s, &query));
-                // (#cmdbar-suggest 2026-10-24) 同一个 query 顺手把补全候选算好：
-                // 打字时的补全框读 suggest-*（快捷命令 + 历史），点时钟打开的
-                // 完整面板仍读 history-view（只要历史）。
-                let (view, kind) = suggest_models(&s, &query);
-                w.set_suggest_view(view);
-                w.set_suggest_kind(kind);
+        let refresh = refresh_history.clone();
+        let last_deleted = last_deleted.clone();
+        window.on_history_restore(move || {
+            let Some((entry, index)) = last_deleted.borrow_mut().take() else {
+                return;
+            };
+            {
+                let mut s = store_rc.borrow_mut();
+                s.restore_history_entry(entry, index);
+                let _ = s.save();
             }
+            refresh();
+        });
+    }
+    {
+        let store_rc = store.clone();
+        let refresh = refresh_history.clone();
+        window.on_history_pin(move |cmd: SharedString, pinned: bool| {
+            {
+                let mut s = store_rc.borrow_mut();
+                if s.set_history_pinned(cmd.as_str(), pinned) {
+                    let _ = s.save();
+                }
+            }
+            refresh();
+        });
+    }
+    {
+        let store_rc = store.clone();
+        let refresh = refresh_history.clone();
+        window.on_history_clear(move || {
+            {
+                let mut s = store_rc.borrow_mut();
+                s.clear_command_history();
+                let _ = s.save();
+            }
+            refresh();
         });
     }
     // (#cmd-hint 2026-10-27) 四段式命令提示框：按**整行**重算四段数据。
@@ -10878,32 +10964,6 @@ fn wire_key_input(
             };
             let model = crate::command_hint::hint_model(&s, line.as_str(), context);
             command_hint_ui::apply_hint_model(&w, &model);
-        });
-    }
-    // Delete a history entry by its command text (#101) — index-free so it works
-    // from the filtered dropdown view.
-    {
-        let store_rc = store.clone();
-        let weak = window.as_weak();
-        let hist_query = hist_query.clone();
-        window.on_delete_history_cmd(move |cmd: SharedString| {
-            {
-                let mut s = store_rc.borrow_mut();
-                if let Some(idx) = s.command_history().iter().position(|c| c == cmd.as_str()) {
-                    s.remove_command_history(idx);
-                    let _ = s.save();
-                }
-            }
-            if let Some(w) = weak.upgrade() {
-                let s = store_rc.borrow();
-                w.set_command_history(history_model(&s));
-                let q = hist_query.borrow().clone();
-                w.set_history_view(history_view_model(&s, &q));
-                // (#cmdbar-suggest 2026-10-24) 删掉一条后补全候选也要少一条。
-                let (view, kind) = suggest_models(&s, &q);
-                w.set_suggest_view(view);
-                w.set_suggest_kind(kind);
-            }
         });
     }
     // Runtime-only collapse state for quick-command groups (#55) — like the

@@ -49,6 +49,7 @@ import { ConfirmDialog } from "confirm_dialog.slint";
 import { LabeledInput, PrimaryButton, GhostButton, DockExpandButton, IconButton, ToolStrip, Scrim, DialogClose } from "widgets.slint";
 import { TerminalView, TermSpan, TermMatch, QuickCmd, QuickDockPanel, SendScope } from "terminal_view.slint";
 import { HintRow } from "command_hint.slint";
+import { HistoryRow } from "history_panel.slint";
 import { RemoteDesktopView } from "remote_desktop_view.slint";
 import { SftpEntry, SftpTreeNode, TunnelInfo } from "sftp_panel.slint";
 import { ProcWindow, ProcRow } from "proc_window.slint";
@@ -1197,11 +1198,10 @@ export component AppWindow inherits Window {
     property <bool> quick-external-send-enter;
     property <int> quick-external-sequence;
     in property <[string]> command-history;          // oldest first (newest last, #113)
-    in property <[string]> history-view;             // filtered dropdown, oldest first (newest last, #101)
-    // (#cmdbar-suggest 2026-10-24) 打字时补全候选：快捷命令（在前）+ 历史匹配，
-    // 与 history-view 分开（完整历史面板只列历史）。kind 与 view 等长。
-    in property <[string]> suggest-view;
-    in property <[int]> suggest-kind;
+    // (#cmd-history-panel 2026-10-27) 历史面板的数据（已过滤/已排序/文案已算好）。
+    in property <[HistoryRow]> history-rows;
+    in property <int> history-total: 0;
+    in property <int> history-pinned: 0;
     // (#cmd-hint 2026-10-27) 四段式命令提示框的数据（高保真稿
     // docs/design/terminal-command-hint-hifi-2026-10-27.html）。
     // Rust 在 hint-query 回调里按整行重算四列后写回；阶段判定、子命令表、
@@ -1236,9 +1236,14 @@ export component AppWindow inherits Window {
     // "A".."D" = 某个同步频道（见 terminal_view 的 scope-sel）。
     callback run-command(string /* tab-id */, string /* cmd */, string /* scope */);
     callback copy-text(string);                 // copy a history command (#96)
-    callback delete-history(int /* index */);   // remove a history entry (#96)
-    callback delete-history-cmd(string /* cmd */);   // remove a history entry by command (#101)
-    callback search-history(string /* query */);     // filter the history dropdown (#101)
+    // (#cmd-history-panel 2026-10-27) 历史面板的七个回调。
+    callback history-search(string /* query */);
+    callback history-filter(int /* 0 全部 / 1 置顶 / 2 今天 */);
+    callback history-sort(int /* 0 最近 / 1 常用 */);
+    callback history-delete(string /* cmd */);
+    callback history-pin(string /* cmd */, bool /* pinned */);
+    callback history-restore();
+    callback history-clear();
     // (#cmd-hint 2026-10-27) 按当前命令行整行重算提示框四段数据（同步回调）。
     callback hint-query(string /* line */);
     // (#cmd-hint-p1 2026-10-27) 终端内联：把第 i 条候选写进 PTY。
@@ -3505,9 +3510,9 @@ export component AppWindow inherits Window {
                         quick-external-sequence: root.quick-external-sequence;
                         focus-sequence: root.terminal-focus-sequence;
                         command-history: root.command-history;
-                        history-view: root.history-view;
-                        suggest-view: root.suggest-view;
-                        suggest-kind: root.suggest-kind;
+                        history-rows: root.history-rows;
+                        history-total: root.history-total;
+                        history-pinned: root.history-pinned;
                         // (#cmd-hint 2026-10-27) 四段式提示框的四段数据
                         hint-rows: root.hint-rows;
                         hint-phase: root.hint-phase;
@@ -3527,9 +3532,14 @@ export component AppWindow inherits Window {
                         // 命令栏 ↗ / Ctrl+Shift+E：交给 Rust 打开独立窗口
                         open-send-window(draft) => { root.open-send-window(draft); }
                         copy-text(t) => { root.copy-text(t); }
-                        delete-history(i) => { root.delete-history(i); }
-                        delete-history-cmd(c) => { root.delete-history-cmd(c); }
-                        search-history(q) => { root.search-history(q); }
+                        // (#cmd-history-panel 2026-10-27)
+                        history-search(q) => { root.history-search(q); }
+                        history-filter(f) => { root.history-filter(f); }
+                        history-sort(s) => { root.history-sort(s); }
+                        history-delete(c) => { root.history-delete(c); }
+                        history-pin(c, on) => { root.history-pin(c, on); }
+                        history-restore() => { root.history-restore(); }
+                        history-clear() => { root.history-clear(); }
                         // (#cmd-hint 2026-10-27) 按整行重算提示框数据（同步回调）
                         hint-query(line) => { root.hint-query(line); }
                         manage-quick-commands() => {
@@ -7452,8 +7462,10 @@ export component AppWindow inherits Window {
                        color: Theme.text-secondary; font-size: Theme.fs-xs; }
                 ShortcutRow { keys: "Enter"; desc: root.lang-en ? "Send command" : "发送命令"; }
                 ShortcutRow { keys: "↑ / ↓"; desc: root.lang-en ? "Previous / next in history" : "上一条 / 下一条历史"; }
-                ShortcutRow { keys: root.is-mac ? "⌃R" : "Ctrl+R"; desc: root.lang-en ? "Search history (↑↓ select, Enter run, Esc close)" : "搜索命令历史(↑↓ 选择,回车执行,Esc 关闭)"; }
-                ShortcutRow { keys: "Esc"; desc: root.lang-en ? "Close history / focus terminal" : "关闭历史 / 聚焦终端"; }
+                // (#cmd-history-panel 2026-10-27) 历史面板重建后 Ctrl+R 的真实行为：
+                // 打开面板（键入即搜索），不再是没有绘制代码的旧下拉。
+                ShortcutRow { keys: root.is-mac ? "⌃R" : "Ctrl+R"; desc: root.lang-en ? "Open command history (type to search)" : "打开命令历史（键入即搜索）"; }
+                ShortcutRow { keys: "Esc"; desc: root.lang-en ? "Clear search / close history / focus terminal" : "清搜索 / 关历史 / 聚焦终端"; }
                 ShortcutRow { keys: root.is-mac ? "⌃A" : "Ctrl+A"; desc: root.lang-en ? "Move to start of line" : "移到行首"; }
                 ShortcutRow { keys: root.is-mac ? "⌃E" : "Ctrl+E"; desc: root.lang-en ? "Move to end of line" : "移到行尾"; }
                 ShortcutRow { keys: root.is-mac ? "⌃K" : "Ctrl+K"; desc: root.lang-en ? "Delete to end of line" : "删除到行尾"; }

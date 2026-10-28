@@ -3,11 +3,201 @@ use super::*;
 pub(super) fn history_model(store: &ConfigStore) -> ModelRc<SharedString> {
     let rows: Vec<SharedString> = store
         .command_history()
-        .iter()
-        .map(|s| s.clone().into())
+        .into_iter()
+        .map(|s| s.into())
         .collect();
     ModelRc::from(Rc::new(VecModel::from(rows)))
 }
+
+// ── 历史命令面板（#cmd-history-panel 2026-10-27）────────────────────────
+//
+// 数据流：`ConfigStore::history_entries()`（存储序 = 最旧在前）
+//        → 过滤 → 排序 → `HistoryRow`（UI 只负责画）。
+//
+// ★ 排序有一条硬规则：**「最近」档必须反转存储序，不能按 `last_used` 排序**。
+//   `last_used` 只有秒级精度，连续执行多条会在同一秒并列；一旦并列，
+//   稳定排序退回存储序 —— 而存储序是最旧在前，于是「最早执行的那条排第一」。
+//   存储序的「位置」本身就精确编码了 recency（push 总是移到末尾），
+//   反转即可，零并列。原型里踩过这个坑，别再踩第二次。
+
+/// 历史面板的过滤档（与 `ui/history_panel.slint` 的 `filter` 属性一一对应）。
+pub(super) const HIST_FILTER_ALL: i32 = 0;
+pub(super) const HIST_FILTER_PINNED: i32 = 1;
+pub(super) const HIST_FILTER_TODAY: i32 = 2;
+
+/// 历史面板的排序档（同上）。
+pub(super) const HIST_SORT_RECENT: i32 = 0;
+pub(super) const HIST_SORT_FREQ: i32 = 1;
+
+/// 「今天」档的时间窗。
+const HIST_TODAY_SECS: i64 = 86_400;
+
+fn now_unix_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// 相对时间文案。`last_used == 0` = 从旧 `Vec<String>` 迁移来的条目，
+/// 时间无从考证 —— 显示「较早」，不编假时间戳。
+/// Rust 侧动态文案走 `i18n::t`（同 hint-phase 的做法），不走 @tr。
+fn history_ago_label(last_used: i64, now: i64) -> String {
+    use crate::i18n::t;
+    if last_used <= 0 {
+        return t("较早", "older").to_string();
+    }
+    let delta = (now - last_used).max(0);
+    if delta < 60 {
+        t("刚刚", "just now").to_string()
+    } else if delta < 3_600 {
+        format!("{} {}", delta / 60, t("分钟前", "min ago"))
+    } else if delta < HIST_TODAY_SECS {
+        format!("{} {}", delta / 3_600, t("小时前", "hours ago"))
+    } else {
+        format!("{} {}", delta / HIST_TODAY_SECS, t("天前", "days ago"))
+    }
+}
+
+/// 次数文案（元信息第一段；高保真 §4：它随排序档变换视觉权重，所以必须
+/// 独立于时间成段，不能拼成一整串）。
+fn history_uses_label(uses: u32) -> String {
+    use crate::i18n::t;
+    format!("{} {}", uses, t("次", "times"))
+}
+
+/// 把 `cmd` 按「第一个不区分大小写的 `q` 命中」拆成 pre/hit/post 三段；
+/// 无命中 → hit 为空。Slint 1.18 的 string 没有 find/substr，高亮位置只能
+/// 在 Rust 侧算好再交给 UI（高保真 §8 的硬要求）。
+///
+/// 拆分点必须落在字符边界上：`to_lowercase` 会改变个别字符的字节长度
+/// （如 `İ`），直接拿小写串的字节下标切原串可能切进 UTF-8 序列中间 ——
+/// 遇到这种情况宁可不高亮，也不能 panic。
+fn split_hit(cmd: &str, q: &str) -> (String, String, String) {
+    if q.is_empty() {
+        return (String::new(), String::new(), String::new());
+    }
+    let Some(b) = cmd.to_lowercase().find(q) else {
+        return (String::new(), String::new(), String::new());
+    };
+    let end = b + q.len();
+    if !cmd.is_char_boundary(b) || !cmd.is_char_boundary(end) {
+        return (String::new(), String::new(), String::new());
+    }
+    (
+        cmd[..b].to_string(),
+        cmd[b..end].to_string(),
+        cmd[end..].to_string(),
+    )
+}
+
+/// 面板行数据（纯 Rust 侧，便于单测；`history_row_model` 再转成 Slint 结构）。
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct HistoryRowData {
+    pub cmd: String,
+    /// 命中高亮三段：pre + hit + post 拼回 = cmd（hit 为空 = 无搜索命中）。
+    pub pre: String,
+    pub hit: String,
+    pub post: String,
+    /// 「7 次」／「7 times」
+    pub uses_label: String,
+    /// 「 · 4 分钟前」（前导分隔符在这边拼好，UI 直接两段并排）
+    pub time_label: String,
+    pub pinned: bool,
+}
+
+/// 过滤 + 排序，返回**显示顺序**的行。
+///
+/// 纯函数（只吃 `&[HistoryEntry]`）—— 单测直接构造条目即可，不必建 ConfigStore。
+pub(super) fn history_rows(
+    entries: &[HistoryEntry],
+    query: &str,
+    filter: i32,
+    sort: i32,
+    now: i64,
+) -> Vec<HistoryRowData> {
+    let q = query.trim().to_lowercase();
+    // (存储下标, 条目)：下标越靠后 = 越近使用，排序破平时当第二键。
+    let mut picked: Vec<(usize, &HistoryEntry)> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| match filter {
+            HIST_FILTER_PINNED => e.pinned,
+            HIST_FILTER_TODAY => {
+                e.last_used > 0 && now.saturating_sub(e.last_used) <= HIST_TODAY_SECS
+            }
+            _ => true,
+        })
+        .filter(|(_, e)| q.is_empty() || e.cmd.to_lowercase().contains(&q))
+        .collect();
+
+    match sort {
+        HIST_SORT_FREQ => picked.sort_by(|a, b| {
+            // 次数降序；同次数按存储位置降序（越靠后越近）。
+            b.1.uses.cmp(&a.1.uses).then_with(|| b.0.cmp(&a.0))
+        }),
+        // 最近：存储序反转（零并列）。**不要**换成按 last_used 排序。
+        _ => picked.reverse(),
+    }
+
+    picked
+        .into_iter()
+        .map(|(_, e)| {
+            // 无命中时 pre/hit/post 全空，UI 直接画 cmd 整串（省一个 Text 三重奏）。
+            let (pre, hit, post) = if q.is_empty() {
+                (String::new(), String::new(), String::new())
+            } else {
+                split_hit(&e.cmd, &q)
+            };
+            HistoryRowData {
+                cmd: e.cmd.clone(),
+                pre,
+                hit,
+                post,
+                uses_label: history_uses_label(e.uses),
+                time_label: format!(" · {}", history_ago_label(e.last_used, now)),
+                pinned: e.pinned,
+            }
+        })
+        .collect()
+}
+
+/// 面板模型。Slint 侧只拿到「已排好序、已算好文案」的行。
+///
+/// 传 `&[HistoryEntry]` 而不是 `&ConfigStore`：这一层可以脱离配置存储做单测
+/// （Slint 结构体的字段映射最容易在重构时静默写漏）。
+pub(super) fn history_row_model(
+    entries: &[HistoryEntry],
+    query: &str,
+    filter: i32,
+    sort: i32,
+) -> ModelRc<crate::ui::HistoryRow> {
+    let now = now_unix_secs();
+    let rows: Vec<crate::ui::HistoryRow> = history_rows(entries, query, filter, sort, now)
+        .into_iter()
+        .map(|r| crate::ui::HistoryRow {
+            cmd: r.cmd.into(),
+            pre: r.pre.into(),
+            hit: r.hit.into(),
+            post: r.post.into(),
+            uses_label: r.uses_label.into(),
+            time_label: r.time_label.into(),
+            pinned: r.pinned,
+        })
+        .collect();
+    ModelRc::from(Rc::new(VecModel::from(rows)))
+}
+
+/// 历史条数（页脚「共 N 条」）+ 置顶条数（清空确认的「保留 N 条」）。
+pub(super) fn history_counts(store: &ConfigStore) -> (i32, i32) {
+    let entries = store.history_entries();
+    let pinned = entries.iter().filter(|e| e.pinned).count() as i32;
+    (entries.len() as i32, pinned)
+}
+
+#[cfg(test)]
+#[path = "../../tests/app/command_history/mod.rs"]
+mod history_view_tests;
 
 /// 预设/自定义规则模型的公共取色入口：ANSI 槽位 → 当前主题实色。
 /// (#hl-settings-hifi) 弹框里的色点必须与终端里真正染上去的颜色同源，否则
@@ -191,65 +381,6 @@ pub(super) fn apply_highlight_rules(window: &AppWindow, bufs: &TermBuffers, stor
         rebuild_tab_display(window, bufs, &tab_id);
     }
 }
-
-/// Build the filtered history-view rows for the dropdown, oldest first with the
-/// newest command at the bottom (#55, #101). The command-history model shares
-/// the same storage order so ↑/↓ recall keeps its shell-like semantics.
-pub(super) fn history_view_rows(history: &[String], query: &str) -> Vec<SharedString> {
-    let q = query.trim().to_lowercase();
-    history
-        .iter()
-        .filter(|command| q.is_empty() || command.to_lowercase().contains(&q))
-        .map(|command| command.clone().into())
-        .collect()
-}
-
-/// Build the filtered history-view model for the dropdown: case-insensitive
-/// substring matches of `query`, ordered from oldest to newest (#101).
-pub(super) fn history_view_model(store: &ConfigStore, query: &str) -> ModelRc<SharedString> {
-    let rows = history_view_rows(store.command_history(), query);
-    ModelRc::from(Rc::new(VecModel::from(rows)))
-}
-
-/// (#cmdbar-suggest 2026-10-24) 打字时补全框的候选：**自定义指令集在前、
-/// 历史匹配在后**。返回 (展示文本, 类型)，两组等长；类型 1 = 快捷命令
-/// （UI 画 bolt 图标）、0 = 历史。
-///
-/// 和 `history_view_model` 分开是因为两者语义不同：点时钟打开的是「翻/搜
-/// 历史」，列历史就够；打字时是「我想执行什么」，自己配的指令集也该被找出来。
-/// 展示文本统一取 `command`（要执行的那串），`name` 只参与匹配 —— 否则
-/// 中文名的快捷命令点一下会把名字当命令发出去。
-pub(super) fn suggest_models(
-    store: &ConfigStore,
-    query: &str,
-) -> (ModelRc<SharedString>, ModelRc<i32>) {
-    let q = query.trim().to_lowercase();
-    let mut texts: Vec<SharedString> = Vec::new();
-    let mut kinds: Vec<i32> = Vec::new();
-    // 空 query 不端出指令集：补全框只在有输入时开，别让「刚聚焦」就刷一屏。
-    if !q.is_empty() {
-        for c in store.quick_commands() {
-            let name_hit = !c.name.trim().is_empty() && c.name.to_lowercase().contains(&q);
-            let cmd_hit = c.command.to_lowercase().contains(&q);
-            if name_hit || cmd_hit {
-                texts.push(c.command.clone().into());
-                kinds.push(1);
-            }
-        }
-    }
-    for row in history_view_rows(store.command_history(), query) {
-        texts.push(row);
-        kinds.push(0);
-    }
-    (
-        ModelRc::from(Rc::new(VecModel::from(texts))),
-        ModelRc::from(Rc::new(VecModel::from(kinds))),
-    )
-}
-
-#[cfg(test)]
-#[path = "../../tests/app/command_history/mod.rs"]
-mod history_view_tests;
 
 /// (#find-bar 2026-10-27 v3.6) 视口内文本匹配已由 terminal 域的
 /// `TermBuffer::find_scan_all` / `find_visible_rects` 替代（全缓冲 + case/regex）。

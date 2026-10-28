@@ -1,0 +1,1257 @@
+// (#cmd-history-panel 2026-10-27) 历史命令面板。
+//
+// 高保真稿：docs/design/history-panel-hifi-2026-10-27.html
+// 数据侧：src/app/terminal_ui.rs（history_rows / history_row_model）
+//
+// ★ 组件只负责「画 + 响应」，不认识命令栏也不认识终端：宿主算锚点、传数据。
+//   这是 command_hint.slint 已验证过的职责划分 —— 别再长出第二份实现。
+//
+// ★ 本文件的布局铁律（都是实测踩出来的，见 terminal_view.slint:104 的注释）：
+//   ① HorizontalLayout/VerticalLayout **不能写 alignment**——LayoutAlignment 是
+//     主轴对齐，一写就把 horizontal-stretch 归零，整行缩成 preferred 宽。
+//   ② 布局放在普通 Rectangle 里必须显式 `width:/height: parent`，否则缩在
+//     preferred 尺寸上（表现：整行内容挤在左边、垂直方向顶对齐）。
+//   ③ 布局里固定高的子项（搜索框 28、胶囊 24、键帽 15）会**顶对齐**——
+//     交叉轴没有对齐属性，要用「高度撑满的槽 + 槽内绝对居中」包一层。
+//
+// 四段结构（尺寸全部锁死，理由见高保真 §4）：
+//   ① 工具栏 46px（搜索 + 过滤胶囊 + 排序分段）
+//   ② 列表   list-rows × 38px + 8px（行数由宿主按可用高算，3–8；
+//            **只画可见行** —— §6：↑↓ 在可见行里循环）
+//   ③ 页脚   28px（键盘契约 + 命中计数 + 清空入口）
+//   ④ 浮层   撤销条 / 清空确认层 / 悬停全文卡（绝对定位，不推动布局）
+
+import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+
+// 一条历史命令。字段与 Rust 侧 `HistoryRowData` 一一对应。
+//
+// ★ 命中高亮是 **Rust 侧拆好的三段**（pre + hit + post 拼回 = cmd）：
+//   Slint 1.18 的 string 没有 find/substr，高亮位置只能在 Rust 算（高保真 §8）。
+//   hit 为空 = 无搜索命中，行内直接画 cmd 整串。
+export struct HistoryRow {
+    cmd: string,        // 命令原文（run / copy / delete / 全文卡用它）
+    pre: string,        // 命中前的片段
+    hit: string,        // 命中片段（accent + 加粗，不加底色块）
+    post: string,       // 命中后的片段
+    uses-label: string, // 「7 次」
+    time-label: string, // 「 · 4 分钟前」（分隔符在 Rust 侧拼好）
+    pinned: bool,
+}
+
+// 行内动作键：常态透明，悬停铺底（高保真 §4：24×24 · r4 · 13px 图标）。
+component HistAct inherits Rectangle {
+    in property <string> glyph;
+    in property <color> tint: Theme.text-secondary;
+    in property <color> hover-tint: Theme.text-primary;
+    in property <color> hover-bg: Theme.bg-hover;
+    // ★ 供父级把「鼠标在按钮上」并入显隐条件：按钮的 TouchArea 盖在行
+    //   TouchArea 上面，鼠标一进按钮，行的 has-hover 就翻 false ——
+    //   显隐只看行的话按钮会当场淡出、永远点不到（实测踩过）。
+    out property <bool> hovering: ta.has-hover;
+    callback clicked();
+
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    background: ta.has-hover ? root.hover-bg : transparent;
+    animate background { duration: 100ms; }
+
+    Icon {
+        glyph: root.glyph;
+        tint: ta.has-hover ? root.hover-tint : root.tint;
+        size: 13px;
+    }
+
+    ta := TouchArea {
+        mouse-cursor: default;
+        clicked => { root.clicked(); }
+    }
+}
+
+// 过滤胶囊（高保真 .pill：h24 · r12 · 11px；选中 accent-soft 底 +
+// accent-line 边 + accent 字）。
+component HistChip inherits Rectangle {
+    in property <string> label;
+    in property <bool> on: false;
+    callback clicked();
+
+    width: lbl.preferred-width + 18px;
+    height: 24px;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: root.on ? Theme.accent.with-alpha(0.42)
+        : (ch-ta.has-hover ? Theme.border-strong : Theme.border-subtle);
+    background: root.on ? Theme.accent-soft
+        : (ch-ta.has-hover ? Theme.bg-hover : transparent);
+    animate background { duration: 110ms; }
+
+    lbl := Text {
+        text: root.label;
+        color: root.on ? Theme.accent-solid
+            : (ch-ta.has-hover ? Theme.text-primary : Theme.text-secondary);
+        font-size: 11px;
+        font-weight: root.on ? Theme.fw-strong : Theme.fw-regular;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    ch-ta := TouchArea {
+        mouse-cursor: default;
+        clicked => { root.clicked(); }
+    }
+}
+
+// 页脚键位里的一个键帽（高保真 §4 表：font-mono 9.5px + border-strong +
+// 底边 2px —— Slint 边框不分边，用一条 1phx 内衬补出）。
+component HistKey inherits Rectangle {
+    in property <string> label;
+
+    height: 15px;
+    width: key-lbl.preferred-width + 7px;
+    border-radius: 3px;
+    border-width: 1px;
+    border-color: Theme.border-strong;
+    background: Theme.bg-panel;
+
+    Rectangle {
+        x: 1phx;
+        y: parent.height - 2phx;
+        width: parent.width - 2phx;
+        height: 1phx;
+        background: Theme.border-strong;
+    }
+
+    key-lbl := Text {
+        text: root.label;
+        color: Theme.text-secondary;
+        font-family: Theme.font-mono;
+        font-size: 9.5px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+}
+
+// 页脚键帽组的动词短语。
+component HistVerb inherits Text {
+    text: root.label;
+    color: Theme.text-muted;
+    font-size: 10px;
+    vertical-alignment: center;
+    in property <string> label;
+}
+
+// 排序分段里的一枚（比过滤胶囊更小一档：内高 18 · 10.5px）。
+component HistSortBtn inherits Rectangle {
+    in property <string> label;
+    in property <bool> on: false;
+    callback clicked();
+
+    height: 18px;
+    width: lbl.preferred-width + 14px;
+    border-radius: 10px;
+    background: root.on ? Theme.accent-soft
+        : (s-ta.has-hover ? Theme.bg-hover : transparent);
+    animate background { duration: 110ms; }
+
+    lbl := Text {
+        text: root.label;
+        color: root.on ? Theme.accent-solid
+            : (s-ta.has-hover ? Theme.text-primary : Theme.text-muted);
+        font-size: 10.5px;
+        font-weight: root.on ? Theme.fw-strong : Theme.fw-regular;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    s-ta := TouchArea {
+        mouse-cursor: default;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component HistoryPanel inherits Rectangle {
+    // ── 宿主传入 ────────────────────────────────────────────────────────
+    in property <[HistoryRow]> rows;
+    in property <bool> open: false;
+    in property <int> total-count: 0;
+    in property <int> pinned-count: 0;
+    // 列表可见行数（3–8），由宿主按「命令栏上方可用高」算好。
+    in property <int> list-rows: 8;
+
+    // ── 视图状态（Rust 侧持有真值，这里只是镜像 + 立即反馈）─────────────
+    in-out property <string> query: "";
+    in-out property <int> filter: 0;   // 0 全部 / 1 置顶 / 2 今天
+    in-out property <int> sort: 0;     // 0 最近 / 1 常用
+    property <int> selected: 0;
+
+    // ── 回调 ────────────────────────────────────────────────────────────
+    callback search(string);
+    callback filter-changed(int);
+    callback sort-changed(int);
+    callback run(string);
+    callback fill(string);
+    callback copy(string);
+    callback delete(string);
+    callback pin(string, bool);
+    callback restore();
+    callback clear-all();
+    callback close();
+
+    // ── 内部状态 ────────────────────────────────────────────────────────
+    property <bool> confirming: false;
+    property <bool> armed: false;
+    // 底部浮条：回执/撤销共用一条（高保真 §4 ④）。undo-cmd 非空 = 有东西
+    // 可撤销（显示撤销钮 + 底部进度条）；空 = 纯回执（无钮，2.2s 自动收）。
+    property <bool> undo-visible: false;
+    property <string> undo-cmd: "";
+    property <string> toast-text: "";
+    // 进度条计时：60ms 一跳，undo 档 5s ≈ 83 跳、纯回执 2.2s ≈ 37 跳。
+    property <int> toast-ticks: 0;
+    property <int> toast-limit: root.undo-cmd != "" ? 83 : 37;
+    // 悬停全文卡（高保真 §2 ②：长命令被省略号截断时的全文查看）。
+    property <int> hover-pop-idx: -1;
+    property <string> hover-pop-text: "";
+    // (#349 同款坑) 面板刚实例化就同步 focus() 会撞 Windows IME 的半构建布局
+    // （"Recursion detected"），必须延迟到下一个事件循环 tick。
+    property <bool> search-focus-pending: false;
+
+    property <length> row-h: 38px;
+    property <length> list-h: root.list-rows * root.row-h + 8px;
+
+    // 可见行数：数据可能多于画出来的行（高保真 §6 —— 选中项只在可见行里循环）。
+    function visible-count() -> int {
+        return Math.min(root.rows.length, root.list-rows);
+    }
+
+    // ★ 面板压终端上不能用 popup-bg（与终端底同色会「消失」）——
+    //   必须升到 bg-elevated + border-strong 描边（高保真 §4 硬约束）。
+    //   边线框配方与「高亮设置」弹框同款：hairline 细线 + border-strong
+    //   （highlight_dialog.slint 的 dlg 根节点）；立体感靠比 terminal 底
+    //   亮一档的 elevated 底 + 这圈细边，不画真投影。
+    background: Theme.bg-elevated;
+    border-radius: Theme.radius-lg;
+    border-width: Theme.hairline();
+    border-color: Theme.border-strong;
+    drop-shadow-blur: 26px;
+    drop-shadow-color: transparent;
+    clip: true;
+    visible: root.open;
+
+    // ★ 面板是 `if` 条件实例：每次打开都是**全新实例**。「打开即聚焦搜索框」
+    //   必须挂 init —— 键盘契约（§6）是「搜索框持焦的单焦点模式」。
+    init => {
+        root.search-focus-pending = true;
+    }
+
+    // 选中项/悬停卡夹进合法范围（过滤/排序/删除都会让 rows 变短）。
+    // 删掉一行后「顶上来那条」占据原位；删的是最后一条则退到倒数第二条。
+    changed rows => {
+        root.hover-pop-idx = -1;
+        if (root.selected >= root.visible-count()) {
+            root.selected = Math.max(0, root.visible-count() - 1);
+        }
+        if (root.selected < 0) { root.selected = 0; }
+    }
+
+    // 回执/撤销浮条的计时器：60ms 一跳驱动倒计时与进度条。
+    toast-timer := Timer {
+        interval: 60ms;
+        running: root.undo-visible;
+        triggered => {
+            root.toast-ticks += 1;
+            if (root.toast-ticks >= root.toast-limit) {
+                root.undo-visible = false;
+                root.undo-cmd = "";
+                root.toast-ticks = 0;
+            }
+        }
+    }
+
+    // 延迟聚焦搜索框（0ms = 下一个事件循环 tick，避开 IME 半构建布局）。
+    focus-timer := Timer {
+        interval: 0ms;
+        running: root.search-focus-pending;
+        triggered => {
+            root.search-focus-pending = false;
+            search-input.focus();
+        }
+    }
+
+    // ★ 吞点击层：面板上所有非交互区域的点击就地吃掉，否则穿透到命令栏的
+    //   隐形遮罩（「点一下搜索框，弹框就消失」）。放在第一个子元素位置。
+    TouchArea { }
+
+    VerticalLayout {
+        width: parent.width;
+        height: parent.height;
+        spacing: 0px;
+
+        // ── ① 工具栏 46px ─────────────────────────────────────────────
+        Rectangle {
+            height: 46px;
+            width: parent.width;
+            background: Theme.bg-panel;
+
+            Rectangle {
+                y: parent.height - 1phx;
+                width: parent.width;
+                height: 1phx;
+                background: Theme.border-subtle;
+            }
+
+            HorizontalLayout {
+                width: parent.width;
+                height: parent.height;
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 8px;
+                // ⚠️ 不能写 alignment: start —— 一写 horizontal-stretch 全归零，
+                //    排序分段就不贴右了（terminal_view.slint:104 同款坑）。
+
+                // 搜索框：槽撑满工具栏高，槽内垂直居中 28px 样式盒（铁律 ③）
+                Rectangle {
+                    height: parent.height;
+                    horizontal-stretch: 1;
+                    min-width: 140px;
+                    max-width: 300px;
+
+                    Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        width: parent.width;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: search-input.has-focus
+                            ? Theme.accent.with-alpha(0.42) : Theme.border-subtle;
+                        background: Theme.field;
+                        drop-shadow-blur: search-input.has-focus ? 4px : 0px;
+                        drop-shadow-color: Theme.accent-soft;
+                        animate border-color { duration: 120ms; }
+
+                        HorizontalLayout {
+                            width: parent.width;
+                            height: parent.height;
+                            padding-left: 8px;
+                            padding-right: 6px;
+                            spacing: 6px;
+
+                            Icon {
+                                glyph: "search";
+                                tint: Theme.text-muted;
+                                size: 12px;
+                            }
+
+                            search-input := TextInput {
+                                horizontal-stretch: 1;
+                                height: parent.height;
+                                color: Theme.text-primary;
+                                font-family: Theme.ui-font-family;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                single-line: true;
+                                edited => { root.query = self.text; root.search(self.text); root.selected = 0; }
+
+                                key-pressed(e) => {
+                                    // ★ 确认态（高保真 §10 ③）：只认 Esc（退出确认）与
+                                    //   Tab/←→（两键间切换）；回车等价「点一下确认键」
+                                    //   但**仍不解锁**。其余键全部吞掉，不许穿透。
+                                    if (root.confirming) {
+                                        if (e.text == Key.Escape) {
+                                            root.confirming = false;
+                                            root.armed = false;
+                                            accept
+                                        } else if (e.text == Key.Tab || e.text == Key.LeftArrow || e.text == Key.RightArrow) {
+                                            root.armed = !root.armed;
+                                            accept
+                                        } else if (e.text == Key.Return) {
+                                            if (root.armed) {
+                                                root.clear-all();
+                                                root.confirming = false;
+                                                root.armed = false;
+                                                root.undo-cmd = "";
+                                                root.toast-text = @tr("History cleared");
+                                                root.toast-ticks = 0;
+                                                root.undo-visible = true;
+                                            } else {
+                                                root.armed = true;
+                                            }
+                                            accept
+                                        } else {
+                                            accept
+                                        }
+                                    } else if ((Theme.is-mac ? e.modifiers.meta : e.modifiers.control)
+                                            && (e.text == "z" || e.text == "Z")) {
+                                        // Ctrl+Z 撤销上一次单条删除（§6 键盘契约）
+                                        if (root.undo-visible && root.undo-cmd != "") {
+                                            root.restore();
+                                            root.undo-cmd = "";
+                                            root.toast-text = @tr("Restored");
+                                            root.toast-ticks = 0;
+                                            root.undo-visible = true;
+                                        }
+                                        accept
+                                    } else if (e.text == Key.DownArrow) {
+                                        if (root.visible-count() > 0) {
+                                            root.selected = Math.mod(root.selected + 1, root.visible-count());
+                                        }
+                                        accept
+                                    } else if (e.text == Key.UpArrow) {
+                                        if (root.visible-count() > 0) {
+                                            root.selected = root.selected <= 0
+                                                ? root.visible-count() - 1 : root.selected - 1;
+                                        }
+                                        accept
+                                    } else if (e.text == Key.Home) {
+                                        // 列表是新→旧：Home = 最近那条（§6）
+                                        root.selected = 0;
+                                        accept
+                                    } else if (e.text == Key.End) {
+                                        if (root.visible-count() > 0) {
+                                            root.selected = root.visible-count() - 1;
+                                        }
+                                        accept
+                                    } else if (e.text == Key.PageDown) {
+                                        if (root.visible-count() > 0) {
+                                            root.selected = Math.min(root.visible-count() - 1, root.selected + 8);
+                                        }
+                                        accept
+                                    } else if (e.text == Key.PageUp) {
+                                        root.selected = Math.max(0, root.selected - 8);
+                                        accept
+                                    } else if (e.text == Key.Return) {
+                                        // 空态时 ↵ 不做事也不放行——避免把半截命令发出去
+                                        if (root.visible-count() > 0) {
+                                            root.run(root.rows[root.selected].cmd);
+                                        }
+                                        accept
+                                    } else if (e.text == Key.Tab) {
+                                        if (root.visible-count() > 0) {
+                                            root.fill(root.rows[root.selected].cmd);
+                                        }
+                                        accept
+                                    } else if (e.text == Key.Delete && self.text == "") {
+                                        // 只在搜索框为空时接管：有字时 Del 必须删字符（§6）
+                                        if (root.visible-count() > 0) {
+                                            root.undo-cmd = root.rows[root.selected].cmd;
+                                            root.delete(root.undo-cmd);
+                                            root.toast-text = @tr("Deleted 1 entry");
+                                            root.toast-ticks = 0;
+                                            root.undo-visible = true;
+                                        }
+                                        accept
+                                    } else if (e.text == Key.Escape) {
+                                        // 两段式：先清搜索，再关面板（§6）
+                                        if (self.text != "") {
+                                            self.text = "";
+                                            root.query = "";
+                                            root.search("");
+                                            root.selected = 0;
+                                        } else {
+                                            root.close();
+                                        }
+                                        accept
+                                    } else {
+                                        reject
+                                    }
+                                }
+                            }
+                        }
+
+                        // 占位提示：Slint 的 TextInput 没有 placeholder 属性，
+                        // 与 HTML placeholder 同语义 —— 空时就叠一层灰字。
+                        if search-input.text == "" : Text {
+                            x: 26px;
+                            width: parent.width - 34px;
+                            height: parent.height;
+                            text: @tr("Type to search");
+                            color: Theme.text-muted;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+
+                        // 清空搜索：16px 圆 + 镂空 ×，有字才出现（高保真 .pb-srch .clr）
+                        if search-input.text != "" : Rectangle {
+                            x: parent.width - self.width - 5px;
+                            y: (parent.height - self.height) / 2;
+                            width: 16px;
+                            height: 16px;
+                            border-radius: 8px;
+                            background: clr-ta.has-hover ? Theme.accent-solid : transparent;
+                            animate background { duration: 100ms; }
+
+                            Icon {
+                                glyph: "close";
+                                tint: clr-ta.has-hover ? Theme.bg-panel : Theme.text-muted;
+                                size: 9px;
+                            }
+
+                            clr-ta := TouchArea {
+                                mouse-cursor: default;
+                                clicked => {
+                                    search-input.text = "";
+                                    root.query = "";
+                                    root.search("");
+                                    root.selected = 0;
+                                    search-input.focus();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 过滤胶囊（「看哪些」）：槽撑满高，槽内垂直居中胶囊排（铁律 ③）
+                Rectangle {
+                    height: parent.height;
+                    horizontal-stretch: 0;
+
+                    HorizontalLayout {
+                        y: (parent.height - self.height) / 2;
+                        height: 24px;
+                        width: parent.width;
+                        spacing: 4px;
+
+                        HistChip {
+                            label: @tr("All");
+                            on: root.filter == 0;
+                            clicked => { root.filter = 0; root.filter-changed(0); root.selected = 0; }
+                        }
+                        HistChip {
+                            label: @tr("Pinned");
+                            on: root.filter == 1;
+                            clicked => { root.filter = 1; root.filter-changed(1); root.selected = 0; }
+                        }
+                        HistChip {
+                            label: @tr("Today");
+                            on: root.filter == 2;
+                            clicked => { root.filter = 2; root.filter-changed(2); root.selected = 0; }
+                        }
+                    }
+                }
+
+                Rectangle { height: parent.height; horizontal-stretch: 1; }
+
+                // 排序分段（「按什么排」——与过滤分两组是高保真 §7 决策 05）。
+                // 槽撑满高，槽内垂直居中 24px 的分段盒（铁律 ③）。
+                Rectangle {
+                    height: parent.height;
+                    horizontal-stretch: 0;
+
+                    Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        width: parent.width;
+                        height: 24px;
+                        border-radius: 12px;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        background: Theme.bg-root;
+
+                        HorizontalLayout {
+                            width: parent.width;
+                            height: parent.height;
+                            padding: 2px;
+                            spacing: 0px;
+
+                            HistSortBtn {
+                                label: @tr("Recent");
+                                on: root.sort == 0;
+                                clicked => { root.sort = 0; root.sort-changed(0); root.selected = 0; }
+                            }
+                            HistSortBtn {
+                                label: @tr("Most used");
+                                on: root.sort == 1;
+                                clicked => { root.sort = 1; root.sort-changed(1); root.selected = 0; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── ② 列表（高度锁死 = list-rows × 38 + 8，面板不跳）────────────
+        Rectangle {
+            height: root.list-h;
+            width: parent.width;
+            background: transparent;
+            clip: true;
+
+            // 空态：与列表同高，两种文案共用（§5：面板高度不随状态变）
+            if root.rows.length == 0 : Rectangle {
+                width: parent.width;
+                height: parent.height;
+                VerticalLayout {
+                    width: parent.width;
+                    height: parent.height;
+                    alignment: center;
+                    spacing: 6px;
+                    padding-left: 24px;
+                    padding-right: 24px;
+
+                    Icon {
+                        glyph: "command-history";
+                        tint: Theme.text-muted;
+                        size: 26px;
+                        opacity: 0.5;
+                    }
+                    Text {
+                        text: root.total-count == 0 ? @tr("No history yet") : @tr("No matching commands");
+                        color: Theme.text-secondary;
+                        font-size: 12.5px;
+                        font-weight: Theme.fw-strong;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: root.total-count == 0
+                            ? @tr("Commands you run will be remembered here")
+                            : @tr("Try another keyword, or switch the filter back to All");
+                        color: Theme.text-muted;
+                        font-size: 11.5px;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                    // 有数据但被过滤空 → 给一键「清除搜索」（高保真 .pb-empty .link）
+                    if root.total-count > 0 : Rectangle {
+                        height: 18px;
+                        width: link-lbl.preferred-width + 8px;
+                        link-lbl := Text {
+                            text: @tr("Clear search");
+                            color: Theme.accent-solid;
+                            font-size: 11.5px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: parent.width;
+                            height: parent.height - 1px;
+                        }
+                        Rectangle {
+                            y: parent.height - 1phx;
+                            width: parent.width;
+                            height: 1phx;
+                            background: Theme.accent.with-alpha(0.42);
+                        }
+                        TouchArea {
+                            mouse-cursor: default;
+                            clicked => {
+                                search-input.text = "";
+                                root.query = "";
+                                root.search("");
+                                root.filter = 0;
+                                root.filter-changed(0);
+                                root.selected = 0;
+                                search-input.focus();
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 行列表：**只画可见行**（§6 —— 锁 3–8 行；超出的行高压到 0 且
+            // 不可见，↑↓ 也就永远循环在屏幕内。`for` 里不能直接挂 `if`，
+            // 用「高 0 + visible」表达「这一行不存在」）。
+            if root.rows.length > 0 : Rectangle {
+                x: 4px;
+                y: 4px;
+                width: parent.width - 8px;
+                height: parent.height - 8px;
+
+                rows-col := VerticalLayout {
+                    width: parent.width;
+                    height: parent.height;
+                    spacing: 0px;
+
+                    for r[idx] in root.rows : Rectangle {
+                        height: idx < root.list-rows ? root.row-h : 0px;
+                        visible: idx < root.list-rows;
+                        border-radius: Theme.radius-sm;
+                        background: idx == root.selected
+                            ? Theme.accent-soft
+                            : (r-ta.has-hover ? Theme.bg-hover : transparent);
+                        animate background { duration: 100ms; }
+
+                        // 选中态左缘 2px accent 竖条（上下各留 6）
+                        if idx == root.selected : Rectangle {
+                            x: 0px;
+                            y: 6px;
+                            width: 2px;
+                            height: parent.height - 12px;
+                            border-radius: 1px;
+                            background: Theme.accent-solid;
+                        }
+
+                        r-ta := TouchArea {
+                            mouse-cursor: default;
+                            clicked => {
+                                root.selected = idx;
+                                root.run(r.cmd);
+                            }
+                            changed has-hover => {
+                                // 悬停全文卡：只在被省略号截断的行上出现（§2 ②）
+                                if (self.has-hover && row-clip) {
+                                    root.hover-pop-idx = idx;
+                                    root.hover-pop-text = r.cmd;
+                                } else if (!self.has-hover && root.hover-pop-idx == idx) {
+                                    root.hover-pop-idx = -1;
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            width: parent.width;
+                            height: parent.height;
+                            padding-left: 12px;
+                            padding-right: 10px;
+                            spacing: 8px;
+                            // ⚠️ 不能写 alignment —— meta 要靠 cmd-box 的
+                            //    horizontal-stretch 被推到行右缘（高保真 .cmd flex:1）。
+
+                            if r.pinned : Icon {
+                                glyph: "pin";
+                                tint: Theme.accent-solid;
+                                size: 12px;
+                            }
+
+                            // 命令原文：等宽 12.5px；命中段 accent + 加粗（无底色块）。
+                            // 吃掉全部剩余宽度 → 元信息被推到最右。
+                            cmd-box := HorizontalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 0px;
+                                if r.hit == "" : Text {
+                                    text: r.cmd;
+                                    color: Theme.text-primary;
+                                    font-family: Theme.font-mono;
+                                    font-size: 12.5px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                if r.hit != "" : Text {
+                                    text: r.pre;
+                                    color: Theme.text-primary;
+                                    font-family: Theme.font-mono;
+                                    font-size: 12.5px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                if r.hit != "" : Text {
+                                    text: r.hit;
+                                    color: Theme.accent-solid;
+                                    font-family: Theme.font-mono;
+                                    font-size: 12.5px;
+                                    font-weight: Theme.fw-strong;
+                                    vertical-alignment: center;
+                                }
+                                if r.hit != "" : Text {
+                                    text: r.post;
+                                    color: Theme.text-primary;
+                                    font-family: Theme.font-mono;
+                                    font-size: 12.5px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+
+                            // 元信息两段：「次数」与「时间」的视觉权重随排序档对调
+                            // （高保真 §4 —— 让「这一刻按什么排」在界面上自解释）；
+                            // 悬停时整段淡出给动作键让位。stretch 钉在 0，
+                            // 才会贴在行右缘而不是分走剩余宽度。
+                            Text {
+                                text: r.uses-label;
+                                color: root.sort == 1
+                                    ? Theme.accent-solid
+                                    : Theme.text-muted.with-alpha(0.55);
+                                font-family: Theme.font-mono;
+                                font-size: 10.5px;
+                                font-weight: root.sort == 1 ? Theme.fw-strong : Theme.fw-regular;
+                                vertical-alignment: center;
+                                horizontal-stretch: 0;
+                                opacity: r-ta.has-hover ? 0 : 1;
+                                animate opacity { duration: 100ms; }
+                            }
+
+                            Text {
+                                text: r.time-label;
+                                color: root.sort == 1
+                                    ? Theme.text-muted.with-alpha(0.6)
+                                    : Theme.text-muted;
+                                font-family: Theme.font-mono;
+                                font-size: 10.5px;
+                                vertical-alignment: center;
+                                horizontal-stretch: 0;
+                                opacity: r-ta.has-hover ? 0 : 1;
+                                animate opacity { duration: 100ms; }
+                            }
+                        }
+
+                        // 截断判定：整条命令的自然宽 > 命令区已分配宽（探针不可见）
+                        property <bool> row-clip: probe.preferred-width > cmd-box.width + 0.5px;
+
+                        probe := Text {
+                            visible: false;
+                            height: 0px;
+                            text: r.cmd;
+                            font-family: Theme.font-mono;
+                            font-size: 12.5px;
+                        }
+
+                        // 悬停动作键：右缘 6 / 垂直居中一条 24px，四枚键 + 2px 缝
+                        //（▶ 执行 · ⧉ 复制 · 图钉 · ⌫ 删除；绝对定位，不推动文字）。
+                        // ★ 动作键只跟 hover 走，不跟选中走（§4 ②）；透明度 100ms
+                        //   淡入淡出（高保真 .pb-acts transition），不放 if 里硬切。
+                        //   不可见态不会误收点击：点进这 102px 必然先 hover 到行。
+                        Rectangle {
+                            x: parent.width - self.width - 6px;
+                            y: (parent.height - self.height) / 2;
+                            width: 102px;
+                            height: 24px;
+                            // 显隐 = 行 hover ∪ 任一动作键 hover：鼠标挪到按钮上时
+                            // 行的 has-hover 会翻 false（按钮的 TouchArea 在上层），
+                            // 不并入按钮的话整条键会当场消失（用户实测踩过）。
+                            opacity: (r-ta.has-hover || a-run.hovering || a-copy.hovering
+                                || a-pin.hovering || a-del.hovering) ? 1 : 0;
+                            animate opacity { duration: 100ms; }
+
+                            HorizontalLayout {
+                                width: parent.width;
+                                height: parent.height;
+                                spacing: 2px;
+
+                                a-run := HistAct {
+                                    glyph: "play";
+                                    clicked => { root.run(r.cmd); }
+                                }
+                                a-copy := HistAct {
+                                    glyph: "copy";
+                                    clicked => { root.copy(r.cmd); }
+                                }
+                                a-pin := HistAct {
+                                    glyph: r.pinned ? "unpin" : "pin";
+                                    tint: r.pinned ? Theme.accent-solid : Theme.text-secondary;
+                                    clicked => { root.pin(r.cmd, !r.pinned); }
+                                }
+                                a-del := HistAct {
+                                    glyph: "delete";
+                                    hover-tint: Theme.danger-strong;
+                                    hover-bg: Theme.danger-strong.with-alpha(0.13);
+                                    clicked => {
+                                        root.undo-cmd = r.cmd;
+                                        root.delete(r.cmd);
+                                        root.toast-text = @tr("Deleted 1 entry");
+                                        root.toast-ticks = 0;
+                                        root.undo-visible = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── ③ 页脚 28px ───────────────────────────────────────────────
+        Rectangle {
+            height: 28px;
+            width: parent.width;
+            background: Theme.bg-panel;
+
+            Rectangle {
+                y: 0px;
+                width: parent.width;
+                height: 1phx;
+                background: Theme.border-subtle;
+            }
+
+            HorizontalLayout {
+                width: parent.width;
+                height: parent.height;
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 9px;
+                // ⚠️ 不能写 alignment —— 右端的计数与「清空」靠 spacer 的
+                //    horizontal-stretch 被推到页脚右缘。
+
+                // 键帽组：槽撑满页脚高，槽内垂直居中 16px 一排（铁律 ③）。
+                // 确认态整行换契约（§10 ⑥）：列表那组键在确认态下全是无效的。
+                if !root.confirming : Rectangle {
+                    height: parent.height;
+
+                    HorizontalLayout {
+                        y: (parent.height - self.height) / 2;
+                        height: 16px;
+                        width: parent.width;
+                        spacing: 12px;
+
+                        HorizontalLayout {
+                            spacing: 3px;
+                            HistKey { label: "↑"; }
+                            HistKey { label: "↓"; }
+                            HistVerb { label: @tr("Select"); }
+                        }
+                        HorizontalLayout {
+                            spacing: 3px;
+                            HistKey { label: "↵"; }
+                            HistVerb { label: @tr("Run"); }
+                        }
+                        HorizontalLayout {
+                            spacing: 3px;
+                            HistKey { label: "Tab"; }
+                            HistVerb { label: @tr("Fill"); }
+                        }
+                        HorizontalLayout {
+                            spacing: 3px;
+                            HistKey { label: "Del"; }
+                            HistVerb { label: @tr("Delete"); }
+                        }
+                        HorizontalLayout {
+                            spacing: 3px;
+                            HistKey { label: "Esc"; }
+                            HistVerb { label: @tr("Close"); }
+                        }
+                    }
+                }
+                if root.confirming : Rectangle {
+                    height: parent.height;
+
+                    HorizontalLayout {
+                        y: (parent.height - self.height) / 2;
+                        height: 16px;
+                        width: parent.width;
+                        spacing: 12px;
+
+                        HorizontalLayout {
+                            spacing: 3px;
+                            HistKey { label: "Esc"; }
+                            HistVerb { label: @tr("Cancel"); }
+                        }
+                        HorizontalLayout {
+                            spacing: 3px;
+                            HistKey { label: "Tab"; }
+                            HistVerb { label: @tr("Toggle"); }
+                            HistKey { label: "↵"; }
+                            HistVerb { label: @tr("OK"); }
+                        }
+                    }
+                }
+
+                Rectangle { height: parent.height; horizontal-stretch: 1; }
+
+                // 命中计数：全量 = 「共 N 条」；过滤/搜索中 = 「命中 / 总数」
+                Text {
+                    text: root.rows.length == root.total-count
+                        ? @tr("{0} entries", root.total-count)
+                        : @tr("{0} / {1} entries", root.rows.length, root.total-count);
+                    color: Theme.text-muted;
+                    font-family: Theme.font-mono;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 0;
+                }
+
+                // 清空入口：低权重文字钮，悬停才铺 danger（§10 ①）；
+                // 没有可清空条目（只剩置顶 / 空历史）时压暗禁用。
+                // 槽撑满高，槽内垂直居中 18px 钮（铁律 ③）。
+                if !root.confirming : Rectangle {
+                    height: parent.height;
+                    horizontal-stretch: 0;
+
+                    Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        width: parent.width;
+                        height: 18px;
+                        border-radius: 3px;
+                        opacity: root.total-count > root.pinned-count ? 1.0 : 0.4;
+                        background: clr-all-ta.has-hover && root.total-count > root.pinned-count
+                            ? Theme.danger-strong.with-alpha(0.13) : transparent;
+
+                        clr-lbl := Text {
+                            text: @tr("Clear");
+                            color: clr-all-ta.has-hover && root.total-count > root.pinned-count
+                                ? Theme.danger-strong : Theme.text-muted;
+                            font-size: 10px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: parent.width;
+                            height: parent.height;
+                        }
+
+                        clr-all-ta := TouchArea {
+                            mouse-cursor: default;
+                            enabled: root.total-count > root.pinned-count;
+                            clicked => {
+                                root.confirming = true;
+                                root.armed = false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── ④ 悬停全文卡（压在列表上方；不推动布局）────────────────────────
+    if root.hover-pop-idx >= 0 && root.hover-pop-text != "" : Rectangle {
+        // 列表区顶(46) + 内衬(4) + 行顶(idx×38)，卡片贴行底 + 6；
+        // 放不下就翻到行上方（贴近高保真 .cmdpop 的翻转规则）。
+        property <length> row-top: 46px + 4px + root.hover-pop-idx * root.row-h;
+        property <length> below-y: row-top + root.row-h + 6px;
+        property <length> pop-h: pop-txt.preferred-height + 14px;
+        property <bool> fits-below: below-y + pop-h <= parent.height - 34px;
+
+        x: 12px;
+        y: fits-below ? below-y : Math.max(50px, row-top - pop-h - 6px);
+        width: min(520px, parent.width - 24px);
+        height: pop-h;
+        background: Theme.field;
+        border-radius: Theme.radius-md;
+        border-width: Theme.hairline();
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 14px;
+        drop-shadow-offset-y: 6px;
+        drop-shadow-color: #000000AA;
+
+        pop-txt := Text {
+            x: 9px;
+            y: 7px;
+            width: parent.width - 18px;
+            text: root.hover-pop-text;
+            color: Theme.text-secondary;
+            font-family: Theme.font-mono;
+            font-size: 11.5px;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+    }
+
+    // ── ⑤ 撤销/回执浮条（压在页脚上方，不占布局）──────────────────────
+    if root.undo-visible : Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - 28px - 36px;
+        width: undo-row.preferred-width + 20px;
+        height: 30px;
+        border-radius: Theme.radius-md;
+        border-width: Theme.hairline();
+        border-color: Theme.border-strong;
+        background: Theme.field;
+        drop-shadow-blur: 12px;
+        drop-shadow-color: #000000AA;
+        clip: true;
+
+        undo-row := HorizontalLayout {
+            width: parent.width;
+            height: parent.height;
+            padding-left: 11px;
+            padding-right: 6px;
+            spacing: 9px;
+
+            Text {
+                text: root.toast-text;
+                color: Theme.text-secondary;
+                font-size: 11.5px;
+                vertical-alignment: center;
+                height: parent.height;
+                horizontal-stretch: 0;
+            }
+
+            // 撤销钮：只有真的有东西可撤销时才出现（纯回执没有钮）。
+            if root.undo-cmd != "" : Rectangle {
+                height: 22px;
+                width: undo-lbl.preferred-width + 16px;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.accent.with-alpha(0.42);
+                background: undo-ta.has-hover ? Theme.accent-solid : Theme.accent-soft;
+                animate background { duration: 100ms; }
+
+                undo-lbl := Text {
+                    text: @tr("Undo");
+                    color: undo-ta.has-hover ? Theme.bg-panel : Theme.accent-solid;
+                    font-size: 11px;
+                    font-weight: Theme.fw-strong;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: parent.width;
+                    height: parent.height;
+                }
+
+                undo-ta := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        // 撤销完成后浮条不消失，原地变成「已撤销」回执再亮 5s。
+                        root.restore();
+                        root.undo-cmd = "";
+                        root.toast-text = @tr("Restored");
+                        root.toast-ticks = 0;
+                        root.undo-visible = true;
+                    }
+                }
+            }
+        }
+
+        // 5s 进度条：随 toast-ticks 递减（高保真 §4 ④：底部 2px accent）。
+        Rectangle {
+            x: 0px;
+            y: parent.height - 2px;
+            width: parent.width * (1.0 - (root.toast-ticks * 1.0) / root.toast-limit);
+            height: 2px;
+            background: Theme.accent-solid;
+            visible: root.undo-cmd != "";
+        }
+    }
+
+    // ── ⑥ 清空确认层：盖住列表区，面板尺寸不变（§10 ②）────────────────
+    if root.confirming : Rectangle {
+        x: 0px;
+        y: 46px;
+        width: parent.width;
+        height: root.list-h;
+        background: Theme.bg-elevated;
+
+        VerticalLayout {
+            width: parent.width;
+            height: parent.height;
+            alignment: center;
+            spacing: 5px;
+            padding-left: 30px;
+            padding-right: 30px;
+
+            HorizontalLayout {
+                alignment: center;
+                spacing: 7px;
+                Icon {
+                    glyph: "warning";
+                    tint: Theme.danger-strong;
+                    size: 16px;
+                }
+                Text {
+                    text: @tr("Clear all command history?");
+                    color: Theme.danger-strong;
+                    font-size: Theme.fs-sm;
+                    font-weight: Theme.fw-strong;
+                    vertical-alignment: center;
+                }
+            }
+
+            // 主行：被删数量是这一屏唯一该被精确读到的数字 —— 单独提亮
+            // （等宽 + 加粗 + text-primary，高保真 §10 ②）。
+            HorizontalLayout {
+                alignment: center;
+                spacing: 4px;
+                Text {
+                    text: @tr("Will delete");
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-xs;
+                    vertical-alignment: center;
+                    horizontal-stretch: 0;
+                }
+                Text {
+                    text: "\{root.total-count - root.pinned-count}";
+                    color: Theme.text-primary;
+                    font-family: Theme.font-mono;
+                    font-size: 12.5px;
+                    font-weight: Theme.fw-strong;
+                    vertical-alignment: center;
+                    horizontal-stretch: 0;
+                }
+                Text {
+                    text: @tr("entries · cannot be undone");
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-xs;
+                    vertical-alignment: center;
+                    horizontal-stretch: 0;
+                }
+            }
+
+            // 副行：安抚信息（置顶保留）⇄ 第二步提示（armed 后变危险色）
+            Text {
+                text: root.armed ? @tr("Click again to permanently delete")
+                    : root.pinned-count > 0
+                        ? @tr("{0} pinned entries are kept", root.pinned-count)
+                        : @tr("Pinned entries are always kept");
+                color: root.armed ? Theme.danger-strong : Theme.text-muted;
+                font-weight: root.armed ? Theme.fw-strong : Theme.fw-regular;
+                font-size: 11.5px;
+                horizontal-alignment: center;
+            }
+
+            HorizontalLayout {
+                alignment: center;
+                spacing: 8px;
+
+                // 「取消」在左，默认落点 —— 出事时回车的后果必须是「什么都没发生」
+                Rectangle {
+                    height: 27px;
+                    width: max(62px, cancel-lbl.preferred-width + 28px);
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: cancel-ta.has-hover ? Theme.border-strong : Theme.border-subtle;
+                    background: cancel-ta.has-hover ? Theme.bg-hover : transparent;
+
+                    cancel-lbl := Text {
+                        text: @tr("Cancel");
+                        color: cancel-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        font-size: Theme.fs-xs;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: parent.width;
+                        height: parent.height;
+                    }
+
+                    cancel-ta := TouchArea {
+                        mouse-cursor: default;
+                        clicked => {
+                            root.confirming = false;
+                            root.armed = false;
+                        }
+                    }
+                }
+
+                // 二次解锁（§10 ⑤）：第一态描边空心「清空」，点一下才变
+                // 实心红「确认清空」；副行同时换成红字提醒再点一次。
+                Rectangle {
+                    height: 27px;
+                    width: max(62px, ok-lbl.preferred-width + 28px);
+                    border-radius: Theme.radius-sm;
+                    border-width: root.armed ? 0px : 1px;
+                    border-color: root.armed ? transparent : Theme.danger-strong.with-alpha(0.45);
+                    background: root.armed
+                        ? (ok-ta.has-hover ? Theme.danger-strong.brighter(0.10) : Theme.danger-strong)
+                        : (ok-ta.has-hover ? Theme.danger-strong.with-alpha(0.13) : transparent);
+                    animate background { duration: 110ms; }
+
+                    ok-lbl := Text {
+                        text: root.armed ? @tr("Confirm clear") : @tr("Clear");
+                        color: root.armed ? white : Theme.danger-strong;
+                        font-size: Theme.fs-xs;
+                        font-weight: Theme.fw-strong;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: parent.width;
+                        height: parent.height;
+                    }
+
+                    ok-ta := TouchArea {
+                        mouse-cursor: default;
+                        clicked => {
+                            if (root.armed) {
+                                root.clear-all();
+                                root.confirming = false;
+                                root.armed = false;
+                                root.undo-cmd = "";
+                                root.toast-text = @tr("History cleared");
+                                root.toast-ticks = 0;
+                                root.undo-visible = true;
+                            } else {
+                                root.armed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
