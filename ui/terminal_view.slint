@@ -1056,7 +1056,7 @@ export component TerminalView inherits Rectangle {
     // 可见行数 = min(候选数, 8)。选中项只允许在这几条里循环 —— 数据侧也按 8
     // 封顶，两边取同一个数，选中项不可能落在没画出来的行上（高保真 §5 边界）。
     function hint-count() -> int {
-        return min(root.hint-rows.length, 8);
+        return min(root.hint-rows.length, 6);
     }
     // 命中的那一条「填进命令行之后**整行**长什么样」。
     //
@@ -2132,11 +2132,11 @@ export component TerminalView inherits Rectangle {
                             // ★ 始终在候选里**循环**（用户实测反馈：穿透会把行
                             //   换成历史命令，选择状态一下就乱，没法继续选）。
                             //   想要 shell 历史 → 按 Esc 关掉浮层，↑↓ 立刻交还。
-                            let n = min(root.term-hint-rows.length, 8);
+                            let n = min(root.term-hint-rows.length, 6);
                             root.term-hint-selected = root.term-hint-selected <= 0
                                 ? n - 1 : root.term-hint-selected - 1;
                         } else {
-                            let n = min(root.term-hint-rows.length, 8);
+                            let n = min(root.term-hint-rows.length, 6);
                             root.term-hint-selected = root.term-hint-selected >= n - 1
                                 ? 0 : root.term-hint-selected + 1;
                         }
@@ -2224,7 +2224,7 @@ export component TerminalView inherits Rectangle {
             // 高保真 §2 的位置规则在这里落地：
             //   ① 锚点 = 光标那一格（不是窗口中心、不是输入框）；
             //   ② 下方放不下整盒就向上翻；
-            //   ③ 横向左对齐光标并夹进终端可视区（左右各留 8）。
+            //   ③ 横向**居中**（用户实测改口径：早先贴光标左对齐，看着偏）。
             //
             // 坐标系：终端网格从 (10, 8) 开始铺，一格 cell-w × cell-h；
             // 光标格由 cursor-row / cursor-col 给出（回滚时 cursor-row = -1，
@@ -2240,6 +2240,20 @@ export component TerminalView inherits Rectangle {
             //   与终端网格渲染用的是同一个数 —— 不要另起一个 root.height 估算，
             //   之前那样算会把「光标在屏外」误判成「在屏内」（浮层悬空），
             //   或反过来误杀（离屏实测 row=33 被挡住）。
+            // 点浮层**以外**的地方 → 关掉（用户实测要求：「点击空白也会取消掉」）。
+            // ★ 声明在浮层之前 = 画在它下面：点在浮层上时浮层自己的 TouchArea
+            //   先接住；只有点到空白才落到这一层。
+            if root.term-hint-open && !root.term-hint-suppressed : TouchArea {
+                x: 0px;
+                y: 0px;
+                width: root.width;
+                // 只盖终端输出区（减去标签栏 32 + 命令栏 48），命令栏仍可点。
+                height: max(1px, root.height - 80px);
+                clicked => {
+                    root.term-hint-suppressed = true;
+                }
+            }
+
             if root.term-hint-open && !root.is-alt-screen
                     && root.cursor-row >= 0 && root.cursor-row < root.term-rows
                     && !root.term-hint-suppressed && root.term-hint-rows.length > 0 : Rectangle {
@@ -2249,13 +2263,14 @@ export component TerminalView inherits Rectangle {
                 property <length> caret-x: 10px + max(0, root.cursor-col) * root.cell-w;
                 property <length> caret-top: 8px + root.cursor-row * root.cell-h;
                 property <length> caret-bottom: self.caret-top + root.cell-h;
-                // 自然高：四段固定尺寸之和（高保真 §3）。
+                // 自然高：三段固定（上下文条 27 + 列表 + 脚注 23）。
+                // ★ 终端内联**不做危险告警**（`danger-token: ""` 写死，告警只在
+                //   命令栏那条浮出条上讲），所以这里不算那 94px。
                 // ★ 不读 `CommandHint.preferred-height`：根是 Rectangle，Slint
                 //   不会从内容反推 Rectangle 的 preferred-height（实测恒 0）。
                 //   也**不跨组件读** out 属性 —— 同一帧里可能还没求值。
-                //   直接在宿主侧按规格算，行数公式与组件内部保持同一个。
-                property <int> hint-rows-shown: max(3, min(root.term-hint-rows.length, 8));
-                property <length> box-h: 27px + (self.hint-rows-shown * 28px + 6px) + 94px + 23px;
+                property <int> hint-rows-shown: max(3, min(root.term-hint-rows.length, 6));
+                property <length> box-h: 27px + (self.hint-rows-shown * 28px + 6px) + 23px;
                 // ★ 可用空间要按**终端输出区**算，不能拿 root.height：
                 //   root 还含标签栏（32）与命令栏（48），按它算会多出 ~80px，
                 //   于是「下方够放」判成立、浮层却压在命令栏上。

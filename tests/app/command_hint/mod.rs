@@ -141,8 +141,9 @@ fn tab_chain_walks_command_to_subcommand_without_jumping_phases() {
 #[test]
 fn the_row_cap_matches_the_ui() {
     // 数据侧封顶数与 Slint 侧画的行数必须是同一个数，
-    // 否则选中项会落在没画出来的行上。用户实测反馈 5 条太少 → 放宽到 8。
-    assert_eq!(HINT_MAX_ROWS, 8);
+    // 否则选中项会落在没画出来的行上。
+    // 5 → 8（「5 条太少」）→ 6（「框感觉太长了，没必要这么长」）。
+    assert_eq!(HINT_MAX_ROWS, 6);
 }
 
 // ── 触发阈值（用户实测反馈：一个字符就弹，误命中太多）──────────────────

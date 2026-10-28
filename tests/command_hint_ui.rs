@@ -316,12 +316,25 @@ fn overlay_rect(f: &Frame, lstr: (u8, u8, u8)) -> Option<(usize, usize, usize, u
     }
     let (top, bottom) = top.map(|t| (t, bottom))?;
 
-    // 竖边：在上下边之间找一条 lstr 竖线（左右各一条）。
-    let mid = top + (bottom - top) / 2;
+    // 竖边：找**贯穿整个浮层高度**的竖线（左右边框）。
+    //   · 不能用某一行的 min/max：横穿列表区时选中行的 accent 底色会盖住
+    //     边框像素（抗锯齿混色），单行取样会漏；
+    //   · 也不能用整段包围盒：终端 pane 自己的边框（x=SIDE_LEFT）也在扫描
+    //     范围里，会把左右边界拉到 pane 边缘（实测 left=240 / right=939）。
+    //   所以按列统计 lstr 像素数，只认覆盖率 ≥80% 高度的列 —— 只有浮层的
+    //   左右边框能贯穿全高。
+    let height = bottom.saturating_sub(top) + 1;
+    let need = (height * 8) / 10;
     let mut left = None;
     let mut right = 0usize;
-    for x in x0..x1 {
-        if close(f.rgb(x, mid), lstr, 30) {
+    for x in (x0 + 2)..x1.saturating_sub(2) {
+        let mut n = 0usize;
+        for y in top..=bottom {
+            if close(f.rgb(x, y), lstr, 30) {
+                n += 1;
+            }
+        }
+        if n >= need {
             if left.is_none() {
                 left = Some(x);
             }
@@ -448,15 +461,59 @@ fn the_box_height_is_locked_between_one_and_three_rows() {
 }
 
 #[test]
-fn the_four_sections_stack_in_the_designed_order() {
+fn the_three_sections_stack_in_the_designed_order() {
+    // ★ 用户实测改规格：原来第四段「详情区 94px」常驻，普通命令根本没人看，
+    //   却把浮层撑得很长（「感觉有些太长了」）。现在详情块只在**危险命令**时
+    //   出现，普通命令是标准三段：上下文条 27 + 列表 + 脚注 23。
     let ui = setup();
     let elev = elevated_of(&ui);
     let f = render_with(&ui, 5);
     let (top, bottom) = find_overlay(&f, elev).expect("没找到提示框");
     let h = bottom - top + 1;
+    // 期望 ≈ 27 + (5*28+6=146) + 23 = 196
     assert!(
-        (280..=305).contains(&h),
-        "框高 {h}px 与四段规格不符（期望 ≈290：27+146+94+23）"
+        (186..=210).contains(&h),
+        "框高 {h}px 与三段规格不符（期望 ≈196：27+146+23）"
+    );
+}
+
+#[test]
+fn the_inline_hint_is_horizontally_centred() {
+    // ★ 用户两次反馈「没有居中 / 没修改好」。这条守住：
+    //   浮层的水平中线必须和终端 pane 的水平中线重合（±3px）。
+    //
+    //   量法：用**列表区底色**（bg-elevated）的一行取水平跨度。
+    //   不用边框色 —— 终端内联浮层比较矮，圆角占掉的比例大，边框竖线
+    //   贯穿率不够，按列统计会误判为「没找到浮层」（实测踩过）。
+    let ui = setup();
+    let elev = elevated_of(&ui);
+    let f = render_term_hint(&ui, 4, 6);
+    maybe_dump(&f, "term-hint-centred");
+
+    let (top, bottom) = find_overlay(&f, elev).expect("没找到终端内联浮层");
+    let row = top + (bottom - top) / 2;
+
+    let mut left = None;
+    let mut right = 0usize;
+    for x in (SIDE_LEFT + 2)..(SIDE_LEFT + PANE_W - 2) {
+        if close(f.rgb(x, row), elev, 4) {
+            if left.is_none() {
+                left = Some(x);
+            }
+            right = x;
+        }
+    }
+    let left = left.expect("那一行没有列表区底色");
+
+    let pane_left = SIDE_LEFT as f32;
+    let pane_right = (SIDE_LEFT + PANE_W) as f32;
+    let pane_mid = (pane_left + pane_right) / 2.0;
+    let popup_mid = (left as f32 + right as f32) / 2.0;
+
+    assert!(
+        (popup_mid - pane_mid).abs() <= 3.0,
+        "浮层没有横向居中：pane 中线 {pane_mid:.1}，浮层中线 {popup_mid:.1}\
+         （left={left}, right={right}）"
     );
 }
 

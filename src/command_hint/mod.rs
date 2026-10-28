@@ -50,7 +50,7 @@ pub(crate) use suggest::should_pop;
 /// 候选列表上限（用户实测反馈：5 条太少，放宽到 8 条）。
 /// `ui/command_hint.slint` 的列表行数与可见行数按同一个数排，
 /// 两边必须一致，否则选中项会落在看不见的行上。
-pub(crate) const HINT_MAX_ROWS: usize = 8;
+pub(crate) const HINT_MAX_ROWS: usize = 6;
 
 // 测试仍留在 `tests/app/command_hint/`（那里是「按特性归档」的既有习惯，
 // 同一批还有 command_history / terminal_input …）。路径是相对本文件所在目录，

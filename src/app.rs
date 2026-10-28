@@ -11684,12 +11684,20 @@ fn wire_key_input(
                 // 让用户自己敲 —— 发错字节比不补更糟。
                 String::new()
             };
-            if tail.is_empty() {
-                return;
+            if !tail.is_empty() {
+                if let Some(handle) = handles.borrow().get(tab_id.as_str()) {
+                    handle.send_raw(tail.into_bytes());
+                }
             }
-            if let Some(handle) = handles.borrow().get(tab_id.as_str()) {
-                handle.send_raw(tail.into_bytes());
-            }
+            // ★ 用户实测：「选完提示框要自动消失」。
+            //   Tab / 回车 / 单击都汇到这里，所以统一在**发送之后**收起浮层。
+            //   没有可发的尾巴（例如候选已经整行填好）也一样收起 —— 否则回车
+            //   会变成一个什么都不做的死键（用户反馈「回车无法选择」）。
+            let hidden = crate::command_hint::HintModel::hidden(String::new());
+            command_hint_ui::apply_terminal_hint_model(&w, &hidden);
+            // 收起同时解锁 Esc 抑制（自增令牌），下一行照常弹。
+            let tok = w.get_term_hint_reset_token().wrapping_add(1);
+            w.set_term_hint_reset_token(tok);
         });
     }
 

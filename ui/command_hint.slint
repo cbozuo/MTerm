@@ -74,30 +74,18 @@ export component CommandHint inherits Rectangle {
 
     // 可见行数 = min(候选数, 8)。高度按它算，所以 1↔5 条之间切换时
     // 框会变高，但 **3 条以内不变**（高保真 §4 的「锁 3 行」）。
-    out property <int> shown: min(root.rows.length, 8);
-    out property <int> list-rows: max(3, min(root.shown, 8));
+    out property <int> shown: min(root.rows.length, 6);
+    out property <int> list-rows: max(3, min(root.shown, 6));
     // ★ 自然高度必须**自己算**，不能读 `self.preferred-height`：
     //   根是 Rectangle，Slint 不会从内容反推 Rectangle 的 preferred-height
     //   （实测恒为 0，于是宿主侧的 min(自然高, 可用高) 完全失效，
     //   浮层在离屏里恒为 257px、翻转判据也跟着错）。
-    //   四段是固定尺寸，直接按规格加起来 —— 这也是高保真 §3 的设计前提。
-    //     上下文条 27 + 列表(list-rows*28+6) + 详情 94 + 脚注 23
-    out property <length> natural-height: 27px + (root.list-rows * 28px + 6px) + 94px + 23px;
-    // 有没有详情可显示：危险告警，或选中项带 signature。
-    out property <bool> has-detail: root.danger-token != "" || root.sel-signature() != "";
-
-    pure function sel-signature() -> string {
-        return root.selected >= 0 && root.selected < root.rows.length
-            ? root.rows[root.selected].signature : "";
-    }
-    pure function sel-description() -> string {
-        return root.selected >= 0 && root.selected < root.rows.length
-            ? root.rows[root.selected].description : "";
-    }
-    pure function sel-source() -> string {
-        return root.selected >= 0 && root.selected < root.rows.length
-            ? root.rows[root.selected].source : "";
-    }
+    //   三段固定 + 可选的危险告警条：
+    //     上下文条 27 + 列表(list-rows*28+6) + 告警 94（仅危险命令）+ 脚注 23
+    out property <length> natural-height:
+        27px + (root.list-rows * 28px + 6px)
+        + (root.danger-token != "" ? 94px : 0px)
+        + 23px;
 
     // ★ 内层内容直接作为根的子级，由根统一裁切。
     //   边框由根 Rectangle 的 border 画，四段内容带直角背景；
@@ -191,7 +179,7 @@ export component CommandHint inherits Rectangle {
                 for r[idx] in root.rows : Rectangle {
                     height: 28px;
                     // 只画前 5 行（数据侧已封顶，这里再兜一层，防越界画到框外）。
-                    visible: idx < 8;
+                    visible: idx < 6;
                     border-radius: Theme.radius-sm;
                     background: idx == root.selected ? Theme.accent-soft
                               : (row-ta.has-hover ? Theme.bg-hover : transparent);
@@ -275,121 +263,54 @@ export component CommandHint inherits Rectangle {
             }
         }
 
-        // ── ③ 详情区 94px（固定）────────────────────────────────────────
-        Rectangle {
+        // ── ③ 危险告警条（**仅危险命令时出现**）────────────────────────
+        //
+        // ★ 用户实测反馈：「下面的描述说明块没必要加进去，把空间让给命令」。
+        //   原来这里常驻 94px 显示语法签名 / 一句话说明 / 来源元信息，普通命令
+        //   根本没人看那几行，却把浮层撑得很长（用户：「感觉有些太长了」）。
+        //   现在只在**危险命令**时出现 —— 那是真正需要用户停下来看一眼的信息，
+        //   其余情况整块不占高度。
+        if root.danger-token != "" : Rectangle {
             height: 94px;
             width: parent.width;
             clip: true;
+            background: Theme.danger.with-alpha(0.13);
 
-            // 危险告警接管：整块换成红色，复用命令栏既有 danger 语言。
-            if root.danger-token != "" : Rectangle {
+            Rectangle {
+                y: 0px;
                 width: parent.width;
-                height: parent.height;
-                background: Theme.danger.with-alpha(0.13);
-
-                Rectangle {
-                    y: 0px;
-                    width: parent.width;
-                    height: 1phx;
-                    background: Theme.danger.with-alpha(0.42);
-                }
-
-                HorizontalLayout {
-                    padding-left: 11px;
-                    padding-right: 11px;
-                    spacing: 8px;
-                    alignment: start;
-
-                    Icon {
-                        glyph: "warning";
-                        tint: Theme.danger-strong;
-                        size: 14px;
-                        width: 14px;
-                        height: 14px;
-                        y: (parent.height - self.height) / 2;
-                    }
-
-                    VerticalLayout {
-                        alignment: center;
-                        spacing: 2px;
-                        horizontal-stretch: 1;
-                        Text {
-                            text: @tr("Dangerous command") + " · " + root.danger-token;
-                            color: Theme.danger-strong;
-                            font-size: Theme.fs-xs;
-                            font-weight: Theme.fw-strong;
-                            overflow: elide;
-                        }
-                        Text {
-                            text: root.danger-why;
-                            color: Theme.text-secondary;
-                            font-size: 10.5px;
-                            overflow: elide;
-                        }
-                    }
-                }
+                height: 1phx;
+                background: Theme.danger.with-alpha(0.42);
             }
 
-            // 正常详情：语法签名 + 说明 + 元信息。
-            if root.danger-token == "" : Rectangle {
-                width: parent.width;
-                height: parent.height;
-                background: Theme.bg-panel;
-
-                Rectangle {
-                    y: 0px;
-                    width: parent.width;
-                    height: 1phx;
-                    background: Theme.slot-line.brighter(0.14);
+            HorizontalLayout {
+                padding-left: 11px;
+                padding-right: 11px;
+                spacing: 8px;
+                Icon {
+                    glyph: "warning";
+                    tint: Theme.danger-strong;
+                    size: 14px;
+                    width: 14px;
+                    height: 14px;
+                    y: (parent.height - self.height) / 2;
                 }
-
                 VerticalLayout {
-                    padding-top: 8px;
-                    padding-left: 11px;
-                    padding-right: 11px;
-                    padding-bottom: 7px;
-                    spacing: 4px;
-                    alignment: start;
-
+                    alignment: center;
+                    spacing: 2px;
+                    horizontal-stretch: 1;
                     Text {
-                        text: root.sel-signature() != "" ? root.sel-signature()
-                            : @tr("No usage info for this command");
-                        color: root.sel-signature() != "" ? Theme.text-primary : Theme.text-muted;
-                        font-family: Theme.font-mono;
-                        font-size: 11.5px;
+                        text: @tr("Dangerous command") + " · " + root.danger-token;
+                        color: Theme.danger-strong;
+                        font-size: Theme.fs-xs;
+                        font-weight: Theme.fw-strong;
                         overflow: elide;
-                        // 技能：签名只有一行，不参与弹性分配。
-                        height: 17px;
-                        vertical-alignment: center;
                     }
                     Text {
-                        text: root.sel-description();
+                        text: root.danger-why;
                         color: Theme.text-secondary;
-                        font-size: 11.5px;
-                        wrap: word-wrap;
+                        font-size: 10.5px;
                         overflow: elide;
-                        vertical-stretch: 1;
-                    }
-                    // 元信息行：来源 + 频次 + 展开提示。
-                    HorizontalLayout {
-                        height: 16px;
-                        spacing: 6px;
-                        alignment: start;
-                        Text {
-                            text: root.sel-source();
-                            color: Theme.text-muted;
-                            font-size: 10px;
-                            font-family: Theme.font-mono;
-                            vertical-alignment: center;
-                        }
-                        Rectangle { horizontal-stretch: 1; }
-                        Text {
-                            text: "Ctrl+↑/↓";
-                            color: Theme.text-muted;
-                            font-size: 10px;
-                            font-family: Theme.font-mono;
-                            vertical-alignment: center;
-                        }
                     }
                 }
             }
@@ -426,7 +347,9 @@ export component CommandHint inherits Rectangle {
                     vertical-alignment: center;
                 }
                 Text {
-                    text: "↵ " + @tr("Run");
+                    // ★ 用户定稿：「tab 回车都是填入，不需要执行」。
+                    //   早先这里写的是「↵ 执行」，与实际行为不符。
+                    text: "↵ " + @tr("Insert");
                     color: Theme.text-muted;
                     font-size: 10px;
                     vertical-alignment: center;
