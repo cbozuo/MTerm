@@ -922,6 +922,8 @@ export component TerminalView inherits Rectangle {
     in property <string> hint-phase: "";       // 阶段胶囊文案（Rust 已本地化）
     in property <string> hint-context: "";     // 上下文条：`user@host : cwd`
     in property <int> hint-total: 0;           // 命中总数（行数按 8 封顶）
+    // ⚠ 修订 10-30：上面三个属性已随浮层头部一起退役（组件不再渲染），
+    //   留在 AppWindow 契约里只是为了少动 Rust setter 调用点；不再接线。
     // 危险命令告警由**本文件自己算**（danger-token() 就在下面几百行处），
     // 所以这里没有 in 属性；组件读的是 out property hint-danger-token。
     // (#cmd-hint-p1 2026-10-27) **终端内联**提示框（高保真 §7 P1）。
@@ -930,35 +932,51 @@ export component TerminalView inherits Rectangle {
     // ★ 与命令栏那组 hint-* 完全分开：终端里敲字时弹这个，命令栏里敲字时
     //   弹那个，两者互不顶掉。
     in property <[HintRow]> term-hint-rows;
-    in property <string> term-hint-phase: "";
-    in property <string> term-hint-context: "";
-    in property <int> term-hint-total: 0;
     in property <bool> term-hint-open: false;
+    // ★ 内联鬼影（高保真 §5 →）：Rust 侧算好的「追加到行尾就能补全」的文本。
+    //   → 键接受（发给 PTY）；空 = 无鬼影。渲染在光标格右侧（见 grid 内的
+    //   term-hint-ghost-tx）。Tab 已定稿永远透传 shell，鬼影是补命令的主捷径。
+    in property <string> term-hint-ghost: "";
+    // 危险命令告警（Rust 侧 danger_of 同表镜像算出），非空 → 列表上方告警条。
+    in property <string> term-hint-danger: "";
+    in property <string> term-hint-danger-why: "";
     // 终端内联提示框的选中项（↑↓ 在候选里走）。
-    property <int> term-hint-selected: 0;
+    // ★ 无选中态（高保真 §5 定稿）：刚弹出时 = -1（不高亮任何行），↑↓ 才建立
+    //   导航；未导航 Enter = 透传执行当前输入，防止「敲完完整命令回车被候选
+    //   偷换」。想翻 shell 历史 → 首项再按 ↑ 穿透（见键处理）。
+    //   复位时机见下面的 sig 监听（纯 Slint：候选签名变化才复位）。
+    property <int> term-hint-selected: -1;
+    // ★ 候选集签名（首条文本 + 条数）：Rust 的 120ms 二次刷新（等远端回显）
+    //   在候选没变时签名相同 → changed 不触发 → 用户刚按下的 ↑↓ 不会被
+    //   重置；真正的新输入（新候选集）签名必然变化 → 复位为无选中。
+    property <string> term-hint-rows-sig:
+        (root.term-hint-rows.length > 0 ? root.term-hint-rows[0].text : "") + "#" + root.term-hint-rows.length;
+    changed term-hint-rows-sig => {
+        root.term-hint-selected = -1;
+    }
     // ★ 候选集合变了就把选中项夹回有效范围。
     //   否则会残留一个越界索引：回车 / 点击取 `row_data(idx)` 拿到 None，
     //   表现为「选过一次之后回车就选不中了」（用户实测反馈）。
+    //   复位目标改 -1（无选中）：候选集变化 = 新输入 = 导航态作废（§5）。
     changed term-hint-rows => {
         if (root.term-hint-selected >= root.term-hint-rows.length) {
-            root.term-hint-selected = max(0, root.term-hint-rows.length - 1);
+            root.term-hint-selected = -1;
         }
     }
-    // 用户按 Esc 关掉后，本行不再自动弹（主流交互：Esc 只关当前这次）。
+    // 用户按 Esc 关掉后，本行不再自动弹（高保真 §4：抑制持续到行被清空）。
     property <bool> term-hint-suppressed: false;
     property <string> term-hint-line-tag: "";   // 记住抑制时那一行，变了才解除
-    // (#cmd-hint-p1) 抑制解除令牌：Rust 在「回车提交 / 行被清空 / **任意普通按键**」
-    // 时自增，下面 changed 监听把它翻译成「清除 suppressed」。
+    // (#cmd-hint-p1) 抑制解除令牌：Rust 在「回车提交 / **行被清空**」时自增，
+    // 下面 changed 监听把它翻译成「清除 suppressed」。
     in property <int> term-hint-reset-token: 0;
-    // 令牌一变就解锁。
     //
-    // ★ 交互口径（对齐主流：VS Code / fish / zsh-autosuggestions / IDE 补全）：
-    //   **Esc 只关掉「这一次」建议，继续输入就重新出现** —— 不是永久封杀到
-    //   行尾。早先实现成「抑制持续到本行结束」，用户实测反馈「按了 Esc 之后
-    //   再怎么输入也不会出现」，这是反主流的，已改。
+    // ★ 交互口径（高保真 §4 定稿 2026-10-30）：**Esc 抑制本行，直到行被清空
+    //   才重置**——打字不清除抑制。早先实现成「任意普通按键都解除」，用户在
+    //   沙盘口径确认稿子里按 §4 走（翻 shell 历史走 ↑ 首项穿透，不必靠打字
+    //   逃出抑制）。
     changed term-hint-reset-token => {
         root.term-hint-suppressed = false;
-        root.term-hint-selected = 0;
+        root.term-hint-selected = -1;
     }
     // (#cmdbar-scope 2026-10-23) 可送达的同步频道（Rust 按本窗口已打开标签页算）。
     in property <[SendScope]> send-scopes;
@@ -1214,6 +1232,16 @@ export component TerminalView inherits Rectangle {
     // 与命令栏的 hint-accept 不同 —— 这里不能改「输入框文本」（终端没有输入框），
     // 只能把候选对应的字节发给 shell：通常是「补全剩余部分 + 一个空格」。
     callback term-hint-accept(int /* index */);
+    // (§5 定稿 2026-10-30) Enter 已导航 → **执行选中候选**：整行替换为
+    // row.apply 后回车（差量字节 + \r，见 Rust 侧）。
+    callback term-hint-run(int /* index */);
+    // (§5) → 键接受内联鬼影：把 ghost 文本发给 PTY（不执行、浮层重算）。
+    callback term-hint-ghost-accept();
+    // (§5) ↑ 首项穿透：把方向键序列（ESC[A）原样发给 PTY 翻 shell 历史。
+    // 不走 send-key —— 那条路会按可打印字符处理控制序列。
+    callback term-hint-send-key-raw(string /* bytes */);
+    // (§5) ↓ 末项关框：Rust 侧把浮层置 hidden（不抑制——继续敲字按新输入重算）。
+    callback term-hint-close-request();
 
     callback send-key(string, bool, bool, bool);
     // Temporary on-device diagnostics for #312. Rust redacts printable text.
@@ -2162,56 +2190,93 @@ export component TerminalView inherits Rectangle {
                     } else if (root.term-hint-open && !root.term-hint-suppressed
                             && root.term-hint-rows.length > 0
                             && (event.text == Key.UpArrow || event.text == Key.DownArrow)) {
-                        // (#cmd-hint-p1) 终端内联浮层打开时，↑↓ 先在候选里走。
-                        // ★ 这**是**对 shell 历史的抢占，但只在浮层可见时发生；
-                        //   而且首项再按 ↑ 会关闭浮层并把这次按键交给 shell
-                        //   （见下面的分支撑透），用户「一路往上翻到历史」的手感不变。
+                        // (§5 定稿 2026-10-30) ↑↓ 建立导航；**不循环**——
+                        //   · ↑ 在首项再按 → **穿透**：关浮层 + 这次 ↑ 交给
+                        //     shell 翻历史（沙盘同款；想翻历史不用先按 Esc）；
+                        //   · ↓ 在末项再按 → 关浮层（shell 的 ↓ 在空提示符上
+                        //     没有动作，不必透传）；
+                        //   · 未导航（-1）首按选中当前指向的候选。
                         if (event.text == Key.UpArrow) {
-                            // ★ 始终在候选里**循环**（用户实测反馈：穿透会把行
-                            //   换成历史命令，选择状态一下就乱，没法继续选）。
-                            //   想要 shell 历史 → 按 Esc 关掉浮层，↑↓ 立刻交还。
-                            let n = root.term-hint-rows.length;
-                            root.term-hint-selected = root.term-hint-selected <= 0
-                                ? n - 1 : root.term-hint-selected - 1;
+                            if (root.term-hint-selected <= 0) {
+                                if (root.term-hint-selected == 0) {
+                                    // 首项再 ↑：关浮层 + 抑制本行 + 交给 shell 历史。
+                                    root.term-hint-suppressed = true;
+                                    root.term-hint-send-key-raw("\u{001b}[A");
+                                    accept
+                                } else {
+                                    root.term-hint-selected = 0;
+                                    accept
+                                }
+                            } else {
+                                root.term-hint-selected -= 1;
+                                accept
+                            }
                         } else {
                             let n = root.term-hint-rows.length;
-                            root.term-hint-selected = root.term-hint-selected >= n - 1
-                                ? 0 : root.term-hint-selected + 1;
+                            if (root.term-hint-selected >= n - 1) {
+                                // 末项再 ↓：关浮层（不透传）。浮层关了但行不变，
+                                // 继续敲字时 Rust 侧行观察会按新输入重算。
+                                root.term-hint-suppressed = false;
+                                root.term-hint-close-request();
+                                accept
+                            } else {
+                                root.term-hint-selected = root.term-hint-selected < 0
+                                    ? 0 : root.term-hint-selected + 1;
+                                accept
+                            }
                         }
                         accept
                     } else if (root.term-hint-open && !root.term-hint-suppressed
                             && root.term-hint-rows.length > 0
-                            && event.text == Key.Tab && !event.modifiers.shift) {
-                        // (#cmd-hint-p1) Tab 把选中候选写进 PTY。
-                        // 只在这一帧有可见候选时接管；0 候选时放行给 shell 原生补全。
-                        root.term-hint-accept(max(0, min(root.term-hint-selected, root.term-hint-rows.length - 1)));
-                        accept
+                            && event.text == Key.Return && event.modifiers.shift) {
+                        // (§5) Shift+Enter 已导航 → **仅填入**选中候选（不执行）：
+                        // 想接着敲参数的入口；未导航时同 Enter（透传执行）。
+                        if (root.term-hint-selected >= 0) {
+                            root.term-hint-accept(root.term-hint-selected);
+                            accept
+                        } else {
+                            root.send-key(event.text,
+                                          Theme.is-mac ? event.modifiers.meta : event.modifiers.control,
+                                          event.modifiers.alt, event.modifiers.shift);
+                            accept
+                        }
                     } else if (root.term-hint-open && !root.term-hint-suppressed
                             && root.term-hint-rows.length > 0
-                            && (event.text == Key.Return)) {
-                        // ★ 用户定稿：「Tab、回车**都是填入**，不需要执行」。
-                        //   终端里回车本来是「把整行交给 shell 执行」，但浮层打开时
-                        //   用户按回车的意图是**确认补全**，而不是把半截命令跑掉。
-                        //   与 Tab 同语义：填入选中候选（追加尾巴），不执行。
-                        //   想执行 → 再按一次回车（那时浮层已因行变化重算/关闭，
-                        //   或候选已并入行内，回车透传执行）。
-                        root.term-hint-accept(max(0, min(root.term-hint-selected, root.term-hint-rows.length - 1)));
+                            && event.text == Key.Return) {
+                        // (§5 定稿) Enter：未导航（无选中项）→ **透传**执行当前
+                        // 输入——敲完一条完整命令回车，执行的永远是你敲的那条，
+                        // 绝不被候选偷换；已导航 → **执行选中候选**（整行替换为
+                        // row.apply 后回车，见 Rust 侧 term-hint-run）。
+                        if (root.term-hint-selected >= 0) {
+                            root.term-hint-run(root.term-hint-selected);
+                        } else {
+                            root.send-key(event.text,
+                                          Theme.is-mac ? event.modifiers.meta : event.modifiers.control,
+                                          event.modifiers.alt, event.modifiers.shift);
+                        }
+                        accept
+                    } else if (root.term-hint-open && !root.term-hint-suppressed
+                            && root.term-hint-ghost != ""
+                            && event.text == Key.RightArrow && !event.modifiers.control
+                            && !event.modifiers.alt) {
+                        // (§5) → 接受内联鬼影：把 ghost 文本发给 PTY（光标在
+                        // 行尾时才可能有鬼影——Rust 侧已判定），不执行；
+                        // 行变化后浮层按新行重算。Ctrl/Alt+→ 仍交给 shell
+                        // （readline 的按词右移）。
+                        root.term-hint-ghost-accept();
                         accept
                     } else if (root.term-hint-open && event.text == Key.Escape) {
                         // (#cmd-hint-p1) Esc 关掉并抑制**本行**（高保真 §4）。
-                        // 抑制只由 Esc 建立；行被清空 / 回车提交时才解除（见 Rust 侧）。
+                        // 抑制只由 Esc 建立；行被清空时 Rust 侧才解除（见 refresh）。
                         root.term-hint-suppressed = true;
                         accept
                     } else {
-                        // ★ 任何普通按键都解除 Esc 抑制 —— 主流交互（VS Code /
-                        //   fish / zsh-autosuggestions）：Esc 只关掉**这一次**
-                        //   建议，继续输入就重新出现。
-                        //   早先这里是「抑制持续到本行结束，打字不清除」，用户
-                        //   实测：「按了 Esc 后，后续再怎么输入也不会出现」。
-                        //   ⚠ 只清 suppressed，**不动 selected** —— 早先把解锁
-                        //   挂在 reset-token 上，而 token 每键都涨，于是
-                        //   「上下键选不中」（选完立刻被重置回 0）。
-                        root.term-hint-suppressed = false;
+                        // ★ 其余按键（含 Tab）**全部透传给 shell**：
+                        //   · Tab 永远是 shell 的原生补全（路径/文件/参数包）——
+                        //     高保真 §5 定稿：提示框永不接管 Tab，shell 补全的
+                        //     回显改变当前行后，浮层按新行重算自己的候选；
+                        //   · ⚠ 不在这里解除 Esc 抑制（§4：抑制持续到行被清空，
+                        //     由 Rust 侧 refresh 在行清空时发 reset 令牌）。
                         root.send-key(event.text,
                                       Theme.is-mac ? event.modifiers.meta : event.modifiers.control,
                                       event.modifiers.alt, event.modifiers.shift);
@@ -2301,21 +2366,23 @@ export component TerminalView inherits Rectangle {
 
             if root.term-hint-open && !root.is-alt-screen
                     && root.cursor-row >= 0 && root.cursor-row < root.term-rows
-                    && !root.term-hint-suppressed && root.term-hint-rows.length > 0 : Rectangle {
+                    && !root.term-hint-suppressed
+                    && (root.term-hint-rows.length > 0 || root.term-hint-danger != "") : Rectangle {
                 // 高保真 §3：472 上限，窄窗按可视区收。
                 width: min(472px, root.width - 16px);
 
                 property <length> caret-x: 10px + max(0, root.cursor-col) * root.cell-w;
                 property <length> caret-top: 8px + root.cursor-row * root.cell-h;
                 property <length> caret-bottom: self.caret-top + root.cell-h;
-                // 自然高：三段固定（上下文条 27 + 列表 + 脚注 23）。
-                // ★ 终端内联**不做危险告警**（`danger-token: ""` 写死，告警只在
-                //   命令栏那条浮出条上讲），所以这里不算那 94px。
+                // 自然高：两段固定（列表 + 脚注 23）+ 条件告警条 30。
+                // ★ 修订 10-30 砍掉上下文条 27px；危险告警从 Rust 侧传来
+                //   （term-hint-danger），终端内联与命令栏共用同一张表。
                 // ★ 不读 `CommandHint.preferred-height`：根是 Rectangle，Slint
                 //   不会从内容反推 Rectangle 的 preferred-height（实测恒 0）。
                 //   也**不跨组件读** out 属性 —— 同一帧里可能还没求值。
-                property <int> hint-rows-shown: max(3, min(root.term-hint-rows.length, 6));
-                property <length> box-h: 27px + (self.hint-rows-shown * 28px + 6px) + 23px;
+                property <int> hint-rows-shown: max(3, min(root.term-hint-rows.length, 5));
+                property <length> box-h: (self.hint-rows-shown * 28px + 6px)
+                    + (root.term-hint-danger != "" ? 30px : 0px) + 23px;
                 // ★ 可用空间要按**终端输出区**算，不能拿 root.height：
                 //   root 还含标签栏（32）与命令栏（48），按它算会多出 ~80px，
                 //   于是「下方够放」判成立、浮层却压在命令栏上。
@@ -2328,10 +2395,10 @@ export component TerminalView inherits Rectangle {
                 property <length> avail: max(160px,
                     self.flip-up ? self.caret-top - 8px : self.space-below);
 
-                // ★ 横向**居中**（用户实测反馈：贴光标左对齐时看着偏，尤其
-                //   光标在右侧或浮层翻到下方时）。命令面板是「全局浮层」，
-                //   居中比跟光标走更稳；宽度本身已按 472 上限收窄。
-                x: max(8px, (root.width - self.width) / 2);
+                // ★ 横向**左对齐光标并夹紧**（高保真 §2 ①③ 硬规则）：
+                //   x = clamp(caret.x, 8, 视口宽 - 盒宽 - 8)。光标在行尾时
+                //   居中必然溢出——贴光标是这类补全浮层的方位语义。
+                x: clamp(self.caret-x, 8px, max(8px, root.width - self.width - 8px));
                 // ★ 翻上去时底边贴光标格上沿（-6），向下时顶边贴光标格下沿（+6）。
                 //
                 // ★ 夹紧只在「翻转后仍然出界」时兜底，**不能反过来盖掉翻转**：
@@ -2353,14 +2420,10 @@ export component TerminalView inherits Rectangle {
                     open: true;
                     rows: root.term-hint-rows;
                     selected: root.term-hint-selected;
-                    phase-label: root.term-hint-phase;
-                    context-text: root.term-hint-context;
-                    total-count: root.term-hint-total;
-                    // 终端内联不做危险告警：告警已经在命令栏那条浮出条上讲了，
-                    // 这里再画一遍会变成「同一个警告出现两次」。
-                    danger-token: "";
-                    danger-why: "";
-                    // 鼠标点击＝填入命令行（把选中项写进 PTY），由 Rust 侧处理。
+                    danger-token: root.term-hint-danger;
+                    danger-why: root.term-hint-danger-why;
+                    // 鼠标点击＝选中+**填入**（不执行；§5 鼠标行，与历史面板
+                    // 「点行=填入」同口径），由 Rust 侧处理。
                     picked(i) => {
                         root.term-hint-selected = i;
                         root.term-hint-accept(i);
@@ -2371,6 +2434,24 @@ export component TerminalView inherits Rectangle {
                     }
                     hovered(i) => { }
                 }
+            }
+
+            // (§5) 内联鬼影：画在光标格右侧的暗色尾巴（整行预测/词级补全）。
+            // 不依赖浮层矩形自身的布局——它跟光标格走。光标不在行尾时 Rust
+            // 侧会把 ghost 清空（敲字场景光标总在行尾，← 左移后消失）。
+            if root.term-hint-open && !root.term-hint-suppressed
+                    && root.term-hint-ghost != ""
+                    && root.cursor-row >= 0 && root.cursor-row < root.term-rows : Text {
+                x: 10px + (max(0, root.cursor-col) + 1) * root.cell-w;
+                y: 8px + root.cursor-row * root.cell-h
+                    + (root.cell-h - root.term-font-size-px * 1.35px) / 2;
+                text: root.term-hint-ghost;
+                color: Theme.text-muted;
+                font-family: Theme.font-mono;
+                font-size: root.term-font-size-px * 1px;
+                overflow: elide;
+                wrap: no-wrap;
+                width: root.width - self.x;
             }
 
             // (#find-bar 2026-10-27 v3.6) 查找栏 = 右上浮层（组件见 find_bar.slint，
@@ -3390,9 +3471,6 @@ export component TerminalView inherits Rectangle {
                     open: true;
                     rows: root.hint-rows;
                     selected: root.history-selected;
-                    phase-label: root.hint-phase;
-                    context-text: root.hint-context;
-                    total-count: root.hint-total;
                     danger-token: root.hint-danger-token;
                     danger-why: root.hint-danger-why;
                     // 鼠标：单击填入（不执行）。悬停只发信号，不改选中。

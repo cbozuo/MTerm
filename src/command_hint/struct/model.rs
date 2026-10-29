@@ -68,11 +68,17 @@ impl<'a> HintInput<'a> {
         }
     }
 
-    /// 判定阶段（高保真 §3 的四种胶囊）。
+    /// 判定阶段。
     ///
-    /// `has_subcommands` 由调用方给：只有「命令本身带子命令」时第二段才叫
-    /// 子命令，否则一律算参数。这样自建脚本（没有 spec）不会被标成子命令。
-    pub(crate) fn phase(&self, has_subcommands: bool) -> HintPhase {
+    /// `known` 由调用方给：第一个词在「内置子命令表」里 = 已知命令。
+    ///   · 只有已知命令的第二段才叫子命令，否则一律算参数——
+    ///     自建脚本（没有 spec）不会被标成子命令。
+    ///   · ★（高保真 §3 定稿 2026-10-30）第一个词**不是**已知命令、当前词
+    ///     又没有参数特征（`-` 开头）时 → 退回**命令阶段整行搜索**：
+    ///     按中文名称搜快捷命令（「修 bug 并提交」含空格，靠词级匹配永远
+    ///     搜不到）、整行历史预测（`df -h` → 历史 `df -h | head -4`）都靠它。
+    ///     这是主流启动器的口径：输入不认识的东西时，搜的是自定义项与历史。
+    pub(crate) fn phase(&self, known: bool) -> HintPhase {
         // 正在补的词里带路径分隔符 → 路径阶段（`ls /var/`、`cat ~/.bash`）。
         if self.word.contains('/') || self.word.starts_with('~') {
             return HintPhase::Path;
@@ -82,8 +88,12 @@ impl<'a> HintInput<'a> {
             // 行尾空格且一个字都没打，仍是命令阶段（用户刚开始）。
             return HintPhase::Command;
         }
+        // 未知命令 + 非参数词 → 整行搜索（见上）。
+        if !known && !self.word.starts_with('-') {
+            return HintPhase::Command;
+        }
         // 第二个词，且命令带子命令 → 子命令阶段。
-        if self.settled.len() == 1 && has_subcommands {
+        if self.settled.len() == 1 && known {
             return HintPhase::Subcommand;
         }
         // 正在补 `-` / `--` 开头的词 → 参数阶段。
@@ -107,6 +117,10 @@ pub(crate) struct HintRowData {
     pub(crate) signature: String,
     /// 详情区说明。
     pub(crate) description: String,
+    /// 排序的**来源平手裁决键**（高保真 §3 排序五级键第 2 级）：
+    /// 0 = 快捷命令（用户自定义置顶）＜ 1 = 内置知识 ＜ 2 = 历史。
+    /// 匹配分相同的时候用它决胜负，最后才是字母序兜底。
+    pub(crate) pri: i32,
     /// 选中这一条后，命令行**整行**应该变成什么。
     ///
     /// ★ 在 Rust 侧算，不在 Slint 侧拼：Slint 1.18 的 string 没有
@@ -118,7 +132,7 @@ pub(crate) struct HintRowData {
 
 /// 算出「把 `cand` 填进去之后整行是什么」。
 ///
-/// ★ 与 Slint 侧的 Enter 两段式判据严格配对：判据是
+/// ★ 与 Slint 侧的 Enter 判据严格配对：判据是
 ///   `line == row.apply` → 执行；否则先填入。所以这里必须产出**稳定的**整行，
 ///   不能每次重算都漂移（否则 Enter 永远等不到「相等」的那一次）。
 impl HintRowData {
@@ -133,6 +147,7 @@ impl HintRowData {
         source: String,
         signature: String,
         description: String,
+        pri: i32,
         input: &HintInput,
         phase: HintPhase,
     ) -> Self {
@@ -144,6 +159,7 @@ impl HintRowData {
             source,
             signature,
             description,
+            pri,
             apply,
         }
     }
@@ -193,6 +209,16 @@ pub(crate) struct HintModel {
     /// 命中总数（可能大于 `rows.len()`，用于「N 条」计数；行数按 `HINT_MAX_ROWS` 封顶）。
     pub(crate) total: usize,
     pub(crate) rows: Vec<HintRowData>,
+    /// ★ 内联鬼影（高保真 §5 →）：首候选落在「当前整行」或「当前词」的
+    ///   前缀上时，追加到行尾就能补全的那段文本。区分大小写（shell 语义）。
+    ///   空 = 无鬼影。`→` 键把它发给 PTY —— Tab 归 shell 之后，
+    ///   这是「补命令名」的主捷径。
+    pub(crate) ghost: String,
+    /// 危险命令命中的模式原文（与 `terminal_view.slint` 的 `danger-token()`
+    /// 同一张表，Rust 侧镜像——终端内联的行文本在 Rust 侧，Slint 函数够不着）。
+    /// 非空 → 提示框列表上方出现红色告警条。
+    pub(crate) danger_token: String,
+    pub(crate) danger_why: String,
 }
 
 impl HintModel {
@@ -203,6 +229,9 @@ impl HintModel {
             context,
             total: 0,
             rows: Vec::new(),
+            ghost: String::new(),
+            danger_token: String::new(),
+            danger_why: String::new(),
         }
     }
 

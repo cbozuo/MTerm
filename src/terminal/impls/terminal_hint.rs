@@ -159,25 +159,36 @@ impl HintObserver {
         // ★ 先按**文本**判密码提示（首选判据）：
         //   `Password: ` 里没有 `$`/`#`，按规则 2 会被整行当成命令行，
         //   第一下按键就会弹出历史命令 —— 而它就贴在密码框旁边。
-        //   靠「连续两次无回显」兜底太晚，第一次已经弹出来了。
         if looks_like_password_prompt(row_text) {
             self.muted = true;
             return LineSnapshot::muted();
         }
 
-        // 兜底：可打印按键但网格毫无变化 → 远端没回显（密码的另一种形态）。
-        if printable_keystroke && !changed {
-            self.silent_keystrokes = self.silent_keystrokes.saturating_add(1);
-            if self.silent_keystrokes >= SILENT_KEY_LIMIT {
-                self.muted = true;
-                return LineSnapshot::muted();
+        // 兜底（只在未静默时计数）：可打印按键但网格毫无变化 → 远端没回显
+        // （密码的另一种形态）。
+        if !self.muted {
+            if printable_keystroke && !changed {
+                self.silent_keystrokes = self.silent_keystrokes.saturating_add(1);
+                if self.silent_keystrokes >= SILENT_KEY_LIMIT {
+                    self.muted = true;
+                }
+            } else if changed {
+                self.silent_keystrokes = 0;
             }
-        } else if changed {
-            // 一旦有回显，解除静默计数（但 `muted` 只在换行后才解除，
-            // 见 `on_submit`）。
-            self.silent_keystrokes = 0;
         }
 
+        // ★ 静默解除（§4 修订 2026-10-30）：**有回显（changed）就恢复观测**。
+        //   密码的特征是「持续无回显」；而快速连打时每次按键的**首读**都落在
+        //   回显之前 —— 原实现只在 on_submit（回车）解除，实测连打 `git co`
+        //   六个键就有 2 次首读无变化 → 误判密码 → 提示框永久哑掉。
+        //   120ms 重读（schedule_hint_reread）时回显必然已到 → changed=true
+        //   → 这里自愈。alt_screen 在函数开头已单独拦截。
+        //   ⚠ 解除判定用的 changed 就是**开头**算的那个 —— 不能在更新
+        //     last_row 之后重算（那样恒为 false，解除永远不触发，实测踩过）。
+        if self.muted && changed {
+            self.muted = false;
+            self.silent_keystrokes = 0;
+        }
         if self.muted {
             return LineSnapshot::muted();
         }
@@ -188,7 +199,10 @@ impl HintObserver {
         if line.trim().is_empty() {
             return LineSnapshot::empty();
         }
-        LineSnapshot { state: LineState::Ready, line }
+        // 行尾判定（§5 鬼影显示前提）：光标右侧（trim 后）无可见字符。
+        // row_text 已被调用方 trim_end，光标列之后还有字符 = 光标在行中。
+        let cursor_at_eol = (cursor_col as usize) >= row_text.chars().count();
+        LineSnapshot { state: LineState::Ready, line, cursor_at_eol }
     }
 
     /// 用户按了回车（命令被提交）→ 行结束，密码静默状态解除。

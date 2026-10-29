@@ -19,13 +19,16 @@ pub(crate) struct LineSnapshot {
     pub(crate) state: LineState,
     /// 命令起点到光标之间的文本。`Muted` 时为空。
     pub(crate) line: String,
+    /// ★ 光标是否停在行尾（§5 鬼影的显示前提）：行内光标右侧没有可见字符。
+    ///   `Muted` 恒 false（无行可言）。
+    pub(crate) cursor_at_eol: bool,
 }
 
 impl LineSnapshot {
     pub(crate) fn muted() -> Self {
-        Self { state: LineState::Muted, line: String::new() }
+        Self { state: LineState::Muted, line: String::new(), cursor_at_eol: false }
     }
     pub(crate) fn empty() -> Self {
-        Self { state: LineState::Empty, line: String::new() }
+        Self { state: LineState::Empty, line: String::new(), cursor_at_eol: true }
     }
 }

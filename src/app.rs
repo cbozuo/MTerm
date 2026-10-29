@@ -220,6 +220,28 @@ fn term_buf(bufs: &TermBuffers, tab_id: &str) -> Option<TermBufferHandle> {
 ///
 /// `printable` 只影响密码判定的「连续无回显」兜底计数；延迟重读时传 `false`
 /// （那一次没有对应的按键事件）。
+/// (#cmd-hint) 排一次 120ms 后的提示框重读：字节刚发出时远端还没回显，
+/// 立即读到的网格是按键之前的内容 —— 延迟一次拿回显之后的真实行重算。
+/// on_send_key / ghost-accept / send-key-raw（↑穿透）/ term-hint-accept
+/// （Shift+Enter 与点击的填入）四条发送路径共用。
+fn schedule_hint_reread(
+    w2: slint::Weak<crate::ui::AppWindow>,
+    bufs2: TermBuffers,
+    store2: Rc<RefCell<ConfigStore>>,
+    obs2: Arc<Mutex<HashMap<String, crate::terminal::HintObserver>>>,
+    was2: Arc<std::sync::atomic::AtomicBool>,
+    tab2: String,
+) {
+    slint::Timer::single_shot(std::time::Duration::from_millis(120), move || {
+        let Some(w) = w2.upgrade() else { return };
+        // tab 切走了就别刷（否则会把别的 tab 的浮层写脏）。
+        if w.get_active_tab_id().as_str() != tab2.as_str() {
+            return;
+        }
+        refresh_terminal_hint(&w, &bufs2, &store2, &obs2, &was2, tab2.as_str(), false);
+    });
+}
+
 fn refresh_terminal_hint(
     w_ob: &AppWindow,
     bufs: &TermBuffers,
@@ -293,6 +315,15 @@ fn refresh_terminal_hint(
             crate::command_hint::hint_model(&store.borrow(), &snap.line, context)
         }
     };
+    // ★ (§5) 鬼影只在光标停在行尾时有效：← 左移到行中之后，候选还在
+    //   （按光标前的文本匹配），但「追加尾巴」不再成立 —— 清空 ghost，
+    //   防止 → 把文本插进行中间。
+    //   （选中态复位不在 Rust 侧做：term-hint-selected 是 TerminalView
+    //   内部属性，Slint 侧用候选签名 changed 监听实现同样的语义。）
+    let mut model = model;
+    if !snap.cursor_at_eol {
+        model.ghost.clear();
+    }
     command_hint_ui::apply_terminal_hint_model(w_ob, &model);
 }
 
@@ -2331,6 +2362,14 @@ fn open_window(
     // into the thread that pumps session events into invoke_from_event_loop).
     let bufs: TermBuffers = Arc::new(Mutex::new(HashMap::new()));
     let render_gates: RenderGates = Arc::new(Mutex::new(HashMap::new()));
+    // (#cmd-hint-p1) 每个 tab 一个行缓冲观测器。按 tab id 存，
+    // 切标签 / 多标签各记各的（终端里 tab 切回来应当还看到自己那半行）。
+    // ★ 定义在**函数体层**：on_send_key 与 §5 的新回调（ghost-accept /
+    //   send-key-raw 都要排 120ms 重读）分属不同的注册块，必须共享同一份。
+    let hint_observers: Arc<Mutex<HashMap<String, crate::terminal::HintObserver>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    // 上一步的观测是不是「空提示符」——用于「行被清空 → 解除 Esc 抑制」只递增一次。
+    let term_hint_was_empty = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Last-known terminal pixel dimensions, updated by every terminal-resize
     // callback.  Shared so on_connect_session can pass a sensible initial PTY
@@ -5899,6 +5938,8 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
         bufs.clone(),
         last_term_size.clone(),
         store.clone(),
+        hint_observers.clone(),
+        term_hint_was_empty.clone(),
         ConnectCtx {
             weak: window.as_weak(),
             editor: editor_win.as_weak(),
@@ -10669,6 +10710,11 @@ fn wire_key_input(
     bufs: TermBuffers,
     last_term_size: Arc<Mutex<(u32, u32)>>,
     store: Rc<RefCell<ConfigStore>>,
+    // (#cmd-hint-p1) 行缓冲观测器与「空提示符」标志——**跨注册块共享**：
+    // on_send_key 与 §5 的新回调（ghost-accept / send-key-raw）都要读写
+    // 同一份（定义在调用方 open_window 的函数体层）。
+    hint_observers: Arc<Mutex<HashMap<String, crate::terminal::HintObserver>>>,
+    term_hint_was_empty: Arc<std::sync::atomic::AtomicBool>,
     ctx: ConnectCtx,
     // (#rdp-vnc-embedded) The remote-desktop input handlers live here because
     // this is where the pointer and key plumbing already is; both tables are
@@ -11225,19 +11271,20 @@ fn wire_key_input(
         let handles = handles.clone();
         let bufs = bufs.clone();
         let sync_input = sync_input.clone();
-        // Shared timestamp: the last time the Shift key alone was pressed
-        // (key="", shift=true).  Used by the time-based Backspace filter below.
-        let last_shift_time: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
-        let weak_sk = window.as_weak();
-        // (#cmd-hint-p1 2026-10-27) 每个 tab 一个行缓冲观测器。按 tab id 存，
-        // 切标签 / 多标签各记各的（终端里 tab 切回来应当还看到自己那半行）。
-        let hint_observers: Arc<Mutex<HashMap<String, crate::terminal::HintObserver>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-        let weak_ob = window.as_weak();
-        let hint_observers_sk = hint_observers.clone();
-        // 上一步的观测是不是「空提示符」——用于「行被清空 → 解除 Esc 抑制」只递增一次。
-        let term_hint_was_empty = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        window.on_send_key(move |tab_id: SharedString, key: SharedString, ctrl: bool, alt: bool, shift: bool| {
+        // store is used by both the on_send_key closure and the ghost/raw
+        // callbacks below; pre-clone here so the first closure can move it.
+        let store = store.clone();
+        // (#cmd-hint-p1) 行缓冲观测器定义在函数体层（上面），这里取共享副本。
+        let hint_observers = hint_observers.clone();
+        let term_hint_was_empty = term_hint_was_empty.clone();
+        {
+            // Shared timestamp: the last time the Shift key alone was pressed
+            // (key="", shift=true).  Used by the time-based Backspace filter below.
+            let last_shift_time: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
+            let weak_sk = window.as_weak();
+            let weak_ob = window.as_weak();
+            let hint_observers_sk = hint_observers.clone();
+            window.on_send_key(move |tab_id: SharedString, key: SharedString, ctrl: bool, alt: bool, shift: bool| {
             let hint_observers = hint_observers_sk.clone();
             let term_hint_was_empty = term_hint_was_empty.clone();
             // ── Enter on a disconnected tab → reconnect in place (#79) ──────
@@ -11671,8 +11718,15 @@ fn wire_key_input(
                 if active == tab_id.as_str() {
                     let is_enter = key.as_str() == "\n" || key.as_str() == "\r";
                     // 可打印按键 = 恰好一个非控制字符。
+                    // ★ 排除 Slint 的功能键 PUA 区（\u{f700}-\u{f8ff}：方向键/
+                    //   Home/End 等）——它们不是「正在敲的字符」，却被计数为
+                    //   可打印后，连按方向键 2 次就会触发「无回显=密码」的
+                    //   静默误判（实测踩过：hint 框刚弹就哑）。
                     let printable = key.chars().count() == 1
-                        && key.chars().next().map(|c| !c.is_control()).unwrap_or(false);
+                        && key.chars().next().map(|c| {
+                            let u = c as u32;
+                            !c.is_control() && !(0xF700..=0xF8FF).contains(&u)
+                        }).unwrap_or(false);
                     if is_enter {
                         hint_observers
                             .lock()
@@ -11718,36 +11772,18 @@ fn wire_key_input(
                         tab_id.as_str(),
                         printable,
                     );
-                    {
-                        let w2 = w_ob.as_weak();
-                        let bufs2 = bufs.clone();
-                        let store2 = store.clone();
-                        let obs2 = hint_observers.clone();
-                        let was_empty2 = term_hint_was_empty.clone();
-                        let tab2 = tab_id.to_string();
-                        slint::Timer::single_shot(
-                            std::time::Duration::from_millis(120),
-                            move || {
-                                let Some(w) = w2.upgrade() else { return };
-                                // tab 切走了就别刷（否则会把别的 tab 的浮层写脏）。
-                                if w.get_active_tab_id().as_str() != tab2.as_str() {
-                                    return;
-                                }
-                                refresh_terminal_hint(
-                                    &w,
-                                    &bufs2,
-                                    &store2,
-                                    &obs2,
-                                    &was_empty2,
-                                    tab2.as_str(),
-                                    false,
-                                );
-                            },
-                        );
-                    }
+                    schedule_hint_reread(
+                        w_ob.as_weak(),
+                        bufs.clone(),
+                        store.clone(),
+                        hint_observers.clone(),
+                        term_hint_was_empty.clone(),
+                        tab_id.to_string(),
+                    );
                 }
             }
         });
+        }
     }
 
     // (#cmd-hint-p1 2026-10-27) 终端内联：把第 i 条候选写进 PTY。
@@ -11761,6 +11797,9 @@ fn wire_key_input(
     {
         let handles = handles.clone();
         let bufs = bufs.clone();
+        let store = store.clone();
+        let obs_all = hint_observers.clone();
+        let was_empty = term_hint_was_empty.clone();
         let weak = window.as_weak();
         window.on_term_hint_accept(move |i: i32| {
             let Some(w) = weak.upgrade() else { return };
@@ -11810,6 +11849,148 @@ fn wire_key_input(
             // 收起同时解锁 Esc 抑制（自增令牌），下一行照常弹。
             let tok = w.get_term_hint_reset_token().wrapping_add(1);
             w.set_term_hint_reset_token(tok);
+            // (§5) 收起后仍要按回显后的新行重算一次：填入的尾随空格是
+            // 「阶段落定信号」，下一阶段（参数/路径）有候选就重弹 —— 这就是
+            // 「选中命令继续敲参数，提示框还在」的闭环。重算出的新框是
+            // **新阶段的新候选**，不是旧框回魂。
+            schedule_hint_reread(
+                w.as_weak(),
+                bufs.clone(),
+                store.clone(),
+                obs_all.clone(),
+                was_empty.clone(),
+                tab_id.clone(),
+            );
+        });
+    }
+
+    // (§5 定稿 2026-10-30) Enter 已导航 → **执行选中候选**。
+    //
+    // 终端里「把行替换成候选再回车」只能靠发字节实现，三种情形：
+    //   ① apply 以当前行为前缀 → 发「差量尾巴 + \r」（最常见：补完即执行）；
+    //   ② apply 与当前行相等 → 直接发 \r；
+    //   ③ 对不上（用户中途改过行 / 候选是替换词）→ 先发 Ctrl+U（\x15，
+    //      bash/zsh/fish 通用的「清到行首」）再发整行 + \r —— 光标总在行尾，
+    //      等价清行。发错字节比这三种保守做法都糟。
+    //
+    // ★ 与 term-hint-accept（Shift+Enter/点击=仅填入）的唯一区别就是末尾
+    //   多发的那个 \r；差量算法共用同一套（apply 由 command_hint 统一算）。
+    {
+        let handles = handles.clone();
+        let bufs = bufs.clone();
+        let weak = window.as_weak();
+        window.on_term_hint_run(move |i: i32| {
+            let Some(w) = weak.upgrade() else { return };
+            let tab_id = w.get_active_tab_id().to_string();
+            let rows = w.get_term_hint_rows();
+            let idx = i.max(0) as usize;
+            let Some(row) = rows.row_data(idx) else { return };
+            let apply = row.apply.to_string();
+            let current = {
+                let Some(h) = term_buf(&bufs, &tab_id) else { return };
+                let mut b = h.lock().unwrap();
+                let s = b.parser.screen();
+                let (_r, cols) = s.size();
+                let (cur_row, cur_col) = s.cursor_position();
+                let row_text = crate::terminal::build_row(s, cur_row, cols).0;
+                let row_text = row_text.trim_end().to_string();
+                drop(b);
+                crate::terminal::command_line(&row_text, cur_col as usize)
+                    .unwrap_or_default()
+            };
+            let payload: String = if apply == current {
+                format!("{apply}\r")
+            } else if let Some(tail) = apply.strip_prefix(current.as_str()) {
+                format!("{tail}\r")
+            } else {
+                // 对不上：清行后重打整行（Ctrl+U 是 readline/fish 通用的
+                // 「清到行首」，光标在行尾时等价清整行）。
+                format!("\x15{apply}\r")
+            };
+            if let Some(handle) = handles.borrow().get(tab_id.as_str()) {
+                handle.send_raw(payload.into_bytes());
+            }
+            // 执行 = 行结束：收起浮层 + 解锁抑制（下一行照常弹）。
+            let hidden = crate::command_hint::HintModel::hidden(String::new());
+            command_hint_ui::apply_terminal_hint_model(&w, &hidden);
+            let tok = w.get_term_hint_reset_token().wrapping_add(1);
+            w.set_term_hint_reset_token(tok);
+        });
+    }
+
+    // (§5) → 接受内联鬼影：把 ghost 文本发给 PTY（不执行）。
+    // 行变化后重算 —— 若下一阶段还有候选，浮层按新行继续；这正是
+    // 「→ 一步补全，继续敲参数」的闭环。
+    // ★ ghost-accept **不经过** Slint 的 send-key 回调（那条路的观察器
+    //   不会触发），所以这里要**自己排 120ms 重读** —— 否则行变了浮层
+    //   还挂着旧候选/旧鬼影（实测踩过）。
+    {
+        let handles = handles.clone();
+        let bufs = bufs.clone();
+        let store = store.clone();
+        let obs_all = hint_observers.clone();
+        let was_empty = term_hint_was_empty.clone();
+        let weak = window.as_weak();
+        let weak2 = window.as_weak();
+        window.on_term_hint_ghost_accept(move || {
+            let Some(w) = weak.upgrade() else { return };
+            let ghost = w.get_term_hint_ghost().to_string();
+            if ghost.is_empty() {
+                return;
+            }
+            let tab_id = w.get_active_tab_id().to_string();
+            if let Some(handle) = handles.borrow().get(tab_id.as_str()) {
+                handle.send_raw(ghost.into_bytes());
+            }
+            // 回显到达后按新行重算（下一阶段有候选就重弹）。
+            schedule_hint_reread(
+                w.as_weak(),
+                bufs.clone(),
+                store.clone(),
+                obs_all.clone(),
+                was_empty.clone(),
+                tab_id.clone(),
+            );
+        });
+    }
+
+    // (§5) ↑ 首项穿透：方向键序列原样发给 PTY（ESC[A = 上箭头），
+    // shell 收到后翻自己的历史 —— 与沙盘「穿透把 ↑ 真的交给 shell」一致。
+    // 抑制由 Slint 侧在按键分支里就地建立（suppressed = true），
+    // 行被清空时 refresh 的空行分支统一解锁。
+    // ★ 与 ghost-accept 同理：穿透不经过 send-key 观察器，自己排重读。
+    {
+        let handles = handles.clone();
+        let bufs = bufs.clone();
+        let store = store.clone();
+        let obs_all = hint_observers.clone();
+        let was_empty = term_hint_was_empty.clone();
+        let weak = window.as_weak();
+        window.on_term_hint_send_key_raw(move |seq: SharedString| {
+            let Some(w) = weak.upgrade() else { return };
+            let tab_id = w.get_active_tab_id().to_string();
+            if let Some(handle) = handles.borrow().get(tab_id.as_str()) {
+                handle.send_raw(seq.as_bytes().to_vec());
+            }
+            schedule_hint_reread(
+                w.as_weak(),
+                bufs.clone(),
+                store.clone(),
+                obs_all.clone(),
+                was_empty.clone(),
+                tab_id.clone(),
+            );
+        });
+    }
+
+    // (§5) ↓ 末项关框：只收起、不抑制 —— 继续敲字时按新输入重算，
+    // 若还有候选浮层会再次出现（用户想表达的是「这批候选我不要了」）。
+    {
+        let weak = window.as_weak();
+        window.on_term_hint_close_request(move || {
+            let Some(w) = weak.upgrade() else { return };
+            let hidden = crate::command_hint::HintModel::hidden(String::new());
+            command_hint_ui::apply_terminal_hint_model(&w, &hidden);
         });
     }
 

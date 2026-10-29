@@ -31,9 +31,18 @@ fn the_first_word_is_the_command_phase() {
 #[test]
 fn a_command_with_subcommands_enters_the_subcommand_phase() {
     let i = HintInput::parse("git co");
-    // `has_subcommands` 只有 git/systemctl/docker/kubectl 这类才为真。
+    // `known` 只有 git/systemctl/docker/kubectl 这类才为真。
     assert_eq!(i.phase(true), HintPhase::Subcommand);
-    // 同一个输入，命令没有子命令概念时就是「参数」阶段。
+    // §3 定稿 2026-10-30：第一个词不是已知命令 → **整行搜索**（Command），
+    // 不再落参数阶段 —— 按中文名称搜快捷命令、整行历史预测都靠这条放宽。
+    assert_eq!(i.phase(false), HintPhase::Command);
+}
+
+#[test]
+fn an_unknown_head_with_an_option_word_stays_in_the_option_phase() {
+    // 整行搜索放宽的边界：当前词是 `-` 开头（参数意图）时不放宽 ——
+    // `df -h` 的 `-h` 仍按参数阶段走（历史整行靠词边界/子串浮出）。
+    let i = HintInput::parse("df -h");
     assert_eq!(i.phase(false), HintPhase::Option);
 }
 

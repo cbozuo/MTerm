@@ -52,13 +52,21 @@ pub(crate) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
 
     let q = input.word.to_lowercase();
     let first_word = input.settled.first().copied().unwrap_or(input.word);
-    let has_subcommands = subcommands_for(first_word).is_some();
-    let phase = input.phase(has_subcommands);
+    let known = subcommands_for(first_word).is_some();
+    let phase = input.phase(known);
 
     // ★ 触发阈值：正在补的词 ≥ 2 字符才弹（用户实测反馈：一个字符误命中
     //   太多，噪音大于价值）。但路径/参数前缀不受限 —— `/` `~` `-` 本身
     //   就是明确的意图信号，1 个字符就该弹。
-    if !should_pop(input.word, input.trailing_space, phase) {
+    // ★ 整行搜索阶段（§3 放宽：head 非已知命令）按**整行长度**判 ——
+    //   `docker l` 的词 `l` 只有 1 字符，但用户已经敲了 8 个字符，
+    //   按词长拦掉会让整行预测完全出不来（实测踩过）。
+    let pop = if phase == HintPhase::Command && !input.settled.is_empty() {
+        input.line.chars().count() >= 2
+    } else {
+        should_pop(input.word, input.trailing_space, phase)
+    };
+    if !pop {
         return HintModel::closed(context);
     }
 
@@ -67,111 +75,183 @@ pub(crate) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
         return subcommand_hint(store, &input, &q, context);
     }
 
-    // ── 相关度打分（越高越靠前）───────────────────────────────────────
-    //   100 命令名前缀命中（打 `git` → 「git 相关」的快捷命令）
-    //    90 命令前缀命中
-    //    70 名字子串命中
-    //    50 命令子串命中
-    //   历史：在同样规则上 -10（用户更想要「自己配的」排前面，
-    //         但最近敲过的也要能浮上来）
-    fn score_of(text: &str, name: &str, q: &str) -> i32 {
+    // ★ 命令阶段整行搜索（§3 定稿）：第一个词不是已知命令时（中文快捷命令
+    //   名称「修 bug 并提交」、整行历史预测 `df -h | head -4`），匹配词是
+    //   **用户敲的整段**，不是最后一个词 —— 否则多词名称永远搜不到。
+    let match_q = if phase == HintPhase::Command {
+        input.line.to_lowercase()
+    } else {
+        q.clone()
+    };
+
+    // ── 相关度打分（高保真 §3 排序五级键）──────────────────────────────
+    //   匹配度：精确 100 > 行前缀 80 > 词边界 65 > 子串 50 > 模糊子序列 18
+    //   词边界 = 按空白分词后任一**非首词**以 query 开头（`st` → `systemctl status …`），
+    //   fzf / VS Code 的分级匹配惯例；首词命中已由「行前缀」一档覆盖。
+    //
+    //   来源平手裁决（第 2 级，`pri`）：快捷命令 0 < 内置 1 < 历史 2 ——
+    //   用户自定义永远压过系统给的（Warp workflows / Raycast 口径）。
+    //   历史另在匹配分上 -10，与裁决同向：自己配的排前面，敲过的也能浮上来。
+    //
+    //   末级兜底是**字母序**（`text` 字典序）——同样的输入永远得到同样的
+    //   列表顺序，排序不确定的补全器看起来像在「抖」（VS Code/JetBrains）。
+    fn word_boundary(text: &str, q: &str) -> bool {
+        if q.is_empty() {
+            return false;
+        }
+        let tl = text.to_lowercase();
+        let ql = q.to_lowercase();
+        tl.split_whitespace()
+            .skip(1)
+            .any(|w| w.starts_with(&ql))
+    }
+    fn five_level(text: &str, q: &str) -> i32 {
         if q.is_empty() {
             return 1;
         }
         let tl = text.to_lowercase();
-        let nl = name.to_lowercase();
-        if nl.starts_with(q) {
+        let ql = q.to_lowercase();
+        if tl == ql {
             return 100;
         }
-        if tl.starts_with(q) {
-            return 90;
+        if tl.starts_with(&ql) {
+            return 80;
         }
-        if nl.contains(q) {
-            return 70;
+        if word_boundary(text, q) {
+            return 65;
         }
-        if tl.contains(q) {
+        if tl.contains(&ql) {
             return 50;
+        }
+        // 模糊子序列：q 的字符按序都出现在 text 里（宽松兜底档）。
+        let mut it = tl.chars();
+        let hit = ql.chars().all(|qc| it.any(|tc| tc == qc));
+        if hit {
+            return 18;
         }
         -1 // 不命中
     }
 
-    // ── 收集全部命中（先不截断，排序后再取前 N）──────────────────────
-    let mut scored: Vec<(i32, HintRowData)> = Vec::new();
+    // ── 收集全部命中（先不截断，合并去重 + 排序后再取前 N）──────────────
+    struct Scored {
+        s: i32,
+        pri: i32,
+        row: HintRowData,
+    }
+
+    let mut scored: Vec<Scored> = Vec::new();
 
     for c in store.quick_commands() {
-        let s = score_of(&c.command, &c.name, &q);
+        // 双字段匹配（§3 快捷命令行）：name 与 command 都参与，名称命中
+        // 视同前缀不吃降档；填入的永远是 command。
+        let s = five_level(&c.command, &match_q).max(five_level(&c.name, &match_q));
         if s < 0 {
             continue;
         }
-        // 短命令优先：同样命中时 `top` 比 `systemctl list-units …` 更相关。
-        let s = s + (64 - c.command.chars().count().min(63)) as i32 / 8;
-        // ★ 详情区要有内容：快捷命令的「说明」就是用户自己起的 name
-        //   （命令管理里那张卡的标题），`signature` 用命令原文 ——
-        //   否则详情区只能显示「暂无用法说明」，等于白占 94px。
         let quick_desc = if c.name.trim().is_empty() {
             t("用户自建的快捷命令", "User-defined quick command").to_string()
         } else {
             c.name.clone()
         };
-        scored.push((
+        scored.push(Scored {
             s,
-            HintRowData::new(
+            pri: 0,
+            row: HintRowData::new(
                 c.command.clone(),
                 HintKind::Quick,
                 c.name.clone(),
                 t("快捷命令", "Quick command").to_string(),
                 c.command.clone(),
                 quick_desc,
+                0,
                 &input,
                 phase,
             ),
-        ));
+        });
     }
 
     let history = store.command_history();
     for cmd in history.iter().rev() {
-        let s = score_of(cmd, "", &q);
+        let s = five_level(cmd, &match_q) - 10;
         if s < 0 {
             continue;
         }
-        let s = s - 10 + (64 - cmd.chars().count().min(63)) as i32 / 8;
-        // 去重：同一条命令既在快捷命令里又在历史里时，只留快捷命令那条。
-        if scored.iter().any(|(_, r)| r.text == *cmd) {
-            continue;
-        }
-        scored.push((
+        scored.push(Scored {
             s,
-            HintRowData::new(
+            pri: 2,
+            row: HintRowData::new(
                 cmd.clone(),
                 HintKind::History,
                 String::new(),
                 t("历史", "History").to_string(),
                 cmd.clone(),
                 t(
-                    "敲过的命令；回车直接执行",
+                    "敲过的命令；Enter 直接执行",
                     "Previously run; Enter runs it again",
                 )
                 .to_string(),
+                2,
                 &input,
                 phase,
             ),
-        ));
+        });
     }
 
-    // 排序：分数降序；同分时短文本优先（更接近用户想敲的那条）。
-    scored.sort_by(|a, b| {
-        b.0.cmp(&a.0)
-            .then_with(|| a.1.text.chars().count().cmp(&b.1.text.chars().count()))
+    // ── 跨来源合并（§3 去重②）：整段填入文本相同 = 同一条命令，只留一行。
+    //    tag/说明取来源优先级更高（pri 小）的一边，分数取两边最大。
+    //    词与行不互斥（去重③）：内置命令名与历史整行文本不同，不去。
+    let mut deduped: Vec<Scored> = Vec::with_capacity(scored.len());
+    for item in scored {
+        if let Some(old) = deduped.iter_mut().find(|o| o.row.text == item.row.text) {
+            if item.pri < old.pri {
+                old.row = item.row;
+                old.pri = item.pri;
+            }
+            old.s = old.s.max(item.s);
+        } else {
+            deduped.push(item);
+        }
+    }
+
+    // 排序：匹配分降序 → 来源裁决升序 → 字母序兜底（确定性）。
+    deduped.sort_by(|a, b| {
+        b.s.cmp(&a.s)
+            .then_with(|| a.pri.cmp(&b.pri))
+            .then_with(|| a.row.text.cmp(&b.row.text))
     });
 
-    let total = scored.len();
+    let total = deduped.len();
+    let (danger_token, danger_why) = danger_of(line);
     if total == 0 {
-        return HintModel::closed(context);
+        if danger_token.is_empty() {
+            return HintModel::closed(context);
+        }
+        // 危险命令 0 候选：框仍要弹 —— 告警条是安全信息（§3②，沙盘同款：
+        // `rm -rf xyz` 即使没有路径候选，也要让红色告警出现在眼前）。
+        return HintModel {
+            open: true,
+            phase,
+            context,
+            total: 0,
+            rows: Vec::new(),
+            ghost: String::new(),
+            danger_token,
+            danger_why,
+        };
     }
-    let rows: Vec<HintRowData> = scored
+    // ── 内联鬼影（§5 →）：首候选落在「整行」或「当前词」前缀上时，
+    //    追加到行尾就能补全的那段。区分大小写（shell 语义，不 lowercase）。
+    let ghost = match deduped.first().map(|x| x.row.text.clone()) {
+        Some(first) if first.starts_with(line) => first[line.len()..].to_string(),
+        Some(first) if !input.word.is_empty() && first.starts_with(input.word) => {
+            first[input.word.len()..].to_string()
+        }
+        _ => String::new(),
+    };
+    let rows: Vec<HintRowData> = deduped
         .into_iter()
         .take(HINT_MAX_ROWS)
-        .map(|(_, r)| r)
+        .map(|x| x.row)
         .collect();
     HintModel {
         open: true,
@@ -179,7 +259,79 @@ pub(crate) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
         context,
         total,
         rows,
+        ghost,
+        danger_token,
+        danger_why,
     }
+}
+
+/// 危险命令表 —— **严格镜像** `ui/terminal_view.slint` 的 `danger-token()`
+/// （`has-token` = 子串包含判定）。Rust 侧多一份是因为终端内联的行文本
+/// 在这里算，Slint 的函数够不着；**改表必须两边同步**（§7「单一真源」
+/// 的理想解是把 Slint 两处也收编到这里，牵动高亮渲染，暂未做）。
+fn danger_of(line: &str) -> (String, String) {
+    let s = line.to_lowercase();
+    let has = |tok: &str| s.contains(tok);
+    let (tok, why): (&str, &str) = if has("rm -rf") || has("rm -fr") || has("rm -r -f") {
+        (
+            "rm -rf",
+            t(
+                "递归强制删除，删掉的内容不进回收站。",
+                "Recursive forced delete; nothing goes to a trash bin.",
+            ),
+        )
+    } else if has("mkfs") {
+        (
+            "mkfs",
+            t(
+                "格式化会直接覆盖目标分区上的全部数据。",
+                "Formatting overwrites everything on the target volume.",
+            ),
+        )
+    } else if has("dd if=") {
+        (
+            "dd if=",
+            t(
+                "按块写入，写错 of= 会抹掉整块盘。",
+                "Block-level write; a wrong of= wipes the whole disk.",
+            ),
+        )
+    } else if has("shutdown") {
+        (
+            "shutdown",
+            t(
+                "会使远端主机停机，当前所有会话中断。",
+                "Shuts the remote host down; all sessions drop.",
+            ),
+        )
+    } else if has("reboot") {
+        (
+            "reboot",
+            t(
+                "会使远端主机重启，当前所有会话中断。",
+                "Reboots the remote host; all sessions drop.",
+            ),
+        )
+    } else if has("chmod -r 777") {
+        (
+            "chmod -R 777",
+            t(
+                "把权限放开到所有人可写。",
+                "Opens the path to world-writable.",
+            ),
+        )
+    } else if has("init 0") {
+        (
+            "init 0",
+            t(
+                "切到关机运行级。",
+                "Switches to the halt runlevel.",
+            ),
+        )
+    } else {
+        ("", "")
+    };
+    (tok.to_string(), why.to_string())
 }
 
 /// 子命令阶段的候选：整条「命令 + 子命令」，这样 Tab 填进去就能直接补参数。
@@ -205,6 +357,7 @@ fn subcommand_hint(
                 t("内置", "Built-in").to_string(),
                 format!("{command} {name} [<opts>]"),
                 (*desc).to_string(),
+                1,
                 input,
                 HintPhase::Subcommand,
             ));
@@ -230,10 +383,11 @@ fn subcommand_hint(
                 t("历史", "History").to_string(),
                 cmd.clone(),
                 t(
-                    "敲过的命令；回车直接执行",
+                    "敲过的命令；Enter 直接执行",
                     "Previously run; Enter runs it again",
                 )
                 .to_string(),
+                2,
                 input,
                 HintPhase::Subcommand,
             ));
@@ -243,11 +397,25 @@ fn subcommand_hint(
     if rows.is_empty() {
         return HintModel::closed(context);
     }
+    // 内联鬼影（与 hint_model 同口径）：子命令阶段 `git st` → `git status` 的尾巴。
+    let ghost = match rows.first().map(|r| r.text.clone()) {
+        Some(first) if first.starts_with(input.line) => first[input.line.len()..].to_string(),
+        Some(first)
+            if !input.word.is_empty() && first.starts_with(input.word) =>
+        {
+            first[input.word.len()..].to_string()
+        }
+        _ => String::new(),
+    };
+    let (danger_token, danger_why) = danger_of(input.line);
     HintModel {
         open: true,
         phase: HintPhase::Subcommand,
         context,
         total,
         rows,
+        ghost,
+        danger_token,
+        danger_why,
     }
 }

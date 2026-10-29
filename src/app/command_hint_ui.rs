@@ -21,21 +21,20 @@ use std::rc::Rc;
 pub(crate) fn apply_terminal_hint_model(win: &AppWindow, model: &HintModel) {
     let rows = hint_rows_model(model);
     win.set_term_hint_rows(rows);
-    win.set_term_hint_phase(model.phase.label().into());
-    win.set_term_hint_context(model.context.clone().into());
-    win.set_term_hint_total(model.total as i32);
+    // 修订 10-30：上下文条（phase/context/total）随浮层头部一起退役；
+    // ghost / danger 是 §5 鬼影与 §3 条件告警条的新输入。
+    win.set_term_hint_ghost(model.ghost.clone().into());
+    win.set_term_hint_danger(model.danger_token.clone().into());
+    win.set_term_hint_danger_why(model.danger_why.clone().into());
     win.set_term_hint_open(model.open);
 }
 
 /// 把 `HintModel` 写成命令栏那一组属性（P0）。
 ///
-/// 单点写入：hint-* 六列必须**一起**更新，否则会出现「列表换了、阶段胶囊还是
+/// 单点写入：hint-* 列必须**一起**更新，否则会出现「列表换了、告警还是
 /// 上一次的」这种半新半旧的一帧。所有调用点都走这里。
 pub(crate) fn apply_hint_model(win: &AppWindow, model: &HintModel) {
     win.set_hint_rows(hint_rows_model(model));
-    win.set_hint_phase(model.phase.label().into());
-    win.set_hint_context(model.context.clone().into());
-    win.set_hint_total(model.total as i32);
 }
 
 /// `HintModel.rows` → Slint 模型。两个 apply 共用，避免字段名抄两遍。

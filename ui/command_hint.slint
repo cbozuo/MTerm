@@ -1,17 +1,24 @@
-// (#cmd-hint 2026-10-27) 命令提示框 —— 高保真四段式浮层。
+// (#cmd-hint 2026-10-27 · 修订 2026-10-30) 命令提示框 —— 轻量两段半浮层。
 //
-// 高保真稿：docs/design/terminal-command-hint-hifi-2026-10-27.html
-// 数据侧：src/app/command_hint.rs
+// 高保真稿：docs/design/terminal-command-hint-hifi-2026-10-27.html（修订 10-30）
+// 数据侧：src/command_hint/（领域层）+ src/app/command_hint_ui.rs（宿主桥）
 //
 // ★ 这个组件**只负责画和响应**，不认识「命令栏」也不认识「终端」：
 //   两处宿主（命令栏 / 终端内联）各算自己的锚点，传进来即可。这是高保真
 //   §7 最后一条「两处宿主共用一组件」的落地方式 —— 别再长出第二份实现
 //   （send_cmd_window 已经踩过这个坑）。
 //
-// 四段的结构与尺寸都锁死，理由见高保真 §3：
-//   ① 上下文条 27px  ② 候选列表 3–5 行  ③ 详情区 94px  ④ 键盘脚注 23px
-//   ②③ 的高度不随候选数量/选中项变化 —— 「换一条候选整个框跳一下」是这类
-//   浮层最刺眼的毛病。
+// ★ 修订 10-30 的结构定稿（用户实测反馈：头部信息提示符里就有、详情区
+//   未选中时整块空白）—— 原「四段式」砍成**两段半**：
+//     ① 候选列表 3–5 行（主体，说明长在行内副标题）
+//     ② 危险告警条 ~30px（**条件渲染**，仅命中 danger-token 时出现在列表上方）
+//     ③ 键盘脚注 23px
+//   原 27px 上下文条（user@host : cwd + 阶段胶囊 + 计数）与 94px 详情区退役。
+//
+// ★ 键盘契约同批定稿（§5）：Tab **永远透传 shell**（提示框不接管）；
+//   Enter 未导航=执行当前输入、已导航=**执行选中候选**；
+//   Shift+Enter / →(鬼影) / 鼠标点击 = 仅填入。选中态由 ↑↓ 显式建立，
+//   刚弹出时无选中（selected = -1，不高亮任何行）。
 
 import { Icon } from "icons.slint";
 import { Theme } from "theme.slint";
@@ -21,35 +28,33 @@ export struct HintRow {
     text: string,
     kind: int,          // 1 = 快捷命令(bolt) / 0 = 历史(时钟)
     subtitle: string,   // 一句话副标题；空则不占位
-    source: string,     // 来源标签：「快捷命令」/「历史」/「内置」
-    signature: string,  // 详情区语法签名；空 = 无 spec
-    description: string,// 详情区说明
+    source: string,     // 来源标签：「快捷命令」/「内置」/「历史」
+    signature: string,  // 语法签名（详情区已退役，字段保留给未来知识库面板）
+    description: string,// 说明（同上）
     // ★ 选中这一条后，命令行**整行**应该变成什么。
     //   由 Rust 侧算好（`HintInput` 已经知道怎么拆词，UI 侧 Slint 1.18 的
     //   string 没有 trim-end/rfind/substr，拼不出来）。两个用途：
-    //     ① Tab / 鼠标点击 → 直接写进输入框；
-    //     ② Enter 两段式 → 拿它跟当前整行比，相等就执行、不等就先填入。
+    //     ① Shift+Enter / 鼠标点击 → 差量填入；
+    //     ② Enter 已导航 → 整行替换后执行。
     apply: string,
 }
 
 export component CommandHint inherits Rectangle {
     // ── 数据 ────────────────────────────────────────────────────────────
     in property <[HintRow]> rows;
-    in property <int> selected: 0;
+    // ★ 无选中态：刚弹出时不高亮任何行（高保真 §5 —— 未导航 Enter=执行
+    //   当前输入，防止「敲完一条完整命令回车被候选偷换」）。↑↓ 才建立导航。
+    in property <int> selected: -1;
     in property <bool> open: false;
-    // 阶段胶囊文案（Rust 侧已按语言定好）。
-    in property <string> phase-label: "";
-    // 上下文条左侧：`user@host : cwd`。
-    in property <string> context-text: "";
-    // 命中总数（可能 > rows.length，行数按 8 封顶）。
-    in property <int> total-count: 0;
-    // 危险命令命中的模式原文；非空 → 详情区整块换成红色告警条。
-    // 复用命令栏既有的 danger 语言（高保真 §3 ③）。
+    // 危险命令命中的模式原文；非空 → 列表上方出现红色告警条。
+    // 数据由 Rust 侧算（`danger_of`，与 terminal_view.slint 的
+    // danger-token() 同表镜像）—— 终端内联与命令栏共用同一份。
     in property <string> danger-token: "";
     in property <string> danger-why: "";
 
     // ── 回调 ────────────────────────────────────────────────────────────
-    // 用户点了某一行（单击填入，不执行 —— 高保真 §5 鼠标行）。
+    // 用户点了某一行（单击=选中+**填入**，不执行 —— §5 鼠标行；
+    // 与历史面板「点行=填入」同口径，执行只交给 Enter）。
     callback picked(int);
     // 悬停某一行（只高亮，不改选中 —— 避免列表跟鼠标抖）。
     callback hovered(int);
@@ -86,22 +91,21 @@ export component CommandHint inherits Rectangle {
         }
     }
 
-    // 可见行数 = min(候选数, 8)。高度按它算，所以 1↔5 条之间切换时
-    // 框会变高，但 **3 条以内不变**（高保真 §4 的「锁 3 行」）。
+    // 可见行数 = min(候选数, 50)。高度按它算，所以 1↔3 条之间切换时
+    // 框高度不变（高保真 §4 的「锁 3 行」）。
     // 数据侧可能给到几十条（见 HINT_MAX_ROWS），视图只开固定视口。
     out property <int> shown: min(root.rows.length, 50);
-    // ★ 视口行数：1–3 条锁定 3 行；3–6 条跟着长；**超过 6 条不再长高**，
-    //   改为滚动（用户定稿：「信息框的高度不变，支持滚动翻找」）。
-    out property <int> list-rows: min(max(3, root.shown), 6);
+    // ★ 视口行数：1–3 条锁定 3 行；3–5 条跟着长；**超过 5 条不再长高**，
+    //   改为滚动（高保真 §3：候选 5 行封顶）。
+    out property <int> list-rows: min(max(3, root.shown), 5);
     // ★ 自然高度必须**自己算**，不能读 `self.preferred-height`：
     //   根是 Rectangle，Slint 不会从内容反推 Rectangle 的 preferred-height
-    //   （实测恒为 0，于是宿主侧的 min(自然高, 可用高) 完全失效，
-    //   浮层在离屏里恒为 257px、翻转判据也跟着错）。
-    //   三段固定 + 可选的危险告警条：
-    //     上下文条 27 + 列表(list-rows*28+6) + 告警 94（仅危险命令）+ 脚注 23
+    //   （实测恒为 0，于是宿主侧的 min(自然高, 可用高) 完全失效）。
+    //   两段固定 + 条件告警条：
+    //     列表(list-rows*28+6) + 告警 30（仅危险命令）+ 脚注 23
     out property <length> natural-height:
-        27px + (root.list-rows * 28px + 6px)
-        + (root.danger-token != "" ? 94px : 0px)
+        (root.list-rows * 28px + 6px)
+        + (root.danger-token != "" ? 30px : 0px)
         + 23px;
 
     // ★ 内层内容直接作为根的子级，由根统一裁切。
@@ -109,10 +113,9 @@ export component CommandHint inherits Rectangle {
     //   它们贴边但不越过根（根有 border-radius 收边）。
     // ★ 内层布局必须**内缩 1px**（四边各让出边框的位置）。
     //   Slint 的 Rectangle border 画在边界内侧，而子元素是画在边框**之上**的
-    //   —— 四个内层段（上下文条 / 详情 / 脚注）带背景且铺满全宽时，会把
-    //   边框整整一圈盖掉（用户实测反馈「四角缺少细线」，其实是四边都被盖，
-    //   角上最明显）。高保真用 CSS `overflow:hidden` 解决同一件事；Slint 的
-    //   等价做法就是让内容避开边框那 1px。
+    //   —— 内层段（告警 / 脚注）带背景且铺满全宽时，会把边框整整一圈盖掉。
+    //   高保真用 CSS `overflow:hidden` 解决同一件事；Slint 的等价做法就是
+    //   让内容避开边框那 1px。
     VerticalLayout {
         x: 1px;
         y: 1px;
@@ -120,66 +123,55 @@ export component CommandHint inherits Rectangle {
         height: parent.height - 2px;
         spacing: 0px;
         alignment: start;
-        // ── ① 上下文条 27px ─────────────────────────────────────────────
-        Rectangle {
-            height: 27px;
+
+        // ── ① 危险告警条（**条件渲染**，仅危险命令时出现在列表上方）────
+        // 高保真 §3②：约 30px 单行。安全警示要醒目，但不值得为它常驻一整块
+        // ——原「列表下方 94px 接管详情区」的结构随详情区一起退役。
+        if root.danger-token != "" : Rectangle {
+            height: 30px;
             width: parent.width;
-            background: Theme.bg-panel;
+            clip: true;
+            background: Theme.danger.with-alpha(0.13);
+
+            Rectangle {
+                y: 0px;
+                width: parent.width;
+                height: 1phx;
+                background: Theme.danger.with-alpha(0.42);
+            }
+
             HorizontalLayout {
                 padding-left: 10px;
-                padding-right: 9px;
-                spacing: 8px;
-                // ★ 不写 alignment：上下文文本吃 stretch，胶囊/计数自然靠右；
-                //   写了 start 会把胶囊的宽度约束打乱（pillfalls 坑）。
+                padding-right: 10px;
+                spacing: 7px;
+                Icon {
+                    glyph: "warning";
+                    tint: Theme.danger-strong;
+                    size: 13px;
+                    width: 13px;
+                    height: 13px;
+                    y: (parent.height - self.height) / 2;
+                }
                 Text {
-                    text: root.context-text;
-                    color: Theme.text-muted;
-                    font-size: Theme.fs-2xs;
-                    font-family: Theme.font-mono;
+                    // 模式原文不翻译（命令原文）；前缀走 i18n。
+                    text: @tr("Dangerous command") + " · " + root.danger-token;
+                    color: Theme.danger-strong;
+                    font-size: Theme.fs-xs;
+                    font-weight: Theme.fw-strong;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.danger-why;
+                    color: Theme.text-secondary;
+                    font-size: 10.5px;
                     vertical-alignment: center;
                     overflow: elide;
                     horizontal-stretch: 1;
                 }
-                // 阶段胶囊。宽度随文案（中英文长度不同），所以不写死。
-                // ★ 高度 16 + y 手动居中：27px 条里固定高度子项默认**顶对齐**
-                //   （pitfalls：交叉轴没有属性可设），用户实测「没有居中显示」。
-                Rectangle {
-                    height: 16px;
-                    width: phase-tx.preferred-width + 12px;
-                    y: (parent.height - self.height) / 2;
-                    border-radius: 8px;
-                    background: Theme.accent-soft;
-                    border-width: 1px;
-                    border-color: Theme.accent;
-                    phase-tx := Text {
-                        text: root.phase-label;
-                        color: Theme.accent;
-                        font-size: 9.5px;
-                        font-weight: Theme.fw-strong;
-                        vertical-alignment: center;
-                        horizontal-alignment: center;
-                        width: parent.width;
-                        height: parent.height;
-                    }
-                }
-                Text {
-                    text: root.total-count + "";
-                    color: Theme.text-muted;
-                    font-size: 10px;
-                    font-family: Theme.font-mono;
-                    vertical-alignment: center;
-                }
-            }
-            // 底部分隔线：1phx（高保真 §3，别用 border —— 四边都会画）
-            Rectangle {
-                y: parent.height - 1phx;
-                width: parent.width;
-                height: 1phx;
-                background: Theme.slot-line.brighter(0.14);
             }
         }
 
-        // ── ② 候选列表（3–5 行）─────────────────────────────────────────
+        // ── ② 候选列表（3–5 行，主体）───────────────────────────────────
         Rectangle {
             // 高保真 §4：候选 1→3 条时高度锁定在 3 行，超过才长高。
             // 28px 行高 + 上下 3px 内衬。
@@ -260,6 +252,17 @@ export component CommandHint inherits Rectangle {
                             horizontal-stretch: 1;
                         }
 
+                        // 一句话副标题（说明长在行内，§3 定稿——详情区已退役）。
+                        // 宽度不够先丢它（高保真：副标题是「扫视时可跳过」的信息）。
+                        if r.subtitle != "" : Text {
+                            text: r.subtitle;
+                            color: Theme.text-secondary;
+                            font-size: 10.5px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            width: min(parent.width / 2, self.preferred-width);
+                        }
+
                         // 来源徽章：**靠右**（吸空块在它后面不行——它自己就是
                         // 最后一个有宽度的元素，剩余空间由主文本的 stretch 吃掉）。
                         if r.source != "" : Rectangle {
@@ -288,60 +291,10 @@ export component CommandHint inherits Rectangle {
             }
         }
 
-        // ── ③ 危险告警条（**仅危险命令时出现**）────────────────────────
-        //
-        // ★ 用户实测反馈：「下面的描述说明块没必要加进去，把空间让给命令」。
-        //   原来这里常驻 94px 显示语法签名 / 一句话说明 / 来源元信息，普通命令
-        //   根本没人看那几行，却把浮层撑得很长（用户：「感觉有些太长了」）。
-        //   现在只在**危险命令**时出现 —— 那是真正需要用户停下来看一眼的信息，
-        //   其余情况整块不占高度。
-        if root.danger-token != "" : Rectangle {
-            height: 94px;
-            width: parent.width;
-            clip: true;
-            background: Theme.danger.with-alpha(0.13);
-
-            Rectangle {
-                y: 0px;
-                width: parent.width;
-                height: 1phx;
-                background: Theme.danger.with-alpha(0.42);
-            }
-
-            HorizontalLayout {
-                padding-left: 11px;
-                padding-right: 11px;
-                spacing: 8px;
-                Icon {
-                    glyph: "warning";
-                    tint: Theme.danger-strong;
-                    size: 14px;
-                    width: 14px;
-                    height: 14px;
-                    y: (parent.height - self.height) / 2;
-                }
-                VerticalLayout {
-                    alignment: center;
-                    spacing: 2px;
-                    horizontal-stretch: 1;
-                    Text {
-                        text: @tr("Dangerous command") + " · " + root.danger-token;
-                        color: Theme.danger-strong;
-                        font-size: Theme.fs-xs;
-                        font-weight: Theme.fw-strong;
-                        overflow: elide;
-                    }
-                    Text {
-                        text: root.danger-why;
-                        color: Theme.text-secondary;
-                        font-size: 10.5px;
-                        overflow: elide;
-                    }
-                }
-            }
-        }
-
-        // ── ④ 键盘脚注 23px ─────────────────────────────────────────────
+        // ── ③ 键盘脚注 23px ─────────────────────────────────────────────
+        // §3③：六项常驻，并刻意不出现「Tab 填入」——Tab 已定稿**永远透传
+        // shell**（§5），脚注本身就是这个契约的声明。键帽一律用英文字母
+        // （用户定稿：↵/⇧ 符号不可用）。
         Rectangle {
             height: 23px;
             width: parent.width;
@@ -366,15 +319,28 @@ export component CommandHint inherits Rectangle {
                     vertical-alignment: center;
                 }
                 Text {
-                    text: "Tab " + @tr("Insert");
+                    // §5 定稿：未导航 Enter=执行当前输入；已导航=执行选中候选。
+                    text: "Enter " + @tr("Run");
                     color: Theme.text-muted;
                     font-size: 10px;
                     vertical-alignment: center;
                 }
                 Text {
-                    // ★ 用户定稿：「tab 回车都是填入，不需要执行」。
-                    //   早先这里写的是「↵ 执行」，与实际行为不符。
-                    text: "↵ " + @tr("Insert");
+                    // 仅填入（不执行）——想接着敲参数的入口。
+                    text: "Shift+Enter " + @tr("Insert");
+                    color: Theme.text-muted;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    // 内联鬼影补全（词级 / 整行预测），Tab 归 shell 后的补命令捷径。
+                    text: "→ " + @tr("Complete");
+                    color: Theme.text-muted;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "Tab=shell";
                     color: Theme.text-muted;
                     font-size: 10px;
                     vertical-alignment: center;

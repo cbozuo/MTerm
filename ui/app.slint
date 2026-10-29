@@ -1212,21 +1212,20 @@ export component AppWindow inherits Window {
     in property <[HistoryRow]> history-rows;
     in property <int> history-total: 0;
     in property <int> history-pinned: 0;
-    // (#cmd-hint 2026-10-27) 四段式命令提示框的数据（高保真稿
-    // docs/design/terminal-command-hint-hifi-2026-10-27.html）。
-    // Rust 在 hint-query 回调里按整行重算四列后写回；阶段判定、子命令表、
+    // (#cmd-hint 2026-10-27) 命令提示框的数据（高保真稿
+    // docs/design/terminal-command-hint-hifi-2026-10-27.html，修订 10-30）。
+    // Rust 在 hint-query 回调里按整行重算后写回；阶段判定、子命令表、
     // 危险命令都在 Rust 侧，Slint 这边只负责画与按键。
+    // ⚠ 修订 10-30：hint-phase/context/total 随浮层头部一起退役（属性删除）。
     in property <[HintRow]> hint-rows;
-    in property <string> hint-phase: "";
-    in property <string> hint-context: "";
-    in property <int> hint-total: 0;
     // (#cmd-hint-p1 2026-10-27) 终端内联提示框（高保真 §7 P1）。
     // 与上面命令栏那组 hint-* **分开**：两处可以各有各的半行草稿，
     // 浮层各显各的，不会互相顶掉。
     in property <[HintRow]> term-hint-rows;
-    in property <string> term-hint-phase: "";
-    in property <string> term-hint-context: "";
-    in property <int> term-hint-total: 0;
+    // (§5) 内联鬼影 + 条件告警条（Rust 侧算好，§3/§5 定稿）。
+    in property <string> term-hint-ghost: "";
+    in property <string> term-hint-danger: "";
+    in property <string> term-hint-danger-why: "";
     in property <bool> term-hint-open: false;
     // (#cmd-hint-p1) 抑制解除令牌：Rust 在「回车提交 / 行被清空」时自增一次，
     // Slint 侧监听变化后清掉 `term-hint-suppressed`。
@@ -1258,6 +1257,14 @@ export component AppWindow inherits Window {
     callback hint-query(string /* line */);
     // (#cmd-hint-p1 2026-10-27) 终端内联：把第 i 条候选写进 PTY。
     callback term-hint-accept(int /* index */);
+    // (§5 定稿 2026-10-30) 终端内联新契约：
+    //   run = Enter 已导航执行选中候选；ghost-accept = → 接受鬼影；
+    //   send-key-raw = ↑ 首项穿透（ESC[A 交给 shell 翻历史）；
+    //   close-request = ↓ 末项关框（不抑制）。
+    callback term-hint-run(int /* index */);
+    callback term-hint-ghost-accept();
+    callback term-hint-send-key-raw(string /* bytes */);
+    callback term-hint-close-request();
     in-out property <bool> quick-cmd-manage-open: false;  // manage dialog（cm 组件的 open 镜像）
     callback open-command-manager();                // 打开命令管理（重置视图/搜索/勾选）
     // 命令管理弹框（#quick-cmd-manager 2026-10-24 高保真）——数据与逻辑见
@@ -3539,19 +3546,21 @@ export component AppWindow inherits Window {
                         history-rows: root.history-rows;
                         history-total: root.history-total;
                         history-pinned: root.history-pinned;
-                        // (#cmd-hint 2026-10-27) 四段式提示框的四段数据
+                        // (#cmd-hint 2026-10-27) 提示框数据（修订 10-30：
+                        // phase/context/total 随浮层头部退役，ghost/danger 进）
                         hint-rows: root.hint-rows;
-                        hint-phase: root.hint-phase;
-                        hint-context: root.hint-context;
-                        hint-total: root.hint-total;
                         // (#cmd-hint-p1) 终端内联那一组
                         term-hint-rows: root.term-hint-rows;
-                        term-hint-phase: root.term-hint-phase;
-                        term-hint-context: root.term-hint-context;
-                        term-hint-total: root.term-hint-total;
+                        term-hint-ghost: root.term-hint-ghost;
+                        term-hint-danger: root.term-hint-danger;
+                        term-hint-danger-why: root.term-hint-danger-why;
                         term-hint-open: root.term-hint-open;
                         term-hint-reset-token: root.term-hint-reset-token;
                         term-hint-accept(i) => { root.term-hint-accept(i); }
+                        term-hint-run(i) => { root.term-hint-run(i); }
+                        term-hint-ghost-accept() => { root.term-hint-ghost-accept(); }
+                        term-hint-send-key-raw(b) => { root.term-hint-send-key-raw(b); }
+                        term-hint-close-request() => { root.term-hint-close-request(); }
                         send-scopes: root.send-scopes;
                         open-tab-count: root.sendable-tabs;
                         run-command(cmd, scope) => { root.run-command(term.id, cmd, scope); }
