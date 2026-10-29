@@ -10146,6 +10146,13 @@ fn wire_session_callbacks(
                 find_total: 0,
                 find_current_no: 0,
                 find_invalid_regex: false,
+                // (#find-bar v3.6 §06⑨) 回填源初始为空；cur-row -1 = 不在视口。
+                find_query: "".into(),
+                find_match_case: false,
+                find_use_regex: false,
+                find_cur_row: -1,
+                find_cur_col: 0,
+                find_cur_len: 0,
                 selection: ModelRc::from(std::rc::Rc::new(VecModel::<TermMatch>::default())),
                 sftp_path: "/".into(),
                 sftp_entries: ModelRc::from(std::rc::Rc::new(VecModel::<SftpEntry>::default())),
@@ -10216,6 +10223,7 @@ fn wire_session_callbacks(
                     vt100_drawing: session.vt100_drawing,
                     charset: crate::terminal::CharsetTracker::default(),
                     interactive_echo_until: std::time::Instant::now(),
+                    last_output_at: std::time::Instant::now(),
                     sel_anchor: None,
                     sel_focus: None,
                     sel_ranges: Vec::new(),
@@ -11146,6 +11154,44 @@ fn wire_key_input(
         });
     }
 
+    // (#find-bar v3.6 §06⑦) on_send_key 的闭包会整体 move 走 `store`，查找
+    // 历史的落盘回调在它之后注册，这里先留一份并把启动回填做掉。
+    let store_find_hist = store.clone();
+    window.set_find_history(crate::app::terminal_ui::find_history_model(
+        &store_find_hist.borrow(),
+    ));
+
+    // (#find-bar v3.6 §06⑨) 重开恢复上次查询：面板打开（open-seq 自增）时
+    // 若缓冲里没有查询词，把历史最新条目（词 + 开关）塞回并重扫。IDEA 同款
+    // 「重开查找栏恢复上次查询」；「不自动滚动」由 find_set_query 的最近命中
+    // 口径兜住（视口内有命中就不挪视图）。
+    {
+        let bufs_restore = bufs.clone();
+        let store_restore = store.clone();
+        let weak_restore = window.as_weak();
+        window.on_find_restore_request(move |tab_id: SharedString| {
+            let tid = tab_id.to_string();
+            let last = {
+                let s = store_restore.borrow();
+                s.find_history().first().cloned()
+            };
+            let Some(entry) = last else { return };
+            let Some(win) = weak_restore.upgrade() else { return };
+            with_term_buf(&bufs_restore, &tid, |buf| {
+                if buf.find.query.is_empty() {
+                    buf.find_set_query(
+                        &entry.query,
+                        crate::terminal::FindOptions {
+                            match_case: entry.match_case,
+                            use_regex: entry.use_regex,
+                        },
+                    );
+                }
+            });
+            crate::app::terminal_ui::rebuild_tab_display(&win, &bufs_restore, &tid);
+        });
+    }
+
     // Forward each keystroke as raw bytes to the SSH PTY. The server's bash /
     // readline handles echo, history (↑↓), Tab completion, Ctrl+C, etc.
     {
@@ -11954,6 +12000,17 @@ fn wire_key_input(
                 set_terminal_row(&win, &tid, |row| {
                     row.spans = ModelRc::from(Rc::new(VecModel::<TermSpan>::default()));
                     row.find_matches = ModelRc::from(Rc::new(VecModel::<TermMatch>::default()));
+                    row.find_current = ModelRc::from(Rc::new(VecModel::<TermMatch>::default()));
+                    row.find_total = 0;
+                    row.find_current_no = 0;
+                    row.find_invalid_regex = false;
+                    // (v3.6 §06⑨) 缓冲已清 → 词与开关一并复位，重开面板不回填旧词。
+                    row.find_query = SharedString::from("");
+                    row.find_match_case = false;
+                    row.find_use_regex = false;
+                    row.find_cur_row = -1;
+                    row.find_cur_col = 0;
+                    row.find_cur_len = 0;
                     row.selection = ModelRc::from(Rc::new(VecModel::<TermMatch>::default()));
                     row.cursor_row = 0;
                     row.cursor_col = 0;
@@ -12000,8 +12057,9 @@ fn wire_key_input(
         );
     }
 
-    // on_find_step：Enter / ↑↓ / 按钮（§03②）。步进 + 居中滚动 + 刷新；
-    // 居中滚不动（顶端/alt 屏）时返回 false → UI 据皮下移让位（200ms）。
+    // on_find_step：Enter / ↑↓ / 按钮（§03②）。步进 + 居中滚动 + 刷新。
+    // 「滚不动还压着 → 下移让位」由 UI 侧按匹配几何自判（FindBar 内
+    // apply-yield，§03②③④），这里只负责滚动与刷新显示。
     {
         let bufs_step = bufs.clone();
         let weak = window.as_weak();
@@ -12049,6 +12107,32 @@ fn wire_key_input(
                 }
             }
         });
+    }
+
+    // (#find-bar v3.6 §06⑦) 查询入历史：FindBar 在「Enter 步进」与「带词
+    // 离开当前查询」（清词 / ✕ 两段式第一段 / 关闭兜底）时提交，这里去重
+    // 落盘并刷新根模型（去重、最新在前、cap 10，见 push_find_history）。
+    {
+        let store_fh = store_find_hist;
+        let weak_fh = window.as_weak();
+        window.on_find_query_committed(
+            move |_tab_id: SharedString, query: SharedString, match_case: bool, use_regex: bool| {
+            // 历史是全局的（§06⑩ 各 tab 共用一份查询史），tab_id 只用于
+            // 回调签名统一，不参与存储。
+            if query.trim().is_empty() {
+                return;
+            }
+            {
+                let mut s = store_fh.borrow_mut();
+                s.push_find_history(query.to_string(), match_case, use_regex);
+                let _ = s.save();
+            }
+            if let Some(w) = weak_fh.upgrade() {
+                let s = store_fh.borrow();
+                w.set_find_history(crate::app::terminal_ui::find_history_model(&s));
+            }
+            },
+        );
     }
 
     // (#find-bar v3.6) query 与 options 两条回调共用这条应用路径：

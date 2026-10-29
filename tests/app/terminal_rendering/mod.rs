@@ -28,6 +28,7 @@ fn make_buf(
         vt100_drawing: true,
         charset: crate::terminal::CharsetTracker::default(),
         interactive_echo_until: std::time::Instant::now(),
+        last_output_at: std::time::Instant::now(),
         sel_anchor: None,
         sel_focus: None,
         sel_ranges: Vec::new(),

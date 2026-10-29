@@ -149,8 +149,10 @@ impl TermBuffer {
     /// 视口内命中的高亮矩形（TermMatch 的 row 是**可视行** 0..rows）。
     /// 由 `rebuild_tab_display` 在每次渲染时调用——视口变了矩形跟着变，
     /// 但 current 指针（绝对序）不动，主题色始终落在同一条命中上。
+    /// (§06⑤) invalid_regex 时**不清**：hits 还是上一次有效扫描的结果，
+    /// 旧高亮保留，仅计数位转红「正则无效」。
     pub(crate) fn find_visible_rects(&self, st: &FindState) -> Vec<TermMatch> {
-        if st.query.is_empty() || st.invalid_regex {
+        if st.query.is_empty() {
             return Vec::new();
         }
         let rows = self.parser.screen().size().0 as usize;
@@ -218,7 +220,22 @@ impl TermBuffer {
     /// `find_reanchor_if_needed` 保证：这里只在「新词」时定锚。
     pub(crate) fn find_set_query(&mut self, st_query: &str, opts: FindOptions) -> bool {
         if st_query == self.find.query && st_opts_eq(&self.find.options, &opts) {
-            return true; // 同词同规则：什么都不动（逐键去抖的幂等底座）
+            // 同词同规则：逐键去抖的幂等底座。唯一的例外是「输出停顿后的
+            // 静默重算」（§04 新输出行）——扫描之后来过新输出、且输出已停
+            // ≥200ms 的这次提交才真正重扫；刷屏期间的每次提交都在这里返回。
+            // 不比 history.len()：回滚区到 MAX_HISTORY 饱和后长度不再变化，
+            // 时间戳比较才能覆盖「新行进、旧行出」的 tail -f 场景。
+            let new_output = self
+                .find
+                .scanned_at
+                .map_or(false, |t| self.last_output_at > t);
+            let quiet =
+                self.last_output_at.elapsed() >= std::time::Duration::from_millis(200);
+            if !new_output || !quiet {
+                return true;
+            }
+            // 落入下方重扫；fresh_query = false → current 按「原位置附近最近
+            // 命中」重锚（§06⑥ 同源），输出流不会把当前匹配拽走。
         }
         let fresh_query = st_query != self.find.query;
         let hits = self.find_scan_all(st_query, opts);
@@ -237,6 +254,7 @@ impl TermBuffer {
         self.find.invalid_regex = false;
         let empty_now = hits.hits.is_empty();
         self.find.hits = hits;
+        self.find.scanned_at = Some(std::time::Instant::now());
         self.find.current = if empty_now {
             None
         } else if fresh_query {
@@ -295,14 +313,15 @@ impl TermBuffer {
     }
 
     /// 「点击高亮成为当前匹配」的入口（§03⑤）：把命中表里**绝对行号+列**
-    /// 等于它的那条设为当前。没找到（点击的是选区/空白）→ 不动。
+    /// 落在它上面的那条设为当前——点击命中矩形内**任意字符**都算（不必
+    /// 对准首列）。没找到（点击的是选区/空白）→ 不动。
     pub(crate) fn find_set_current_at(&mut self, abs_row: usize, col: i32) -> bool {
         if let Some(i) = self
             .find
             .hits
             .hits
             .iter()
-            .position(|&(a, c, _)| a == abs_row && c == col)
+            .position(|&(a, c, l)| a == abs_row && col >= c && col < c + l)
         {
             self.find.current = Some(i);
             true

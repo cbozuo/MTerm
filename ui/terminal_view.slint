@@ -3,7 +3,7 @@ import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { CommandHint, HintRow } from "command_hint.slint";
 import { HistoryPanel, HistoryRow } from "history_panel.slint";
-import { FindBar } from "find_bar.slint";
+import { FindBar, FindHistItem } from "find_bar.slint";
 import { SftpPanel, SftpEntry, SftpTreeNode, TunnelInfo } from "sftp_panel.slint";
 import { TabInfo } from "tabs.slint";
 import { DialogClose, DockExpandButton, ToolStrip } from "widgets.slint";
@@ -838,6 +838,15 @@ export component TerminalView inherits Rectangle {
     in property <int> find-total: 0;
     in property <int> find-current-no: 0;
     in property <bool> find-invalid-regex: false;
+    // (#find-bar v3.6 §06⑨/⑩/§03②) 回填源 + 当前匹配几何（让位判定输入）。
+    in property <string> find-query: "";
+    in property <bool> find-match-case: false;
+    in property <bool> find-use-regex: false;
+    in property <int> find-cur-row: -1;
+    in property <int> find-cur-col: 0;
+    in property <int> find-cur-len: 0;
+    // (§06⑦) 最近 10 条查询（最新在前），宿主从 ConfigStore 铺入。
+    in property <[FindHistItem]> find-history;
     in property <bool> lang-zh: true;   // 占位符/计数文案用（Theme.lang 现无此闸，宿主传）
     in property <[TermMatch]> selection;    // drag-selection highlight rectangles
 
@@ -1251,10 +1260,14 @@ export component TerminalView inherits Rectangle {
     callback copy-terminal-text();
     callback clear-terminal();              // wipe this session's screen buffer
     callback find-query-changed(string);    // (v3.6) debounced query → full-buffer rescan
-    // (#find-bar v3.6) 查找栏回调族：开关 / 步进 / 点高亮。历史回调待 P2 接线。
+    // (#find-bar v3.6) 查找栏回调族：开关 / 步进 / 点高亮。
     callback find-options-changed(string, bool, bool); // (query, match-case, use-regex)
-    callback find-step(int) -> bool;        // ±1 → 已居中滚动 = true / 滚不动 = false（让位判定）
+    callback find-step(int) -> bool;        // ±1 → 已居中滚动 = true / 滚不动 = false
     callback find-pick-hit(int, int);       // 点击高亮 (vis-row, col) → 设为当前匹配
+    // (§06⑨) 面板打开（Ctrl+F / 右键菜单）时请求恢复上次查询（历史最新）。
+    callback find-restore-request();
+    // (v3.6 §06⑦) 查询入历史：Enter 步进与带词离开当前查询时提交。
+    callback find-query-committed(string, bool, bool);
     callback terminal-scroll(float);         // scroll history by fractional lines (+ = up); Rust keeps the sub-line remainder so momentum decays smoothly
     // Wheel inside an alt-screen app (tmux/less/vim): forward to the program so it
     // scrolls, instead of doing nothing (#170). dir = +1 up / -1 down; col/row =
@@ -1282,8 +1295,6 @@ export component TerminalView inherits Rectangle {
     property <int> find-open-seq: 0;
     // (v3.6 §04 打开行) Ctrl+F 再按一次 → 全选查询词。
     property <int> find-select-all-seq: 0;
-    // §03② 下移让位：滚不动且当前匹配压在锚位下时，宿主把让位高度传给面板。
-    property <length> find-yield-y: 0px;
     // A context-menu click creates the conditional find bar while Slint is
     // still dispatching the popup event. Focusing its TextInput synchronously
     // can re-enter the Windows IME/accessibility plumbing and panic (#343).
@@ -1554,7 +1565,9 @@ export component TerminalView inherits Rectangle {
                     // absolute coordinates derived from its (row, col) and the
                     // measured Consolas cell size — no per-line layout needed,
                     // which keeps the model flat (a single `for`).
-                    Rectangle {
+                    // (#find-bar v3.6 §03②) grid-rect id：让位判定用它的
+                    // absolute-position 换算匹配行在浮层坐标系里的 y。
+                    grid-rect := Rectangle {
                         x: 10px;
                         y: 8px + parent.view-y;
                         width: parent.width - 20px;
@@ -1575,6 +1588,11 @@ export component TerminalView inherits Rectangle {
                             width: parent.width;
                             height: parent.height;
                             mouse-cursor: text;
+                            // (#find-bar v3.6 §03⑤) 点高亮候选：按下点 + 是否
+                            // 允许 pick（tracked 转发的按下不算）。
+                            property <length> press-x;
+                            property <length> press-y;
+                            property <bool> press-ok: false;
                             pointer-event(ev) => {
                                 if (ev.kind == PointerEventKind.down) {
                                     // Any button press re-takes keyboard focus.
@@ -1585,10 +1603,16 @@ export component TerminalView inherits Rectangle {
                                         ctx-menu.show();
                                     } else if (ev.button == PointerEventButton.left
                                             && root.mouse-tracked && !ev.modifiers.shift) {
+                                        self.press-ok = false;
                                         root.terminal-mouse(0, 0,
                                             floor(self.mouse-y / root.cell-h),
                                             floor(self.mouse-x / root.cell-w));
                                     } else if (ev.button == PointerEventButton.left) {
+                                        // (§03⑤) 单击候选：up 时位移 <4px 且点在
+                                        // 高亮矩形上 → 成为当前匹配；拖拽选区照旧。
+                                        self.press-x = self.mouse-x;
+                                        self.press-y = self.mouse-y;
+                                        self.press-ok = true;
                                         root.selecting = true;
                                         root.select-start(
                                             floor(self.mouse-y / root.cell-h),
@@ -1597,6 +1621,18 @@ export component TerminalView inherits Rectangle {
                                             ev.modifiers.shift);
                                     }
                                 } else if (ev.kind == PointerEventKind.up) {
+                                    // (§03⑤) 单击（未拖动）点在匹配矩形上 → 当前
+                                    // 匹配；Rust 侧没点中就不动。htop/btop 的转发
+                                    // 按下 press-ok=false，照常透传远端。
+                                    if (ev.button == PointerEventButton.left && self.press-ok
+                                            && root.find-active
+                                            && abs(self.mouse-x - self.press-x) < 4px
+                                            && abs(self.mouse-y - self.press-y) < 4px) {
+                                        root.find-pick-hit(
+                                            floor(self.mouse-y / root.cell-h),
+                                            floor(self.mouse-x / root.cell-w));
+                                    }
+                                    self.press-ok = false;
                                     if (root.extra-paste-shortcuts-enabled && ev.button == PointerEventButton.middle) {
                                         root.paste-from-clipboard();
                                         ime-input.focus();
@@ -1808,6 +1844,10 @@ export component TerminalView inherits Rectangle {
                             width: parent.width;
                             height: parent.height;
                             mouse-cursor: text;
+                            // (#find-bar v3.6 §03⑤) 与 body-touch 同款 pick 候选。
+                            property <length> press-x;
+                            property <length> press-y;
+                            property <bool> press-ok: false;
                             pointer-event(ev) => {
                                 if (ev.kind == PointerEventKind.down) {
                                     ime-input.focus();
@@ -1820,10 +1860,15 @@ export component TerminalView inherits Rectangle {
                                         // Mouse-tracking TUI (btop/htop/mc): forward the
                                         // press so the remote acts on it (#terminal-mouse).
                                         // Shift+click still selects locally (xterm-style).
+                                        self.press-ok = false;
                                         root.terminal-mouse(0, 0,
                                             floor(self.mouse-y / root.cell-h),
                                             floor(self.mouse-x / root.cell-w));
                                     } else if (ev.button == PointerEventButton.left) {
+                                        // (§03⑤) 单击候选：拖拽选区照旧，up 时判定 pick。
+                                        self.press-x = self.mouse-x;
+                                        self.press-y = self.mouse-y;
+                                        self.press-ok = true;
                                         root.selecting = true;
                                         root.select-start(
                                             floor(self.mouse-y / root.cell-h),
@@ -1832,6 +1877,16 @@ export component TerminalView inherits Rectangle {
                                             ev.modifiers.shift);
                                     }
                                 } else if (ev.kind == PointerEventKind.up) {
+                                    // (§03⑤) 单击（未拖动）点在匹配矩形上 → 当前匹配。
+                                    if (ev.button == PointerEventButton.left && self.press-ok
+                                            && root.find-active
+                                            && abs(self.mouse-x - self.press-x) < 4px
+                                            && abs(self.mouse-y - self.press-y) < 4px) {
+                                        root.find-pick-hit(
+                                            floor(self.mouse-y / root.cell-h),
+                                            floor(self.mouse-x / root.cell-w));
+                                    }
+                                    self.press-ok = false;
                                     if (root.extra-paste-shortcuts-enabled && ev.button == PointerEventButton.middle) {
                                         root.paste-from-clipboard();
                                         ime-input.focus();
@@ -1933,6 +1988,7 @@ export component TerminalView inherits Rectangle {
                                         clicked => {
                                             root.find-active = true;
                                             root.find-open-seq += 1;
+                                            root.find-restore-request();
                                         }
                                     }
                                 }
@@ -2021,6 +2077,7 @@ export component TerminalView inherits Rectangle {
                         } else {
                             root.find-active = true;
                             root.find-open-seq += 1;
+                            root.find-restore-request();
                         }
                         accept
                     // ── Jump to command-history search: ⌘⇧R / Ctrl+Shift+R (#140) ──
@@ -2326,17 +2383,34 @@ export component TerminalView inherits Rectangle {
                 find-total: root.find-total;
                 find-current-no: root.find-current-no;
                 find-invalid-regex: root.find-invalid-regex;
-                is-alt-screen: root.is-alt-screen;
                 lang-en: !root.lang-zh;
                 open-seq: root.find-open-seq;
                 select-all-seq: root.find-select-all-seq;
+                // (v3.6 §06⑨/⑩) 回填源：重开/切 tab 时组件按此恢复词与开关。
+                initial-query: root.find-query;
+                initial-match-case: root.find-match-case;
+                initial-use-regex: root.find-use-regex;
+                // (v3.6 §03②) 让位判定的几何输入：匹配矩形（网格坐标）+
+                // 网格原点（绝对坐标，组件内换算成自身坐标系）。
+                find-cur-row: root.find-cur-row;
+                find-cur-col: root.find-cur-col;
+                find-cur-len: root.find-cur-len;
+                cell-w: root.cell-w;
+                cell-h: root.cell-h;
+                grid-abs-x: grid-rect.absolute-position.x;
+                grid-abs-y: grid-rect.absolute-position.y;
+                // (v3.6 §06⑦) 查询历史下拉。
+                history: root.find-history;
                 query-changed(q) => { root.find-query-changed(q); }
                 options-changed(q, aa, rx) => { root.find-options-changed(q, aa, rx); }
                 step(dir) => { root.find-step(dir); }
                 pick-hit(r, c) => { root.find-pick-hit(r, c); }
+                query-committed(q, aa, rx) => { root.find-query-committed(q, aa, rx); }
+                // (§06⑨) FindBar 打开（open-seq 自增）即请求恢复——空词时
+                // 由 Rust 侧把历史最新条目塞回缓冲。
+                changed open-seq => { root.find-restore-request(); }
                 closed() => {
                     root.find-active = false;
-                    root.find-yield-y = 0px;
                     // §06⑧：不回 live bottom——只把焦点还给终端。
                     ime-input.focus();
                 }

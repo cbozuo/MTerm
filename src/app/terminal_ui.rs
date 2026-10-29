@@ -9,6 +9,21 @@ pub(super) fn history_model(store: &ConfigStore) -> ModelRc<SharedString> {
     ModelRc::from(Rc::new(VecModel::from(rows)))
 }
 
+/// (#find-bar v3.6 §06⑦) 查找历史 → 下拉模型。存储序即显示序（最新在前），
+/// 与命令历史的「视图层反转」不同——FindQueryEntry 一开始就按 UI 序存。
+pub(super) fn find_history_model(store: &ConfigStore) -> ModelRc<FindHistItem> {
+    let rows: Vec<FindHistItem> = store
+        .find_history()
+        .iter()
+        .map(|e| FindHistItem {
+            query: e.query.clone().into(),
+            match_case: e.match_case,
+            use_regex: e.use_regex,
+        })
+        .collect();
+    ModelRc::from(Rc::new(VecModel::from(rows)))
+}
+
 // ── 历史命令面板（#cmd-history-panel 2026-10-27）────────────────────────
 //
 // 数据流：`ConfigStore::history_entries()`（存储序 = 最旧在前）
@@ -457,18 +472,31 @@ pub(super) fn rebuild_tab_display(win: &AppWindow, bufs: &TermBuffers, tab_id: &
         let current = buf.find_current_rect(&buf.find);
         let (total, cur1) = buf.find_counts();
         let invalid = buf.find_invalid_regex();
+        // (v3.6 §06⑨/⑩) 词 + 开关 + 当前匹配几何一起回传：面板重开/切 tab
+        // 时 FindBar 据此回填（不自动滚动）；cur-* 同时是「下移让位」的
+        // 判定输入（匹配行在视口内才可能被浮层压住）。
+        let (fq, faa, frx) = (
+            buf.find.query.clone(),
+            buf.find.options.match_case,
+            buf.find.options.use_regex,
+        );
         let sel = buf.selection_rects_visible(cols);
-        (b, matches, current, total, cur1, invalid, sel)
+        (
+            b, matches, current, total, cur1, invalid, sel, fq, faa, frx,
+        )
     });
-    let Some((b, matches, current, total, cur1, invalid, sel)) = data else {
+    let Some((b, matches, current, total, cur1, invalid, sel, fq, faa, frx)) = data else {
         return;
     };
     let spans = ModelRc::from(Rc::new(VecModel::from(b.spans)));
     let fm = ModelRc::from(Rc::new(VecModel::from(matches)));
+    let cur = current.as_ref().map(|m| (m.row, m.col, m.len)).unwrap_or((-1, 0, 0));
     let cm = ModelRc::from(Rc::new(VecModel::from(current.into_iter().collect::<Vec<_>>())));
     let sm = ModelRc::from(Rc::new(VecModel::from(sel)));
     let (cr, cc, ru, alt) = (b.cursor_row, b.cursor_col, b.rows_used, b.is_alt);
     let (smax, soff) = (b.scroll_max, b.scroll_offset);
+    let (cur_row, cur_col, cur_len) = cur;
+    let fq = SharedString::from(fq);
     set_terminal_row(win, tab_id, move |row| {
         row.spans = spans.clone();
         row.cursor_row = cr;
@@ -481,6 +509,12 @@ pub(super) fn rebuild_tab_display(win: &AppWindow, bufs: &TermBuffers, tab_id: &
         row.find_total = total as i32;
         row.find_current_no = cur1.unwrap_or(0) as i32;
         row.find_invalid_regex = invalid;
+        row.find_query = fq.clone();
+        row.find_match_case = faa;
+        row.find_use_regex = frx;
+        row.find_cur_row = cur_row;
+        row.find_cur_col = cur_col;
+        row.find_cur_len = cur_len;
         row.selection = sm.clone();
         row.scroll_max = smax;
         row.scroll_offset = soff;

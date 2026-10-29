@@ -10,10 +10,20 @@
 // v3.6 落进本文件的口径：
 //   · 定位：右上角 8px，宽 430（窄面板按 §06① 降级）；
 //   · 聚焦光环：1px accent + 3px accent-soft（项目惯例，dialog-buttons-v2）；
-//   · Esc 两段式（§04 关闭行）：有词先清词，无词才关；
+//   · 四态（§02）：刚打开（只有手柄+输入框，计数/↑↓ 隐藏）、有结果、
+//     没找到（计数红「0 个结果」+ 描边/光环/镜头转红，↑↓ 隐藏）、开关开启；
+//   · Esc / ✕ 两段式（§04 关闭行）：有词先清词（带词清空入历史 §06⑦），
+//     无词才关；
+//   · Shift+Enter = 上一个（§04 跳转行）；
 //   · Alt C/X/↓ 仅本输入框持焦时接管（§04），焦点在终端时不经这里；
-//   · 手柄拖动 + 四角磁吸 ≤12px + 双击复位（§03 拖动细则）；
-//   · 下移让位：owner-y 由宿主传入的占用高度驱动，200ms 动画（§03②）；
+//   · 手柄拖动 + 四角磁吸 ≤12px + 双击复位（§03 拖动细则）+ 三态配色
+//     （静默置灰 / 悬停 accent 淡染 / 按住 accent 描边）；
+//   · 下移让位（§03②③④）：宿主传当前匹配几何，组件按「匹配与锚位相交」
+//     200ms 去抖判定——相交则让位（下移优先、放不上时上移 §06③），
+//     不相交回锚位（钉过手柄回钉住处，§03④）；
+//   · 重开/切 tab 回填 initial-*（§06⑨/⑩），不自动滚动；
+//   · 输出去抖重算：面板打开期间每 400ms 提交一次当前词，Rust 幂等分支
+//     决定是否真重扫（输出停顿 ≥200ms 才算，§04 新输出行）；
 //   · 关闭（Esc/✕）不回 live bottom —— 面板关掉即止，滚动位置归宿主管。
 
 import { Icon } from "icons.slint";
@@ -32,31 +42,59 @@ export component FindBar inherits Rectangle {
     in property <int> find-total: 0;
     in property <int> find-current-no: 0;
     in property <bool> find-invalid-regex: false;
-    in property <bool> is-alt-screen: false;
     // 终端可视行数（居中跳转的「行数/2」在 Rust 侧算，这里只透传）。
     in property <[FindHistItem]> history: [];
 
     // ── 回调（宿主转发给 Rust）─────────────────────────────────────────
     callback query-changed(string);            // 200ms 去抖后的词
     callback options-changed(string, bool, bool); // (query, aa, regex)
-    callback step(int);                        // +1 下一个 / -1 上一个 → returns 滚动了
+    callback step(int);                        // +1 下一个 / -1 上一个
     callback pick-hit(int, int);               // 点击高亮 (vis-row, col)
     callback closed();                         // 面板关闭（宿主收焦点回终端）
-    callback history-restore(string, bool, bool); // 选中历史 → 回填+重查
+    // (§06⑦) 查询入历史：Enter 步进与带词离开当前查询时提交（宿主落盘）。
+    callback query-committed(string, bool, bool);
+
+    // ── 让位判定几何（§03②）：宿主传当前匹配与网格原点 ──────────────────
+    // 匹配矩形（网格坐标，cur-row < 0 = 当前匹配不在视口 → 不相交）。
+    in property <int> find-cur-row: -1;
+    in property <int> find-cur-col: 0;
+    in property <int> find-cur-len: 0;
+    in property <length> cell-w: 8px;
+    in property <length> cell-h: 16px;
+    // 网格原点（窗口绝对坐标）：组件内减自身 absolute-position 换算成本
+    // 组件坐标系的偏移，滚动/布局变化时绑定自动跟随。
+    in property <length> grid-abs-x: 0px;
+    in property <length> grid-abs-y: 0px;
+    property <length> grid-rel-x: root.grid-abs-x - self.absolute-position.x;
+    property <length> grid-rel-y: root.grid-abs-y - self.absolute-position.y;
+
+    // ── 重开/切 tab 回填（§06⑨/⑩）：宿主从 TermBuffer.find 铺来 ─────────
+    // init 时初始化（重开回填，不自动滚动）；changed 时同步（切 tab 显示
+    // 该 tab 的词）。回调只在值真正变化时触发，rebuild 每帧回写无害。
+    in property <string> initial-query: "";
+    in property <bool> initial-match-case: false;
+    in property <bool> initial-use-regex: false;
 
     // ── 面板局部状态 ───────────────────────────────────────────────────
     property <bool> match-case: false;
     property <bool> use-regex: false;
     property <string> query: "";
     property <bool> hist-open: false;
-    // 下移让位后的 y 偏移（§03②）：0 = 锚位；>0 = 让位到匹配行下方。
+    // 下移/上移让位后的偏移（§03②③）：0 = 锚位；>0 = 让到匹配行下方，
+    // <0 = 上移到匹配行上方（§06③ 死角）。
     property <length> yield-y: 0px;
-    // 手柄拖动状态（§03 拖动细则）：会话内记忆，不持久化。
+    // 手柄钉位（§03 拖动细则）：会话内记忆，不持久化；-1 = 未钉（右上默认）。
+    // v3.6 §03④：锚位 = 钉住位（未钉 = 右上默认），让位/回锚都相对它。
     property <length> pin-x: -1px;
     property <length> pin-y: -1px;
+    // true 仅在按住手柄拖动期间；松手即 false（钉位继续生效）。
     property <bool> dragging: false;
+    property <length> eff-x: self.pin-x >= 0px ? self.pin-x : self.anchor-x;
+    property <length> eff-y: self.pin-y >= 0px ? self.pin-y : self.anchor-y;
     // 输入去抖（§04 默认行为行：200ms）。
     property <bool> debounce-pending: false;
+    // 让位判定去抖（§03②：200ms；匹配变化合并成一次判定）。
+    property <bool> yield-pending: false;
 
     // 面板宽（§06① 窄面板降级：<360 计数缩字，<300 只留输入+清空+关闭）。
     property <length> panel-w: root.width < 420px ? max(240px, root.width - 16px) : 430px;
@@ -67,6 +105,36 @@ export component FindBar inherits Rectangle {
     property <length> anchor-x: root.width - self.panel-w - 8px;
     property <length> anchor-y: 8px;
 
+    // 「没找到 / 正则无效」红态（§02 没找到态）：fgroup 描边、聚焦光环、
+    // 镜头一并转红；仅计数红字（正则无效 §06⑤）由计数位承担。
+    property <bool> fail-state: (root.find-total == 0 && root.query != "")
+        || root.find-invalid-regex;
+
+    // ── 悬浮提示（tooltip）：按钮不自己渲染气泡，写到根的 tip-*，由
+    //    组件末尾的统一浮层渲染（声明在最后 = 画在最上；照 app.slint
+    //    IconBtn 的 topbar-tip 机制做成组件内局部版，300ms 防闪烁）。
+    property <string> tip-text: "";
+    property <string> tip-pending: "";
+    property <length> tip-x: 0px;
+    property <length> tip-y: 0px;
+    function tip-show(text: string, ax: length, ay: length) {
+        root.tip-pending = text;
+        root.tip-x = ax - self.absolute-position.x;
+        root.tip-y = ay - self.absolute-position.y;
+    }
+    function tip-hide() {
+        root.tip-pending = "";
+        root.tip-text = "";
+    }
+    Timer {
+        interval: 300ms;
+        running: root.tip-pending != "";
+        triggered => {
+            root.tip-text = root.tip-pending;
+            root.tip-pending = "";
+        }
+    }
+
     Timer {
         interval: 200ms;
         running: root.debounce-pending;
@@ -76,31 +144,101 @@ export component FindBar inherits Rectangle {
         }
     }
 
-    // ── 面板本体（y = 锚位 + 让位偏移；拖动时直接用 pin-*）──────────────
-    x: self.dragging ? self.pin-x : self.anchor-x;
-    y: self.dragging ? self.pin-y : self.anchor-y + self.yield-y;
-    width: self.panel-w;
-    height: 34px;
-    background: Theme.popup-bg;
-    border-width: 1px;
-    border-color: self.find-invalid-regex ? Theme.danger : Theme.border-strong;
-    border-radius: Theme.radius-lg;
-    // ★ 弹窗表面**不要投影**（2026-10-17 用户定稿「全删」）：
-    //   颜色必须写成 transparent（tests/dialog_scrim_drag.rs 的唯一合规值）。
-    //   ⚠ 这两行**不能整行删除** —— 实测删掉后 Slint 会把 panel-w/width
-    //   误判成绑定循环（编译直接失败），所以保留属性、只把颜色设为透明。
-    drop-shadow-blur: 0px;
-    drop-shadow-color: transparent;
+    // 让位判定去抖（§03② 200ms）：匹配变化的多个 changed 合并成一次判定；
+    // 输出流刷屏不改 current（绝对行号锚定），不会连续触发位移。
+    Timer {
+        interval: 200ms;
+        running: root.yield-pending;
+        triggered => {
+            root.yield-pending = false;
+            root.apply-yield();
+        }
+    }
 
+    // (§04 新输出行) 输出停顿 200ms 后静默重算的驱动源：面板打开且有词期间
+    // 每 400ms 提交一次当前词；Rust 侧 find_set_query 幂等分支决定是否真的
+    // 重扫（扫描后来过新输出且已静默 ≥200ms 才扫），刷屏期间这里空转。
+    Timer {
+        interval: 400ms;
+        running: root.query != "";
+        triggered => { root.query-changed(root.query); }
+    }
+
+    // ── 让位判定（§03②③④）：匹配与基准位（钉位/右上默认锚位）相交 →
+    // 下移到匹配行下方；下方放不下（§06③）上移到匹配行上方；不相交 →
+    // 回锚位（yield-y = 0，钉过手柄回钉住处）。拖动中不判定。
+    function apply-yield() {
+        if (root.dragging) {
+            return;
+        }
+        if (root.find-cur-row < 0 || root.cell-h <= 0px) {
+            root.yield-y = 0px;
+            return;
+        }
+        let my0 = root.grid-rel-y + root.find-cur-row * root.cell-h;
+        let mx0 = root.grid-rel-x + root.find-cur-col * root.cell-w;
+        let mx1 = mx0 + root.find-cur-len * root.cell-w;
+        let px = root.eff-x;
+        let py = root.eff-y;
+        let hit = px < mx1 && px + root.panel-w > mx0
+            && py < my0 + root.cell-h && py + 34px > my0;
+        if (!hit) {
+            root.yield-y = 0px;
+            return;
+        }
+        // 让位：面板 34px 高、与匹配行净距 6px；「下移让位」下方总有空间
+        // （面板 ≪ 终端行数），仅钉到底部 + 匹配在末行的死角走「上移」。
+        let below = my0 + root.cell-h + 6px - py;
+        let above = my0 - 34px - 6px - py;
+        if (py + below + 34px <= root.height - 4px) {
+            root.yield-y = below;
+        } else if (py + above >= 4px) {
+            root.yield-y = above;
+        } else {
+            root.yield-y = 0px;
+        }
+    }
+
+    // ── 面板本体收进 panel := Rectangle：根只是宿主给的坐标系（铺满终端
+    //    区、无背景无描边）。此前把 background/border 直接放在根上，而
+    //    实例化处又把根拉伸成 parent.width/height —— 整个终端区被一块
+    //    巨大的描边面板盖住（实测 2026-10-30）。坐标系与面板必须分层。
     animate yield-y { duration: 200ms; easing: ease-out; }
+
+    // 匹配变化 → 重新判定让位（§03④）。find-cur-row/len 与 current-no/
+    // total 任一变化都要重判（值不变时 changed 不触发，rebuild 回写无害）。
+    changed find-cur-row => { root.yield-pending = true; }
+    changed find-cur-len => { root.yield-pending = true; }
+    changed find-current-no => { root.yield-pending = true; }
+    changed find-total => { root.yield-pending = true; }
+
+    panel := Rectangle {
+        // 面板定位：钉位或右上默认锚位；y 再叠加让位偏移。
+        x: root.dragging ? root.pin-x : root.eff-x;
+        y: root.dragging ? root.pin-y : root.eff-y + root.yield-y;
+        width: root.panel-w;
+        height: 34px;
+        background: Theme.popup-bg;
+        border-width: 1px;
+        border-color: root.find-invalid-regex ? Theme.danger : Theme.border-strong;
+        border-radius: Theme.radius-lg;
+        // ★ 弹窗表面**不要投影**（2026-10-17 用户定稿「全删」）：
+        //   颜色必须写成 transparent（tests/dialog_scrim_drag.rs 的唯一合规值）。
+        //   ⚠ 这两行**不能整行删除** —— 实测删掉后 Slint 会把 panel-w/width
+        //   误判成绑定循环（编译直接失败），所以保留属性、只把颜色设为透明。
+        drop-shadow-blur: 0px;
+        drop-shadow-color: transparent;
 
     HorizontalLayout {
         padding-left: 0px; padding-right: 6px;
         spacing: 6px;
 
-        // ── 手柄 ⠿（§03 拖动细则）：贴左缘、与面板等高热区 ──────────────
+        // ── 手柄 ⠿（§03 拖动细则）：贴左缘、与面板等高热区；三态 =
+        //    静默置灰 / 悬停 accent 淡染(grab) / 按住 accent 描边(grabbing)
         Rectangle {
             width: 18px;
+            accessible-role: button;
+            accessible-label: root.lang-en ? "Drag find bar" : "拖动查找栏";
             grip-ta := TouchArea {
                 mouse-cursor: self.pressed ? grabbing : grab;
                 // 拖动：Slint TouchArea 无 press-x/y 增量原语（项目先例是
@@ -108,12 +246,20 @@ export component FindBar inherits Rectangle {
                 // 「绝对鼠标位 − 上帧绝对鼠标位」累加到位移上。
                 property <length> last-abs-x;
                 property <length> last-abs-y;
+                pointer-event(ev) => {
+                    // 松手：钉位继续生效（dragging 只表示"按住拖动中"），
+                    // 并立刻重判让位——钉位若压住当前匹配，照样让开。
+                    if (ev.kind == PointerEventKind.up && root.dragging) {
+                        root.dragging = false;
+                        root.apply-yield();
+                    }
+                }
                 moved => {
                     if (self.pressed) {
                         root.dragging = true;
                         if (root.pin-x < 0px) {
-                            root.pin-x = root.anchor-x;
-                            root.pin-y = root.anchor-y + root.yield-y;
+                            root.pin-x = root.eff-x;
+                            root.pin-y = root.eff-y + root.yield-y;
                             self.last-abs-x = self.absolute-position.x + self.mouse-x;
                             self.last-abs-y = self.absolute-position.y + self.mouse-y;
                         }
@@ -121,13 +267,16 @@ export component FindBar inherits Rectangle {
                         let ay = self.absolute-position.y + self.mouse-y;
                         let nx = root.pin-x + (ax - self.last-abs-x);
                         let ny = root.pin-y + (ay - self.last-abs-y);
-                        // clamp 在终端区内（§03「范围」行）。
-                        let cx = clamp(nx, 4px, max(4px, root.width - self.width - 4px));
+                        // clamp 在终端区内（§03「范围」行）。★ 基准是**面板宽**
+                        // （root.panel-w）——此前误用 self.width（手柄 18px），
+                        // x 向上界几乎等于终端宽，面板会被整个拖出右缘看不见
+                        // （用户实测 2026-10-30）。
+                        let cx = clamp(nx, 4px, max(4px, root.width - root.panel-w - 4px));
                         let cy = clamp(ny, 4px, max(4px, root.height - 34px - 4px));
                         // 四角磁吸 ≤12px（§03）：Slint 无 if 表达式 → 嵌套三元。
                         root.pin-x = cx < 12px ? 8px
-                            : (root.width - cx - self.width < 12px
-                                ? root.width - self.width - 8px
+                            : (root.width - cx - root.panel-w < 12px
+                                ? root.width - root.panel-w - 8px
                                 : cx);
                         root.pin-y = cy < 12px ? 8px
                             : (root.height - cy - 34px < 12px
@@ -138,31 +287,60 @@ export component FindBar inherits Rectangle {
                     }
                 }
                 clicked => { }
+                changed has-hover => {
+                    if (self.has-hover && !self.pressed) {
+                        root.tip-show(
+                            root.lang-en ? "Drag to move · double-click to reset"
+                                : "拖动浮层 · 双击回右上角",
+                            self.absolute-position.x + self.width / 2,
+                            self.absolute-position.y + self.height + 5px);
+                    } else {
+                        root.tip-hide();
+                    }
+                }
                 double-clicked => {
-                    // 双击复位（项目惯例）：清钉位 + 清让位。
+                    // 双击复位（项目惯例）：清钉位 + 清让位（§03「记忆」行）。
                     root.dragging = false;
                     root.pin-x = -1px;
                     root.pin-y = -1px;
                     root.yield-y = 0px;
+                    root.apply-yield();
                 }
             }
-            Icon {
-                glyph: "drag-grip";
-                tint: root.dragging ? Theme.accent-solid
-                    : grip-ta.has-hover ? Theme.text-primary : Theme.text-muted;
-                width: 12px; height: 20px;
-                x: (parent.width - self.width) / 2;
-                y: (parent.height - self.height) / 2;
+            Rectangle {
+                x: 0px; y: 0px;
+                width: parent.width; height: parent.height;
+                border-radius: Theme.radius-sm;
+                background: grip-ta.pressed ? Theme.accent-soft
+                    : grip-ta.has-hover ? Theme.bg-hover : transparent;
+                border-width: 1px;
+                border-color: grip-ta.pressed ? Theme.accent-solid.with-alpha(0.30) : transparent;
+                Icon {
+                    glyph: "drag-grip";
+                    tint: grip-ta.pressed || grip-ta.has-hover
+                        ? Theme.accent-solid : Theme.text-muted;
+                    width: 12px; height: 20px;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
             }
         }
 
-        // ── 输入场（fgroup）：光环 = 1px accent + 3px accent-soft ─────────
-        Rectangle {
+        // ── 输入场（fgroup）：34px 面板内高 24px 上下各让 5（1:1 稿 .p1）；
+        //    光环 = 1px accent + 3px accent-soft；没找到/正则无效时描边、
+        //    光环、镜头一并转红（§02 没找到态）──
+        VerticalLayout {
+            padding-top: 5px; padding-bottom: 5px;
+            Rectangle {
             HorizontalLayout {
                 padding-left: 9px; padding-right: 5px;
                 padding-top: 0px; padding-bottom: 0px;
                 spacing: 3px;
-                Icon { glyph: "search"; tint: Theme.text-muted; width: 14px; y: (parent.height - self.height)/2; }
+                Icon {
+                    glyph: "search";
+                    tint: root.fail-state ? Theme.danger-strong : Theme.text-muted;
+                    width: 14px; y: (parent.height - self.height)/2;
+                }
                 // 输入 + 占位（Slint TextInput 无 placeholder-text，叠层实现）。
                 Rectangle {
                     horizontal-stretch: 1;
@@ -182,8 +360,9 @@ export component FindBar inherits Rectangle {
                         }
                         key-pressed(e) => {
                             if (e.text == "\u{001b}") {
-                                // Esc 两段式（§04 关闭行）：有词先清词。
+                                // Esc 两段式（§04 关闭行）：有词先清词（入历史）。
                                 if (root.query != "") {
+                                    root.query-committed(root.query, root.match-case, root.use-regex);
                                     root.query = "";
                                     self.text = "";
                                     root.query-changed("");
@@ -193,15 +372,18 @@ export component FindBar inherits Rectangle {
                                     accept;
                                 }
                             } else if (e.text == Key.Return) {
-                                // Enter = 下一个（§04 跳转行）。
-                                if (root.query != "") { root.step(1); }
+                                // Enter = 下一个 / Shift+Enter = 上一个（§04 跳转行）。
+                                if (root.query != "") {
+                                    root.query-committed(root.query, root.match-case, root.use-regex);
+                                    root.step(e.modifiers.shift ? -1 : 1);
+                                }
                                 accept;
-                            } else if (e.modifiers.alt && (e.text == "c" || e.text == "C")) {
+                            } else if (e.modifiers.alt && (e.text == "c" || e.text == "C" || e.text == "ã")) {
                                 // Alt C/X/↓：仅本框持焦时接管（§04 切换规则行）。
                                 root.match-case = !root.match-case;
                                 root.options-changed(root.query, root.match-case, root.use-regex);
                                 accept;
-                            } else if (e.modifiers.alt && (e.text == "x" || e.text == "X")) {
+                            } else if (e.modifiers.alt && (e.text == "x" || e.text == "X" || e.text == "ø")) {
                                 root.use-regex = !root.use-regex;
                                 root.options-changed(root.query, root.match-case, root.use-regex);
                                 accept;
@@ -213,7 +395,7 @@ export component FindBar inherits Rectangle {
                             }
                         }
                     }
-                    if (fb-input.text == "" && !fb-input.has-focus) : Text {
+                    if (fb-input.text == "") : Text {
                         text: root.lang-en ? "Find (Ctrl+F)" : "查找 (Ctrl+F)";
                         color: Theme.text-muted;
                         font-size: Theme.fs-sm;
@@ -222,11 +404,24 @@ export component FindBar inherits Rectangle {
                     }
                 }
                 // ── 内嵌按钮组：清空 × / 历史 ↩ / Aa / 正则（§01 2-5）────────
+                // 「刚打开」态指令组不出现（§02 卡①：有输入才出现）。
                 if (fb-input.text != "") : Rectangle {
                     width: 22px;
+                    accessible-role: button;
+                    accessible-label: @tr("Clear search");
                     fb-clr-ta := TouchArea {
                         mouse-cursor: pointer;
+                        changed has-hover => {
+                            if (self.has-hover) {
+                                root.tip-show(
+                                    root.lang-en ? "Clear (Esc)" : "清空 (Esc)",
+                                    self.absolute-position.x,
+                                    self.absolute-position.y + self.height + 5px);
+                            } else { root.tip-hide(); }
+                        }
                         clicked => {
+                            // 带词清空 = 离开当前查询 → 入历史（§06⑦）。
+                            root.query-committed(root.query, root.match-case, root.use-regex);
                             root.query = "";
                             fb-input.text = "";
                             root.query-changed("");
@@ -248,13 +443,24 @@ export component FindBar inherits Rectangle {
                     }
                 }
                 // 历史 ↩（§01 ③）：command-history glyph；Alt ↓ 同键。
-                if (!root.compact) : Rectangle {
+                if (!root.compact && fb-input.text != "") : Rectangle {   // §02卡①：空态指令组不出现
                     width: 24px;
+                    accessible-role: button;
+                    accessible-label: root.lang-en ? "Query history" : "查询历史";
                     border-radius: Theme.radius-sm;
                     background: hist-ta.has-hover ? Theme.bg-hover
                         : root.hist-open ? Theme.accent-soft : transparent;
                     hist-ta := TouchArea {
                         mouse-cursor: pointer;
+                        changed has-hover => {
+                            if (self.has-hover) {
+                                root.tip-show(
+                                    root.lang-en ? "Query history (Alt+Down)"
+                                        : "查询历史 (Alt+↓)",
+                                    self.absolute-position.x,
+                                    self.absolute-position.y + self.height + 5px);
+                            } else { root.tip-hide(); }
+                        }
                         clicked => { root.hist-open = !root.hist-open; }
                     }
                     Icon {
@@ -266,14 +472,24 @@ export component FindBar inherits Rectangle {
                     }
                 }
                 // Aa（§01 ④）：match-case.svg；开启态 accent 淡染描边（§02 开关态）。
-                if (!root.compact) : Rectangle {
+                if (!root.compact && fb-input.text != "") : Rectangle {   // §02卡①：空态指令组不出现
                     width: 24px;
                     property <bool> on: root.match-case;
+                    accessible-role: button;
+                    accessible-label: root.lang-en ? "Match case" : "区分大小写";
                     border-radius: Theme.radius-sm;
                     background: self.on ? Theme.accent-soft
                         : aa-ta.has-hover ? Theme.bg-hover : transparent;
                     aa-ta := TouchArea {
                         mouse-cursor: pointer;
+                        changed has-hover => {
+                            if (self.has-hover) {
+                                root.tip-show(
+                                    root.lang-en ? "Match case (Alt+C)" : "区分大小写 (Alt+C)",
+                                    self.absolute-position.x,
+                                    self.absolute-position.y + self.height + 5px);
+                            } else { root.tip-hide(); }
+                        }
                         clicked => {
                             root.match-case = !root.match-case;
                             root.options-changed(root.query, root.match-case, root.use-regex);
@@ -288,14 +504,25 @@ export component FindBar inherits Rectangle {
                     }
                 }
                 // (.·)* 正则（§01 ⑤）：regex.svg；写错时计数位红字（数据侧保旧结果）。
-                if (!root.compact) : Rectangle {
+                if (!root.compact && fb-input.text != "") : Rectangle {   // §02卡①：空态指令组不出现
                     width: 24px;
                     property <bool> on: root.use-regex;
+                    accessible-role: button;
+                    accessible-label: root.lang-en ? "Use regular expression" : "正则表达式";
                     border-radius: Theme.radius-sm;
                     background: self.on ? Theme.accent-soft
                         : rx-ta.has-hover ? Theme.bg-hover : transparent;
                     rx-ta := TouchArea {
                         mouse-cursor: pointer;
+                        changed has-hover => {
+                            if (self.has-hover) {
+                                root.tip-show(
+                                    root.lang-en ? "Regular expression (Alt+X)"
+                                        : "正则表达式 (Alt+X)",
+                                    self.absolute-position.x,
+                                    self.absolute-position.y + self.height + 5px);
+                            } else { root.tip-hide(); }
+                        }
                         clicked => {
                             root.use-regex = !root.use-regex;
                             root.options-changed(root.query, root.match-case, root.use-regex);
@@ -312,86 +539,124 @@ export component FindBar inherits Rectangle {
             }
             background: Theme.field;
             border-width: 1px;
-            border-color: fb-input.has-focus ? Theme.accent-solid
-                : root.find-invalid-regex ? Theme.danger : Theme.border-subtle;
+            border-color: root.fail-state ? Theme.danger
+                : fb-input.has-focus ? Theme.accent-solid : Theme.border-subtle;
             border-radius: Theme.radius-md;
-            // 聚焦光环（v3.6 B2：项目惯例）。
+            // 聚焦光环（v3.6 B2：项目惯例）；没找到态光环同步转红（§02 卡③）。
             if (fb-input.has-focus) : Rectangle {
                 x: -3px; y: -3px;
                 width: parent.width + 6px; height: parent.height + 6px;
                 border-radius: Theme.radius-md + 2px;
                 border-width: 3px;
-                border-color: Theme.accent-soft;
+                border-color: root.fail-state
+                    ? Theme.danger-strong.with-alpha(0.16) : Theme.accent-soft;
+            }
             }
         }
 
-        // ── 计数（§01 ⑥）：「当前 / 总数」；0 结果红；正则无效红字 ────────
-        if (!root.mini) : Text {
+        // ── 计数（§01 ⑥）：有词才出现（§02 卡①「刚打开」无计数）；
+        //    0 结果红「0 个结果」、正则无效红「正则无效」 ────────────────
+        if (root.query != "") : Text {
             width: root.compact ? 30px : 56px;
             text: root.find-invalid-regex
                 ? (root.lang-en ? "bad rx" : "正则无效")
-                : root.find-total == 0 && root.query != ""
+                : root.find-total == 0
                     ? (root.lang-en ? "0 results" : "0 个结果")
-                    : root.query == "" ? "" : root.find-current-no + " / " + root.find-total;
-            color: (root.find-invalid-regex || (root.find-total == 0 && root.query != ""))
+                    : root.find-current-no + " / " + root.find-total;
+            color: (root.find-invalid-regex || root.find-total == 0)
                 ? Theme.danger-strong : Theme.text-secondary;
             font-size: root.compact ? Theme.fs-2xs : Theme.fs-xs;
+            font-weight: 600;
             vertical-alignment: center;
             horizontal-alignment: center;
             overflow: elide;
         }
 
-        // ── ↑↓（§01 ⑦）：expand-less / expand-more（IconImages 已注册）────
-        if (!root.mini) : HorizontalLayout {
+        // ── ↑↓（§01 ⑦）：有结果才出现（§02 卡③「没找到」无导航）────────
+        if (root.find-total > 0) : HorizontalLayout {
             spacing: 2px;
             Rectangle {
                 width: 24px;
-                property <bool> en: root.find-total > 0;
+                accessible-role: button;
+                accessible-label: root.lang-en ? "Previous match" : "上一个";
                 border-radius: Theme.radius-sm;
-                background: prev-ta.has-hover && self.en ? Theme.bg-hover : transparent;
+                background: prev-ta.has-hover ? Theme.bg-hover : transparent;
                 prev-ta := TouchArea {
                     mouse-cursor: pointer;
-                    enabled: parent.en;
+                    changed has-hover => {
+                        if (self.has-hover) {
+                            root.tip-show(
+                                root.lang-en ? "Previous match (Shift+Enter)"
+                                    : "上一个 (Shift+Enter)",
+                                self.absolute-position.x,
+                                self.absolute-position.y + self.height + 5px);
+                        } else { root.tip-hide(); }
+                    }
                     clicked => { root.step(-1); }
                 }
-                Icon { glyph: "expand-less"; tint: parent.en ? Theme.text-secondary : Theme.text-muted; width: 14px; height: 14px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
+                Icon { glyph: "expand-less"; tint: prev-ta.has-hover ? Theme.text-primary : Theme.text-secondary; width: 14px; height: 14px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
             }
             Rectangle {
                 width: 24px;
-                property <bool> en: root.find-total > 0;
+                accessible-role: button;
+                accessible-label: root.lang-en ? "Next match" : "下一个";
                 border-radius: Theme.radius-sm;
-                background: next-ta.has-hover && self.en ? Theme.bg-hover : transparent;
+                background: next-ta.has-hover ? Theme.bg-hover : transparent;
                 next-ta := TouchArea {
                     mouse-cursor: pointer;
-                    enabled: parent.en;
+                    changed has-hover => {
+                        if (self.has-hover) {
+                            root.tip-show(
+                                root.lang-en ? "Next match (Enter)" : "下一个 (Enter)",
+                                self.absolute-position.x,
+                                self.absolute-position.y + self.height + 5px);
+                        } else { root.tip-hide(); }
+                    }
                     clicked => { root.step(1); }
                 }
-                Icon { glyph: "expand-more"; tint: parent.en ? Theme.text-secondary : Theme.text-muted; width: 14px; height: 14px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
+                Icon { glyph: "expand-more"; tint: next-ta.has-hover ? Theme.text-primary : Theme.text-secondary; width: 14px; height: 14px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
             }
         }
 
-        // ── 关闭 ✕（§01 ⑧）：清高亮 + 焦点回终端（由宿主 closed() 做）────
+        // ── 关闭 ✕（§01 ⑧）：两段式（§04 关闭行）——有词先清词（入历史），
+        //    无词才关闭（清高亮 + 焦点回终端由宿主 closed() 做）──────────
         Rectangle {
             width: 24px;
+            accessible-role: button;
+            accessible-label: root.lang-en ? "Close find bar" : "关闭查找栏";
             fb-close-ta := TouchArea {
                 mouse-cursor: pointer;
+                changed has-hover => {
+                    if (self.has-hover) {
+                        root.tip-show(
+                            root.lang-en ? "Close (Esc)" : "关闭 (Esc)",
+                            self.absolute-position.x,
+                            self.absolute-position.y + self.height + 5px);
+                    } else { root.tip-hide(); }
+                }
                 clicked => {
-                    root.query = "";
-                    fb-input.text = "";
-                    root.closed();
+                    if (root.query != "") {
+                        root.query-committed(root.query, root.match-case, root.use-regex);
+                        root.query = "";
+                        fb-input.text = "";
+                        root.query-changed("");
+                        fb-input.focus();
+                    } else {
+                        root.closed();
+                    }
                 }
             }
             Icon {
                 glyph: "close";
                 tint: fb-close-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
-                width: 13px; height: 13px;
+                width: 15px; height: 15px;
                 x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
             }
         }
     }
 
     // ── 历史下拉（§04 历史行 / §06⑦）：最近 10 条，选中即重查 ────────────
-    // Alt ↓ / ↩ 打开；点条目 → 连开关一起恢复（history-restore 回调）。
+    // Alt ↓ / ↩ 打开；点条目 → 连开关一起恢复（走 options 通道一次到位）。
     if (root.hist-open && root.history.length > 0) : Rectangle {
         x: 18px;                     // 手柄右侧起
         y: parent.height + 4px;
@@ -422,7 +687,6 @@ export component FindBar inherits Rectangle {
                         fb-input.text = it.query;
                         // 选中即重查（§04）；开关已同步，走 options 通道一次到位。
                         root.options-changed(it.query, it.match-case, it.use-regex);
-                        root.history-restore(it.query, it.match-case, it.use-regex);
                         fb-input.focus();
                     }
                 }
@@ -452,6 +716,31 @@ export component FindBar inherits Rectangle {
             }
         }
     }
+    }
+    // panel := Rectangle 结束（坐标系根继续）。
+
+    // ── 悬浮提示浮层：声明在最后 = 画在最上（面板/下拉之上）。位置取
+    //    按钮底部 +5（照 IconBtn topbar-tip），x 夹在组件内防右缘溢出。
+    if (root.tip-text != "") : Rectangle {
+        x: clamp(root.tip-x, 4px, max(4px, root.width - self.width - 4px));
+        y: root.tip-y;
+        width: tip-t.preferred-width + 14px;
+        height: 22px;
+        background: Theme.popup-bg;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        border-radius: Theme.radius-sm;
+        drop-shadow-blur: 0px;
+        drop-shadow-color: transparent;
+        tip-t := Text {
+            x: (parent.width - self.preferred-width) / 2;
+            y: (parent.height - self.preferred-height) / 2;
+            text: root.tip-text;
+            color: Theme.text-primary;
+            font-size: Theme.fs-2xs;
+            font-family: Theme.ui-font-family;
+        }
+    }
 
     // 宿主注入：语言开关。延迟聚焦（#343 同款：init 同步 focus 会崩）走
     // 组件内 Timer；宿主打开面板后置 open-seq 自增即触发。
@@ -470,4 +759,24 @@ export component FindBar inherits Rectangle {
             fb-input.focus();
         }
     }
+
+    // (§06⑨/⑩) 重开/切 tab 回填：init 初始化 + initial-* 变化时同步
+    // （切 tab 显示该 tab 的词与开关）。不自动滚动——仅当视口内无命中时
+    // 由 Rust 侧「最近命中」口径决定是否移动视图。
+    init => {
+        root.match-case = root.initial-match-case;
+        root.use-regex = root.initial-use-regex;
+        root.query = root.initial-query;
+        fb-input.text = root.initial-query;
+    }
+    changed initial-query => {
+        root.query = root.initial-query;
+        fb-input.text = root.initial-query;
+        root.match-case = root.initial-match-case;
+        root.use-regex = root.initial-use-regex;
+        root.hist-open = false;
+        root.yield-pending = true;
+    }
+    changed initial-match-case => { root.match-case = root.initial-match-case; }
+    changed initial-use-regex => { root.use-regex = root.initial-use-regex; }
 }

@@ -40,6 +40,9 @@ pub(crate) struct TermBuffer {
     /// forwarded to the PTY instead of starting a local drag-selection, so
     /// btop/htop/mc can be operated with the mouse (#terminal-mouse).
     pub(crate) mouse_tracked: bool,
+    /// 最近一次输出字节到达的时间（#find-bar v3.6 §04 新输出行：「即时搜索
+    /// 在停顿 200ms 后静默重算」的静默判定源；`ingest_chunk` 每批更新）。
+    pub(crate) last_output_at: std::time::Instant,
     pub(crate) history: VecDeque<Line>,
     pub(crate) prev: Vec<Line>,
     pub(crate) view_offset: usize,

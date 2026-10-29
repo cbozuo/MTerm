@@ -1,7 +1,7 @@
 use crate::terminal::{
     build_row, cell_prefix, char_after_cell_end, char_at_cell_start, detect_scroll,
-    find::FindState, highlight_plain_output, render_term_span, BuiltScreen, CsiState, Line,
-    TermBuffer, MAX_HISTORY, RAW_CAP,
+    find::FindState, highlight_plain_output, render_term_span, BuiltScreen, CsiState, FindHits,
+    Line, TermBuffer, MAX_HISTORY, RAW_CAP,
 };
 use crate::ui::TermMatch;
 
@@ -31,6 +31,7 @@ impl TermBuffer {
         let (rows, cols) = self.parser.screen().size();
         self.parser = vt100::Parser::new(rows, cols, 5000);
         self.find = FindState::default();
+        self.last_output_at = std::time::Instant::now();
         self.history = std::collections::VecDeque::new();
         self.prev = Vec::new();
         self.view_offset = 0;
@@ -545,6 +546,11 @@ impl TermBuffer {
         self.sel_anchor = None;
         self.sel_focus = None;
         self.sel_ranges.clear();
+        // (#find-bar v3.6) 回滚区被重放重建：命中表的绝对行号全部错位，整体
+        // 作废（重放本身算输出 → last_output_at 已更新），下次查询提交按
+        // 「输出停顿后静默重算」自动重扫。
+        self.find.hits = FindHits::default();
+        self.find.current = None;
         self.feed_batched(&stream);
     }
 
@@ -560,6 +566,9 @@ impl TermBuffer {
     /// Process one bounded batch and capture any lines that scrolled off the top
     /// (skipped for alt-screen programs like vim/nano).
     fn ingest_chunk(&mut self, bytes: &[u8]) {
+        // (#find-bar v3.6) 任何输出批次都刷新静默时钟：查找的「停顿 200ms 后
+        // 静默重算」（§04 新输出行）用它区分刷屏中的输出与停顿后的输出。
+        self.last_output_at = std::time::Instant::now();
         // Detect full-screen-clear sequences *before* processing so we can
         // suppress history for programs that redraw without alt-screen (e.g.
         // btop configured with `alt-screen = false`).

@@ -58,4 +58,9 @@ pub(crate) struct FindState {
     pub(crate) invalid_regex: bool,
     /// 当前匹配在 `hits.hits` 里的下标；无命中/未初始化 = None。
     pub(crate) current: Option<usize>,
+    /// 上次全量扫描完成的时间。配合 `TermBuffer::last_output_at` 判定
+    /// 「输出停顿后的静默重算」（v3.6 §04 新输出行）：扫描之后来过新输出、
+    /// 且输出已停 ≥200ms 的下一次查询提交才重扫——刷屏期间的每次提交都在
+    /// 幂等分支直接返回。
+    pub(crate) scanned_at: Option<std::time::Instant>,
 }

@@ -67,6 +67,19 @@ fn default_history_uses() -> u32 {
     1
 }
 
+/// 终端查找栏的一条查询历史（#find-bar v3.6 §06⑦）。存储序**最新在前**
+/// （下拉直接按存储序显示，与命令历史的 oldest-first 相反——两处 UI 的
+/// 读取方式不同，别互相「对齐」）。开关随最近一次使用一起存，选中即连同
+/// Aa / 正则一起恢复。
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FindQueryEntry {
+    pub query: String,
+    #[serde(default)]
+    pub match_case: bool,
+    #[serde(default)]
+    pub use_regex: bool,
+}
+
 pub(crate) const PREVIOUS_DEFAULT_WALLPAPER_TRANSPARENCY: f32 = 0.38;
 pub(crate) const PREVIOUS_DEFAULT_WALLPAPER_OVERLAY: f32 =
     1.0 - PREVIOUS_DEFAULT_WALLPAPER_TRANSPARENCY;
@@ -476,6 +489,11 @@ pub struct ConfigFile {
     /// Structured command history (rev 10), oldest first — the source of truth.
     #[serde(default)]
     pub history_entries: Vec<HistoryEntry>,
+    /// Recent terminal-find queries, **newest first**, capped (#find-bar
+    /// v3.6 §06⑦). Written on Enter and on leaving a non-empty query; the
+    /// find-bar dropdown reads them in storage order.
+    #[serde(default)]
+    pub find_history: Vec<FindQueryEntry>,
     /// Collapse the left resource sidebar on startup (#78).
     #[serde(default)]
     pub collapse_right_sidebar_default: bool,

@@ -48,6 +48,8 @@ import { SessionDialog, SessionDraft, PortFwd, TriggerDraft, GroupEntry, JumpEnt
 import { ConfirmDialog } from "confirm_dialog.slint";
 import { LabeledInput, PrimaryButton, GhostButton, DockExpandButton, IconButton, ToolStrip, Scrim, DialogClose } from "widgets.slint";
 import { TerminalView, TermSpan, TermMatch, QuickCmd, QuickDockPanel, SendScope } from "terminal_view.slint";
+// (#find-bar v3.6 §06⑦) 查询历史条目（FindBar 的下拉模型元素）。
+import { FindHistItem } from "find_bar.slint";
 import { HintRow } from "command_hint.slint";
 import { HistoryRow } from "history_panel.slint";
 import { RemoteDesktopView } from "remote_desktop_view.slint";
@@ -99,6 +101,14 @@ export struct TerminalState {
     find-total: int,           // (#find-bar v3.6) total match count across the buffer
     find-current-no: int,      // (#find-bar v3.6) 1-based current match, 0 = none
     find-invalid-regex: bool,  // (#find-bar v3.6) regex failed to compile → keep old hits
+    // (v3.6 §06⑨/⑩/§03②) 词 + 开关 + 当前匹配几何：面板重开/切 tab 的回填源，
+    // cur-* 同时是「下移让位」的判定输入（-1 = 当前匹配不在视口）。
+    find-query: string,
+    find-match-case: bool,
+    find-use-regex: bool,
+    find-cur-row: int,
+    find-cur-col: int,
+    find-cur-len: int,
     selection: [TermMatch],    // drag-selection highlight rectangles
 
     // SFTP panel state
@@ -2204,6 +2214,12 @@ export component AppWindow inherits Window {
     callback find-options-changed(string /* tab-id */, string /* query */, bool /* aa */, bool /* regex */);
     callback find-step(string /* tab-id */, int /* dir */) -> bool;
     callback find-pick-hit(string /* tab-id */, int /* vis-row */, int /* col */);
+    // (§06⑨) 打开查找栏时恢复上次查询（Rust 从 ConfigStore 历史最新塞回）。
+    callback find-restore-request(string /* tab-id */);
+    // (v3.6 §06⑦) 查询入历史：FindBar 在 Enter 步进与带词离开当前查询时提交。
+    callback find-query-committed(string /* tab-id */, string /* query */, bool /* aa */, bool /* regex */);
+    // (v3.6 §06⑦) 最近 10 条查询（最新在前），启动时从 ConfigStore 回填。
+    in property <[FindHistItem]> find-history;
     // Scroll a session's scrollback history by N lines (+ = up/older).
     callback terminal-scroll(string /* tab-id */, float /* delta-lines (fractional, momentum-aware) */);
     // Wheel forwarded to an alt-screen program (#170): tab-id, dir (+1 up/-1 down), col, row.
@@ -3465,11 +3481,21 @@ export component AppWindow inherits Window {
                         find-total: term.find-total;
                         find-current-no: term.find-current-no;
                         find-invalid-regex: term.find-invalid-regex;
+                        // (v3.6 §06⑨/⑩) 回填源 + 让位几何 + 历史。
+                        find-query: term.find-query;
+                        find-match-case: term.find-match-case;
+                        find-use-regex: term.find-use-regex;
+                        find-cur-row: term.find-cur-row;
+                        find-cur-col: term.find-cur-col;
+                        find-cur-len: term.find-cur-len;
+                        find-history: root.find-history;
                         lang-zh: !root.lang-en;
                         find-query-changed(q) => { root.find-query-changed(term.id, q); }
                         find-options-changed(q, aa, rx) => { root.find-options-changed(term.id, q, aa, rx); }
                         find-step(dir) => { root.find-step(term.id, dir); }
                         find-pick-hit(r, c) => { root.find-pick-hit(term.id, r, c); }
+                        find-query-committed(q, aa, rx) => { root.find-query-committed(term.id, q, aa, rx); }
+                        find-restore-request() => { root.find-restore-request(term.id); }
                         selection: term.selection;
                         sftp-panel-height: term.sftp-panel-height;
                         set-sftp-panel-height(v) => { root.set-pane-sftp-height(term.id, v); }

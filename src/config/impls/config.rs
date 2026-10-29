@@ -318,6 +318,9 @@ pub(crate) fn normalize_highlight_color(color: &str) -> String {
 /// Command-history cap (#55/#113). Pinned entries are exempt from eviction.
 pub(crate) const HISTORY_CAP: usize = 200;
 
+/// 查找历史的条数上限（#find-bar v3.6 §04 历史行：最近 10 条）。
+pub(crate) const FIND_HISTORY_CAP: usize = 10;
+
 /// 当前 unix 秒。`HistoryEntry.last_used` 用它刷新；取不到系统时间时退 0
 /// （UI 会把 0 当「未知 / 较早」，不会显示成 1970 年）。
 fn now_unix_secs() -> i64 {
@@ -1940,6 +1943,26 @@ impl ConfigStore {
     /// Structured command history, oldest first (rev 10, #cmd-history-panel).
     pub fn history_entries(&self) -> &[HistoryEntry] {
         &self.cache.history_entries
+    }
+
+    /// Recent terminal-find queries, newest first (#find-bar v3.6 §06⑦).
+    pub fn find_history(&self) -> &[crate::config::FindQueryEntry] {
+        &self.cache.find_history
+    }
+
+    /// Record one terminal-find query: de-duplicates by text (the Aa / regex
+    /// toggles travel with the latest use), newest first, capped at
+    /// [`FIND_HISTORY_CAP`]. Written on Enter and on leaving a non-empty query.
+    pub fn push_find_history(&mut self, query: String, match_case: bool, use_regex: bool) {
+        if query.trim().is_empty() {
+            return;
+        }
+        self.cache.find_history.retain(|e| e.query != query);
+        self.cache.find_history.insert(
+            0,
+            crate::config::FindQueryEntry { query, match_case, use_regex },
+        );
+        self.cache.find_history.truncate(FIND_HISTORY_CAP);
     }
 
     /// Append a command to the history: skips blanks, de-duplicates globally so
