@@ -191,21 +191,30 @@ fn grab_stable(ui: &AppWindow) -> Frame {
 }
 
 /// 命令栏那一行的中线：找 accent 色的 `$` 提示符（与基线测试同款）。
+/// (#hist-round6) 只取**底部最后一段连续 accent 行带**的中点 —— 面板打开时
+/// 列表里也有 accent 像素（选中行左缘条），全窗 min/max 会被面板拉偏
+/// （面板变矮后选中条落到中线以下，图标扫描带错位、簇数 0 → panic）。
 fn cmdbar_mid_y(f: &Frame, accent: (u8, u8, u8)) -> usize {
-    let mut min = usize::MAX;
-    let mut max = 0usize;
-    let mut found = false;
+    let mut rows = Vec::new();
     for y in (H / 2)..H {
         for x in 0..(W / 2) {
             if close(f.rgb(x, y), accent, 8) {
-                found = true;
-                min = min.min(y);
-                max = max.max(y);
+                rows.push(y);
+                break;
             }
         }
     }
-    assert!(found, "命令栏没渲染出来：找不到 accent 色的 \"$\" 提示符");
-    (min + max) / 2
+    assert!(!rows.is_empty(), "命令栏没渲染出来：找不到 accent 色的 \"$\" 提示符");
+    let mut end = rows[rows.len() - 1];
+    let mut start = end;
+    for &y in rows.iter().rev() {
+        if end - y <= 2 {
+            start = y;
+        } else {
+            break;
+        }
+    }
+    (start + end) / 2
 }
 
 /// 命令栏右端图标簇的 x 中心（⚡ 快捷命令 / 🕘 历史 / ↗ 发送窗）。
@@ -621,7 +630,8 @@ fn footer_count_hugs_the_right_edge() {
     );
 }
 
-/// ⑧ 只画可见行：数据多于 list-rows（8）时，第 9 行的位置必须是空的。
+/// ⑧ 滚动视口裁剪（#hist-scroll）：数据多于 list-rows（测试窗格下 = 8）时，
+/// 滚动偏移 0 只应绘制前 8 行 —— 视口外的行带必须为空。
 #[test]
 fn only_visible_rows_are_drawn() {
     let ui = setup();
@@ -629,7 +639,7 @@ fn only_visible_rows_are_drawn() {
     let elev = theme_color(&ui, |t| t.get_bg_elevated());
 
     let specs: Vec<(String, u32, bool)> =
-        (0..12).map(|i| (format!("echo row-{i:02}"), 1, false)).map(|(c, u, p)| (c, u, p)).collect();
+        (0..20).map(|i| (format!("echo row-{i:02}"), 1, false)).map(|(c, u, p)| (c, u, p)).collect();
     let rows: Vec<HistoryRow> = specs
         .iter()
         .map(|(cmd, uses, pinned)| HistoryRow {
@@ -644,21 +654,23 @@ fn only_visible_rows_are_drawn() {
         })
         .collect();
     ui.set_history_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
-    ui.set_history_total(12);
+    ui.set_history_total(20);
 
     let f = open_panel(&ui);
     maybe_dump(&f, "hist_visible_rows");
     let (l, t, r, _b) = panel_rect(&f, lstr).unwrap();
 
-    // 列表区 = 面板顶 + 46 .. +46+312（8 行 × 38 + 8 内衬）。
-    // 数「有内容像素的 38px 行带」：只有前 8 行该画（数据 12 条）。
+    // 列表区 = 面板顶 + 46 起；可见行数 = 测试窗格高算出的 hist-list-rows
+    //（600 高窗格 → ⌊(540−82)/38⌋ = 12，夹到上限 8）。数「有内容像素的
+    // 38px 行带」：滚动偏移 0 时只有前 8 行该画（数据 20 条，其余在视口外）。
     let list_t = t + 46;
     let row_h = 38;
+    let visible_rows = 8usize;
     let mut painted = 0usize;
-    for i in 0..12 {
+    for i in 0..20usize {
         let band_t = list_t + 4 + i * row_h + 2;
         let band_b = band_t + row_h - 4;
-        if band_b >= list_t + 8 + 8 * row_h {
+        if band_b >= list_t + 8 + visible_rows * row_h {
             break; // 超出锁定的列表高度
         }
         let mut n = 0usize;
@@ -677,5 +689,5 @@ fn only_visible_rows_are_drawn() {
             painted += 1;
         }
     }
-    assert_eq!(painted, 8, "只应绘制 8 个可见行（数据 12 条），量到 {}", painted);
+    assert_eq!(painted, visible_rows, "只应绘制 {} 个可见行（数据 20 条，其余在滚动视口外），量到 {}", visible_rows, painted);
 }

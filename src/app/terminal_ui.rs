@@ -32,6 +32,10 @@ pub(super) const HIST_SORT_FREQ: i32 = 1;
 /// 「今天」档的时间窗。
 const HIST_TODAY_SECS: i64 = 86_400;
 
+/// (#hist-round6) 常用页签只显使用频率 Top20：长尾的 1~2 次命令没有翻找
+/// 价值，20 条内必含真正常用的那批。
+const HIST_FREQ_TOP_N: usize = 20;
+
 fn now_unix_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -134,10 +138,14 @@ pub(super) fn history_rows(
         .collect();
 
     match sort {
-        HIST_SORT_FREQ => picked.sort_by(|a, b| {
-            // 次数降序；同次数按存储位置降序（越靠后越近）。
-            b.1.uses.cmp(&a.1.uses).then_with(|| b.0.cmp(&a.0))
-        }),
+        HIST_SORT_FREQ => {
+            picked.sort_by(|a, b| {
+                // 次数降序；同次数按存储位置降序（越靠后越近）。
+                b.1.uses.cmp(&a.1.uses).then_with(|| b.0.cmp(&a.0))
+            });
+            // (#hist-round6) 常用页签只看使用频率 Top20。
+            picked.truncate(HIST_FREQ_TOP_N);
+        }
         // 最近：存储序反转（零并列）。**不要**换成按 last_used 排序。
         _ => picked.reverse(),
     }

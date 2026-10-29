@@ -1004,6 +1004,8 @@ export component TerminalView inherits Rectangle {
     property <int> history-selected: 0;
     // (#cmd-history-panel) 历史面板可见行数：按命令栏上方可用高算，夹在 3–8。
     // 高保真 §4 公式：avail = 视口高 − 命令栏48 − 下缝12；行数 = ⌊(avail − 46 − 28 − 8) / 38⌋。
+    // (#hist-scroll 2026-10-29) 列表改 ScrollView 承载全量行，超出框内滚动。
+    // (#hist-round6) 行数维持 8 不变；收短的是**宽度**（见面板落点 560→480）。
     property <int> hist-list-rows: min(8, max(3,
         Math.floor((root.height - 48px - 12px - 46px - 28px - 8px) / 38px)));
     property <length> hist-panel-h: 46px + root.hist-list-rows * 38px + 8px + 28px;
@@ -2888,10 +2890,16 @@ export component TerminalView inherits Rectangle {
                 // 落点/宽度都 snap 到设备网格：面板描边是 Theme.hairline()
                 //（1 物理像素），坐标带半像素时发丝线会被抗锯齿摊成两行淡影
                 //（高保真 §9 ②，window_frame 的四条边线同款处理）。
-                width: Theme.snap-to-device(min(560px, parent.width - 24px));
+                // (#hist-round6) **高度**也要 snap：底边 = y + height，height
+                // 不落栅格时四条边里唯独底边骑半像素、被 AA 摊粗一档
+                //（用户截图：底边比其它边线粗）。
+                // (#hist-round6) 宽度收窄 560→460：工具栏 = 搜索(≤300 吸余量)
+                // + 三页签紧凑分段（贴右内衬 10）—— 页签到右缘的间距与到搜索
+                // 框的间距视觉相等（用户定稿），窄一档少压终端。
+                width: Theme.snap-to-device(min(460px, parent.width - 24px));
                 x: Theme.snap-to-device(parent.width - self.width - 10px);
                 y: Theme.snap-to-device(-self.height - 6px);
-                height: root.hist-panel-h;
+                height: Theme.snap-to-device(root.hist-panel-h);
                 open: true;
                 rows: root.history-rows;
                 total-count: root.history-total;
@@ -2912,6 +2920,10 @@ export component TerminalView inherits Rectangle {
                     // 应该在命令栏里面显示」—— 填完回到命令栏继续编辑。
                     // 历史游标一并复位，免得下一次 ↑ 从半路开始。
                     cmd-input.text = cmd;
+                    // (#hist-round6) 光标放到命令**末尾**：程序化设 text 后光标
+                    // 停在 0（用户截图），set-selection-offsets 传大值由
+                    // safe_byte_offset 钳到文本末尾（Slint 内建钳制）。
+                    cmd-input.set-selection-offsets(100000000, 100000000);
                     root.history-cursor = -1;
                     root.hist-open = false;
                     cmd-input.focus();

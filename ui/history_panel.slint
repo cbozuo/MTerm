@@ -15,14 +15,16 @@
 //     交叉轴没有对齐属性，要用「高度撑满的槽 + 槽内绝对居中」包一层。
 //
 // 四段结构（尺寸全部锁死，理由见高保真 §4）：
-//   ① 工具栏 46px（搜索 + 过滤胶囊 + 排序分段）
-//   ② 列表   list-rows × 38px + 8px（行数由宿主按可用高算，3–8；
-//            **只画可见行** —— §6：↑↓ 在可见行里循环）
+//   ① 工具栏 46px（搜索 + 三页签：全部/置顶/常用 —— #hist-round5 五钮并三）
+//   ② 列表   list-rows × 38px + 8px（行数由宿主按可用高算，3–10；
+//            ScrollView 承载全量行，超出框内滚动 —— #hist-scroll）
 //   ③ 页脚   28px（键盘契约 + 命中计数 + 清空入口）
 //   ④ 浮层   撤销条 / 清空确认层 / 悬停全文卡（绝对定位，不推动布局）
 
 import { Theme } from "theme.slint";
 import { Icon } from "icons.slint";
+import { ScrollView } from "std-widgets.slint";
+import { SegGroup } from "seg.slint";
 
 // 一条历史命令。字段与 Rust 侧 `HistoryRowData` 一一对应。
 //
@@ -41,6 +43,9 @@ export struct HistoryRow {
 }
 
 // 行内动作键：常态透明，悬停铺底（高保真 §4：24×24 · r4 · 13px 图标）。
+// (#hist-round4 2026-10-29) 补悬浮提示：高保真沙盘给每枚键配了 title
+//（执行/复制/置顶/取消置顶/删除），落地用根节点统一的提示泡（见 ⑦）——
+// 键自身只上报「我悬停了」，文案由实例传给 root。
 component HistAct inherits Rectangle {
     in property <string> glyph;
     in property <color> tint: Theme.text-secondary;
@@ -51,6 +56,8 @@ component HistAct inherits Rectangle {
     //   显隐只看行的话按钮会当场淡出、永远点不到（实测踩过）。
     out property <bool> hovering: ta.has-hover;
     callback clicked();
+    // 悬停进出都上报（真 = 进入）；宿主据此开关 ⑦ 的提示泡。
+    callback tip-active(bool);
 
     width: 24px;
     height: 24px;
@@ -66,40 +73,36 @@ component HistAct inherits Rectangle {
 
     ta := TouchArea {
         mouse-cursor: default;
+        changed has-hover => { root.tip-active(self.has-hover); }
         clicked => { root.clicked(); }
     }
 }
 
-// 过滤胶囊（高保真 .pill：h24 · r12 · 11px；选中 accent-soft 底 +
-// accent-line 边 + accent 字）。
-component HistChip inherits Rectangle {
+// 分段段件（#hist-round6 强调色设置的 AccentSeg 同款）：段体透明透出
+// SegGroup 的滑层，段格宽必须均匀 —— min/preferred-width 归零、横向
+// stretch 交给 SegGroup 均分（#seg-uniform-cells）；高度不设，横向布局
+// 交叉轴拉伸到内衬高（compact 28 − 2×2）。
+component HistSeg inherits Rectangle {
     in property <string> label;
-    in property <bool> on: false;
+    in property <bool> active;
     callback clicked();
 
-    width: lbl.preferred-width + 18px;
-    height: 24px;
-    border-radius: 12px;
-    border-width: 1px;
-    border-color: root.on ? Theme.accent.with-alpha(0.42)
-        : (ch-ta.has-hover ? Theme.border-strong : Theme.border-subtle);
-    background: root.on ? Theme.accent-soft
-        : (ch-ta.has-hover ? Theme.bg-hover : transparent);
-    animate background { duration: 110ms; }
+    min-width: 0px;
+    preferred-width: 0px;
+    horizontal-stretch: 1;
+    border-radius: 6px;
+    background: root.active ? transparent : (ta.has-hover ? Theme.bg-hover : transparent);
 
-    lbl := Text {
+    Text {
         text: root.label;
-        color: root.on ? Theme.accent-solid
-            : (ch-ta.has-hover ? Theme.text-primary : Theme.text-secondary);
-        font-size: 11px;
-        font-weight: root.on ? Theme.fw-strong : Theme.fw-regular;
+        color: root.active ? Theme.accent : (ta.has-hover ? Theme.text-primary : Theme.text-secondary);
+        font-size: Theme.fs-xs;
         horizontal-alignment: center;
         vertical-alignment: center;
-        width: parent.width;
-        height: parent.height;
+        overflow: elide;
     }
 
-    ch-ta := TouchArea {
+    ta := TouchArea {
         mouse-cursor: default;
         clicked => { root.clicked(); }
     }
@@ -146,41 +149,6 @@ component HistVerb inherits Text {
     in property <string> label;
 }
 
-// 排序分段里的一枚（比过滤胶囊更小一档：内高 18 · 10.5px）。
-component HistSortBtn inherits Rectangle {
-    in property <string> label;
-    in property <bool> on: false;
-    // 自身内容的准确宽（文字 + 左右 7 内衬）：外层分段盒按两枚之和收宽。
-    // ★ 不能用 preferred-width —— 它只算文字自然宽，不含 width 绑定里的
-    //   内衬，盒会比按钮总宽窄 28px、按钮溢出。
-    out property <length> pref-w: lbl.preferred-width + 14px;
-    callback clicked();
-
-    height: 18px;
-    width: lbl.preferred-width + 14px;
-    border-radius: 10px;
-    background: root.on ? Theme.accent-soft
-        : (s-ta.has-hover ? Theme.bg-hover : transparent);
-    animate background { duration: 110ms; }
-
-    lbl := Text {
-        text: root.label;
-        color: root.on ? Theme.accent-solid
-            : (s-ta.has-hover ? Theme.text-primary : Theme.text-muted);
-        font-size: 10.5px;
-        font-weight: root.on ? Theme.fw-strong : Theme.fw-regular;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-        width: parent.width;
-        height: parent.height;
-    }
-
-    s-ta := TouchArea {
-        mouse-cursor: default;
-        clicked => { root.clicked(); }
-    }
-}
-
 export component HistoryPanel inherits Rectangle {
     // ── 宿主传入 ────────────────────────────────────────────────────────
     in property <[HistoryRow]> rows;
@@ -192,7 +160,11 @@ export component HistoryPanel inherits Rectangle {
 
     // ── 视图状态（Rust 侧持有真值，这里只是镜像 + 立即反馈）─────────────
     in-out property <string> query: "";
-    in-out property <int> filter: 0;   // 0 全部 / 1 置顶 / 2 今天
+    // (#hist-round5 2026-10-29) 工具栏五钮并三钮：tab = 页签高亮（0 全部 /
+    // 1 置顶 / 2 常用）。Rust 侧契约不变，仍是 filter + sort 两个信号，
+    // 页签点击时组合下发：全部 f0s0 / 置顶 f1s0 / 常用 f0s1。
+    in-out property <int> tab: 0;
+    in-out property <int> filter: 0;   // 0 全部 / 1 置顶 / 2 今天（UI 已不暴露）
     in-out property <int> sort: 0;     // 0 最近 / 1 常用
     property <int> selected: 0;
 
@@ -223,6 +195,21 @@ export component HistoryPanel inherits Rectangle {
     // 悬停全文卡（高保真 §2 ②：长命令被省略号截断时的全文查看）。
     property <int> hover-pop-idx: -1;
     property <string> hover-pop-text: "";
+    // (#hist-round4 2026-10-29) 撤销浮条锚在被删行的原位置（不再是恒贴页脚）。
+    property <int> undo-row-idx: 0;
+    // (#hist-round4) 行内动作键的悬浮提示：文本 + 锚（行号、键序号）。
+    // 气泡画在根节点（列表容器 clip 之外），第一行的提示才不会被裁掉；
+    // 坐标由 (act-tip-row, act-tip-btn) 反推，见 ⑦。
+    property <string> act-tip-text: "";
+    property <int> act-tip-row: -1;
+    property <int> act-tip-btn: -1;
+    // (#hist-scroll 2026-10-29) 列表滚动：fluent ScrollView 的 content-y 是
+    // **负值域**（内部 flickable.content-y ⇄ 滚动条 value：0 = 顶、−max = 底；
+    // #hist-fix-keynav 2026-10-29 键盘翻找曾写正值 → 视口被向下平移、行被
+    // 推出视口外（用户截图「命令不见了」））。scroll-raw = 原始 content-y
+    // 镜像；list-scroll-y = 正值逻辑偏移，供全文卡/提示泡/撤销条锚定补偿。
+    property <length> scroll-raw: 0;
+    property <length> list-scroll-y: Math.max(0, -root.scroll-raw);
     // (#349 同款坑) 面板刚实例化就同步 focus() 会撞 Windows IME 的半构建布局
     // （"Recursion detected"），必须延迟到下一个事件循环 tick。
     property <bool> search-focus-pending: false;
@@ -231,8 +218,24 @@ export component HistoryPanel inherits Rectangle {
     property <length> list-h: root.list-rows * root.row-h + 8px;
 
     // 可见行数：数据可能多于画出来的行（高保真 §6 —— 选中项只在可见行里循环）。
-    function visible-count() -> int {
-        return Math.min(root.rows.length, root.list-rows);
+    // (#hist-scroll 2026-10-29) 列表改 ScrollView 承载**全量行**后，选中与
+    // 方向键都在全量行里走；此函数负责把选中行带进可视窗口（方向键翻找）。
+    // ★ 写入走 scroll-raw（fluent content-y 负值域，见属性注释）。
+    function ensure-selected-visible() {
+        if (root.rows.length == 0 || root.rows.length <= root.list-rows) {
+            root.scroll-raw = 0;
+            return;
+        }
+        // 内容坐标：viewport 顶部留 4 内衬 → 行 i 顶 = 4 + i×38；
+        // 可视窗口高 = list-h − 8（列表区内衬）。
+        if (4px + root.selected * root.row-h < -root.scroll-raw) {
+            root.scroll-raw = -Math.max(0, root.selected * root.row-h);
+        } else if (4px + (root.selected + 1) * root.row-h
+                > -root.scroll-raw + root.list-h - 8px) {
+            root.scroll-raw = -Math.min(
+                root.rows.length * root.row-h + 16px - root.list-h,
+                8px + (root.selected + 1) * root.row-h - (root.list-h - 8px));
+        }
     }
 
     // ★ 面板压终端上不能用 popup-bg（与终端底同色会「消失」）——
@@ -241,7 +244,10 @@ export component HistoryPanel inherits Rectangle {
     //   （highlight_dialog.slint 的 dlg 根节点）；立体感靠比 terminal 底
     //   亮一档的 elevated 底 + 这圈细边，不画真投影。
     background: Theme.bg-elevated;
-    border-radius: Theme.radius-lg;
+    // (#hist-round5 2026-10-29) 边线/圆角对齐「高亮设置」弹框的框体配方：
+    // hairline 细线 + border-strong + radius-xl（原来 lg 低一档，四角弧线
+    // 与全应用弹框不一致）。
+    border-radius: Theme.radius-xl;
     border-width: Theme.hairline();
     border-color: Theme.border-strong;
     drop-shadow-blur: 26px;
@@ -259,10 +265,17 @@ export component HistoryPanel inherits Rectangle {
     // 删掉一行后「顶上来那条」占据原位；删的是最后一条则退到倒数第二条。
     changed rows => {
         root.hover-pop-idx = -1;
-        if (root.selected >= root.visible-count()) {
-            root.selected = Math.max(0, root.visible-count() - 1);
+        root.act-tip-row = -1;
+        root.act-tip-btn = -1;
+        if (root.selected >= root.rows.length) {
+            root.selected = Math.max(0, root.rows.length - 1);
         }
         if (root.selected < 0) { root.selected = 0; }
+        // (#hist-scroll) 滚动位置夹回合法范围（删行/过滤后内容变短）。
+        // fluent content-y 负值域：[−max, 0]。
+        root.scroll-raw = Math.max(
+            -Math.max(0, root.rows.length * root.row-h + 16px - root.list-h),
+            Math.min(root.scroll-raw, 0));
     }
 
     // 回执/撤销浮条的计时器：60ms 一跳驱动倒计时与进度条。
@@ -315,7 +328,10 @@ export component HistoryPanel inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 padding-left: 10px;
-                padding-right: 10px;
+                // (#hist-round6b) 右内衬 10→8 = 页签间到搜索框的布局间距：
+                // 页签是最后一个子项（贴右内衬），两处间距**精确相等**（用户
+                // 标注①=②；页签到右缘的空白此前是尾部弹性空隙，~70px）。
+                padding-right: 8px;
                 spacing: 8px;
                 // ⚠️ 不能写 alignment: start —— 一写 horizontal-stretch 全归零，
                 //    排序分段就不贴右了（terminal_view.slint:104 同款坑）。
@@ -381,6 +397,7 @@ export component HistoryPanel inherits Rectangle {
                                                 root.confirming = false;
                                                 root.armed = false;
                                                 root.undo-cmd = "";
+                                                root.undo-row-idx = 0;
                                                 root.toast-text = @tr("History cleared");
                                                 root.toast-ticks = 0;
                                                 root.undo-visible = true;
@@ -403,48 +420,58 @@ export component HistoryPanel inherits Rectangle {
                                         }
                                         accept
                                     } else if (e.text == Key.DownArrow) {
-                                        if (root.visible-count() > 0) {
-                                            root.selected = Math.mod(root.selected + 1, root.visible-count());
+                                        // (#hist-scroll) 方向键在**全量行**里翻找
+                                        //（不再限于可见行），选中出视口自动滚动跟随。
+                                        if (root.rows.length > 0) {
+                                            root.selected = Math.mod(root.selected + 1, root.rows.length);
+                                            root.ensure-selected-visible();
                                         }
                                         accept
                                     } else if (e.text == Key.UpArrow) {
-                                        if (root.visible-count() > 0) {
+                                        if (root.rows.length > 0) {
                                             root.selected = root.selected <= 0
-                                                ? root.visible-count() - 1 : root.selected - 1;
+                                                ? root.rows.length - 1 : root.selected - 1;
+                                            root.ensure-selected-visible();
                                         }
                                         accept
                                     } else if (e.text == Key.Home) {
                                         // 列表是新→旧：Home = 最近那条（§6）
                                         root.selected = 0;
+                                        root.ensure-selected-visible();
                                         accept
                                     } else if (e.text == Key.End) {
-                                        if (root.visible-count() > 0) {
-                                            root.selected = root.visible-count() - 1;
+                                        if (root.rows.length > 0) {
+                                            root.selected = root.rows.length - 1;
+                                            root.ensure-selected-visible();
                                         }
                                         accept
                                     } else if (e.text == Key.PageDown) {
-                                        if (root.visible-count() > 0) {
-                                            root.selected = Math.min(root.visible-count() - 1, root.selected + 8);
+                                        if (root.rows.length > 0) {
+                                            root.selected = Math.min(root.rows.length - 1, root.selected + root.list-rows);
+                                            root.ensure-selected-visible();
                                         }
                                         accept
                                     } else if (e.text == Key.PageUp) {
-                                        root.selected = Math.max(0, root.selected - 8);
+                                        root.selected = Math.max(0, root.selected - root.list-rows);
+                                        root.ensure-selected-visible();
                                         accept
                                     } else if (e.text == Key.Return) {
-                                        // 回车 = 立即执行选中项（发往终端）；填入
-                                        // 用 Tab 或点行 —— 两个动作必须分开。
-                                        if (root.visible-count() > 0) {
-                                            root.run(root.rows[root.selected].cmd);
+                                        // (#hist-round6) 回车 = **填入**命令栏（不执行，
+                                        // 收起面板）—— 用户口径：回车后命令直接进了终端
+                                        // 执行出乎预期；立即执行只保留行尾 ▶。
+                                        if (root.rows.length > 0) {
+                                            root.fill(root.rows[root.selected].cmd);
                                         }
                                         accept
                                     } else if (e.text == Key.Tab) {
-                                        if (root.visible-count() > 0) {
+                                        if (root.rows.length > 0) {
                                             root.fill(root.rows[root.selected].cmd);
                                         }
                                         accept
                                     } else if (e.text == Key.Delete && self.text == "") {
                                         // 只在搜索框为空时接管：有字时 Del 必须删字符（§6）
-                                        if (root.visible-count() > 0) {
+                                        if (root.rows.length > 0) {
+                                            root.undo-row-idx = Math.min(root.selected, root.rows.length - 1);
                                             root.undo-cmd = root.rows[root.selected].cmd;
                                             root.delete(root.undo-cmd);
                                             root.toast-text = @tr("Deleted 1 entry");
@@ -453,8 +480,14 @@ export component HistoryPanel inherits Rectangle {
                                         }
                                         accept
                                     } else if (e.text == Key.Escape) {
-                                        // 两段式：先清搜索，再关面板（§6）
-                                        if (self.text != "") {
+                                        // 三段式（#hist-round4）：撤销条在场先撤，
+                                        // 再清搜索，最后关面板（§6 两段式的延长档）。
+                                        if (root.undo-visible && root.undo-cmd != "") {
+                                            root.restore();
+                                            root.undo-cmd = "";
+                                            root.toast-text = @tr("Restored");
+                                            root.toast-ticks = 0;
+                                        } else if (self.text != "") {
                                             self.text = "";
                                             root.query = "";
                                             root.search("");
@@ -513,75 +546,53 @@ export component HistoryPanel inherits Rectangle {
                     }
                 }
 
-                // 过滤胶囊（「看哪些」）：槽撑满高（铁律 ③）。
-                // ★ 槽必须给显式宽 = 胶囊排的 preferred：槽里只有 y 定位的
-                //   绝对定位子元素不算 preferred，布局会把槽压成 0 宽、胶囊
-                //   靠自身宽溢出画 —— 和排序分段一起把行末控件顶出面板
-                //   （实测「最近/常用」被裁成半个「近」字）。
+                // 页签（#hist-round6）：强调色设置同款 SegGroup 滑动分段
+                //（ui/seg.slint compact 档）。全部 f0s0 / 置顶 f1s0 / 常用
+                // f0s1（Rust 契约不变；常用只显使用频率 Top20，见 terminal_ui）。
+                // (#hist-round6b) 页签是**最后一个**子项：贴右内衬 10px，与
+                // 「到搜索框右缘的 8px 间距」视觉相等（用户定稿）；尾部弹性
+                // 空隙已删 —— 余量全由搜索框吸收，两处间距不再随面板宽漂移。
                 Rectangle {
                     height: parent.height;
-                    width: pill-row.preferred-width;
+                    width: 160px;
                     horizontal-stretch: 0;
 
-                    pill-row := HorizontalLayout {
+                    SegGroup {
                         y: (parent.height - self.height) / 2;
-                        height: 24px;
-                        spacing: 4px;
+                        width: parent.width;
+                        height: 28px;
+                        compact: true;
+                        active-index: root.tab;
+                        count: 3;
 
-                        HistChip {
+                        HistSeg {
                             label: @tr("All");
-                            on: root.filter == 0;
-                            clicked => { root.filter = 0; root.filter-changed(0); root.selected = 0; }
-                        }
-                        HistChip {
-                            label: @tr("Pinned");
-                            on: root.filter == 1;
-                            clicked => { root.filter = 1; root.filter-changed(1); root.selected = 0; }
-                        }
-                        HistChip {
-                            label: @tr("Today");
-                            on: root.filter == 2;
-                            clicked => { root.filter = 2; root.filter-changed(2); root.selected = 0; }
-                        }
-                    }
-                }
-
-                Rectangle { height: parent.height; horizontal-stretch: 1; }
-
-                // 排序分段（「按什么排」——与过滤分两组是高保真 §7 决策 05）。
-                // 分段盒宽 = 两枚段钮 pref-w 之和 + padding 4（高保真 .pb-sort
-                // 是 flex:0 0 auto 收内容宽 —— ★ 不能写 width: parent.width：
-                // 循环引用塌成 0 宽，段钮溢出被面板 clip 裁成「半圆」）。
-                // 槽同样给显式宽（同过滤胶囊的坑）。
-                Rectangle {
-                    height: parent.height;
-                    width: sort-box.preferred-width;
-                    horizontal-stretch: 0;
-
-                    sort-box := Rectangle {
-                        y: (parent.height - self.height) / 2;
-                        width: sort-recent.pref-w + sort-freq.pref-w + 4px;
-                        height: 24px;
-                        border-radius: 12px;
-                        border-width: 1px;
-                        border-color: Theme.border-subtle;
-                        background: Theme.bg-root;
-
-                        HorizontalLayout {
-                            width: parent.width;
-                            height: parent.height;
-                            padding: 2px;
-                            spacing: 0px;
-
-                            sort-recent := HistSortBtn {
-                                label: @tr("Recent");
-                                on: root.sort == 0;
-                                clicked => { root.sort = 0; root.sort-changed(0); root.selected = 0; }
+                            active: root.tab == 0;
+                            clicked => {
+                                root.tab = 0;
+                                root.filter = 0; root.filter-changed(0);
+                                root.sort = 0; root.sort-changed(0);
+                                root.selected = 0;
                             }
-                            sort-freq := HistSortBtn {
-                                label: @tr("Most used");
-                                on: root.sort == 1;
-                                clicked => { root.sort = 1; root.sort-changed(1); root.selected = 0; }
+                        }
+                        HistSeg {
+                            label: @tr("Pinned");
+                            active: root.tab == 1;
+                            clicked => {
+                                root.tab = 1;
+                                root.filter = 1; root.filter-changed(1);
+                                root.sort = 0; root.sort-changed(0);
+                                root.selected = 0;
+                            }
+                        }
+                        HistSeg {
+                            label: @tr("Most used");
+                            active: root.tab == 2;
+                            clicked => {
+                                root.tab = 2;
+                                root.filter = 0; root.filter-changed(0);
+                                root.sort = 1; root.sort-changed(1);
+                                root.selected = 0;
                             }
                         }
                     }
@@ -596,10 +607,27 @@ export component HistoryPanel inherits Rectangle {
             background: transparent;
             clip: true;
 
-            // 空态：与列表同高，两种文案共用（§5：面板高度不随状态变）
+            // 空态：与列表同高（§5：面板高度不随状态变）。
+            // (#hist-round5 2026-10-29) 文案按「空的原因」分四档（无历史 /
+            // 搜索无命中 / 置顶空 / 今天空），不再一律说「换个关键词」；
+            // 入口链接跟随语境（清除搜索 ⇄ 查看全部），并整块水平居中 ——
+            // 旧版链接是固定宽子项，在垂直布局里贴左（用户截图）。
             if root.rows.length == 0 : Rectangle {
                 width: parent.width;
                 height: parent.height;
+
+                // 空的原因 → 标题/副文案
+                property <string> empty-title: root.total-count == 0
+                    ? @tr("No history yet")
+                    : root.query != "" ? @tr("No matching commands")
+                    : root.filter == 1 ? @tr("No pinned commands")
+                    : @tr("Nothing run today");
+                property <string> empty-desc: root.total-count == 0
+                    ? @tr("Commands you run will be remembered here")
+                    : root.query != "" ? @tr("Try another keyword, or switch the filter back to All")
+                    : root.filter == 1 ? @tr("Hover a command and click its pin to keep it here")
+                    : @tr("Switch back to All to see earlier history");
+
                 VerticalLayout {
                     width: parent.width;
                     height: parent.height;
@@ -615,74 +643,112 @@ export component HistoryPanel inherits Rectangle {
                         opacity: 0.5;
                     }
                     Text {
-                        text: root.total-count == 0 ? @tr("No history yet") : @tr("No matching commands");
+                        text: empty-title;
                         color: Theme.text-secondary;
                         font-size: 12.5px;
                         font-weight: Theme.fw-strong;
                         horizontal-alignment: center;
                     }
                     Text {
-                        text: root.total-count == 0
-                            ? @tr("Commands you run will be remembered here")
-                            : @tr("Try another keyword, or switch the filter back to All");
+                        text: empty-desc;
                         color: Theme.text-muted;
                         font-size: 11.5px;
                         horizontal-alignment: center;
                         wrap: word-wrap;
                     }
-                    // 有数据但被过滤空 → 给一键「清除搜索」（高保真 .pb-empty .link）
+                    // 有历史但被搜/过滤空 → 入口链接。不绑 width，让垂直
+                    // 布局把它拉伸到**内容宽** —— 旧版绑 parent.width 取到
+                    // 含内衬的整行宽，槽从左内衬起点摆放后按整宽居中，
+                    // 链接整体右移一个内衬（用户截图：查看全部不居中）。
                     if root.total-count > 0 : Rectangle {
-                        height: 18px;
-                        width: link-lbl.preferred-width + 8px;
-                        link-lbl := Text {
-                            text: @tr("Clear search");
-                            color: Theme.accent-solid;
-                            font-size: 11.5px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            width: parent.width;
-                            height: parent.height - 1px;
-                        }
+                        height: 20px;
+
                         Rectangle {
-                            y: parent.height - 1phx;
-                            width: parent.width;
-                            height: 1phx;
-                            background: Theme.accent.with-alpha(0.42);
-                        }
-                        TouchArea {
-                            mouse-cursor: default;
-                            clicked => {
-                                search-input.text = "";
-                                root.query = "";
-                                root.search("");
-                                root.filter = 0;
-                                root.filter-changed(0);
-                                root.selected = 0;
-                                search-input.focus();
+                            x: (parent.width - self.width) / 2;
+                            y: 1px;
+                            width: link-lbl.preferred-width + 16px;
+                            height: 18px;
+                            // (#hist-round6c) 悬停反馈：accent-soft 底 + 文字提亮
+                            // + 下划线实线化（此前悬停无任何样式变化，体验差）。
+                            background: link-ta.has-hover ? Theme.accent-soft : transparent;
+                            border-radius: 4px;
+                            animate background { duration: 100ms; }
+
+                            link-lbl := Text {
+                                text: root.query != "" ? @tr("Clear search") : @tr("Show all");
+                                color: link-ta.has-hover ? Theme.accent-hover : Theme.accent-solid;
+                                font-size: 11.5px;
+                                font-weight: link-ta.has-hover ? Theme.fw-strong : Theme.fw-regular;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                width: parent.width;
+                                height: parent.height - 1px;
+                            }
+                            Rectangle {
+                                y: parent.height - 1phx;
+                                width: parent.width;
+                                height: 1phx;
+                                background: Theme.accent.with-alpha(link-ta.has-hover ? 1.0 : 0.42);
+                            }
+                            link-ta := TouchArea {
+                                // 光标跟随全应用口径：统一原始箭头（用户口径）。
+                                mouse-cursor: default;
+                                clicked => {
+                                    // (#hist-round6c) 回「全部」= 与「全部」页签
+                                    // 同一套联动：tab 归位（滑块滑回去）+ filter/
+                                    // sort 下发 + 滚动复位。此前漏发 tab，滑块
+                                    // 停在置顶（用户截图）。
+                                    root.tab = 0;
+                                    root.filter = 0; root.filter-changed(0);
+                                    root.sort = 0; root.sort-changed(0);
+                                    root.selected = 0;
+                                    root.scroll-raw = 0;
+                                    if (search-input.text != "") {
+                                        search-input.text = "";
+                                        root.query = "";
+                                        root.search("");
+                                    }
+                                    // ★ 聚焦走 0ms 延迟 Timer（#349）：点击路径
+                                    //   同步 focus 会撞 IME 半布局，把搜索框打瘪。
+                                    root.search-focus-pending = true;
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // 行列表：**只画可见行**（§6 —— 锁 3–8 行；超出的行高压到 0 且
-            // 不可见，↑↓ 也就永远循环在屏幕内。`for` 里不能直接挂 `if`，
-            // 用「高 0 + visible」表达「这一行不存在」）。
+            // 行列表（#hist-scroll 2026-10-29）：ScrollView 承载**全部行**——
+            // 数据超出可见行数（宿主 hist-list-rows，3–12）即框内滚动：
+            // 滚轮翻找、↑↓ 选中出视口自动跟随；滚动偏移镜像到
+            // list-scroll-y，供全文卡/提示泡/撤销条按行锚定时做视口补偿。
             if root.rows.length > 0 : Rectangle {
                 x: 4px;
                 y: 4px;
                 width: parent.width - 8px;
                 height: parent.height - 8px;
 
-                rows-col := VerticalLayout {
+                scr := ScrollView {
                     width: parent.width;
                     height: parent.height;
-                    spacing: 0px;
+                    content-width: parent.width;
+                    content-height: max(self.height, root.rows.length * root.row-h + 8px);
+                    // ★ fluent content-y 负值域（0 顶 / −max 底），见属性注释。
+                    content-y <=> root.scroll-raw;
+                    // (#hist-round6) 滚动条整条去掉（用户：灰色柱子丑）——
+                    // 滚轮 + ↑↓ 翻找已覆盖，拖滚动条的需求由键盘承接。
+                    vertical-scrollbar-policy: ScrollBarPolicy.always-off;
 
-                    for r[idx] in root.rows : Rectangle {
-                        height: idx < root.list-rows ? root.row-h : 0px;
-                        visible: idx < root.list-rows;
-                        border-radius: Theme.radius-sm;
+                    rows-col := VerticalLayout {
+                        x: 0px;
+                        y: 4px;
+                        width: parent.width;
+                        height: root.rows.length * root.row-h;
+                        spacing: 0px;
+
+                        for r[idx] in root.rows : Rectangle {
+                            height: root.row-h;
+                            border-radius: Theme.radius-sm;
                         // ★ 行悬停 ≠ 只看行自己的 TouchArea：动作键（ HistAct 的
                         //   TouchArea）盖在行 TouchArea 上面，鼠标一进按钮行的
                         //   has-hover 就翻 false —— 不并入的话鼠标挪到键上，
@@ -876,31 +942,77 @@ export component HistoryPanel inherits Rectangle {
                                 a-run := HistAct {
                                     glyph: "play";
                                     clicked => { root.run(r.cmd); }
+                                    tip-active(on) => {
+                                        if (on) {
+                                            root.act-tip-text = @tr("Run");
+                                            root.act-tip-row = idx;
+                                            root.act-tip-btn = 0;
+                                        } else if (root.act-tip-btn == 0 && root.act-tip-row == idx) {
+                                            root.act-tip-text = "";
+                                            root.act-tip-row = -1;
+                                            root.act-tip-btn = -1;
+                                        }
+                                    }
                                 }
                                 a-copy := HistAct {
                                     glyph: "copy";
                                     clicked => { root.copy(r.cmd); }
+                                    tip-active(on) => {
+                                        if (on) {
+                                            root.act-tip-text = @tr("Copy");
+                                            root.act-tip-row = idx;
+                                            root.act-tip-btn = 1;
+                                        } else if (root.act-tip-btn == 1 && root.act-tip-row == idx) {
+                                            root.act-tip-text = "";
+                                            root.act-tip-row = -1;
+                                            root.act-tip-btn = -1;
+                                        }
+                                    }
                                 }
                                 a-pin := HistAct {
                                     glyph: r.pinned ? "unpin" : "pin";
                                     tint: r.pinned ? Theme.accent-solid : Theme.text-secondary;
                                     clicked => { root.pin(r.cmd, !r.pinned); }
+                                    tip-active(on) => {
+                                        if (on) {
+                                            root.act-tip-text = r.pinned ? @tr("Unpin") : @tr("Pin");
+                                            root.act-tip-row = idx;
+                                            root.act-tip-btn = 2;
+                                        } else if (root.act-tip-btn == 2 && root.act-tip-row == idx) {
+                                            root.act-tip-text = "";
+                                            root.act-tip-row = -1;
+                                            root.act-tip-btn = -1;
+                                        }
+                                    }
                                 }
                                 a-del := HistAct {
                                     glyph: "delete";
                                     hover-tint: Theme.danger-strong;
                                     hover-bg: Theme.danger-strong.with-alpha(0.13);
                                     clicked => {
+                                        root.undo-row-idx = idx;
                                         root.undo-cmd = r.cmd;
                                         root.delete(r.cmd);
                                         root.toast-text = @tr("Deleted 1 entry");
                                         root.toast-ticks = 0;
                                         root.undo-visible = true;
                                     }
+                                    tip-active(on) => {
+                                        if (on) {
+                                            root.act-tip-text = @tr("Delete");
+                                            root.act-tip-row = idx;
+                                            root.act-tip-btn = 3;
+                                        } else if (root.act-tip-btn == 3 && root.act-tip-row == idx) {
+                                            root.act-tip-text = "";
+                                            root.act-tip-row = -1;
+                                            root.act-tip-btn = -1;
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
+                    } // scr := ScrollView
                 }
             }
         }
@@ -950,12 +1062,9 @@ export component HistoryPanel inherits Rectangle {
                             //（0xProto 等），链里没有 ↵（U+21B5）字形 → 渲染成
                             // 竖条 fallback（用户截图）。↑↓ 同链却正常（多数等宽
                             // 字体收了箭头没收回车符）。改用「Enter」文字键帽。
+                            // (#hist-round6) Enter = 填入（不执行）；Tab 同义收敛
+                            // 不再单列（执行走行尾 ▶）。
                             HistKey { label: "Enter"; }
-                            HistVerb { label: @tr("Run"); }
-                        }
-                        HorizontalLayout {
-                            spacing: 3px;
-                            HistKey { label: "Tab"; }
                             HistVerb { label: @tr("Fill"); }
                         }
                         HorizontalLayout {
@@ -966,7 +1075,10 @@ export component HistoryPanel inherits Rectangle {
                         HorizontalLayout {
                             spacing: 3px;
                             HistKey { label: "Esc"; }
-                            HistVerb { label: @tr("Close"); }
+                            // (#hist-round5) Esc 承担三段：取消删除 → 清搜索 →
+                            // 关面板，随状态切单一动词描述不全面（用户反馈），
+                            // 改常显「取消/关闭」完整覆盖。
+                            HistVerb { label: @tr("Cancel / close"); }
                         }
                     }
                 }
@@ -996,53 +1108,66 @@ export component HistoryPanel inherits Rectangle {
 
                 Rectangle { height: parent.height; horizontal-stretch: 1; }
 
-                // 命中计数：全量 = 「共 N 条」；过滤/搜索中 = 「命中 / 总数」
-                Text {
-                    text: root.rows.length == root.total-count
-                        ? @tr("{0} entries", root.total-count)
-                        : @tr("{0} / {1} entries", root.rows.length, root.total-count);
-                    color: Theme.text-muted;
-                    font-family: Theme.font-mono;
-                    font-size: 10px;
-                    vertical-alignment: center;
-                    horizontal-stretch: 0;
-                }
-
-                // 清空入口：低权重文字钮，悬停才铺 danger（§10 ①）；
-                // 没有可清空条目（只剩置顶 / 空历史）时压暗禁用。
-                // 宽 = 文字自然宽 + 左右 6（高保真 .clear-all padding）——
-                // ★ 不能写 width: parent.width：槽没有 own preferred 宽，
-                //   绑回自身 = 循环塌成 0 宽，按钮整个看不见（用户截图）。
-                if !root.confirming : Rectangle {
+                // 右端组（#hist-round4 2026-10-29）：计数 + 清空收进一个定宽组，
+                // 整体贴右缘 —— 修复旧版「条」与「清空」黏连、清空被面板边裁半的
+                // 挤压问题（槽宽显式 = 内容 preferred， spacer 吃掉全部余量）。
+                // 组内距 12：计数与清空之间留出呼吸位（旧 HL 间距 9 观感黏连）。
+                Rectangle {
                     height: parent.height;
                     horizontal-stretch: 0;
+                    width: foot-right.preferred-width;
 
-                    Rectangle {
-                        y: (parent.height - self.height) / 2;
-                        width: clr-lbl.preferred-width + 12px;
-                        height: 18px;
-                        border-radius: 3px;
-                        opacity: root.total-count > root.pinned-count ? 1.0 : 0.4;
-                        background: clr-all-ta.has-hover && root.total-count > root.pinned-count
-                            ? Theme.danger-strong.with-alpha(0.13) : transparent;
+                    foot-right := HorizontalLayout {
+                        height: parent.height;
+                        spacing: 12px;
 
-                        clr-lbl := Text {
-                            text: @tr("Clear");
-                            color: clr-all-ta.has-hover && root.total-count > root.pinned-count
-                                ? Theme.danger-strong : Theme.text-muted;
+                        // 命中计数：全量 = 「共 N 条」；过滤/搜索中 = 「命中 / 总数」
+                        Text {
+                            text: root.rows.length == root.total-count
+                                ? @tr("{0} entries", root.total-count)
+                                : @tr("{0} / {1} entries", root.rows.length, root.total-count);
+                            color: Theme.text-muted;
+                            font-family: Theme.font-mono;
                             font-size: 10px;
-                            horizontal-alignment: center;
                             vertical-alignment: center;
-                            width: parent.width;
-                            height: parent.height;
+                            horizontal-stretch: 0;
                         }
 
-                        clr-all-ta := TouchArea {
-                            mouse-cursor: default;
-                            enabled: root.total-count > root.pinned-count;
-                            clicked => {
-                                root.confirming = true;
-                                root.armed = false;
+                        // 清空入口：低权重文字钮，悬停才铺 danger（§10 ①）；
+                        // 没有可清空条目（只剩置顶 / 空历史）时压暗禁用。
+                        if !root.confirming : Rectangle {
+                            height: parent.height;
+                            horizontal-stretch: 0;
+                            width: clr-lbl.preferred-width + 12px;
+
+                            Rectangle {
+                                y: (parent.height - self.height) / 2;
+                                width: parent.width;
+                                height: 18px;
+                                border-radius: 3px;
+                                opacity: root.total-count > root.pinned-count ? 1.0 : 0.4;
+                                background: clr-all-ta.has-hover && root.total-count > root.pinned-count
+                                    ? Theme.danger-strong.with-alpha(0.13) : transparent;
+
+                                clr-lbl := Text {
+                                    text: @tr("Clear");
+                                    color: clr-all-ta.has-hover && root.total-count > root.pinned-count
+                                        ? Theme.danger-strong : Theme.text-muted;
+                                    font-size: 10px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    width: parent.width;
+                                    height: parent.height;
+                                }
+
+                                clr-all-ta := TouchArea {
+                                    mouse-cursor: default;
+                                    enabled: root.total-count > root.pinned-count;
+                                    clicked => {
+                                        root.confirming = true;
+                                        root.armed = false;
+                                    }
+                                }
                             }
                         }
                     }
@@ -1051,18 +1176,39 @@ export component HistoryPanel inherits Rectangle {
         }
     }
 
+    // (#hist-round6) 边线置顶描一圈：工具栏/页脚的 bg-panel 色带是根的
+    // **子元素**，画在根边框之上 —— 直角色带把四条边线中段盖掉一半、
+    // 把圆角弧整段盖没（用户截图：四角无边线、很不协调）。最外层补一圈
+    // 纯描线（透明底、无 TouchArea，不吃点击），与「高亮设置」弹框同款
+    // hairline + border-strong + radius-xl。
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: Theme.radius-xl;
+        border-width: Theme.hairline();
+        border-color: Theme.border-strong;
+        background: transparent;
+    }
+
     // ── ④ 悬停全文卡（压在列表上方；不推动布局）────────────────────────
+    // (#hist-round4 2026-10-29) 宽高都自适应：宽 = 命令最长行的自然宽 +
+    // 内衬（上限 520，装不下再限宽换行），不再是恒 520 的宽条；高随
+    // pop-txt 的换行数走（wrap 后 preferred-height 会重算）。
     if root.hover-pop-idx >= 0 && root.hover-pop-text != "" : Rectangle {
-        // 列表区顶(46) + 内衬(4) + 行顶(idx×38)，卡片贴行底 + 6；
+        // 列表区顶(46) + 内衬(4) + 行顶(idx×38 − 滚动偏移)，卡片贴行底 + 6；
         // 放不下就翻到行上方（贴近高保真 .cmdpop 的翻转规则）。
-        property <length> row-top: 46px + 4px + root.hover-pop-idx * root.row-h;
+        property <length> row-top: 46px + 8px + root.hover-pop-idx * root.row-h - root.list-scroll-y;  // 8 = 容器内衬 4 + 视口内 rows-col 内衬 4（#hist-round6b 双重内衬）
         property <length> below-y: row-top + root.row-h + 6px;
         property <length> pop-h: pop-txt.preferred-height + 14px;
         property <bool> fits-below: below-y + pop-h <= parent.height - 34px;
+        // 探针测「最长一行」的自然宽：卡片宽收齐内容（下限 120、上限
+        // 520 / 面板宽-24），短命令不再被撑成通栏长条。
+        property <length> txt-w: pop-probe.preferred-width;
+        property <length> pop-w: min(min(520px, parent.width - 24px), max(120px, txt-w + 20px));
 
-        x: 12px;
+        x: min(12px, parent.width - pop-w - 4px);
         y: fits-below ? below-y : Math.max(50px, row-top - pop-h - 6px);
-        width: min(520px, parent.width - 24px);
+        width: pop-w;
         height: pop-h;
         background: Theme.field;
         border-radius: Theme.radius-md;
@@ -1083,15 +1229,69 @@ export component HistoryPanel inherits Rectangle {
             wrap: word-wrap;
             overflow: elide;
         }
+
+        // 宽度探针：no-wrap 量出文本最长自然行；不可见不占布局。
+        pop-probe := Text {
+            visible: false;
+            height: 0px;
+            text: root.hover-pop-text;
+            font-family: Theme.font-mono;
+            font-size: 11.5px;
+            wrap: no-wrap;
+        }
     }
 
-    // ── ⑤ 撤销/回执浮条（压在页脚上方，不占布局）──────────────────────
-    // 用户口径（2026-10-29）：文字与撤销钮在条内**居中**排（左 11/右 6 的
-    // 不对称内衬是高保真稿的排版残留，按钮明显偏右）；浮条横向居中于面板。
+    // ── ⑦ 行内动作键的悬浮提示泡（#hist-round4 2026-10-29）──────────────
+    // 高保真沙盘给四枚键配了 title（执行/复制/置顶|取消置顶/删除）；落地用
+    // SftpTooltip 同款气泡（#popup-tip：popup-bg-elevated 底 + border-strong）。
+    // ★ 必须画在根节点：列表容器 clip，气泡贴行上方会被第一行裁掉；
+    //   坐标由 (act-tip-row, act-tip-btn) 反推 —— 动作键条贴行右缘
+    //   (4 + W-8-108)，键距 26（24 键宽 + 2 缝），泡右缘对齐键右缘。
+    if root.act-tip-row >= 0 && root.act-tip-text != "" : Rectangle {
+        property <length> tip-row-top: 46px + 8px + root.act-tip-row * root.row-h - root.list-scroll-y;
+        property <length> btn-right: parent.width - 112px + root.act-tip-btn * 26px + 24px;
+
+        x: Math.max(4px, btn-right - self.width);
+        y: Math.max(2px, tip-row-top - self.height - 4px);
+        width: tip-lbl.preferred-width + 14px;
+        height: 18px;
+        background: Theme.popup-bg-elevated;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+
+        tip-lbl := Text {
+            width: parent.width;
+            height: parent.height;
+            text: root.act-tip-text;
+            color: Theme.text-primary;
+            font-size: 10px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    // ── ⑤ 撤销/回执浮条（随被删/撤销行走，不占布局）────────────────────
+    // (#hist-round6 2026-10-29) 内容改**显式对称摆位**：删除/撤销两条状态
+    // 条按「内衬 10 + 文本 + 缝 9 + 撤销钮 + 内衬 10」精确合成条宽、手工
+    // 摆放 —— 旧 HL alignment: center 有观感偏移（用户：两条状态条都要在
+    // 命令行上居中）。纵向仍锚在命令行的原位置居中，夹在列表区内
+    //（不越工具栏下缘、不压页脚）。
     if root.undo-visible : Rectangle {
+        property <int> anchor-row: Math.max(0, Math.min(root.undo-row-idx,
+            Math.max(0, root.rows.length - 1)));
+        property <length> anchor-row-top: 46px + 8px + anchor-row * root.row-h - root.list-scroll-y;
+        property <length> pad: 10px;
+        property <bool> has-undo-btn: root.undo-cmd != "";
+        // 钮宽探针：撤销钮在条件分支里，条宽合成用探针量（同字体字重）。
+        property <length> undo-btn-w: undo-probe.preferred-width + 16px;
+
         x: (parent.width - self.width) / 2;
-        y: parent.height - 28px - 36px;
-        width: undo-row.preferred-width + 20px;
+        y: Math.min(
+            Math.max(anchor-row-top + (root.row-h - self.height) / 2, 50px),
+            parent.height - 28px - self.height - 6px);
+        width: pad * 2 + toast-txt.preferred-width
+            + (has-undo-btn ? 9px + undo-btn-w : 0px);
         height: 30px;
         border-radius: Theme.radius-md;
         border-width: Theme.hairline();
@@ -1101,52 +1301,55 @@ export component HistoryPanel inherits Rectangle {
         drop-shadow-color: #000000AA;
         clip: true;
 
-        undo-row := HorizontalLayout {
-            width: parent.width;
+        toast-txt := Text {
+            x: pad;
+            text: root.toast-text;
+            color: Theme.text-secondary;
+            font-size: 11.5px;
+            vertical-alignment: center;
             height: parent.height;
-            alignment: center;
-            spacing: 9px;
+        }
 
-            Text {
-                text: root.toast-text;
-                color: Theme.text-secondary;
-                font-size: 11.5px;
+        undo-probe := Text {
+            visible: false;
+            height: 0px;
+            text: @tr("Undo");
+            font-size: 11px;
+            font-weight: Theme.fw-strong;
+        }
+
+        // 撤销钮：只有真的有东西可撤销时才出现（纯回执没有钮）。
+        if has-undo-btn : Rectangle {
+            x: pad + toast-txt.preferred-width + 9px;
+            y: (parent.height - self.height) / 2;
+            width: undo-btn-w;
+            height: 22px;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.accent.with-alpha(0.42);
+            background: undo-ta.has-hover ? Theme.accent-solid : Theme.accent-soft;
+            animate background { duration: 100ms; }
+
+            undo-lbl := Text {
+                text: @tr("Undo");
+                color: undo-ta.has-hover ? Theme.bg-panel : Theme.accent-solid;
+                font-size: 11px;
+                font-weight: Theme.fw-strong;
+                horizontal-alignment: center;
                 vertical-alignment: center;
+                width: parent.width;
                 height: parent.height;
-                horizontal-stretch: 0;
             }
 
-            // 撤销钮：只有真的有东西可撤销时才出现（纯回执没有钮）。
-            if root.undo-cmd != "" : Rectangle {
-                height: 22px;
-                width: undo-lbl.preferred-width + 16px;
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: Theme.accent.with-alpha(0.42);
-                background: undo-ta.has-hover ? Theme.accent-solid : Theme.accent-soft;
-                animate background { duration: 100ms; }
-
-                undo-lbl := Text {
-                    text: @tr("Undo");
-                    color: undo-ta.has-hover ? Theme.bg-panel : Theme.accent-solid;
-                    font-size: 11px;
-                    font-weight: Theme.fw-strong;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    width: parent.width;
-                    height: parent.height;
-                }
-
-                undo-ta := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        // 撤销完成后浮条不消失，原地变成「已撤销」回执再亮 5s。
-                        root.restore();
-                        root.undo-cmd = "";
-                        root.toast-text = @tr("Restored");
-                        root.toast-ticks = 0;
-                        root.undo-visible = true;
-                    }
+            undo-ta := TouchArea {
+                mouse-cursor: default;
+                clicked => {
+                    // 撤销完成后浮条不消失，原地变成「已撤销」回执再亮 5s。
+                    root.restore();
+                    root.undo-cmd = "";
+                    root.toast-text = @tr("Restored");
+                    root.toast-ticks = 0;
+                    root.undo-visible = true;
                 }
             }
         }
@@ -1301,6 +1504,7 @@ export component HistoryPanel inherits Rectangle {
                                 root.confirming = false;
                                 root.armed = false;
                                 root.undo-cmd = "";
+                                root.undo-row-idx = 0;
                                 root.toast-text = @tr("History cleared");
                                 root.toast-ticks = 0;
                                 root.undo-visible = true;
