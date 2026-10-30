@@ -8,20 +8,28 @@
 //   §7 最后一条「两处宿主共用一组件」的落地方式 —— 别再长出第二份实现
 //   （send_cmd_window 已经踩过这个坑）。
 //
-// ★ 修订 10-30 的结构定稿（用户实测反馈：头部信息提示符里就有、详情区
-//   未选中时整块空白）—— 原「四段式」砍成**两段半**：
-//     ① 候选列表 3–5 行（主体，说明长在行内副标题）
-//     ② 危险告警条 ~30px（**条件渲染**，仅命中 danger-token 时出现在列表上方）
-//     ③ 键盘脚注 23px
-//   原 27px 上下文条（user@host : cwd + 阶段胶囊 + 计数）与 94px 详情区退役。
+// ★ 修订 10-30（实测二轮）：
+//   · 边框配方与「高亮设置」弹框对齐（用户：边框线和四个圆角要和高亮设置
+//     里面对齐）—— radius-xl + hairline 细线 + border-strong，同
+//     highlight_dialog.slint 的 dlg 根节点与 history_panel 的 #hist-round5。
+//   · 列表改 ScrollView 承载**全量行**（#cmd-hint-scroll）：可见行数 5 → 8
+//     （用户：展示的有些少）；鼠标滚轮翻找、↑↓ 选中出视口自动跟随。
+//     旧 Flickable 方案死于两个坑：a) `viewport-y` 是**负值域**（0=顶、
+//     −max=底），键盘跟随写了正值 `row-top`，内容被整体向下平移推出视口，
+//     露出下层终端 —— 用户截图「箭头往下滚看不到背景」；b) 行文本带 `\n`
+//     （多行粘贴的历史条目）把 28px 行盒撑爆叠到邻行（显示侧压平修复，
+//     见 command_hint_ui.rs）。
 //
-// ★ 键盘契约同批定稿（§5）：Tab **永远透传 shell**（提示框不接管）；
-//   Enter 未导航=执行当前输入、已导航=**执行选中候选**；
-//   Shift+Enter / →(鬼影) / 鼠标点击 = 仅填入。选中态由 ↑↓ 显式建立，
-//   刚弹出时无选中（selected = -1，不高亮任何行）。
+// ★ 键盘契约（§7 定稿 2026-10-30 三轮，终端内联与命令栏两处宿主**完全同一套**）：
+//   弹出即选中首条（候选按相关度排好，首条就是最佳）；
+//   Enter = 填入选中候选并收框（确认靠收框表达，不做行==apply 文本比对——
+//   打字打出的完整命令与候选天然相等，比对必漏：用户实测 `ll` 回车直接执行）；
+//   框关了 Enter = 执行当前输入；Shift+Enter = 强制执行选中候选；
+//   →(鬼影) / 鼠标点击 = 仅填入；Tab 永远透传 shell。
 
 import { Icon } from "icons.slint";
 import { Theme } from "theme.slint";
+import { ScrollView } from "std-widgets.slint";
 
 // 一条候选。字段与 `HintRowData`（Rust）一一对应。
 export struct HintRow {
@@ -34,16 +42,16 @@ export struct HintRow {
     // ★ 选中这一条后，命令行**整行**应该变成什么。
     //   由 Rust 侧算好（`HintInput` 已经知道怎么拆词，UI 侧 Slint 1.18 的
     //   string 没有 trim-end/rfind/substr，拼不出来）。两个用途：
-    //     ① Shift+Enter / 鼠标点击 → 差量填入；
-    //     ② Enter 已导航 → 整行替换后执行。
+    //     ① Enter / 鼠标点击 → 差量填入（框开着永远填入）；
+    //     ② Shift+Enter → 整行替换后直接执行。
     apply: string,
 }
 
 export component CommandHint inherits Rectangle {
     // ── 数据 ────────────────────────────────────────────────────────────
     in property <[HintRow]> rows;
-    // ★ 无选中态：刚弹出时不高亮任何行（高保真 §5 —— 未导航 Enter=执行
-    //   当前输入，防止「敲完一条完整命令回车被候选偷换」）。↑↓ 才建立导航。
+    // ★ 选中项由宿主持有并传入（两处宿主各管各的）：弹出即指向首条
+    // （高保真 §7 收敛 —— 候选按相关度排好，首条就是最佳，Enter 直接确认）。
     in property <int> selected: -1;
     in property <bool> open: false;
     // 危险命令命中的模式原文；非空 → 列表上方出现红色告警条。
@@ -64,49 +72,72 @@ export component CommandHint inherits Rectangle {
     //   主题里是**同一个值**（深 #181A1D / 亮 #FAF8F4），压上去框会「消失」，
     //   只剩一圈边框。必须升到 slot-elev + border-strong 描边。
     background: Theme.bg-elevated;
-    // ★ 圆角用 radius-lg（10px），与主界面的弹窗（命令管理 / 确认框 / 设置）
-    //   同一档。原来写 radius-md（6px），用户实测反馈「主界面四个圆角看得清，
-    //   这个提示框像没设圆角」—— 6px 在深色底上确实几乎看不出来。
-    border-radius: Theme.radius-lg;
-    border-width: 1px;
+    // (#cmd-hint-border 2026-10-30) 边框配方与「高亮设置」弹框对齐（用户实测
+    // 反馈：边框线和四个圆角要和高亮设置里面对齐）：radius-xl + hairline 细线
+    // + border-strong —— 同 highlight_dialog.slint 的 dlg 根节点、history_panel
+    // 的 #hist-round5。原 radius-lg（10px）低一档，四角弧线与全应用弹框不一致。
+    border-radius: Theme.radius-xl;
+    border-width: Theme.hairline();
     border-color: Theme.border-strong;
-    drop-shadow-blur: 14px;
-    drop-shadow-color: #00000066;
+    // (#cmd-hint-chrome 2026-10-30) 投影对齐「高亮设置」弹框 / 历史面板同款：
+    // 26px transparent —— 立体感靠比终端底亮一档的 elevated 底 + 细边撑，
+    // 不画真投影。原 14px #00000066 的黑影让框看起来比同配方的高亮设置
+    // 「重一档」，用户实测点名不像。
+    drop-shadow-blur: 26px;
+    drop-shadow-color: transparent;
     // 内层布局已内缩 1px 避开边框（见下方 VerticalLayout 的注释），
     // 这里开 clip 只是防止列表行文字溢出圆角。
     clip: true;
     visible: root.open;
 
-    // ★ 键盘上下选择时把选中行滚进视口；鼠标滚轮仍可自由滚（Flickable 自己处理）。
-    changed selected => {
-        if (root.selected >= 0) {
-            let cur = list-flick.viewport-y;
-            let row-top = root.selected * 28px;
-            let row-bottom = row-top + 28px;
-            let target = row-top < cur
-                ? row-top
-                : (row-bottom > cur + list-flick.height ? row-bottom - list-flick.height : cur);
-            let max-y = max(0px, root.rows.length * 28px + 6px - list-flick.height);
-            list-flick.viewport-y = clamp(target, 0px, max-y);
-        }
-    }
-
+    // ── 滚动几何（#cmd-hint-scroll 2026-10-30）──────────────────────────
+    // 行高 28px 与列表区内衬 3px 是本组件的基准数（多处引用，集中在这）。
+    out property <length> row-h: 28px;
+    out property <length> list-pad: 3px;
     // 可见行数 = min(候选数, 50)。高度按它算，所以 1↔3 条之间切换时
     // 框高度不变（高保真 §4 的「锁 3 行」）。
-    // 数据侧可能给到几十条（见 HINT_MAX_ROWS），视图只开固定视口。
+    // 数据侧可能给到几十条（HINT_MAX_ROWS=50），视图只开固定视口。
     out property <int> shown: min(root.rows.length, 50);
-    // ★ 视口行数：1–3 条锁定 3 行；3–5 条跟着长；**超过 5 条不再长高**，
-    //   改为滚动（高保真 §3：候选 5 行封顶）。
-    out property <int> list-rows: min(max(3, root.shown), 5);
+    // ★ 视口行数：1–3 条锁定 3 行；3–8 条跟着长；**超过 8 条不再长高**，
+    //   改为框内滚动（用户实测「展示的有些少」5 → 8）。
+    out property <int> list-rows: min(max(3, root.shown), 8);
     // ★ 自然高度必须**自己算**，不能读 `self.preferred-height`：
     //   根是 Rectangle，Slint 不会从内容反推 Rectangle 的 preferred-height
     //   （实测恒为 0，于是宿主侧的 min(自然高, 可用高) 完全失效）。
     //   两段固定 + 条件告警条：
     //     列表(list-rows*28+6) + 告警 30（仅危险命令）+ 脚注 23
     out property <length> natural-height:
-        (root.list-rows * 28px + 6px)
+        (root.list-rows * root.row-h + 6px)
         + (root.danger-token != "" ? 30px : 0px)
         + 23px;
+
+    // ★ 键盘上下选择时把选中行滚进视口（#cmd-hint-scroll）：写入走
+    //   list-scroll（ScrollView 的 content-y 镜像，负值域 0=顶/−max=底 ——
+    //   见 history_panel.slint #hist-fix-keynav 同款坑）。ensure-selected-
+    //   visible 是三段 clamp 的标准写法：行顶出视口 → 对齐顶；行底出视口 →
+    //   对齐底；都不出 → 保持。
+    function ensure-selected-visible() {
+        if (root.rows.length == 0 || root.rows.length <= root.list-rows
+                || root.selected < 0) {
+            list-scroll = 0;
+            return;
+        }
+        let row-top = root.list-pad + root.selected * root.row-h;
+        let row-bottom = row-top + root.row-h;
+        let win-h = root.list-rows * root.row-h + 6px;
+        if (row-top < -list-scroll) {
+            list-scroll = -row-top;
+        } else if (row-bottom > -list-scroll + win-h) {
+            list-scroll = -(row-bottom - win-h);
+        }
+    }
+
+    changed selected => { root.ensure-selected-visible(); }
+    // 候选集变化（新输入）→ 滚动位置归零：新列表从顶看起。
+    // （selected 的复位由宿主做；这里只管滚动窗口。）
+    changed rows => { list-scroll = 0; }
+    // 滚动偏移（fluent content-y 负值域）。由下面的 ScrollView 双向绑定。
+    property <length> list-scroll: 0px;
 
     // ★ 内层内容直接作为根的子级，由根统一裁切。
     //   边框由根 Rectangle 的 border 画，四段内容带直角背景；
@@ -129,7 +160,9 @@ export component CommandHint inherits Rectangle {
         // ——原「列表下方 94px 接管详情区」的结构随详情区一起退役。
         if root.danger-token != "" : Rectangle {
             height: 30px;
-            width: parent.width;
+            // (#cmd-hint-chrome 2026-10-30) 告警条同样内衬 1px（顶角同脚注）。
+            x: 1px;
+            width: parent.width - 2px;
             clip: true;
             background: Theme.danger.with-alpha(0.13);
 
@@ -171,31 +204,46 @@ export component CommandHint inherits Rectangle {
             }
         }
 
-        // ── ② 候选列表（3–5 行，主体）───────────────────────────────────
+        // ── ② 候选列表（3–8 行，主体）───────────────────────────────────
         Rectangle {
             // 高保真 §4：候选 1→3 条时高度锁定在 3 行，超过才长高。
             // 28px 行高 + 上下 3px 内衬。
-            height: root.list-rows * 28px + 6px;
+            height: root.list-rows * root.row-h + 6px;
             width: parent.width;
             background: transparent;
             clip: true;
 
-            // ★ 固定视口 + 滚动：候选可以很多，框高不变。
-            list-flick := Flickable {
+            // (#cmd-hint-scroll 2026-10-30) 列表滚动：ScrollView 承载**全部行**
+            // ——鼠标滚轮翻找、↑↓ 选中出视口自动跟随（ensure-selected-visible
+            // 写 list-scroll，负值域）。滚动条整条去掉（#hist-round6 同款：
+            // 灰柱丑；滚轮 + ↑↓ 已覆盖）。旧 Flickable 的 viewport-y 正值写入
+            // 会把内容平移出视口（用户截图「往下滚看不到背景」），整段退役。
+            list-scr := ScrollView {
                 width: parent.width;
                 height: parent.height;
-                viewport-width: self.width;
-                // 内容高 = 全部候选；不足一屏时也不留空白。
-                viewport-height: max(self.height, root.rows.length * 28px + 6px);
-                interactive: true;
+                content-width: parent.width;
+                content-height: max(self.height,
+                    root.rows.length * root.row-h + 6px);
+                content-y <=> list-scroll;
+                vertical-scrollbar-policy: ScrollBarPolicy.always-off;
 
-            VerticalLayout {
-                padding: 3px;
-                spacing: 0px;
-                alignment: start;
+                VerticalLayout {
+                    x: 0px;
+                    y: root.list-pad;
+                    width: parent.width;
+                    height: root.rows.length * root.row-h;
+                    spacing: 0px;
+                    alignment: start;
 
                 for r[idx] in root.rows : Rectangle {
-                    height: 28px;
+                    height: root.row-h;
+                    // (#cmd-hint-chrome 2026-10-30) 行高亮**内衬式**（历史面板同款）：
+                    // 水平内衬 4px，不贴弹框边——原先全宽贴边的直角行背景在弹框
+                    // 左上/右上角戳出 radius-xl 弧线之外 4~5px，把圆角线盖掉
+                    // （用户截图：第一行背景超出了）。弹出即选中首条后该行永远
+                    // 存在，问题必现；竖条也随内衬挪进来。
+                    x: 4px;
+                    width: parent.width - 8px;
                     border-radius: Theme.radius-sm;
                     background: idx == root.selected ? Theme.accent-soft
                               : (row-ta.has-hover ? Theme.bg-hover : transparent);
@@ -295,9 +343,13 @@ export component CommandHint inherits Rectangle {
         // §3③：六项常驻，并刻意不出现「Tab 填入」——Tab 已定稿**永远透传
         // shell**（§5），脚注本身就是这个契约的声明。键帽一律用英文字母
         // （用户定稿：↵/⇧ 符号不可用）。
+        // (#cmd-hint-chrome 2026-10-30) 脚注水平内衬 1px：Slint 的 clip 是
+        // 矩形裁切不认圆角，全宽直角底会盖掉底部两个圆角的弧线内缘
+        // （与行高亮溢出同一机理）；让出边框那 1px 弧线就完整了。
         Rectangle {
             height: 23px;
-            width: parent.width;
+            x: 1px;
+            width: parent.width - 2px;
             background: Theme.bg-panel;
 
             Rectangle {
@@ -319,15 +371,16 @@ export component CommandHint inherits Rectangle {
                     vertical-alignment: center;
                 }
                 Text {
-                    // §5 定稿：未导航 Enter=执行当前输入；已导航=执行选中候选。
-                    text: "Enter " + @tr("Run");
+                    // (§7 定稿 2026-10-30 三轮) Enter = 填入选中候选并收框；
+                    // 框关了 Enter 才执行当前输入。终端与命令栏同一契约。
+                    text: "Enter " + @tr("Insert");
                     color: Theme.text-muted;
                     font-size: 10px;
                     vertical-alignment: center;
                 }
                 Text {
-                    // 仅填入（不执行）——想接着敲参数的入口。
-                    text: "Shift+Enter " + @tr("Insert");
+                    // Shift+Enter = 跳过填入直接执行选中候选（清行重打 + 回车）。
+                    text: "Shift+Enter " + @tr("Run");
                     color: Theme.text-muted;
                     font-size: 10px;
                     vertical-alignment: center;

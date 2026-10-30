@@ -107,10 +107,37 @@ fn accepting_a_path_does_not_add_a_trailing_space() {
 
 #[test]
 fn a_history_row_always_replaces_the_whole_line() {
-    // 历史是「整条命令」，不是某个词的补全 —— 任何阶段都整行替换。
+    // 历史是「整条命令」，不是某个词的补全 —— 命令阶段整行替换。
     assert_eq!(
         apply_of("git commit -m fix", HintKind::History, "git co"),
         "git commit -m fix"
+    );
+}
+
+#[test]
+fn a_history_path_candidate_keeps_the_typed_prefix() {
+    // ★ 回归（2026-10-30 用户实测）：`cd /home/wec/` + 选历史 `/home/wec/web/`
+    //   —— 原先历史一律整行替换，把 `cd ` 丢掉，回车执行裸路径
+    //   （bash: /home/wec/web/: 是一个目录）。候选以**正在补的词**为前缀时
+    //   只替换那个词，前缀保留。
+    assert_eq!(
+        apply_of("/home/wec/web/", HintKind::History, "cd /home/wec/"),
+        "cd /home/wec/web/"
+    );
+    // 候选以**整行**为前缀 → 它就是当前行的延伸，整行接上去。
+    assert_eq!(
+        apply_of("cd /home/wec/java/test", HintKind::History, "cd /home/wec/"),
+        "cd /home/wec/java/test"
+    );
+    // 不相干的整行预测 → 整行替换（旧行为兜底）。
+    assert_eq!(
+        apply_of("docker ps -a", HintKind::History, "cd /home/wec/"),
+        "docker ps -a"
+    );
+    // 路径阶段接上一级时不补尾随空格（还要继续往下补）。
+    assert_eq!(
+        apply_of("/home/wec/web/", HintKind::Quick, "cd /home/wec/"),
+        "cd /home/wec/web/"
     );
 }
 
@@ -151,8 +178,94 @@ fn tab_chain_walks_command_to_subcommand_without_jumping_phases() {
 fn the_row_cap_matches_the_ui() {
     // 数据侧封顶数与 Slint 侧画的行数必须是同一个数，
     // 否则选中项会落在没画出来的行上。
-    // 5 → 8（「5 条太少」）→ 6（「框感觉太长了，没必要这么长」）。
+    // Slint 侧可见行数 2026-10-30 由 5 提到 8（用户：「展示的有些少」）；
+    // 数据侧 HINT_MAX_ROWS=50 仍是全量封顶，视图用 ScrollView 滚。
     assert_eq!(HINT_MAX_ROWS, 50);
+}
+
+// ── 匹配收紧（2026-10-30 四轮，用户实测「无论怎么输入都有匹配」）─────────
+
+use crate::config::{ConfigFile, ConfigStore};
+use std::path::PathBuf;
+
+// ConfigStore 没有公开构造函数（字段 pub(crate)）；测试模块就挂在
+// crate 里（src/command_hint/mod.rs 的 #[cfg(test)] mod），直接构造一个
+// 不落盘的实例（同 config.rs 内测的 temp_store）。
+fn mem_store() -> ConfigStore {
+    ConfigStore {
+        path: PathBuf::from("unused.json"),
+        cache: ConfigFile::default(),
+        key: [7u8; 32],
+    }
+}
+
+#[test]
+fn fuzzy_subsequence_no_longer_matches_unrelated_history() {
+    // ★ 模糊子序列档删除的回归：输入 `lh`（两个字符）时，原先字符按序
+    //   出现就算命中，`sudo tee /etc/profile.d/lsd.sh << 'EOF' …`（含 L、H
+    //   字符）会混进候选——内联建议被噪音淹没。现在只允许精确/前缀/词
+    //   边界/子串/切分子串五档，`lh` 与该历史不相干 → 不出候选。
+    use super::hint_model;
+
+    let mut store = mem_store();
+    store.push_command_history("sudo tee /etc/profile.d/lsd.sh << 'EOF'".to_string());
+    store.push_command_history("free -h".to_string());
+
+    // `lh`：与两条历史都无前缀/词边界/子串关系 → 无候选。
+    let m = hint_model(&store, "lh", String::new());
+    assert!(
+        m.rows.iter().all(|r| !r.text.contains("sudo tee")),
+        "模糊子序列不该再让不相干的历史进候选：{:?}",
+        m.rows.iter().map(|r| &r.text).collect::<Vec<_>>()
+    );
+
+    // `free`：前缀命中 `free -h`，正常候选（对照，证明不是全局哑掉）。
+    let m = hint_model(&store, "free", String::new());
+    assert!(
+        m.rows.iter().any(|r| r.text == "free -h"),
+        "前缀命中应正常出候选"
+    );
+
+    // `ree`：子串命中，正常候选（对照）。
+    let m = hint_model(&store, "ree", String::new());
+    assert!(
+        m.rows.iter().any(|r| r.text == "free -h"),
+        "子串命中应正常出候选"
+    );
+}
+
+#[test]
+fn chinese_quick_command_names_match_via_token_substring() {
+    // ★ 模糊档删掉后中文搜索由「切分子串」承接：快捷命令名「查看内存占用」，
+    //   输入「查内存」（2-gram：查内/内存）→ 名称切词后含「查内存占用」，
+    //   2-gram「内存」是它的子串 → 命中（40 分）。
+    use super::hint_model;
+    use crate::config::QuickCommand;
+
+    let mut store = mem_store();
+    store.set_quick_commands(vec![QuickCommand {
+        name: "查看内存占用".to_string(),
+        command: "free -h".to_string(),
+        group: String::new(),
+        note: String::new(),
+        send_enter: true,
+    }]);
+
+    // 整串子串：`查内存` 是「查看内存占用」的…不是（看字隔着）——
+    // 走 2-gram：「查内」「内存」都在名称里 → 命中。
+    let m = hint_model(&store, "查内存", String::new());
+    assert!(
+        m.rows.iter().any(|r| r.text == "free -h"),
+        "中文 2-gram 切分子串应命中快捷命令：{:?}",
+        m.rows.iter().map(|r| &r.text).collect::<Vec<_>>()
+    );
+
+    // 完整词「查看内存」是名称的子串 → 整串子串档直接命中。
+    let m = hint_model(&store, "查看内存", String::new());
+    assert!(
+        m.rows.iter().any(|r| r.text == "free -h"),
+        "中文整串子串应命中"
+    );
 }
 
 // ── 触发阈值（用户实测反馈：一个字符就弹，误命中太多）──────────────────

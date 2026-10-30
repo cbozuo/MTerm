@@ -84,10 +84,21 @@ pub(crate) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
         q.clone()
     };
 
-    // ── 相关度打分（高保真 §3 排序五级键）──────────────────────────────
-    //   匹配度：精确 100 > 行前缀 80 > 词边界 65 > 子串 50 > 模糊子序列 18
-    //   词边界 = 按空白分词后任一**非首词**以 query 开头（`st` → `systemctl status …`），
-    //   fzf / VS Code 的分级匹配惯例；首词命中已由「行前缀」一档覆盖。
+    // ── 相关度打分（高保真 §3 排序五级键；2026-10-30 四轮收紧）──────────
+    //   匹配度：精确 100 > 行前缀 80 > 词边界 65 > 子串 50。
+    //
+    //   ★ 模糊子序列档**删除**（用户实测：「无论怎么输入都有匹配」）：
+    //     原第 5 档（18 分）判定 = query 字符按序出现在候选里即可，2 字符
+    //     输入几乎能命中任何命令（`lh` → `sudo tee …aLias…`），内联建议被
+    //     噪音淹没。行业口径（fish/Warp 的内联建议、FinalShell 的自动提示）
+    //     都是**前缀 + 子串封顶**；fzf 级别的模糊只属于显式搜索场景。
+    //
+    //   ★ 中文/多词名称的搜索靠「切分子串」而不是字符模糊：query 与 text
+    //     各自按空白切词后，任一 query 词是任一 text 词的子串即命中
+    //     （40 分，介于词边界与整串子串之间）。「查看内存」切出「查看/
+    //     内存」，text 名称「查看内存占用」同样切词后子串命中——
+    //     中文无空格分词，这里按字符 2-gram 兜一层（`查内存` → 「查」
+    //     「内存」都能在名称里找到）。fuzzy 档删掉后中文搜索由它承接。
     //
     //   来源平手裁决（第 2 级，`pri`）：快捷命令 0 < 内置 1 < 历史 2 ——
     //   用户自定义永远压过系统给的（Warp workflows / Raycast 口径）。
@@ -104,6 +115,35 @@ pub(crate) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
         tl.split_whitespace()
             .skip(1)
             .any(|w| w.starts_with(&ql))
+    }
+    /// 切分子串：两侧各按空白切词，任一 query 词是任一 text 词的子串 → 命中。
+    /// 中文（无空格）整段是一个「词」，退化为整串子串；若整串不中，再按
+    /// 字符 2-gram 切 query 兜一层（`查内存` → 「查」+「内存」）。
+    fn token_substring(text: &str, q: &str) -> bool {
+        let tl = text.to_lowercase();
+        let ql = q.to_lowercase();
+        let t_toks: Vec<&str> = tl.split_whitespace().collect();
+        let q_toks: Vec<&str> = ql.split_whitespace().collect();
+        // ① 词对词：任一 query 词是任一 text 词的子串。
+        if q_toks
+            .iter()
+            .any(|qw| t_toks.iter().any(|tw| tw.contains(qw)))
+        {
+            return true;
+        }
+        // ② 中文 2-gram 兜底：query 无空白切不出多词且 text 含任一 2-gram。
+        //    只对「含 CJK」的 query 启用 —— 英文短词的 2-gram 噪音太大。
+        let has_cjk = ql.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c));
+        if !has_cjk || ql.chars().count() < 2 {
+            return false;
+        }
+        let grams: Vec<String> = {
+            let cs: Vec<char> = ql.chars().collect();
+            (0..cs.len().saturating_sub(1))
+                .map(|i| cs[i..i + 2].iter().collect())
+                .collect()
+        };
+        grams.iter().any(|g| tl.contains(g.as_str()))
     }
     fn five_level(text: &str, q: &str) -> i32 {
         if q.is_empty() {
@@ -123,11 +163,8 @@ pub(crate) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
         if tl.contains(&ql) {
             return 50;
         }
-        // 模糊子序列：q 的字符按序都出现在 text 里（宽松兜底档）。
-        let mut it = tl.chars();
-        let hit = ql.chars().all(|qc| it.any(|tc| tc == qc));
-        if hit {
-            return 18;
+        if token_substring(text, q) {
+            return 40;
         }
         -1 // 不命中
     }

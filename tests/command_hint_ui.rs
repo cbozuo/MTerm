@@ -239,10 +239,8 @@ fn render_with(ui: &AppWindow, row_count: usize) -> Frame {
     type_text(ui, "git");
 
     // 模拟 Rust 侧 hint-query 的产物（离屏测试没有接那套回调）。
+    // (修订 10-30) hint-phase/context/total 随浮层头部退役，只灌 rows。
     ui.set_hint_rows(rows(row_count));
-    ui.set_hint_total(row_count as i32);
-    ui.set_hint_phase("命令".into());
-    ui.set_hint_context("root@web-01 : /var/log".into());
     // 再敲一个字符，让 `edited` 带着「已就绪的候选」重跑一次可见性判断。
     type_text(ui, "t");
 
@@ -321,10 +319,13 @@ fn overlay_rect(f: &Frame, lstr: (u8, u8, u8)) -> Option<(usize, usize, usize, u
     //     边框像素（抗锯齿混色），单行取样会漏；
     //   · 也不能用整段包围盒：终端 pane 自己的边框（x=SIDE_LEFT）也在扫描
     //     范围里，会把左右边界拉到 pane 边缘（实测 left=240 / right=939）。
-    //   所以按列统计 lstr 像素数，只认覆盖率 ≥80% 高度的列 —— 只有浮层的
-    //   左右边框能贯穿全高。
+    //   所以按列统计 lstr 像素数，只认覆盖率 ≥60% 高度的列 —— 只有浮层的
+    //   左右边框能贯穿大半高度。(#cmd-hint-border 2026-10-30) 圆角升到
+    //   radius-xl = 16px 后，左右边框直线段只剩 (H−32)/H ≈ 72%（框高 113），
+    //   旧 80% 阈值在数学上就不可达（直线段被圆角吃掉 32px），必须下调；
+    //   底噪单行最多 200px 宽（脚注横线是横不是竖），列方向不会误中。
     let height = bottom.saturating_sub(top) + 1;
-    let need = (height * 8) / 10;
+    let need = (height * 6) / 10;
     let mut left = None;
     let mut right = 0usize;
     for x in (x0 + 2)..x1.saturating_sub(2) {
@@ -384,10 +385,10 @@ fn the_hint_box_has_a_complete_border() {
     assert_eq!(edges, 4, "四条边的中点应有边框色，实际命中 {edges}/4");
 
     // ② 四角邻域（圆角弧线）也必须有边框色。
-    //    圆角 radius-md = 6px：弧线像素离角顶点约 5~6px。
-    //    ★ 扫描方向要朝「角外」：左上角弧线在左上方向，右上在右上……
-    //      第一版固定向右下扫，左上/右上永远漏（它们的弧线在 y 更小、x 更小/
-    //      更大的方向）。这里给每个角一个(dx, dy)方向向量。
+    //    (#cmd-hint-border 2026-10-30) 圆角升到 radius-xl = 16px：弧线像素
+    //    离角顶点最远 ~17px，邻域扫 20px；方向朝**框内**（弧线在角顶点的
+    //    右下/左下方向，朝外扫永远漏 —— 旧 radius-md=6 时 9px 邻域罩得住
+    //    纯属余量，升档后必须改）。
     let mut corners = 0;
     let scan = [
         ("左上", left, top, 1i32, 1i32),
@@ -396,11 +397,11 @@ fn the_hint_box_has_a_complete_border() {
         ("右下", right, bottom, -1i32, -1i32),
     ];
     for (name, ox, oy, sx, sy) in scan {
-        // 2D 邻域扫 9px（radius-md=6 的弧线 + 1px 边框宽 + 抗锯齿余量）。
+        // 2D 邻域扫 20px（radius-xl=16 的弧线 + hairline 边框 + 抗锯齿余量）。
         // 圆角处是「边框色与背景色」的抗锯齿混合，容差放宽到 45。
         let mut found = false;
-        'scan: for dy in 0..=9i32 {
-            for dx in 0..=9i32 {
+        'scan: for dy in 0..=20i32 {
+            for dx in 0..=20i32 {
                 let x = (ox as i32 + dx * sx) as usize;
                 let y = (oy as i32 + dy * sy) as usize;
                 if close(f.rgb(x, y), lstr, 45) {
@@ -463,50 +464,56 @@ fn the_box_height_is_locked_between_one_and_three_rows() {
 #[test]
 fn many_candidates_keep_the_height_and_scroll() {
     // ★ 用户定稿：「候选数再提一些，信息框的高度不变，支持滚动翻找」。
-    //   6 条封顶视口，再多的候选进 Flickable 滚动，框高不许再长。
+    //   (#cmd-hint-scroll 2026-10-30) 可见行数 8：6 条与 20 条都按 8 行视口
+    //   画（6 条不满 8 也锁 8？不 —— list-rows = max(3, min(shown, 8))，
+    //   6 条时 6 行、20 条时 8 行 + ScrollView 滚动。两个高度都必须稳定，
+    //   这里锁的是「20 条不再长高」：框高 = 8×28+6+23 = 253。
     let ui = setup();
     let elev = elevated_of(&ui);
-
-    let f6 = render_with(&ui, 6);
-    let (t6, b6) = find_overlay(&f6, elev).expect("6 条候选时没画框");
-    let h6 = b6 - t6;
 
     let f20 = render_with(&ui, 20);
     maybe_dump(&f20, "hint-20rows");
     let (t20, b20) = find_overlay(&f20, elev).expect("20 条候选时没画框");
     let h20 = b20 - t20;
-
     assert!(
-        h6.abs_diff(h20) <= 2,
-        "候选 6 条高 {h6}px、20 条高 {h20}px —— 超过视口后高度不该变（应滚动）"
+        (244..=262).contains(&h20),
+        "候选 20 条高 {h20}px —— 应为 8 行视口规格 ≈253（8×28+6+23），多出的候选进滚动"
+    );
+
+    // 50 条（数据侧 HINT_MAX_ROWS 封顶）也不许更长。
+    let f50 = render_with(&ui, 50);
+    let (t50, b50) = find_overlay(&f50, elev).expect("50 条候选时没画框");
+    let h50 = b50 - t50;
+    assert!(
+        h50.abs_diff(h20) <= 2,
+        "候选 20 条高 {h20}px、50 条高 {h50}px —— 超过视口后高度不该变（应滚动）"
     );
 }
 
 #[test]
 fn the_three_sections_stack_in_the_designed_order() {
     // ★ 用户实测改规格：原来第四段「详情区 94px」常驻，普通命令根本没人看，
-    //   却把浮层撑得很长（「感觉有些太长了」）。现在详情块只在**危险命令**时
-    //   出现，普通命令是标准三段：上下文条 27 + 列表 + 脚注 23。
+    //   却把浮层撑得很长（「感觉有些太长了」）。10-30 修订再砍掉头部上下文条
+    //   27px —— 普通命令是两段：列表 + 脚注 23。
     let ui = setup();
     let elev = elevated_of(&ui);
     let f = render_with(&ui, 5);
     let (top, bottom) = find_overlay(&f, elev).expect("没找到提示框");
     let h = bottom - top + 1;
-    // 期望 ≈ 27 + (5*28+6=146) + 23 = 196
+    // 期望 ≈ (5*28+6=146) + 23 = 169（hairline 边框 ±2）
     assert!(
-        (186..=210).contains(&h),
-        "框高 {h}px 与三段规格不符（期望 ≈196：27+146+23）"
+        (160..=178).contains(&h),
+        "框高 {h}px 与两段规格不符（期望 ≈169：146+23）"
     );
 }
 
 #[test]
 fn the_inline_hint_is_horizontally_centred() {
-    // ★ 用户两次反馈「没有居中 / 没修改好」。这条守住：
-    //   浮层的水平中线必须和终端 pane 的水平中线重合（±3px）。
-    //
-    //   量法：用**列表区底色**（bg-elevated）的一行取水平跨度。
-    //   不用边框色 —— 终端内联浮层比较矮，圆角占掉的比例大，边框竖线
-    //   贯穿率不够，按列统计会误判为「没找到浮层」（实测踩过）。
+    // ★ 高保真 §2 ①③（2026-10-30 定稿）：浮层**左对齐光标并夹紧**，
+    //   不再居中 —— x = clamp(caret.x, 8, 视口宽 - 盒宽 - 8)。
+    //   （用户原反馈「没有居中」的旧规格已随定位规则一起退役。）
+    //   这里守硬不变量：光标 col=12（靠左）时，浮层整体落在 pane 左半区，
+    //   且不出 pane 左缘（x ≥ 8）。
     let ui = setup();
     let elev = elevated_of(&ui);
     let f = render_term_hint(&ui, 4, 6);
@@ -528,14 +535,14 @@ fn the_inline_hint_is_horizontally_centred() {
     let left = left.expect("那一行没有列表区底色");
 
     let pane_left = SIDE_LEFT as f32;
-    let pane_right = (SIDE_LEFT + PANE_W) as f32;
-    let pane_mid = (pane_left + pane_right) / 2.0;
-    let popup_mid = (left as f32 + right as f32) / 2.0;
-
+    let pane_mid = pane_left + PANE_W as f32 / 2.0;
     assert!(
-        (popup_mid - pane_mid).abs() <= 3.0,
-        "浮层没有横向居中：pane 中线 {pane_mid:.1}，浮层中线 {popup_mid:.1}\
-         （left={left}, right={right}）"
+        (left as f32) < pane_mid,
+        "光标在左半区时浮层应贴光标（左缘 {left} 应在 pane 中线 {pane_mid:.1} 左侧）"
+    );
+    assert!(
+        (left as i32 - SIDE_LEFT as i32) >= 8,
+        "浮层左缘 {left} 距 pane 左缘不足 8px —— 横向夹紧失效"
     );
 }
 
@@ -550,7 +557,6 @@ fn a_dangerous_command_paints_the_detail_area_red() {
 
     type_text(&ui, "rm -rf /tmp/x");
     ui.set_hint_rows(rows(3));
-    ui.set_hint_total(3);
 
     let mut f = Frame::new();
     for _ in 0..5 {
@@ -622,9 +628,7 @@ fn render_term_hint(ui: &AppWindow, row_count: usize, cursor_row: i32) -> Frame 
         }
     }
     ui.set_term_hint_rows(rows(row_count));
-    ui.set_term_hint_phase("命令".into());
-    ui.set_term_hint_context("root@web-01 : /var/log".into());
-    ui.set_term_hint_total(row_count as i32);
+    // (修订 10-30) term-hint-phase/context/total 随浮层头部退役，只灌 rows。
     ui.set_term_hint_open(true);
 
     let mut f = Frame::new();

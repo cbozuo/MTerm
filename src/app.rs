@@ -11797,9 +11797,6 @@ fn wire_key_input(
     {
         let handles = handles.clone();
         let bufs = bufs.clone();
-        let store = store.clone();
-        let obs_all = hint_observers.clone();
-        let was_empty = term_hint_was_empty.clone();
         let weak = window.as_weak();
         window.on_term_hint_accept(move |i: i32| {
             let Some(w) = weak.upgrade() else { return };
@@ -11826,14 +11823,17 @@ fn wire_key_input(
                     .unwrap_or_default()
             };
             // 算追加尾巴：apply 以 current 为前缀时只补差量（最常见，也最安全）。
+            // 对不上（整行替换候选 / 用户中途用箭头改过行）→ 清行重打
+            // （Ctrl+U，bash/zsh/fish 通用的「清到行首」，光标在行尾时等价清
+            // 整行）。原先「保守什么都不发」在整行替换候选上表现为
+            // 「点了没反应」（用户实测 2026-10-30）——填入承诺的是
+            // 「整行变成 apply」，清行重打就是它的实现。
             let tail = if apply == current {
                 String::new()
             } else if let Some(rest) = apply.strip_prefix(current.as_str()) {
                 rest.to_string()
             } else {
-                // 对不上（用户中途用箭头改过行）：保守起来**什么都不发**，
-                // 让用户自己敲 —— 发错字节比不补更糟。
-                String::new()
+                format!("\x15{apply}")
             };
             if !tail.is_empty() {
                 if let Some(handle) = handles.borrow().get(tab_id.as_str()) {
@@ -11849,22 +11849,16 @@ fn wire_key_input(
             // 收起同时解锁 Esc 抑制（自增令牌），下一行照常弹。
             let tok = w.get_term_hint_reset_token().wrapping_add(1);
             w.set_term_hint_reset_token(tok);
-            // (§5) 收起后仍要按回显后的新行重算一次：填入的尾随空格是
-            // 「阶段落定信号」，下一阶段（参数/路径）有候选就重弹 —— 这就是
-            // 「选中命令继续敲参数，提示框还在」的闭环。重算出的新框是
-            // **新阶段的新候选**，不是旧框回魂。
-            schedule_hint_reread(
-                w.as_weak(),
-                bufs.clone(),
-                store.clone(),
-                obs_all.clone(),
-                was_empty.clone(),
-                tab_id.clone(),
-            );
+            // (§5 修订 2026-10-30 二轮：Enter=填入) 填入后**不再**排 120ms
+            // 重读 —— 填入的语义就是「行变成 apply，到此为止，等用户确认」。
+            // 旧逻辑填完接着重算，同一批候选立刻弹回来（apply 与行尾空格
+            // 又构成新阶段），用户按 Enter 想确认时框还开着，第二次 Enter
+            // 才透传 —— 表现为「要按两次回车」。执行路径（term-hint-run）
+            // 才需要后续的重算闭环。
         });
     }
 
-    // (§5 定稿 2026-10-30) Enter 已导航 → **执行选中候选**。
+    // (§5 修订 2026-10-30 二轮) Shift+Enter 已导航 → **直接执行选中候选**。
     //
     // 终端里「把行替换成候选再回车」只能靠发字节实现，三种情形：
     //   ① apply 以当前行为前缀 → 发「差量尾巴 + \r」（最常见：补完即执行）；
@@ -11873,7 +11867,7 @@ fn wire_key_input(
     //      bash/zsh/fish 通用的「清到行首」）再发整行 + \r —— 光标总在行尾，
     //      等价清行。发错字节比这三种保守做法都糟。
     //
-    // ★ 与 term-hint-accept（Shift+Enter/点击=仅填入）的唯一区别就是末尾
+    // ★ 与 term-hint-accept（Enter 已导航/点击=仅填入）的唯一区别就是末尾
     //   多发的那个 \r；差量算法共用同一套（apply 由 command_hint 统一算）。
     {
         let handles = handles.clone();

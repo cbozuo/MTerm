@@ -167,29 +167,42 @@ impl HintRowData {
 
 pub(crate) fn compute_apply(cand: &str, kind: HintKind, input: &HintInput, phase: HintPhase) -> String {
     // ★ 命令阶段：候选是「命令名」或「整条命令」，整行替换。
-    if kind == HintKind::History || phase == HintPhase::Command {
+    if phase == HintPhase::Command {
         return cand.to_string();
     }
     // ★ 子命令阶段的候选**本身已经是整条**（`git commit`，见 subcommand_hint），
     //   所以必须整行替换 —— 走到下面任何一个分支都会拼成 `git git commit`
-    //   （两条都踩过：先拼前缀、再拼尾随空格）。
+    //   （两条都踩过：先拼前缀、再拼尾随空格）。内置子命令（Quick）补一个
+    //   尾随空格接参数；历史条目是完整命令，不加。
     if phase == HintPhase::Subcommand {
-        return format!("{cand} ");
+        return if kind == HintKind::History {
+            cand.to_string()
+        } else {
+            format!("{cand} ")
+        };
     }
-    // 路径：接上去继续补下一级，不加空格。
-    if phase == HintPhase::Path {
-        if input.trailing_space {
-            return format!("{}{}", input.line, cand);
-        }
-        return rebuild(input, cand, "");
+    // ★ 路径 / 参数阶段（2026-10-30 实测修复）：历史候选是「整条命令」，
+    //   但当前行已经有前缀（`cd /home/wec/`）。原先历史一律整行替换，选中
+    //   `/home/wec/web/` 会把 `cd ` 丢掉，回车直接执行裸路径
+    //   （bash: /home/wec/web/: 是一个目录）。按候选与当前行的关系四级判定：
+    //     ① 候选以当前整行为前缀 → 它就是当前行的延伸（`cd /home/wec/` 选
+    //        `cd /home/wec/java/test`）→ 整行替换为候选（= 接上去）；
+    //     ② 行尾空格（词已落定）→ 候选接在整行后面（参数补尾随空格进下一
+    //        阶段，路径不补 —— 还要继续往下补）；
+    //     ③ 候选以正在补的词为前缀 → 只替换那个词（选 `/home/wec/web/` →
+    //        `cd /home/wec/web/`）；
+    //     ④ 其余（不相干的整行预测）→ 整行替换。
+    if cand.starts_with(input.line.trim_end()) {
+        return cand.to_string();
     }
-    // 参数：替换正在补的那个词，并补一个尾随空格（进入下一阶段）。
-    // ★ 尾随空格不是装饰：它同时是 Slint 侧「这个词已落定」的信号，
-    //   也是下一步判阶段的输入。不补就会卡在同一阶段，Enter 永远只填入不执行。
     if input.trailing_space {
-        return format!("{}{} ", input.line, cand);
+        let tail = if phase == HintPhase::Path { "" } else { " " };
+        return format!("{}{}{}", input.line, cand, tail);
     }
-    rebuild(input, cand, " ")
+    if !input.word.is_empty() && cand.starts_with(input.word) {
+        return rebuild(input, cand, if phase == HintPhase::Path { "" } else { " " });
+    }
+    cand.to_string()
 }
 
 /// 用 `cand` 替换正在补的那个词；`tail` 附在整行末尾。
