@@ -1290,8 +1290,6 @@ export component TerminalView inherits Rectangle {
     callback find-options-changed(string, bool, bool); // (query, match-case, use-regex)
     callback find-step(int) -> bool;        // ±1 → 已居中滚动 = true / 滚不动 = false
     callback find-pick-hit(int, int);       // 点击高亮 (vis-row, col) → 设为当前匹配
-    // (§06⑨) 面板打开（Ctrl+F / 右键菜单）时请求恢复上次查询（历史最新）。
-    callback find-restore-request();
     // (v3.6 §06⑦) 查询入历史：Enter 步进与带词离开当前查询时提交。
     callback find-query-committed(string, bool, bool);
     callback terminal-scroll(float);         // scroll history by fractional lines (+ = up); Rust keeps the sub-line remainder so momentum decays smoothly
@@ -2012,9 +2010,10 @@ export component TerminalView inherits Rectangle {
                                     MenuItem {
                                         icon: "search"; label: @tr("Find");
                                         clicked => {
+                                            // (2026-10-31 口径) 打开 = 清空态：先清缓冲词与匹配再开面板。
+                                            root.find-query-changed("");
                                             root.find-active = true;
                                             root.find-open-seq += 1;
-                                            root.find-restore-request();
                                         }
                                     }
                                 }
@@ -2101,9 +2100,10 @@ export component TerminalView inherits Rectangle {
                         if (root.find-active) {
                             root.find-select-all-seq += 1;
                         } else {
+                            // (2026-10-31 口径) 打开 = 清空态：先清缓冲词与匹配再开面板。
+                            root.find-query-changed("");
                             root.find-active = true;
                             root.find-open-seq += 1;
-                            root.find-restore-request();
                         }
                         accept
                     // ── Jump to command-history search: ⌘⇧R / Ctrl+Shift+R (#140) ──
@@ -2470,9 +2470,8 @@ export component TerminalView inherits Rectangle {
                 step(dir) => { root.find-step(dir); }
                 pick-hit(r, c) => { root.find-pick-hit(r, c); }
                 query-committed(q, aa, rx) => { root.find-query-committed(q, aa, rx); }
-                // (§06⑨) FindBar 打开（open-seq 自增）即请求恢复——空词时
-                // 由 Rust 侧把历史最新条目塞回缓冲。
-                changed open-seq => { root.find-restore-request(); }
+                // (2026-10-31 口径) 打开 = 清空态：清空动作在宿主打开点先行
+                // （find-query-changed("")），此处不再做「重开恢复上次查询」。
                 closed() => {
                     root.find-active = false;
                     // §06⑧：不回 live bottom——只把焦点还给终端。

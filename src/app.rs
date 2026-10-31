@@ -11211,32 +11211,8 @@ fn wire_key_input(
     // 若缓冲里没有查询词，把历史最新条目（词 + 开关）塞回并重扫。IDEA 同款
     // 「重开查找栏恢复上次查询」；「不自动滚动」由 find_set_query 的最近命中
     // 口径兜住（视口内有命中就不挪视图）。
-    {
-        let bufs_restore = bufs.clone();
-        let store_restore = store.clone();
-        let weak_restore = window.as_weak();
-        window.on_find_restore_request(move |tab_id: SharedString| {
-            let tid = tab_id.to_string();
-            let last = {
-                let s = store_restore.borrow();
-                s.find_history().first().cloned()
-            };
-            let Some(entry) = last else { return };
-            let Some(win) = weak_restore.upgrade() else { return };
-            with_term_buf(&bufs_restore, &tid, |buf| {
-                if buf.find.query.is_empty() {
-                    buf.find_set_query(
-                        &entry.query,
-                        crate::terminal::FindOptions {
-                            match_case: entry.match_case,
-                            use_regex: entry.use_regex,
-                        },
-                    );
-                }
-            });
-            crate::app::terminal_ui::rebuild_tab_display(&win, &bufs_restore, &tid);
-        });
-    }
+    // (2026-10-31 口径修订) 用户要求打开 = 清空态，恢复链路整体退役：
+    // 宿主打开点先 find-query-changed("") 清缓冲再开面板。
 
     // Forward each keystroke as raw bytes to the SSH PTY. The server's bash /
     // readline handles echo, history (↑↓), Tab completion, Ctrl+C, etc.
@@ -12206,11 +12182,16 @@ fn wire_key_input(
     // on_find_query_changed：输入去抖后的落点（UI 侧 200ms Timer）。
     // 全缓冲扫描；正则无效 → 保旧状态，仅把 invalid 标志刷给 UI。
     // 起始当前匹配 = 离视口最近命中（最近命中口径在 find_set_query 内）。
+    // (2026-10-31) 规则必须取**缓冲当前值**：此前写死 default()，Aa/正则
+    // 点亮后会被 UI 的 400ms 静默重算 Timer（query-changed 只带词）定期
+    // 覆盖回 false —— 开关点了就弹回、选中态永远显示不出来（实机复现）。
     {
         let bufs_find = bufs.clone();
         let weak = window.as_weak();
         window.on_find_query_changed(move |tab_id: SharedString, query: SharedString| {
-            find_apply_query(&bufs_find, &weak, &tab_id, &query, crate::terminal::FindOptions::default());
+            let opts = with_term_buf(&bufs_find, &tab_id, |buf| buf.find.options)
+                .unwrap_or_default();
+            find_apply_query(&bufs_find, &weak, &tab_id, &query, opts);
         });
     }
 

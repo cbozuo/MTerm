@@ -240,7 +240,7 @@ export component FindBar inherits Rectangle {
             accessible-role: button;
             accessible-label: root.lang-en ? "Drag find bar" : "拖动查找栏";
             grip-ta := TouchArea {
-                mouse-cursor: self.pressed ? grabbing : grab;
+                // (2026-10-31 用户口径) 不用 grab/grabbing 专形光标，保持系统默认箭头。
                 // 拖动：Slint TouchArea 无 press-x/y 增量原语（项目先例是
                 // absolute-position 差分，见 sftp splitter）。这里用
                 // 「绝对鼠标位 − 上帧绝对鼠标位」累加到位移上。
@@ -256,8 +256,14 @@ export component FindBar inherits Rectangle {
                 }
                 moved => {
                     if (self.pressed) {
-                        root.dragging = true;
-                        if (root.pin-x < 0px) {
+                        // 基准重置以「每次拖动的第一帧」为准（!dragging），不能用
+                        // pin-x < 0 判首拖：二次拖动时钉位已在（pin ≥ 0），last-abs
+                        // 残留**上次松手点**，第一帧就会把面板跳到「上次松手点 →
+                        // 本次按下点」的位移上（实测 2026-10-31：在左缘再按住拖，
+                        // 面板跑到中间）。重置语义 = 面板从当前显示位起步：
+                        // pin = eff（x）/ eff+yield（y），last-abs = 本次按住的指针位。
+                        if (!root.dragging) {
+                            root.dragging = true;
                             root.pin-x = root.eff-x;
                             root.pin-y = root.eff-y + root.yield-y;
                             self.last-abs-x = self.absolute-position.x + self.mouse-x;
@@ -471,7 +477,8 @@ export component FindBar inherits Rectangle {
                         x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
                     }
                 }
-                // Aa（§01 ④）：match-case.svg；开启态 accent 淡染描边（§02 开关态）。
+                // Aa（§01 ④）：match-case.svg；开启态 accent 淡染描边（§02 开关态，
+                // 对齐稿 .ib.on = tonal 底 + 1.5px accent 内描边 + 图标 accent）。
                 if (!root.compact && fb-input.text != "") : Rectangle {   // §02卡①：空态指令组不出现
                     width: 24px;
                     property <bool> on: root.match-case;
@@ -480,6 +487,8 @@ export component FindBar inherits Rectangle {
                     border-radius: Theme.radius-sm;
                     background: self.on ? Theme.accent-soft
                         : aa-ta.has-hover ? Theme.bg-hover : transparent;
+                    border-width: self.on ? 1.5px : 0px;
+                    border-color: self.on ? Theme.accent-solid.with-alpha(0.30) : transparent;
                     aa-ta := TouchArea {
                         mouse-cursor: pointer;
                         changed has-hover => {
@@ -504,6 +513,7 @@ export component FindBar inherits Rectangle {
                     }
                 }
                 // (.·)* 正则（§01 ⑤）：regex.svg；写错时计数位红字（数据侧保旧结果）。
+                // 开关态同 Aa（§02 开关态 = tonal 底 + 1.5px accent 内描边）。
                 if (!root.compact && fb-input.text != "") : Rectangle {   // §02卡①：空态指令组不出现
                     width: 24px;
                     property <bool> on: root.use-regex;
@@ -512,6 +522,8 @@ export component FindBar inherits Rectangle {
                     border-radius: Theme.radius-sm;
                     background: self.on ? Theme.accent-soft
                         : rx-ta.has-hover ? Theme.bg-hover : transparent;
+                    border-width: self.on ? 1.5px : 0px;
+                    border-color: self.on ? Theme.accent-solid.with-alpha(0.30) : transparent;
                     rx-ta := TouchArea {
                         mouse-cursor: pointer;
                         changed has-hover => {
@@ -620,10 +632,13 @@ export component FindBar inherits Rectangle {
 
         // ── 关闭 ✕（§01 ⑧）：两段式（§04 关闭行）——有词先清词（入历史），
         //    无词才关闭（清高亮 + 焦点回终端由宿主 closed() 做）──────────
+        //    (2026-10-31) hover 补背景底，对齐稿 .ib:hover（同组钮悬停有底）。
         Rectangle {
             width: 24px;
             accessible-role: button;
             accessible-label: root.lang-en ? "Close find bar" : "关闭查找栏";
+            border-radius: Theme.radius-sm;
+            background: fb-close-ta.has-hover ? Theme.bg-hover : transparent;
             fb-close-ta := TouchArea {
                 mouse-cursor: pointer;
                 changed has-hover => {
