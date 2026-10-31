@@ -241,11 +241,13 @@ export component FindBar inherits Rectangle {
             accessible-label: root.lang-en ? "Drag find bar" : "拖动查找栏";
             grip-ta := TouchArea {
                 // (2026-10-31 用户口径) 不用 grab/grabbing 专形光标，保持系统默认箭头。
-                // 拖动：Slint TouchArea 无 press-x/y 增量原语（项目先例是
-                // absolute-position 差分，见 sftp splitter）。这里用
-                // 「绝对鼠标位 − 上帧绝对鼠标位」累加到位移上。
-                property <length> last-abs-x;
-                property <length> last-abs-y;
+                // 拖动 = **绝对定位法**：首帧测「抓取偏移」（指针绝对位 − 面板位），
+                // 之后每帧 pin = 指针绝对位 − 抓偏，直接从指针当前位置解算。
+                // 此前是差分累加法（pin += 本帧指针位移）：absolute-position 的
+                // 布局滞后会混进每帧增量，误差逐帧累积 → 快半拍/拖沓不丝滑
+                //（实测 2026-10-31）。绝对法无累积、无反馈回路，单帧误差不放大。
+                property <length> grab-off-x;
+                property <length> grab-off-y;
                 pointer-event(ev) => {
                     // 松手：钉位继续生效（dragging 只表示"按住拖动中"），
                     // 并立刻重判让位——钉位若压住当前匹配，照样让开。
@@ -256,23 +258,19 @@ export component FindBar inherits Rectangle {
                 }
                 moved => {
                     if (self.pressed) {
-                        // 基准重置以「每次拖动的第一帧」为准（!dragging），不能用
-                        // pin-x < 0 判首拖：二次拖动时钉位已在（pin ≥ 0），last-abs
-                        // 残留**上次松手点**，第一帧就会把面板跳到「上次松手点 →
-                        // 本次按下点」的位移上（实测 2026-10-31：在左缘再按住拖，
-                        // 面板跑到中间）。重置语义 = 面板从当前显示位起步：
-                        // pin = eff（x）/ eff+yield（y），last-abs = 本次按住的指针位。
+                        // 首帧（!dragging）测抓偏——此刻面板未动，absolute-position
+                        // 与指针同帧，偏移精确。每次拖动都要重测（不能用 pin<0 判）。
                         if (!root.dragging) {
                             root.dragging = true;
                             root.pin-x = root.eff-x;
                             root.pin-y = root.eff-y + root.yield-y;
-                            self.last-abs-x = self.absolute-position.x + self.mouse-x;
-                            self.last-abs-y = self.absolute-position.y + self.mouse-y;
+                            self.grab-off-x = self.absolute-position.x + self.mouse-x - root.pin-x;
+                            self.grab-off-y = self.absolute-position.y + self.mouse-y - root.pin-y;
                         }
-                        let ax = self.absolute-position.x + self.mouse-x;
-                        let ay = self.absolute-position.y + self.mouse-y;
-                        let nx = root.pin-x + (ax - self.last-abs-x);
-                        let ny = root.pin-y + (ay - self.last-abs-y);
+                        // 面板应到位置 = 指针当前绝对位 − 抓偏（抓偏已吸收根系
+                        // 与窗口系的固定差、手柄在面板内的偏移、面板 1px 边框）。
+                        let nx = self.absolute-position.x + self.mouse-x - self.grab-off-x;
+                        let ny = self.absolute-position.y + self.mouse-y - self.grab-off-y;
                         // clamp 在终端区内（§03「范围」行）。★ 基准是**面板宽**
                         // （root.panel-w）——此前误用 self.width（手柄 18px），
                         // x 向上界几乎等于终端宽，面板会被整个拖出右缘看不见
@@ -288,8 +286,6 @@ export component FindBar inherits Rectangle {
                             : (root.height - cy - 34px < 12px
                                 ? root.height - 34px - 8px
                                 : cy);
-                        self.last-abs-x = ax;
-                        self.last-abs-y = ay;
                     }
                 }
                 clicked => { }
