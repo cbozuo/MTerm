@@ -310,9 +310,15 @@ export component FindBar inherits Rectangle {
                 }
             }
             Rectangle {
-                x: 0px; y: 0px;
-                width: parent.width; height: parent.height;
-                border-radius: Theme.radius-sm;
+                // (2026-10-31 用户口径) 背景层让开面板 1px 描边（x/y: 1px），
+                // 左上/左下角随面板圆角同心（radius-lg−1px）——悬停/按压的
+                // 底色与描边不再戳出面板圆角边界。
+                x: 1px; y: 1px;
+                width: parent.width - 1px; height: parent.height - 2px;
+                border-top-left-radius: Theme.radius-lg - 1px;
+                border-bottom-left-radius: Theme.radius-lg - 1px;
+                border-top-right-radius: Theme.radius-sm;
+                border-bottom-right-radius: Theme.radius-sm;
                 background: grip-ta.pressed ? Theme.accent-soft
                     : grip-ta.has-hover ? Theme.bg-hover : transparent;
                 border-width: 1px;
@@ -621,11 +627,12 @@ export component FindBar inherits Rectangle {
                     }
                     clicked => { root.step(-1); }
                 }
-                // 悬停背景内收 2px（不贴面板线框）。
+                // 悬停背景收成 20px 居中（2026-10-31 用户口径：盒随面板全高，
+                // 背景太高不协调；与左侧图标组同高）。
                 Rectangle {
                     width: parent.width;
-                    height: parent.height - 4px;
-                    y: 2px;
+                    height: 20px;
+                    y: (parent.height - self.height)/2;
                     border-radius: Theme.radius-sm;
                     background: prev-ta.has-hover ? Theme.bg-hover : transparent;
                 }
@@ -649,8 +656,8 @@ export component FindBar inherits Rectangle {
                 }
                 Rectangle {
                     width: parent.width;
-                    height: parent.height - 4px;
-                    y: 2px;
+                    height: 20px;
+                    y: (parent.height - self.height)/2;
                     border-radius: Theme.radius-sm;
                     background: next-ta.has-hover ? Theme.bg-hover : transparent;
                 }
@@ -658,8 +665,9 @@ export component FindBar inherits Rectangle {
             }
         }
 
-        // ── 关闭 ✕（§01 ⑧）：两段式（§04 关闭行）——有词先清词（入历史），
-        //    无词才关闭（清高亮 + 焦点回终端由宿主 closed() 做）──────────
+        // ── 关闭 ✕（§01 ⑧）：(2026-10-31 用户口径) **直接关闭整个面板**，
+        //    不再「有词先清词」两段式（Esc 仍是两段式）；带词关闭不入历史。
+        //    悬停 = DialogClose 同款语义红底 + 纯白 ×（Theme.close-btn-hot）。
         Rectangle {
             width: 24px;
             accessible-role: button;
@@ -675,27 +683,23 @@ export component FindBar inherits Rectangle {
                     } else { root.tip-hide(); }
                 }
                 clicked => {
-                    if (root.query != "") {
-                        root.query-committed(root.query, root.match-case, root.use-regex);
-                        root.query = "";
-                        fb-input.text = "";
-                        root.query-changed("");
-                        fb-input.focus();
-                    } else {
-                        root.closed();
-                    }
+                    // (2026-10-31) 直接关闭：先清缓冲词与匹配（终端高亮随缓冲
+                    // 清空，§01⑧「关闭清掉全部高亮」），宿主收面板+焦点回终端。
+                    root.query-changed("");
+                    root.closed();
                 }
             }
             Rectangle {
                 width: parent.width;
-                height: parent.height - 4px;
-                y: 2px;
+                height: 20px;
+                y: (parent.height - self.height)/2;
                 border-radius: Theme.radius-sm;
-                background: fb-close-ta.has-hover ? Theme.bg-hover : transparent;
+                background: fb-close-ta.has-hover ? Theme.close-btn-hot : transparent;
+                animate background { duration: 90ms; }
             }
             Icon {
                 glyph: "close";
-                tint: fb-close-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                tint: fb-close-ta.has-hover ? white : Theme.text-secondary;
                 width: 15px; height: 15px;
                 x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
             }
