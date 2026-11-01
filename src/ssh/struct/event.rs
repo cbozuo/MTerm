@@ -138,8 +138,10 @@ pub struct SessionHandle {
 }
 
 impl SessionHandle {
-    pub fn send_raw(&self, bytes: Vec<u8>) {
-        let _ = self.commands.send(SessionCommand::RawInput(bytes));
+    /// (#send-cmd-p3) 返回投递是否成功：通道关闭（会话已在拆除）= false。
+    /// 以前吞错，发送窗的逐台回执拿不到「这台到底收到没有」。
+    pub fn send_raw(&self, bytes: Vec<u8>) -> bool {
+        self.commands.send(SessionCommand::RawInput(bytes)).is_ok()
     }
 
     pub fn resize(&self, cols: u32, rows: u32) {

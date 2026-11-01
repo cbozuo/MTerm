@@ -1,5 +1,6 @@
 import { Icon } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
+import { SegGroup } from "seg.slint";
 import { Theme } from "theme.slint";
 import { CommandHint, HintRow } from "command_hint.slint";
 import { HistoryPanel, HistoryRow } from "history_panel.slint";
@@ -63,6 +64,21 @@ export struct SendScope {
     letter: string,   // "A".."D"
     color: color,
     count: int,
+}
+
+// (#send-cmd-p2) 可送达标签页的逐台明细：范围菜单「逐个挑选主机」段、
+// 发送窗目标提示卡、逐台回执的名字都从这里来。
+// current = 是否本窗口的当前标签页（提示卡行尾标「· 当前」）。
+export struct SendTarget {
+    id: string,
+    // (#hosts-title 2026-11-01) tab 标题(如「202 (copy) (copy)」)—— 用户
+    // 认识的名字;id 是内部 UUID,只作数据键。title 空 = 退回显示 id。
+    title: string,
+    user: string,
+    ch: string,
+    color: color,
+    online: bool,
+    current: bool,
 }
 
 // --- ScopeRow --------------------------------------------------------------
@@ -182,6 +198,9 @@ export component ScopeButton inherits Rectangle {
     // 是否自带「点外部关闭」层。命令栏自己用（整个终端区都是外部）；弹出编辑
     // 弹窗传 false —— 那边是模态面板，由面板内层 / 遮罩分工处理（见下方注释）。
     in property <bool> outside-close: true;
+    // (#menu-seg 2026-11-01) 三段滑块:0=标签页 / 1=频道 / 2=主机 —— 段切换
+    // 只换浏览内容,不改已选状态;菜单打开时重置回段 0。
+    in-out property <int> menu-seg: 0;
     // (#scope-chip 2026-10-26) 「有框」档：常态就画 1phx 描边 + 圆角，像一枚可点的
     // 胶囊。命令栏那里它跟一排图标钮并排、紧挨发送键，靠位置就够"是个控件"，
     // 所以默认 false；弹出编辑面板的页脚只有它一个孤零零挂在左边，不画框就是
@@ -192,6 +211,14 @@ export component ScopeButton inherits Rectangle {
     // 本身就压在一块 popup-bg 上，再叠一层同名半透明 = 能看见底下的文字
     // （用户截图：范围菜单"穿透"了）。面板里传 true → 用不透明的 field 底。
     in property <bool> on-popup: false;
+    // (#send-cmd-p2) 逐台主机段:发送窗的范围菜单用它做「逐个挑选主机」
+    // (带搜索,>6 台出搜索框)。命令栏不传 = 空 = 不画这段。
+    // host-sel = 已勾主机 id 的 CSV(尾逗号),由 Rust 维护(增删要用切片,
+    // Slint 的 string 做不了)—— 点行上抛 host-toggle 回调。
+    in property <[SendTarget]> hosts: [];
+    in-out property <string> host-sel: "";
+    in-out property <string> host-search: "";
+    callback host-toggle(string /* id */);
     // 草稿（菜单里勾的那一份）—— 组件私有，不参与双向绑定
     property <bool> d-all: false;
     property <bool> d-a: false;
@@ -237,13 +264,67 @@ export component ScopeButton inherits Rectangle {
         if (root.ch-d) { return "D"; }
         return "";
     }
+    function host-n() -> int {
+        // CSV 尾逗号计数:段数 = 逗号数(id 不含逗号,主机名口径保证)
+        if (root.host-sel == "") { return 0; }
+        return root.host-sel.character-count - root.host-sel.replace-all(",", "").character-count;
+    }
+    function host-in(id: string) -> bool {
+        return root.host-sel != "" && root.host-sel.replace-all(id + ",", "") != root.host-sel;
+    }
+    // (#menu-seg 2026-11-01) 三段滑块的可见段与联动:
+    //   · has-channel / has-host —— 空段不渲染(用户反馈 ①:没有频道就没有频道段);
+    //   · seg-count / seg-vi(i) —— 可见段编号压缩(隐藏段不占格,滑块步长按可见数算);
+    //   · menu-seg-clamp —— 数据变化时把当前段钳回有效区间(纯函数供菜单打开时调用)。
+    // (#menu-seg-互斥 2026-11-01 用户反馈) 三档是**互斥的发送语义**:
+    // 自选主机(含「当前标签页」=单台)/ 全部标签页 / 按频道群发,不能同时成立。
+    // 规则:进入某段 → 先清掉其它档的选择,再落本段的默认;
+    // 点行则只清其它档、保留本段已有勾选。
+    property <bool> has-channel: root.scopes.length > 0;
+    // 主机段恒存在:「当前/全部标签页」对命令栏也永远有意义。
+    property <bool> has-host: true;
+    function seg-count() -> int {
+        return (root.has-channel ? 1 : 0) + 1;
+    }
+    function seg-vi(i: int) -> int {
+        if (i == 1) { return 0; }
+        return root.has-channel ? 1 : 0;
+    }
+    function menu-seg-clamp() {
+        if (root.menu-seg == 1 && !root.has-channel) { root.menu-seg = 2; }
+    }
+    // 进段即互斥落位(用户反馈 ①③):
+    //   频道段 → 清主机/全部,勾第一个有人的频道;
+    //   主机段 → 清频道,落「当前标签页」单台档(等价 hosts 里的 current 台)。
+    function menu-seg-sync() {
+        root.menu-seg-clamp();
+        if (root.menu-seg == 1) {
+            root.d-all = false;
+            root.host-sel = "";
+            if (root.draft-n() == 0) {
+                if (root.scope-count-of("A") > 0) { root.draft-toggle("A"); }
+                else if (root.scope-count-of("B") > 0) { root.draft-toggle("B"); }
+                else if (root.scope-count-of("C") > 0) { root.draft-toggle("C"); }
+                else if (root.scope-count-of("D") > 0) { root.draft-toggle("D"); }
+            }
+        }
+        if (root.menu-seg == 2) {
+            root.d-a = false; root.d-b = false; root.d-c = false; root.d-d = false;
+            root.d-all = false;
+            root.host-sel = "";
+            // 落「当前标签页」:不预勾任何主机行(顶部单选行已表达该档,
+            // 行勾了反而变成自选档 —— 与单选行互斥)。
+        }
+    }
     function scope-label() -> string {
+        if (root.host-n() > 0) { return @tr("{0} hosts", root.host-n()); }
         if (root.all) { return @tr("All tabs"); }
         if (root.applied-n() == 0) { return @tr("This tab"); }
         if (root.applied-n() == 1) { return @tr("Channel {0}", root.applied-single()); }
         return @tr("{0} channels", root.applied-n());
     }
     function scope-count() -> int {
+        if (root.host-n() > 0) { return root.host-n(); }
         if (root.all) { return root.tab-count; }
         if (root.applied-n() == 0) { return 0; }
         return root.applied-total();
@@ -253,6 +334,8 @@ export component ScopeButton inherits Rectangle {
     }
     // 范围串："" / "*" / "A,C"（尾逗号由 Rust 侧过滤）
     function scope-spec() -> string {
+        // (#send-cmd-p2) 自选主机档:"H:" 前缀 + id CSV,Rust 侧按 id 精确匹配
+        if (root.host-n() > 0) { return "H:" + root.host-sel; }
         if (root.all) { return "*"; }
         if (root.applied-n() == 0) { return ""; }
         return (root.ch-a ? "A," : "") + (root.ch-b ? "B," : "")
@@ -312,11 +395,13 @@ export component ScopeButton inherits Rectangle {
         return "D";
     }
     function draft-toggle(letter: string) {
+        // (#menu-seg-互斥) 点频道行 = 按频道群发档:清自选主机与全部标签页。
+        root.host-sel = "";
+        root.d-all = false;
         if (letter == "A") { root.d-a = !root.d-a; }
         else if (letter == "B") { root.d-b = !root.d-b; }
         else if (letter == "C") { root.d-c = !root.d-c; }
         else { root.d-d = !root.d-d; }
-        root.d-all = false;
     }
     function draft-summary() -> string {
         if (root.d-all) { return @tr("{0} tabs", root.tab-count); }
@@ -332,6 +417,9 @@ export component ScopeButton inherits Rectangle {
         root.d-b = root.ch-b;
         root.d-c = root.ch-c;
         root.d-d = root.ch-d;
+        // (#menu-seg2) 两段制:默认落在「主机」段(单选/全选/搜索都在这,
+        // 是最常用的落点);无主机的会话(罕见)由 menu-seg-clamp 兜回。
+        root.menu-seg = 2;
         root.open = true;
     }
     function scope-commit() {
@@ -343,11 +431,14 @@ export component ScopeButton inherits Rectangle {
         root.open = false;
     }
     function scope-pick(all: bool) {
+        // (#menu-seg-互斥) 单选/全选 = 互斥模型的两个档:清掉频道与自选主机,
+        // 立即提交并关菜单(单选语义,与旧版「点完即关」一致)。
         root.all = all;
         root.ch-a = false;
         root.ch-b = false;
         root.ch-c = false;
         root.ch-d = false;
+        root.host-sel = "";
         root.open = false;
     }
 
@@ -520,7 +611,13 @@ export component ScopeButton inherits Rectangle {
         y: Theme.snap-to-device(parent.absolute-position.y - self.height - 6px)
             - parent.absolute-position.y;
         width: 300px;
-        height: Theme.snap-to-device(scope-col.preferred-height);
+        // (#menu-seg-高度 用户反馈 ②) 段切换不跳高:给内容列一个**最小高度**
+        // (= 段 0 两行 + 段 2 八行的估算值),矮段被撑到与高段同高 —— 三个段
+        // 的菜单外框尺寸恒定,只有行内容在换。hosts 空的会话(命令栏)不参与,
+        // 那里仍跟 preferred(段少内容少,固定反而空)。
+        height: root.hosts.length > 0
+            ? Theme.snap-to-device(Math.max(Math.min(scope-col.preferred-height, 340px), 300px))
+            : Theme.snap-to-device(Math.min(scope-col.preferred-height, 340px));
         background: root.on-popup ? Theme.field : Theme.popup-bg;
         border-radius: 9px;
         border-width: Theme.hairline();
@@ -528,38 +625,61 @@ export component ScopeButton inherits Rectangle {
         drop-shadow-blur: 16px;
         drop-shadow-color: transparent;
         TouchArea {}   // 吞点击，免得被背板当成"点外部"
-        scope-col := VerticalLayout {
+        // (#send-cmd-p2) hosts 段可能 80+ 行:包一层 ScrollView 兜底滚动
+        // (滚轮可滚,滚动条不画 —— 与发送窗两处列表同一语言)。
+        menu-scroll := ScrollView {
+            width: 100%;
+            height: 100%;
+            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+            content-width: self.visible-width;
+            scope-col := VerticalLayout {
             padding: 6px;
             spacing: 1px;
 
-            // 1 当前标签页（单选，点完即关 —— 单一选择不需要
-            // 「完成」那一步）
-            // ⚠️ 勾选态一律读**草稿**：读已应用值的话，勾了
-            // 频道 A 之后「当前标签页」还挂着勾（截图实证），
-            // 三档同时亮两个。
-            ScopeRow {
-                checked: !root.d-all && root.draft-n() == 0;
-                dot: transparent;
-                label: @tr("This tab");
-                clicked => { root.scope-pick(false); }
+            // ── 两段滑块（#menu-seg2 2026-11-01）：频道 | 主机 ──
+            // 用户反馈:标签页段没必要(「当前标签页」语义被主机段的单选/全选
+            // 覆盖)——去掉;原「当前/全部标签页」收进主机段顶部。
+            // 无频道的会话只有「主机」一段(滑块退化为单格,视觉即静态头)。
+            SegGroup {
+                active-index: root.menu-seg == 1 ? root.seg-vi(1)
+                    : root.seg-vi(2);
+                count: root.seg-count();
+                compact: true;
+                height: 30px;
+                if root.has-channel : Rectangle {
+                    height: parent.height - 6px;
+                    TouchArea {
+                        mouse-cursor: default;
+                        clicked => { root.menu-seg = 1; root.menu-seg-sync(); }
+                    }
+                    Text {
+                        text: @tr("频道");
+                        color: root.menu-seg == 1 ? Theme.accent-solid : Theme.text-secondary;
+                        font-size: Theme.fs-xs;
+                        font-weight: root.menu-seg == 1 ? 700 : 400;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                if root.has-host : Rectangle {
+                    height: parent.height - 6px;
+                    TouchArea {
+                        mouse-cursor: default;
+                        clicked => { root.menu-seg = 2; root.menu-seg-sync(); }
+                    }
+                    Text {
+                        text: @tr("主机");
+                        color: root.menu-seg == 2 ? Theme.accent-solid : Theme.text-secondary;
+                        font-size: Theme.fs-xs;
+                        font-weight: root.menu-seg == 2 ? 700 : 400;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
             }
-            // 2 全部标签页（单选；高保真 .opt.all 的下沿分隔线）
-            ScopeRow {
-                checked: root.d-all;
-                dot: transparent;
-                label: @tr("All tabs");
-                trailing: "" + root.tab-count;
-                clicked => { root.scope-pick(true); }
-            }
-            // (#scope-menu-hairline 2026-10-27) 分隔横线 1 逻辑 px → 1 设备 px，
-            // 与面板里的分隔线同一档粗细（见上方菜单外框的注释）。
-            Rectangle {
-                height: Theme.hairline();
-                background: Theme.line-2;
-            }
-            // 3 同步频道（多选；勾选只改草稿，菜单不关 —— 高保真
-            // MUST 02：关掉再打开、再找回位置，选第三个就崩了）
-            if root.scopes.length > 0 : Rectangle {
+            // ── 段 1：同步频道（多选；勾选只改草稿）──
+            if root.menu-seg == 1 && root.scopes.length > 0 : Rectangle {
                 height: 26px;
                 Text {
                     x: 9px;
@@ -572,6 +692,7 @@ export component ScopeButton inherits Rectangle {
                     vertical-alignment: center;
                 }
             }
+            if root.menu-seg == 1 : VerticalLayout {
             for sc in root.scopes : ScopeRow {
                 checked: root.draft-of(sc.letter);
                 dot: sc.color;
@@ -579,6 +700,96 @@ export component ScopeButton inherits Rectangle {
                 trailing: @tr("{0} 台", sc.count);
                 row-enabled: sc.count > 0;
                 clicked => { root.draft-toggle(sc.letter); }
+            }
+            }
+            // ── 段 2：主机(用户反馈 ①):单选「当前标签页」/ 全选「全部标签页」
+            // 收进本段顶部,搜索继续;勾主机行 = 自选档。
+            if root.menu-seg == 2 : Rectangle {
+                height: Theme.hairline();
+                background: Theme.line-2;
+            }
+            if root.menu-seg == 2 : VerticalLayout {
+            ScopeRow {
+                checked: !root.d-all && root.host-n() == 0;
+                dot: transparent;
+                label: @tr("This tab");
+                clicked => { root.scope-pick(false); }
+            }
+            ScopeRow {
+                checked: root.d-all;
+                dot: transparent;
+                label: @tr("All tabs");
+                trailing: "" + root.tab-count;
+                clicked => { root.scope-pick(true); }
+            }
+            }
+            if root.menu-seg == 2 && root.hosts.length > 0 : Rectangle {
+                height: 26px;
+                Text {
+                    x: 9px;
+                    width: parent.width - 80px;
+                    height: parent.height;
+                    text: @tr("Pick hosts");
+                    color: Theme.text-muted;
+                    font-size: 10px;
+                    letter-spacing: 1px;
+                    vertical-alignment: center;
+                }
+                if root.host-n() > 0 : Text {
+                    x: parent.width - 76px;
+                    width: 64px;
+                    height: parent.height;
+                    text: @tr("{0} picked", root.host-n());
+                    color: Theme.accent-solid;
+                    font-size: 10px;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+            }
+            if root.menu-seg == 2 && root.hosts.length > 6 : Rectangle {
+                height: 28px;
+                margin-h := Rectangle {
+                    x: 6px;
+                    width: parent.width - 12px;
+                    height: parent.height;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: host-srch.has-focus ? Theme.accent-solid.with-alpha(0.42) : Theme.border-control;
+                    background: Theme.popup-bg;
+                    host-srch := TextInput {
+                        x: 8px;
+                        width: parent.width - 16px;
+                        y: (parent.height - self.preferred-height) / 2;
+                        text: root.host-search;
+                        color: Theme.text-primary;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        single-line: true;
+                        edited => { root.host-search = self.text; }
+                        key-pressed(e) => {
+                            if (e.text == Key.Escape) { root.host-search = ""; accept; }
+                            else { reject; }
+                        }
+                    }
+                }
+            }
+            if root.menu-seg == 2 && root.hosts.length > 0 : VerticalLayout {
+            for h in root.hosts : ScopeRow {
+                checked: root.host-in(h.id);
+                dot: root.scope-color-of(h.ch);
+                // (#hosts-title 用户反馈 ②) 显示 tab 标题(202 (copy) 这种),
+                // 原来显示 tab 内部 id(term-xxx UUID)—— 用户认识的是标题;
+                // title 空才退回 id。当前台行尾仍标「· 当前」。
+                label: (h.title == "" ? h.id : h.title)
+                    + (h.current ? @tr(" · current") : "");
+                trailing: h.online ? h.user + " · " + h.ch : @tr("offline");
+                row-enabled: true;
+                clicked => {
+                    root.d-all = false;
+                    root.d-a = false; root.d-b = false; root.d-c = false; root.d-d = false;
+                    root.host-toggle(h.id);
+                }
+            }
             }
             // 4 草稿汇总（高保真 .sum：勾了什么、合计几台，实时算）
             if root.scopes.length > 0 : Rectangle {
@@ -628,6 +839,7 @@ export component ScopeButton inherits Rectangle {
                 }
             }
         }
+        } // menu-scroll
     }
 }
 
@@ -1042,7 +1254,7 @@ export component TerminalView inherits Rectangle {
 
     // 第二参数从 bool(to-all) 换成范围串："" = 当前标签页 / "*" = 全部 /
     // "A,C" = 勾选的一组频道（见 scope-spec）。
-    callback run-command(string /* cmd */, string /* scope */);
+    callback run-command(string /* cmd */, string /* scope */, string /* mode: ""|line|block (send-cmd-p1) */);
     // (#send-cmd-window) 打开「发送命令」独立窗口，带上命令栏当前那一行文本
     callback open-send-window(string /* draft */);
 
@@ -1146,26 +1358,11 @@ export component TerminalView inherits Rectangle {
     // ── 危险命令（#cmdbar-danger 2026-10-23，高保真屏 05/07）───────────
     // 命中即「告警条浮出 + 发送键变红改文案」；改掉命令就自动消失，没有第二个
     // 确认对话框（高保真屏 07 的定稿：点「仍然发送」= 直接发出）。
-    function has-token(t: string, tok: string) -> bool {
-        return t.replace-all(tok, "") != t;
-    }
-    // 返回要展示的模式（命令原文，不翻译）；"" = 安全
-    function danger-token(t: string) -> string {
-        if (t == "") { return ""; }
-        let s = t.to-lowercase();
-        if (root.has-token(s, "rm -rf") || root.has-token(s, "rm -fr")
-                || root.has-token(s, "rm -r -f")) {
-            return "rm -rf";
-        }
-        if (root.has-token(s, "mkfs")) { return "mkfs"; }
-        if (root.has-token(s, "dd if=")) { return "dd if="; }
-        if (root.has-token(s, "shutdown")) { return "shutdown"; }
-        if (root.has-token(s, "reboot")) { return "reboot"; }
-        if (root.has-token(s, "chmod -r 777")) { return "chmod -R 777"; }
-        if (root.has-token(s, "init 0")) { return "init 0"; }
-        return "";
-    }
-    property <string> danger-now: root.danger-token(cmd-input.text);
+    // (#send-cmd-p1) 危险词检测迁 Rust(单一出处):这里的值由 AppWindow
+    // 经 Rust on_check_cmd_text 镜像回来;旧 Slint 词表(contains 粗匹配)删除 ——
+    // grep shutdown 这类参数命中不再误报。
+    in property <string> danger-now: "";
+    callback check-cmd-text(string /* line */);
     // (#cmd-hint 2026-10-27) 提示框详情区的告警**读同一份** danger-token()。
     // 高保真 §7 点名过「危险模式表被抄了第三遍」，所以这里不新增查表，
     // 直接把本节算出来的值下发给组件；tag 用命令原文（不翻译），
@@ -1336,7 +1533,7 @@ export component TerminalView inherits Rectangle {
     changed quick-external-sequence => {
         if (root.active) {
             if (root.quick-external-send-enter) {
-                root.run-command(root.quick-external-command, root.scope-spec());
+                root.run-command(root.quick-external-command, root.scope-spec(), "");
                 root.focus-pending = true;
             } else {
                 cmd-input.text = root.quick-external-command;
@@ -2636,7 +2833,7 @@ export component TerminalView inherits Rectangle {
                                 single-line: false;
                                 // Enter sends; ↑/↓ recall history.
                                 accepted => {
-                                    root.run-command(self.text, root.scope-spec());
+                                    root.run-command(self.text, root.scope-spec(), "");
                                     self.text = "";
                                     root.history-open = false;
                                     root.history-cursor = -1;
@@ -2651,6 +2848,8 @@ export component TerminalView inherits Rectangle {
                                     // 命令都在那边，Slint 拿不到那些表）。这是同步
                                     // 回调：返回时 hint-* 已是这次输入的结果。
                                     root.hint-query(self.text);
+                                    // (#send-cmd-p1) 危险词检测在 Rust:同步重算(与 hint-query 同一节奏)。
+                                    root.check-cmd-text(self.text);
                                     // (#cmdbar-suggest-empty 2026-10-24 / #cmd-hint)
                                     // 一条都没匹上就别把框亮出来 —— 只有「无匹配」
                                     // 三个字的空壳挡终端又没有信息量。危险命令例外：
@@ -2670,7 +2869,7 @@ export component TerminalView inherits Rectangle {
                                     // 把它当普通键处理（多行输入/裸发），三个语义
                                     // 各自为政；现在两处宿主一个口径。
                                     if (e.text == Key.Return && e.modifiers.shift) {
-                                        root.run-command(self.text, root.scope-spec());
+                                        root.run-command(self.text, root.scope-spec(), "");
                                         self.text = "";
                                         root.history-open = false;
                                         root.history-cursor = -1;
@@ -2691,7 +2890,7 @@ export component TerminalView inherits Rectangle {
                                             root.focus-pending = true;
                                             accept
                                         }
-                                        root.run-command(self.text, root.scope-spec());
+                                        root.run-command(self.text, root.scope-spec(), "");
                                         self.text = "";
                                         root.history-open = false;
                                         root.history-cursor = -1;
@@ -3001,7 +3200,7 @@ export component TerminalView inherits Rectangle {
                     send-ta := TouchArea {
                         mouse-cursor: default;
                         clicked => {
-                            root.run-command(cmd-input.text, root.scope-spec());
+                            root.run-command(cmd-input.text, root.scope-spec(), "");
                             cmd-input.text = "";
                             root.history-cursor = -1;
                             root.focus-pending = true;
@@ -3062,7 +3261,7 @@ export component TerminalView inherits Rectangle {
                     // ★ 先关框、再发键（高保真 §5 的硬顺序）：反过来会让
                     //   PTY 回显和面板重绘抢同一帧，看着像「命令跑了框还挂着」。
                     root.hist-open = false;
-                    root.run-command(cmd, root.scope-spec());
+                    root.run-command(cmd, root.scope-spec(), "");
                     root.focus-pending = true;
                 }
                 fill(cmd) => {
@@ -3284,7 +3483,7 @@ export component TerminalView inherits Rectangle {
                                     clicked => {
                                         if (q.send-enter) {
                                             // Send + execute (trailing Return).
-                                            root.run-command(q.command, root.scope-spec());
+                                            root.run-command(q.command, root.scope-spec(), "");
                                             root.focus-pending = true;
                                         } else {
                                             // Only fill the input box so it can be

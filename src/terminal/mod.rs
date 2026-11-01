@@ -8,6 +8,10 @@ mod line;
 
 #[path = "impls/input.rs"]
 mod input;
+// (#send-cmd-p1) 发送命令窗口的文字检测(危险词 + 续行风险):单一出处。
+// Slint 的 string 没有逐字符访问,引号扫描/块计数必须在 Rust 侧做。
+#[path = "impls/send_check.rs"]
+pub(crate) mod send_check;
 #[path = "impls/json_output.rs"]
 mod json_output;
 #[path = "impls/charset.rs"]

@@ -190,6 +190,32 @@ fn refresh_send_scopes(window: &AppWindow, store: &ConfigStore) {
     }
     window.set_sendable_tabs(tabs.iter().filter(|t| is_sendable(t)).count() as i32);
     window.set_send_scopes(ModelRc::from(Rc::new(VecModel::from(scopes))));
+    // (#send-cmd-p2) 逐台明细:范围菜单主机段/提示卡/回执名字的数据源。
+    // current 标记「本窗口当前标签页」—— 提示卡行尾的「· 当前」一眼定位。
+    // online 置 true:标签页开着 = PTY 活着(离线成员本就不在 tabs 里)。
+    let active_id = window.get_active_tab_id().to_string();
+    let targets: Vec<crate::ui::SendTarget> = tabs
+        .iter()
+        .filter(|t| is_sendable(t))
+        .map(|t| {
+            let letter = t.channel_letter.as_str();
+            let slot = ["A", "B", "C", "D"].iter().position(|l| *l == letter).unwrap_or(0);
+            crate::ui::SendTarget {
+                id: t.id.clone(),
+                // (#hosts-title) tab 标题跟随:菜单里显示用户认识的名字
+                title: t.title.clone(),
+                user: t.user.clone(),
+                ch: t.channel_letter.clone(),
+                color: theme
+                    .get_channel_colors()
+                    .row_data(slot)
+                    .unwrap_or_default(),
+                online: true,
+                current: t.id.as_str() == active_id,
+            }
+        })
+        .collect();
+    window.set_send_targets(ModelRc::from(Rc::new(VecModel::from(targets))));
 }
 
 /// (#sync-dialog-v2) 逐窗口刷新频道状态条（跨窗口成员变更后，每个窗口的
@@ -2668,6 +2694,7 @@ fn open_window(
             sw.set_quick_commands(main.get_quick_commands());
             sw.set_command_history(main.get_command_history());
             sw.set_scopes(main.get_send_scopes());
+            sw.set_targets(main.get_send_targets());
             sw.set_tab_count(main.get_sendable_tabs());
             sw.set_lang_en(main.get_lang_en());
             sync_send_cmd_theme(&main, &sw);
@@ -2679,7 +2706,16 @@ fn open_window(
                 // 位置/尺寸（用户拖过的大小要留），也不覆盖草稿 —— 窗里
                 // 可能有没发完的编辑内容。
             } else {
-                sw.set_text(draft);
+                sw.set_text(draft.clone());
+                // (#send-cmd-p1) 带入的草稿要立刻算一次检测(危险词/续行风险),
+                // 面板时代的左栏没有这层;不 invoke(窗口刚建,事件循环未跑稳),
+                // 直接同步 set —— 与 on_check_text 同一份口径。
+                sw.set_danger_token(SharedString::from(
+                    crate::terminal::send_check::danger_token(draft.as_ref()),
+                ));
+                sw.set_risk_info(SharedString::from(
+                    crate::terminal::send_check::continuation_risk(draft.as_ref()),
+                ));
                 place_send_cmd_window(&main, &sw);
                 let _ = sw.show();
                 // (#send-cmd-dpr 2026-10-27) 创建时主窗还没映射，主窗的
@@ -2704,7 +2740,7 @@ fn open_window(
         // 频道串由 run-command 自己展开到所有打开的终端标签页）。
         let win_weak = window.as_weak();
         let snd_weak = send_win.as_weak();
-        send_win.on_send(move |cmd: SharedString, scope: SharedString| {
+        send_win.on_send(move |cmd: SharedString, scope: SharedString, mode: SharedString| {
             let Some(sw) = snd_weak.upgrade() else { return };
             // (#send-cmd-single 2026-10-27) 目标 = 最近打开发送窗的主窗（可能
             // 是任意一个主窗；全局实例上注册的这份回调属于最后完成 open_window
@@ -2714,10 +2750,264 @@ fn open_window(
                 .or_else(|| win_weak.upgrade());
             let Some(main) = main else { return };
             let tab = main.get_active_tab_id();
-            main.invoke_run_command(tab, cmd, scope);
-            // 发完历史多了一条：窗口里的「最近」跟着刷
+            // (#send-cmd-p3) 回执随发送返回:逐台 ok/失败进信息区与提示卡
+            let receipt = main.invoke_run_command(tab, cmd, scope, mode);
+            let bad = receipt.iter().filter(|r| !r.ok).count() as i32;
+            let okn = receipt.row_count() as i32 - bad;
+            sw.set_receipt(receipt);
+            sw.set_receipt_bad(bad);
+            sw.set_receipt_ok(okn);
+            // 发完历史多了一条：窗口里的「最近」跟着刷（面板数据源）
             sw.set_command_history(main.get_command_history());
             sw.window().with_winit_window(|ww| ww.focus_window());
+        });
+    }
+    {
+        // (#send-cmd-p1) 文字检测:danger / risk 在 Rust(单一出处),编辑器
+        // 每次变更(击键 / 插入 / 外部写入)都重算。Slint 的 string 没有
+        // 逐字符访问,引号扫描与块计数必须在 Rust 侧做(§16 定稿注记)。
+        let snd_weak = send_win.as_weak();
+        send_win.on_check_text(move |text: SharedString| {
+            let Some(sw) = snd_weak.upgrade() else { return };
+            sw.set_danger_token(SharedString::from(
+                crate::terminal::send_check::danger_token(text.as_ref()),
+            ));
+            sw.set_risk_info(SharedString::from(
+                crate::terminal::send_check::continuation_risk(text.as_ref()),
+            ));
+            // (#send-cmd-p1 §04⑤) 多行 + sudo:后面几行会被当密码吞
+            sw.set_sudo_hint(crate::terminal::send_check::sudo_hint(text.as_ref()));
+        });
+    }
+    {
+        // (#menu-seg2-fix) 菜单打开瞬间现拉 scopes/targets:发送窗开着时
+        // 主窗加了频道/开了新标签,只在打开时镜像的话就是旧快照(实机截图:
+        // 频道 B 已加入,滑块仍只有「主机」段)。从 SEND_CMD_HOST 主窗重读
+        // refresh_send_scopes 的产物。
+        let snd_weak = send_win.as_weak();
+        send_win.on_refresh_scopes(move || {
+            let Some(sw) = snd_weak.upgrade() else { return };
+            let Some(main) = SEND_CMD_HOST
+                .with(|h| h.borrow().as_ref().and_then(|w| w.upgrade()))
+            else { return };
+            sw.set_scopes(main.get_send_scopes());
+            sw.set_targets(main.get_send_targets());
+            sw.set_tab_count(main.get_sendable_tabs());
+        });
+    }
+    {
+        // (#send-cmd-p2) 范围菜单主机勾选:CSV 增删要用切片,Slint 做不了,
+        // 上抛到这里改。编码 = 尾逗号 CSV("id1,id2,"),与 "H:" scope 串同源。
+        let snd_weak = send_win.as_weak();
+        send_win.on_host_toggle(move |id: SharedString| {
+            let Some(sw) = snd_weak.upgrade() else { return };
+            let id = id.to_string();
+            let sel = sw.get_host_sel().to_string();
+            let items: Vec<&str> = sel.split(',').filter(|x| !x.is_empty()).collect();
+            let has = items.iter().any(|x| *x == id);
+            let mut csv = String::new();
+            if has {
+                for x in items {
+                    if *x != id {
+                        csv.push_str(x);
+                        csv.push(',');
+                    }
+                }
+            } else {
+                csv = sel;
+                if !csv.is_empty() && !csv.ends_with(',') {
+                    csv.push(',');
+                }
+                csv.push_str(&id);
+                csv.push(',');
+            }
+            sw.set_host_sel(csv.into());
+        });
+    }
+    {
+        // (#send-cmd-p2 §04②) 插入到光标处:Slint 按光标像素反推行列(等宽
+        // 字体),切片拼接在 Rust —— 不劈开正在写的行,光标落插入内容末尾。
+        let snd_weak = send_win.as_weak();
+        send_win.on_insert_at(move |text: SharedString, line: i32, col: i32, cmd: SharedString| {
+            let (new_text, caret) = crate::terminal::send_check::insert_at_cursor(
+                text.as_ref(),
+                line.max(0) as usize,
+                col.max(0) as usize,
+                cmd.as_ref(),
+            );
+            crate::ui::InsertResult {
+                text: SharedString::from(new_text),
+                caret: caret as i32,
+            }
+        });
+    }
+    {
+        // (#send-cmd-p3 §10③) 重试失败项:Rust 拼失败 CSV(host-sel),发送键
+        // 回「发送」,第二次动作才真发 —— 发送是对多台机器的动作,多确认一次。
+        let snd_weak = send_win.as_weak();
+        send_win.on_retry_bad_csv(move || {
+            let Some(sw) = snd_weak.upgrade() else { return SharedString::from("") };
+            let mut csv = String::new();
+            for r in sw.get_receipt().iter() {
+                if !r.ok {
+                    csv.push_str(r.id.as_str());
+                    csv.push(',');
+                }
+            }
+            SharedString::from(csv)
+        });
+    }
+    {
+        // (#send-cmd-p3) 回执清空(bad/ok 计数同步归零;Slint 只改数组会漏)
+        let snd_weak = send_win.as_weak();
+        send_win.on_clear_receipt(move || {
+            let Some(sw) = snd_weak.upgrade() else { return };
+            sw.set_receipt(ModelRc::from(Rc::new(VecModel::from(Vec::<crate::ui::SendReceiptItem>::new()))));
+            sw.set_receipt_bad(0);
+            sw.set_receipt_ok(0);
+        });
+    }
+    {
+        // (#send-cmd-p2/p3) 提示卡复制:名单每行一台(带频道与断开态),
+        // 结果每行 id+结果 —— 直接进剪贴板。
+        let snd_weak = send_win.as_weak();
+        send_win.on_copy_list(move || {
+            let Some(sw) = snd_weak.upgrade() else { return };
+            let mut out = String::new();
+            for t in sw.get_targets().iter() {
+                out.push_str(t.user.as_str());
+                out.push('@');
+                out.push_str(t.id.as_str());
+                out.push_str("\t频道 ");
+                out.push_str(t.ch.as_str());
+                if !t.online {
+                    out.push_str("\t已断开");
+                }
+                out.push('\n');
+            }
+            let text = out;
+            std::thread::spawn(move || clipboard_set_text(text));
+        });
+    }
+    {
+        let snd_weak = send_win.as_weak();
+        send_win.on_copy_result_clip(move || {
+            let Some(sw) = snd_weak.upgrade() else { return };
+            let mut out = String::new();
+            for r in sw.get_receipt().iter() {
+                out.push_str(r.id.as_str());
+                out.push('\t');
+                out.push_str(if r.ok { "已送达" } else { "失败" });
+                out.push('\n');
+            }
+            let text = out;
+            std::thread::spawn(move || clipboard_set_text(text));
+        });
+    }
+    {
+        // (#send-cmd-p1) 命令栏危险词:同一份 Rust 词表(单一出处)。
+        let weak2 = window.as_weak();
+        window.on_check_cmd_text(move |text: SharedString| {
+            let Some(w) = weak2.upgrade() else { return };
+            w.set_cmd_danger(SharedString::from(
+                crate::terminal::send_check::danger_token(text.as_ref()),
+            ));
+        });
+    }
+    {
+        // (#send-cmd-p1) 命令面板的行模型:Rust 按查询词现算 —— 无词 = 默认
+        // 视图(最近 + 快捷命令全部),有词 = 匹配的命令 / 历史各自分段。
+        // 段头也是一行(kind=0),↑↓ 与插入都跳过它(lib-hi 落在第一个可选行)。
+        let snd_weak = send_win.as_weak();
+        send_win.on_refresh_lib(move |query: SharedString| {
+            use crate::ui::LibRow;
+            let Some(sw) = snd_weak.upgrade() else { return };
+            let en = sw.get_lang_en();
+            let q = query.trim().to_lowercase();
+            let mut rows: Vec<LibRow> = Vec::new();
+            let mk = |kind: i32, text: &str, sub: &str| LibRow {
+                kind,
+                text: SharedString::from(text.to_string()),
+                sub: SharedString::from(sub.to_string()),
+            };
+            let hist: Vec<String> = sw
+                .get_command_history()
+                .iter()
+                .map(|h| h.to_string())
+                .collect();
+            let quick: Vec<_> = sw
+                .get_quick_commands()
+                .iter()
+                .filter(|qc| qc.orig_index >= 0)
+                .map(|qc| (qc.name.to_string(), qc.command.to_string()))
+                .collect();
+            if q.is_empty() {
+                // 默认视图:最近(最新在前)+ 快捷命令全部
+                if !hist.is_empty() {
+                    rows.push(mk(0, if en { "Recent" } else { "最近" }, ""));
+                    for h in hist.iter().rev().take(50) {
+                        rows.push(mk(2, h, ""));
+                    }
+                }
+                if !quick.is_empty() {
+                    rows.push(mk(0, if en { "Quick commands" } else { "快捷命令" }, ""));
+                    for (name, cmd) in &quick {
+                        rows.push(mk(1, name, cmd));
+                    }
+                }
+            } else {
+                let matched_cmds: Vec<&(String, String)> = quick
+                    .iter()
+                    .filter(|(n, c)| n.to_lowercase().contains(&q) || c.to_lowercase().contains(&q))
+                    .collect();
+                let matched_hists: Vec<&String> = hist
+                    .iter()
+                    .filter(|h| h.to_lowercase().contains(&q))
+                    .collect();
+                if !matched_cmds.is_empty() {
+                    rows.push(mk(
+                        0,
+                        &format!("{} · {}", if en { "Quick commands" } else { "快捷命令" }, matched_cmds.len()),
+                        "",
+                    ));
+                    for (name, c) in matched_cmds {
+                        rows.push(mk(1, name, c));
+                    }
+                }
+                if !matched_hists.is_empty() {
+                    rows.push(mk(
+                        0,
+                        &format!("{} · {}", if en { "History" } else { "历史" }, matched_hists.len()),
+                        "",
+                    ));
+                    for h in matched_hists {
+                        rows.push(mk(2, h, ""));
+                    }
+                }
+            }
+            let first = rows.iter().position(|r| r.kind != 0).map(|i| i as i32).unwrap_or(0);
+            sw.set_lib_hi(first);
+            sw.set_lib_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
+        });
+    }
+    {
+        // (#send-cmd-p1) ↑↓ 移动选中行:Rust 负责**跳过段头**(段头 kind=0
+        // 不参与选中 —— Slint 表达式写不了循环)。
+        let snd_weak = send_win.as_weak();
+        send_win.on_lib_move(move |delta: i32| {
+            let Some(sw) = snd_weak.upgrade() else { return };
+            let model = sw.get_lib_rows();
+            let n = model.row_count() as i32;
+            if n == 0 { return; }
+            let mut hi = sw.get_lib_hi();
+            loop {
+                hi += delta;
+                if hi < 0 || hi >= n { return; }
+                if model.row_data(hi as usize).map(|r| r.kind != 0).unwrap_or(false) {
+                    sw.set_lib_hi(hi);
+                    return;
+                }
+            }
         });
     }
     {
@@ -10789,8 +11079,32 @@ fn wire_key_input(
         let store_rc = store.clone();
         let weak = window.as_weak();
         window.on_run_command(
-            move |tab_id: SharedString, cmd: SharedString, scope: SharedString| {
-                let (history_line, bytes) = encode_command_bar_input(&cmd);
+            move |tab_id: SharedString, cmd: SharedString, scope: SharedString, mode: SharedString|
+                  -> ModelRc<crate::ui::SendReceiptItem> {
+                let mut receipt: Vec<crate::ui::SendReceiptItem> = Vec::new();
+                let cmd_str = cmd.to_string();
+                // (#send-cmd-p1) 送达方式(send-command-hifi §10①):同样的多行
+                // 文本,写进 PTY 的方式不同,后果完全不同 ——
+                //   ""      = 单行(旧口径,整段 + 一个 \n);
+                //   "line"  = 逐行回车:每行各自 Enter,等于人工逐行敲;
+                //   "block" = 整段粘贴:bracketed paste 包裹(\e[200~…\e[201~)
+                //             后补一次回车,for / heredoc / 未闭合引号才安全。
+                // 命令栏现有调用点全部传 ""(单行,语义不变)。
+                let bytes = match mode.as_str() {
+                    "line" => {
+                        let mut b = cmd_str.replace('\n', "\r").into_bytes();
+                        b.push(b'\r');
+                        b
+                    }
+                    "block" => {
+                        let mut b = encode_pasted_text(&cmd_str, true);
+                        b.push(b'\r');
+                        b
+                    }
+                    _ => encode_command_bar_input(cmd.as_ref()).1,
+                };
+                // 历史口径不变:trim_end 后非空才入账(三种方式同一份历史)。
+                let (history_line, _) = encode_command_bar_input(cmd.as_ref());
                 {
                     let h = handles_rc.borrow();
                     // (#cmdbar-scope-multi 2026-10-23) 第二参数由 bool(to-all) 改成范围串：
@@ -10802,7 +11116,21 @@ fn wire_key_input(
                     // 里也可能残留正在拆除的 tab。kind == "terminal" 是与按钮台数
                     // 同一个判据（welcome 没有 PTY，发不到）。
                     let scope = scope.as_str();
-                    let ids: Vec<String> = if scope.is_empty() {
+                    // (#send-cmd-p2) 自选主机档:"H:id1,id2," —— 按 id 精确匹配
+                    // (不按频道/全部展开;id 来自 targets,菜单里逐台勾的)。
+                    let ids: Vec<String> = if let Some(csv) = scope.strip_prefix("H:") {
+                        let wanted: Vec<&str> = csv.split(',').filter(|x| !x.is_empty()).collect();
+                        weak.upgrade()
+                            .map(|w| {
+                                w.get_tabs()
+                                    .iter()
+                                    .filter(|t| t.kind.as_str() == "terminal")
+                                    .filter(|t| wanted.iter().any(|x| *x == t.id.as_str()))
+                                    .map(|t| t.id.to_string())
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    } else if scope.is_empty() {
                         vec![tab_id.to_string()]
                     } else {
                         weak.upgrade()
@@ -10826,7 +11154,18 @@ fn wire_key_input(
                     };
                     for id in ids {
                         if let Some(handle) = h.get(id.as_str()) {
-                            handle.send_raw(bytes.clone());
+                            // (#send-cmd-p3) send_raw 返回投递结果:通道死=false
+                            let ok = handle.send_raw(bytes.clone());
+                            receipt.push(crate::ui::SendReceiptItem {
+                                id: SharedString::from(id.clone()),
+                                ok,
+                            });
+                        } else {
+                            // handle 不在表里(标签页正在拆除):如实记失败
+                            receipt.push(crate::ui::SendReceiptItem {
+                                id: SharedString::from(id.clone()),
+                                ok: false,
+                            });
                         }
                     }
                 }
@@ -10838,6 +11177,7 @@ fn wire_key_input(
                         w.set_command_history(history_model(&s));
                     }
                 }
+                ModelRc::from(Rc::new(VecModel::from(receipt)))
             },
         );
     }

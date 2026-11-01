@@ -588,10 +588,10 @@ pub(super) fn sync_send_cmd_theme(main: &AppWindow, w: &SendCmdWindow) {
     w.set_wp_tint(main.get_wp_tint());
 }
 
-/// 把「发送命令」窗口摆到主窗内容区正中（尺寸固定 620×420，与面板时代一致）。
+/// 把「发送命令」窗口摆到主窗内容区正中（§04⑦ 定稿 760×500,最小 620×420）。
 pub(super) fn place_send_cmd_window(main: &AppWindow, w: &SendCmdWindow) {
-    const W: f64 = 620.0;
-    const H: f64 = 420.0;
+    const W: f64 = 760.0;
+    const H: f64 = 500.0;
     let Some(((ox, oy), (iw, ih))) = main
         .window()
         .with_winit_window(|ww| {
