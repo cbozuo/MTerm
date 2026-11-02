@@ -20,12 +20,16 @@
 //     （多行粘贴的历史条目）把 28px 行盒撑爆叠到邻行（显示侧压平修复，
 //     见 command_hint_ui.rs）。
 //
-// ★ 键盘契约（§7 定稿 2026-10-30 三轮，终端内联与命令栏两处宿主**完全同一套**）：
-//   弹出即选中首条（候选按相关度排好，首条就是最佳）；
-//   Enter = 填入选中候选并收框（确认靠收框表达，不做行==apply 文本比对——
-//   打字打出的完整命令与候选天然相等，比对必漏：用户实测 `ll` 回车直接执行）；
-//   框关了 Enter = 执行当前输入；Shift+Enter = 强制执行选中候选；
-//   →(鬼影) / 鼠标点击 = 仅填入；Tab 永远透传 shell。
+// ★ 键盘契约（§7 定稿 2026-10-30 三轮；(#cmd-hint-passive) 2026-11-02 四轮
+//   改**纯提示**，终端内联与命令栏两处宿主**完全同一套**）：
+//   框只是「候选参考卡」：弹出**不选中任何行**（selected = -1，↑↓ 才选中
+//   —— 默认高亮首条会和 Enter 执行当前行抢语义，(#cmd-hint-no-default)）；
+//   **Enter 永不接管** —— 回车（开着框也一样）直接执行当前已敲的行，
+//   不多吃一次确认键（用户实测：输入 `ll` 与首条候选天然相等时，
+//   「填入→再回车」白吃一次键）；
+//   Shift+Enter = 执行**选中**的候选（无选中时不拦，等同 Enter）；
+//   →(鬼影) / 鼠标点击 = 仅填入；Tab 永远透传 shell；
+//   Esc / 点空白 = 关框，**继续敲字按新输入重新弹**。
 
 import { Icon } from "icons.slint";
 import { Theme } from "theme.slint";
@@ -42,7 +46,7 @@ export struct HintRow {
     // ★ 选中这一条后，命令行**整行**应该变成什么。
     //   由 Rust 侧算好（`HintInput` 已经知道怎么拆词，UI 侧 Slint 1.18 的
     //   string 没有 trim-end/rfind/substr，拼不出来）。两个用途：
-    //     ① Enter / 鼠标点击 → 差量填入（框开着永远填入）；
+    //     ① Shift+Enter / 鼠标点击 → 差量填入（框开着永远填入）；
     //     ② Shift+Enter → 整行替换后直接执行。
     apply: string,
 }
@@ -50,8 +54,10 @@ export struct HintRow {
 export component CommandHint inherits Rectangle {
     // ── 数据 ────────────────────────────────────────────────────────────
     in property <[HintRow]> rows;
-    // ★ 选中项由宿主持有并传入（两处宿主各管各的）：弹出即指向首条
-    // （高保真 §7 收敛 —— 候选按相关度排好，首条就是最佳，Enter 直接确认）。
+    // ★ 选中项由宿主持有并传入（两处宿主各管各的）：**弹出不选中**（-1，
+    //   (#cmd-hint-no-default) 2026-11-02 —— 默认高亮首条会和「Enter=执行
+    //   当前行」抢语义），↑↓ 才选中。它只是 Shift+Enter（执行候选）与
+    //   导航的落点；Enter 不接管（(#cmd-hint-passive) 2026-11-02）。
     in property <int> selected: -1;
     in property <bool> open: false;
     // 危险命令命中的模式原文；非空 → 列表上方出现红色告警条。
@@ -72,23 +78,29 @@ export component CommandHint inherits Rectangle {
     //   主题里是**同一个值**（深 #181A1D / 亮 #FAF8F4），压上去框会「消失」，
     //   只剩一圈边框。必须升到 slot-elev + border-strong 描边。
     background: Theme.bg-elevated;
-    // (#cmd-hint-border 2026-10-30) 边框配方与「高亮设置」弹框对齐（用户实测
-    // 反馈：边框线和四个圆角要和高亮设置里面对齐）：radius-xl + hairline 细线
-    // + border-strong —— 同 highlight_dialog.slint 的 dlg 根节点、history_panel
-    // 的 #hist-round5。原 radius-lg（10px）低一档，四角弧线与全应用弹框不一致。
+    // (#cmd-hint-border 2026-10-30) 边框配方与「高亮设置」弹框对齐：hairline
+    // 细线 + border-strong（同 highlight_dialog.slint 的 dlg 根节点、
+    // history_panel 的 #hist-round5）。
     // (#cmd-hint-corner 2026-11-02) 线改由**顶层描圈**统一画（组件尾部的
     // Rectangle，z 序最上）：脚注 bg-panel 色带、首行选中底块都是带背景的
     // 子元素，直角（哪怕内缩 1px）都会把根自身 border 的四角弧线盖掉/压糊
     //（用户截图：四角弧线缺失、弧线发糊）。根不再画线 + 顶层描圈，与
     // history_panel #hist-border-single 同款。
-    border-radius: Theme.radius-xl;
+    // (#cmd-hint-radius-tight 2026-11-02) 圆角 radius-xl(16) → radius-lg(10)：
+    // 用户实测投影在圆角处「溢出」观感差、左侧竖条与左边框线间距突兀 ——
+    // 小圆角让投影收敛、竖条离弧线起点更近，整圈更协调（测试的角邻域扫描
+    // 20px 仍罩得住 radius-lg=10 的弧线，见 tests/command_hint_ui.rs）。
+    border-radius: Theme.radius-lg;
     border-width: 0px;
-    // (#cmd-hint-chrome 2026-10-30) 投影对齐「高亮设置」弹框 / 历史面板同款：
-    // 26px transparent —— 立体感靠比终端底亮一档的 elevated 底 + 细边撑，
-    // 不画真投影。原 14px #00000066 的黑影让框看起来比同配方的高亮设置
-    // 「重一档」，用户实测点名不像。
-    drop-shadow-blur: 26px;
-    drop-shadow-color: transparent;
+    // (#cmd-hint-shadow 2026-11-02) 画**真投影**，与终端窗口的悬浮感同一语言
+    // （用户：四个圆角和命令行的阴影协调些）。10-30 曾因「比高亮设置重一档」
+    // 改成透明；这次把立体感补回来但收着给：18px 大模糊 + 6px 下坠 + 中低
+    // 不透明度（暗色 45% / 亮色 20%），浮在满屏字符上靠影子分层，不再只靠
+    // 一圈发丝线。同族参照：发送命令窗面板 16px #00000070、历史面板悬浮卡
+    // 14px/6px #000000AA。
+    drop-shadow-blur: 18px;
+    drop-shadow-offset-y: 6px;
+    drop-shadow-color: Theme.dark ? #00000073 : #00000033;
     // 内层布局已内缩 1px 避开边框（见下方 VerticalLayout 的注释），
     // 这里开 clip 只是防止列表行文字溢出圆角。
     clip: true;
@@ -246,9 +258,7 @@ export component CommandHint inherits Rectangle {
                     height: root.row-h;
                     // (#cmd-hint-chrome 2026-10-30) 行高亮**内衬式**（历史面板同款）：
                     // 不贴弹框边——原先全宽贴边的直角行背景在弹框左上/右上角
-                    // 戳出 radius-xl 弧线之外，把圆角线盖掉（用户截图：第一行
-                    // 背景超出了）。弹出即选中首条后该行永远存在，问题必现；
-                    // 竖条也随内衬挪进来。
+                    // 戳出弧线之外，把圆角线盖掉（用户截图：第一行背景超出了）。
                     // (#cmd-hint-tight 2026-11-02) 内衬 4→2px：用户反馈左右
                     // 空档偏宽（弧线由顶层描圈兜底后无需再让这么多）。
                     x: 2px;
@@ -258,8 +268,14 @@ export component CommandHint inherits Rectangle {
                               : (row-ta.has-hover ? Theme.bg-hover : transparent);
 
                     // 选中项左侧 2px 竖条（高保真 .hb-row.on::before）。
+                    // (#cmd-hint-bar-flush 2026-11-02) 竖条**贴住弹框左边线**：
+                    // x = 行内 0 → 行外 -2（抵掉行自身的 2px 内衬，落在根的
+                    // x=0 边线上）。用户实测「竖线与左边框线还有间距，不协调」
+                    // —— 同款语义见终端网格选中行贴边 / 历史面板分隔线贴边。
+                    // 首行选中时竖条顶端落在左上弧线起点的下方（弧线 10px 内
+                    // 本来就没有直线段），不与描圈打架。
                     if idx == root.selected : Rectangle {
-                        x: 0px;
+                        x: -2px;
                         y: 4px;
                         width: 2px;
                         height: parent.height - 8px;
@@ -380,16 +396,16 @@ export component CommandHint inherits Rectangle {
                     vertical-alignment: center;
                 }
                 Text {
-                    // (§7 定稿 2026-10-30 三轮) Enter = 填入选中候选并收框；
-                    // 框关了 Enter 才执行当前输入。终端与命令栏同一契约。
-                    text: "Enter " + @tr("Insert");
+                    // ((#cmd-hint-passive) 2026-11-02) Enter = 直接执行当前输入
+                    //（框开着也不拦）；填入选中候选走 Shift+Enter / → / 点击。
+                    text: "Enter " + @tr("Run");
                     color: Theme.text-muted;
                     font-size: 10px;
                     vertical-alignment: center;
                 }
                 Text {
-                    // Shift+Enter = 跳过填入直接执行选中候选（清行重打 + 回车）。
-                    text: "Shift+Enter " + @tr("Run");
+                    // Shift+Enter = 执行**选中**候选（填入 + 回车一步到位）。
+                    text: "Shift+Enter " + @tr("Run selected");
                     color: Theme.text-muted;
                     font-size: 10px;
                     vertical-alignment: center;
@@ -422,10 +438,11 @@ export component CommandHint inherits Rectangle {
     // 边线唯一出处：声明在所有内容之后 = z 序最上，脚注色带/首行选中底块
     // 都盖不住它，四角弧线恒完整。根自身 border-width 已归零，无双层叠画。
     // 透明底、无 TouchArea，不吃点击。
+    // (#cmd-hint-radius-tight 2026-11-02) 半径跟根一起收小到 radius-lg。
     Rectangle {
         width: parent.width;
         height: parent.height;
-        border-radius: Theme.radius-xl;
+        border-radius: Theme.radius-lg;
         border-width: Theme.hairline();
         border-color: Theme.border-strong;
         background: transparent;

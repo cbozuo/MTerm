@@ -1152,46 +1152,49 @@ export component TerminalView inherits Rectangle {
     in property <string> term-hint-danger: "";
     in property <string> term-hint-danger-why: "";
     // 终端内联提示框的选中项（↑↓ 在候选里走）。
-    // ★ 弹出即选中首条（§7 收敛 2026-10-30，与命令栏同一契约）：候选按相关度
-    //   排好，第一条就是最佳，Enter 直接确认它。Enter 两段式：
-    //   行 == 首条 apply → 执行；否则仅填入（再按一次才执行）——
-    //   判定在 Rust 侧（term-hint-enter，终端行文本在网格里 Slint 拿不到）。
-    //   Shift+Enter = 直接执行选中候选。首项再按 ↑ 穿透翻 shell 历史。
-    //   复位时机见下面的 sig 监听（纯 Slint：候选签名变化才复位）。
-    property <int> term-hint-selected: 0;
+    // ★ **弹出不选中**（(#cmd-hint-no-default) 2026-11-02）：默认 -1，↑↓ 才
+    //   选中 —— 默认高亮首条会和「Enter=执行当前行」抢语义（纯提示契约，
+    //   (#cmd-hint-passive)）；选中项只是 Shift+Enter（执行候选）的落点。
+    property <int> term-hint-selected: -1;
     // ★ 候选集签名（首条文本 + 条数）：Rust 的 120ms 二次刷新（等远端回显）
     //   在候选没变时签名相同 → changed 不触发 → 用户刚按下的 ↑↓ 不会被
-    //   重置；真正的新输入（新候选集）签名必然变化 → 复位选中首条。
+    //   重置；真正的新输入（新候选集）签名必然变化 → 复位为**不选中**。
     property <string> term-hint-rows-sig:
         (root.term-hint-rows.length > 0 ? root.term-hint-rows[0].text : "") + "#" + root.term-hint-rows.length;
     changed term-hint-rows-sig => {
-        root.term-hint-selected = root.term-hint-rows.length > 0 ? 0 : -1;
+        // (#cmd-hint-no-default) 新候选集 = 弹出，选中复位 -1（不默认选首条）。
+        root.term-hint-selected = -1;
+        // (#cmd-hint-esc-redisplay 2026-11-02) 新候选集 = 新输入 → Esc 关掉的
+        // 框重新允许弹（用户实测口径：Esc 只是收一下，继续敲字要再弹）。
+        root.term-hint-esc-dismissed = false;
     }
     // ★ 候选集合变了就把选中项夹回有效范围。
     //   否则会残留一个越界索引：回车 / 点击取 `row_data(idx)` 拿到 None，
     //   表现为「选过一次之后回车就选不中了」（用户实测反馈）。
-    //   (§7 收敛) 夹回**首条**（新候选集 = 首条就是当前指向）。
     changed term-hint-rows => {
         if (root.term-hint-selected >= root.term-hint-rows.length) {
             root.term-hint-selected = root.term-hint-rows.length > 0
                 ? root.term-hint-rows.length - 1 : -1;
         }
     }
-    // 用户按 Esc 关掉后，本行不再自动弹（高保真 §4：抑制持续到行被清空）。
+    // 用户按 Esc / 点空白关掉后：**本行暂不弹，行一变（继续敲字）就恢复**
+    // （(#cmd-hint-esc-redisplay) 2026-11-02 改口径 —— 早先「抑制到行被清空」，
+    // 用户实测反馈「Esc 后再输入不再显示」不行；翻 shell 历史的 ↑ 穿透
+    // 仍走下面的 term-hint-suppressed（整行抑制），两条互不干扰）。
+    property <bool> term-hint-esc-dismissed: false;
     property <bool> term-hint-suppressed: false;
-    property <string> term-hint-line-tag: "";   // 记住抑制时那一行，变了才解除
     // (#cmd-hint-p1) 抑制解除令牌：Rust 在「回车提交 / **行被清空**」时自增，
     // 下面 changed 监听把它翻译成「清除 suppressed」。
     in property <int> term-hint-reset-token: 0;
     //
-    // ★ 交互口径（高保真 §4 定稿 2026-10-30）：**Esc 抑制本行，直到行被清空
-    //   才重置**——打字不清除抑制。早先实现成「任意普通按键都解除」，用户在
-    //   沙盘口径确认稿子里按 §4 走（翻 shell 历史走 ↑ 首项穿透，不必靠打字
-    //   逃出抑制）。
+    // ★ 交互口径（(#cmd-hint-esc-redisplay) 2026-11-02 修订）：Esc / 点空白
+    //   只关当前这一下，新输入（候选签名变化）即恢复；↑ 首项穿透建立的
+    //   suppressed 仍持续到行被清空（翻历史时框不该一行接一行地弹）。
     changed term-hint-reset-token => {
         root.term-hint-suppressed = false;
-        // (§7 收敛) 新一行 = 重新指向首条（与命令栏 history-selected = 0 同款）。
-        root.term-hint-selected = root.term-hint-rows.length > 0 ? 0 : -1;
+        root.term-hint-esc-dismissed = false;
+        // (#cmd-hint-no-default) 新一行弹出 = 不选中（↑↓ 才选中）。
+        root.term-hint-selected = -1;
     }
     // (#cmdbar-scope 2026-10-23) 可送达的同步频道（Rust 按本窗口已打开标签页算）。
     in property <[SendScope]> send-scopes;
@@ -1307,6 +1310,8 @@ export component TerminalView inherits Rectangle {
     }
 
     // 把选中项填入命令行（不执行）。返回是否真的改了文本。
+    // (#cmd-hint-no-default) 未选中（-1）时由调用方保证不进来（Tab 分支
+    // 有 hint-count>0 闸，但选中仍可能是 -1）→ 直接返回 false 不改文本。
     function hint-accept() -> bool {
         let idx = root.history-selected;
         if (idx < 0 || idx >= root.hint-count()) { return false; }
@@ -1319,7 +1324,7 @@ export component TerminalView inherits Rectangle {
         } else {
             cmd-input.text = target;
         }
-        root.history-selected = 0;
+        root.history-selected = -1;
         // ★ #cmdbar-focus：填入后要让输入框重新持有焦点与光标。
         cmd-input.focus();
         root.hint-refresh();
@@ -1426,11 +1431,11 @@ export component TerminalView inherits Rectangle {
     // (#cmd-hint-p1 2026-10-27) 终端内联：把第 i 条候选**写进 PTY**。
     // 与命令栏的 hint-accept 不同 —— 这里不能改「输入框文本」（终端没有输入框），
     // 只能把候选对应的字节发给 shell：通常是「补全剩余部分 + 一个空格」。
-    // (§7 收敛 2026-10-30) Enter（行未补完）/ 鼠标点击都汇到这里：**仅填入**，
-    // 不执行 —— 再按一次 Enter 才执行。
+    // ((#cmd-hint-passive) 2026-11-02) 入口只剩**鼠标点击**（仅填入，不执行）；
+    // Enter 已透传 shell 直接执行当前行。
     callback term-hint-accept(int /* index */);
-    // (§7 定稿 2026-10-30 三轮) Shift+Enter → **直接执行选中候选**（清行重打
-    // + 回车）；Enter → 仅填入（框开着永远填入，见键处理）。
+    // (§7 定稿 2026-10-30 三轮) Shift+Enter → **执行选中候选**（填入 + 回车
+    // 一步到位）；Enter 已不接管（纯提示，透传执行当前行）。
     callback term-hint-run(int /* index */);
     // (§5) → 键接受内联鬼影：把 ghost 文本发给 PTY（不执行、浮层重算）。
     callback term-hint-ghost-accept();
@@ -2385,12 +2390,13 @@ export component TerminalView inherits Rectangle {
                     // `control` elsewhere, so ^X/^C reach the PTY everywhere (#158).
                     // Return `accept` for everything: `reject` would drop the char.
                     } else if (root.term-hint-open && !root.term-hint-suppressed
+                            && !root.term-hint-esc-dismissed
                             && root.term-hint-rows.length > 0
                             && (event.text == Key.UpArrow || event.text == Key.DownArrow)) {
-                        // (§7 收敛 2026-10-30) ↑↓ 移动选中；**不循环**——
-                        //   弹出时已选中首条（与命令栏 history-selected = 0 同款）；
-                        //   · ↑ 在首项再按 → **穿透**：关浮层 + 这次 ↑ 交给
-                        //     shell 翻历史（沙盘同款；想翻历史不用先按 Esc）；
+                        // ((#cmd-hint-no-default) 2026-11-02) ↑↓ 移动选中；
+                        // **不循环**；弹出时**不选中**（-1），↓ = 选首条。
+                        //   · ↑ 在首项（或未选中）再按 → **穿透**：关浮层 +
+                        //     这次 ↑ 交给 shell 翻历史（沙盘同款）；
                         //   · ↓ 在末项再按 → 关浮层（shell 的 ↓ 在空提示符上
                         //     没有动作，不必透传）。
                         if (event.text == Key.UpArrow) {
@@ -2412,32 +2418,24 @@ export component TerminalView inherits Rectangle {
                                 root.term-hint-close-request();
                                 accept
                             } else {
+                                // -1（未选中）+↓ = 选首条；首条+↓ = 第二条。
                                 root.term-hint-selected += 1;
                                 accept
                             }
                         }
                         accept
                     } else if (root.term-hint-open && !root.term-hint-suppressed
+                            && !root.term-hint-esc-dismissed
                             && root.term-hint-rows.length > 0
+                            && root.term-hint-selected >= 0
                             && event.text == Key.Return && event.modifiers.shift) {
-                        // (§7 定稿 2026-10-30 三轮) Shift+Enter = **强制执行**选中
-                        // 候选（清行重打 + 回车，term-hint-run）——跳过「填入确认」
-                        // 的快车道，与命令栏同一口径。
+                        // (§7 定稿 2026-10-30 三轮) Shift+Enter = **执行选中候选**
+                        // （填入 + 回车一步，term-hint-run）。(#cmd-hint-no-default)
+                        // 未选中（-1）时不拦 —— 等同 Enter 透传执行当前行。
                         root.term-hint-run(root.term-hint-selected);
                         accept
                     } else if (root.term-hint-open && !root.term-hint-suppressed
-                            && root.term-hint-rows.length > 0
-                            && event.text == Key.Return) {
-                        // (§7 定稿 2026-10-30 三轮，用户实测：输入与首条候选相同
-                        //   时回车被误判「已确认」直接执行) Enter 契约再简化——
-                        //   **框开着（有候选）→ 永远=填入选中候选并收框**；
-                        //   填完后行与候选一致，浮层已收，第二次 Enter 走下面的
-                        //   透传分支执行——「确认」靠浮层收起这个动作本身表达，
-                        //   不再需要 line==apply 的文本比对（打字打出的完整命令
-                        //   与候选天然相等，比对判据必漏）。
-                        root.term-hint-accept(root.term-hint-selected);
-                        accept
-                    } else if (root.term-hint-open && !root.term-hint-suppressed
+                            && !root.term-hint-esc-dismissed
                             && root.term-hint-ghost != ""
                             && event.text == Key.RightArrow && !event.modifiers.control
                             && !event.modifiers.alt) {
@@ -2448,17 +2446,21 @@ export component TerminalView inherits Rectangle {
                         root.term-hint-ghost-accept();
                         accept
                     } else if (root.term-hint-open && event.text == Key.Escape) {
-                        // (#cmd-hint-p1) Esc 关掉并抑制**本行**（高保真 §4）。
-                        // 抑制只由 Esc 建立；行被清空时 Rust 侧才解除（见 refresh）。
-                        root.term-hint-suppressed = true;
+                        // (#cmd-hint-p1) Esc 关框。(#cmd-hint-esc-redisplay
+                        // 2026-11-02) 改**软抑制**：只压住当前这一下，继续敲字
+                        // （候选签名变化，见上面的 sig 监听）就重新弹 ——
+                        // 用户实测「Esc 后再输入不再显示」不行。
+                        root.term-hint-esc-dismissed = true;
                         accept
                     } else {
-                        // ★ 其余按键（含 Tab）**全部透传给 shell**：
+                        // ★ 其余按键（含 Tab 与 **Enter**）**全部透传给 shell**：
                         //   · Tab 永远是 shell 的原生补全（路径/文件/参数包）——
                         //     高保真 §5 定稿：提示框永不接管 Tab，shell 补全的
                         //     回显改变当前行后，浮层按新行重算自己的候选；
-                        //   · ⚠ 不在这里解除 Esc 抑制（§4：抑制持续到行被清空，
-                        //     由 Rust 侧 refresh 在行清空时发 reset 令牌）。
+                        //   · (#cmd-hint-passive 2026-11-02) Enter 也透传：回车=
+                        //     执行当前已敲的行（框开着不多吃一次键）。浮层的收起
+                        //     由 Rust 侧 send-key 的回车分支完成（立刻隐藏 + 发
+                        //     复位令牌，见 src/app.rs on_send_key）。
                         root.send-key(event.text,
                                       Theme.is-mac ? event.modifiers.meta : event.modifiers.control,
                                       event.modifiers.alt, event.modifiers.shift);
@@ -2522,10 +2524,12 @@ export component TerminalView inherits Rectangle {
             // 光标格由 cursor-row / cursor-col 给出（回滚时 cursor-row = -1，
             // 那种情况直接不画 —— 用户在看历史，不该弹补全）。
             //
-            // 可见性还有三条闸（高保真 §4 抑制表）：
+            // 可见性还有三条闸（高保真 §4 抑制表；(#cmd-hint-esc-redisplay)
+            // 2026-11-02 修订）：
             //   · term-hint-open —— Rust 侧行缓冲判定「有可信命令行」；
             //   · !is-alt-screen —— vim/htop 里没有 shell 行；
-            //   · !term-hint-suppressed —— 用户按过 Esc。
+            //   · !term-hint-suppressed —— ↑ 首项穿透（翻历史整行抑制）；
+            //   · !term-hint-esc-dismissed —— Esc / 点空白软抑制（敲字即解）。
             //
             // ★ 再加一条几何闸：光标必须落在终端**可视行数内**。
             //   判据用已有的 `term-rows`（可视行数 = floor(可视高/cell-h)），
@@ -2535,20 +2539,23 @@ export component TerminalView inherits Rectangle {
             // 点浮层**以外**的地方 → 关掉（用户实测要求：「点击空白也会取消掉」）。
             // ★ 声明在浮层之前 = 画在它下面：点在浮层上时浮层自己的 TouchArea
             //   先接住；只有点到空白才落到这一层。
-            if root.term-hint-open && !root.term-hint-suppressed : TouchArea {
+            if root.term-hint-open && !root.term-hint-suppressed
+                    && !root.term-hint-esc-dismissed : TouchArea {
                 x: 0px;
                 y: 0px;
                 width: root.width;
                 // 只盖终端输出区（减去标签栏 32 + 命令栏 48），命令栏仍可点。
                 height: max(1px, root.height - 80px);
                 clicked => {
-                    root.term-hint-suppressed = true;
+                    // (#cmd-hint-esc-redisplay) 与 Esc 同一软抑制：点空白只关
+                    // 这一下，继续敲字照常重弹。
+                    root.term-hint-esc-dismissed = true;
                 }
             }
 
             if root.term-hint-open && !root.is-alt-screen
                     && root.cursor-row >= 0 && root.cursor-row < root.term-rows
-                    && !root.term-hint-suppressed
+                    && !root.term-hint-suppressed && !root.term-hint-esc-dismissed
                     && (root.term-hint-rows.length > 0 || root.term-hint-danger != "") : Rectangle {
                 // 高保真 §3 上限 472 → (#cmd-hint-tight 2026-11-02) 收到 432：
                 // 用户反馈左右偏宽；窄窗仍按可视区收。
@@ -2572,17 +2579,22 @@ export component TerminalView inherits Rectangle {
                 //   于是「下方够放」判成立、浮层却压在命令栏上。
                 //   这里减掉两块 chrome，再留 8 的安全边距。
                 property <length> term-area-bottom: root.height - 48px - 32px;
-                // 下方剩余空间（扣掉 8 的安全边距）。≥ 盒高就向下，否则向上翻。
-                property <length> space-below: self.term-area-bottom - self.caret-bottom - 8px;
+                // 下方剩余空间（扣掉 24 的阴影安全边距，见 #cmd-hint-shadow-room）。
+                // ≥ 盒高就向下，否则向上翻。
+                property <length> space-below: self.term-area-bottom - self.caret-bottom - 24px;
                 property <bool> flip-up: self.space-below < self.box-h;
                 // 两边都不够时压高度，至少留出四段里最要紧的部分。
                 property <length> avail: max(160px,
                     self.flip-up ? self.caret-top - 8px : self.space-below);
 
                 // ★ 横向**左对齐光标并夹紧**（高保真 §2 ①③ 硬规则）：
-                //   x = clamp(caret.x, 8, 视口宽 - 盒宽 - 8)。光标在行尾时
+                //   x = clamp(caret.x, m, 视口宽 - 盒宽 - m)。光标在行尾时
                 //   居中必然溢出——贴光标是这类补全浮层的方位语义。
-                x: clamp(self.caret-x, 8px, max(8px, root.width - self.width - 8px));
+                //   (#cmd-hint-shadow-room 2026-11-02) 夹紧边距 8 → 20px：
+                //   真投影（18px 模糊）会向框外晕 ~18px，8px 边距不够它活，
+                //   central.clip 把超出部分硬切 —— 用户实测「阴影右侧没贴边」
+                //   （之前透明投影无此问题）。边距必须 ≥ 模糊半径。
+                x: clamp(self.caret-x, 20px, max(20px, root.width - self.width - 20px));
                 // ★ 翻上去时底边贴光标格上沿（-6），向下时顶边贴光标格下沿（+6）。
                 //
                 // ★ 夹紧只在「翻转后仍然出界」时兜底，**不能反过来盖掉翻转**：
@@ -2593,10 +2605,14 @@ export component TerminalView inherits Rectangle {
                 //     · 向下 → 顶边不许超过「终端区底 - 盒高 - 8」；
                 //     · 向上 → 顶边不许小于 8（不越过标签栏）。
                 height: min(self.box-h, self.avail);
+                // (#cmd-hint-shadow-room) y 向下夹紧边距 8 → 24px：阴影 18px
+                // 模糊 + 6px 下坠，要 24px 才完整落进 central.clip；顶边阴影
+                // 向上只晕 ~12px（18-6），8px 够。space-below 的 8 同步 24，
+                // 让「下方够不够」的判定也按同一口径算。
                 y: self.flip-up
                     ? max(8px, self.caret-top - self.height - 6px)
                     : min(self.caret-bottom + 6px,
-                          max(8px, self.term-area-bottom - self.height - 8px));
+                          max(8px, self.term-area-bottom - self.height - 24px));
 
                 term-hint-inner := CommandHint {
                     width: parent.width;
@@ -2624,6 +2640,7 @@ export component TerminalView inherits Rectangle {
             // 不依赖浮层矩形自身的布局——它跟光标格走。光标不在行尾时 Rust
             // 侧会把 ghost 清空（敲字场景光标总在行尾，← 左移后消失）。
             if root.term-hint-open && !root.term-hint-suppressed
+                    && !root.term-hint-esc-dismissed
                     && root.term-hint-ghost != ""
                     && root.cursor-row >= 0 && root.cursor-row < root.term-rows : Text {
                 x: 10px + (max(0, root.cursor-col) + 1) * root.cell-w;
@@ -2862,38 +2879,33 @@ export component TerminalView inherits Rectangle {
                                     root.history-open = root.history-autocomplete
                                         && (root.hint-rows.length > 0
                                             || root.danger-now != "");
-                                    // 选中项默认停在第一条（最相关），不是最后一条：
-                                    // 四段式列表是「按相关度排好」的，第一条就是最佳。
-                                    root.history-selected = 0;
+                                    // (#cmd-hint-no-default 2026-11-02) 弹出**不选中**
+                                    // （-1）：默认高亮首条会和「Enter=执行当前行」抢
+                                    // 语义；↑↓ 才选中（↓ 首下 = 首条）。
+                                    root.history-selected = -1;
                                 }
                                 key-pressed(e) => {
-                                    // (§7 收敛 2026-10-30) Shift+Enter = 强制执行
-                                    //（跳过两段式直接发送，提示框开不开都一样）——
-                                    // 与终端内联同一契约。原先掉进 reject，TextInput
-                                    // 把它当普通键处理（多行输入/裸发），三个语义
-                                    // 各自为政；现在两处宿主一个口径。
-                                    if (e.text == Key.Return && e.modifiers.shift) {
+                                    // ((#cmd-hint-passive) 2026-11-02) 两处宿主
+                                    // 同一套契约：Enter = **直接执行**当前输入
+                                    //（提示框纯提示，开着也不拦 —— 两段式「填入→
+                                    // 再回车」多吃一次键，用户实测点名）；
+                                    // Shift+Enter = 执行**选中**候选（整行替换成
+                                    // apply 再发送，与终端内联 term-hint-run 同义，
+                                    // 也与脚注「Shift+Enter 执行选中」一致）。
+                                    // 要候选但先改改 → Tab 填入（下方分支）。
+                                    if (e.text == Key.Return && e.modifiers.shift
+                                            && root.hist-popup-visible
+                                            && root.history-autocomplete
+                                            && root.history-selected >= 0
+                                            && root.hint-count() > 0) {
+                                        self.text = root.hint-target(root.history-selected);
                                         root.run-command(self.text, root.scope-spec(), "");
                                         self.text = "";
                                         root.history-open = false;
                                         root.history-cursor = -1;
                                         root.focus-pending = true;
                                         accept
-                                    } else if (e.text == Key.Return && !e.modifiers.shift) {
-                                        // (§7 定稿 2026-10-30 三轮) Enter 契约简化
-                                        //（与终端内联同一口径，用户实测：输入 `ll`
-                                        //   与首条候选相同时被 line==apply 误判
-                                        //   「已确认」直接执行）：**补全框开着 →
-                                        //   Enter 永远=填入选中候选并收框**；填完
-                                        //   框已收，第二次 Enter 走执行。「确认」靠
-                                        //   浮层收起表达，不做文本比对。
-                                        if (root.hist-popup-visible
-                                                && root.history-autocomplete
-                                                && root.hint-count() > 0) {
-                                            root.hint-accept();
-                                            root.focus-pending = true;
-                                            accept
-                                        }
+                                    } else if (e.text == Key.Return) {
                                         root.run-command(self.text, root.scope-spec(), "");
                                         self.text = "";
                                         root.history-open = false;
@@ -2925,8 +2937,9 @@ export component TerminalView inherits Rectangle {
                                         else { ime-input.focus(); }
                                         accept
                                     } else if (e.text == Key.UpArrow) {
-                                        // (#cmd-hint) 提示框打开时 ↑↓ 在**可见行**里循环；
-                                        // 在首项再按 ↑ 就穿透回 shell 历史（高保真 §5）。
+                                        // (#cmd-hint) 提示框打开时 ↑↓ 在**可见行**里移动
+                                        //（不循环）；(#cmd-hint-no-default) 未选中（-1）
+                                        // 时 ↑ = 穿透回 shell 历史（首项再 ↑ 同）。
                                         if (root.history-autocomplete && root.hint-count() > 0) {
                                             if (root.history-selected <= 0) {
                                                 // 穿透：收起提示框，改走历史回溯。
@@ -2951,6 +2964,8 @@ export component TerminalView inherits Rectangle {
                                         accept
                                     } else if (e.text == Key.DownArrow) {
                                         if (root.history-autocomplete && root.hint-count() > 0) {
+                                            // (#cmd-hint-no-default) -1（未选中）+ ↓ =
+                                            // 选首条；末项再 ↓ 回卷首条。
                                             root.history-selected = root.history-selected >= root.hint-count() - 1
                                                 ? 0 : root.history-selected + 1;
                                         } else {
@@ -3649,9 +3664,11 @@ export component TerminalView inherits Rectangle {
                 // 锚点：贴光标（与旧实现同一套横向口径），宽度按高保真 §3 取 472，
                 // 但不超过命令栏可用宽。x 再 clamp 进栏内，光标贴右时不至于出界。
                 // (#cmd-hint-tight) 472 → 432，同终端内联那处。
+                // (#cmd-hint-shadow-room 2026-11-02) 夹紧边距 8 → 20px：真投影
+                // 18px 模糊要往框外晕，8px 不够被裁（用户实测「阴影右侧没贴边」）。
                 width: min(432px, parent.width - 16px);
-                x: clamp(cmd-box.x + 28px + root.cmd-caret-x, 8px,
-                        max(8px, parent.width - self.width - 8px));
+                x: clamp(cmd-box.x + 28px + root.cmd-caret-x, 20px,
+                        max(20px, parent.width - self.width - 20px));
                 // 向上弹：命令栏在最底，浮层只能往上长；底边贴住栏上沿。
                 //
                 // ★ 高度必须夹进**终端区可用高**，不能只夹 root.height：

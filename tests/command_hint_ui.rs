@@ -557,6 +557,12 @@ fn a_dangerous_command_paints_the_detail_area_red() {
 
     type_text(&ui, "rm -rf /tmp/x");
     ui.set_hint_rows(rows(3));
+    // ★ 离屏测试没接 app.rs 的 on_check_cmd_text（那里才会把命令算成
+    //   cmd-danger），danger-now 永远为空 → 告警条根本不渲染，本测试自
+    //   告警条搬进浮层后就在空转（2026-11-02 实测红 0 → 0、整框无一红
+    //   像素，而断言却一直「通过过」）。直接灌 AppWindow 属性——它与
+    //   TerminalView.danger-now 双向绑定（app.slint），等价于回调产物。
+    ui.set_cmd_danger("rm -rf".into());
 
     let mut f = Frame::new();
     for _ in 0..5 {
@@ -570,21 +576,21 @@ fn a_dangerous_command_paints_the_detail_area_red() {
     let red_danger = max_red_in_detail(&f, dt, db);
     assert!(
         red_danger > red_safe + 50,
-        "危险命令没有把详情区染红（红色像素 {red_safe} → {red_danger}）"
+        "危险命令没有把告警条染红（红色像素 {red_safe} → {red_danger}）"
     );
 }
 
-/// 在**详情区**（浮层下沿往上 23(脚注)~117(脚注+详情)）逐行数红像素，取最大值。
+/// 在浮层里逐行数红像素，取最大值（取样「告警条」）。
 ///
-/// ★ 不要用固定的「底边 - 70px」去取样：浮层高度会随分隔线/裁切调整而变，
-///   固定偏移会落到背景或脚注上（实测量出红 0 与 6，而截图里整条告警是红的）。
-///   扫一段区间取最大，对高度变化免疫。
+/// ★ 取样窗的历史：详情区（下沿往上 23~117）随 2026-10-30 修订退役——告警条
+///   挪到了**列表区上方**（30px 条件条）。原「bottom-117..bottom-23」落在列表
+///   区上，量到红 0（2026-11-02 实测红 0 → 0，截图里告警明明整条红）。
+///   改为**整框扫**（顶部..脚注上沿）：告警条在哪一行都能命中，对布局调整
+///   免疫——危险命令是唯一会大面积偏红的元素，误伤风险为零。
 fn max_red_in_detail(f: &Frame, top: usize, bottom: usize) -> usize {
-    // 详情区上沿 = bottom - 脚注23 - 详情94；下沿 = bottom - 脚注23。
-    let lo = bottom.saturating_sub(23 + 94).max(top);
-    let hi = bottom.saturating_sub(23);
+    let hi = bottom.saturating_sub(23); // 排除脚注（里头没有红，纯省像素）
     let mut best = 0;
-    for y in lo..hi {
+    for y in top..hi {
         best = best.max(count_red_row(f, y, top));
     }
     best

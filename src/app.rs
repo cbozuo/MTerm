@@ -12110,6 +12110,8 @@ fn wire_key_input(
     //     ② 与当前行比对，算出**需要追加的尾巴**；
     //     ③ 只把那段尾巴发给 PTY（不重打整行，避免触发 readline 的乱序）。
     //   `apply` 由 command_hint 统一算，命令栏与这里共用同一份语义。
+    //   (#cmd-hint-passive 2026-11-02) Enter 不再走这里（回车透传 shell 直接
+    //   执行，见 terminal_view.slint 键处理）；入口只剩**鼠标点击**（仅填入）。
     {
         let handles = handles.clone();
         let bufs = bufs.clone();
