@@ -16,7 +16,7 @@ import { Theme } from "theme.slint";
 import { Icon } from "icons.slint";
 import { Scrim, DialogClose } from "widgets.slint";
 import { ScrollView } from "std-widgets.slint";
-import { ColorPickerDialog, PickerMath } from "color_picker.slint";
+import { ColorPickerDialog, PickerMath, InfoSwatch, ColorInfoCard } from "color_picker.slint";
 
 export struct HighlightPresetItem {
     id: string,
@@ -175,14 +175,16 @@ export component HighlightDialog inherits Rectangle {
     callback sync-picker-pos();                    // 数值改动后回填取样点
 
     // ── 页签与取色中间量（全部本地，弹框关掉即弃）────────────────────
-    property <int> tab: 0;                          // 0 预设 / 1 自定义
+    // tab / pal-open / pal-base 开放 in-out：运行时只有弹框内部写（语义不变），
+    // examples/highlight_shot.rs 离屏渲染要直写它们摆状态。
+    in-out property <int> tab: 0;                   // 0 预设 / 1 自定义
     property <string> new-name: "";
     property <string> new-pattern: "";
     // (#hl-rule-edit) 编辑态：>=0 = 正在改第 index 条自定义规则（表单回填、
     // 主钮变「保存修改」）；-1 = 添加态。取消/保存后复位。
     property <int> edit-index: -1;
-    property <bool> pal-open: false;                // 47 色板卡
-    property <string> pal-base: "#1FC8B4";          // 开卡时的颜色（取消还原）
+    in-out property <bool> pal-open: false;         // 47 色板卡（开放供离屏预览驱动）
+    in-out property <string> pal-base: "#1FC8B4";   // 开卡时的颜色（取消还原）
     property <bool> pick-open: false;               // 调色盘
     property <string> pick-base: "#1FC8B4";         // 开盘时的颜色（取消还原）
     property <[string]> recent-slots: [root.r0, root.r1, root.r2, root.r3,
@@ -605,7 +607,13 @@ export component HighlightDialog inherits Rectangle {
                                 multi: true;
                                 field-h: 70px;
                             }
-                            // 颜色行：色块 + HEX + 对比度提示
+                            // (#hl-add-row 2026-11-02) 颜色行与主钮合并同一行：
+                            // [颜色] [色块钮] [对比度警示(可省)] [取消(编辑态)] [＋添加]。
+                            // 主钮底色**跟随选定色**（用户定稿交互：颜色选定后添加
+                            // 按钮即变为选定色，形成"用这个色新增"的直观暗示）；
+                            // 悬停/按下用白叠（与色板卡「应用」键同一语言）——原来的
+                            // accent-soft 底 + accent 字在 hover 翻成实心强调底时
+                            // 青字压青底（用户反馈「移入有些不清晰」），一并根治。
                             HorizontalLayout {
                                 spacing: 9px;
                                 cross-axis-alignment: center;
@@ -658,7 +666,8 @@ export component HighlightDialog inherits Rectangle {
                                         }
                                     }
                                 }
-                                // 对比度提示：取色盘守卫判据（与强调色同口径）
+                                // 对比度提示：取色盘守卫判据（与强调色同口径）。
+                                // 弹性宽改 0：余量归主钮，本句按自然宽度排在色块后。
                                 if PickerMath.fit-hex(root.new-color) != root.new-color : Text {
                                     text: root.lang-en
                                         ? "Too dim on the terminal — will be brightened"
@@ -666,68 +675,75 @@ export component HighlightDialog inherits Rectangle {
                                     color: Theme.warning;
                                     font-size: 10.5px;
                                     vertical-alignment: center;
-                                    horizontal-stretch: 1;
+                                    horizontal-stretch: 0;
                                     overflow: elide;
                                 }
-                            }
-                            // (#hl-rule-edit) 主钮双态：添加 / 保存修改；
-                            // 编辑态旁挂「取消」复位回添加态。
-                            Rectangle {
-                                height: 38px;
-                                border-radius: 8px;
-                                background: add-ta.has-hover
-                                    ? Theme.accent-solid.brighter(0.08) : Theme.accent-soft;
-                                border-width: 1px;
-                                border-color: Theme.accent-solid.with-alpha(0.55);
-                                Text {
-                                    width: 100%;
-                                    height: 100%;
-                                    text: root.edit-index >= 0
-                                        ? (root.lang-en ? "Save changes" : "保存修改")
-                                        : (root.lang-en ? "＋ Add" : "＋ 添加");
-                                    color: Theme.accent;
-                                    font-size: 12.5px;
-                                    font-weight: Theme.fw-strong;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                                add-ta := TouchArea {
-                                    mouse-cursor: default;
-                                    clicked => {
-                                        if root.edit-index >= 0 {
-                                            if root.update-rule(root.edit-index, root.new-name, root.new-pattern, root.new-color) {
-                                                root.new-name = "";
-                                                root.new-pattern = "";
-                                                root.edit-index = -1;
-                                            }
-                                        } else if root.add-rule(root.new-name, root.new-pattern, root.new-color) {
+                                // (#hl-rule-edit) 编辑态旁挂「取消」：定宽描边钮，
+                                // 与色板卡页脚取消键同规格（64 宽）。
+                                if root.edit-index >= 0 : Rectangle {
+                                    width: 64px;
+                                    height: 38px;
+                                    border-radius: 8px;
+                                    background: cancel-ta.has-hover ? Theme.bg-hover : transparent;
+                                    border-width: 1px;
+                                    border-color: Theme.border-strong;
+                                    Text {
+                                        width: 100%;
+                                        height: 100%;
+                                        text: root.lang-en ? "Cancel" : "取消";
+                                        color: cancel-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                                        font-size: 12.5px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    cancel-ta := TouchArea {
+                                        mouse-cursor: default;
+                                        clicked => {
                                             root.new-name = "";
                                             root.new-pattern = "";
+                                            root.edit-index = -1;
                                         }
                                     }
                                 }
-                            }
-                            if root.edit-index >= 0 : Rectangle {
-                                height: 38px;
-                                border-radius: 8px;
-                                background: cancel-ta.has-hover ? Theme.bg-hover : transparent;
-                                border-width: 1px;
-                                border-color: Theme.border-strong;
-                                Text {
-                                    width: 100%;
-                                    height: 100%;
-                                    text: root.lang-en ? "Cancel" : "取消";
-                                    color: Theme.text-secondary;
-                                    font-size: 12.5px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                                cancel-ta := TouchArea {
-                                    mouse-cursor: default;
-                                    clicked => {
-                                        root.new-name = "";
-                                        root.new-pattern = "";
-                                        root.edit-index = -1;
+                                // 主钮双态：添加 / 保存修改。底色 = 选定色，文字 =
+                                // ink-on（深块白字/浅块黑字，任意选定色可读）。
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    height: 38px;
+                                    border-radius: 8px;
+                                    background: PickerMath.hex-color(root.new-color);
+                                    clip: true;
+                                    Rectangle {
+                                        border-radius: 8px;
+                                        background: #ffffff;
+                                        opacity: add-ta.has-hover ? 0.12 : add-ta.pressed ? 0.22 : 0;
+                                    }
+                                    Text {
+                                        width: 100%;
+                                        height: 100%;
+                                        text: root.edit-index >= 0
+                                            ? (root.lang-en ? "Save changes" : "保存修改")
+                                            : (root.lang-en ? "＋ Add" : "＋ 添加");
+                                        color: PickerMath.ink-on(root.new-color);
+                                        font-size: 12.5px;
+                                        font-weight: Theme.fw-strong;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    add-ta := TouchArea {
+                                        mouse-cursor: default;
+                                        clicked => {
+                                            if root.edit-index >= 0 {
+                                                if root.update-rule(root.edit-index, root.new-name, root.new-pattern, root.new-color) {
+                                                    root.new-name = "";
+                                                    root.new-pattern = "";
+                                                    root.edit-index = -1;
+                                                }
+                                            } else if root.add-rule(root.new-name, root.new-pattern, root.new-color) {
+                                                root.new-name = "";
+                                                root.new-pattern = "";
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -915,18 +931,24 @@ export component HighlightDialog inherits Rectangle {
                     // (#hl-done-btn 2026-10-20) 按 hi-fi `.done` 打磨：
                     // ① 宽度不再写死 84px（中英文"完成"/"Done"宽度差很多），
                     //    改为左右 18px 内边距 + 内容自适应；
-                    // ② 补按下态（accent-pressed），背景/边框都走 120ms 过渡，
-                    //    不再只有 hover 一档；
+                    // ② (#hl-done-white 2026-11-02) 悬停/按下反馈改**白叠**语言
+                    //    （hover 12% / 按下 22%，与色板卡「应用」、调色盘「确认」、
+                    //    表单「添加」同一套）——原 accent-hover/pressed 是整底换色，
+                    //    过渡时整块明暗跳变（用户反馈「样式生硬」），白叠只在
+                    //    accent 上罩一层渐显，观感与全弹框统一；
                     // ③ 字色按 hi-fi 的 `--ac-on`：暗色主题是深青（强调色压暗
                     //    82%），亮色主题是白 —— 白字压在 #1FC8B4 上对比只有
                     //    ~1.9:1，糊成一团也是"生硬"的来源之一。
                     Rectangle {
                         height: 30px;
                         border-radius: 7px;
-                        background: done-ta.pressed ? Theme.accent-pressed
-                                  : done-ta.has-hover ? Theme.accent-hover
-                                  : Theme.accent;
-                        animate background { duration: 120ms; }
+                        background: Theme.accent;
+                        clip: true;
+                        Rectangle {
+                            border-radius: 7px;
+                            background: #ffffff;
+                            opacity: done-ta.has-hover ? 0.12 : done-ta.pressed ? 0.22 : 0;
+                        }
                         HorizontalLayout {
                             padding-left: 18px;
                             padding-right: 18px;
@@ -970,18 +992,123 @@ export component HighlightDialog inherits Rectangle {
                 border-color: Theme.border-strong;
                 drop-shadow-blur: 24px;
                 drop-shadow-color: transparent;
+                // (#hl-pal-parity 2026-11-02) 对齐强调色弹框的三件套：
+                // ① 卡片留白吞层 —— 原来点卡片空白会穿透到底下全屏遮罩被当成
+                //    「取消」误关卡（用户以为卡片坏了）；② 空白区可拖动；
+                // ③ 选定态三属性（fitted/warn/dirty）供副标题三态行用。
+                property <string> fitted: PickerMath.fit-hex(root.new-color);
+                property <bool> warn: self.fitted != root.new-color;
+                property <bool> dirty: root.new-color != root.pal-base;
+                property <length> drag-ox;
+                property <length> drag-oy;
+                property <length> drag-cx;
+                property <length> drag-cy;
+                property <bool> dragging: false;
+                pal-ta := TouchArea {
+                    clicked => { }
+                    pointer-event(ev) => {
+                        if (ev.kind == PointerEventKind.down) {
+                            pal-card.dragging = true;
+                            pal-card.drag-ox = pal-card.x;
+                            pal-card.drag-oy = pal-card.y;
+                            pal-card.drag-cx = pal-ta.absolute-position.x + pal-ta.mouse-x;
+                            pal-card.drag-cy = pal-ta.absolute-position.y + pal-ta.mouse-y;
+                        } else if (ev.kind == PointerEventKind.up) {
+                            pal-card.dragging = false;
+                        }
+                    }
+                    moved => {
+                        if (pal-card.dragging) {
+                            pal-card.x = Math.max(8px, Math.min(
+                                pal-card.drag-ox + (pal-ta.absolute-position.x + pal-ta.mouse-x - pal-card.drag-cx),
+                                Math.max(8px, parent.width - pal-card.width - 8px)));
+                            pal-card.y = Math.max(8px, Math.min(
+                                pal-card.drag-oy + (pal-ta.absolute-position.y + pal-ta.mouse-y - pal-card.drag-cy),
+                                Math.max(8px, parent.height - pal-card.height - 8px)));
+                        }
+                    }
+                }
                 pal-lay := VerticalLayout {
                     padding-top: 14px;
                     padding-bottom: 14px;
                     padding-left: 16px;
                     padding-right: 16px;
                     spacing: 10px;
-                    Text {
-                        text: root.lang-en
-                            ? "Tap a swatch to select; Apply takes effect. Cancel reverts."
-                            : "点选色块仅选中；「应用」后生效，取消 / 关闭还原当前色";
-                        color: Theme.text-muted;
-                        font-size: 11px;
+                    // 副标题三态（互斥，与强调色弹框/swatch_popup 同款口径）：
+                    // 警示（对比不足）→ 已选未生效 → 中性提示。尾部吸空块不能省，
+                    // 否则余量摊给可生长 Text，色块被推离文字。
+                    if pal-card.warn : HorizontalLayout {
+                        spacing: 4px;
+                        cross-axis-alignment: center;
+                        Text {
+                            height: 20px;
+                            horizontal-stretch: 0;
+                            vertical-alignment: center;
+                            text: root.lang-en ? "Selected" : "已选择";
+                            color: Theme.warning;
+                            font-size: 11px;
+                        }
+                        InfoSwatch { hex: root.new-color; card-below: false; }
+                        Text {
+                            height: 20px;
+                            horizontal-stretch: 0;
+                            vertical-alignment: center;
+                            text: root.lang-en
+                                ? "not applied — too dim on the terminal; applying lightens to"
+                                : "（未生效）—— 对终端底对比度不足，应用时将自动调亮为";
+                            color: Theme.warning;
+                            font-size: 11px;
+                        }
+                        InfoSwatch { hex: pal-card.fitted; card-below: false; }
+                        Text {
+                            height: 20px;
+                            horizontal-stretch: 0;
+                            vertical-alignment: center;
+                            text: root.lang-en ? ". Apply takes effect; Cancel / ✕ / blank reverts."
+                                : "；点「应用」生效，取消 / 关闭还原。";
+                            color: Theme.warning;
+                            font-size: 11px;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    if !pal-card.warn && pal-card.dirty : HorizontalLayout {
+                        spacing: 4px;
+                        cross-axis-alignment: center;
+                        Text {
+                            height: 20px;
+                            horizontal-stretch: 0;
+                            vertical-alignment: center;
+                            text: root.lang-en ? "Selected" : "已选择";
+                            color: Theme.text-muted;
+                            font-size: 11px;
+                        }
+                        InfoSwatch { hex: root.new-color; card-below: false; }
+                        Text {
+                            height: 20px;
+                            horizontal-stretch: 0;
+                            vertical-alignment: center;
+                            text: root.lang-en
+                                ? "(not applied). Apply takes effect; Cancel / ✕ / blank reverts."
+                                : "（未生效）；点「应用」生效，取消 / 关闭还原。";
+                            color: Theme.text-muted;
+                            font-size: 11px;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    if !pal-card.warn && !pal-card.dirty : HorizontalLayout {
+                        spacing: 4px;
+                        cross-axis-alignment: center;
+                        Text {
+                            height: 20px;
+                            horizontal-stretch: 0;
+                            vertical-alignment: center;
+                            text: root.lang-en
+                                ? "Tap a swatch to select; Apply takes effect. Cancel / ✕ / blank reverts."
+                                : "点选色块仅选中；「应用」后生效，取消 / 关闭还原当前色";
+                            color: Theme.text-muted;
+                            font-size: 11px;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
                     }
                     // 最近取用（本次会话，≤8；从未取过色时整行不占位）
                     if root.r0 != "" : HorizontalLayout {
@@ -994,13 +1121,27 @@ export component HighlightDialog inherits Rectangle {
                             horizontal-stretch: 0;
                         }
                         for r in root.recent-slots : Rectangle {
-                            width: r != "" ? 17px : 0px;
-                            height: 17px;
+                            width: r != "" ? 14px : 0px;
+                            height: 14px;
                             border-radius: 4px;
                             background: PickerMath.hex-color(r);
                             border-width: r-ta.has-hover ? 2px : 1px;
                             border-color: r-ta.has-hover
                                 ? PickerMath.ink-on(r).with-alpha(0.72) : #ffffff26;
+                            drop-shadow-blur: r-ta.has-hover ? 10px : 0px;
+                            drop-shadow-color: #00000066;
+                            animate drop-shadow-blur { duration: 100ms; }
+                            Rectangle {
+                                border-radius: 4px;
+                                background: #ffffff;
+                                opacity: r-ta.has-hover ? 0.10 : 0;
+                            }
+                            ColorInfoCard {
+                                hex: r;
+                                x: (parent.width - self.width) / 2 - 8px;
+                                y: -(self.height + 7px);
+                                visible: r-ta.has-hover;
+                            }
                             r-ta := TouchArea {
                                 mouse-cursor: default;
                                 clicked => { root.new-color = r; }
@@ -1030,10 +1171,20 @@ export component HighlightDialog inherits Rectangle {
                             height: 40px;
                             border-radius: 8px;
                             background: PickerMath.hex-color(p.h);
-                            border-width: root.new-color == p.h ? 2px : 1px;
+                            border-width: root.new-color == p.h ? 2px : p-ta.has-hover ? 2px : 1px;
                             border-color: root.new-color == p.h
                                 ? PickerMath.ink-on(p.h)
                                 : p-ta.has-hover ? PickerMath.ink-on(p.h).with-alpha(0.72) : #ffffff1a;
+                            // (#hl-pal-parity) 悬停反馈与强调色弹框同款：柔和投影 +
+                            // 10% 白叠 + 边框加粗提亮（原来悬停只有边框变色，太弱）。
+                            drop-shadow-blur: p-ta.has-hover ? 12px : 0px;
+                            drop-shadow-color: #00000066;
+                            animate drop-shadow-blur { duration: 100ms; }
+                            Rectangle {
+                                border-radius: 8px;
+                                background: #ffffff;
+                                opacity: p-ta.has-hover ? 0.10 : 0;
+                            }
                             VerticalLayout {
                                 padding-left: 7px;
                                 padding-right: 5px;
@@ -1066,62 +1217,76 @@ export component HighlightDialog inherits Rectangle {
                     HorizontalLayout {
                         height: 36px;
                         spacing: 8px;
-                        // 「选定色 + 调色盘 ›」合并钮（强调色弹框同款）
+                        // 「选定色 + 调色盘 ›」合并钮（强调色弹框同款）。
+                        // (#hl-pal-curfix 2026-11-02) **调色盘点不到的真凶**：原来
+                        // 三段（色井103 + 分隔1 + 文字90 = 194px）全放进
+                        // HorizontalLayout，cur-ta 作为无定宽的第 4 个布局子项被
+                        // 分到 0 宽 → 整条合并钮永远点不到，「调色盘 ›」形同虚设
+                        // （用户反馈「调色盘不起作用」）。改成 swatch_popup 同款
+                        // 绝对定位三段 + 整卡一个 TouchArea 铺满（两段动作本来就
+                        // 相同 = 开调色盘）；纵向内衬改 hairline，底边不再露缝
+                        // （强调色那边的 #cur-seam 同款修法）。
                         Rectangle {
                             width: 194px;
                             height: 36px;
                             border-radius: 10px;
                             background: Theme.popup-bg-elevated;
-                            border-width: 1px;
+                            border-width: Theme.hairline();
                             border-color: cur-ta.has-hover
                                 ? PickerMath.hex-color(root.new-color) : Theme.border-strong;
                             clip: true;
-                            HorizontalLayout {
-                                spacing: 0px;
-                                Rectangle {
-                                    width: 103px;
-                                    height: parent.height;
-                                    background: PickerMath.hex-color(root.new-color);
-                                    VerticalLayout {
-                                        padding-left: 10px;
-                                        alignment: center;
-                                        spacing: 0px;
-                                        Text {
-                                            text: root.lang-en ? "Selected" : "选定";
-                                            color: PickerMath.ink-on(root.new-color);
-                                            font-size: 9px;
-                                            font-weight: Theme.fw-strong;
-                                            opacity: 0.85;
-                                        }
-                                        Text {
-                                            text: root.new-color;
-                                            color: PickerMath.ink-on(root.new-color);
-                                            font-size: 10px;
-                                            font-family: Theme.term-font-family;
-                                        }
+                            animate border-color { duration: 120ms; }
+                            Rectangle {
+                                x: 1px;
+                                y: Theme.hairline();
+                                width: 103px;
+                                height: parent.height - 2 * Theme.hairline();
+                                border-top-left-radius: 9px;
+                                border-bottom-left-radius: 9px;
+                                background: PickerMath.hex-color(root.new-color);
+                                VerticalLayout {
+                                    x: 10px;
+                                    alignment: center;
+                                    spacing: 0px;
+                                    Text {
+                                        text: root.lang-en ? "Selected" : "选定";
+                                        color: PickerMath.ink-on(root.new-color);
+                                        font-size: 9px;
+                                        font-weight: Theme.fw-strong;
+                                        opacity: 0.85;
+                                    }
+                                    Text {
+                                        text: root.new-color;
+                                        color: PickerMath.ink-on(root.new-color);
+                                        font-size: 10px;
+                                        font-family: Theme.term-font-family;
                                     }
                                 }
-                                Rectangle {
-                                    width: 1px;
-                                    height: parent.height;
-                                    background: Theme.border-strong;
-                                }
-                                Text {
-                                    width: 90px;
-                                    height: parent.height;
-                                    text: root.lang-en ? "Palette ›" : "调色盘 ›";
-                                    color: cur-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
-                                    font-size: 12px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                                cur-ta := TouchArea {
-                                    mouse-cursor: default;
-                                    clicked => {
-                                        root.pick-base = root.new-color;
-                                        root.picker-open(root.new-color);
-                                        root.pick-open = true;
-                                    }
+                            }
+                            Rectangle {
+                                x: 104px;
+                                y: Theme.hairline();
+                                width: 1px;
+                                height: parent.height - 2 * Theme.hairline();
+                                background: Theme.border-strong;
+                            }
+                            Text {
+                                x: 105px;
+                                y: Theme.hairline();
+                                width: parent.width - 105px - 1px;
+                                height: parent.height - 2 * Theme.hairline();
+                                text: root.lang-en ? "Palette ›" : "调色盘 ›";
+                                color: cur-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            cur-ta := TouchArea {
+                                mouse-cursor: default;
+                                clicked => {
+                                    root.pick-base = root.new-color;
+                                    root.picker-open(root.new-color);
+                                    root.pick-open = true;
                                 }
                             }
                         }
@@ -1176,6 +1341,14 @@ export component HighlightDialog inherits Rectangle {
                             height: 36px;
                             border-radius: 8px;
                             background: PickerMath.hex-color(root.new-color);
+                            clip: true;
+                            // (#hl-pal-parity) 悬停提亮 + 按下压暗（白叠，应用键
+                            // 与色板卡/调色盘确认键同一语言；原来无任何反馈）。
+                            Rectangle {
+                                border-radius: 8px;
+                                background: #ffffff;
+                                opacity: pc-ok-ta.has-hover ? 0.12 : pc-ok-ta.pressed ? 0.22 : 0;
+                            }
                             Text {
                                 width: 100%;
                                 height: 100%;
