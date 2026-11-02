@@ -76,9 +76,13 @@ export component CommandHint inherits Rectangle {
     // 反馈：边框线和四个圆角要和高亮设置里面对齐）：radius-xl + hairline 细线
     // + border-strong —— 同 highlight_dialog.slint 的 dlg 根节点、history_panel
     // 的 #hist-round5。原 radius-lg（10px）低一档，四角弧线与全应用弹框不一致。
+    // (#cmd-hint-corner 2026-11-02) 线改由**顶层描圈**统一画（组件尾部的
+    // Rectangle，z 序最上）：脚注 bg-panel 色带、首行选中底块都是带背景的
+    // 子元素，直角（哪怕内缩 1px）都会把根自身 border 的四角弧线盖掉/压糊
+    //（用户截图：四角弧线缺失、弧线发糊）。根不再画线 + 顶层描圈，与
+    // history_panel #hist-border-single 同款。
     border-radius: Theme.radius-xl;
-    border-width: Theme.hairline();
-    border-color: Theme.border-strong;
+    border-width: 0px;
     // (#cmd-hint-chrome 2026-10-30) 投影对齐「高亮设置」弹框 / 历史面板同款：
     // 26px transparent —— 立体感靠比终端底亮一档的 elevated 底 + 细边撑，
     // 不画真投影。原 14px #00000066 的黑影让框看起来比同配方的高亮设置
@@ -91,9 +95,12 @@ export component CommandHint inherits Rectangle {
     visible: root.open;
 
     // ── 滚动几何（#cmd-hint-scroll 2026-10-30）──────────────────────────
-    // 行高 28px 与列表区内衬 3px 是本组件的基准数（多处引用，集中在这）。
+    // 行高 28px 是本组件的基准数（多处引用，集中在这）。
+    // (#cmd-hint-flush-top 2026-11-02) 列表上内衬 0：首行（弹出即选中的那条）
+    // 贴住顶边框线，不再空 3px（用户截图「第一个命令不靠顶边线」）；列表区
+    // 高度/内容高的 +6px（上下各 3）同步收成 +3px（仅底部）。
     out property <length> row-h: 28px;
-    out property <length> list-pad: 3px;
+    out property <length> list-pad: 0px;
     // 可见行数 = min(候选数, 50)。高度按它算，所以 1↔3 条之间切换时
     // 框高度不变（高保真 §4 的「锁 3 行」）。
     // 数据侧可能给到几十条（HINT_MAX_ROWS=50），视图只开固定视口。
@@ -107,7 +114,7 @@ export component CommandHint inherits Rectangle {
     //   两段固定 + 条件告警条：
     //     列表(list-rows*28+6) + 告警 30（仅危险命令）+ 脚注 23
     out property <length> natural-height:
-        (root.list-rows * root.row-h + 6px)
+        (root.list-rows * root.row-h + 3px)
         + (root.danger-token != "" ? 30px : 0px)
         + 23px;
 
@@ -124,7 +131,7 @@ export component CommandHint inherits Rectangle {
         }
         let row-top = root.list-pad + root.selected * root.row-h;
         let row-bottom = row-top + root.row-h;
-        let win-h = root.list-rows * root.row-h + 6px;
+        let win-h = root.list-rows * root.row-h + 3px;
         if (row-top < -list-scroll) {
             list-scroll = -row-top;
         } else if (row-bottom > -list-scroll + win-h) {
@@ -207,8 +214,8 @@ export component CommandHint inherits Rectangle {
         // ── ② 候选列表（3–8 行，主体）───────────────────────────────────
         Rectangle {
             // 高保真 §4：候选 1→3 条时高度锁定在 3 行，超过才长高。
-            // 28px 行高 + 上下 3px 内衬。
-            height: root.list-rows * root.row-h + 6px;
+            // 28px 行高；(#cmd-hint-flush-top) 内衬上 0 / 下 3 → 高度 +3px。
+            height: root.list-rows * root.row-h + 3px;
             width: parent.width;
             background: transparent;
             clip: true;
@@ -223,7 +230,7 @@ export component CommandHint inherits Rectangle {
                 height: parent.height;
                 content-width: parent.width;
                 content-height: max(self.height,
-                    root.rows.length * root.row-h + 6px);
+                    root.rows.length * root.row-h + 3px);
                 content-y <=> list-scroll;
                 vertical-scrollbar-policy: ScrollBarPolicy.always-off;
 
@@ -238,12 +245,14 @@ export component CommandHint inherits Rectangle {
                 for r[idx] in root.rows : Rectangle {
                     height: root.row-h;
                     // (#cmd-hint-chrome 2026-10-30) 行高亮**内衬式**（历史面板同款）：
-                    // 水平内衬 4px，不贴弹框边——原先全宽贴边的直角行背景在弹框
-                    // 左上/右上角戳出 radius-xl 弧线之外 4~5px，把圆角线盖掉
-                    // （用户截图：第一行背景超出了）。弹出即选中首条后该行永远
-                    // 存在，问题必现；竖条也随内衬挪进来。
-                    x: 4px;
-                    width: parent.width - 8px;
+                    // 不贴弹框边——原先全宽贴边的直角行背景在弹框左上/右上角
+                    // 戳出 radius-xl 弧线之外，把圆角线盖掉（用户截图：第一行
+                    // 背景超出了）。弹出即选中首条后该行永远存在，问题必现；
+                    // 竖条也随内衬挪进来。
+                    // (#cmd-hint-tight 2026-11-02) 内衬 4→2px：用户反馈左右
+                    // 空档偏宽（弧线由顶层描圈兜底后无需再让这么多）。
+                    x: 2px;
+                    width: parent.width - 4px;
                     border-radius: Theme.radius-sm;
                     background: idx == root.selected ? Theme.accent-soft
                               : (row-ta.has-hover ? Theme.bg-hover : transparent);
@@ -407,5 +416,18 @@ export component CommandHint inherits Rectangle {
                 Rectangle { horizontal-stretch: 1; }
             }
         }
+    }
+
+    // ── 顶层描边圈（#cmd-hint-corner 2026-11-02）────────────────────────
+    // 边线唯一出处：声明在所有内容之后 = z 序最上，脚注色带/首行选中底块
+    // 都盖不住它，四角弧线恒完整。根自身 border-width 已归零，无双层叠画。
+    // 透明底、无 TouchArea，不吃点击。
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        border-radius: Theme.radius-xl;
+        border-width: Theme.hairline();
+        border-color: Theme.border-strong;
+        background: transparent;
     }
 }
