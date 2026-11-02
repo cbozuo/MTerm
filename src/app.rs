@@ -3273,6 +3273,11 @@ fn open_window(
         } else {
             window.set_term_font_family(mono_default.clone());
         }
+        // (#ink-bias-metrics 2026-11-02) 墨迹居中偏移跟随**最终生效**的字体。
+        let effective = window.get_term_font_family().to_string();
+        let bias = term_ink_bias_em(&db, &effective);
+        tracing::debug!(font = %effective, bias = %bias, "term-font: ink bias (em)");
+        window.set_term_ink_bias_em(bias);
         window.set_term_font_size(s.font_size() as f32);
         window.set_terminal_line_spacing(s.terminal_line_spacing());
         window.set_term_font_bold(s.terminal_bold());
@@ -3958,6 +3963,14 @@ fn open_window(
             if let Some(w) = weak.upgrade() {
                 w.set_term_font_family(resolved);
                 w.set_term_font_chosen(family);
+                // (#ink-bias-metrics) 字体换了，墨迹居中偏移跟着换。fontdb 的
+                // 全局扫描闭包在外层（db 移动进 on_set_ui_font 所在块），这里
+                // 重新建一个小扫描不值得 —— on_set_term_font 只在设置面板里
+                // 触发，扫一次几十毫秒可接受。
+                let db2 = load_font_database();
+                let bias = term_ink_bias_em(&db2, w.get_term_font_family().as_str());
+                tracing::debug!(bias = %bias, "term-font: ink bias (em) after family change");
+                w.set_term_ink_bias_em(bias);
             }
         });
     }
@@ -13392,6 +13405,67 @@ fn family_covers(db: &fontdb::Database, name: &str, probe: &[char]) -> bool {
     };
     let charmap = skrifa::charmap::Charmap::new(&font);
     probe.iter().all(|&c| charmap.map(c).is_some())
+}
+
+/// (#ink-bias-metrics 2026-11-02) 终端文字的纵向墨迹居中偏移，单位 **em**（乘以
+/// 字号得 px）。
+///
+/// 背景：`terminal_view.slint` 的格子高 = 行距 × 字体自然行盒，而字形墨迹在
+/// 行盒里的位置由字体的 ascent/descent/cap 分配决定 —— 有的字体墨迹偏上
+/// （留白集中在基线下方），有的接近居中。旧实现是**写死 +0.062em**（当时
+/// 按 dev 机字体实测调出），换字体就错：Maple Mono NF CN 的 asc-cap(290) ≈
+/// |desc|(300)，墨迹本来就接近居中，再被推 0.062em 就贴着格子底（用户实测
+/// 拖选高亮里文字压着下边线）。
+///
+/// 这里用 FreeType 同款的度量选择策略（skrifa Metrics：USE_TYPO_METRICS 优先，
+/// 否则 hhea），按「大写顶→基线」的可见墨迹算居中偏移：
+///
+/// ```text
+/// shift_down_em = line_box/2 − (cap_top + baseline)/2
+///               = (|descent| − (ascent − cap_height)) / 2   （单位 em）
+/// ```
+///
+/// Maple/JetBrains：(|300|−290)/2 = +0.005em ≈ 0（旧常数会多推 0.057em）；
+/// descent 明显大于 asc-cap 的字体才需要像旧常数那样往下拉。cap_height 缺失
+/// （无 OS/2 表）时返回 0 —— 宁可不偏，不猜。
+fn term_ink_bias_em(db: &fontdb::Database, family: &str) -> f32 {
+    use fontdb::Source;
+    const FALLBACK: f32 = 0.062;
+    let Some(id) = find_regular_face(db, family) else {
+        return FALLBACK;
+    };
+    let Some(face) = db.face(id) else {
+        return FALLBACK;
+    };
+    let bytes: Vec<u8> = match &face.source {
+        Source::Binary(b) => b.as_ref().as_ref().to_vec(),
+        Source::SharedFile(_, b) => b.as_ref().as_ref().to_vec(),
+        Source::File(p) => match std::fs::read(p) {
+            Ok(b) => b,
+            Err(_) => return FALLBACK,
+        },
+    };
+    let Ok(font) = skrifa::FontRef::from_index(&bytes, face.index) else {
+        return FALLBACK;
+    };
+    let m = skrifa::metrics::Metrics::new(
+        &font,
+        skrifa::instance::Size::new(1.0),
+        skrifa::instance::LocationRef::default(),
+    );
+    let Some(cap) = m.cap_height else { return 0.0 };
+    let upm = m.units_per_em as f32;
+    if upm == 0.0 || cap <= 0.0 {
+        return 0.0;
+    }
+    // Metrics::new 按 size=1px 缩放过：ascent/descent/cap 已经是 px @1em，
+    // 直接就是 em 值（units_per_em 个单位 = 1em = 1px @ size 1）。
+    let shift = ((m.descent.abs()) - (m.ascent - cap)) / 2.0;
+    // 发疯字体兜底：偏移超过 0.12em 就不可信，回退旧常数。
+    if !shift.is_finite() || shift.abs() > 0.12 {
+        return FALLBACK;
+    }
+    shift
 }
 
 /// Choose the UI (sans) font. `saved` is the user's Interface › Font choice; a
