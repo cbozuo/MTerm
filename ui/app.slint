@@ -2764,22 +2764,26 @@ export component AppWindow inherits Window {
             // Welcome / session list, to the right of the icon strip. Hidden when
             // collapsed — its icon stays in the strip; clicking it re-opens.
             if !root.left-sidebar-collapsed : Rectangle {
-                x: root.left-sidebar-dock == "right" ? parent.width - parent.quick-right - parent.right-sidebar-outside-strip - parent.left-sidebar-size
+                // (#sb-seam-overlap 2026-11-02) 同右栏：边界侧多铺 1 设备像素压住
+                // 未绘制缝（透壁纸那条亮线）。dock=left 边界在右缘 → 加宽；
+                // dock=right 边界在左缘 → 左移再加宽；top/bottom 同理。
+                x: root.left-sidebar-dock == "right" ? parent.width - parent.quick-right - parent.right-sidebar-outside-strip - parent.left-sidebar-size - 1phx
                  : root.left-sidebar-dock == "left" ? parent.quick-left + parent.right-sidebar-outside-strip
                  : parent.quick-left;
-                y: root.left-sidebar-dock == "bottom" ? parent.height - parent.quick-bottom - parent.right-sidebar-outside-strip - parent.left-sidebar-size
+                y: root.left-sidebar-dock == "bottom" ? parent.height - parent.quick-bottom - parent.right-sidebar-outside-strip - parent.left-sidebar-size - 1phx
                  : root.left-sidebar-dock == "top" ? parent.quick-top + parent.right-sidebar-outside-strip
                  : parent.quick-top;
-                width: parent.left-sidebar-horizontal ? parent.left-sidebar-size
+                width: parent.left-sidebar-horizontal ? parent.left-sidebar-size + 1phx
                     : parent.width - parent.quick-left - parent.quick-right;
                 height: parent.left-sidebar-horizontal
-                    ? parent.height - parent.quick-top - parent.quick-bottom : parent.left-sidebar-size;
+                    ? parent.height - parent.quick-top - parent.quick-bottom : parent.left-sidebar-size + 1phx;
                 // (#panel-layer-parity 2026-10-18) 这里原来也铺了一层 zone-sidebar，
                 // 于是左栏 = 容器 + LeftSidebar 根 + 紧凑卡片 = **3 层**半透明叠加，
                 // 右栏 = RightSidebar 根 + 内层卡片 = **2 层**。同一档透明度两边实际
                 // 不透明度不同（0.5 时左 87.5% / 右 75%），看起来「右边更透、像没铺满」。
                 // 底色由 LeftSidebar 根统一负责，这里不再叠一层。
-                clip: true;
+                // (#sb-seam-overlap) 铺出边界的 1phx 不能被裁掉 → clip 关掉。
+                clip: false;
                 LeftSidebar {
                     // macOS 原生标题栏没有侧栏切换按钮 → 保留面板内箭头；
                     // Windows/Linux 用标题栏 LOGO 按钮，面板内箭头隐藏。
@@ -3010,14 +3014,22 @@ export component AppWindow inherits Window {
             // Only shown while expanded; collapsing swaps it for the ToolStrip icon
             // bar below (mirrors the welcome sidebar), so no clipped widgets bleed
             // through the 36px strip (#resource-collapse).
+            // (#sb-seam-overlap 2026-11-02) 包裹矩形向**边界外**多铺 1 设备像素：
+            // sb-edge-snap 把边界吸到设备网格，但窗内各矩形（pane 画布 / 面板 /
+            // splitter 可见线）各自按逻辑坐标光栅化，分数缩放（125%/150%）或
+            // 跨屏 DPR 变化后三者并不总落在同一设备列 —— 中间会剩一条 1 设备
+            // 像素的**未绘制缝**：窗口底是透明的（#zone-alpha-desktop），缝隙
+            // 直接透出桌面壁纸（用户截图：右栏与终端之间一条随壁纸变色的亮线，
+            // 仅在打开终端后可见）。给面板自己多铺 1phx 压住这条缝，观感无变化
+            // （多出的 1 像素在面板底色内、被 splitter 线覆盖）。
             if !root.right-sidebar-collapsed : Rectangle {
-                x: root.right-sidebar-dock == "right" ? parent.width - parent.sb-w
+                x: root.right-sidebar-dock == "right" ? parent.width - parent.sb-w - 1phx
                  : 0px;
-                y: root.right-sidebar-dock == "bottom" ? parent.height - parent.sb-h
+                y: root.right-sidebar-dock == "bottom" ? parent.height - parent.sb-h - 1phx
                  : 0px;
-                width: root.right-sidebar-horizontal ? parent.sb-w : parent.width;
-                height: root.right-sidebar-horizontal ? parent.height : parent.sb-h;
-                clip: true;
+                width: root.right-sidebar-horizontal ? parent.sb-w + 1phx : parent.width;
+                height: root.right-sidebar-horizontal ? parent.height : parent.sb-h + 1phx;
+                clip: false;
                 RightSidebar {
                 // 同左栏：macOS 保留箭头，Win/Linux 用标题栏切换按钮。
                 show-collapse: !root.custom-titlebar;
