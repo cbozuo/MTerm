@@ -16,6 +16,7 @@ mod port_forward;
 // 终端行缓冲在 `crate::terminal::{HintObserver, command_line}`。
 mod command_hint_ui;
 mod command_manager;
+mod ping;
 mod quick_commands;
 mod resource_ui;
 mod session_event;
@@ -11384,6 +11385,8 @@ fn wire_key_input(
         Rc::new(RefCell::new(all_quick_group_names(&store.borrow())));
     // 命令管理弹框（#quick-cmd-manager 高保真 2026-10-24）：模型构建 + 回调。
     command_manager::install(&window, &store, &collapsed_quick_groups);
+    // 标题栏 Ping 弹框（#titlebar-ping 高保真 2026-11-03 V13）：探测引擎 + 回调。
+    ping::install(&window, &store);
     {
         let store_rc = store.clone();
         let weak = window.as_weak();

@@ -1,0 +1,841 @@
+// SPDX-License-Identifier: MIT
+// 标题栏 Ping 弹框（#titlebar-ping，高保真 docs/design/titlebar-ping-hifi-2026-11-03.html V13）。
+// 双模式：Ping＝可达性探测（本机/托管主机源，草稿→清单→RTT/曲线）；端口＝本机端口占用视图
+// （监听端口表，无目标概念）。骨架与 highlight_dialog 同款：全窗 overlay + Scrim + 卡片
+// 拖动 + 右下缩放抓手（settings 的 ifd-* 模式）。点外不关（模态，V2 定稿）。
+//
+// 数据全部 Rust 下发：清单/监听表是重建式模型（Slint 无 filter），图表曲线是 Rust
+// 拼好的 SVG path 字符串（Path 的 d 可绑定 string），「加入 N」条数走 pure callback
+// count-draft（Slint 无 split）。草稿 TextEdit 为固定两行高（TextEdit 无 content-size
+// 暴露，高保真的自动扩大在落地里退化为固定高+滚动，差异已记录）。
+
+import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+import { Scrim } from "widgets.slint";
+import { PickerMath } from "color_picker.slint";
+
+// ── 数据行 ─────────────────────────────────────────────────────────────
+// tone: 0 优秀 1 一般 2 超时 3 待测
+export struct PingTargetRow {
+    addr: string,
+    state-word: string,
+    tone: int,
+    rtt: string,
+    loss: string,
+    spark: string,
+    selected: bool,
+}
+// 端口模式：本机监听端口（GetExtendedTcpTable + 进程名）
+export struct ListenRow {
+    port: int,
+    name: string,
+    pid: int,
+    addr: string,
+    path: string,
+    selected: bool,
+}
+// 探测源下拉项（本机 / 托管主机；online=false 置灰）
+export struct PingHostOption {
+    key: string,
+    name: string,
+    online: bool,
+}
+
+export component PingDialog inherits Rectangle {
+    in property <bool> lang-en: false;
+    in property <length> bounds-w;
+    in property <length> bounds-h;
+    in property <bool> enabled: true;
+
+    in property <[PingTargetRow]> targets: [];
+    in property <[ListenRow]> listen-items: [];
+    in property <[PingHostOption]> hosts: [];
+    in property <string> method: "icmp";            // icmp | port
+    in property <string> source-name: "本机";
+    in-out property <string> draft;
+    in property <int> target-count: 0;
+
+    in property <string> result-target: "";
+    in property <string> method-label: "ICMP";
+    in property <string> rtt-label: "当前 RTT";
+    in property <string> rtt-value: "—";
+    in property <string> rtt-unit: "ms";
+    in property <string> quality-tone: "neutral";   // good fair bad testing neutral
+    in property <string> quality-text: "待测";
+    in property <string> quality-hint: "";
+    in property <bool> show-owner: false;
+    in property <string> owner-host: "";
+    in property <string> owner-row: "";
+    in property <string> stat-1-label: "平均";
+    in property <string> stat-1-value: "—";
+    in property <string> stat-2-label: "抖动";
+    in property <string> stat-2-value: "—";
+    in property <string> stat-3-label: "丢包";
+    in property <string> stat-3-value: "—";
+    in property <string> chart-path: "";
+    in property <string> chart-area-path: "";
+    in property <string> chart-loss-path: "";
+    in property <bool> chart-show: true;
+
+    in property <bool> testing: false;
+    in property <bool> auto-on: false;
+    in property <bool> auto-disabled: false;
+    in property <string> run-text: "探测";
+    in property <bool> run-disabled: false;
+    in property <string> summary: "";
+    in property <bool> has-error: false;
+    in property <string> input-error: "";
+    in property <int> listen-count: 0;
+    in property <int> listen-selected: 0;
+    in-out property <string> listen-search;
+
+    callback close-requested();
+    callback run();
+    callback add-draft();
+    callback clear-draft();
+    callback remove-target(string);
+    callback select-target(string);
+    callback toggle-auto(bool);
+    callback set-method(string);
+    callback set-source(string);
+    callback listen-select(int);
+    callback listen-search-edited(string);
+    callback copy-target();
+
+    // 纯回调：草稿解析条数（Rust 实现，Slint 无 split）
+    pure callback count-draft(string) -> int;
+
+    // ── 卡片内部临时态 ────────────────────────────────────────────────
+    property <length> card-x: 0px;
+    property <length> card-y: 0px;
+    property <bool> dragging: false;
+    property <bool> resizing: false;
+    property <length> drag-ox;
+    property <length> drag-oy;
+    property <length> drag-cx;
+    property <length> drag-cy;
+    property <bool> source-open: false;
+    property <length> card-w: 760px;
+    property <length> card-h: 460px;
+    property <length> base-w;
+    property <length> base-h;
+
+    init => {
+        card-x = Theme.snap-to-device((root.bounds-w - card-w) / 2);
+        card-y = Theme.snap-to-device((root.bounds-h - card-h) / 2);
+    }
+
+    Scrim { }
+    // 点外不关（V2 定稿）：吞滚轮即可
+    TouchArea {
+        height: 100%;
+        scroll-event(e) => { accept }
+    }
+
+    esc-scope := FocusScope {
+        x: 0; y: 0; width: 1px; height: 1px;
+        key-pressed(k) => {
+            if (k.text == Key.Escape) { root.close-requested(); return accept; }
+            return reject;
+        }
+    }
+
+    // ── 卡片 ──────────────────────────────────────────────────────────
+    card := Rectangle {
+        x: card-x; y: card-y;
+        width: card-w; height: card-h;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        border-radius: 12px;
+        background: Theme.bg-elevated;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #0000006e;
+        clip: true;
+
+        Rectangle {   // 顶部 accent 细线
+            x: 0; y: 0; width: parent.width; height: 2px;
+            background: @linear-gradient(90deg, transparent 0%, Theme.accent-solid 20%, Theme.accent-solid 80%, transparent 100%);
+            opacity: 0.7;
+        }
+
+        // ── 头部（拖动柄）────────────────────────────────────────────
+        head := Rectangle {
+            x: 0; y: 0; width: parent.width; height: 54px;
+            background: transparent;
+            drag-ta := TouchArea {
+                mouse-cursor: move;
+                pointer-event(pe) => {
+                    if (pe.kind == PointerEventKind.down && pe.button == PointerEventButton.left) {
+                        root.drag-ox = root.card-x; root.drag-oy = root.card-y;
+                        root.drag-cx = self.pressed-x; root.drag-cy = self.pressed-y;
+                        root.dragging = true;
+                    }
+                    if (pe.kind == PointerEventKind.up) { root.dragging = false; }
+                }
+                moved => {
+                    if (root.dragging) {
+                        root.card-x = clamp(root.drag-ox + self.pressed-x - root.drag-cx, 8px, max(8px, root.bounds-w - card.width - 8px));
+                        root.card-y = clamp(root.drag-oy + self.pressed-y - root.drag-cy, 8px, max(8px, root.bounds-h - card.height - 8px));
+                    }
+                }
+            }
+            HorizontalLayout {
+                x: 14px; y: 12px; width: parent.width - 70px; height: 30px;
+                spacing: 10px;
+                alignment: center;
+                Rectangle {
+                    width: 30px; height: 30px; border-radius: 7px;
+                    background: Theme.accent-soft;
+                    border-width: 1px; border-color: Theme.accent-solid.with-alpha(0.24);
+                    Icon { glyph: "connectivity-test"; width: 15px; height: 15px; tint: Theme.accent-solid; }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 7px;
+                        Text { text: root.lang-en ? "Ping" : "Ping 测试"; font-size: Theme.fs-md; font-weight: Theme.fw-strong; color: Theme.text-primary; vertical-alignment: center; }
+                        Rectangle {
+                            height: 16px; border-radius: 3px;
+                            border-width: 1px; border-color: Theme.border-subtle;
+                            HorizontalLayout {
+                                padding-left: 4px; padding-right: 4px;
+                                Text {
+                                    text: root.method == "icmp" ? "ICMP" : (root.lang-en ? "Local ports" : "端口占用");
+                                    font-size: 9px; font-weight: 500; color: Theme.text-muted; vertical-alignment: center;
+                                    font-family: Theme.ui-font-family;
+                                }
+                            }
+                        }
+                    }
+                    Text {
+                        text: root.method == "icmp"
+                            ? (root.lang-en ? "Reachability & round-trip latency" : "Ping 检测可达性与往返延迟 · 端口查看本机监听占用")
+                            : (root.lang-en ? "Local listening ports snapshot" : "本机监听端口占用快照");
+                        font-size: 10px; color: Theme.text-muted; vertical-alignment: center;
+                    }
+                }
+            }
+            // ✕ 关闭
+            Rectangle {
+                x: parent.width - 38px; y: 16px; width: 22px; height: 22px; border-radius: 4px;
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.close-requested(); }
+                }
+                Icon { glyph: "close"; width: 12px; height: 12px; tint: ta-close.has-hover ? Theme.text-primary : Theme.text-muted; }
+                ta-close := TouchArea { mouse-cursor: pointer; clicked => { root.close-requested(); } }
+            }
+        }
+
+        // ── 主体双栏 ─────────────────────────────────────────────────
+        Rectangle {
+            x: 0; y: 54px; width: parent.width; height: parent.height - 54px - 50px;
+            HorizontalLayout {
+                padding-left: 16px; padding-right: 14px; padding-top: 12px; padding-bottom: 12px;
+                spacing: 16px;
+
+                // ══ 左栏（360px）：Ping＝定义+草稿+清单；端口＝监听表 ══
+                VerticalLayout {
+                    width: 360px;
+                    alignment: stretch;
+
+                    // 探测定义行：源 + 方式
+                    if (root.method == "icmp") : HorizontalLayout {
+                        height: 26px; spacing: 6px; alignment: stretch;
+                        // 源下拉
+                        Rectangle {
+                            width: 92px; height: 26px; border-radius: 5px;
+                            border-width: 1px;
+                            border-color: source-open ? Theme.accent-solid : Theme.border-control;
+                            background: source-open ? Theme.accent-soft : Theme.popup-field;
+                            src-btn := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.source-open = !root.source-open; }
+                            }
+                            HorizontalLayout {
+                                padding-left: 8px; padding-right: 6px; spacing: 5px;
+                                Icon { glyph: "host-server"; width: 12px; height: 12px; tint: Theme.text-secondary; }
+                                Text { text: root.source-name; font-size: 11px; color: Theme.text-primary; vertical-alignment: center; overflow: elide; }
+                                Rectangle { width: 1px; }
+                                Icon { glyph: "chevron-down"; width: 10px; height: 10px; tint: Theme.text-muted; }
+                            }
+                        }
+                        // 方式分段
+                        Rectangle {
+                            width: 110px; height: 26px; border-radius: 5px;
+                            border-width: 1px; border-color: Theme.border-control;
+                            background: Theme.popup-field;
+                            clip: true;
+                            HorizontalLayout {
+                                Rectangle {
+                                    HorizontalLayout {
+                                        padding-left: 12px; padding-right: 12px;
+                                        Text { text: root.lang-en ? "Ping" : "Ping"; font-size: 11px; vertical-alignment: center;
+                                            color: root.method == "icmp" ? Theme.accent-solid : Theme.text-secondary;
+                                            font-weight: root.method == "icmp" ? 700 : 400; }
+                                    }
+                                    ta-ping := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.set-method("icmp"); }
+                                    }
+                                    background: root.method == "icmp" ? Theme.accent-soft : transparent;
+                                }
+                                Rectangle { width: 1px; height: 26px; background: Theme.border-control; }
+                                Rectangle {
+                                    HorizontalLayout {
+                                        padding-left: 12px; padding-right: 12px;
+                                        Text { text: root.lang-en ? "Ports" : "端口"; font-size: 11px; vertical-alignment: center;
+                                            color: root.method == "port" ? Theme.accent-solid : Theme.text-secondary;
+                                            font-weight: root.method == "port" ? 700 : 400; }
+                                    }
+                                    ta-port := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.set-method("port"); }
+                                    }
+                                    background: root.method == "port" ? Theme.accent-soft : transparent;
+                                }
+                            }
+                        }
+                    }
+
+                    // 源提示（Ping 模式）
+                    if (root.method == "icmp") : Text {
+                        height: 14px;
+                        text: root.lang-en ? "From local: result reflects \"you → target\"" : "从本机发起：结果反映「你 → 目标」的链路";
+                        font-size: 9px; color: Theme.text-muted; vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    // ── 草稿区（Ping 模式）────────────────────────────
+                    if (root.method == "icmp") : VerticalLayout {
+                        height: 52px;
+                        spacing: 3px;
+                        field := Rectangle {
+                            property <int> draft-ready: root.count-draft(root.draft);
+                            height: 48px;
+                            border-width: 1px;
+                            border-color: root.has-error ? Theme.danger : (draft-ta.has-focus ? Theme.accent-solid : Theme.border-control);
+                            border-radius: 6px;
+                            background: Theme.popup-field;
+                            clip: true;
+                            HorizontalLayout {
+                                padding-left: 9px; padding-right: 4px;
+                                // 草稿（自由文本，原样显示）
+                                VerticalLayout {
+                                    HorizontalLayout {
+                                        Text {
+                                            visible: root.draft == "";
+                                            text: root.lang-en ? "IP / domain, batch paste" : "IP / 域名，可批量粘贴";
+                                            font-size: 10px; color: Theme.text-muted; vertical-alignment: center;
+                                        }
+                                        draft-ta := TextInput {
+                                            text <=> root.draft;
+                                            font-size: 11px;
+                                            color: Theme.text-primary;
+                                            single-line: false;
+                                            wrap: word-wrap;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                                // 框内按钮组：✕ 清空 + 加入 N
+                                HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+                                    width: 96px;
+                                    VerticalLayout { alignment: center;
+                                        Rectangle {
+                                            width: 22px; height: 22px; border-radius: 11px;
+                                            TouchArea {
+                                                mouse-cursor: pointer;
+                                                clicked => { root.clear-draft(); }
+                                            }
+                                            Icon { glyph: "close"; width: 10px; height: 10px;
+                                                tint: clr-ta.has-hover ? Theme.popup-bg-elevated : Theme.text-muted; }
+                                            clr-ta := TouchArea { mouse-cursor: pointer; clicked => { root.clear-draft(); } }
+                                            background: clr-ta.has-hover ? Theme.accent-solid : transparent;
+                                        }
+                                    }
+                                    VerticalLayout { alignment: center;
+                                        add-btn := Rectangle {
+                                            height: 22px; border-radius: 11px;
+                                            background: add-ta.has-hover && field.draft-ready > 0 ? Theme.accent-solid.darker(0.08) : (field.draft-ready > 0 ? Theme.accent-solid : Theme.bg-active);
+                                            add-ta := TouchArea {
+                                                mouse-cursor: field.draft-ready > 0 ? pointer : default;
+                                                enabled: field.draft-ready > 0;
+                                                clicked => { root.add-draft(); }
+                                            }
+                                            HorizontalLayout {
+                                                padding-left: 10px; padding-right: 10px;
+                                                Text {
+                                                    text: field.draft-ready > 0 ? (root.lang-en ? "Add " + field.draft-ready : "加入 " + field.draft-ready) : (root.lang-en ? "Add" : "加入");
+                                                    font-size: 10px; font-weight: 700; vertical-alignment: center;
+                                                    color: field.draft-ready > 0 ? PickerMath.ink-on(Theme.accent-hex) : Theme.text-muted;
+                                                    font-family: Theme.ui-font-family;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // 错误提示
+                        Text {
+                            visible: root.has-error;
+                            height: 14px;
+                            text: root.input-error;
+                            font-size: 9.5px; color: Theme.danger; vertical-alignment: center;
+                        }
+                    }
+
+                    // ── 清单（Ping 模式）────────────────────────────────
+                    if (root.method == "icmp") : VerticalLayout {
+                        alignment: stretch;
+                        HorizontalLayout {
+                            height: 18px; spacing: 6px;
+                            Text { text: root.lang-en ? "Targets " + root.target-count : "清单 " + root.target-count; font-size: 9px; font-weight: 600;
+                                color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                            Rectangle { }
+                            Icon { glyph: "chevron-down"; width: 10px; height: 10px; tint: Theme.text-muted; }
+                        }
+                        // 表头
+                        Rectangle {
+                            height: 20px;
+                            HorizontalLayout {
+                                padding-left: 6px; padding-right: 8px; spacing: 10px;
+                                Text { text: root.lang-en ? "TARGET" : "目标"; width: 132px; font-size: 8.5px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                                Text { text: root.lang-en ? "STATE" : "状态"; width: 40px; font-size: 8.5px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                                Text { text: root.lang-en ? "RTT" : "延迟"; width: 48px; font-size: 8.5px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                                Text { text: root.lang-en ? "LOSS" : "丢包"; width: 44px; font-size: 8.5px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                                Rectangle { }
+                            }
+                        }
+                        // 行
+                        for t[idx] in root.targets : Rectangle {
+                            height: 30px; border-radius: 4px;
+                            background: t.selected ? Theme.accent-soft : (lt-touch.has-hover ? Theme.bg-hover : transparent);
+                            lt-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.select-target(t.addr); }
+                            }
+                            HorizontalLayout {
+                                padding-left: 6px; padding-right: 8px; spacing: 10px;
+                                HorizontalLayout {
+                                    width: 132px; spacing: 7px; alignment: center;
+                                    // 移除（✓ 勾选态，点击移出探测集）
+                                    Rectangle {
+                                        width: 14px; height: 14px; border-radius: 3px;
+                                        background: Theme.accent-solid;
+                                        TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.remove-target(t.addr); }
+                                        }
+                                        Text { text: "✓"; font-size: 9px; color: PickerMath.ink-on(Theme.accent-hex); horizontal-alignment: center; }
+                                    }
+                                    Rectangle { width: 5px; height: 5px; border-radius: 2.5px;
+                                        background: t.tone == 0 ? Theme.success : (t.tone == 1 ? Theme.warning : (t.tone == 2 ? Theme.danger : Theme.text-muted)); }
+                                    Text { text: t.addr; font-size: 10px; color: Theme.text-primary; vertical-alignment: center; overflow: elide; font-family: Theme.ui-font-family; }
+                                }
+                                Text { text: t.state-word; width: 40px; font-size: 10px; font-weight: 600; vertical-alignment: center;
+                                    color: t.tone == 0 ? Theme.success : (t.tone == 1 ? Theme.warning : (t.tone == 2 ? Theme.danger : Theme.text-muted)); }
+                                Text { text: t.rtt; width: 48px; font-size: 10px; color: Theme.text-secondary; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                                Text { text: t.loss; width: 44px; font-size: 9.5px; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                                // 迷你趋势
+                                Rectangle {
+                                    HorizontalLayout { }
+                                    if (t.spark != "") : Path {
+                                        width: 40px; height: 12px;
+                                        viewbox-width: 40; viewbox-height: 12;
+                                        commands: t.spark;
+                                        stroke: Theme.accent-solid;
+                                        stroke-width: 1.2px;
+                                        fill: transparent;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── 端口模式：监听端口表 ────────────────────────────
+                    if (root.method == "port") : VerticalLayout {
+                        alignment: stretch;
+                        HorizontalLayout {
+                            height: 24px; spacing: 6px;
+                            Text { text: root.lang-en ? "Listening " + root.listen-count : "监听端口 " + root.listen-count; font-size: 9px; font-weight: 600;
+                                color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                            Rectangle { }
+                            Rectangle {
+                                width: 140px; height: 24px; border-radius: 5px;
+                                border-width: 1px; border-color: Theme.border-control;
+                                background: Theme.popup-field;
+                                HorizontalLayout {
+                                    padding-left: 7px; padding-right: 6px; spacing: 5px;
+                                    Icon { glyph: "search"; width: 11px; height: 11px; tint: Theme.text-muted; }
+                                    lsearch := TextInput {
+                                        text <=> root.listen-search;
+                                        font-size: 10px; color: Theme.text-primary;
+                                        single-line: true; vertical-alignment: center;
+                                        edited() => { root.listen-search-edited(self.text); }
+                                    }
+                                    Text { visible: root.listen-search == ""; text: root.lang-en ? "port / process" : "搜端口 / 进程"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+                                }
+                            }
+                        }
+                        Rectangle {
+                            height: 20px;
+                            HorizontalLayout {
+                                padding-left: 6px; padding-right: 8px; spacing: 8px;
+                                Text { text: root.lang-en ? "PORT" : "端口"; width: 52px; font-size: 8.5px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                                Text { text: root.lang-en ? "PROCESS" : "进程"; width: 150px; font-size: 8.5px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                                Rectangle { }
+                                Text { text: "pid"; width: 46px; font-size: 8.5px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                            }
+                        }
+                        for l in root.listen-items : Rectangle {
+                            height: 28px; border-radius: 4px;
+                            background: l.selected ? Theme.accent-soft : (ll-touch.has-hover ? Theme.bg-hover : transparent);
+                            ll-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.listen-select(l.port); }
+                            }
+                            HorizontalLayout {
+                                padding-left: 6px; padding-right: 8px; spacing: 8px;
+                                Text { text: "{l.port}"; width: 52px; font-size: 10px; font-weight: 600; color: l.selected ? Theme.accent-solid : Theme.text-primary; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                                Text { text: l.name; width: 150px; font-size: 10px; color: Theme.text-primary; vertical-alignment: center; overflow: elide; font-family: Theme.ui-font-family; }
+                                Rectangle { }
+                                Text { text: "{l.pid}"; width: 46px; font-size: 9.5px; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle { width: 1px; height: 100%; background: Theme.border-subtle; }
+
+                // ══ 右栏：结果 ══
+                VerticalLayout {
+                    alignment: stretch;
+                    spacing: 0;
+
+                    // 结果头
+                    HorizontalLayout {
+                        height: 22px; spacing: 6px; alignment: stretch;
+                        // ← 全部（仅单个态显示，V11）
+                        if (root.result-target != "" && root.method == "icmp" && root.selected-target-active) : Rectangle {
+                            // selected-target-active 为 true 时才出现
+                        }
+                        sel-tag := Rectangle {
+                            visible: root.selected-target-active;
+                            height: 18px; border-radius: 4px;
+                            background: Theme.accent-soft;
+                            border-width: 1px; border-color: Theme.accent-solid.with-alpha(0.26);
+                            st-touch := TouchArea { mouse-cursor: pointer; clicked => { root.select-target(""); } }
+                            HorizontalLayout {
+                                padding-left: 7px; padding-right: 7px;
+                                Text { text: root.lang-en ? "← All" : "← 全部"; font-size: 9px; font-weight: 600; color: Theme.accent-solid; vertical-alignment: center; }
+                            }
+                        }
+                        Text { text: root.result-target; font-size: 12.5px; font-weight: 600; color: Theme.text-primary; vertical-alignment: center; overflow: elide; font-family: Theme.ui-font-family; }
+                        Rectangle {
+                            height: 16px; border-radius: 3px; border-width: 1px; border-color: Theme.border-subtle;
+                            HorizontalLayout { padding-left: 4px; padding-right: 4px;
+                                Text { text: root.method-label; font-size: 8.5px; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; } }
+                        }
+                        Rectangle {
+                            height: 16px; border-radius: 3px; border-width: 1px; border-color: Theme.border-subtle;
+                            HorizontalLayout { padding-left: 4px; padding-right: 4px;
+                                Text { text: root.source-name; font-size: 8.5px; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; } }
+                        }
+                        Rectangle { }
+                        copy-btn := Rectangle {
+                            width: 18px; height: 18px; border-radius: 3px;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.copy-target(); }
+                            }
+                            Icon { glyph: "copy"; width: 11px; height: 11px; tint: cp-ta.has-hover ? Theme.text-primary : Theme.text-muted; }
+                            cp-ta := TouchArea { mouse-cursor: pointer; clicked => { root.copy-target(); } }
+                        }
+                    }
+
+                    // hero：主数值 + 质量标签
+                    HorizontalLayout {
+                        height: 56px;
+                        padding-top: 6px;
+                        VerticalLayout {
+                            alignment: center; spacing: 2px;
+                            Text { text: root.rtt-label; font-size: 8.5px; font-weight: 600; color: Theme.text-muted; font-family: Theme.ui-font-family; }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                Text { text: root.rtt-value; font-size: root.method == "port" ? 34px : 38px; font-weight: 600; color: Theme.text-primary; vertical-alignment: center;
+                                    font-family: Theme.ui-font-family; }
+                                Text { text: root.rtt-unit; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                            }
+                        }
+                        Rectangle { }
+                        VerticalLayout {
+                            alignment: center; spacing: 3px;
+                            Rectangle {
+                                height: 20px; border-radius: 4px;
+                                border-width: 1px;
+                                border-color: root.quality-tone == "good" ? Theme.success.with-alpha(0.32)
+                                    : (root.quality-tone == "fair" ? Theme.warning.with-alpha(0.32)
+                                    : (root.quality-tone == "bad" ? Theme.danger.with-alpha(0.32)
+                                    : (root.quality-tone == "testing" ? Theme.accent-solid.with-alpha(0.32) : Theme.border-subtle)));
+                                background: root.quality-tone == "good" ? Theme.success.with-alpha(0.11)
+                                    : (root.quality-tone == "fair" ? Theme.warning.with-alpha(0.11)
+                                    : (root.quality-tone == "bad" ? Theme.danger.with-alpha(0.11)
+                                    : (root.quality-tone == "testing" ? Theme.accent-soft : transparent)));
+                                HorizontalLayout {
+                                    padding-left: 7px; padding-right: 7px; spacing: 5px;
+                                    Rectangle { width: 4px; height: 4px; border-radius: 2px; y: 8px;
+                                        background: root.quality-tone == "good" ? Theme.success
+                                            : (root.quality-tone == "fair" ? Theme.warning
+                                            : (root.quality-tone == "bad" ? Theme.danger
+                                            : (root.quality-tone == "testing" ? Theme.accent-solid : Theme.text-muted))); }
+                                    Text { text: root.quality-text; font-size: 10px; font-weight: 600; vertical-alignment: center;
+                                        color: root.quality-tone == "good" ? Theme.success
+                                            : (root.quality-tone == "fair" ? Theme.warning
+                                            : (root.quality-tone == "bad" ? Theme.danger
+                                            : (root.quality-tone == "testing" ? Theme.accent-solid : Theme.text-muted)));
+                                        font-family: Theme.ui-font-family; }
+                                }
+                            }
+                            Text { text: root.quality-hint; font-size: 9.5px; color: Theme.text-muted; horizontal-alignment: right; font-family: Theme.ui-font-family; }
+                        }
+                    }
+
+                    // 图表（Ping 模式）
+                    if (root.method == "icmp") : Rectangle {
+                        height: 110px;
+                        Rectangle {
+                            y: 4px; width: parent.width; height: 104px;
+                            border-width: 1px; border-color: Theme.border-subtle; border-radius: 5px;
+                            background: Theme.popup-bg-inset;
+                            clip: true;
+                            VerticalLayout {
+                                padding-left: 8px; padding-right: 8px; padding-top: 6px; padding-bottom: 2px;
+                                HorizontalLayout {
+                                    height: 14px;
+                                    Text { text: root.lang-en ? "Recent probes" : "最近探测 · 30 点"; font-size: 9px; color: Theme.text-secondary; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                                    Rectangle { }
+                                    Text { text: root.lang-en ? "100 ms threshold" : "100 ms 阈值"; font-size: 9px; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                                }
+                                Rectangle {
+                                    chart := Rectangle {
+                                        y: 18px; height: 74px;
+                                        if (root.chart-show && root.chart-path != "") : Path {
+                                            width: 100%; height: 100%;
+                                            commands: root.chart-area-path;
+                                            fill: Theme.accent-solid.with-alpha(0.16);
+                                            stroke-width: 0;
+                                        }
+                                        if (root.chart-show && root.chart-path != "") : Path {
+                                            width: 100%; height: 100%;
+                                            commands: root.chart-path;
+                                            stroke: Theme.accent-solid;
+                                            stroke-width: 1.6px;
+                                            fill: transparent;
+                                        }
+                                        if (root.chart-show && root.chart-loss-path != "") : Path {
+                                            width: 100%; height: 100%;
+                                            commands: root.chart-loss-path;
+                                            stroke: Theme.danger;
+                                            stroke-width: 2px;
+                                            fill: transparent;
+                                        }
+                                        if (!root.chart-show) : Text {
+                                            text: root.lang-en ? "No data yet" : "暂无探测数据";
+                                            font-size: 10px; color: Theme.text-muted; horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%;
+                                        }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    height: 12px;
+                                    Text { text: root.lang-en ? "30 probes ago" : "30 次前"; font-size: 9px; color: Theme.text-secondary; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                                    Rectangle { }
+                                    Text { text: root.lang-en ? "now" : "现在"; font-size: 9px; color: Theme.text-secondary; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                                }
+                            }
+                        }
+                    }
+
+                    // 三格统计
+                    Rectangle {
+                        height: 40px;
+                        HorizontalLayout {
+                            stat := VerticalLayout {
+                                alignment: center; spacing: 3px;
+                                Text { text: root.stat-1-label; font-size: 9px; color: Theme.text-secondary; font-family: Theme.ui-font-family; }
+                                Text { text: root.stat-1-value; font-size: 13px; font-weight: 600; color: Theme.text-primary; font-family: Theme.ui-font-family; }
+                            }
+                            Rectangle { width: 1px; background: Theme.border-subtle; }
+                            VerticalLayout {
+                                alignment: center; spacing: 3px;
+                                Text { text: root.stat-2-label; font-size: 9px; color: Theme.text-secondary; font-family: Theme.ui-font-family; }
+                                Text { text: root.stat-2-value; font-size: 13px; font-weight: 600; color: Theme.text-primary; font-family: Theme.ui-font-family; }
+                            }
+                            Rectangle { width: 1px; background: Theme.border-subtle; }
+                            VerticalLayout {
+                                alignment: center; spacing: 3px;
+                                Text { text: root.stat-3-label; font-size: 9px; color: Theme.text-secondary; font-family: Theme.ui-font-family; }
+                                Text { text: root.stat-3-value; font-size: 13px; font-weight: 600; color: Theme.text-primary; font-family: Theme.ui-font-family; }
+                            }
+                        }
+                    }
+
+                    // 监听进程块（Ping 单目标态 / 端口选中态）
+                    if (root.show-owner) : Rectangle {
+                        height: 52px; border-radius: 5px;
+                        border-width: 1px; border-color: Theme.border-subtle;
+                        background: Theme.popup-bg-inset;
+                        VerticalLayout {
+                            padding-left: 9px; padding-right: 9px; padding-top: 6px;
+                            Text { text: root.owner-host; font-size: 9px; color: Theme.text-secondary; font-family: Theme.ui-font-family; }
+                            Text { text: root.owner-row; font-size: 9.8px; color: Theme.text-primary; overflow: elide; wrap: word-wrap; font-family: Theme.ui-font-family; }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 页脚三段 ─────────────────────────────────────────────────
+        Rectangle {
+            x: 0; y: parent.height - 50px; width: parent.width; height: 50px;
+            border-width: 1px; border-color: Theme.border-subtle;
+            HorizontalLayout {
+                padding-left: 14px; padding-right: 14px; spacing: 10px;
+                // 左：连续 Ping（端口模式隐藏）
+                if (root.method == "icmp") : HorizontalLayout {
+                    alignment: center;
+                    spacing: 7px;
+                    width: 130px;
+                    auto-ta := TouchArea {
+                        width: 26px; height: 15px;
+                        mouse-cursor: root.auto-disabled ? default : pointer;
+                        enabled: !root.auto-disabled;
+                        clicked => { root.toggle-auto(!root.auto-on); }
+                    }
+                    Rectangle {
+                        width: 26px; height: 15px; border-radius: 8px;
+                        border-width: 1px; border-color: Theme.border-control;
+                        background: root.auto-on ? Theme.accent-solid : Theme.bg-active;
+                        animate background { duration: 120ms; }
+                        Rectangle {
+                            x: root.auto-on ? parent.width - 12px : 2px;
+                            y: 2px; width: 10px; height: 10px; border-radius: 11px;
+                            background: root.auto-on ? PickerMath.ink-on(Theme.accent-hex) : Theme.text-muted;
+                            animate x { duration: 140ms; }
+                        }
+                    }
+                    Text { text: root.lang-en ? "Continuous" : "连续 Ping"; font-size: 10px; color: Theme.text-secondary; vertical-alignment: center;
+                        opacity: root.auto-disabled ? 0.45 : 1; font-family: Theme.ui-font-family; }
+                    Text { text: "2s"; font-size: 9px; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                }
+                Rectangle { }
+                // 中：汇总
+                Text { text: root.summary; font-size: 9.5px; color: Theme.text-secondary; vertical-alignment: center;
+                    horizontal-alignment: center; font-family: Theme.ui-font-family; overflow: elide; }
+                Rectangle { }
+                // 右：主按钮 + 清空
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 8px;
+                    run-btn := Rectangle {
+                        width: 92px; height: 30px; border-radius: 6px;
+                        background: root.testing ? Theme.bg-active : Theme.accent-solid;
+                        clip: true;
+                        animate background { duration: 120ms; }
+                        // 白叠反馈（#btn-ink-unify）
+                        Rectangle {
+                            background: #ffffff;
+                            opacity: run-ta.has-hover && !root.testing ? 0.12 : (run-ta.pressed && !root.testing ? 0.22 : 0);
+                        }
+                        run-ta := TouchArea {
+                            mouse-cursor: root.testing ? default : pointer;
+                            enabled: !root.testing;
+                            clicked => { root.run(); }
+                        }
+                        Text { text: root.run-text; font-size: 12px; font-weight: 700; vertical-alignment: center;
+                            color: root.testing ? Theme.text-muted : PickerMath.ink-on(Theme.accent-hex); font-family: Theme.ui-font-family; }
+                    }
+                    if (root.method == "icmp") : Rectangle {
+                        height: 28px; border-radius: 6px;
+                        border-width: 1px; border-color: Theme.border-strong;
+                        background: clear-ta.has-hover ? Theme.bg-hover : transparent;
+                        clear-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.clear-results(); }
+                        }
+                        HorizontalLayout {
+                            padding-left: 12px; padding-right: 12px;
+                            Text { text: root.lang-en ? "Clear" : "清空结果"; font-size: 11px; vertical-alignment: center;
+                                color: clear-ta.has-hover ? Theme.text-primary : Theme.text-secondary; font-family: Theme.ui-font-family; }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 右下缩放抓手 ─────────────────────────────────────────────
+        resize-grip := Rectangle {
+            x: parent.width - 18px; y: parent.height - 18px; width: 18px; height: 18px;
+            TouchArea {
+                mouse-cursor: nwse-resize;
+                pointer-event(pe) => {
+                    if (pe.kind == PointerEventKind.down && pe.button == PointerEventButton.left) {
+                        root.base-w = card.width; root.base-h = card.height;
+                        root.drag-cx = self.pressed-x; root.drag-cy = self.pressed-y;
+                        root.resizing = true;
+                    }
+                    if (pe.kind == PointerEventKind.up) { root.resizing = false; }
+                }
+                moved => {
+                    if (root.resizing) {
+                        card.width = clamp(root.base-w + self.pressed-x - root.drag-cx, 560px, max(560px, root.bounds-w - card.x - 8px));
+                        card.height = clamp(root.base-h + self.pressed-y - root.drag-cy, 420px, max(420px, root.bounds-h - card.y - 8px));
+                    }
+                }
+            }
+        }
+
+        // ── 源下拉菜单 ───────────────────────────────────────────────
+        if (root.source-open) : Rectangle {
+            x: card.x + 30px; y: card.y + 84px; width: 300px; height: 96px;
+            border-width: 1px; border-color: Theme.border-strong; border-radius: 6px;
+            background: Theme.popup-bg-elevated;
+            drop-shadow-blur: 18px; drop-shadow-color: #00000070;
+            VerticalLayout {
+                padding: 6px;
+                Text { text: root.lang-en ? "Probe source" : "探测源"; font-size: 9px; font-weight: 600; color: Theme.text-muted; height: 16px; font-family: Theme.ui-font-family; }
+                for h in root.hosts : Rectangle {
+                    height: 26px; border-radius: 4px;
+                    background: h.key == root.source-key ? Theme.accent-soft : (hs-touch.has-hover && h.online ? Theme.bg-hover : transparent);
+                    hs-touch := TouchArea {
+                        mouse-cursor: h.online ? pointer : default;
+                        enabled: h.online;
+                        clicked => { root.set-source(h.key); root.source-open = false; }
+                    }
+                    HorizontalLayout {
+                        padding-left: 7px; padding-right: 7px; spacing: 7px;
+                        Rectangle { width: 5px; height: 5px; border-radius: 2.5px; y: 11px;
+                            background: h.online ? Theme.success : Theme.text-muted; }
+                        Text { text: h.name; font-size: 11px; color: h.online ? Theme.text-primary : Theme.text-muted; vertical-alignment: center;
+                            overflow: elide; font-family: Theme.ui-font-family; }
+                    }
+                }
+            }
+            menu-scrim := TouchArea { }   // 打开时挡住下层
+        }
+        // 源菜单打开时点外部关闭
+        if (root.source-open) : TouchArea {
+            clicked => { root.source-open = false; }
+        }
+    }
+
+    // Ping 单目标态标记（Rust 下发）：selected-target-active
+    in property <bool> selected-target-active: false;
+    in property <string> source-key: "local";
+    callback clear-results();
+}

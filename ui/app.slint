@@ -65,6 +65,7 @@ import { InterfacePanel, WslProfileInfo, AccentGuard } from "interface_panel.sli
 // (#hl-settings-hifi 2026-10-20) 高亮设置弹框（预设逐条开关 + 任意色自定义
 // 规则）。本体在根层：设置页与标题栏两个入口打开的是同一个实例。
 import { HighlightDialog, HighlightPresetItem, HighlightCustomItem } from "highlight_dialog.slint";
+import { PingDialog, PingTargetRow, ListenRow, PingHostOption } from "ping_dialog.slint";
 import { SettingsDialog } from "settings_dialog.slint";
 // Re-export so `slint::include_modules!` generates the detached Rust window types.
 export { ProcWindow, SystemInfoWindow, EditorWindow, TrayMenuWindow, AboutWindow, SendCmdWindow }
@@ -1366,6 +1367,63 @@ export component AppWindow inherits Window {
     in-out property <bool> json-format-output: true;
     // (#hl-settings-hifi) 高亮设置弹框的数据/开关（Rust 侧每次改动回写模型）
     in-out property <bool> highlight-dialog-open: false;
+    // (#titlebar-ping 2026-11-04) Ping 弹框数据/开关（Rust 侧模型重建下发，
+    // 与 highlight 同款模式；「加入 N」条数走 pure callback ping-count-draft）。
+    in-out property <bool> ping-dialog-open: false;
+    in property <[PingTargetRow]> ping-targets;
+    in property <[ListenRow]> ping-listen-items;
+    in property <[PingHostOption]> ping-hosts;
+    in property <string> ping-method: "icmp";
+    in property <string> ping-source-name: "本机";
+    in property <string> ping-source-key: "local";
+    in property <bool> ping-selected-target-active: false;
+    in-out property <string> ping-draft;
+    in property <int> ping-target-count: 0;
+    in property <string> ping-result-target: "";
+    in property <string> ping-method-label: "ICMP";
+    in property <string> ping-rtt-label: "当前 RTT";
+    in property <string> ping-rtt-value: "—";
+    in property <string> ping-rtt-unit: "ms";
+    in property <string> ping-quality-tone: "neutral";
+    in property <string> ping-quality-text: "待测";
+    in property <string> ping-quality-hint: "";
+    in property <bool> ping-show-owner: false;
+    in property <string> ping-owner-host: "";
+    in property <string> ping-owner-row: "";
+    in property <string> ping-stat-1-label: "平均";
+    in property <string> ping-stat-1-value: "—";
+    in property <string> ping-stat-2-label: "抖动";
+    in property <string> ping-stat-2-value: "—";
+    in property <string> ping-stat-3-label: "丢包";
+    in property <string> ping-stat-3-value: "—";
+    in property <string> ping-chart-path: "";
+    in property <string> ping-chart-area-path: "";
+    in property <string> ping-chart-loss-path: "";
+    in property <bool> ping-chart-show: false;
+    in property <bool> ping-testing: false;
+    in property <bool> ping-auto-on: false;
+    in property <bool> ping-auto-disabled: false;
+    in property <string> ping-run-text: "探测";
+    in property <string> ping-summary: "";
+    in property <bool> ping-has-error: false;
+    in property <string> ping-input-error: "";
+    in property <int> ping-listen-count: 0;
+    in property <int> ping-listen-selected: 0;
+    in-out property <string> ping-listen-search;
+    pure callback ping-count-draft(string) -> int;
+    callback ping-run();
+    callback ping-add-draft();
+    callback ping-clear-draft();
+    callback ping-remove-target(string);
+    callback ping-select-target(string);
+    callback ping-toggle-auto(bool);
+    callback ping-set-method(string);
+    callback ping-set-source(string);
+    callback ping-listen-select(int);
+    callback ping-listen-search-edited(string);
+    callback ping-copy-target();
+    callback ping-clear-results();
+    callback ping-close();
     in property <[HighlightPresetItem]> highlight-presets;
     in property <[HighlightCustomItem]> highlight-customs;
     in-out property <int> highlight-enabled-count: 0;
@@ -2549,6 +2607,21 @@ export component AppWindow inherits Window {
                             root.settings-open = false;
                             root.download-open = false;
                             root.gm-open-request();
+                        }
+                    }
+                    // (#titlebar-ping 2026-11-04) Ping 测试 —— 标题栏脉冲图标入口，
+                    // 开合型按钮（active = 弹框打开），与命令栏/同步输入同一语言。
+                    TopbarBtn { height: parent.height;
+                        icon: "connectivity-test";
+                        label: "";
+                        tip: root.lang-en ? "Ping" : "Ping 测试";
+                        tip-show(t, tx, ty) => { root.topbar-tip-text = t; root.topbar-tip-x = tx; root.topbar-tip-y = ty; }
+                        tip-hide(t) => { if (root.topbar-tip-text == t) { root.topbar-tip-text = ""; } }
+                        active: root.ping-dialog-open;
+                        clicked => {
+                            root.settings-open = false;
+                            root.download-open = false;
+                            root.ping-dialog-open = !root.ping-dialog-open;
                         }
                     }
                     // 弹性：把工具钮组顶向 LOGO（左组左对齐，#topbar-icon-only 修订）。
@@ -8314,6 +8387,69 @@ export component AppWindow inherits Window {
     // 从设置页打开时设置卡留在背后（同 accent-pop 的层级关系）。
     // 位置状态（hex/取样点/明度）在根上 —— Rust 侧 on_highlight_sync_picker_pos
     // 与强调色那一套同款回填。
+    // (#titlebar-ping 2026-11-04) Ping 弹框：与 highlight 同款条件实例化。
+    // 点外不关（模态，V2 定稿）；关闭走 Esc / ✕ / 标题栏图标。Rust 回调经
+    // root 转发（on_ping_*），「加入 N」计数走 pure callback ping-count-draft。
+    if root.ping-dialog-open : PingDialog {
+        lang-en: root.lang-en;
+        bounds-w: root.width;
+        bounds-h: root.height;
+        targets: root.ping-targets;
+        listen-items: root.ping-listen-items;
+        hosts: root.ping-hosts;
+        method: root.ping-method;
+        source-name: root.ping-source-name;
+        source-key: root.ping-source-key;
+        selected-target-active: root.ping-selected-target-active;
+        draft <=> root.ping-draft;
+        target-count: root.ping-target-count;
+        result-target: root.ping-result-target;
+        method-label: root.ping-method-label;
+        rtt-label: root.ping-rtt-label;
+        rtt-value: root.ping-rtt-value;
+        rtt-unit: root.ping-rtt-unit;
+        quality-tone: root.ping-quality-tone;
+        quality-text: root.ping-quality-text;
+        quality-hint: root.ping-quality-hint;
+        show-owner: root.ping-show-owner;
+        owner-host: root.ping-owner-host;
+        owner-row: root.ping-owner-row;
+        stat-1-label: root.ping-stat-1-label;
+        stat-1-value: root.ping-stat-1-value;
+        stat-2-label: root.ping-stat-2-label;
+        stat-2-value: root.ping-stat-2-value;
+        stat-3-label: root.ping-stat-3-label;
+        stat-3-value: root.ping-stat-3-value;
+        chart-path: root.ping-chart-path;
+        chart-area-path: root.ping-chart-area-path;
+        chart-loss-path: root.ping-chart-loss-path;
+        chart-show: root.ping-chart-show;
+        testing: root.ping-testing;
+        auto-on: root.ping-auto-on;
+        auto-disabled: root.ping-auto-disabled;
+        run-text: root.ping-run-text;
+        summary: root.ping-summary;
+        has-error: root.ping-has-error;
+        input-error: root.ping-input-error;
+        listen-count: root.ping-listen-count;
+        listen-selected: root.ping-listen-selected;
+        listen-search <=> root.ping-listen-search;
+        count-draft(text) => { root.ping-count-draft(text); }
+        close-requested => { root.ping-dialog-open = false; root.ping-close(); }
+        run => { root.ping-run(); }
+        add-draft => { root.ping-add-draft(); }
+        clear-draft => { root.ping-clear-draft(); }
+        remove-target(a) => { root.ping-remove-target(a); }
+        select-target(a) => { root.ping-select-target(a); }
+        toggle-auto(v) => { root.ping-toggle-auto(v); }
+        set-method(m) => { root.ping-set-method(m); }
+        set-source(k) => { root.ping-set-source(k); }
+        listen-select(p) => { root.ping-listen-select(p); }
+        listen-search-edited(t) => { root.ping-listen-search-edited(t); }
+        copy-target => { root.ping-copy-target(); }
+        clear-results => { root.ping-clear-results(); }
+    }
+
     if root.highlight-dialog-open : HighlightDialog {
         lang-en: root.lang-en;
         bounds-w: root.width;
