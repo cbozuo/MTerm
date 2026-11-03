@@ -30,6 +30,14 @@ export struct TermSpan {
     nerd: bool,
     // (#twemoji-removal 2026-09-05) emoji/emoji-image 字段已随 Twemoji 移除:
     // emoji 交由字体回退渲染单色轮廓,不再有图像 span。
+    // (#nerd-icon-unify 2026-11-03) 逐字形光学归一化（Rust 侧按所选字体量出，
+    // 见 app.rs load_nerd_icon_layouts）：Nerd Font 各图标族墨迹占幅差异极大
+    // （文档 0.92em vs Material 文件夹 0.67em），全局倍数只能迁就最高的那批，
+    // 矮的永远显小 —— 改为按字形墨迹「高趋近 0.85em、高≤0.92em、宽≤1.02em
+    // (1.7 格)」逐个求倍数；nerd-x-em 把墨迹盒在 1 格内水平居中（墨迹在
+    // 字身框里不居中，直接放大 Text 会整体右漂）。未量出的字形回退 1.15/0。
+    nerd-scale: float,
+    nerd-x-em: float,
 }
 
 // A find-match highlight rectangle on the terminal grid.
@@ -1618,13 +1626,6 @@ export component TerminalView inherits Rectangle {
     in-out property <float> term-ink-bias-em: 0.062;
     property <length> ink-bias: root.term-font-size-px * root.term-ink-bias-em * 1px;
     property <length> text-y-shift: (root.cell-h - cell-probe.preferred-height) / 2 + root.ink-bias;
-    // (#nerd-icon-scale) 图标字形放大倍数：图标按 em 方框设计，格宽只有字号
-    // ~0.6，名义字号下比小写 x-height 还矮。但放大要按**最高的那批**图标算：
-    // `ls --color` 的文档图标（nf-fa-file_text 等）墨高 0.77em，1.75 会让它长到
-    // 1.35em —— 比整格还高，上下都糊进邻行，整屏看着"图标比字大一号、还错位"。
-    // 1.15 让最高图标收进格内（0.92em），常规文件夹图标 0.60em、数字高度 0.73em，
-    // 与文字比例协调。
-    property <float> nerd-scale: 1.15;
     // Usable text box = root.width minus the 10px left/right padding of
     // output-text; usable height = key-capture height minus the 8px top pad.
     // The old 16px bottom focus-recovery strip was redundant once body-touch
@@ -2000,7 +2001,9 @@ export component TerminalView inherits Rectangle {
                             // layout never re-enters parley's FontContext.
                             // (#twemoji-removal) emoji 图像 span 已移除,统一文本渲染。
                             Text {
-                                x: 0px;
+                                // (#nerd-icon-unify) x：图标 span 按 Rust 量出的墨迹盒
+                                // 偏移（em）水平居中——墨迹在字身框里不居中，放大后
+                                // 右漂越明显，逐字形修正才稳；普通 span 顶在格左。
                                 // (#line-spacing-center) cell-h 随 terminal-line-spacing
                                 // 缩放，但这个 Text 仍按字体自然行盒（cell-probe 的
                                 // preferred-height，未乘 spacing）绘制。行距 <1 时文字
@@ -2021,8 +2024,12 @@ export component TerminalView inherits Rectangle {
                                 // 「不设 height 以免重入 FontContext」冲突。
                                 // (#ink-center) 与文字共用同一 ink-bias，图标字面底线
                                 // 才能和文字齐平。
+                                // (#nerd-icon-unify) x：按 Rust 量出的墨迹盒
+                                // 偏移（em）水平居中，替代「Text 顶在格左」——
+                                // 放大倍数越大右漂越明显，逐字形修正才稳。
+                                x: span.nerd ? span.nerd-x-em * root.term-font-size-px * 1px : 0px;
                                 y: span.nerd
-                                    ? (root.cell-h - cell-probe.preferred-height * root.nerd-scale) / 2
+                                    ? (root.cell-h - cell-probe.preferred-height * span.nerd-scale) / 2
                                         + root.ink-bias
                                     : root.text-y-shift;
                                 text: span.text;
@@ -2033,7 +2040,7 @@ export component TerminalView inherits Rectangle {
                                 font-family: span.cjk ? Theme.ui-font-family : Theme.term-font-family;
                                 // 图标放大不改变字体度量（cell-w/h 仍来自 cell-probe），
                                 // 所以 PTY 列数/行数不会因放大而重排。
-                                font-size: (span.nerd ? root.term-font-size-px * root.nerd-scale : root.term-font-size-px) * 1px;
+                                font-size: (span.nerd ? root.term-font-size-px * span.nerd-scale : root.term-font-size-px) * 1px;
                                 font-weight: (Theme.term-font-bold || span.bold) ? Theme.fw-strong : Theme.fw-regular;
                             }
                         }

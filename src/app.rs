@@ -56,7 +56,7 @@ use self::window::*;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 /// Max bytes merged into one Output event before starting a fresh chunk (#209).
 /// Keeps a single UI callback from spending hundreds of ms in vt100 ingest.
@@ -3278,6 +3278,8 @@ fn open_window(
         let bias = term_ink_bias_em(&db, &effective);
         tracing::debug!(font = %effective, bias = %bias, "term-font: ink bias (em)");
         window.set_term_ink_bias_em(bias);
+        // (#nerd-icon-unify) 逐字形图标布局表跟随最终生效的字体。
+        load_nerd_icon_layouts(&db, &effective);
         window.set_term_font_size(s.font_size() as f32);
         window.set_terminal_line_spacing(s.terminal_line_spacing());
         window.set_term_font_bold(s.terminal_bold());
@@ -3971,6 +3973,8 @@ fn open_window(
                 let bias = term_ink_bias_em(&db2, w.get_term_font_family().as_str());
                 tracing::debug!(bias = %bias, "term-font: ink bias (em) after family change");
                 w.set_term_ink_bias_em(bias);
+                // (#nerd-icon-unify) 图标布局表跟着换。
+                load_nerd_icon_layouts(&db2, w.get_term_font_family().as_str());
             }
         });
     }
@@ -13466,6 +13470,118 @@ fn term_ink_bias_em(db: &fontdb::Database, family: &str) -> f32 {
         return FALLBACK;
     }
     shift
+}
+
+/// (#nerd-icon-unify 2026-11-03) 终端 Nerd Font 图标的**逐字形光学归一化**。
+///
+/// `#nerd-icon-scale` 的全局倍数（1.15）解决的是「图标比小写字母还矮」，但
+/// Nerd Font 收录的图标来自多个上游族（FontAwesome / Material Design /
+/// Devicons…），同一 em 方框里的墨迹占幅差异极大 —— 实测
+/// （`examples/nerd_ink_stats.rs`，Maple Mono NF CN / JetBrainsMono NF）：
+/// 文档/归档类（fa-file-*, h≈0.92em）×1.15 后墨高 1.06em，而 Material 族
+/// 的文件夹/齿轮/刷新（md-folder h=0.67、md-settings h=0.62）只有
+/// 0.71~0.77em —— 用户看到的就是「文档图标正常、文件夹/设置/刷新显小」。
+/// 统一倍数救不了：放大 MD 族到 FA 的墨高，宽度会越 2 格压到文件名。
+///
+/// 所以启动/换字体时用 skrifa 逐字形量出 PUA 图标的墨迹盒（em），按
+/// 「墨高趋近 TARGET，墨高≤CAP_H，墨宽≤CAP_W（1.7 格，lsd/eza 图标后都有
+/// 空格垫着）」求倍数；x 偏移让墨迹在格内水平居中（墨迹在字身框里不居中，
+/// 直接放大 Text 会整体右漂）。字形缺失/未量出 → 回退旧全局 1.15。
+pub(crate) struct NerdGlyphLayout {
+    pub scale: f32,
+    /// Text 元素的 x 偏移，单位 = 字号 em（Slint 侧 × term-font-size-px）。
+    pub x_em: f32,
+}
+
+/// 逐字形布局表：码位 → (倍数, x 偏移 em)。RwLock + Arc：读路径是每个
+/// 图标字符一次（渲染热路径），只克隆 Arc 不克隆表；字体设置变更时整体换表。
+static NERD_ICON_LAYOUTS: RwLock<Option<Arc<HashMap<u32, NerdGlyphLayout>>>> =
+    RwLock::new(None);
+
+/// 未量出（字体无该字形/尚未加载）时的回退 = 旧的全局倍数，墨迹居中不偏移。
+pub(crate) const NERD_LAYOUT_FALLBACK: NerdGlyphLayout =
+    NerdGlyphLayout { scale: 1.15, x_em: 0.0 };
+
+pub(crate) fn nerd_glyph_layout(cp: char) -> NerdGlyphLayout {
+    match NERD_ICON_LAYOUTS.read() {
+        Ok(guard) => match guard.as_ref() {
+            Some(m) => m
+                .get(&(cp as u32))
+                .map(|l| NerdGlyphLayout { scale: l.scale, x_em: l.x_em })
+                .unwrap_or(NERD_LAYOUT_FALLBACK),
+            None => NERD_LAYOUT_FALLBACK,
+        },
+        Err(_) => NERD_LAYOUT_FALLBACK,
+    }
+}
+
+/// 归一化目标/上限（单位 em）。实测分布见 nerd_ink_stats：p10 0.62 /
+/// p50 0.83 / p90 0.92。TARGET=0.85 让 MD 族长到与 FA 族一档；CAP_H=0.92
+/// 收住 FA 里最高的图标（fa-cog 0.92 ×1.15=1.06em 本来就溢出行盒）；
+/// CAP_W=1.02em（1.7 格，格宽 0.6em）防横向压到文件名 —— 文件夹 0.83em 宽
+/// 是被它卡住的瓶颈，再宽就得靠缩字了。
+const NERD_TARGET_H: f32 = 0.85;
+const NERD_CAP_H: f32 = 0.92;
+const NERD_CAP_W: f32 = 1.02;
+const NERD_MIN_S: f32 = 1.0;
+const NERD_MAX_S: f32 = 1.6;
+/// 等宽图标字形的字身框（advance）= 1 格 ≈ 0.6em；x 居中据此推。
+const NERD_CELL_EM: f32 = 0.6;
+
+fn load_nerd_icon_layouts(db: &fontdb::Database, family: &str) {
+    use fontdb::Source;
+    let empty: HashMap<u32, NerdGlyphLayout> = HashMap::new();
+    let table = (|| -> Option<HashMap<u32, NerdGlyphLayout>> {
+        let id = find_regular_face(db, family)?;
+        let face = db.face(id)?;
+        let bytes: Vec<u8> = match &face.source {
+            Source::Binary(b) => b.as_ref().as_ref().to_vec(),
+            Source::SharedFile(_, b) => b.as_ref().as_ref().to_vec(),
+            Source::File(p) => match std::fs::read(p) {
+                Ok(b) => b,
+                Err(_) => return None,
+            },
+        };
+        let font = skrifa::FontRef::from_index(&bytes, face.index).ok()?;
+        let cmap = skrifa::charmap::Charmap::new(&font);
+        let gm = skrifa::metrics::GlyphMetrics::new(
+            &font,
+            skrifa::instance::Size::new(1.0),
+            skrifa::instance::LocationRef::default(),
+        );
+        // bounds() @ size 1.0 返回的就是 em 归一值，勿再除 units_per_em。
+        let mut map: HashMap<u32, NerdGlyphLayout> = HashMap::new();
+        for (cp, gid) in cmap.mappings() {
+            let in_pua = (0xE000..=0xF8FF).contains(&cp) || (0xF0000..=0xFFFFD).contains(&cp);
+            if !in_pua || (0xE0A0..=0xE0D4).contains(&cp) {
+                continue; // Powerline 分隔符不拆不放，不进表
+            }
+            let Some(b) = gm.bounds(gid) else { continue };
+            let w = b.x_max - b.x_min;
+            let h = b.y_max - b.y_min;
+            if w <= 0.01 || h <= 0.01 {
+                continue;
+            }
+            let scale = (NERD_TARGET_H / h)
+                .clamp(NERD_MIN_S, NERD_MAX_S)
+                .min(NERD_CAP_H / h)
+                .min(NERD_CAP_W / w);
+            // 墨迹盒 [x_min, x_max]·S 在 1 格宽里水平居中：
+            // x + x_min·S = (cell - w·S)/2  →  x_em = 0.3 - scale·(w/2 + x_min)
+            let x_em = NERD_CELL_EM / 2.0 - scale * (w / 2.0 + b.x_min);
+            if !scale.is_finite() || !x_em.is_finite() {
+                continue;
+            }
+            map.insert(cp, NerdGlyphLayout { scale, x_em });
+        }
+        Some(map)
+    })()
+    .unwrap_or(empty);
+    let n = table.len();
+    if let Ok(mut guard) = NERD_ICON_LAYOUTS.write() {
+        *guard = if n > 0 { Some(Arc::new(table)) } else { None };
+    }
+    tracing::debug!(font = %family, glyphs = n, "term-font: nerd icon layouts (em)");
 }
 
 /// Choose the UI (sans) font. `saved` is the user's Interface › Font choice; a

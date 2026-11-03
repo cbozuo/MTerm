@@ -1,4 +1,5 @@
 
+use crate::app::{nerd_glyph_layout, NerdGlyphLayout};
 use crate::terminal::{CompiledOutputRule, HistSpan, RuleColor};
 use crate::ui::TermSpan;
 
@@ -296,6 +297,8 @@ pub(crate) fn render_term_span(
             cells: span.cells,
             cjk,
             nerd: false,
+            nerd_scale: 1.0,
+            nerd_x_em: 0.0,
         }];
     }
     let mut out: Vec<TermSpan> = Vec::new();
@@ -305,6 +308,9 @@ pub(crate) fn render_term_span(
         if is_scaled_icon_char(ch) {
             push_plain_span(&mut out, &plain, fg, bg, span.bold, row, &mut col);
             plain.clear();
+            // (#nerd-icon-unify) 逐字形光学倍数 + 墨迹水平居中偏移；
+            // 字形未量出时回退旧全局 1.15（见 app.rs NERD_LAYOUT_FALLBACK）。
+            let NerdGlyphLayout { scale, x_em } = nerd_glyph_layout(ch);
             out.push(TermSpan {
                 text: ch.to_string().into(),
                 fg,
@@ -315,6 +321,8 @@ pub(crate) fn render_term_span(
                 cells: 1,
                 cjk: false,
                 nerd: true,
+                nerd_scale: scale,
+                nerd_x_em: x_em,
             });
             col += 1;
         } else {
@@ -352,6 +360,8 @@ fn push_plain_span(
         cells,
         cjk: contains_cjk(text),
         nerd: false,
+        nerd_scale: 1.0,
+        nerd_x_em: 0.0,
     });
     *col += cells;
 }
