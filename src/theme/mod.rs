@@ -190,6 +190,10 @@ macro_rules! impl_theme_apply {
             t.set_slot_tbg(color(p.tbg));
             t.set_slot_tfg(color(p.tfg));
             t.set_slot_ac(color(r.accent));
+            // (#hl-done-spec) 强调色 hex 字符串：高亮弹框完成钮字色走
+            // PickerMath.ink-on（与「添加」钮同源；ink-on 只吃 hex）。Slint 的
+            // color 没有内置转 hex，由宿主在此随 slot-ac 一起下发。
+            t.set_accent_hex(format!("#{:06X}", r.accent & 0xFFFFFF).into());
             t.set_slot_ok(color(p.ok));
             t.set_slot_wr(color(p.wr));
             t.set_slot_dg(color(p.dg));
