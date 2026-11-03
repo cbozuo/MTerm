@@ -631,8 +631,16 @@ component TopbarBtn inherits Rectangle {
     //
     // 用 min-width 而不是 width：Slint 不允许同时声明两者，而这里要的是
     // 「至少 32px、文字模式则按内容自适应」，正是 min-width 的语义。
-    min-width: root.icon-only ? 32px : 0px;
-    border-radius: Theme.radius-sm;
+    // (#topbar-icon-only 修订3) icon-only 时 min/max 同钉 40px：① 32px 下
+    // preferred 在个别 DPI 取整会漂 1-2px，相邻块露出细竖缝（用户截图圈点）；
+    // ② 用户点名悬停块与右侧窗口四键（40px 宽、无圆角、零间距）**同款** ——
+    // 统一 40px 后左右两条带手感一致。锁死双端 = 布局求解不参与。
+    min-width: root.icon-only ? 40px : 0px;
+    max-width: root.icon-only ? 40px : 100000px;
+    // (#topbar-icon-only 修订2) 纯图标模式圆角归零：spacing 0 下相邻 hover 块
+    // 的 4px 圆角交界会漏出楔形底缝（用户反馈「悬浮阴影还存在间距」），方角
+    // 才能连成完整整带——与 win-controls 三键（无圆角贴连）同一语言。
+    border-radius: root.icon-only ? 0px : Theme.radius-sm;
     background: ta.pressed ? Theme.bg-active
         : root.active ? Theme.accent.with-alpha(0.15)
         : ta.has-hover ? Theme.bg-hover
@@ -642,7 +650,7 @@ component TopbarBtn inherits Rectangle {
     // accent 半透明底 + 图标/文字 accent 色表达。
     breathe-layer := Rectangle {
         width: 100%; height: 100%;
-        border-radius: Theme.radius-sm;
+        border-radius: root.icon-only ? 0px : Theme.radius-sm;
         background: Theme.accent;
         visible: root.breathe;
         opacity: root.breathe ? 0.55 : 0;
@@ -2423,13 +2431,16 @@ export component AppWindow inherits Window {
                 // 的 `clip` 只允许用在 Rectangle / Path 上，不能直接写在
                 // HorizontalLayout 上。
                 topbar-left-clip := Rectangle {
-                    width: parent.width - 224px;   // 让出右侧绝对定位的控制组
+                    width: parent.width - 240px;   // 让出右侧绝对定位的控制组
                     height: parent.height;
                     clip: true;
                 HorizontalLayout {
                     // (#polish-topbar-r5) 贴合窗口左缘:去掉标题栏左 padding,
                     // 呼吸空间由按钮自身的 padding-left(8px)提供。
-                    spacing: 8px;
+                    // (#topbar-icon-only 修订3) spacing 0：悬停高亮与右侧 win-controls
+                    // 同款连成整带——此前误改了 win-controls（本来就 0），左组这个
+                    // 8px 一直是缝的真身（用户连续两轮圈点）。
+                    spacing: 0;
                     // (#logo-brand-btn 2026-10-08) 左上角品牌 LOGO 按钮的占位：
                     // BrandLogoBtn 以根层绝对定位盖在这里(32px),无热区垫片把
                     // 「新建会话」右移让位;垫片不带 TouchArea,点击落到 tb-drag。
@@ -2447,7 +2458,7 @@ export component AppWindow inherits Window {
                     // 新建会话 —— 打开会话对话框(与左侧"+ 新建会话"入口
                     // 对等,DBeaver"新建连接"同型;#polish-topbar-r5)。
                     TopbarBtn { height: parent.height;
-                        icon: "add";   // 新建（new-session 的角标加号 16px 下与终端框线粘连，用户视作重叠，换回通号）
+                        icon: "new-session";   // 终端框+角标加号 —— 项目图标库现成的新建会话图标
                         label: "";
                         tip: root.lang-en ? "New session" : "新建会话";
                         tip-show(t, tx, ty) => { root.topbar-tip-text = t; root.topbar-tip-x = tx; root.topbar-tip-y = ty; }
@@ -2556,13 +2567,13 @@ export component AppWindow inherits Window {
                 // Slint 1.18 的 HL 没有 flex-shrink，唯一可靠的锁宽手段就是脱离
                 // 布局流。
                 //
-                // 宽度是显式常量：(#topbar-icon-only 修订) 传输 32 + 更多 32
-                // + 右侧栏开关 40 + 三键 40×3 = 224px。
+                // 宽度是显式常量：(#topbar-icon-only 修订3) 传输 40 + 更多 40
+                // + 右侧栏开关 40 + 三键 40×3 = 240px。
                 // `x: parent.width - self.width` 保证永远贴右缘；窗口再窄也不会缩。
                 win-controls := HorizontalLayout {
                     x: parent.width - self.width;
                     y: 0;
-                    width: 224px;
+                    width: 240px;
                     height: parent.height;
                     // (#winbtn-seamless) 三键贴连无间隙:高亮区连成一条整带,
                     // 悬停跨键时不断开(Windows 原生窗口控制样式)。
@@ -2576,7 +2587,8 @@ export component AppWindow inherits Window {
                     // 弹层锚点走 btn-* 矩形，传输弹层锚点见各自 clicked 内注释。
                     // 传输管理 —— 呼吸灯 + 下载弹层锚点(transfer-btn)。
                     transfer-btn := TopbarBtn { height: parent.height;
-                        icon: "swap-vert";   // 上下双箭头 —— 上行/下行双向传输（用户定稿；download 读作单向下载）
+                        icon: "transfer";   // 上下双列箭头 —— 几何取自 icons-preview.html 预览稿的 swap-vert 卡
+                        // （实际 swap-vert.svg 是拐弯箭头形，与预览稿对不上；新文件，原文件保留不动）
                         label: "";
                         tip: root.lang-en ? "Transfers" : "传输";
                         tip-show(t, tx, ty) => { root.topbar-tip-text = t; root.topbar-tip-x = tx; root.topbar-tip-y = ty; }
