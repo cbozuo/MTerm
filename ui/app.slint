@@ -65,7 +65,7 @@ import { InterfacePanel, WslProfileInfo, AccentGuard } from "interface_panel.sli
 // (#hl-settings-hifi 2026-10-20) 高亮设置弹框（预设逐条开关 + 任意色自定义
 // 规则）。本体在根层：设置页与标题栏两个入口打开的是同一个实例。
 import { HighlightDialog, HighlightPresetItem, HighlightCustomItem } from "highlight_dialog.slint";
-import { PingDialog, PingTargetRow, ListenRow, PingHostOption } from "ping_dialog.slint";
+import { PingDialog, PingTargetRow, ListenRow, PingHostOption, PingHostInfo } from "ping_dialog.slint";
 import { SettingsDialog } from "settings_dialog.slint";
 // Re-export so `slint::include_modules!` generates the detached Rust window types.
 export { ProcWindow, SystemInfoWindow, EditorWindow, TrayMenuWindow, AboutWindow, SendCmdWindow }
@@ -1376,6 +1376,7 @@ export component AppWindow inherits Window {
     in property <string> ping-method: "icmp";
     in property <string> ping-source-name: "本机";
     in property <string> ping-source-key: "local";
+    in-out property <string> ping-source-search;
     in property <bool> ping-selected-target-active: false;
     in-out property <string> ping-draft;
     in property <int> ping-target-count: 0;
@@ -1411,14 +1412,20 @@ export component AppWindow inherits Window {
     in property <int> ping-listen-selected: 0;
     in-out property <string> ping-listen-search;
     pure callback ping-count-draft(string) -> int;
+    pure callback ping-ip-hit(string, string, string) -> bool;   // ＋ 下拉行过滤
     callback ping-run();
     callback ping-add-draft();
     callback ping-clear-draft();
+    callback ping-add-target(string);   // ＋ 下拉点选直加入清单
     callback ping-remove-target(string);
     callback ping-select-target(string);
     callback ping-toggle-auto(bool);
     callback ping-set-method(string);
     callback ping-set-source(string);
+    callback ping-source-search-edited(string);
+    callback ping-refresh-hosts();
+    callback ping-refresh-targets();
+    in property <[PingHostInfo]> ping-target-opts;   // ＋ 下拉（本机+全部已保存会话）
     callback ping-listen-select(int);
     callback ping-listen-search-edited(string);
     callback ping-copy-target();
@@ -8400,6 +8407,7 @@ export component AppWindow inherits Window {
         method: root.ping-method;
         source-name: root.ping-source-name;
         source-key: root.ping-source-key;
+        source-search <=> root.ping-source-search;
         selected-target-active: root.ping-selected-target-active;
         draft <=> root.ping-draft;
         target-count: root.ping-target-count;
@@ -8435,15 +8443,21 @@ export component AppWindow inherits Window {
         listen-selected: root.ping-listen-selected;
         listen-search <=> root.ping-listen-search;
         count-draft(text) => { root.ping-count-draft(text); }
+        ip-hit(k, n, q) => { root.ping-ip-hit(k, n, q); }
         close-requested => { root.ping-dialog-open = false; root.ping-close(); }
         run => { root.ping-run(); }
         add-draft => { root.ping-add-draft(); }
         clear-draft => { root.ping-clear-draft(); }
+        add-target(a) => { root.ping-add-target(a); }
+        target-opts: root.ping-target-opts;
+        refresh-targets => { root.ping-refresh-targets(); }
         remove-target(a) => { root.ping-remove-target(a); }
         select-target(a) => { root.ping-select-target(a); }
         toggle-auto(v) => { root.ping-toggle-auto(v); }
         set-method(m) => { root.ping-set-method(m); }
         set-source(k) => { root.ping-set-source(k); }
+        source-search-edited(t) => { root.ping-source-search-edited(t); }
+        refresh-hosts => { root.ping-refresh-hosts(); }
         listen-select(p) => { root.ping-listen-select(p); }
         listen-search-edited(t) => { root.ping-listen-search-edited(t); }
         copy-target => { root.ping-copy-target(); }

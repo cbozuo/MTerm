@@ -17,6 +17,8 @@ pub mod layout;
 pub mod logging;
 pub mod mcp;
 pub mod picker;
+// (#titlebar-ping 2026-11-04) Ping 弹框探测引擎（ICMP/TCP、监听端口表、path 拼接）。
+pub mod ping;
 pub mod rdp;
 pub mod remote;
 pub mod resource;
