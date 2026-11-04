@@ -1,0 +1,44 @@
+// (#panel-anim 2026-11-05) 侧栏收展动效全局状态（#panel-anim）。
+//
+// 高保真：docs/design/two-sidebar-hifi-2026-11-04.html（V9）。一套配置
+// （形态 / 时长 / 缓动 / 减少动效）**同时作用于左右两栏**；本 global 是
+// Slint 侧的单一数据源，Rust 经 `window.global::<PanelAnim>()` 写入
+// （启动 seed + 设置页修改即时回写，同 Theme.device-pixel-ratio 的直写
+// 范式，见 src/theme/mod.rs）。
+//
+// 动画本体不在本文件：app.slint 的 root 层持有 `left-anim-w` /
+// `right-anim-w` / `right-anim-h` 动画属性（animate 挂在**常驻**属性上，
+// 避开 `if !collapsed` 条件元素重建时从 0 重播的历史坑，见
+// app.slint #right-panel-no-anim 注释），收展只切换目标值。
+//
+// 词表与出厂值同源自 src/panel_anim.rs（改词表两边要一起动）。
+export global PanelAnim {
+    // 形态：instant | push | swallow | accordion | homing | jelly。
+    in-out property <string> shape: "push";
+    // 时长 80–600ms（UI 滑块步进 10；Rust 侧已钳制）。
+    in-out property <int> ms: 240;
+    // 缓动：standard | smooth | spring（cubic-bezier 映射在 app.slint 的
+    // animate easing: 处——AnimationStyle 不能作为属性类型存储）。
+    in-out property <string> easing: "smooth";
+    // 「减少动效」最终生效值 = 用户开关（跟随系统）&& 系统要求减少动效。
+    // Rust 在启动与开关变更时计算写入；true ⇒ 时长归零，不做形态降级。
+    in-out property <bool> reduced: false;
+    // 用户开关的**回显值**（设置页 Switch 显示它，不是 reduced）：跟随系统
+    // 打开但系统未要求减少动效时，reduced=false 而 reduced-follow=true ——
+    // 若 Switch 读 reduced 会显示 off，再点发 true 但配置已是 true，界面
+    // 纹丝不动（开关"坏了"）。两个值必须分开。
+    in-out property <bool> reduced-follow: true;
+    // 首帧门卫（高保真坑 01）：Rust 在 window.show() 之后置 true。置位前
+    // 所有收展动画禁播——启动恢复布局时属性首帧即终值，本就不会播；这层
+    // 保险兜住未来任何「show 之前写 collapsed」的新路径。
+    in-out property <bool> ready: false;
+
+    // 最终时长：系统减少动效 ⇒ 0ms（布局逻辑不变，仅无过渡）。
+    public pure function dur() -> duration {
+        return self.reduced ? 0ms : self.ms * 1ms;
+    }
+    // 是否播放宽度过渡：instant 形态恒为直接赋值；未 ready 不播。
+    public pure function active() -> bool {
+        return self.ready && self.shape != "instant";
+    }
+}

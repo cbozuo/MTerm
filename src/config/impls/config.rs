@@ -2137,6 +2137,37 @@ impl ConfigStore {
     pub fn set_left_sidebar_collapsed(&mut self, v: bool) {
         self.cache.left_sidebar_collapsed = Some(v);
     }
+
+    // ── (#panel-anim 2026-11-05) 侧栏收展动效：一套配置同时作用左右两栏 ──
+    /// 收展形态（instant|push|swallow|accordion|homing|jelly），非法值回落 push。
+    pub fn panel_anim_shape(&self) -> &'static str {
+        crate::panel_anim::normalize_shape(&self.cache.panel_anim_shape)
+    }
+    pub fn set_panel_anim_shape(&mut self, v: String) {
+        self.cache.panel_anim_shape = crate::panel_anim::normalize_shape(&v).to_string();
+    }
+    /// 收展时长 ms，钳制 80–600；0/未设置回落 240。
+    pub fn panel_anim_ms(&self) -> u32 {
+        crate::panel_anim::clamp_ms(self.cache.panel_anim_ms)
+    }
+    pub fn set_panel_anim_ms(&mut self, v: u32) {
+        self.cache.panel_anim_ms = crate::panel_anim::clamp_ms(v);
+    }
+    /// 缓动（standard|smooth|spring），非法值回落 smooth。
+    pub fn panel_anim_easing(&self) -> &'static str {
+        crate::panel_anim::normalize_easing(&self.cache.panel_anim_easing)
+    }
+    pub fn set_panel_anim_easing(&mut self, v: String) {
+        self.cache.panel_anim_easing = crate::panel_anim::normalize_easing(&v).to_string();
+    }
+    /// 「减少动效：跟随系统」用户开关（默认 true）。最终是否生效还要叠加
+    /// `crate::panel_anim::system_reduced_motion()` 的系统检测结果。
+    pub fn panel_anim_reduced_motion(&self) -> bool {
+        self.cache.panel_anim_reduced_motion
+    }
+    pub fn set_panel_anim_reduced_motion(&mut self, v: bool) {
+        self.cache.panel_anim_reduced_motion = v;
+    }
     pub fn mcp_enabled(&self) -> bool {
         self.cache.mcp_enabled
     }

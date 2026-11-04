@@ -67,6 +67,10 @@ import { InterfacePanel, WslProfileInfo, AccentGuard } from "interface_panel.sli
 import { HighlightDialog, HighlightPresetItem, HighlightCustomItem } from "highlight_dialog.slint";
 import { PingDialog, PingTargetRow, ListenRow, PingHostOption, PingHostInfo } from "ping_dialog.slint";
 import { SettingsDialog } from "settings_dialog.slint";
+// (#panel-anim 2026-11-05) 侧栏收展动效：global 单一数据源（Rust 直写 +
+// 设置页回写），动画属性与容器改造见本文件 root / dock-area / rest 各处。
+import { PanelAnim } from "panel_anim.slint";
+export { PanelAnim }
 // Re-export so `slint::include_modules!` generates the detached Rust window types.
 export { ProcWindow, SystemInfoWindow, EditorWindow, TrayMenuWindow, AboutWindow, SendCmdWindow }
 import { LineEdit, Button, ScrollView, CheckBox, Palette } from "std-widgets.slint";
@@ -1101,6 +1105,12 @@ export component AppWindow inherits Window {
     callback open-ctx-menu-at(length, length);
     changed right-sidebar-collapsed => {
         if (!root.right-sidebar-collapsed) { root.refresh-sidebar(); }
+        // (#panel-anim 2026-11-05) 吞没形态扫描线点亮（与下方 left-scan 对称；
+        // Slint 同一属性只允许一个 changed 回调，故并入此处）。
+        if (PanelAnim.shape == "swallow" && PanelAnim.active()) {
+            root.right-scan-flash = true;
+            right-scan-timer.restart();
+        }
     }
     callback set-right-sidebar-collapsed(bool);       // apply + persist
     // User-draggable size of the resource sidebar. width is used when docked
@@ -1705,12 +1715,99 @@ export component AppWindow inherits Window {
     in-out property <string> left-sidebar-dock: "left";
     property <bool> left-sidebar-horizontal:
         root.left-sidebar-dock == "left" || root.left-sidebar-dock == "right";
-    property <length> left-sidebar-taken:
-        root.left-sidebar-collapsed ? 36px : root.left-sidebar-width;
+    // (#panel-anim 2026-11-05) 改绑动画值：rest 的 x/宽与工具栏偏移在收展
+    // 过渡中跟随（推挤语义）。原 `collapsed ? 36px : width` 的 36px 是图标条
+    // 时代残值（strip 恒 0 后收起态占用本来就是 0）。
+    property <length> left-sidebar-taken: root.left-anim-w;
     callback persist-left-sidebar-dock(string);
     // Welcome sidebar collapsed to the edge icon strip (IDEA-style), persisted.
     in-out property <bool> left-sidebar-collapsed: false;
     callback set-left-sidebar-collapsed(bool);          // apply + persist
+    // ── (#panel-anim 2026-11-05) 侧栏收展动画值（高保真 V9 §05）─────────
+    // 收/展只切换 collapsed（= 动画属性的目标值 0 ↔ width），过渡由 animate
+    // 承担。动画挂在 AppWindow **常驻属性**上而非 `if !collapsed` 容器元素
+    // 上：条件元素每次重建都会让 animate 从 0 重播（历史坑 #right-panel-no-anim，
+    // 2026-10-18 因此删过右栏动画）；常驻属性没有重建问题。rest 布局 /
+    // splitter 可见线 / 工具栏偏移都绑同一组动画值 ⇒ 推挤形态下终端同步重排。
+    // splitter 拖宽时禁播（坑 02：拖拽要即时跟手，不能被 240ms 插值拖住）。
+    //
+    // 缓动：用户三选映射 cubic-bezier（高保真 §05）；果冻形态强制 spring
+    // 曲线——「过冲回弹」是形态承诺（§05 果冻行即写死该曲线），预设
+    // lively=jelly+spring 与此一致；其余形态走用户缓动配置。
+    // 延迟：归巢形态外层收宽滞后 60ms（「内容飞向按钮并淡出，面板随后
+    // 收宽」，§02 归巢卡），其余形态 0。
+    property <bool> left-sidebar-dragging;              // 自 dock-area 上收（animate enabled 要读）
+    property <length> left-anim-w: root.left-sidebar-collapsed ? 0px : root.left-sidebar-width;
+    animate left-anim-w {
+        duration: PanelAnim.dur();
+        delay: PanelAnim.shape == "homing" ? 60ms : 0ms;
+        easing: PanelAnim.shape == "jelly" ? cubic-bezier(0.34, 1.56, 0.64, 1.0)
+            : PanelAnim.easing == "standard" ? cubic-bezier(0.4, 0.0, 0.2, 1.0)
+            : PanelAnim.easing == "spring" ? cubic-bezier(0.34, 1.56, 0.64, 1.0)
+            : cubic-bezier(0.25, 1.0, 0.3, 1.0);
+        enabled: PanelAnim.active() && !root.left-sidebar-dragging;
+    }
+    // 右栏宽高分离（水平停靠收展走宽、垂直停靠走高），同一动画参数。
+    property <length> right-anim-w: root.right-sidebar-collapsed ? 0px : root.right-sidebar-width;
+    property <length> right-anim-h: root.right-sidebar-collapsed ? 0px : root.right-sidebar-height;
+    animate right-anim-w, right-anim-h {
+        duration: PanelAnim.dur();
+        delay: PanelAnim.shape == "homing" ? 60ms : 0ms;
+        easing: PanelAnim.shape == "jelly" ? cubic-bezier(0.34, 1.56, 0.64, 1.0)
+            : PanelAnim.easing == "standard" ? cubic-bezier(0.4, 0.0, 0.2, 1.0)
+            : PanelAnim.easing == "spring" ? cubic-bezier(0.34, 1.56, 0.64, 1.0)
+            : cubic-bezier(0.25, 1.0, 0.3, 1.0);
+        enabled: PanelAnim.active() && !root.right-sidebar-dragging;
+    }
+    // 手风琴（层级近似）：内容层相对容器**延迟跟随**收窄（外层先收、内层
+    // 滞后 ~20% 时长跟上）→ 内容边缘滞后容器边缘，形成两段折叠波次。
+    // 逐行 scaleY/delay 18ms 需要枚举行，既有面板组件行不可枚举（且 Slint
+    // 无 scaleY），按用户确认的「层级近似」落地。
+    property <length> left-accordion-w: root.left-sidebar-collapsed ? 0px : root.left-sidebar-width;
+    animate left-accordion-w {
+        duration: PanelAnim.dur();
+        delay: 48ms;
+        easing: PanelAnim.easing == "standard" ? cubic-bezier(0.4, 0.0, 0.2, 1.0)
+            : PanelAnim.easing == "spring" ? cubic-bezier(0.34, 1.56, 0.64, 1.0)
+            : cubic-bezier(0.25, 1.0, 0.3, 1.0);
+        enabled: PanelAnim.active() && PanelAnim.shape == "accordion" && !root.left-sidebar-dragging;
+    }
+    property <length> right-accordion-w: root.right-sidebar-collapsed ? 0px : root.right-sidebar-width;
+    property <length> right-accordion-h: root.right-sidebar-collapsed ? 0px : root.right-sidebar-height;
+    animate right-accordion-w, right-accordion-h {
+        duration: PanelAnim.dur();
+        delay: 48ms;
+        easing: PanelAnim.easing == "standard" ? cubic-bezier(0.4, 0.0, 0.2, 1.0)
+            : PanelAnim.easing == "spring" ? cubic-bezier(0.34, 1.56, 0.64, 1.0)
+            : cubic-bezier(0.25, 1.0, 0.3, 1.0);
+        enabled: PanelAnim.active() && PanelAnim.shape == "accordion" && !root.right-sidebar-dragging;
+    }
+    // ── 吞没形态收口扫描线（简版）────────────────────────────────────
+    // 高保真 §02 吞没卡：收口处一条扫描线收束。Slint 无 keyframes，用
+    // collapsed 切换点亮 + 定时熄灭近似：changed 点亮（透明度瞬时 1），
+    // 全时长后 Timer 熄灭（150ms 渐隐挂在元素上）。非吞没形态不点亮。
+    property <bool> left-scan-flash;
+    property <bool> right-scan-flash;
+    changed left-sidebar-collapsed => {
+        if (PanelAnim.shape == "swallow" && PanelAnim.active()) {
+            root.left-scan-flash = true;
+            left-scan-timer.restart();
+        }
+    }
+    left-scan-timer := Timer {
+        interval: PanelAnim.dur();
+        triggered => { root.left-scan-flash = false; }
+    }
+    right-scan-timer := Timer {
+        interval: PanelAnim.dur();
+        triggered => { root.right-scan-flash = false; }
+    }
+    // 设置页「收展动效」下发（iface-panel 转发而来）：Rust 落盘 + 回写 global。
+    callback set-panel-anim-shape(string);
+    callback set-panel-anim-ms(int);
+    callback set-panel-anim-easing(string);
+    callback set-panel-anim-reduced-motion(bool);
+    callback set-panel-anim-preset(string);
     in-out property <bool> collapse-sftp-default: false;
     callback set-collapse-sftp-default(bool);      // apply + persist
     in-out property <bool> sftp-collapsed: false;       // (legacy global; per-tab now)
@@ -2798,10 +2895,12 @@ export component AppWindow inherits Window {
             // happens from the title bar.
             property <length> right-sidebar-outside-strip: 0px;
             property <length> left-sidebar-strip: 0px;
-            property <length> left-sidebar-size: (!root.zen-mode && !root.left-sidebar-collapsed) ? root.left-sidebar-width : 0px;
+            // (#panel-anim 2026-11-05) 收展过渡走 root.left-anim-w（动画值）：
+            // collapsed 的 0 化已由动画属性承载，这里只保留 zen 的瞬时乘 0。
+            // max(0px,·)：果冻 spring 曲线收起方向会越过 0（负插值），钳掉。
+            property <length> left-sidebar-size: root.zen-mode ? 0px : max(0px, root.left-anim-w);
             property <length> left-sidebar-taken: left-sidebar-strip + left-sidebar-size + right-sidebar-outside-strip;
             property <bool> left-sidebar-horizontal: root.left-sidebar-horizontal;
-            property <bool> left-sidebar-dragging;
             property <bool> combine-collapsed-tools:
                 root.left-sidebar-collapsed
                 && root.right-sidebar-collapsed && root.right-sidebar-dock == root.left-sidebar-dock;
@@ -2870,7 +2969,14 @@ export component AppWindow inherits Window {
 
             // Welcome / session list, to the right of the icon strip. Hidden when
             // collapsed — its icon stays in the strip; clicking it re-opens.
-            if !root.left-sidebar-collapsed : Rectangle {
+            // (#panel-anim 2026-11-05) 由 `if !collapsed` 改常驻：收展过渡期间
+            // 容器必须活着（宽度 = left-sidebar-size 动画值）。visible 跟随
+            // **动画值**而非 collapsed——若绑 collapsed，收起指令一到容器立即
+            // 消失，240ms 的宽度过渡就没人演了；绑动画值则面板随宽度收缩、
+            // 到 0 后自动停渲染（替代原 if 的「完全移除」语义）。zen 的 0 化
+            // 在 size 层，容器这里随之 0 宽不可见。
+            Rectangle {
+                visible: root.left-anim-w > 0px;
                 // (#sb-seam-overlap 2026-11-02) 同右栏：边界侧多铺 1 设备像素压住
                 // 未绘制缝（透壁纸那条亮线）。dock=left 边界在右缘 → 加宽；
                 // dock=right 边界在左缘 → 左移再加宽；top/bottom 同理。
@@ -2891,6 +2997,16 @@ export component AppWindow inherits Window {
                 // 底色由 LeftSidebar 根统一负责，这里不再叠一层。
                 // (#sb-seam-overlap) 铺出边界的 1phx 不能被裁掉 → clip 关掉。
                 clip: false;
+                // (#panel-anim 2026-11-05) 形态裁切层：吞没（内容固定满宽被裁）、
+                // 手风琴（内容滞后收窄）、归巢（内容飞出收口边）都要把溢出内容
+                // 裁掉。外层容器 clip 必须保持 false（压缝 1phx 不能被裁），裁切
+                // 在本层做；宽高各留出压缝的那 1phx。
+                left-anim-clip := Rectangle {
+                    clip: true;
+                    x: 0;
+                    y: 0;
+                    width: root.left-sidebar-horizontal ? parent.width - 1phx : parent.width;
+                    height: root.left-sidebar-horizontal ? parent.height : parent.height - 1phx;
                 LeftSidebar {
                     // macOS 原生标题栏没有侧栏切换按钮 → 保留面板内箭头；
                     // Windows/Linux 用标题栏 LOGO 按钮，面板内箭头隐藏。
@@ -2922,8 +3038,39 @@ export component AppWindow inherits Window {
                     drag-cancel-seq: root.session-drag-cancel-seq;
                     move-session-to(id, target, after) => { root.move-session-to(id, target, after); }
                     reorder-group(g, before) => { root.reorder-group(g, before); }
-                    width: parent.width;
-                    height: parent.height;
+                    // (#panel-anim 2026-11-05) 形态内容层（高保真 §02）：
+                    //   push/instant —— 跟随容器宽度重排（推挤语义）；
+                    //   swallow —— 固定满宽，容器收窄时被裁切层裁掉（吸进边缘）；
+                    //   accordion —— 延迟跟随宽（left-accordion-w，两段折叠波次）；
+                    //   homing —— 恒跟随宽，整体向收口边位移并淡出（x/y/opacity）。
+                    // 垂直停靠同构于高度（满宽恒为 parent.width，无需固定）。
+                    width: dock-area.left-sidebar-horizontal
+                        ? (PanelAnim.shape == "swallow" ? root.left-sidebar-width
+                        : PanelAnim.shape == "accordion" ? max(0px, root.left-accordion-w)
+                        : parent.width)
+                        : parent.width;
+                    height: !dock-area.left-sidebar-horizontal
+                        ? (PanelAnim.shape == "swallow" ? root.left-sidebar-width
+                        : PanelAnim.shape == "accordion" ? max(0px, root.left-accordion-w)
+                        : parent.height)
+                        : parent.height;
+                    // 归巢：内容飞向收口按钮并淡出；外层宽度滞后 60ms 收（先飞后收）。
+                    x: dock-area.left-sidebar-horizontal && PanelAnim.shape == "homing"
+                        ? (root.left-sidebar-collapsed
+                            ? (root.left-sidebar-dock == "left" ? -40px : 40px) : 0px)
+                        : 0px;
+                    y: !dock-area.left-sidebar-horizontal && PanelAnim.shape == "homing"
+                        ? (root.left-sidebar-collapsed
+                            ? (root.left-sidebar-dock == "top" ? -40px : 40px) : 0px)
+                        : 0px;
+                    opacity: PanelAnim.shape == "homing" && root.left-sidebar-collapsed ? 0 : 1;
+                    animate x, y, opacity {
+                        duration: PanelAnim.dur();
+                        easing: PanelAnim.easing == "standard" ? cubic-bezier(0.4, 0.0, 0.2, 1.0)
+                            : PanelAnim.easing == "spring" ? cubic-bezier(0.34, 1.56, 0.64, 1.0)
+                            : cubic-bezier(0.25, 1.0, 0.3, 1.0);
+                        enabled: PanelAnim.active() && PanelAnim.shape == "homing";
+                    }
                     compact: true;
                     dock-edge: root.left-sidebar-dock;
                     sessions: root.sessions;
@@ -2990,6 +3137,20 @@ export component AppWindow inherits Window {
                     delete-group(name) => { root.delete-group(name); }
                     remove-session(id) => { root.remove-session(id); }
                 }
+                } // 裁切层
+                // (#panel-anim 2026-11-05) 吞没形态收口扫描线（外层，不随内容被
+                // 裁）：collapsed 切换点亮（left-scan-flash），PanelAnim.dur() 后
+                // Timer 熄灭（150ms 渐隐）。贴收口边的 2px 高亮条（垂直条上下
+                // 渐隐，近似高保真的 scanline 渐变）。
+                Rectangle {
+                    opacity: root.left-scan-flash ? 1 : 0;
+                    animate opacity { duration: 150ms; }
+                    x: root.left-sidebar-dock == "left" ? parent.width - 2px : 0px;
+                    y: root.left-sidebar-dock == "top" ? parent.height - 2px : 0px;
+                    width: root.left-sidebar-horizontal ? 2px : parent.width;
+                    height: root.left-sidebar-horizontal ? parent.height : 2px;
+                    background: @linear-gradient(180deg, transparent 0%, rgba(125, 177, 255, 0.95) 50%, transparent 100%);
+                }
                 // (#line-dedup 2026-10-18) 这里原来还有一条 `1px`（逻辑）边界线：
                 // 200% 下是 **2 设备像素**，和 splitter 的 hairline 可见线、compact
                 // 卡片自己的 hairline 边框叠在同一个边界上 → 用户截图"不同区域重叠
@@ -2998,7 +3159,11 @@ export component AppWindow inherits Window {
             }
 
             // Drag the welcome sidebar's right edge to resize it (v0.5 M3b).
-            if !root.left-sidebar-collapsed : Rectangle {
+            // (#panel-anim 2026-11-05) 同样由 if 改 visible：动画期间可见线
+            // 跟随收口边缘走（collapsed 已置但动画值尚未到 0 时仍显示），
+            // 完全收起后自动隐没；展开时从 0 宽起跟随。
+            Rectangle {
+                visible: !root.left-sidebar-collapsed || root.left-anim-w > 0px;
                 x: root.left-sidebar-dock == "left" ? parent.quick-left + parent.right-sidebar-outside-strip + parent.left-sidebar-size - 2px
                  : root.left-sidebar-dock == "right" ? parent.width - parent.quick-right - parent.right-sidebar-outside-strip - parent.left-sidebar-size - 2px
                  : parent.quick-left;
@@ -3014,14 +3179,14 @@ export component AppWindow inherits Window {
                     mouse-cursor: dock-area.left-sidebar-horizontal ? ew-resize : ns-resize;
                     pointer-event(ev) => {
                         if (ev.kind == PointerEventKind.down) {
-                            dock-area.left-sidebar-dragging = true;
+                            root.left-sidebar-dragging = true;
                         } else if (ev.kind == PointerEventKind.up) {
-                            dock-area.left-sidebar-dragging = false;
+                            root.left-sidebar-dragging = false;
                             root.persist-left-sidebar-width(root.left-sidebar-width / 1px);
                         }
                     }
                     moved => {
-                        if (dock-area.left-sidebar-dragging) {
+                        if (root.left-sidebar-dragging) {
                             if (dock-area.left-sidebar-horizontal) {
                                 root.left-sidebar-width = clamp(
                                     root.left-sidebar-dock == "right"
@@ -3062,7 +3227,7 @@ export component AppWindow inherits Window {
                             - (root.left-sidebar-dock == "top" ? Theme.hairline() : 0px)) - parent.y;
                     width:  parent.width < parent.height ? Theme.hairline() : parent.width;
                     height: parent.width < parent.height ? parent.height : Theme.hairline();
-                    background: ws-split-ta.has-hover || dock-area.left-sidebar-dragging
+                    background: ws-split-ta.has-hover || root.left-sidebar-dragging
                         ? Theme.accent : Theme.border-subtle;
                     animate background { duration: 120ms; }
                 }
@@ -3094,22 +3259,23 @@ export component AppWindow inherits Window {
             // 用户截图里终端与右栏之间那条白缝。修法是把**边界位置**吸到设备
             // 网格：右/下停靠按「窗口内侧 - 宽度」取整（边界对齐设备像素），
             // 左/上停靠直接取整宽度。终端与右栏从此共用同一条整数边界。
-            property <length> sb-w: root.zen-mode || root.right-sidebar-collapsed ? 0px
-                : dock-area.right-sidebar-strip-outside
-                    || dock-area.combine-collapsed-tools ? 0px
+            // (#panel-anim 2026-11-05) 收展过渡走 root.right-anim-w/-h（动画
+            // 值）：collapsed 的 0 化由动画属性承载。原条件链里的
+            // strip-outside / combine-collapsed-tools 分支一并去掉——它们只在
+            // collapsed 后为真，而过渡中段 collapsed 已置、动画值未到 0，
+            // 留着会把过渡瞬间掐死成 0；去掉后收起态经动画值到 0，稳态等价。
+            property <length> sb-w: root.zen-mode ? 0px
                 : root.right-sidebar-horizontal
                     ? (root.right-sidebar-dock == "right"
-                        ? self.width - Theme.snap-to-device(self.width - root.right-sidebar-width)
-                        : Theme.snap-to-device(root.right-sidebar-width))
+                        ? max(0px, self.width - Theme.snap-to-device(self.width - root.right-anim-w))
+                        : max(0px, Theme.snap-to-device(root.right-anim-w)))
                     : root.right-sidebar-width;
-            property <length> sb-h: root.zen-mode || root.right-sidebar-collapsed ? 0px
-                : dock-area.right-sidebar-strip-outside
-                    || dock-area.combine-collapsed-tools ? 0px
+            property <length> sb-h: root.zen-mode ? 0px
                 : root.right-sidebar-horizontal
                     ? root.right-sidebar-height
                     : (root.right-sidebar-dock == "bottom"
-                        ? self.height - Theme.snap-to-device(self.height - root.right-sidebar-height)
-                        : Theme.snap-to-device(root.right-sidebar-height));
+                        ? max(0px, self.height - Theme.snap-to-device(self.height - root.right-anim-h))
+                        : max(0px, Theme.snap-to-device(root.right-anim-h)));
             // (#splitter-v2 2026-09-04) 间距归零：命中区跨立边界两侧（各压
             // 2px），面板之间不再留空档，否则会透出 dock-area 底色形成灰色
             // 空隙带。原值：root.zen-mode || root.right-sidebar-collapsed ? 0px : 4px
@@ -3129,7 +3295,12 @@ export component AppWindow inherits Window {
             // 直接透出桌面壁纸（用户截图：右栏与终端之间一条随壁纸变色的亮线，
             // 仅在打开终端后可见）。给面板自己多铺 1phx 压住这条缝，观感无变化
             // （多出的 1 像素在面板底色内、被 splitter 线覆盖）。
-            if !root.right-sidebar-collapsed : Rectangle {
+            // (#panel-anim 2026-11-05) 由 `if !collapsed` 改常驻：宽 = sb-w
+            // 动画值。visible 跟随动画值（宽/高 >0 才渲染）而非 collapsed
+            // ——绑 collapsed 会让容器在过渡一开始就消失（实测教训）。
+            // 宽度动画挂在 root 常驻属性上，本元素不带 animate。
+            Rectangle {
+                visible: root.right-anim-w > 0px || root.right-anim-h > 0px;
                 x: root.right-sidebar-dock == "right" ? parent.width - parent.sb-w - 1phx
                  : 0px;
                 y: root.right-sidebar-dock == "bottom" ? parent.height - parent.sb-h - 1phx
@@ -3137,11 +3308,45 @@ export component AppWindow inherits Window {
                 width: root.right-sidebar-horizontal ? parent.sb-w + 1phx : parent.width;
                 height: root.right-sidebar-horizontal ? parent.height : parent.sb-h + 1phx;
                 clip: false;
+                // (#panel-anim 2026-11-05) 形态裁切层（与左栏同构）。
+                right-anim-clip := Rectangle {
+                    clip: true;
+                    x: 0;
+                    y: 0;
+                    width: root.right-sidebar-horizontal ? parent.width - 1phx : parent.width;
+                    height: root.right-sidebar-horizontal ? parent.height : parent.height - 1phx;
                 RightSidebar {
                 // 同左栏：macOS 保留箭头，Win/Linux 用标题栏切换按钮。
                 show-collapse: !root.custom-titlebar;
-                width: parent.width;
-                height: parent.height;
+                // (#panel-anim 2026-11-05) 形态内容层（四态同左栏 LeftSidebar，
+                // 方向镜像：dock=right 收口在左缘）。垂直停靠满宽恒 parent.width。
+                width: root.right-sidebar-horizontal
+                    ? (PanelAnim.shape == "swallow" ? root.right-sidebar-width
+                    : PanelAnim.shape == "accordion" ? max(0px, root.right-accordion-w)
+                    : parent.width)
+                    : parent.width;
+                height: !root.right-sidebar-horizontal
+                    ? (PanelAnim.shape == "swallow" ? root.right-sidebar-height
+                    : PanelAnim.shape == "accordion" ? max(0px, root.right-accordion-h)
+                    : parent.height)
+                    : parent.height;
+                // 归巢：内容飞向收口边并淡出（dock=right/bottom 收向右/下）。
+                x: root.right-sidebar-horizontal && PanelAnim.shape == "homing"
+                    ? (root.right-sidebar-collapsed
+                        ? (root.right-sidebar-dock == "right" ? 40px : -40px) : 0px)
+                    : 0px;
+                y: !root.right-sidebar-horizontal && PanelAnim.shape == "homing"
+                    ? (root.right-sidebar-collapsed
+                        ? (root.right-sidebar-dock == "bottom" ? 40px : -40px) : 0px)
+                    : 0px;
+                opacity: PanelAnim.shape == "homing" && root.right-sidebar-collapsed ? 0 : 1;
+                animate x, y, opacity {
+                    duration: PanelAnim.dur();
+                    easing: PanelAnim.easing == "standard" ? cubic-bezier(0.4, 0.0, 0.2, 1.0)
+                        : PanelAnim.easing == "spring" ? cubic-bezier(0.34, 1.56, 0.64, 1.0)
+                        : cubic-bezier(0.25, 1.0, 0.3, 1.0);
+                    enabled: PanelAnim.active() && PanelAnim.shape == "homing";
+                }
                 // Docked top/bottom → lay the resource widgets out in a row.
                 lay-horizontal: !root.right-sidebar-horizontal;
                 dock-edge: root.right-sidebar-dock;
@@ -3151,6 +3356,9 @@ export component AppWindow inherits Window {
                 // 看出一段生长过程；左侧面板（LeftSidebar）从来没有这个动画，于是
                 // 两边切换观感不一致。拖动时本来 duration 就是 0ms，删掉不影响拖动
                 // 跟手；折叠/展开与左栏一样变成瞬时。
+                // (#panel-anim 2026-11-05) 动画在更合适的位置重新出现：宽度过渡
+                // 挂在 root 常驻属性 right-anim-w/-h（无重建问题）+ PanelAnim.ready
+                // 首帧门卫 + 拖拽禁播，容器元素本身不带 animate，本坑不复发。
                 connection-state: root.connection-state;
                 conn-host: root.conn-host;
                 conn-state: root.conn-state;
@@ -3203,6 +3411,18 @@ export component AppWindow inherits Window {
                     root.set-right-sidebar-collapsed(root.right-sidebar-collapsed);
                 }
                 }
+                } // 裁切层
+                // (#panel-anim 2026-11-05) 吞没扫描线（右栏镜像：dock=right
+                // 收口在左缘）。
+                Rectangle {
+                    opacity: root.right-scan-flash ? 1 : 0;
+                    animate opacity { duration: 150ms; }
+                    x: root.right-sidebar-dock == "right" ? 0px : parent.width - 2px;
+                    y: root.right-sidebar-dock == "bottom" ? 0px : parent.height - 2px;
+                    width: root.right-sidebar-horizontal ? 2px : parent.width;
+                    height: root.right-sidebar-horizontal ? parent.height : 2px;
+                    background: @linear-gradient(180deg, transparent 0%, rgba(125, 177, 255, 0.95) 50%, transparent 100%);
+                }
             }
 
 
@@ -3222,7 +3442,9 @@ export component AppWindow inherits Window {
             // 填充形成 #0e0f13 色带（#del-splitter 曾短暂整块禁用），透明背景
             // + 跨立布局让两侧面板各自透出，无新增色带。
             Rectangle {
-                visible: !root.right-sidebar-collapsed;
+                // (#panel-anim 2026-11-05) 过渡期间可见线跟随收口边缘走，完全
+                // 收起后隐没（同左栏 splitter 的 visible 化）。
+                visible: !root.right-sidebar-collapsed || root.right-anim-w > 0px || root.right-anim-h > 0px;
                 // Horizontal docks → a vertical 4px hit-area at the sidebar's inner
                 // edge; vertical docks → a horizontal 4px hit-area (the visible 1px
                 // line is the child Rectangle below, centred inside this area).
@@ -8383,6 +8605,13 @@ export component AppWindow inherits Window {
             set-mcp-permissions(enabled, credentials, commands, files) => {
                 root.set-mcp-permissions(enabled, credentials, commands, files);
             }
+            // (#panel-anim 2026-11-05) 收展动效：逐项/预设下发到 Rust（落盘
+            // + 回写 global PanelAnim，UI 绑定自动刷新）。
+            set-panel-anim-shape(s) => { root.set-panel-anim-shape(s); }
+            set-panel-anim-ms(v) => { root.set-panel-anim-ms(v); }
+            set-panel-anim-easing(e) => { root.set-panel-anim-easing(e); }
+            set-panel-anim-reduced-motion(v) => { root.set-panel-anim-reduced-motion(v); }
+            set-panel-anim-preset(k) => { root.set-panel-anim-preset(k); }
             add-wsl-profile(name, distribution, directory) => { root.add-wsl-profile(name, distribution, directory); }
             remove-wsl-profile(id) => { root.remove-wsl-profile(id); }
             pick-wsl-directory => { root.pick-wsl-directory(); }

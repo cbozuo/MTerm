@@ -2366,12 +2366,21 @@ thread_local! {
 /// `at` pins the window to a physical screen position (tab detach); without
 /// it the window cascades from the newest one or centers.
 /// Returns the registry id used to unregister on close.
+/// (#panel-anim 2026-11-05) 「减少动效」最终生效值 = 用户「跟随系统」开关
+/// && 系统确实要求减少动效（SPI_GETCLIENTAREAANIMATION）。seed 与设置页
+/// 回调两处共用，保证同一口径。
+fn effective_panel_anim_reduced(s: &ConfigStore) -> bool {
+    crate::panel_anim::effective_reduced(
+        s.panel_anim_reduced_motion(),
+        crate::panel_anim::system_reduced_motion(),
+    )
+}
+
 fn open_window(
     core: Rc<AppCore>,
     cascade: bool,
     at: Option<slint::PhysicalPosition>,
-) -> Result<u64> {
-    let runtime = core.runtime.clone();
+) -> Result<u64> {    let runtime = core.runtime.clone();
     let store = core.store.clone();
     let registry = core.registry.clone();
 
@@ -3561,6 +3570,105 @@ fn open_window(
         let (ww, wh) = s.window_size();
         let preferred = (ww > 0.0 && wh > 0.0).then_some((ww, wh));
         pending_window_size_restore.set(preferred);
+
+        // (#panel-anim 2026-11-05) 收展动效配置 seed（一套作用左右两栏）：
+        // show 之前写入 global，首帧即终值，启动恢复布局不播动画。
+        // reduced = 用户「跟随系统」开关 && 系统确实要求减少动效。
+        let panel_anim = window.global::<PanelAnim<'_>>();
+        panel_anim.set_shape(s.panel_anim_shape().into());
+        panel_anim.set_ms(s.panel_anim_ms() as i32);
+        panel_anim.set_easing(s.panel_anim_easing().into());
+        // 回显值（设置页 Switch 显示）与生效值分开：见 PanelAnim.reduced-follow。
+        panel_anim.set_reduced_follow(s.panel_anim_reduced_motion());
+        panel_anim.set_reduced(effective_panel_anim_reduced(&s));
+    }
+    // (#panel-anim 2026-11-05) 设置页「收展动效」：逐项修改 → 落盘 +
+    // 回写 global PanelAnim（UI 绑定自动刷新，修改即时生效）。预设一次
+    // 原子写三元组。reduced 的最终生效值始终走同一口径
+    // （effective_panel_anim_reduced）。
+    {
+        let store = store.clone();
+        let weak = window.as_weak();
+        window.on_set_panel_anim_shape(move |v| {
+            let shape = {
+                let mut s = store.borrow_mut();
+                s.set_panel_anim_shape(v.to_string());
+                let _ = s.save();
+                s.panel_anim_shape()
+            };
+            if let Some(w) = weak.upgrade() {
+                w.global::<PanelAnim<'_>>().set_shape(shape.into());
+            }
+        });
+    }
+    {
+        let store = store.clone();
+        let weak = window.as_weak();
+        window.on_set_panel_anim_ms(move |v: i32| {
+            let ms = {
+                let mut s = store.borrow_mut();
+                s.set_panel_anim_ms(v.max(0) as u32);
+                let _ = s.save();
+                s.panel_anim_ms()
+            };
+            if let Some(w) = weak.upgrade() {
+                w.global::<PanelAnim<'_>>().set_ms(ms as i32);
+            }
+        });
+    }
+    {
+        let store = store.clone();
+        let weak = window.as_weak();
+        window.on_set_panel_anim_easing(move |v| {
+            let easing = {
+                let mut s = store.borrow_mut();
+                s.set_panel_anim_easing(v.to_string());
+                let _ = s.save();
+                s.panel_anim_easing()
+            };
+            if let Some(w) = weak.upgrade() {
+                w.global::<PanelAnim<'_>>().set_easing(easing.into());
+            }
+        });
+    }
+    {
+        let store = store.clone();
+        let weak = window.as_weak();
+        window.on_set_panel_anim_reduced_motion(move |v| {
+            let reduced = {
+                let mut s = store.borrow_mut();
+                s.set_panel_anim_reduced_motion(v);
+                let _ = s.save();
+                effective_panel_anim_reduced(&s)
+            };
+            if let Some(w) = weak.upgrade() {
+                let pa = w.global::<PanelAnim<'_>>();
+                pa.set_reduced_follow(v); // 回显用户开关
+                pa.set_reduced(reduced);  // 生效值驱动时长归零
+            }
+        });
+    }
+    {
+        let store = store.clone();
+        let weak = window.as_weak();
+        window.on_set_panel_anim_preset(move |key| {
+            // 未知 key 直接忽略（词表外的值不该改配置）。
+            if let Some((shape, ms, easing)) = crate::panel_anim::preset(&key) {
+                {
+                    let mut s = store.borrow_mut();
+                    s.set_panel_anim_shape(shape.to_string());
+                    s.set_panel_anim_ms(ms);
+                    s.set_panel_anim_easing(easing.to_string());
+                    let _ = s.save();
+                }
+                if let Some(w) = weak.upgrade() {
+                    let pa = w.global::<PanelAnim<'_>>();
+                    pa.set_shape(shape.into());
+                    pa.set_ms(ms as i32);
+                    pa.set_easing(easing.into());
+                }
+            }
+        });
     }
     {
         let store = store.clone();
@@ -7168,6 +7276,17 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
     // spinning the loop. run_event_loop() does not, so display it here —
     // without this the app starts but no window ever appears (#multi-window).
     window.show().context("failed to show window")?;
+    // (#panel-anim 2026-11-05) 首帧门卫放行（高保真坑 01）：事件循环首轮之后
+    // 才允许收展动画播放。置位前的属性改动一律瞬时——启动 seed / 布局恢复
+    // 永远赶在这之前完成，双保险确保启动永不从 0 播到目标宽。
+    {
+        let weak = window.as_weak();
+        slint::Timer::single_shot(std::time::Duration::from_millis(0), move || {
+            if let Some(w) = weak.upgrade() {
+                w.global::<PanelAnim<'_>>().set_ready(true);
+            }
+        });
+    }
     // (#win-icon-hook-merge 2026-10-10) 主窗口**不再**在这里单独挂图标钩子:
     // on_winit_window_event 是单槽回调,show() 之后再注册会把上面 4171 起的
     // 主事件钩子(Resized→maximized 同步/原生关闭分流/焦点跟踪)整个顶掉。

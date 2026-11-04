@@ -19,6 +19,8 @@ pub mod mcp;
 pub mod picker;
 // (#titlebar-ping 2026-11-04) Ping 弹框探测引擎（ICMP/TCP、监听端口表、path 拼接）。
 pub mod ping;
+// (#panel-anim 2026-11-05) 侧栏收展动效领域层（词表/预设/系统减少动效检测）。
+pub mod panel_anim;
 pub mod rdp;
 pub mod remote;
 pub mod resource;

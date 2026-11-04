@@ -173,6 +173,20 @@ pub(crate) fn default_quick_panel_height() -> f32 {
     220.0
 }
 
+// (#panel-anim 2026-11-05) 侧栏收展动效出厂值：顺滑预设 = 推挤 · 240ms · 顺滑。
+pub(crate) fn default_panel_anim_shape() -> String {
+    crate::panel_anim::SHAPE_DEFAULT.to_string()
+}
+pub(crate) fn default_panel_anim_ms() -> u32 {
+    crate::panel_anim::MS_DEFAULT
+}
+pub(crate) fn default_panel_anim_easing() -> String {
+    crate::panel_anim::EASING_DEFAULT.to_string()
+}
+pub(crate) fn default_panel_anim_reduced_motion() -> bool {
+    true
+}
+
 /// (#mode-values 2026-10-17) 一套「外观数值」—— 暗 / 亮各存一份。
 ///
 /// 用户定稿：「暗主题调好了，切亮主题不该用暗主题的数值；明暗不共用，某个
@@ -563,6 +577,22 @@ pub struct ConfigFile {
     /// None means the user has not explicitly collapsed/expanded it yet.
     #[serde(default)]
     pub left_sidebar_collapsed: Option<bool>,
+    // ── (#panel-anim 2026-11-05) 侧栏收展动效：一套配置同时作用于左右两栏 ──
+    /// Collapse/expand transition shape for both sidebars. One of
+    /// `instant|push|swallow|accordion|homing|jelly`（非法值在读取端回落 push）。
+    #[serde(default = "default_panel_anim_shape")]
+    pub panel_anim_shape: String,
+    /// Transition duration in ms, clamped to 80–600（非法值在读取端回落 240）。
+    #[serde(default = "default_panel_anim_ms")]
+    pub panel_anim_ms: u32,
+    /// Easing curve id: `standard|smooth|spring`（非法值在读取端回落 smooth）。
+    #[serde(default = "default_panel_anim_easing")]
+    pub panel_anim_easing: String,
+    /// When true (default), honor the OS "reduce motion" setting: all panel
+    /// transition durations collapse to 0 while the system asks for less
+    /// animation. No shape downgrade — layout logic stays identical.
+    #[serde(default = "default_panel_anim_reduced_motion")]
+    pub panel_anim_reduced_motion: bool,
     /// 面板不透明度（0.30–1.00 的旧全局值）。四分区改造后不再直接驱动界面：
     /// 仅作 rev4 迁移的来源值（迁到三区各自的 alpha）。
     #[serde(default)]
