@@ -29,11 +29,14 @@ pub(crate) struct TargetState {
     /// 最近采样（None＝丢包），滚动窗口。
     pub(crate) samples: Vec<Option<f64>>,
     pub(crate) selected: bool,
+    /// 参与探测（2026-11-05 用户定稿：清单勾选框在勾/空间切换——空框=不
+    /// 参与但**行保留置灰**，不再直接移除；探测集/计数/下拉勾选都以此为准）
+    pub(crate) enabled: bool,
 }
 
 impl TargetState {
     pub(crate) fn new(addr: String) -> Self {
-        Self { addr, ip: None, mode: "idle".into(), samples: Vec::new(), selected: false }
+        Self { addr, ip: None, mode: "idle".into(), samples: Vec::new(), selected: false, enabled: true }
     }
 
     pub(crate) fn last(&self) -> Option<f64> {
@@ -87,6 +90,10 @@ pub(crate) struct PingState {
     pub(crate) method: String, // icmp | port
     pub(crate) source: String, // local | 会话 id
     pub(crate) auto_on: bool,
+    /// 探测轮次在飞（2026-11-04 用户定稿：只有点「探测」才触发；连续 Ping
+    /// 的每 2s 轮次也算一轮）。按钮态/防重入用它，行不再集体翻「测试中」
+    /// （有数据的目标轮询期间保持原状——清单不再每 2s 跳动）。
+    pub(crate) round_active: bool,
     pub(crate) listen_rows: Vec<ListenEntry>,
     pub(crate) listen_query: String,
     pub(crate) listen_sel: Option<u16>,
@@ -102,6 +109,7 @@ impl PingState {
             method: "icmp".into(),
             source: "local".into(),
             auto_on: false,
+            round_active: false,
             listen_rows: Vec::new(),
             listen_query: String::new(),
             listen_sel: None,
@@ -114,10 +122,11 @@ impl PingState {
         self.targets.iter().find(|t| t.selected).map(|t| t.addr.as_str())
     }
 
-    /// 汇总视图取「最慢」目标名（供标题/图表）。
+    /// 汇总视图取「最慢」目标名（供标题/图表）——只看参与探测的行。
     pub(crate) fn worst_target(&self) -> Option<&TargetState> {
         let mut worst: Option<&TargetState> = None;
         for t in &self.targets {
+            if !t.enabled { continue; }
             if t.mode == "idle" || t.mode == "testing" { continue; }
             if t.mode == "offline" {
                 if worst.map(|w| w.mode != "offline").unwrap_or(true) { worst = Some(t); }

@@ -26,6 +26,18 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 // ── install ─────────────────────────────────────────────────────────────
+fn kind_proto(kind: crate::config::SessionKind, lang_en: bool) -> &'static str {
+    use crate::config::SessionKind as K;
+    match kind {
+        K::Ssh => "SSH",
+        K::Serial => if lang_en { "Serial" } else { "串口" },
+        K::Telnet => "Telnet",
+        K::Local => if lang_en { "Local" } else { "本地" },
+        K::Rdp => "RDP",
+        K::Vnc => "VNC",
+    }
+}
+
 pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigStore>>) {
     let w = window.as_weak();
     let state = Arc::new(Mutex::new(PingState::new()));
@@ -36,18 +48,7 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
     // 源下拉 = 本机 + 已打开 tab 的会话（连接态动态）；＋ 下拉 = 本机 + 全部
     // 已保存会话（「本软件维护的集合」，不管有没有开 tab，key=会话 host 即
     // 探测地址）。两处行都带悬浮信息卡字段（tab 卡同款；远程源仍仅展示，
-    // 真正从远端探测要三期 SSH 通道，见文件头）。
-    fn kind_proto(kind: crate::config::SessionKind, lang_en: bool) -> &'static str {
-        use crate::config::SessionKind as K;
-        match kind {
-            K::Ssh => "SSH",
-            K::Serial => if lang_en { "Serial" } else { "串口" },
-            K::Telnet => "Telnet",
-            K::Local => if lang_en { "Local" } else { "本地" },
-            K::Rdp => "RDP",
-            K::Vnc => "VNC",
-        }
-    }
+    // 真正从远端探测要三期 SSH 通道，见文件头）。proto 文案 kind_proto（模块级）。
 
     type HostEntry = (String, String, bool, String, String, String, String, String, String);
 
@@ -113,35 +114,16 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
         });
     }
 
-    // ＋ 下拉全量：本机 + 全部已保存会话（打开下拉时重建，增删会话不陈旧）
+    // ＋ 下拉全量：本机 + 全部已保存会话（打开下拉时重建，增删会话不陈旧）。
+    // selected = key 已在清单（toggle 填入的勾选态，2026-11-04 定稿）。
     {
         let w = w.clone();
         let store = Rc::clone(store);
+        let state = state.clone();
         window.on_ping_refresh_targets(move || {
             let Some(w) = w.upgrade() else { return };
-            let lang = w.get_lang_en();
             let store = store.borrow();
-            let mut opts: Vec<PingHostInfo> = vec![PingHostInfo {
-                key: "127.0.0.1".into(), name: "本机".into(),
-                proto: kind_proto(crate::config::SessionKind::Local, lang).into(),
-                host: "127.0.0.1".into(),
-                user: "".into(), auth: "".into(), group: "".into(), note: "".into(),
-            }];
-            for s in store.sessions() {
-                if s.host.trim().is_empty() { continue; }
-                let group = crate::config::display_group_of(s);
-                opts.push(PingHostInfo {
-                    key: SharedString::from(s.host.clone()),
-                    name: SharedString::from(s.name.clone()),
-                    proto: SharedString::from(kind_proto(s.kind, lang)),
-                    host: SharedString::from(s.host.clone()),
-                    user: SharedString::from(s.user.clone()),
-                    auth: SharedString::from(s.auth.as_str()),
-                    group: SharedString::from(group),
-                    note: SharedString::from(s.note.clone()),
-                });
-            }
-            w.set_ping_target_opts(ModelRc::from(Rc::new(VecModel::from(opts))));
+            rebuild_target_opts(&w, &store, &state, w.get_lang_en());
         });
     }
 
@@ -295,18 +277,23 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
         });
     }
 
-    // ＋ 下拉模型由 on_ping_refresh_targets 打开时重建（本机+全部已保存会话）
+    // ＋ 下拉行点击 / 清单勾选框 = 参与/不参与切换（2026-11-05 用户定稿：
+    // 空框=不参与但**行保留置灰**，不再直接移除；勾选态同步下拉模型）
     {
         let w = w.clone();
         let state = state.clone();
-        window.on_ping_add_target(move |addr| {
+        let store = Rc::clone(store);
+        window.on_ping_toggle_target(move |addr| {
             let addr = addr.trim().to_string();
             if addr.is_empty() { return; }
             let Some(w) = w.upgrade() else { return };
             let mut skipped = false;
             if let Ok(mut st) = state.lock() {
-                if st.targets.iter().any(|x| x.addr.eq_ignore_ascii_case(&addr)) { return; }
-                if st.targets.len() >= MAX_TARGETS { skipped = true; } else {
+                if let Some(t) = st.targets.iter_mut().find(|x| x.addr.eq_ignore_ascii_case(&addr)) {
+                    t.enabled = !t.enabled;   // 勾/空切换，行保留
+                } else if st.targets.len() >= MAX_TARGETS {
+                    skipped = true;
+                } else {
                     st.targets.push(TargetState::new(addr));
                 }
             }
@@ -315,19 +302,8 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
                 w.set_ping_has_error(true);
             }
             refresh_all(&w, &state);
-        });
-    }
-
-    // 移除目标
-    {
-        let w = w.clone();
-        let state = state.clone();
-        window.on_ping_remove_target(move |addr| {
-            if let Ok(mut st) = state.lock() {
-                st.targets.retain(|t| t.addr != addr.as_str());
-            }
-            let Some(w) = w.upgrade() else { return };
-            refresh_all(&w, &state);
+            // 下拉勾选态同步：勾选来自清单 enabled 成员关系，重建下拉模型即可
+            rebuild_target_opts(&w, &store.borrow(), &state, w.get_lang_en());
         });
     }
 
@@ -346,10 +322,12 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
         });
     }
 
-    // 探测 / 刷新
+    // 探测 / 刷新（连续 Ping 定时器随探测启动——2026-11-04 用户定稿：
+    // 开关只切状态不触发，点「探测」才跑）
     {
         let w = w.clone();
         let state = state.clone();
+        let auto_timer = auto_timer.clone();
         window.on_ping_run(move || {
             let is_port = state.lock().map(|s| s.method == "port").unwrap_or(false);
             let Some(w) = w.upgrade() else { return };
@@ -399,45 +377,67 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
                 w.set_ping_draft(SharedString::new());
             }
             let targets: Vec<String> = state.lock().ok()
-                .map(|s| s.targets.iter().map(|t| t.addr.clone()).collect())
+                .map(|s| s.targets.iter().filter(|t| t.enabled)
+                    .map(|t| t.addr.clone()).collect())
                 .unwrap_or_default();
             if targets.is_empty() {
                 w.set_ping_has_error(true);
-                w.set_ping_input_error(SharedString::from("请至少选择一个目标"));
+                w.set_ping_input_error(SharedString::from("请至少勾选一个目标"));
                 return;
             }
             w.set_ping_has_error(false);
+            // 连续 Ping 开着：确保定时器在跑（开关切换不启动定时器，这里随
+            // 探测启动；重复 start 是幂等重置——重置节拍从本次点击起算）
+            if w.get_ping_auto_on() { start_auto_timer(&w, &state, &auto_timer); }
             start_round(&w, &state, targets);
         });
     }
 
-    // 连续 Ping
+    // 连续 Ping（开关只切状态不触发，2026-11-04 用户定稿：切换瞬间不探测、
+    // 不起定时器；定时器随「探测」按钮启动/重置——探测期间开关关闭则停表）
     {
         let w = w.clone();
         let state = state.clone();
         window.on_ping_toggle_auto(move |on| {
-            let auto_timer = auto_timer.clone();
             let Some(w) = w.upgrade() else { return };
             w.set_ping_auto_on(on);
             if let Ok(mut st) = state.lock() { st.auto_on = on; }
-            if on {
-                let w2 = w.as_weak();
-                let state2 = state.clone();
-                let timer = slint::Timer::default();
-                timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(AUTO_INTERVAL_MS), move || {
-                    let Some(w) = w2.upgrade() else { return };
-                    if !w.get_ping_dialog_open() || !w.get_ping_auto_on() { return; }
-                    if w.get_ping_testing() { return; }
-                    let targets: Vec<String> = state2.lock().unwrap()
-                        .targets.iter().map(|t| t.addr.clone()).collect();
-                    if targets.is_empty() { return; }
-                    start_round(&w, &state2, targets);
-                });
-                *auto_timer.borrow_mut() = Some(timer);
-            } else {
+            if !on {
+                // 关闭即停表（在飞的那一轮照常落地）
                 *auto_timer.borrow_mut() = None;
             }
+            // 开启时不做任何探测动作（含定时器）——下一次点「探测」时启动
         });
+    }
+
+    /// 连续 Ping 定时器（随「探测」启动；Repeated 2s，每跳探测一轮）。
+    /// 供 on_ping_run 调用；独立函数避免闭包内再借 auto_timer（RefCell 冲突）。
+    fn start_auto_timer(
+        w: &AppWindow,
+        state: &Arc<Mutex<PingState>>,
+        auto_timer: &Rc<RefCell<Option<slint::Timer>>>,
+    ) {
+        let timer = slint::Timer::default();
+        let w2 = w.as_weak();
+        let state2 = state.clone();
+        timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(AUTO_INTERVAL_MS), move || {
+            let Some(w) = w2.upgrade() else { return };
+            if !w.get_ping_dialog_open() || !w.get_ping_auto_on() { return; }
+            // 轮次在飞 / 弹框关闭中：跳过这一跳（round_active 防重入在
+            // start_round 里兜底，双保险）
+            if w.get_ping_testing() { return; }
+            let targets: Vec<String> = match state2.lock() {
+                Ok(st) => {
+                    if st.method != "icmp" { return; }
+                    st.targets.iter().filter(|t| t.enabled)
+                        .map(|t| t.addr.clone()).collect()
+                }
+                Err(_) => return,
+            };
+            if targets.is_empty() { return; }
+            start_round(&w, &state2, targets);
+        });
+        *auto_timer.borrow_mut() = Some(timer);
     }
 
     // 清空结果（保留目标清单，V2 定稿）
@@ -528,12 +528,14 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
 
 // ── 探测轮次 ────────────────────────────────────────────────────────────
 fn start_round(w: &AppWindow, state: &Arc<Mutex<PingState>>, targets: Vec<String>) {
-    w.set_ping_testing(true);
+    // 轮次标记（2026-11-04 用户定稿「清单一直在跳动」根因修复：探测期间
+    // 行/右栏**保持上次数据**——不再把目标集体翻成 testing 模式渲染成
+    // 「测试中/—」再翻回来；按钮文字用 round_active 渲染「测试中…」做在飞
+    // 反馈。防重入：轮次在飞时直接忽略新触发。）
     {
         let Ok(mut st) = state.lock() else { return };
-        for t in &mut st.targets {
-            if targets.iter().any(|x| x == &t.addr) { t.mode = "testing".into(); }
-        }
+        if st.round_active { return; }
+        st.round_active = true;
     }
     refresh_all(w, state);
     let w2 = w.as_weak();
@@ -580,8 +582,8 @@ fn start_round(w: &AppWindow, state: &Arc<Mutex<PingState>>, targets: Vec<String
                     }
                     done += 1;
                 }
+                st.round_active = false;
             }
-            w.set_ping_testing(false);
             refresh_all(&w, &state2);
             toast(&w, &format!("Ping 完成 · {} 个目标", done));
         });
@@ -614,6 +616,7 @@ fn refresh_all(w: &AppWindow, state: &Arc<Mutex<PingState>>) {
             } else { format!("{:.1}%", t.loss_pct()) }),
             spark: SharedString::from(spark_path(&t.samples)),
             selected: t.selected,
+            enabled: t.enabled,
         });
     }
     w.set_ping_targets(ModelRc::from(Rc::new(VecModel::from(rows))));
@@ -663,16 +666,20 @@ fn refresh_all(w: &AppWindow, state: &Arc<Mutex<PingState>>) {
     let selected_active = sel_addr.is_some();
     w.set_ping_selected_target_active(selected_active);
 
-    let testing = st.targets.iter().any(|t| t.mode == "testing");
-    let has_any = st.targets.iter().any(|t| t.mode != "idle");
+    // 在飞反馈（2026-11-04 用户定稿：探测期间行/右栏保持上次数据，不集体
+    // 翻「测试中」；只把按钮文字换成「测试中…」+ 禁点）
+    let testing = st.round_active;
+    w.set_ping_testing(testing);
+    // has_any / 计数只看参与探测的行（空框=不参与，2026-11-05 定稿）
+    let has_any = st.targets.iter().any(|t| t.enabled && t.mode != "idle");
+    let enabled_count = st.targets.iter().filter(|t| t.enabled).count();
+    // 空态：无选中、无数据 → 图表占位框/三格统计整块隐藏（右栏不再悬着
+    // 「—」孤块和空占位框，2026-11-04 用户反馈截图）
+    w.set_ping_empty_view(!has_any);
 
     let (rtt_label, rtt_value, rtt_unit, q_text, q_tone, q_hint, title, chart_on, chart_src, loss_src, owner, stats): (
         String, String, String, String, String, String, String, bool, Vec<Option<f64>>, String, Option<(String, String)>, [String; 6]
-    ) = if testing {
-        ("当前 RTT".to_string(), "—".to_string(), "ms".to_string(), (if lang { "Testing" } else { "测试中" }).to_string(), "testing".to_string(),
-         (if lang { "Probing targets" } else { "正在探测目标" }).into(), String::new(), true, Vec::new(), String::new(), None,
-         ["—".into(), "—".into(), "—".into(), "—".into(), "—".into(), "—".into()])
-    } else if let Some(addr) = &sel_addr {
+    ) = if let Some(addr) = &sel_addr {
         let Some(t) = st.targets.iter().find(|t| &t.addr == addr) else {
             return;
         };
@@ -716,6 +723,7 @@ fn refresh_all(w: &AppWindow, state: &Arc<Mutex<PingState>>) {
         let mut jit_n = 0usize;
         let mut worst_name = String::new();
         for t in &st.targets {
+            if !t.enabled { continue; }   // 空框行不进汇总
             if t.mode == "idle" || t.mode == "testing" { continue; }
             if t.mode == "offline" || t.mode == "degraded" { bad_n += 1; }
             if t.loss_pct() > 0.0 { loss_n += 1; }
@@ -735,8 +743,8 @@ fn refresh_all(w: &AppWindow, state: &Arc<Mutex<PingState>>) {
             "ms".to_string(),
             if bad_n > 0 { format!("{} 个异常", bad_n) } else { "全部正常".into() },
             if bad_n > 0 { "fair".to_string() } else { "good".to_string() },
-            format!("{} 个目标 · 最慢来自 {}", st.targets.len(), if worst_name.is_empty() { "—".into() } else { worst_title }),
-            format!("{} 个目标", st.targets.len()),
+            format!("{} 个目标 · 最慢来自 {}", enabled_count, if worst_name.is_empty() { "—".into() } else { worst_title }),
+            format!("{} 个目标", enabled_count),
             true,
             chart_src.clone(),
             loss_path(&chart_src),
@@ -788,21 +796,20 @@ fn refresh_all(w: &AppWindow, state: &Arc<Mutex<PingState>>) {
     w.set_ping_stat_3_label(SharedString::from(stats[4].clone()));
     w.set_ping_stat_3_value(SharedString::from(stats[5].clone()));
 
-    // 页脚
-    let testing = st.targets.iter().any(|t| t.mode == "testing");
-    w.set_ping_testing(testing);
+    // 页脚（testing=round_active，上面已下发；摘要保持上次结果文案——
+    // 在飞时不再整条换「正在探测…」，只有按钮文字给在飞反馈）
     w.set_ping_run_text(SharedString::from(if testing {
         (if lang { "Testing…" } else { "测试中…" }).into()
-    } else { format!("探测 {} 个", st.targets.len()) }));
+    } else { format!("探测 {} 个", enabled_count) }));
     let auto_disabled = testing || !has_any;
     w.set_ping_auto_disabled(auto_disabled);
     let summary = if st.targets.is_empty() {
         (if lang { "No targets" } else { "勾选目标，或在上方输入 IP 后加入" }).to_string()
-    } else if testing {
-        (if lang { "Testing…" } else { "正在探测…" }).to_string()
+    } else if enabled_count == 0 {
+        (if lang { "No enabled targets" } else { "全部未勾选 · 点行首空框重新参与" }).to_string()
     } else {
-        let bad = st.targets.iter().filter(|t| t.mode == "offline" || t.mode == "degraded").count();
-        format!("{} 个目标 · {}", st.targets.len(), if bad > 0 { format!("{} 个异常", bad) } else { "全部正常".into() })
+        let bad = st.targets.iter().filter(|t| t.enabled && (t.mode == "offline" || t.mode == "degraded")).count();
+        format!("{} 个目标 · {}", enabled_count, if bad > 0 { format!("{} 个异常", bad) } else { "全部正常".into() })
     };
     w.set_ping_summary(SharedString::from(summary));
 
@@ -857,4 +864,45 @@ fn toast(w: &AppWindow, text: &str) {
     // 复用命令管理同款 toast 通道（若可用则静默失败，不打断探测流程）
     let _ = w;
     let _ = text;
+}
+
+// ── ＋ 下拉模型重建 ─────────────────────────────────────────────────────
+/// 全量重建 ＋ 下拉（本机 + 全部已保存会话），selected = key 已在清单。
+/// 打开下拉（on_ping_refresh_targets）与 toggle 填入（on_ping_add_target）
+/// 共用——勾选态的唯一来源是清单成员关系。
+fn rebuild_target_opts(
+    w: &AppWindow,
+    store: &std::cell::Ref<ConfigStore>,
+    state: &Arc<Mutex<PingState>>,
+    lang_en: bool,
+) {
+    // 勾选 = 参与探测的行（空框=不参与，2026-11-05 定稿）
+    let in_list: Vec<String> = state.lock().ok()
+        .map(|st| st.targets.iter().filter(|t| t.enabled)
+            .map(|t| t.addr.clone()).collect())
+        .unwrap_or_default();
+    let is_sel = |k: &str| in_list.iter().any(|a| a.eq_ignore_ascii_case(k));
+    let mut opts: Vec<PingHostInfo> = vec![PingHostInfo {
+        key: "127.0.0.1".into(), name: if lang_en { "Local" } else { "本机" }.into(),
+        proto: kind_proto(crate::config::SessionKind::Local, lang_en).into(),
+        host: "127.0.0.1".into(),
+        user: "".into(), auth: "".into(), group: "".into(), note: "".into(),
+        selected: is_sel("127.0.0.1"),
+    }];
+    for s in store.sessions() {
+        if s.host.trim().is_empty() { continue; }
+        let group = crate::config::display_group_of(s);
+        opts.push(PingHostInfo {
+            key: SharedString::from(s.host.clone()),
+            name: SharedString::from(s.name.clone()),
+            proto: SharedString::from(kind_proto(s.kind, lang_en)),
+            host: SharedString::from(s.host.clone()),
+            user: SharedString::from(s.user.clone()),
+            auth: SharedString::from(s.auth.as_str()),
+            group: SharedString::from(group),
+            note: SharedString::from(s.note.clone()),
+            selected: is_sel(&s.host),
+        });
+    }
+    w.set_ping_target_opts(ModelRc::from(Rc::new(VecModel::from(opts))));
 }
