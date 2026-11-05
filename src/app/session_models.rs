@@ -1,11 +1,11 @@
 use super::*;
-// (#drag-cross-group-fix 2026-09-06) 显式导入:此前经 `use super::*` 隐式
-// 继承 app.rs 的 use 项,app.rs 内不再直接使用该函数后需在此声明。
-use crate::config::named_display_groups;
-// (#tab-group-bar 2026-09-14) 标签底部色条要用与左侧会话行同一套"显示组"语义。
-use crate::config::display_group_of;
-// (#group-color 2026-09-14) 分组颜色表:组名 -> "#RRGGBB"。
+// (#left-panel-v3 2026-11-06) 树形分组:组从组名字符串升级为一等实体
+// (GroupRecord),本文件重写为「递归拍平 → 带 depth/row-kind 扁平行」的
+// 模型层;旧 named_display_groups / display_group_of 的组名路径退役。
+// (#tab-group-bar 2026-09-14) 标签底部色条要用与左侧会话行同一套组色语义。
+// (#group-color 2026-09-14) 分组颜色(旧:组名表;新:record 有效色)。
 use std::collections::{HashMap, HashSet};
+use std::cmp::Ordering;
 
 /// (#group-color 2026-09-14) 解析 `"#RRGGBB"` / `"#RGB"`(前导 `#` 可省)为颜色。
 /// Slint 的 `Color` **没有实现 `FromStr`**,所以这里手工解析。其他形式一律视为
@@ -41,28 +41,39 @@ pub(super) fn normalize_hex(hex: &str) -> Option<String> {
     ))
 }
 
+/// (#left-panel-v3) 面板排序方式(设置弹层「排序方式」三档)。
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum GroupSort {
+    /// 存储序:组 = record Vec 顺序(用户拖动维护);会话 = sessions Vec 内
+    /// 同组相对顺序。默认。
+    #[default]
+    Storage,
+    /// 名称:组与会话各自按名称排序(小写比较;无 locale 依赖)。
+    Name,
+    /// 最近:按 last_used 降序(ISO 字符串字典序即时间序),空值垫底。
+    Recent,
+}
+
 /// (#tab-group-bar 2026-09-14) 标签底部色条用的组色:`(绘制色, hex)`。
 ///
-/// **必须与左侧会话行同源** —— 复用同一张 `group_colors` 表和同一套"显示组"
-/// 规则(空组名 / 保留名 → "default"),否则标签色条会和它所属的组头对不上色。
-/// 唯一的例外是内建本地终端:它在列表里恒归 `system` 组(见 `build_session_rows`),
-/// 若直接走 `display_group_of` 会被归到 `default`,故先用内建列表判一次身份。
-///
-/// hex 为空 = 该组未设色 → Slint 侧不绘制色条。
+/// **必须与左侧会话行同源** —— 走 `group_effective_color`(本组 → 最近祖先),
+/// 与树渲染同一条颜色链。builtin 本地终端恒归 `system` 组。
+/// hex 为空 = 该组无有效色 → Slint 侧不绘制色条。
 pub(super) fn tab_group_color(store: &ConfigStore, session: &Session) -> (slint::Color, String) {
     let builtin = builtin_local_sessions(store.wsl_profiles());
-    let group = if builtin.iter().any(|b| b.id == session.id) {
-        "system".to_string()
+    let gid = if builtin.iter().any(|b| b.id == session.id) {
+        crate::config::GROUP_ID_SYSTEM.to_string()
+    } else if session.group_id.is_empty() {
+        crate::config::GROUP_ID_DEFAULT.to_string()
     } else {
-        display_group_of(session)
+        session.group_id.clone()
     };
     match store
-        .group_colors()
-        .get(group.as_str())
+        .group_effective_color(&gid)
         .filter(|hex| !hex.trim().is_empty())
     {
         Some(hex) => (
-            parse_hex_color(hex).unwrap_or_default(),
+            parse_hex_color(&hex).unwrap_or_default(),
             hex.trim().to_string(),
         ),
         None => (slint::Color::default(), String::new()),
@@ -130,59 +141,71 @@ pub(super) fn parse_batch_import(text: &str) -> Vec<Session> {
     out
 }
 
-/// (#group-dot 2026-09-14) 同上,但每项**多带该组的颜色**:会话对话框的「分组」
-/// 下拉要在组名前画色点,而 Slint 侧既无"按名查色"也无 color→hex 的能力,故在
-/// Rust 侧把名称与颜色配成对一起注入(与 named_display_groups 同源)。
+/// (#group-dot 2026-09-14 / V3) 会话对话框「分组」下拉项:组 id + 名称 + 颜色
+/// + 树深度。顺序 = 默认组首位,其后用户组按树形 DFS(record Vec 顺序)。
 /// 未设色的组 hex = "" → Slint 侧只留空位、不画点。
 pub(super) fn session_groups_model(store: &ConfigStore) -> ModelRc<GroupEntry> {
-    let named = named_display_groups(store.groups(), store.sessions());
-    let colors = store.group_colors();
-    let entries: Vec<GroupEntry> = named
-        .into_iter()
-        .map(|name| {
-            let hex = colors
-                .get(name.as_str())
-                .map(|h| h.trim())
-                .filter(|h| !h.is_empty())
-                .unwrap_or("");
-            GroupEntry {
-                name: name.as_str().into(),
-                hex: hex.into(),
-                color: parse_hex_color(hex).unwrap_or_default(),
-                // (#group-dot-r2 2026-09-15) 成员数:下拉项右缘展示。
-                count: store
-                    .sessions()
-                    .iter()
-                    .filter(|s| s.group == *name)
-                    .count() as i32,
-            }
-        })
-        .collect();
+    let records = store.group_records();
+    let mut entries: Vec<GroupEntry> = Vec::new();
+    let count_of = |gid: &str| {
+        store
+            .sessions()
+            .iter()
+            .filter(|s| s.group_id == gid)
+            .count() as i32
+    };
+    let push = |entries: &mut Vec<GroupEntry>,
+                record: &crate::config::GroupRecord,
+                depth: usize| {
+        let hex = record.color.clone().unwrap_or_default();
+        entries.push(GroupEntry {
+            id: record.id.as_str().into(),
+            name: record.name.as_str().into(),
+            hex: hex.clone().into(),
+            color: parse_hex_color(&hex).unwrap_or_default(),
+            count: count_of(&record.id),
+            depth: depth as i32,
+        });
+    };
+    // default 恒首位(未分组兜底目标);system 不进下拉(存不了普通会话)。
+    if let Some(default) = records.iter().find(|r| r.id == crate::config::GROUP_ID_DEFAULT) {
+        push(&mut entries, default, 0);
+    }
+    // 用户组 DFS:同组内子组在前(与树渲染同序),深度即缩进。
+    fn walk<'a>(
+        records: &'a [crate::config::GroupRecord],
+        parent: &str,
+        depth: usize,
+        entries: &mut Vec<GroupEntry>,
+        push: &impl Fn(&mut Vec<GroupEntry>, &'a crate::config::GroupRecord, usize),
+    ) {
+        for record in records.iter().filter(|r| r.parent_id == parent && !r.reserved) {
+            push(entries, record, depth);
+            walk(records, &record.id, depth + 1, entries, push);
+        }
+    }
+    walk(records, "", 0, &mut entries, &push);
     ModelRc::from(Rc::new(VecModel::from(entries)))
 }
 
-/// (#move-to-groups 2026-09-14) 成员右键菜单「移动到」的组清单,顺序 =
-/// **默认组恒居首位**,其后是具名组(存储顺序 = 组头拖动维护的顺序)。
-///
-/// 为什么不再让 Slint 侧遍历 root.sessions 过滤:
-///  · `visible: false` 的行**仍然各占一个 VerticalLayout 的 spacing** —— 列表
-///    几十行里绝大多数不可见,菜单里就堆出用户看到的"组与组之间留有空隙"
-///    (实测:一两行可见却隔着好几个身位);
-///  · 默认组在 sessions 里只有当**存在未分组成员**时才有对应行,未分组会话全
-///    被移走时菜单里"默认组"整个消失 —— 而它恰恰是最常用的归位目标(用户
-///    要求"第一位永远是默认组")。这里直接由存储侧列出全部可用组,与
-///    display_groups 同源,不再依赖"恰好有成员"。
-/// 排除:builtin 的 system 组(存不了普通会话)。当前会话所在的组不在这里
-/// 排除——排除条件依赖"右键的是哪一行",而本模型在会话列表刷新时一次性填好,
-/// 由 Slint 侧按 ctx-menu-group 过滤(那里的 `if` 同样不占布局)。
+/// (#move-to-groups 2026-09-14 / V3) 成员右键菜单「移动到」的组清单:显示名
+/// 列表(默认组恒居首位,用户组树形序;保留组 system 排除)。**临时兼容**:
+/// S4 接「移动到分组」弹窗后回调改走 id,届时本函数退役。
 pub(super) fn move_target_groups_model(store: &ConfigStore) -> ModelRc<SharedString> {
-    let mut groups: Vec<SharedString> = vec![SharedString::from("default")];
-    groups.extend(
-        named_display_groups(store.groups(), store.sessions())
-            .into_iter()
-            .map(SharedString::from),
-    );
-    ModelRc::from(Rc::new(VecModel::from(groups)))
+    let records = store.group_records();
+    let mut names: Vec<SharedString> = records
+        .iter()
+        .find(|r| r.id == crate::config::GROUP_ID_DEFAULT)
+        .map(|r| vec![SharedString::from(r.name.as_str())])
+        .unwrap_or_default();
+    fn walk<'a>(records: &'a [crate::config::GroupRecord], parent: &str, out: &mut Vec<SharedString>) {
+        for record in records.iter().filter(|r| r.parent_id == parent && !r.reserved) {
+            out.push(SharedString::from(record.name.as_str()));
+            walk(records, &record.id, out);
+        }
+    }
+    walk(records, "", &mut names);
+    ModelRc::from(Rc::new(VecModel::from(names)))
 }
 
 // ---------------------------------------------------------------------------
@@ -327,7 +350,7 @@ pub(super) fn jump_candidates(
 /// (#conn-path 2026-10-04 高保真 #proxy-fields) Session → 跳板链条目(信息卡
 /// 数据源):label 沿用 jump_candidates 的命名规则,auth 存原始值由 slint 侧
 /// auth-label() 转显示名。
-pub(super) fn jump_entry(s: &Session) -> JumpEntry {
+pub(super) fn jump_entry(s: &Session, group_display: &str) -> JumpEntry {
     let label = if s.name.trim().is_empty() {
         if s.user.trim().is_empty() {
             s.host.clone()
@@ -345,7 +368,7 @@ pub(super) fn jump_entry(s: &Session) -> JumpEntry {
         port: s.port as i32,
         user: s.user.clone().into(),
         auth: s.auth.as_str().into(),
-        group: s.group.clone().into(),
+        group: group_display.into(),
         note: s.note.clone().into(),
     }
 }
@@ -354,11 +377,24 @@ pub(super) fn jump_entry(s: &Session) -> JumpEntry {
 /// 与 `skip`(已在链中的 id 集合 —— 防环:下拉只列未入链项)。
 pub(super) fn build_jump_pool(store: &ConfigStore, exclude_id: &str, skip: &HashSet<String>) -> Vec<JumpEntry> {
     let mut out = Vec::new();
+    let group_name_of = |gid: &str| -> String {
+        store
+            .group_records()
+            .iter()
+            .find(|r| r.id == gid)
+            .map(|r| r.name.clone())
+            .unwrap_or_default()
+    };
     for s in store.sessions() {
         if s.kind != SessionKind::Ssh || s.id == exclude_id || skip.contains(&s.id) {
             continue;
         }
-        out.push(jump_entry(s));
+        let gid = if s.group_id.is_empty() {
+            crate::config::GROUP_ID_DEFAULT
+        } else {
+            s.group_id.as_str()
+        };
+        out.push(jump_entry(s, &group_name_of(gid)));
     }
     out
 }
@@ -367,267 +403,318 @@ fn normalized_query(query: &str) -> String {
     query.trim().to_lowercase()
 }
 
-fn session_matches_normalized_query(session: &Session, query: &str) -> bool {
-    query.is_empty()
-        || session.name.to_lowercase().contains(query)
-        || session.host.to_lowercase().contains(query)
-}
-
 #[cfg(test)]
 fn session_matches_query(session: &Session, query: &str) -> bool {
     let query = normalized_query(query);
     session_matches_normalized_query(session, &query)
 }
 
+/// (V3) 匹配口径(设计稿 T2):名称 / 主机 / 用户 / 备注 / 协议 / 认证方式。
+/// 组名的命中(整组带出)由 `FlatCtx::matches` 的祖先链回溯承担。
+fn session_matches_normalized_query(session: &Session, query: &str) -> bool {
+    query.is_empty()
+        || session.name.to_lowercase().contains(query)
+        || session.host.to_lowercase().contains(query)
+        || session.user.to_lowercase().contains(query)
+        || session.note.to_lowercase().contains(query)
+        || session.kind.as_str().to_lowercase().contains(query)
+}
+
+/// (V3) last_used 排序键:ISO 字符串字典序即时间序;空值恒垫底。
+fn last_used_rank(s: &Session) -> (bool, String) {
+    match &s.last_used {
+        Some(v) if !v.trim().is_empty() => (true, v.clone()),
+        _ => (false, String::new()),
+    }
+}
+
+/// (V3) 树形拍平上下文:递归展开 group_records 树,产出「组头行 → 子组 →
+/// 成员」扁平序列。关键决策(设计稿 §06 迁移顺序 #2):
+///  - Slint 只吃扁平行,递归布局一律不做;
+///  - 同组内**子组在前**、成员在后(成员块连续,组内拖拽几何才成立);
+///  - 折叠(非搜索态)时子层不进模型,组头行保留(计数徽章仍可见);
+///  - 搜索时强制展开且**不写回**折叠态;组名命中带出全部子孙;组头计数 = 匹配数;
+///  - 根层顺序:system(本地终端,可被 hide_system 整组剔除)→ default
+///    (仅当有成员)→ 用户根组(record 顺序)——与旧版行序一致,迁移零 surprise。
+struct FlatCtx<'a> {
+    records: &'a [crate::config::GroupRecord],
+    by_group: HashMap<&'a str, Vec<&'a Session>>,
+    /// 有效色预计算:id -> (Color, hex)("" = 无色)。
+    colors: HashMap<&'a str, (slint::Color, String)>,
+    name_hit: HashSet<&'a str>,
+    searching: bool,
+    sort: GroupSort,
+}
+
+impl<'a> FlatCtx<'a> {
+    fn children(&self, parent: &str) -> Vec<&'a crate::config::GroupRecord> {
+        self.records.iter().filter(|r| r.parent_id == parent).collect()
+    }
+
+    /// 会话自身字段 + 祖先组名链的联合匹配。
+    fn matches_with(&self, s: &Session, query: &str) -> bool {
+        if !self.searching {
+            return true;
+        }
+        if session_matches_normalized_query(s, query) {
+            return true;
+        }
+        let mut cur = if s.group_id.is_empty() {
+            crate::config::GROUP_ID_DEFAULT.to_string()
+        } else {
+            s.group_id.clone()
+        };
+        for _ in 0..16 {
+            if self.name_hit.contains(cur.as_str()) {
+                return true;
+            }
+            match self.records.iter().find(|r| r.id == cur) {
+                Some(r) if !r.parent_id.is_empty() => cur = r.parent_id.clone(),
+                _ => break,
+            }
+        }
+        false
+    }
+
+    /// 子树会话总数(不过滤)。
+    fn subtree_total(&self, gid: &str) -> usize {
+        let own = self.by_group.get(gid).map(|v| v.len()).unwrap_or(0);
+        own + self
+            .children(gid)
+            .iter()
+            .map(|r| self.subtree_total(&r.id))
+            .sum::<usize>()
+    }
+
+    /// 子树匹配会话数(搜索态组头计数)。
+    fn subtree_matches(&self, gid: &str, query: &str) -> usize {
+        let own = self
+            .by_group
+            .get(gid)
+            .map(|v| v.iter().filter(|s| self.matches_with(s, query)).count())
+            .unwrap_or(0);
+        own + self
+            .children(gid)
+            .iter()
+            .map(|r| self.subtree_matches(&r.id, query))
+            .sum::<usize>()
+    }
+
+    fn color_of(&self, gid: &str) -> (slint::Color, String) {
+        self.colors
+            .get(gid)
+            .cloned()
+            .unwrap_or((slint::Color::default(), String::new()))
+    }
+
+    /// 递归展开一个组:组头行 + (未折叠时)子组 + 成员 + 空组占位。
+    fn emit_group(&self, gid: &str, depth: usize, query: &str, out: &mut Vec<SessionInfo>) {
+        let Some(record) = self.records.iter().find(|r| r.id == gid) else {
+            return;
+        };
+        let mut members: Vec<&Session> = self.by_group.get(gid).cloned().unwrap_or_default();
+        let kids = self.children(gid);
+        let force = self.name_hit.contains(gid);
+        let match_count = self.subtree_matches(gid, query);
+        // 搜索可见性:组名未命中且子树零匹配 → 整组不出现。
+        if self.searching && !force && match_count == 0 {
+            return;
+        }
+        sort_members(&mut members, self.sort);
+        let shown: Vec<&&Session> = members
+            .iter()
+            .filter(|s| self.matches_with(s, query))
+            .collect();
+
+        let (gc, hex) = self.color_of(gid);
+        let total = if self.searching { match_count } else { self.subtree_total(gid) };
+        let subs = kids.iter().filter(|r| !r.reserved).count();
+        let collapsed = record.collapsed && !self.searching;
+        out.push(SessionInfo {
+            id: "".into(),
+            name: record.name.as_str().into(),
+            kind: "".into(),
+            host: "".into(),
+            port: 0,
+            user: "".into(),
+            auth: "".into(),
+            group_id: record.id.as_str().into(),
+            group: record.name.as_str().into(),
+            depth: depth as i32,
+            collapsed,
+            builtin: record.id == crate::config::GROUP_ID_SYSTEM,
+            conn_state: 0,
+            group_index: 0,
+            group_size: 0,
+            group_total: total as i32,
+            group_subs: if self.searching { 0 } else { subs as i32 },
+            note: "".into(),
+            group_color: gc,
+            group_color_hex: hex.as_str().into(),
+            row_kind: "group".into(),
+        });
+        if collapsed {
+            return;
+        }
+        // 子组在前(设计稿 §06:成员块必须连续,组内拖拽几何才成立)。
+        for kid in &kids {
+            self.emit_group(&kid.id, depth + 1, query, out);
+        }
+        if shown.is_empty() {
+            if !self.searching || force {
+                // 空组占位(非搜索态;搜索时组名命中也显示)。
+                out.push(SessionInfo {
+                    id: "".into(),
+                    name: "".into(),
+                    kind: "".into(),
+                    host: "".into(),
+                    port: 0,
+                    user: "".into(),
+                    auth: "".into(),
+                    group_id: record.id.as_str().into(),
+                    group: record.name.as_str().into(),
+                    depth: (depth + 1) as i32,
+                    collapsed: false,
+                    builtin: false,
+                    conn_state: 0,
+                    group_index: 0,
+                    group_size: 0,
+                    group_total: 0,
+                    group_subs: 0,
+                    note: "".into(),
+                    group_color: gc,
+                    group_color_hex: hex.as_str().into(),
+                    row_kind: "empty".into(),
+                });
+            }
+            return;
+        }
+        let group_size = shown.len() as i32;
+        for (i, s) in shown.iter().enumerate() {
+            let s = **s;
+            out.push(SessionInfo {
+                id: s.id.clone().into(),
+                name: s.name.clone().into(),
+                kind: s.kind.as_str().into(),
+                host: s.host.clone().into(),
+                port: s.port as i32,
+                user: s.user.clone().into(),
+                // (#conn-path) 认证方式原始值:悬浮信息卡「认证」行。
+                auth: s.auth.as_str().into(),
+                note: s.note.clone().into(),
+                group_id: record.id.as_str().into(),
+                group: record.name.as_str().into(),
+                depth: (depth + 1) as i32,
+                collapsed: false,
+                builtin: record.id == crate::config::GROUP_ID_SYSTEM,
+                conn_state: 0,
+                group_index: i as i32,
+                group_size,
+                group_total: 0,
+                group_subs: 0,
+                group_color: gc,
+                group_color_hex: hex.as_str().into(),
+                row_kind: "session".into(),
+            });
+        }
+    }
+}
+
+fn sort_members(members: &mut Vec<&Session>, sort: GroupSort) {
+    match sort {
+        GroupSort::Storage => {}
+        GroupSort::Name => members.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+        }),
+        GroupSort::Recent => members.sort_by(|a, b| last_used_rank(b).cmp(&last_used_rank(a))),
+    }
+}
+
+
 fn build_session_rows(
-    sessions: &[Session],
-    explicit_groups: &[String],
-    collapsed_groups: Option<&[String]>,
-    // (#group-color 2026-09-14) 用户在右键菜单里设的分组颜色(组名 -> hex)。
-    group_colors: &HashMap<String, String>,
+    store: &ConfigStore,
     builtin_sessions: &[Session],
     query: &str,
     // (#hide-system-group 2026-09-13) 隐藏"本地终端"保留组:**模型层过滤**。
-    // Slint 的 `visible:false` 只隐藏不回收空间,列表上方会残留一整块空白;
-    // 在这里把 system 组从数据里剔掉,后面的组自然上移补位。
+    // Slint 的 `visible:false` 只隐藏不回收空间,列表上方会残留一整块空白。
     hide_system: bool,
+    sort: GroupSort,
 ) -> Vec<SessionInfo> {
-    // Group sessions by their `group` (named groups alphabetically, ungrouped
-    // last), then by name within each group, and tag the first row of every
-    // group with a header so the welcome list can render a folder heading (#41).
     let query = normalized_query(query);
-    // 隐藏时把 system 组从输入里剔掉 —— 组头、成员、显式分组一起消失。
-    let owned_sessions: Vec<Session> = if hide_system {
-        sessions
-            .iter()
-            .filter(|s| s.group != "system")
-            .cloned()
-            .collect()
-    } else {
-        sessions.to_vec()
-    };
-    let owned_builtins: Vec<Session> = if hide_system {
-        Vec::new()
-    } else {
-        builtin_sessions.to_vec()
-    };
-    let owned_groups: Vec<String> = if hide_system {
-        explicit_groups
-            .iter()
-            .filter(|g| g.as_str() != "system")
-            .cloned()
-            .collect()
-    } else {
-        explicit_groups.to_vec()
-    };
-    let sessions = owned_sessions.as_slice();
-    let builtin_sessions = owned_builtins.as_slice();
-    let explicit_groups = owned_groups.as_slice();
     let searching = !query.is_empty();
-    let matches = |session: &Session| session_matches_normalized_query(session, &query);
-    let group_is_collapsed = |group: &str| {
-        !searching
-            && collapsed_groups
-                .map(|groups| groups.iter().any(|collapsed| collapsed == group))
-                .unwrap_or(true)
-    };
+    let records = store.group_records();
 
-    // Ordered list of display groups:
-    //  - "default" only when there are ungrouped sessions (group == "")
-    //  - named groups: explicit folders (incl. empty ones) ∪ sessions' groups,
-    //    de-duplicated, alphabetical.
-    let has_default = sessions.iter().any(|session| {
-        (session.group.is_empty() || is_reserved_session_group(session.group.trim()))
-            && matches(session)
-    });
-    let mut named: Vec<String> = if searching {
-        sessions
+    // 组名命中集(搜索:组名匹配 → 整组带出,设计稿 T2)。
+    let name_hit: HashSet<&str> = if searching {
+        records
             .iter()
-            .filter(|session| {
-                !session.group.is_empty()
-                    && !is_reserved_session_group(session.group.trim())
-                    && matches(session)
-            })
-            .map(|session| session.group.clone())
+            .filter(|r| r.name.to_lowercase().contains(&query))
+            .map(|r| r.id.as_str())
             .collect()
     } else {
-        named_display_groups(explicit_groups, sessions)
-    };
-    // (#drag-cross-group-fix 2026-09-06) 不再按字母排序:显示顺序必须与
-    // named_display_groups 的存储顺序(用户组头拖动换位维护的顺序)完全一致。
-    // 旧代码在这里重新按字母排序,导致三处组序互相矛盾:
-    //  1) 组头拖动排序(reorder-group 改存储顺序)视觉上无效——显示仍按字母序;
-    //  2) 跨组拖动(move-session-delta)按存储顺序找"相邻组",与显示相邻组
-    //     不符:存储序为 [测试, Test] 而显示为 [Test, 测试] 时,把"测试"里
-    //     的会话向上拖,被判定落到保留组 system,再被保留组检查静默拒绝
-    //     ——表现为"首行靠近组别就卡住,永远跨不进上面的组"。
-    //  3) 与 reorder_session 的显示序(存储序)不一致,同病。
-    // 改为按首次出现去重、保持存储顺序(搜索路径收集的会话组序同样保留)。
-    let mut unique: Vec<String> = Vec::new();
-    for group in named {
-        if !unique.contains(&group) {
-            unique.push(group);
-        }
-    }
-    named = unique;
-
-    let mut display_groups: Vec<String> = Vec::new();
-    if has_default {
-        display_groups.push("default".to_string());
-    }
-    display_groups.extend(named);
-
-    // (#group-color 2026-09-14) 分组颜色 = **用户在右键菜单里设定的 hex**。
-    // 未设 = 无色(has 为 false),由 Slint 回落该主题的次级前景色。
-    //
-    // 旧的"组名 hash → 8 色调色板"派生机制整体退役:那是临时方案,颜色随机、
-    // 且**改个组名就换色**,无法承担"身份标识"的职责。用户定稿:"默认就是
-    // 没有色彩的"。落点(组头文件夹 + 成员树线)全部由这一个来源驱动。
-    //
-    // 返回 (颜色, 是否已设):已设时把 hex 解析成 Color 一并传下去,Slint 侧
-    // 不必做字符串→颜色的转换。
-    // (#group-color-reserved 2026-09-14) **保留组一视同仁**:system(本地终端)与
-    // default(默认组)不再被排除在设色表之外 —— 用户定稿"系统组、默认组都支持
-    // 右击修改分组颜色"。二者仍**默认无色**(不参与自动配色),只是用户手动设色
-    // 后照常显示。组名为空(内部哨兵)才是真正的无色。
-    let group_color = |group: &str| -> (slint::Color, String) {
-        if group.is_empty() {
-            return (slint::Color::default(), String::new());
-        }
-        match group_colors.get(group).filter(|hex| !hex.is_empty()) {
-            Some(hex) => match parse_hex_color(hex) {
-                Some(color) => (color, hex.clone()),
-                None => (slint::Color::default(), String::new()),
-            },
-            None => (slint::Color::default(), String::new()),
-        }
+        HashSet::new()
     };
 
-    // Placeholder row for an empty folder; id == "" marks it as a group header
-    // with no session (used by the UI to gate the "delete group" action).
-    // (#group-color 2026-09-14) 空组占位行也要带组色 —— 组头行的文件夹
-    // 靠它上色,占位组同样要显示自己的颜色。
-    let blank = |group: &str, gc: slint::Color, hex: &str| SessionInfo {
-        id: "".into(),
-        name: "".into(),
-        // Placeholder rows render no member icon; "" falls back to the default
-        // protocol glyph. See Theme.protocol-icon.
-        kind: "".into(),
-        host: "".into(),
-        port: 0,
-        user: "".into(),
-        auth: "".into(),
-        group: group.into(),
-        group_header: group.into(),
-        collapsed: group_is_collapsed(group),
-        builtin: false,
-        conn_state: 0,
-        note: "".into(),
-        group_index: 0,
-        group_size: 0,
-        group_color: gc,
-        group_color_hex: hex.into(),
+    // 会话按组分桶(builtin 归 system,与旧版一致)。存储序保持。
+    let mut by_group: HashMap<&str, Vec<&Session>> = HashMap::new();
+    for s in store.sessions() {
+        let gid = if s.group_id.is_empty() {
+            crate::config::GROUP_ID_DEFAULT
+        } else {
+            s.group_id.as_str()
+        };
+        by_group.entry(gid).or_default().push(s);
+    }
+    for b in builtin_sessions {
+        by_group
+            .entry(crate::config::GROUP_ID_SYSTEM)
+            .or_default()
+            .push(b);
+    }
+
+    // 有效色预计算(本组 → 最近祖先 → 无)。
+    let mut colors: HashMap<&str, (slint::Color, String)> = HashMap::new();
+    for r in records {
+        let hex = store
+            .group_effective_color(&r.id)
+            .filter(|h| !h.trim().is_empty())
+            .unwrap_or_default();
+        let color = parse_hex_color(&hex).unwrap_or_default();
+        colors.insert(r.id.as_str(), (color, hex));
+    }
+
+    let ctx = FlatCtx {
+        records,
+        by_group,
+        colors,
+        name_hit,
+        searching,
+        sort,
     };
 
     let mut rows: Vec<SessionInfo> = Vec::new();
-    // (#group-count-badge) 先收集再计数:组头行要带"组内成员数"。
-    let builtin_matched: Vec<&Session> = builtin_sessions
-        .iter()
-        .filter(|session| matches(session))
-        .collect();
-    for (i, s) in builtin_matched.iter().enumerate() {
-        // (#group-color-reserved 2026-09-14) 本地终端组默认无色,但支持用户右击
-        // 设色 —— 与具名组读同一张表,不再硬编码无色。
-        let (sys_gc, sys_hex) = group_color("system");
-        rows.push(SessionInfo {
-            id: s.id.clone().into(),
-            name: s.name.clone().into(),
-            kind: s.kind.as_str().into(),
-            host: s.host.clone().into(),
-            port: 0,
-            user: s.user.clone().into(),
-            auth: "".into(),
-            group: "system".into(),
-            group_color: sys_gc,
-            group_color_hex: sys_hex.as_str().into(),
-            group_header: if i == 0 { "system".into() } else { "".into() },
-            collapsed: group_is_collapsed("system"),
-            note: "".into(),
-            builtin: true,
-            conn_state: 0,
-            group_index: i as i32,
-            // (#drag-cross-group-fix 2026-09-06) 组大小写入每一行:拖拽起拖时
-            // drag-size 取自"被拖行"的 session.group-size,旧代码只有首行有值
-            // (徽章用途),非首行拖拽时 size=0 → Rust 端组内窗口
-            // dn∈[-gi, size-1-gi] 塌缩为空,组内排序被误判成跨组移动。
-            // 计数徽章只在组头行渲染,非首行带值无副作用。
-            group_size: builtin_matched.len() as i32,
-        });
+    // 1) system(本地终端):builtin 恒存在时显示;hide_system 整组剔除。
+    if !hide_system && records.iter().any(|r| r.id == crate::config::GROUP_ID_SYSTEM) {
+        ctx.emit_group(crate::config::GROUP_ID_SYSTEM, 0, &query, &mut rows);
     }
-    for group in &display_groups {
-        let gs: Vec<&Session> = if group == "default" {
-            sessions
-                .iter()
-                .filter(|session| {
-                    (session.group.is_empty() || is_reserved_session_group(session.group.trim()))
-                        && matches(session)
-                })
-                .collect()
-        } else {
-            sessions
-                .iter()
-                .filter(|session| &session.group == group && matches(session))
-                .collect()
-        };
-        // No alphabetical sort: the stored Vec order is the user's manual
-        // order, maintained by drag-to-reorder (same convention as quick
-        // commands). New sessions land at the end of their group.
-        // (#default-group-header 2026-09-10) default 组现在与具名组同构:有组头、
-        // 可折叠、可作跨组拖放的落点。空占位(blank)仍只给具名组——default 组
-        // 只在存在未分组成员时才进入 display_groups(见上面的 has_default),
-        // 恒有成员,该分支天然走不到。
-        // (#group-color 2026-09-14) 本组的颜色,组头与成员行共用同一个值。
-        let (gc, hex) = group_color(group);
-        if gs.is_empty() && !searching && group != "default" {
-            rows.push(blank(group, gc, &hex));
-        } else {
-            for (i, s) in gs.iter().enumerate() {
-                rows.push(SessionInfo {
-                    id: s.id.clone().into(),
-                    name: s.name.clone().into(),
-                    kind: s.kind.as_str().into(),
-                    host: s.host.clone().into(),
-                    port: s.port as i32,
-                    user: s.user.clone().into(),
-                    // (#conn-path) 认证方式原始值:悬浮信息卡「认证」行。
-                    auth: s.auth.as_str().into(),
-                    note: s.note.clone().into(),
-                    group: group.clone().into(),
-                    group_color: gc,
-                    group_color_hex: hex.as_str().into(),
-                    // (#default-group-header 2026-09-10) default 组现在也生成
-                    // 组头行:未分组的会话不再是"顶层平铺的单独会话",而是挂在
-                    // "默认组"下面的普通成员(用户要求:每个会话必须属于某个组,
-                    // 没写组的归入默认组)。原 `group != "default"` 判断是
-                    // "未分组平铺"那一版的遗留。
-                    group_header: if i == 0 {
-                        group.clone().into()
-                    } else {
-                        "".into()
-                    },
-                    // (#default-group-header) 折叠不再是特例:默认组与其他组
-                    // 一样可展开/折叠,折叠状态照常读写——它现在有组头可以点
-                    // 开,不会再出现"折叠记录把成员永久藏住"的死局。
-                    collapsed: group_is_collapsed(group),
-                    builtin: false,
-                    conn_state: 0,
-                    group_index: i as i32,
-                    // (#drag-cross-group-fix 2026-09-06) 同上:非首行也带
-                    // 真实组大小,否则非首行拖拽的组内/跨组判定全部失真。
-                    group_size: gs.len() as i32,
-                });
-            }
+    // 2) default(默认组):有成员(或搜索命中)才显示,与旧版 has_default 同语义。
+    let default_hit = if searching {
+        ctx.name_hit.contains(crate::config::GROUP_ID_DEFAULT)
+            || ctx.subtree_matches(crate::config::GROUP_ID_DEFAULT, &query) > 0
+    } else {
+        ctx.subtree_total(crate::config::GROUP_ID_DEFAULT) > 0
+    };
+    if default_hit {
+        ctx.emit_group(crate::config::GROUP_ID_DEFAULT, 0, &query, &mut rows);
+    }
+    // 3) 用户根组(record 顺序;空组保留显示 —— 显式建组就该可见)。
+    for kid in ctx.children("") {
+        if kid.reserved {
+            continue;
         }
+        ctx.emit_group(&kid.id, 0, &query, &mut rows);
     }
     rows
 }
@@ -637,18 +724,19 @@ pub(super) fn sync_sessions_to_model_with_filter(
     model: &VecModel<SessionInfo>,
     query: &str,
 ) {
+    sync_sessions_to_model_with_sort(store, model, query, GroupSort::Storage);
+}
+
+/// (V3) 带排序档位的模型刷新(面板设置「排序方式」)。group_records 为空时
+/// (异常配置)兜底补建保留组,防止树渲染全空。
+pub(super) fn sync_sessions_to_model_with_sort(
+    store: &ConfigStore,
+    model: &VecModel<SessionInfo>,
+    query: &str,
+    sort: GroupSort,
+) {
     let builtin_sessions = builtin_local_sessions(store.wsl_profiles());
-    // (#hide-system-group) 隐藏"本地终端"时把 system 组整组从**模型**里剔除:
-    // Slint 的 `visible: false` 只是不画、位置照占,列表上方会残留一块空白。
-    let rows = build_session_rows(
-        store.sessions(),
-        store.groups(),
-        store.collapsed_session_groups(),
-        store.group_colors(),
-        &builtin_sessions,
-        query,
-        store.system_group_hidden(),
-    );
+    let rows = build_session_rows(store, &builtin_sessions, query, store.system_group_hidden(), sort);
     model.set_vec(rows);
 }
 
@@ -666,13 +754,11 @@ pub(super) fn refresh_session_rows_in_place(
     use slint::Model as _;
     let builtin_sessions = builtin_local_sessions(store.wsl_profiles());
     let rows = build_session_rows(
-        store.sessions(),
-        store.groups(),
-        store.collapsed_session_groups(),
-        store.group_colors(),
+        store,
         &builtin_sessions,
         query,
         store.system_group_hidden(),
+        GroupSort::Storage,
     );
     if rows.len() == model.row_count() {
         for (i, row) in rows.into_iter().enumerate() {
@@ -963,6 +1049,9 @@ pub(super) fn session_from_draft(
             existing.map(|s| s.proxy.as_str()).unwrap_or(""),
         ),
         last_used: None,
+        // (#left-panel-v3) draft.group = GroupEntry.id(下拉提交 id,不再是
+        // 组名)。legacy group 字段同值兜底(load 迁移会按名/容错解析)。
+        group_id: draft.group.to_string(),
         group: draft.group.to_string(),
         kind,
         local_distribution: String::new(),

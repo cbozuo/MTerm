@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{OutputHighlightRule, QuickCommand, Secret, Session};
+use super::{GroupRecord, OutputHighlightRule, QuickCommand, Secret, Session};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WslProfile {
@@ -424,20 +424,24 @@ pub struct ConfigFile {
     /// wallpaper + tinted theme. Defaults to the "幻想 3048" built-in.
     #[serde(default = "default_wallpaper")]
     pub wallpaper: String,
-    /// Explicit session groups/folders (#41), including empty ones so a folder
-    /// can exist before any session is moved into it. "default" is implicit and
-    /// not stored here.
+    /// (#left-panel-v3 2026-11-06) 会话分组树(V3 多级分组)——**唯一事实源**。
+    /// 保留组 default/system 固定 id 补建在其中;同级顺序 = Vec 相对顺序;
+    /// parent_id 空串 = 根级。
+    #[serde(default)]
+    pub group_records: Vec<GroupRecord>,
+    /// LEGACY(rev 11 起被 `group_records` 取代):单层组名列表快照。
+    /// load 时迁移进 group_records,save 时反向写回供降级版本读取
+    /// (与 rev10 历史命令的 legacy 快照同口径)。
     #[serde(default)]
     pub groups: Vec<String>,
-    /// Quick Connect folders that were collapsed when the UI was last used.
-    /// `None` is a legacy/new config and starts with every folder collapsed;
-    /// `Some([])` means the user explicitly expanded every folder.
+    /// LEGACY:Quick Connect folders that were collapsed when the UI was last
+    /// used. Now stored per-record in `group_records[].collapsed`; written back
+    /// on save for downgrade compatibility.
     #[serde(default)]
     pub collapsed_session_groups: Option<Vec<String>>,
-    /// (#group-color 2026-09-14) 用户为分组指定的颜色:组名 -> "#RRGGBB"。
-    /// **没有条目 = 无色**(渲染时回落主题的次级前景色,不是置灰)。
-    /// 迁移时不种子任何值:旧的 hash 派生色按设计丢弃,所有组默认中性,
-    /// 直到用户手动选一个。
+    /// LEGACY(#group-color 2026-09-14):用户为分组指定的颜色:组名 ->
+    /// "#RRGGBB"。Now stored per-record in `group_records[].color`; written
+    /// back on save for downgrade compatibility.
     #[serde(default)]
     pub group_colors: HashMap<String, String>,
     /// Stored inverted ("don't follow") so both serde and the Default derive

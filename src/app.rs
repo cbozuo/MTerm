@@ -7800,11 +7800,36 @@ fn refresh_session_markers(window: &slint::Weak<AppWindow>) {
 /// 也是删除分组时的默认去向。它不是 system，不可改名 / 删除。
 pub(crate) const GM_UNGROUPED: &str = "默认组";
 
-fn gm_belongs(session: &Session, selected: &str) -> bool {
-    if selected == GM_UNGROUPED {
-        session.group.is_empty() || is_reserved_session_group(session.group.trim())
+/// (#left-panel-v3) gm 显示名 → 组 id(GM_UNGROUPED → default 保留组;
+/// 查不到返回空串)。分组管理台薄适配的统一入口。
+fn gm_group_id(store: &ConfigStore, name: &str) -> String {
+    if name == GM_UNGROUPED {
+        crate::config::GROUP_ID_DEFAULT.to_string()
     } else {
-        session.group == selected
+        store
+            .group_records()
+            .iter()
+            .find(|r| r.name == name)
+            .map(|r| r.id.clone())
+            .unwrap_or_default()
+    }
+}
+
+fn gm_belongs(
+    session: &Session,
+    selected: &str,
+    records: &[crate::config::GroupRecord],
+) -> bool {
+    // (#left-panel-v3) gm 按显示名选中,内部解析成组 id 再比成员。
+    // GM_UNGROUPED(默认组)→ default 保留组 id;其余按名查 record(查不到
+    // = 组刚被删 → false)。
+    if selected == GM_UNGROUPED {
+        session.group_id == crate::config::GROUP_ID_DEFAULT || session.group_id.is_empty()
+    } else {
+        match records.iter().find(|r| r.name == selected) {
+            Some(record) => session.group_id == record.id,
+            None => false,
+        }
     }
 }
 
@@ -7826,8 +7851,9 @@ fn gm_picked_ids(window: &AppWindow) -> Vec<String> {
 fn next_group_color(store: &ConfigStore, dark: bool) -> String {
     // (#gm-accent-palette) 自动分配色与色板同源 = ACCENT_PRESETS（强调色预设）。
     let used: std::collections::HashSet<String> = store
-        .group_colors()
-        .values()
+        .group_records()
+        .iter()
+        .filter_map(|r| r.color.as_ref())
         .map(|v| v.to_uppercase())
         .collect();
     crate::theme::palettes::ACCENT_PRESETS
@@ -7868,17 +7894,47 @@ fn refresh_group_manager(
     let hit_group_name = |name: &str| -> bool {
         !query.is_empty() && name.to_lowercase().contains(&query)
     };
+    // (#left-panel-v3) gm 薄适配:管理台继续以显示名为行键,内部经
+    // group_records 查 id/颜色。GM_UNGROUPED 哨兵 → default 保留组。
+    let records = store.group_records();
+    let gid_of = |name: &str| -> String {
+        if name == GM_UNGROUPED {
+            crate::config::GROUP_ID_DEFAULT.to_string()
+        } else {
+            records
+                .iter()
+                .find(|r| r.name == name)
+                .map(|r| r.id.clone())
+                .unwrap_or_default()
+        }
+    };
+    let color_of = |name: &str| -> String {
+        if name == GM_UNGROUPED {
+            records
+                .iter()
+                .find(|r| r.id == crate::config::GROUP_ID_DEFAULT)
+                .and_then(|r| r.color.clone())
+                .unwrap_or_default()
+        } else {
+            records
+                .iter()
+                .find(|r| r.name == name)
+                .and_then(|r| r.color.clone())
+                .unwrap_or_default()
+        }
+    };
     // (#gm-search-count) 一组内的命中条数。0 命中的组**不隐藏**（高保真 10-22）：
     // 左栏行数恒定 → 「我的分组」小节的 y 映射不用跟着搜索变，用户也不会
     // 以为组被删了；只把行压暗 + 计数显示成 命中/总数。
     let hits_in = |ungrouped: bool, name: &str| -> i32 {
+        let gid = gid_of(name);
         let all: Vec<&Session> = sessions
             .iter()
             .filter(|s| {
                 if ungrouped {
-                    s.group.is_empty() || is_reserved_session_group(s.group.trim())
+                    s.group_id == crate::config::GROUP_ID_DEFAULT || s.group_id.is_empty()
                 } else {
-                    s.group == name
+                    s.group_id == gid
                 }
             })
             .collect();
@@ -7890,12 +7946,19 @@ fn refresh_group_manager(
 
     let count_ungrouped = sessions
         .iter()
-        .filter(|s| s.group.is_empty() || is_reserved_session_group(s.group.trim()))
+        .filter(|s| s.group_id == crate::config::GROUP_ID_DEFAULT || s.group_id.is_empty())
         .count() as i32;
 
-    // (#group-manager) 组清单必须与侧栏同源：显式 groups + 只存在于会话
-    // group 字段里的「隐含组」都要出现，否则这些会话在管理台里无处可寻。
-    let named = crate::config::named_display_groups(store.groups(), sessions);
+    // (#group-manager / V3) 组清单与侧栏同源:group_records 的用户组(平铺
+    // DFS,子组跟在父组后)。管理台暂以显示名为键(薄适配,S9 一并 id 化)。
+    let mut named: Vec<String> = Vec::new();
+    fn walk_names(records: &[crate::config::GroupRecord], parent: &str, out: &mut Vec<String>) {
+        for r in records.iter().filter(|r| r.parent_id == parent && !r.reserved) {
+            out.push(r.name.clone());
+            walk_names(records, &r.id, out);
+        }
+    }
+    walk_names(records, "", &mut named);
 
     let mut rows: Vec<crate::ui::GroupRow> = Vec::with_capacity(named.len() + 1);
     // 「默认组」空着就不占一行（用户要求）：它没有成员时唯一作用是「移出分组」的落点，
@@ -7903,11 +7966,7 @@ fn refresh_group_manager(
     // 例外：一个自定义组都没有时保留它，否则整个左栏会空掉。
     if count_ungrouped > 0 || named.is_empty() {
         // 默认组同样可以设色（set_group_color 只拒绝空名）。
-        let hex = store
-            .group_colors()
-            .get(GM_UNGROUPED)
-            .cloned()
-            .unwrap_or_default();
+        let hex = color_of(GM_UNGROUPED);
         rows.push(crate::ui::GroupRow {
             name: GM_UNGROUPED.into(),
             color: parse_hex_color(&hex).unwrap_or_default(),
@@ -7918,8 +7977,9 @@ fn refresh_group_manager(
         });
     }
     for name in &named {
-        let hex = store.group_colors().get(name).cloned().unwrap_or_default();
-        let count = sessions.iter().filter(|s| &s.group == name).count() as i32;
+        let hex = color_of(name);
+        let gid = gid_of(name);
+        let count = sessions.iter().filter(|s| s.group_id == gid).count() as i32;
         rows.push(crate::ui::GroupRow {
             name: name.as_str().into(),
             color: parse_hex_color(&hex).unwrap_or_default(),
@@ -7955,7 +8015,7 @@ fn refresh_group_manager(
     };
     let members: Vec<crate::ui::GmMember> = sessions
         .iter()
-        .filter(|s| gm_belongs(s, &selected) && keep_member(s))
+        .filter(|s| gm_belongs(s, &selected, records) && keep_member(s))
         .map(|s| crate::ui::GmMember {
             id: s.id.as_str().into(),
             name: s.name.as_str().into(),
@@ -7970,11 +8030,7 @@ fn refresh_group_manager(
         })
         .collect();
 
-    let cur_hex = store
-        .group_colors()
-        .get(&selected)
-        .cloned()
-        .unwrap_or_default();
+    let cur_hex = color_of(&selected);
     let cur_index = rows
         .iter()
         .position(|row| row.name == selected.as_str())
@@ -8153,7 +8209,7 @@ fn wire_session_callbacks(
             const CHIP_GAP: f64 = 29.0; // chip 间:gap7 + 箭头 14 + gap7(实测)
             const PAD: f64 = 24.0; // 容器左右 padding
             let entries: Vec<JumpEntry> =
-                chain.borrow().iter().map(session_models::jump_entry).collect();
+                chain.borrow().iter().map(|s| session_models::jump_entry(s, "")).collect();
             chain_model.set_vec(entries.clone());
 
             // 贪心装箱:「目标主机」视作挂在末行尾的虚拟项(用户要求:第一行
@@ -8948,7 +9004,8 @@ fn wire_session_callbacks(
             }
             {
                 let mut store = store.borrow_mut();
-                store.set_session_group_collapsed(&target, new_state);
+                // (#left-panel-v3) target = 组头行的 group-id(V3 组头独立行)。
+                store.set_group_collapsed(&target, new_state);
                 if let Err(err) = store.save() {
                     tracing::warn!("failed to save Quick Connect folder state: {err:#}");
                 }
@@ -8975,12 +9032,13 @@ fn wire_session_callbacks(
             }
             use slint::Model as _;
             let n = sessions_model.row_count();
-            let mut names: Vec<String> = Vec::new();
+            let mut gids: Vec<String> = Vec::new();
             for i in 0..n {
                 if let Some(row) = sessions_model.row_data(i) {
-                    let group = row.group.to_string();
-                    if !group.is_empty() && !names.iter().any(|g| g == &group) {
-                        names.push(group);
+                    // (#left-panel-v3) 只对组头行记账:row-kind == "group" 的
+                    // group-id 是组身份;成员行的 group-id 是所属组,会重复。
+                    if row.row_kind == "group" && !gids.iter().any(|g| g.as_str() == row.group_id.as_str()) {
+                        gids.push(row.group_id.to_string());
                     }
                     if row.collapsed != collapsed {
                         let mut r = row;
@@ -8991,8 +9049,8 @@ fn wire_session_callbacks(
             }
             {
                 let mut store = store.borrow_mut();
-                for g in &names {
-                    store.set_session_group_collapsed(g, collapsed);
+                for g in &gids {
+                    store.set_group_collapsed(g, collapsed);
                 }
                 if let Err(err) = store.save() {
                     tracing::warn!("failed to save group collapsed state: {err:#}");
@@ -9159,7 +9217,7 @@ fn wire_session_callbacks(
                 } else if is_reserved_session_group(trimmed) {
                     Some(t("该名称为系统保留分组", "This group name is reserved"))
                 } else if (orig.is_empty() || !trimmed.eq_ignore_ascii_case(orig.as_str()))
-                    && s.session_group_exists(trimmed)
+                    && s.session_group_name_taken(trimmed, orig.as_str())
                 {
                     Some(t("分组已存在", "Group already exists"))
                 } else {
@@ -9172,7 +9230,7 @@ fn wire_session_callbacks(
             {
                 let mut s = store.borrow_mut();
                 if orig.is_empty() {
-                    s.add_group(trimmed.to_string());
+                    s.add_group(trimmed.to_string(), "");
                 } else {
                     s.rename_group(orig.as_str(), trimmed.to_string());
                 }
@@ -9193,12 +9251,8 @@ fn wire_session_callbacks(
             }
             // 菜单 / 取色面板的当前色回写,与 on_set_group_color 同口径 —— 否则
             // 右击同一组时菜单色块还停在旧色上。
-            let final_hex = store
-                .borrow()
-                .group_colors()
-                .get(trimmed)
-                .cloned()
-                .unwrap_or_default();
+            // (#left-panel-v3) rename 按组 id(V3):提交后按 id 查本组自定义色。
+            let final_hex = store.borrow().group_effective_color(&orig).unwrap_or_default();
             sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
             registry.broadcast_config_changed();
             // (#group-color-live-tab) 对话框提交(新建设色/改名覆盖/清除)同样
@@ -9257,7 +9311,7 @@ fn wire_session_callbacks(
                 {
                     let st = store.borrow();
                     if w.get_gm_selected().is_empty() {
-                        let named = crate::config::named_display_groups(st.groups(), st.sessions());
+                        let named: Vec<String> = st.group_records().iter().filter(|r| !r.reserved).map(|r| r.name.clone()).collect();
                         let first = named
                             .first()
                             .cloned()
@@ -9337,7 +9391,7 @@ fn wire_session_callbacks(
                 }
                 let st = store.borrow();
                 // 改回自己的原名（哪怕大小写不同）不算撞名
-                if !n.eq_ignore_ascii_case(orig.trim()) && st.session_group_exists(n) {
+                if !n.eq_ignore_ascii_case(orig.trim()) && st.session_group_name_taken(n, &gm_group_id(&st, orig.trim())) {
                     return "已存在同名分组（不区分大小写）".into();
                 }
                 SharedString::new()
@@ -9365,7 +9419,7 @@ fn wire_session_callbacks(
                     let mut st = store.borrow_mut();
                     // (#group-manager) rename_group 撞名是**静默 return**（返回 ()），
                     // UI 无从得知失败 —— 所以校验必须在这里前置做掉。
-                    if !n.eq_ignore_ascii_case(orig.trim()) && st.session_group_exists(&n) {
+                    if !n.eq_ignore_ascii_case(orig.trim()) && st.session_group_name_taken(&n, &gm_group_id(&st, orig.trim())) {
                         return "已存在同名分组（不区分大小写）".into();
                     }
                     st.rename_group(orig.as_str(), n.clone());
@@ -9412,10 +9466,10 @@ fn wire_session_callbacks(
                 };
                 {
                     let mut st = store.borrow_mut();
-                    if st.session_group_exists(&n) {
+                    if st.session_group_name_taken(&n, "") {
                         return "已存在同名分组（不区分大小写）".into();
                     }
-                    st.add_group(n.clone());
+                    st.add_group(n.clone(), "");
                     st.set_group_color(&n, &color);
                     if let Err(err) = st.save() {
                         tracing::warn!("failed to save config: {err:#}");
@@ -9477,9 +9531,10 @@ fn wire_session_callbacks(
                     if w.get_gm_selected() == name {
                         let next = store
                             .borrow()
-                            .groups()
-                            .first()
-                            .cloned()
+                            .group_records()
+                            .iter()
+                            .find(|r| !r.reserved)
+                            .map(|r| r.name.clone())
                             .unwrap_or_else(|| GM_UNGROUPED.to_string());
                         w.set_gm_selected(next.as_str().into());
                     }
@@ -9710,13 +9765,15 @@ fn wire_session_callbacks(
                 }
                 let group = w.get_gm_selected().to_string();
                 // 组内顺序（全局顺序里属于这个组的那些，保持原序）
-                let order: Vec<String> = store
-                    .borrow()
-                    .sessions()
-                    .iter()
-                    .filter(|s| gm_belongs(s, &group))
-                    .map(|s| s.id.clone())
-                    .collect();
+                let order: Vec<String> = {
+                    let st = store.borrow();
+                    let records = st.group_records().to_vec();
+                    st.sessions()
+                        .iter()
+                        .filter(|s| gm_belongs(s, &group, &records))
+                        .map(|s| s.id.clone())
+                        .collect()
+                };
                 let picked_set: std::collections::HashSet<&str> =
                     ids.iter().map(|s| s.as_str()).collect();
                 let first = order.iter().position(|id| picked_set.contains(id.as_str()));
@@ -9983,6 +10040,8 @@ fn wire_session_callbacks(
                         .unwrap_or_default(),
                 ),
                 last_used: None,
+                // (#left-panel-v3) draft.group = GroupEntry.id;legacy 同值兜底。
+                group_id: draft.group.to_string(),
                 group: draft.group.to_string(),
                 kind,
                 local_distribution: String::new(),

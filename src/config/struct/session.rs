@@ -202,8 +202,12 @@ pub struct Session {
     pub jump_chain: Vec<String>,
     #[serde(default)]
     pub last_used: Option<String>,
-    /// Optional folder/group name to organize sessions in the list (#41).
-    /// Empty = ungrouped. Sessions are grouped by this in Quick Connect.
+    /// (#left-panel-v3 2026-11-06) 分组 id(V3 多级分组)——**唯一事实源**。
+    /// 空 = 未分组(渲染归 default 保留组);"grp-system" = 内建本地终端。
+    #[serde(default)]
+    pub group_id: String,
+    /// LEGACY(rev 11 起被 `group_id` 取代):组名。load 时解析成 group_id,
+    /// save 时按 id→名写回供降级版本读取。
     #[serde(default)]
     pub group: String,
 
@@ -389,6 +393,7 @@ impl Session {
             jump_session_id: String::new(),
             jump_chain: Vec::new(),
             last_used: None,
+            group_id: String::new(),
             group: String::new(),
             kind: SessionKind::Ssh,
             local_distribution: String::new(),

@@ -344,17 +344,10 @@ fn dedup_keep_last(items: &mut Vec<String>) {
     }
 }
 
-/// Display-only session groups that must never be persisted as user folders.
-/// `default` maps to an empty group; `system` is owned by built-in local shells.
-pub(crate) fn is_reserved_session_group(name: &str) -> bool {
-    name.eq_ignore_ascii_case("default") || name.eq_ignore_ascii_case("system")
-}
-
-/// (#default-group-drag 2026-09-10) 会话的【显示组】:未分组(group 为空)与
-/// 保留名一律归于 "default",其余即自身组名。默认组成为正式组(有组头、可
-/// 折叠、可作拖放落点)后,拖拽的每个判定点都必须用同一套显示组语义——
-/// reorder_session 的邻组查找、build_session_rows 的渲染分组同源,
-/// 否则落点与实际行对不上。
+/// (#default-group-drag 2026-09-10) 会话的【显示组】:未分组与保留名一律归于
+/// "default",其余即自身组名。(V3 后 legacy:display_group_of 仍被
+/// reorder_session / move_session_relative 的旧签名路径使用,树形路径改走
+/// group_id。)
 pub(crate) fn display_group_of(session: &Session) -> String {
     if session.group.is_empty() || is_reserved_session_group(session.group.trim()) {
         "default".to_string()
@@ -412,6 +405,57 @@ fn normalize_reserved_session_groups(cfg: &mut ConfigFile) -> bool {
             session.group.clear();
             changed = true;
         }
+    }
+    changed
+}
+
+/// (#left-panel-v3 2026-11-06) 旧单层组数据 → `group_records` 树 +
+/// `session.group_id`。幂等:records 已非空时只补保留组 record、解析残留的
+/// legacy 组名。分三步:① 首次迁移(legacy 列表/折叠/颜色 → records);
+/// ② default/system 保留组 record 兜底(树渲染与颜色/折叠持久化都假设它们
+/// 在列);③ session.group(legacy 名)→ group_id(空名归 default;未知名
+/// 补建 record,保证引用不悬空)。之后 `Session.group` / `cfg.groups` 等
+/// legacy 字段只作为降级快照由 save() 回写。
+pub(crate) fn migrate_group_tree(cfg: &mut ConfigFile) -> bool {
+    let mut changed = false;
+    if cfg.group_records.is_empty() {
+        let names: Vec<String> = cfg.sessions.iter().map(|s| s.group.clone()).collect();
+        if let Some(records) = migrate_group_records(
+            &cfg.groups,
+            cfg.collapsed_session_groups.as_deref(),
+            &cfg.group_colors,
+            &names,
+        ) {
+            cfg.group_records = records;
+            changed = true;
+        }
+    }
+    for (id, name) in [(GROUP_ID_DEFAULT, "default"), (GROUP_ID_SYSTEM, "system")] {
+        if !cfg.group_records.iter().any(|r| r.id == id) {
+            cfg.group_records.push(GroupRecord::reserved(id, name));
+            changed = true;
+        }
+    }
+    for session in &mut cfg.sessions {
+        if !session.group_id.is_empty() {
+            continue;
+        }
+        let name = session.group.trim();
+        if name.is_empty() {
+            session.group_id = GROUP_ID_DEFAULT.to_string();
+        } else if let Some(record) = cfg
+            .group_records
+            .iter()
+            .find(|r| r.name.eq_ignore_ascii_case(name))
+        {
+            session.group_id = record.id.clone();
+        } else {
+            let id = new_group_id();
+            cfg.group_records
+                .push(GroupRecord::new(id.clone(), name.to_string(), String::new()));
+            session.group_id = id;
+        }
+        changed = true;
     }
     changed
 }
@@ -570,6 +614,9 @@ impl ConfigStore {
                     // builds allowed moving saved servers into `system`, creating
                     // a duplicate empty-menu folder (#316, #324).
                     migrated |= normalize_reserved_session_groups(&mut cfg);
+                    // (#left-panel-v3) 单层组名 → group_records 树 + session.group_id
+                    // (保留组 record 补建;幂等)。
+                    migrated |= migrate_group_tree(&mut cfg);
                     // One-time push of the new default layout to existing users
                     // (only for items they never changed). (#new-user-defaults)
                     migrated |= migrate_defaults(&mut cfg);
@@ -2373,21 +2420,36 @@ impl ConfigStore {
         self.cache.download_always_ask = ask;
     }
 
-    // ── Session groups / folders (#41) ────────────────────────────────────
+    // ── Session groups / folders(#41;V3 多级分组树)─────────────────────
 
-    /// Explicit groups (empty folders included). "default" is implicit.
-    pub fn groups(&self) -> &[String] {
-        &self.cache.groups
+    /// (#left-panel-v3 2026-11-06) 分组树(只读)。保留组 default/system
+    /// 迁移后始终在列;同级顺序 = Vec 相对顺序;parent_id 空 = 根级。
+    pub fn group_records(&self) -> &[GroupRecord] {
+        &self.cache.group_records
     }
 
-    pub fn collapsed_session_groups(&self) -> Option<&[String]> {
-        self.cache.collapsed_session_groups.as_deref()
+    /// 按 id 查组(保留组常量 id 也可查)。
+    pub fn group_by_id(&self, id: &str) -> Option<&GroupRecord> {
+        self.cache.group_records.iter().find(|g| g.id == id)
     }
 
-    /// (#group-color 2026-09-14) 全部分组颜色(组名 -> "#RRGGBB"),供模型层
-    /// 组装 SessionInfo 时查表。未设色的组不在表里。
-    pub fn group_colors(&self) -> &std::collections::HashMap<String, String> {
-        &self.cache.group_colors
+    /// (#group-color 2026-09-14 / V3) 分组有效色:本组自定义色 → 最近祖先
+    /// 自定义色 → None(渲染层回落主题次级前景)。环防御:父链最多走 16 层。
+    pub fn group_effective_color(&self, id: &str) -> Option<String> {
+        let mut current = id.to_string();
+        for _ in 0..16 {
+            let Some(record) = self.group_by_id(&current) else {
+                break;
+            };
+            if let Some(hex) = &record.color {
+                return Some(hex.clone());
+            }
+            if record.parent_id.is_empty() {
+                break;
+            }
+            current = record.parent_id.clone();
+        }
+        None
     }
 
     /// (#hide-system-group) 是否隐藏欢迎列表里的"本地终端"保留组
@@ -2408,215 +2470,193 @@ impl ConfigStore {
         }
     }
 
-    /// Remember a Quick Connect folder's open/closed state. On the first
-    /// interaction, materialise the default-collapsed state for every existing
-    /// folder so expanding one folder does not accidentally expand the rest.
-    pub fn set_session_group_collapsed(&mut self, name: &str, collapsed: bool) {
-        if self.cache.collapsed_session_groups.is_none() {
-            let mut groups = vec!["system".to_string()];
-            if self
-                .cache
-                .sessions
-                .iter()
-                .any(|session| session.group.is_empty())
-            {
-                groups.push("default".to_string());
-            }
-            groups.extend(self.cache.groups.iter().cloned());
-            groups.extend(
-                self.cache
-                    .sessions
-                    .iter()
-                    .filter(|session| !session.group.is_empty())
-                    .map(|session| session.group.clone()),
-            );
-            groups.sort();
-            groups.dedup();
-            self.cache.collapsed_session_groups = Some(groups);
-        }
-
-        let groups = self.cache.collapsed_session_groups.as_mut().unwrap();
-        groups.retain(|group| group != name);
-        if collapsed {
-            groups.push(name.to_string());
-            groups.sort();
-            groups.dedup();
-        }
-    }
-
-    /// Whether a user group already exists, including groups inferred from
-    /// sessions that were created before explicit group records were added.
-    pub fn session_group_exists(&self, name: &str) -> bool {
-        let target = name.trim();
-        if target.is_empty() {
-            return false;
-        }
-        self.cache
-            .groups
-            .iter()
-            .any(|group| group.trim().eq_ignore_ascii_case(target))
-            || self.cache.sessions.iter().any(|session| {
-                !session.group.trim().is_empty()
-                    && session.group.trim().eq_ignore_ascii_case(target)
-            })
-    }
-
-    /// (#group-order-materialize 2026-09-12) 把**显示组序**物化进 explicit
-    /// groups:组排序前必须先补这一步,否则"会话对话框里自由输入过组名"
-    /// (GroupCombo 可编辑,#179)的组会漏在显式列表外 —— 它照常显示
-    /// (named_display_groups 把 session-only 组按首现顺序附在末尾),却不在
-    /// cache.groups 里,下面两个组排序函数按名字查列表直接找不到,表现为
-    /// **组头拖动完全没反应**(拖了不换位、也不能作为落点)。
-    /// 顺序不变、幂等:只是把隐含组按它当前显示的位置写成显式,顺带丢掉
-    /// 保留组名等脏数据(与 normalize_reserved_session_groups 同口径)。
-    fn materialize_group_order(&mut self) {
-        let display = named_display_groups(&self.cache.groups, &self.cache.sessions);
-        if display != self.cache.groups {
-            self.cache.groups = display;
-        }
-    }
-
-    /// (#group-sort-line-r2 2026-09-11) 组排序的提交语义与**插入线同源**:
-    /// 线画在哪个组头之前,松手就把 `name` 移到 `target` 之前。旧公式
-    /// `round(dy/pitch)` 按格数估位移,组高不等时会与线的落点脱节
-    /// (线在 A 前、松手落在 B 前)。
-    /// target 不存在 / 与 name 相同 → false(no-op,回原位)。
-    /// default/system 不在 explicit groups,天然不参与。
-    pub fn move_group_before(&mut self, name: &str, target: &str) -> bool {
-        if name.is_empty() || target.is_empty() || name == target {
-            return false;
-        }
-        self.materialize_group_order();
-        let Some(from) = self.cache.groups.iter().position(|g| g == name) else {
+    /// (#left-panel-v3) 记住分组的展开/折叠状态(直接写 record)。
+    /// 返回是否发生了变化(调用方据此决定是否落盘/刷新)。
+    pub fn set_group_collapsed(&mut self, id: &str, collapsed: bool) -> bool {
+        let Some(record) = self
+            .cache
+            .group_records
+            .iter_mut()
+            .find(|g| g.id == id)
+        else {
             return false;
         };
-        if self.cache.groups.iter().position(|g| g == target).is_none() {
+        if record.collapsed == collapsed {
             return false;
         }
-        let group = self.cache.groups.remove(from);
-        // remove 之后 target 的下标可能前移,按名字重找插入点。
+        record.collapsed = collapsed;
+        true
+    }
+
+    /// (#left-panel-v3) display name 是否已被占用(大小写不敏感;保留组名
+    /// 恒占用)。`exclude_id` 供重命名时排除自己。
+    pub fn session_group_name_taken(&self, name: &str, exclude_id: &str) -> bool {
+        let target = name.trim();
+        if target.is_empty() || is_reserved_session_group(target) {
+            return true;
+        }
+        self.cache.group_records.iter().any(|group| {
+            group.id != exclude_id && group.name.trim().eq_ignore_ascii_case(target)
+        })
+    }
+
+    /// (#left-panel-v3) 组排序:同级内把 `id` 移到 `target_id` 之前。
+    /// 跨父移动不允许(组拖拽只改同级顺序,设计稿 T4);target 不存在 /
+    /// 同组 → false(no-op)。保留组不参与排序。
+    pub fn move_group_before(&mut self, id: &str, target_id: &str) -> bool {
+        if id.is_empty() || target_id.is_empty() || id == target_id {
+            return false;
+        }
+        let Some(record) = self.group_by_id(id) else {
+            return false;
+        };
+        if record.reserved {
+            return false;
+        }
+        let parent = record.parent_id.clone();
+        let Some(target) = self.group_by_id(target_id) else {
+            return false;
+        };
+        if target.reserved || target.parent_id != parent {
+            return false;
+        }
+        let Some(from) = self
+            .cache
+            .group_records
+            .iter()
+            .position(|g| g.id == id)
+        else {
+            return false;
+        };
+        let record = self.cache.group_records.remove(from);
+        // remove 之后 target 的下标可能前移,按 id 重找插入点。
         let to = self
             .cache
-            .groups
+            .group_records
             .iter()
-            .position(|g| g == target)
-            .unwrap_or(self.cache.groups.len());
-        self.cache.groups.insert(to, group);
+            .position(|g| g.id == target_id)
+            .unwrap_or(self.cache.group_records.len());
+        self.cache.group_records.insert(to, record);
         true
     }
 
-    /// (#group-drag-tail 2026-09-11) 移到 explicit groups 末尾 = 列表最后
-    /// 一位。尾部哨兵上报的 "(tail)" 落点由 app.rs 分派到这里——此前
-    /// "插入到某组之前"的表达式永远覆盖不到"最后组之后"这个位置,组别
-    /// 无法被拖到末位(用户反馈)。已在末位时 no-op(避免无谓写盘)。
-    pub fn move_group_to_end(&mut self, name: &str) -> bool {
-        if name.is_empty() {
-            return false;
-        }
-        // (#group-order-materialize 2026-09-12) 同 move_group_before:session-only
-        // 组要先物化进显式列表,否则"移到末位"对这个组同样静默无效。
-        self.materialize_group_order();
-        let Some(from) = self.cache.groups.iter().position(|g| g == name) else {
+    /// (#left-panel-v3) 组移到**同级末位**(原 "(tail)" 哨兵语义)。已在
+    /// 末位时 no-op。
+    pub fn move_group_to_end(&mut self, id: &str) -> bool {
+        let Some(record) = self.group_by_id(id) else {
             return false;
         };
-        if from + 1 == self.cache.groups.len() {
+        if record.reserved {
             return false;
         }
-        let group = self.cache.groups.remove(from);
-        self.cache.groups.push(group);
+        let parent = record.parent_id.clone();
+        // 同级最后一个成员的下标(跳过其它层级的 record)。
+        let last_same_parent = self
+            .cache
+            .group_records
+            .iter()
+            .rposition(|g| g.parent_id == parent && !g.reserved)
+            .expect("moving non-reserved group implies a same-parent slot exists");
+        let Some(from) = self.cache.group_records.iter().position(|g| g.id == id) else {
+            return false;
+        };
+        if from == last_same_parent {
+            return false;
+        }
+        let record = self.cache.group_records.remove(from);
+        let to = self
+            .cache
+            .group_records
+            .iter()
+            .rposition(|g| g.parent_id == parent && !g.reserved)
+            .map(|p| p + 1)
+            .unwrap_or(self.cache.group_records.len());
+        self.cache.group_records.insert(to, record);
         true
     }
 
-    /// Create an empty group. Ignores blank/reserved names and duplicates.
-    pub fn add_group(&mut self, name: String) {
+    /// (#left-panel-v3) 新建分组(可指定父组;parent 必须存在且非保留组)。
+    /// 返回新组 id;名字被占用 / 非法时返回 None。
+    pub fn add_group(&mut self, name: String, parent_id: &str) -> Option<String> {
         let n = name.trim().to_string();
-        if n.is_empty() || is_reserved_session_group(&n) || self.session_group_exists(&n) {
-            return;
+        if n.is_empty() || self.session_group_name_taken(&n, "") {
+            return None;
         }
-        self.cache.groups.push(n.clone());
-        if let Some(groups) = &mut self.cache.collapsed_session_groups {
-            groups.push(n);
-            groups.sort();
-            groups.dedup();
+        let parent_id = parent_id.trim().to_string();
+        if !parent_id.is_empty() {
+            match self.group_by_id(&parent_id) {
+                Some(parent) if !parent.reserved => {}
+                _ => return None,
+            }
         }
+        let id = new_group_id();
+        self.cache
+            .group_records
+            .push(GroupRecord::new(id.clone(), n, parent_id));
+        Some(id)
     }
 
-    /// Delete a group. Any session still in it falls back to ungrouped — the UI
-    /// only offers delete on empty groups, but we clear sessions defensively.
-    pub fn remove_group(&mut self, name: &str) {
-        if is_reserved_session_group(name.trim()) {
+    /// (#left-panel-v3) 删除分组:子组提升到被删组的父级(层级收拢,不级联
+    /// 删);组内会话全部回到未分组(default)。保留组不可删。
+    pub fn remove_group(&mut self, id: &str) {
+        let Some(record) = self.group_by_id(id) else {
+            return;
+        };
+        if record.reserved {
             return;
         }
-        self.cache.groups.retain(|g| g != name);
-        // (#group-color 2026-09-14) 组没了,颜色条目也要跟着清掉:否则以后
-        // 建一个同名组时会"继承"上一个组的颜色,看起来像凭空冒出来的。
-        self.cache.group_colors.remove(name);
-        if let Some(groups) = &mut self.cache.collapsed_session_groups {
-            groups.retain(|group| group != name);
-        }
+        let parent = record.parent_id.clone();
+        self.cache
+            .group_records
+            .iter_mut()
+            .filter(|g| g.parent_id == id)
+            .for_each(|child| child.parent_id = parent.clone());
+        self.cache.group_records.retain(|g| g.id != id);
         for s in &mut self.cache.sessions {
-            if s.group == name {
-                s.group.clear();
+            if s.group_id == id {
+                s.group_id = GROUP_ID_DEFAULT.to_string();
             }
         }
     }
 
-    /// Rename a group, moving its sessions along. No-op for reserved names.
-    pub fn rename_group(&mut self, old: &str, new: String) {
+    /// (#left-panel-v3) 重命名分组(id 键下只改名字,颜色/折叠/成员身份
+    /// 天然不动 —— 旧版按名连带迁移的逻辑整体退役)。保留组不可改名。
+    pub fn rename_group(&mut self, id: &str, new: String) {
         let n = new.trim().to_string();
-        if n.is_empty()
-            || is_reserved_session_group(old.trim())
-            || is_reserved_session_group(&n)
-            || n == old
-            || (!n.eq_ignore_ascii_case(old) && self.session_group_exists(&n))
-        {
+        if n.is_empty() || self.session_group_name_taken(&n, id) {
             return;
         }
-        for g in &mut self.cache.groups {
-            if g == old {
-                *g = n.clone();
-            }
+        let Some(record) = self
+            .cache
+            .group_records
+            .iter_mut()
+            .find(|g| g.id == id)
+        else {
+            return;
+        };
+        if record.reserved || record.name == n {
+            return;
         }
-        // (#group-color 2026-09-14) 颜色是按组名存的 key,改名时必须一起迁移 ——
-        // 否则"改个名颜色就没了"(用户设的色静默丢失)。
-        if let Some(hex) = self.cache.group_colors.remove(old) {
-            self.cache.group_colors.insert(n.clone(), hex);
-        }
-        for s in &mut self.cache.sessions {
-            if s.group == old {
-                s.group = n.clone();
-            }
-        }
-        if let Some(groups) = &mut self.cache.collapsed_session_groups {
-            for group in groups.iter_mut() {
-                if group == old {
-                    *group = n.clone();
-                }
-            }
-            groups.sort();
-            groups.dedup();
-        }
-        self.cache.groups.sort();
-        self.cache.groups.dedup();
+        record.name = n;
     }
 
-    /// 设定分组颜色;`hex` 传空串 = 清除(回到无色)。
-    /// (#group-color-reserved 2026-09-14) **保留组也可着色**:system(本地终端)与
-    /// default(默认组)默认仍无色(不参与自动配色),但用户右击设色后照常显示 ——
-    /// 用户定稿"系统组、默认组都支持右击修改分组颜色"。因此这里只拒绝空名。
-    pub fn set_group_color(&mut self, name: &str, hex: &str) {
-        let name = name.trim();
-        if name.is_empty() {
+    /// (#left-panel-v3) 设定分组颜色(id 键);`hex` 传空串 = 清除。
+    /// (#group-color-reserved 2026-09-14) 保留组也可着色(用户定稿)。
+    pub fn set_group_color(&mut self, id: &str, hex: &str) {
+        let Some(record) = self
+            .cache
+            .group_records
+            .iter_mut()
+            .find(|g| g.id == id)
+        else {
             return;
-        }
+        };
         let hex = hex.trim();
-        if hex.is_empty() {
-            self.cache.group_colors.remove(name);
+        record.color = if hex.is_empty() {
+            None
         } else {
-            self.cache
-                .group_colors
-                .insert(name.to_string(), hex.to_string());
-        }
+            Some(hex.to_string())
+        };
     }
 
     pub fn save(&self) -> Result<()> {
@@ -2624,6 +2664,44 @@ impl ConfigStore {
         let mut disk = self.cache.clone();
         // (#sync-dialog-v2-fix 2026-10-12) 频道成员不入盘（内存态，见 load）。
         disk.channel_members = default_channel_members();
+        // (#left-panel-v3) legacy 组快照回写(降级兼容,与 rev10 历史命令同
+        // 口径):组名列表 / 折叠表 / 颜色表 / 会话组名全部从 group_records
+        // 与 session.group_id 派生。保留组不入名列表(default 隐式、system
+        // 是 builtin 专属),与旧语义一致。
+        {
+            let name_of = |id: &str| -> String {
+                disk.group_records
+                    .iter()
+                    .find(|r| r.id == id)
+                    .map(|r| r.name.clone())
+                    .unwrap_or_default()
+            };
+            disk.groups = disk
+                .group_records
+                .iter()
+                .filter(|r| !r.reserved)
+                .map(|r| r.name.clone())
+                .collect();
+            let collapsed: Vec<String> = disk
+                .group_records
+                .iter()
+                .filter(|r| r.collapsed && !r.reserved)
+                .map(|r| r.name.clone())
+                .collect();
+            disk.collapsed_session_groups = Some(collapsed);
+            disk.group_colors = disk
+                .group_records
+                .iter()
+                .filter_map(|r| r.color.as_ref().map(|hex| (r.name.clone(), hex.clone())))
+                .collect();
+            for session in &mut disk.sessions {
+                session.group = if session.group_id == GROUP_ID_DEFAULT {
+                    String::new()
+                } else {
+                    name_of(&session.group_id)
+                };
+            }
+        }
         for session in &mut disk.sessions {
             if !session.password.is_empty()
                 && !session.password.as_str().starts_with(Self::ENC_PREFIX)
