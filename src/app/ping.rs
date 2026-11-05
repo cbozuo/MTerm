@@ -14,16 +14,19 @@
 //!  · ⚠️ state 的 Mutex 锁必须全部短作用域：UI 线程持锁期间二次 lock() 是
 //!    std Mutex 重入 → 永久阻塞 → 整窗「未响应」（持锁路径用 *_locked 变体）。
 
-use crate::config::ConfigStore;
-use crate::ping::{chart_paths, icmp_probe, listen_table, loss_path, looks_like_host, parse_draft,
-    resolve, spark_path, tcp_probe, ListenEntry, PingState, TargetState,
-    AUTO_INTERVAL_MS, MAX_TARGETS};
+use crate::config::{ConfigStore, SessionKind};
+use crate::ping::{chart_paths, icmp_probe, listen_table, listen_table_remote, loss_path,
+    looks_like_host, mode_from_samples, parse_draft, ping_remote, resolve, spark_path, tcp_probe,
+    ListenEntry, PingState, TargetState, AUTO_INTERVAL_MS, MAX_TARGETS};
 use crate::ui::{AppWindow, ListenRow, PingHostInfo, PingHostOption, PingTargetRow};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
 use std::net::IpAddr;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use tokio::runtime::Runtime;
+
+use super::session_runtime::resolve_jump_chain;
 
 // ── install ─────────────────────────────────────────────────────────────
 fn kind_proto(kind: crate::config::SessionKind, lang_en: bool) -> &'static str {
@@ -38,7 +41,9 @@ fn kind_proto(kind: crate::config::SessionKind, lang_en: bool) -> &'static str {
     }
 }
 
-pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigStore>>) {
+pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigStore>>,
+    runtime: Arc<Runtime>,
+) {
     let w = window.as_weak();
     let state = Arc::new(Mutex::new(PingState::new()));
     // 连续 Ping 定时器：slint::Timer 非 Send，留在 UI 线程（state 不携带）
@@ -50,36 +55,43 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
     // 探测地址）。两处行都带悬浮信息卡字段（tab 卡同款；远程源仍仅展示，
     // 真正从远端探测要三期 SSH 通道，见文件头）。proto 文案 kind_proto（模块级）。
 
-    type HostEntry = (String, String, bool, String, String, String, String, String, String);
+    // HostEntry = (key, 名称, tab 连接, proto, host, user, auth, group, note,
+    // **exec**=该源可执行命令（本机恒真；tab 仅 SSH 会话）——源下拉两种模式下
+    // 的可点规则都靠它（Serial/Telnet 控制台流、RDP/VNC 无命令通道、Local 与
+    // 本机同机重复 → 置灰不可作源；作为目标不受限）。
+    type HostEntry = (String, String, bool, String, String, String, String, String, String, bool);
 
     /// 源下拉全量：本机 + 当前窗口已打开 tab（按会话去重）。tab 的卡片字段
     /// 直接从 TabInfo 透传（Rust 建 tab 时已填好 proto/host/user/auth/group/note）。
     fn build_hosts(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigStore>>) -> Vec<HostEntry> {
         let mut seen: Vec<String> = Vec::new();
-        // 本机行 host 填 127.0.0.1：悬浮卡出「主机：127.0.0.1」行——名称「本机」
-        // 之外再给一层物理机语义，不会被误读成某个已开的 tab（2026-11-05 反馈）
         let mut out: Vec<HostEntry> =
             vec![("local".to_string(), "本机".to_string(), false,
                   String::new(), "127.0.0.1".to_string(), String::new(), String::new(),
-                  String::new(), String::new())];
+                  String::new(), String::new(), true)];
         for i in 0..window.get_tabs().row_count() {
             let Some(t) = window.get_tabs().row_data(i) else { continue };
             let sid = t.session_id.to_string();
             if sid.is_empty() || seen.contains(&sid) { continue; }
             seen.push(sid.clone());
-            let name = store.borrow().get(&sid)
-                .map(|s| s.name.clone())
-                .unwrap_or_else(|| t.title.to_string());
+            let (name, kind_ssh) = {
+                let store = store.borrow();
+                match store.get(&sid) {
+                    Some(s) => (s.name.clone(), s.kind == SessionKind::Ssh),
+                    None => (t.title.to_string(), false),
+                }
+            };
             out.push((sid, name, t.connected,
                 t.proto.to_string(), t.host.to_string(), t.user.to_string(),
-                t.auth.to_string(), t.group_name.to_string(), t.note.to_string()));
+                t.auth.to_string(), t.group_name.to_string(), t.note.to_string(),
+                kind_ssh));
         }
         out
     }
 
     fn push_hosts(window: &AppWindow, entries: &[HostEntry]) {
         let hosts: Vec<PingHostOption> = entries.iter()
-            .map(|(k, name, conn, proto, host, user, auth, group, note)| PingHostOption {
+            .map(|(k, name, conn, proto, host, user, auth, group, note, exec)| PingHostOption {
                 key: SharedString::from(k.clone()),
                 name: SharedString::from(name.clone()),
                 online: k == "local" || *conn,
@@ -89,6 +101,7 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
                 auth: SharedString::from(auth.clone()),
                 group: SharedString::from(group.clone()),
                 note: SharedString::from(note.clone()),
+                exec: *exec,
             }).collect();
         window.set_ping_hosts(ModelRc::from(Rc::new(VecModel::from(hosts))));
     }
@@ -138,12 +151,12 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
             let filtered: Vec<PingHostOption> = {
                 let Ok(st) = state.lock() else { return };
                 st.hosts_full.iter()
-                    .filter(|(k, name, _, _, _, _, _, _, _)| {
+                    .filter(|(k, name, _, _, _, _, _, _, _, _)| {
                         q.is_empty()
                             || name.to_lowercase().contains(&q)
                             || k.to_lowercase().contains(&q)
                     })
-                    .map(|(k, name, conn, proto, host, user, auth, group, note)| PingHostOption {
+                    .map(|(k, name, conn, proto, host, user, auth, group, note, exec)| PingHostOption {
                         key: SharedString::from(k.clone()),
                         name: SharedString::from(name.clone()),
                         online: k == "local" || *conn,
@@ -153,6 +166,7 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
                         auth: SharedString::from(auth.clone()),
                         group: SharedString::from(group.clone()),
                         note: SharedString::from(note.clone()),
+                        exec: *exec,
                     })
                     .collect()
             };
@@ -199,8 +213,57 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
             w.set_ping_listen_search(SharedString::new());
             w.set_ping_has_error(false);
             w.set_ping_input_error(SharedString::new());
+            w.set_ping_probe_error(SharedString::new());
             w.set_ping_listen_count(0);
             w.set_ping_listen_selected(0);
+            refresh_all(&w, &state);
+        });
+    }
+
+    // 打开弹框：默认探测源 = 当前 tab 的会话（2026-11-05 用户定稿）——
+    // 仅当该 tab **已连接**且会话是 SSH（可作源的类型）时采用；断线 / 未打开 /
+    // 非 SSH（RDP/VNC/串口/本地终端）一律回落「本机」。
+    {
+        let w = w.clone();
+        let state = state.clone();
+        let store = store.clone();
+        window.on_ping_open(move || {
+            let Some(w) = w.upgrade() else { return };
+            let active_id = w.get_active_tab_id().to_string();
+            // 找活动 tab 的会话 id（connected && state==1 才算在线）
+            let active_sid = {
+                let tabs = w.get_tabs();
+                let mut sid = String::new();
+                for i in 0..tabs.row_count() {
+                    let Some(t) = tabs.row_data(i) else { continue };
+                    if t.id.as_str() == active_id.as_str()
+                        && t.connected && t.state == 1 && !t.session_id.is_empty() {
+                        sid = t.session_id.to_string();
+                    }
+                }
+                sid
+            };
+            let usable = !active_sid.is_empty()
+                && store.borrow().get(&active_sid)
+                    .map(|s| s.kind == SessionKind::Ssh)
+                    .unwrap_or(false);
+            // 源下拉数据同步刷新（tab 列表可能已变）
+            let hosts = build_hosts(&w, &store);
+            let (key, name) = if usable {
+                let name = hosts.iter().find(|(k, ..)| *k == active_sid)
+                    .map(|(_, n, ..)| n.clone())
+                    .unwrap_or_else(|| active_sid.clone());
+                (active_sid.clone(), name)
+            } else {
+                ("local".to_string(), if w.get_lang_en() { "Local".to_string() } else { "本机".to_string() })
+            };
+            if let Ok(mut st) = state.lock() {
+                st.source = key.clone();
+                st.hosts_full = hosts.clone();
+            }
+            push_hosts(&w, &hosts);
+            w.set_ping_source_key(SharedString::from(key));
+            w.set_ping_source_name(SharedString::from(name));
             refresh_all(&w, &state);
         });
     }
@@ -209,22 +272,21 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
     {
         let w = w.clone();
         let state = state.clone();
+        let store = store.clone();
+        let runtime = runtime.clone();
         window.on_ping_set_method(move |m| {
             if let Ok(mut st) = state.lock() {
                 st.method = m.to_string();
             }
             let Some(w) = w.upgrade() else { return };
             w.set_ping_method(SharedString::from(m.as_str()));
+            // 换模式等于换视图：上一模式的探测错误不再适用
+            w.set_ping_probe_error(SharedString::new());
             if m == "port" {
-                // 一期同步拉取监听端口（快照 <100ms，直接同步调用）
-                let rows = listen_table();
-                if let Ok(mut s) = state.lock() {
-                    // 存入 state：refresh_all → render_listen_locked 从 st.listen_rows
-                    // 渲染，不存会被空表覆盖成 0 行
-                    s.listen_rows = rows.clone();
-                }
-                w.set_ping_listen_count(rows.len() as i32);
-                set_listen_model(&w, &rows, None);
+                // 按探测源取端口表（本机=本地 API；SSH tab=远端 ss/netstat，
+                // 异步）。fetch_listen 自带全部路径的 refresh_all
+                fetch_listen(&w, &store, &state, &runtime);
+                return;
             }
             refresh_all(&w, &state);
         });
@@ -357,26 +419,15 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
     {
         let w = w.clone();
         let state = state.clone();
+        let store = store.clone();
+        let runtime = runtime.clone();
         let auto_timer = auto_timer.clone();
         window.on_ping_run(move || {
             let is_port = state.lock().map(|s| s.method == "port").unwrap_or(false);
             let Some(w) = w.upgrade() else { return };
             if is_port {
-                w.set_ping_testing(true);
-                let w2 = w.as_weak();
-                let state2 = state.clone();
-                std::thread::spawn(move || {
-                    let rows = listen_table();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        let Some(w) = w2.upgrade() else { return };
-                        if let Ok(mut st) = state2.lock() {
-                            st.listen_rows = rows;
-                        }
-                        w.set_ping_testing(false);
-                        refresh_all(&w, &state2);
-                        toast(&w, "已刷新监听端口");
-                    });
-                });
+                // 按探测源取端口表（本机同步 / 远端异步），含刷新中反馈与守卫
+                fetch_listen(&w, &store, &state, &runtime);
                 return;
             }
             // Ping：草稿非空 → 先并入（与高保真 startTest 一致）
@@ -416,10 +467,12 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
                 return;
             }
             w.set_ping_has_error(false);
+            // 新一轮探测：清掉上一轮的探测类错误（probe-error 只属于上次轮次）
+            w.set_ping_probe_error(SharedString::new());
             // 连续 Ping 开着：确保定时器在跑（开关切换不启动定时器，这里随
             // 探测启动；重复 start 是幂等重置——重置节拍从本次点击起算）
-            if w.get_ping_auto_on() { start_auto_timer(&w, &state, &auto_timer); }
-            start_round(&w, &state, targets);
+            if w.get_ping_auto_on() { start_auto_timer(&w, &state, &auto_timer, &store, &runtime); }
+            start_round(&w, &state, &store, &runtime, targets);
         });
     }
 
@@ -446,10 +499,14 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
         w: &AppWindow,
         state: &Arc<Mutex<PingState>>,
         auto_timer: &Rc<RefCell<Option<slint::Timer>>>,
+        store: &Rc<RefCell<ConfigStore>>,
+        runtime: &Arc<Runtime>,
     ) {
         let timer = slint::Timer::default();
         let w2 = w.as_weak();
         let state2 = state.clone();
+        let store = store.clone();
+        let runtime = runtime.clone();
         timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(AUTO_INTERVAL_MS), move || {
             let Some(w) = w2.upgrade() else { return };
             if !w.get_ping_dialog_open() || !w.get_ping_auto_on() { return; }
@@ -458,14 +515,16 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
             if w.get_ping_testing() { return; }
             let targets: Vec<String> = match state2.lock() {
                 Ok(st) => {
-                    if st.method != "icmp" { return; }
+                    // 远端源连续 Ping 禁用（每 2s 重连 SSH 不可接受，持久通道
+                    // 后续优化）——开关已置灰，这里双保险
+                    if st.method != "icmp" || st.source != "local" { return; }
                     st.targets.iter().filter(|t| t.enabled)
                         .map(|t| t.addr.clone()).collect()
                 }
                 Err(_) => return,
             };
             if targets.is_empty() { return; }
-            start_round(&w, &state2, targets);
+            start_round(&w, &state2, &store, &runtime, targets);
         });
         *auto_timer.borrow_mut() = Some(timer);
     }
@@ -480,6 +539,8 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
                 for t in &mut st.targets { t.selected = false; }
             }
             let Some(w) = w.upgrade() else { return };
+            // 清结果同时撤探测错误（错误属于刚被清掉的那轮结果）
+            w.set_ping_probe_error(SharedString::new());
             refresh_all(&w, &state);
         });
     }
@@ -531,17 +592,19 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
         });
     }
 
-    // 源切换（一期仅本机可选；回调留全量路径）
+    // 源切换（本机 / SSH tab；两种模式语义一致：数据从所选源来）
     {
         let state = state.clone();
+        let store = store.clone();
+        let runtime = runtime.clone();
         let w = window.as_weak();
         window.on_ping_set_source(move |key| {
             let name = {
                 let Ok(st) = state.lock() else { return };
                 match key.as_str() {
                     "local" => "本机".to_string(),
-                    _ => st.hosts_full.iter().find(|(k, _, _, _, _, _, _, _, _)| k == key.as_str())
-                        .map(|(_, n, _, _, _, _, _, _, _)| n.clone())
+                    _ => st.hosts_full.iter().find(|(k, _, _, _, _, _, _, _, _, _)| k == key.as_str())
+                        .map(|(_, n, _, _, _, _, _, _, _, _)| n.clone())
                         .unwrap_or_else(|| key.to_string()),
                 }
             };
@@ -558,76 +621,237 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
             let Some(w) = w.upgrade() else { return };
             w.set_ping_source_key(SharedString::from(key.as_str()));
             w.set_ping_source_name(SharedString::from(name));
-            refresh_all(&w, &state);
+            // 换源等于换链路：上次源的探测错误不再适用
+            w.set_ping_probe_error(SharedString::new());
+            // 端口模式：切源即重取该源的端口表（远端异步）；Ping 模式仅重渲染
+            let is_port = state.lock().map(|s| s.method == "port").unwrap_or(false);
+            if is_port {
+                fetch_listen(&w, &store, &state, &runtime);
+            } else {
+                refresh_all(&w, &state);
+            }
         });
     }
 }
 
 // ── 探测轮次 ────────────────────────────────────────────────────────────
-fn start_round(w: &AppWindow, state: &Arc<Mutex<PingState>>, targets: Vec<String>) {
+fn start_round(w: &AppWindow, state: &Arc<Mutex<PingState>>, store: &Rc<RefCell<ConfigStore>>,
+    runtime: &Arc<Runtime>, targets: Vec<String>,
+) {
     // 轮次标记（2026-11-04 用户定稿「清单一直在跳动」根因修复：探测期间
     // 行/右栏**保持上次数据**——不再把目标集体翻成 testing 模式渲染成
     // 「测试中/—」再翻回来；按钮文字用 round_active 渲染「测试中…」做在飞
     // 反馈。防重入：轮次在飞时直接忽略新触发。）
-    // 顺带记下发起源：落地时源已切换则本轮作废（结果反映发起源链路，
+    // 顺带记下发起源/方式：落地时已切换则本轮作废（结果反映发起源链路，
     // 2026-11-05 源切换清结果配套——不然切源瞬间在飞的旧源结果照落）。
     let src_at_start = {
         let Ok(mut st) = state.lock() else { return };
         if st.round_active { return; }
         st.round_active = true;
-        st.source.clone()
+        (st.source.clone(), st.method.clone())
+    };
+    // 探测源为 SSH tab → 远端真实探测：在源主机执行 ping 并解析（tokio
+    // 并发限 4，避免 12 目标打满 sshd MaxStartups）
+    let remote = if src_at_start.0 == "local" {
+        None
+    } else {
+        let sess = store.borrow().get(&src_at_start.0).cloned();
+        sess.filter(|s| s.kind == SessionKind::Ssh).map(|s| {
+            let jumps = resolve_jump_chain(store, &s);
+            (s, jumps)
+        })
     };
     refresh_all(w, state);
     let w2 = w.as_weak();
     let state2 = state.clone();
-    std::thread::spawn(move || {
-        let mut results: Vec<(String, TargetState)> = Vec::new();
-        for addr in &targets {
-            let ip = resolve(addr);
-            let mut ts = TargetState::new(addr.clone());
-            ts.ip = ip;
-            match ip {
-                Some(IpAddr::V4(v4)) => {
-                    let (pts, all_lost) = icmp_probe(v4);
-                    if all_lost {
-                        ts.mode = "offline".into();
-                    } else {
-                        let loss = pts.iter().filter(|s| s.is_none()).count() as f64 / pts.len() as f64 * 100.0;
-                        let max_rtt = pts.iter().flatten().cloned().fold(0.0f64, f64::max);
-                        ts.mode = if loss > 0.0 || max_rtt >= 100.0 { "degraded".into() } else { "normal".into() };
+    match remote {
+        Some((session, jumps)) => {
+            runtime.spawn(async move {
+                let sem = Arc::new(tokio::sync::Semaphore::new(4));
+                let mut tasks = Vec::new();
+                for addr in targets {
+                    let permit = Arc::clone(&sem);
+                    let sess = session.clone();
+                    let jp = jumps.clone();
+                    tasks.push(tokio::spawn(async move {
+                        let _permit = permit.acquire_owned().await;
+                        let res = ping_remote(sess, jp, &addr).await;
+                        (addr, res)
+                    }));
+                }
+                let mut results = Vec::new();
+                for t in tasks {
+                    if let Ok(r) = t.await { results.push(r); }
+                }
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(w) = w2.upgrade() else { return };
+                    let mut done = 0usize;
+                    let mut err_first = String::new();
+                    let mut err_all = true;
+                    if let Ok(mut st) = state2.lock() {
+                        if st.source == src_at_start.0 && st.method == src_at_start.1 {
+                            let cur_sel: Option<String> = st.selected_addr().map(|s| s.to_string());
+                            for (addr, res) in results {
+                                if let Some(t) = st.targets.iter_mut().find(|t| t.addr == addr) {
+                                    match res {
+                                        Ok(samples) => {
+                                            t.samples = samples.clone();
+                                            t.mode = mode_from_samples(&samples);
+                                            err_all = false;
+                                        }
+                                        Err(e) => {
+                                            t.samples = vec![None; 3];
+                                            t.mode = "offline".into();
+                                            if err_first.is_empty() { err_first = e; }
+                                        }
+                                    }
+                                    t.selected = cur_sel.as_deref() == Some(&t.addr);
+                                }
+                                done += 1;
+                            }
+                        }
+                        st.round_active = false;
                     }
-                    ts.samples = pts;
-                }
-                Some(IpAddr::V6(v6)) => {
-                    let rt = tcp_probe(IpAddr::V6(v6), 2000);
-                    ts.samples = vec![rt];
-                    ts.mode = if rt.is_some() { "normal".into() } else { "offline".into() };
-                }
-                None => {
-                    ts.mode = "offline".into();
-                    ts.samples = vec![None; 3];
-                }
-            }
-            results.push((addr.clone(), ts));
+                    refresh_all(&w, &state2);
+                    if err_all {
+                        // 探测类错误 → 只进页脚（probe-error），不染草稿输入框
+                        w.set_ping_probe_error(SharedString::from(if err_first.is_empty() {
+                            "探测失败：无返回".to_string()
+                        } else { format!("远端探测失败：{err_first}") }));
+                    } else if done > 0 {
+                        w.set_ping_probe_error(SharedString::new());
+                        toast(&w, &format!("Ping 完成 · {} 个目标", done));
+                    }
+                });
+            });
         }
+        None => {
+            std::thread::spawn(move || {
+                let mut results: Vec<(String, TargetState)> = Vec::new();
+                for addr in &targets {
+                    let ip = resolve(addr);
+                    let mut ts = TargetState::new(addr.clone());
+                    ts.ip = ip;
+                    match ip {
+                        Some(IpAddr::V4(v4)) => {
+                            let (pts, all_lost) = icmp_probe(v4);
+                            // 与远端 ping 同一套判定（mode_from_samples）
+                            ts.mode = if all_lost { "offline".into() } else { mode_from_samples(&pts) };
+                            ts.samples = pts;
+                        }
+                        Some(IpAddr::V6(v6)) => {
+                            let rt = tcp_probe(IpAddr::V6(v6), 2000);
+                            ts.samples = vec![rt];
+                            ts.mode = if rt.is_some() { "normal".into() } else { "offline".into() };
+                        }
+                        None => {
+                            ts.mode = "offline".into();
+                            ts.samples = vec![None; 3];
+                        }
+                    }
+                    results.push((addr.clone(), ts));
+                }
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(w) = w2.upgrade() else { return };
+                    let mut done = 0usize;
+                    if let Ok(mut st) = state2.lock() {
+                        if st.source == src_at_start.0 && st.method == src_at_start.1 {
+                            let cur_sel: Option<String> = st.selected_addr().map(|s| s.to_string());
+                            for (addr, ts) in results {
+                                if let Some(t) = st.targets.iter_mut().find(|t| t.addr == addr) {
+                                    *t = ts;
+                                    t.selected = cur_sel.as_deref() == Some(&t.addr);
+                                }
+                                done += 1;
+                            }
+                        }
+                        st.round_active = false;
+                    }
+                    refresh_all(&w, &state2);
+                    if done > 0 { toast(&w, &format!("Ping 完成 · {} 个目标", done)); }
+                });
+            });
+        }
+    }
+}
+
+// ── 端口表按源拉取 ─────────────────────────────────────────────────────
+/// 源 key → 显示名（无锁环境用；refresh_all 持锁期间用内联版）
+fn source_display(state: &Arc<Mutex<PingState>>, key: &str) -> String {
+    let st = state.lock().unwrap();
+    match key {
+        "local" => (if st.lang_en { "Local" } else { "本机" }).to_string(),
+        k => st.hosts_full.iter()
+            .find(|(hk, ..)| hk == k)
+            .map(|(_, n, ..)| n.clone())
+            .unwrap_or_else(|| k.to_string()),
+    }
+}
+
+/// 端口模式按探测源取监听端口表：本机=GetExtendedTcpTable 同步快照（<100ms）；
+/// SSH tab=远端执行 ss/netstat（异步 10s）。结果落地守卫=(source, method) 不变
+/// （探测中途切源/切模式则丢弃）；连接失败（主机密钥未信任/认证失败/超时）
+/// 进页脚错误槽。全路径自带 refresh_all。
+fn fetch_listen(
+    w: &AppWindow,
+    store: &Rc<RefCell<ConfigStore>>,
+    state: &Arc<Mutex<PingState>>,
+    runtime: &Arc<Runtime>,
+) {
+    let source = state.lock().ok().map(|s| s.source.clone()).unwrap_or_default();
+    if source == "local" {
+        let rows = listen_table();
+        if let Ok(mut s) = state.lock() {
+            // 存入 state：refresh_all → render_listen_locked 从 st.listen_rows
+            // 渲染，不存会被空表覆盖成 0 行
+            s.listen_rows = rows.clone();
+        }
+        w.set_ping_listen_count(rows.len() as i32);
+        set_listen_model(w, &rows, None);
+        refresh_all(w, state);
+        return;
+    }
+    // 远端：会话 + 跳板链（非 SSH 源在源下拉已置灰，这里防御性兜底）。
+    // 以下错误都是探测/源问题 → probe-error（页脚红字），不染草稿输入框
+    let sess = store.borrow().get(&source).cloned();
+    let Some(sess) = sess else {
+        w.set_ping_probe_error(SharedString::from(format!("源「{source}」不是已保存会话")));
+        refresh_all(w, state);
+        return;
+    };
+    if sess.kind != SessionKind::Ssh {
+        w.set_ping_probe_error(SharedString::from(
+            format!("「{}」不支持端口枚举（仅 SSH 会话可作为源）", sess.name)));
+        refresh_all(w, state);
+        return;
+    }
+    let jumps = resolve_jump_chain(store, &sess);
+    let src_name = source_display(state, &source);
+    w.set_ping_testing(true);
+    refresh_all(w, state); // 立即反馈「刷新中…」
+    let w2 = w.as_weak();
+    let state2 = state.clone();
+    runtime.clone().spawn(async move {
+        let res = listen_table_remote(sess, jumps).await;
         let _ = slint::invoke_from_event_loop(move || {
             let Some(w) = w2.upgrade() else { return };
-            let mut done = 0usize;
-            if let Ok(mut st) = state2.lock() {
-                if st.source == src_at_start {
-                    let cur_sel: Option<String> = st.selected_addr().map(|s| s.to_string());
-                    for (addr, ts) in results {
-                        if let Some(t) = st.targets.iter_mut().find(|t| t.addr == addr) {
-                            *t = ts;
-                            t.selected = cur_sel.as_deref() == Some(&t.addr);
-                        }
-                        done += 1;
+            let valid = state2.lock().ok()
+                .map(|st| st.source == source && st.method == "port")
+                .unwrap_or(false);
+            if valid {
+                match res {
+                    Ok(rows) => {
+                        if let Ok(mut st) = state2.lock() { st.listen_rows = rows; }
+                        w.set_ping_probe_error(SharedString::new());
+                    }
+                    Err(e) => {
+                        w.set_ping_probe_error(SharedString::from(
+                            format!("无法连接「{src_name}」：{e}")));
                     }
                 }
-                st.round_active = false;
             }
+            w.set_ping_testing(false);
             refresh_all(&w, &state2);
-            if done > 0 { toast(&w, &format!("Ping 完成 · {} 个目标", done)); }
         });
     });
 }
@@ -663,13 +887,21 @@ fn refresh_all(w: &AppWindow, state: &Arc<Mutex<PingState>>) {
     }
     w.set_ping_targets(ModelRc::from(Rc::new(VecModel::from(rows))));
 
+    // 发起源显示名（src_disp）：owner 解析行前缀 + 源 chip 共用——两种模式的
+    // 数据都真实来自所选源（端口=远端枚举、Ping=远端执行，2026-11-05 做真），
+    // 「本机 · ip」/「tab名 · ip」/端口模式源标签都按它显示
+    let src_disp = if st.source == "local" {
+        if lang { "Local".to_string() } else { "本机".to_string() }
+    } else {
+        st.hosts_full.iter().find(|(hk, _, _, _, _, _, _, _, _, _)| *hk == st.source)
+            .map(|(_, n, _, _, _, _, _, _, _, _)| n.clone())
+            .unwrap_or_else(|| st.source.clone())
+    };
+
     if st.method == "port" {
-        // 已持锁 → 用持锁版渲染（render_listen 会二次 lock，重入即死锁）
-        // 端口模式=本机快照（GetExtendedTcpTable 仅本机；远端枚举端口要三期
-        // SSH 远端执行 netstat）：源 chip 与结果头标签强制显示本机，避免
-        // 「选了 tab、端口列表还是本机」的误导（2026-11-05 用户反馈）。
-        // 切回 Ping 模式时 refresh_all 末尾按 st.source 恢复真实源名。
-        w.set_ping_source_name(SharedString::from(if lang { "Local" } else { "本机" }));
+        // 已持锁 → 用持锁版渲染（render_listen 会二次 lock，重入即死锁）。
+        // 源 chip/结果头标签按 src_disp 显示（远端枚举做真后数据即来自所选源）
+        w.set_ping_source_name(SharedString::from(src_disp.clone()));
         render_listen_locked(w, &st);
         // 端口模式右栏
         let sel = st.listen_sel.and_then(|p| st.listen_rows.iter().find(|r| r.port == p));
@@ -712,16 +944,6 @@ fn refresh_all(w: &AppWindow, state: &Arc<Mutex<PingState>>) {
     let sel_addr = st.selected_addr().map(|s| s.to_string());
     let selected_active = sel_addr.is_some();
     w.set_ping_selected_target_active(selected_active);
-
-    // 发起源显示名：owner 解析行前缀 + 源 chip 共用（「本机 · ip」/「tab名 · ip」
-    // ——从哪个源发起一目了然，2026-11-05「本机歧义」配套）
-    let src_disp = if st.source == "local" {
-        if lang { "Local".to_string() } else { "本机".to_string() }
-    } else {
-        st.hosts_full.iter().find(|(hk, _, _, _, _, _, _, _, _)| *hk == st.source)
-            .map(|(_, n, _, _, _, _, _, _, _)| n.clone())
-            .unwrap_or_else(|| st.source.clone())
-    };
 
     // 在飞反馈（2026-11-04 用户定稿：探测期间行/右栏保持上次数据，不集体
     // 翻「测试中」；只把按钮文字换成「测试中…」+ 禁点）
@@ -903,7 +1125,10 @@ fn refresh_all(w: &AppWindow, state: &Arc<Mutex<PingState>>) {
     w.set_ping_run_text(SharedString::from(if testing {
         (if lang { "Testing…" } else { "测试中…" }).into()
     } else { format!("探测 {} 个", enabled_count) }));
-    let auto_disabled = testing || !has_any;
+    // 连续 Ping 远端源禁用（每 2s 重连 SSH 不可接受，持久通道后续优化）——
+    // 开关置灰 + 定时器 tick 双保险
+    let auto_disabled = testing || !has_any
+        || (st.method == "icmp" && st.source != "local");
     w.set_ping_auto_disabled(auto_disabled);
     let idle_n = st.targets.iter().filter(|t| t.enabled && t.mode == "idle").count();
     let summary = if st.targets.is_empty() {
@@ -990,15 +1215,35 @@ fn rebuild_target_opts(
             .map(|t| t.addr.clone()).collect())
         .unwrap_or_default();
     let is_sel = |k: &str| in_list.iter().any(|a| a.eq_ignore_ascii_case(k));
-    let mut opts: Vec<PingHostInfo> = vec![PingHostInfo {
-        key: "127.0.0.1".into(), name: if lang_en { "Local" } else { "本机" }.into(),
-        proto: kind_proto(crate::config::SessionKind::Local, lang_en).into(),
-        host: "127.0.0.1".into(),
-        user: "".into(), auth: "".into(), group: "".into(), note: "".into(),
-        selected: is_sel("127.0.0.1"),
-    }];
+    // 探测源的地址（2026-11-05 用户反馈）：源主机自身不进候选——自己 ping
+    // 自己无意义。按**地址**剔（不只按会话 id）：同 host 的重复会话（如
+    // 188 / 188 (1)）一并剔掉；源=本机时剔掉本机行与任何指向 127.0.0.1 的会话。
+    let source_host: String = state.lock().ok().map(|st| {
+        if st.source == "local" {
+            "127.0.0.1".to_string()
+        } else {
+            store.sessions().iter()
+                .find(|s| s.id == st.source)
+                .map(|s| s.host.clone())
+                .unwrap_or_default()
+        }
+    }).unwrap_or_default();
+    let is_source_host = |host: &str| {
+        !source_host.is_empty() && host.trim().eq_ignore_ascii_case(source_host.trim())
+    };
+    let mut opts: Vec<PingHostInfo> = Vec::new();
+    if !is_source_host("127.0.0.1") {
+        opts.push(PingHostInfo {
+            key: "127.0.0.1".into(), name: if lang_en { "Local" } else { "本机" }.into(),
+            proto: kind_proto(crate::config::SessionKind::Local, lang_en).into(),
+            host: "127.0.0.1".into(),
+            user: "".into(), auth: "".into(), group: "".into(), note: "".into(),
+            selected: is_sel("127.0.0.1"),
+        });
+    }
     for s in store.sessions() {
         if s.host.trim().is_empty() { continue; }
+        if is_source_host(&s.host) { continue; }
         let group = crate::config::display_group_of(s);
         opts.push(PingHostInfo {
             key: SharedString::from(s.host.clone()),

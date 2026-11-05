@@ -47,9 +47,7 @@ impl TargetState {
         if self.samples.is_empty() { return 0.0; }
         let lost = self.samples.iter().filter(|s| s.is_none()).count();
         lost as f64 / self.samples.len() as f64 * 100.0
-    }
-
-    pub(crate) fn avg(&self) -> Option<f64> {
+    }    pub(crate) fn avg(&self) -> Option<f64> {
         let v: Vec<f64> = self.samples.iter().flatten().copied().collect();
         if v.is_empty() { return None; }
         Some(v.iter().sum::<f64>() / v.len() as f64)
@@ -83,6 +81,18 @@ impl TargetState {
     }
 }
 
+/// 采样 → 模式判定（本地 ICMP / 远端 ping 共用同一规则）：空或全丢=offline；
+/// 有丢包或最大 RTT ≥100ms=degraded；否则 normal。
+pub(crate) fn mode_from_samples(samples: &[Option<f64>]) -> String {
+    if samples.is_empty() || samples.iter().all(|s| s.is_none()) {
+        return "offline".into();
+    }
+    let loss = samples.iter().filter(|s| s.is_none()).count() as f64
+        / samples.len() as f64 * 100.0;
+    let max_rtt = samples.iter().flatten().copied().fold(0.0f64, f64::max);
+    if loss > 0.0 || max_rtt >= 100.0 { "degraded".into() } else { "normal".into() }
+}
+
 /// 弹框会话态（install 时创建，Arc<Mutex> 持有；锁全部短作用域——
 /// std Mutex 不可重入，UI 线程持锁期间二次 lock 即整窗「未响应」）。
 pub(crate) struct PingState {
@@ -98,9 +108,10 @@ pub(crate) struct PingState {
     pub(crate) listen_query: String,
     pub(crate) listen_sel: Option<u16>,
     pub(crate) lang_en: bool,
-    /// 源下拉全量（key, 显示名, tab 是否连接, 卡片字段×6）——本机 + 已打开
-    /// tab 的会话（2026-11-04 定稿）；过滤搜索在 Rust 重建模型（Slint 无 filter）。
-    pub(crate) hosts_full: Vec<(String, String, bool, String, String, String, String, String, String)>,}
+    /// 源下拉全量（key, 显示名, tab 是否连接, 卡片字段×6, **exec**=可执行命令
+    /// ——本机/SSH 会话真）——本机 + 已打开 tab 的会话（2026-11-04 定稿）；
+    /// 过滤搜索在 Rust 重建模型（Slint 无 filter）。
+    pub(crate) hosts_full: Vec<(String, String, bool, String, String, String, String, String, String, bool)>,}
 
 impl PingState {
     pub(crate) fn new() -> Self {

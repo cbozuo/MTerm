@@ -24,10 +24,16 @@ pub(crate) mod listen;
 pub(crate) mod chart;
 #[path = "impls/local_ip.rs"]
 pub(crate) mod local_ip;
+#[path = "impls/listen_remote.rs"]
+pub(crate) mod listen_remote;
+#[path = "impls/ping_remote.rs"]
+pub(crate) mod ping_remote;
 
-pub(crate) use model::{parse_draft, looks_like_host, resolve, ListenEntry, PingState, TargetState,
-    AUTO_INTERVAL_MS, MAX_TARGETS};
+pub(crate) use model::{parse_draft, looks_like_host, resolve, mode_from_samples, ListenEntry,
+    PingState, TargetState, AUTO_INTERVAL_MS, MAX_TARGETS};
 pub(crate) use net::{icmp_probe, tcp_probe};
 pub(crate) use listen::listen_table;
+pub(crate) use listen_remote::listen_table_remote;
+pub(crate) use ping_remote::ping_remote;
 pub(crate) use chart::{chart_paths, loss_path, spark_path};
 pub(crate) use local_ip::local_ipv4_list;
