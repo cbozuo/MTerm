@@ -1873,6 +1873,10 @@ export component SessionDialog inherits Rectangle {
     property <int> proxy-port-focus-seq: 0;
 
     callback submit(SessionDraft);
+    // 提交时是否「保存后立即打开」（2026-11-05）：由页脚「创建并打开」在
+    // 提交前写入，宿主（app.slint 桥到 AppWindow）在 submit 回调里读取。
+    // 单独的 submit-and-open 回调会迫使 Rust 侧复制整段提交逻辑。
+    in-out property <bool> submit-open-after: false;
     callback test-connection(SessionDraft);
     callback cancel();
     callback add-forward();
@@ -2095,6 +2099,12 @@ export component SessionDialog inherits Rectangle {
         };
     }
     function try-submit() {
+        // 默认只保存（键盘回车等路径）：标志在这里复位，避免上一次「创建并打开」
+        // 校验失败后残留 true，下次普通提交被误判为要打开。
+        root.submit-mode(false);
+    }
+    // open_after = 保存后是否立即打开连接（页脚主按钮「创建并打开」）。
+    function submit-mode(open_after: bool) {
         if (root.draft-kind != "serial" && root.draft-host == "") {
             root.host-missing = true;
             root.host-focus-seq += 1;
@@ -2112,6 +2122,7 @@ export component SessionDialog inherits Rectangle {
         }
         root.host-missing = false;
         root.serial-missing = false;
+        root.submit-open-after = open_after;
         root.submit(root.make-draft());
     }
     function try-test() {
@@ -4216,16 +4227,22 @@ if root.draft-kind == "serial" : HorizontalLayout {
                     spacing: 10px;
                 // (#hifi-v17) 页脚按钮高 / 圆角同原型 .btn；(#foot-btn-roles
                 // 2026-10-23) 由 38/r9 收到 34/r8 —— 页脚三键与规格表一致。
+                // 2026-11-05 页脚定稿：**每模式两键**（取消移出——标题栏 ✕ /
+                // Esc / 点外关闭三条取消路径都在）。
+                //   新建：创建（tonal 功能键，仅保存）| 连接（实心主落点，保存并立即连接）
+                //   编辑：保存（tonal）| 连接（保存修改并立即连接）
                 GhostButton {
                     btn-height: 34px;
                     btn-radius: 8px;
                     dialog-chrome: true;
-                    // (#foot-btn 2026-09-20) 内容宽,不再均分拉伸。
+                    // 功能键档（accent 10% 浅面 + accent 描边/字，与「测试连接」
+                    // 同款）——与实心主键「连接」形成两级层次
+                    tonal: true;
                     horizontal-stretch: 0;
                     btn-min-width: 0px;
                     hug-width: true;
-                    text: @tr("Cancel");
-                    clicked => { root.cancel(); }
+                    text: root.is-editing ? @tr("Save") : @tr("Create");
+                    clicked => { root.try-submit(); }
                 }
                 PrimaryButton {
                     btn-height: 34px;
@@ -4235,8 +4252,10 @@ if root.draft-kind == "serial" : HorizontalLayout {
                     horizontal-stretch: 0;
                     btn-min-width: 0px;
                     hug-width: true;
-                    text: is-editing ? @tr("Save") : @tr("Create");
-                    clicked => { root.try-submit(); }
+                    // 「连接」= 保存后立即开连接（两种模式同一快速路径；
+                    // 编辑模式=保存修改后另开连接）。
+                    text: @tr("Connect");
+                    clicked => { root.submit-mode(true); }
                 }
                 }
             }

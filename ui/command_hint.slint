@@ -20,16 +20,13 @@
 //     （多行粘贴的历史条目）把 28px 行盒撑爆叠到邻行（显示侧压平修复，
 //     见 command_hint_ui.rs）。
 //
-// ★ 键盘契约（§7 定稿 2026-10-30 三轮；(#cmd-hint-passive) 2026-11-02 四轮
-//   改**纯提示**，终端内联与命令栏两处宿主**完全同一套**）：
-//   框只是「候选参考卡」：弹出**不选中任何行**（selected = -1，↑↓ 才选中
-//   —— 默认高亮首条会和 Enter 执行当前行抢语义，(#cmd-hint-no-default)）；
-//   **Enter 永不接管** —— 回车（开着框也一样）直接执行当前已敲的行，
-//   不多吃一次确认键（用户实测：输入 `ll` 与首条候选天然相等时，
-//   「填入→再回车」白吃一次键）；
-//   Shift+Enter = 执行**选中**的候选（无选中时不拦，等同 Enter）；
-//   →(鬼影) / 鼠标点击 = 仅填入；Tab 永远透传 shell；
-//   Esc / 点空白 = 关框，**继续敲字按新输入重新弹**。
+// ★ 键盘契约（2026-11-05 用户定稿第二轮；两处宿主完全同一套）：
+//   弹出**不选中**（selected = -1，敲 `free` 直接回车 = 执行 `free`）；
+//   ↑↓ 才手动选中（来源徽章呈选中态）；
+//   **Enter**：有选中 → 仅填入（替换当前行，不执行）；无选中 → 执行当前行；
+//   Shift+Enter = 执行**选中**的候选；→(鬼影) / 鼠标点击 = 仅填入；
+//   Tab 永远透传 shell；Esc / 点空白 = 关框，继续敲字重新弹；
+//   候选匹配 = **全匹配**（候选必须以整行输入为前缀，不模糊）。
 
 import { Icon } from "icons.slint";
 import { Theme } from "theme.slint";
@@ -54,10 +51,8 @@ export struct HintRow {
 export component CommandHint inherits Rectangle {
     // ── 数据 ────────────────────────────────────────────────────────────
     in property <[HintRow]> rows;
-    // ★ 选中项由宿主持有并传入（两处宿主各管各的）：**弹出不选中**（-1，
-    //   (#cmd-hint-no-default) 2026-11-02 —— 默认高亮首条会和「Enter=执行
-    //   当前行」抢语义），↑↓ 才选中。它只是 Shift+Enter（执行候选）与
-    //   导航的落点；Enter 不接管（(#cmd-hint-passive) 2026-11-02）。
+    // ★ 选中项由宿主持有并传入（两处宿主各管各的）：**弹出不选中**（-1）——
+    //   敲 `free` 回车就是执行 `free`；↑↓ 才手动选中（2026-11-05 定稿）。
     in property <int> selected: -1;
     in property <bool> open: false;
     // 危险命令命中的模式原文；非空 → 列表上方出现红色告警条。
@@ -302,11 +297,12 @@ export component CommandHint inherits Rectangle {
                         //   推不到行尾（用户实测：徽章悬在文本旁边）。
                         //   右对齐靠末尾的「吸空块」。
 
-                        // 类型图标：快捷命令 bolt / 历史 时钟。
+                        // 类型图标：快捷命令 bolt / 历史 时钟。2026-11-05 用户
+                        // 定稿：未选中一律**弱色**（两来源同款，不按来源 accent），
+                        // 选中行随选中高亮 accent。
                         Icon {
                             glyph: r.kind == 1 ? "bolt" : "command-history";
-                            tint: idx == root.selected ? Theme.accent
-                                : (r.kind == 1 ? Theme.accent : Theme.text-muted);
+                            tint: idx == root.selected ? Theme.accent : Theme.text-muted;
                             size: 12px;
                             width: 12px;
                             height: 12px;
@@ -343,13 +339,15 @@ export component CommandHint inherits Rectangle {
                             width: min(parent.width - 24px, src-tx.preferred-width + 8px);
                             border-radius: 3px;
                             y: (parent.height - self.height) / 2;
-                            background: idx == root.selected ? Theme.accent-soft : transparent;
+                            // 2026-11-05 用户定稿：徽章**恒亮**（选中同款）——
+                            // 每行来源标签一律 accent 描边/文字/淡底，不随选中变
+                            background: Theme.accent-soft;
                             border-width: 1px;
-                            border-color: idx == root.selected ? Theme.accent : Theme.border-subtle;
+                            border-color: Theme.accent;
                             clip: true;
                             src-tx := Text {
                                 text: r.source;
-                                color: idx == root.selected ? Theme.accent : Theme.text-muted;
+                                color: Theme.accent;
                                 font-size: 9px;
                                 font-family: Theme.font-mono;
                                 vertical-alignment: center;
@@ -396,9 +394,8 @@ export component CommandHint inherits Rectangle {
                     vertical-alignment: center;
                 }
                 Text {
-                    // ((#cmd-hint-passive) 2026-11-02) Enter = 直接执行当前输入
-                    //（框开着也不拦）；填入选中候选走 Shift+Enter / → / 点击。
-                    text: "Enter " + @tr("Run");
+                    // (2026-11-05 第二轮定稿) Enter：选中 → 仅填入；未选中 → 执行。
+                    text: "Enter " + @tr("Fill / Run");
                     color: Theme.text-muted;
                     font-size: 10px;
                     vertical-alignment: center;

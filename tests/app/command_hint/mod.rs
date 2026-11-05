@@ -200,23 +200,26 @@ fn mem_store() -> ConfigStore {
 }
 
 #[test]
-fn fuzzy_subsequence_no_longer_matches_unrelated_history() {
-    // ★ 模糊子序列档删除的回归：输入 `lh`（两个字符）时，原先字符按序
-    //   出现就算命中，`sudo tee /etc/profile.d/lsd.sh << 'EOF' …`（含 L、H
-    //   字符）会混进候选——内联建议被噪音淹没。现在只允许精确/前缀/词
-    //   边界/子串/切分子串五档，`lh` 与该历史不相干 → 不出候选。
+fn only_prefix_matches_pop() {
+    // ★ 2026-11-05 用户定稿「全匹配，不要模糊匹配」的回归：
+    //   敲 `free -h` 时曾还会列出 `df -h`（词边界命中 `-h`）与
+    //   `du -h …`（子串），候选被噪音淹没 → 现在只允许**从前缀**命中：
+    //   候选必须以整行输入（Command/子命令阶段）或当前词（参数/路径阶段）开头。
     use super::hint_model;
 
     let mut store = mem_store();
     store.push_command_history("sudo tee /etc/profile.d/lsd.sh << 'EOF'".to_string());
     store.push_command_history("free -h".to_string());
+    store.push_command_history("df -h".to_string());
+    store.push_command_history("du -h -d 1 / 2>/dev/null | sort -hr | head -20".to_string());
 
-    // `lh`：与两条历史都无前缀/词边界/子串关系 → 无候选。
-    let m = hint_model(&store, "lh", String::new());
+    // `free -h`：只有以它为前缀的候选；`df -h` / `du -h …` 不得混入。
+    let m = hint_model(&store, "free -h", String::new());
+    let texts: Vec<&str> = m.rows.iter().map(|r| r.text.as_str()).collect();
+    assert!(texts.contains(&"free -h"), "前缀命中应出候选：{texts:?}");
     assert!(
-        m.rows.iter().all(|r| !r.text.contains("sudo tee")),
-        "模糊子序列不该再让不相干的历史进候选：{:?}",
-        m.rows.iter().map(|r| &r.text).collect::<Vec<_>>()
+        !texts.iter().any(|t| t.starts_with("df ") || t.starts_with("du ")),
+        "词边界/子串命中的候选不该再混进来：{texts:?}"
     );
 
     // `free`：前缀命中 `free -h`，正常候选（对照，证明不是全局哑掉）。
@@ -226,19 +229,25 @@ fn fuzzy_subsequence_no_longer_matches_unrelated_history() {
         "前缀命中应正常出候选"
     );
 
-    // `ree`：子串命中，正常候选（对照）。
+    // `ree`：子串不再命中（全匹配口径）。
     let m = hint_model(&store, "ree", String::new());
     assert!(
-        m.rows.iter().any(|r| r.text == "free -h"),
-        "子串命中应正常出候选"
+        m.rows.iter().all(|r| r.text != "free -h"),
+        "子串命中必须退出（全匹配）：{:?}",
+        m.rows.iter().map(|r| &r.text).collect::<Vec<_>>()
     );
+
+    // `-h`（参数阶段）：候选须以 `-h` 为前缀 —— 历史 `free -h`/`df -h`
+    // 是整行，不以 `-h` 开头 → 不出；`free -h` 整行输入才算。
+    let m = hint_model(&store, "free -h", String::new());
+    assert!(m.rows.iter().any(|r| r.text == "free -h"));
 }
 
 #[test]
-fn chinese_quick_command_names_match_via_token_substring() {
-    // ★ 模糊档删掉后中文搜索由「切分子串」承接：快捷命令名「查看内存占用」，
-    //   输入「查内存」（2-gram：查内/内存）→ 名称切词后含「查内存占用」，
-    //   2-gram「内存」是它的子串 → 命中（40 分）。
+fn chinese_quick_command_names_match_by_prefix() {
+    // ★ 全匹配口径（2026-11-05）：快捷命令名「查看内存占用」只在**从前缀**
+    //   命中时出候选 —— 输入「查看」/「查看内存」命中；「查内存」（跳过
+    //   「看」）属于 2-gram 模糊命中，已随全匹配一起删除。
     use super::hint_model;
     use crate::config::QuickCommand;
 
@@ -251,20 +260,25 @@ fn chinese_quick_command_names_match_via_token_substring() {
         send_enter: true,
     }]);
 
-    // 整串子串：`查内存` 是「查看内存占用」的…不是（看字隔着）——
-    // 走 2-gram：「查内」「内存」都在名称里 → 命中。
-    let m = hint_model(&store, "查内存", String::new());
+    // 前缀命中：名称以输入开头 → 出候选。
+    let m = hint_model(&store, "查看", String::new());
     assert!(
         m.rows.iter().any(|r| r.text == "free -h"),
-        "中文 2-gram 切分子串应命中快捷命令：{:?}",
+        "中文名称前缀应命中快捷命令：{:?}",
         m.rows.iter().map(|r| &r.text).collect::<Vec<_>>()
     );
-
-    // 完整词「查看内存」是名称的子串 → 整串子串档直接命中。
     let m = hint_model(&store, "查看内存", String::new());
     assert!(
         m.rows.iter().any(|r| r.text == "free -h"),
-        "中文整串子串应命中"
+        "中文名称前缀（长）应命中"
+    );
+
+    // 2-gram 模糊命中退出（全匹配）：跳过「看」的「查内存」不再命中。
+    let m = hint_model(&store, "查内存", String::new());
+    assert!(
+        m.rows.iter().all(|r| r.text != "free -h"),
+        "中文 2-gram 模糊命中必须退出：{:?}",
+        m.rows.iter().map(|r| &r.text).collect::<Vec<_>>()
     );
 }
 

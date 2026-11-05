@@ -1170,7 +1170,8 @@ export component TerminalView inherits Rectangle {
     property <string> term-hint-rows-sig:
         (root.term-hint-rows.length > 0 ? root.term-hint-rows[0].text : "") + "#" + root.term-hint-rows.length;
     changed term-hint-rows-sig => {
-        // (#cmd-hint-no-default) 新候选集 = 弹出，选中复位 -1（不默认选首条）。
+        // (2026-11-05 用户定稿第二轮) 打出候选 = **不选中**（-1）：敲 `free`
+        // 直接回车就是要执行 `free`，不能被默认高亮截走；↑↓ 才手动选中。
         root.term-hint-selected = -1;
         // (#cmd-hint-esc-redisplay 2026-11-02) 新候选集 = 新输入 → Esc 关掉的
         // 框重新允许弹（用户实测口径：Esc 只是收一下，继续敲字要再弹）。
@@ -1332,10 +1333,11 @@ export component TerminalView inherits Rectangle {
         } else {
             cmd-input.text = target;
         }
-        root.history-selected = -1;
         // ★ #cmdbar-focus：填入后要让输入框重新持有焦点与光标。
         cmd-input.focus();
         root.hint-refresh();
+        // 填入后回到未选中（弹出不选中口径，2026-11-05 第二轮）
+        root.history-selected = -1;
         return cmd-input.text != before;
     }
 
@@ -1439,8 +1441,7 @@ export component TerminalView inherits Rectangle {
     // (#cmd-hint-p1 2026-10-27) 终端内联：把第 i 条候选**写进 PTY**。
     // 与命令栏的 hint-accept 不同 —— 这里不能改「输入框文本」（终端没有输入框），
     // 只能把候选对应的字节发给 shell：通常是「补全剩余部分 + 一个空格」。
-    // ((#cmd-hint-passive) 2026-11-02) 入口只剩**鼠标点击**（仅填入，不执行）；
-    // Enter 已透传 shell 直接执行当前行。
+    // 入口：鼠标点击 / **手动选中后的 Enter**（仅填入，不执行）。
     callback term-hint-accept(int /* index */);
     // (§7 定稿 2026-10-30 三轮) Shift+Enter → **执行选中候选**（填入 + 回车
     // 一步到位）；Enter 已不接管（纯提示，透传执行当前行）。
@@ -1459,6 +1460,8 @@ export component TerminalView inherits Rectangle {
     callback cycle-tab(bool /* reverse */);
     // Ctrl+B (⌘B on macOS) — toggle the left sidebar (#sidebar-hotkey 2026-11-05).
     callback toggle-sidebar-key();
+    // Ctrl+Alt+B (⌘⌥B on macOS) — toggle the right sidebar.
+    callback toggle-right-sidebar-key();
     // Ctrl+Shift+N (⌘⇧N on macOS) — open a new application window (#multi-window).
     callback new-window-key();
     // Font zoom: Ctrl+= / Ctrl+- / Ctrl+0 (⌘ on macOS). Direction:
@@ -2315,9 +2318,16 @@ export component TerminalView inherits Rectangle {
                     // 终端聚焦时按键先到这里（否则会作为 ^B 发进 PTY）。
                     // ⌘B on macOS arrives as the C0 char \u{0002}.
                     } else if (event.modifiers.control && !event.modifiers.shift
+                            && !event.modifiers.alt
                             && (event.text == "b" || event.text == "B"
                                 || event.text == "\u{0002}")) {
                         root.toggle-sidebar-key();
+                        accept
+                    // ── Toggle right sidebar: Ctrl+Alt+B (#sidebar-hotkey) ──
+                    } else if (event.modifiers.control && event.modifiers.alt
+                            && !event.modifiers.shift
+                            && (event.text == "b" || event.text == "B")) {
+                        root.toggle-right-sidebar-key();
                         accept
                     // ── Find: ⌘F / Ctrl+F (mirrors right-click → Find) ──
                     // (v3.6 §04 打开行) 再按一次 = 全选已有查询词（由
@@ -2417,9 +2427,9 @@ export component TerminalView inherits Rectangle {
                             && !root.term-hint-esc-dismissed
                             && root.term-hint-rows.length > 0
                             && (event.text == Key.UpArrow || event.text == Key.DownArrow)) {
-                        // ((#cmd-hint-no-default) 2026-11-02) ↑↓ 移动选中；
-                        // **不循环**；弹出时**不选中**（-1），↓ = 选首条。
-                        //   · ↑ 在首项（或未选中）再按 → **穿透**：关浮层 +
+                        // (2026-11-05 用户定稿) ↑↓ 移动选中（弹出即选中首条 0）；
+                        // **不循环**；
+                        //   · ↑ 在首项再按 → **穿透**：关浮层 +
                         //     这次 ↑ 交给 shell 翻历史（沙盘同款）；
                         //   · ↓ 在末项再按 → 关浮层（shell 的 ↓ 在空提示符上
                         //     没有动作，不必透传）。
@@ -2447,6 +2457,19 @@ export component TerminalView inherits Rectangle {
                                 accept
                             }
                         }
+                        accept
+                    } else if (root.term-hint-open && !root.term-hint-suppressed
+                            && !root.term-hint-esc-dismissed
+                            && root.term-hint-rows.length > 0
+                            && root.term-hint-selected >= 0
+                            && event.text == Key.Return
+                            && !event.modifiers.shift
+                            && !event.modifiers.control && !event.modifiers.alt) {
+                        // (2026-11-05 用户定稿第二轮) 手动选中后 Enter = **仅填入**
+                        //（替换当前行，不执行）；未选中时回车直接执行当前行
+                        //（敲 `free` 就是执行 `free`，不拦）。
+                        // 要一步执行选中项 → Shift+Enter。
+                        root.term-hint-accept(root.term-hint-selected);
                         accept
                     } else if (root.term-hint-open && !root.term-hint-suppressed
                             && !root.term-hint-esc-dismissed
@@ -2877,12 +2900,23 @@ export component TerminalView inherits Rectangle {
                                 // run-command receives the text (#319).
                                 single-line: false;
                                 // Enter sends; ↑/↓ recall history.
+                                // (2026-11-05 用户定稿) Enter 两段式（与 key-pressed
+                                // 的 Return 分支同口径）：有选中且整行≠目标 → 先
+                                // 填入（替换），不执行；整行已是目标 → 执行。
                                 accepted => {
-                                    root.run-command(self.text, root.scope-spec(), "");
-                                    self.text = "";
-                                    root.history-open = false;
-                                    root.history-cursor = -1;
-                                    root.focus-pending = true;
+                                    // 手动选中时 Enter = 仅填入；未选中 → 执行。
+                                    if (root.hist-popup-visible
+                                            && root.history-autocomplete
+                                            && root.history-selected >= 0
+                                            && root.hint-count() > 0) {
+                                        root.hint-accept();
+                                    } else {
+                                        root.run-command(self.text, root.scope-spec(), "");
+                                        self.text = "";
+                                        root.history-open = false;
+                                        root.history-cursor = -1;
+                                        root.focus-pending = true;
+                                    }
                                 }
                                 edited => {
                                     root.history-cursor = -1;
@@ -2903,20 +2937,19 @@ export component TerminalView inherits Rectangle {
                                     root.history-open = root.history-autocomplete
                                         && (root.hint-rows.length > 0
                                             || root.danger-now != "");
-                                    // (#cmd-hint-no-default 2026-11-02) 弹出**不选中**
-                                    // （-1）：默认高亮首条会和「Enter=执行当前行」抢
-                                    // 语义；↑↓ 才选中（↓ 首下 = 首条）。
+                                    // (2026-11-05 用户定稿第二轮) 弹出**不选中**：
+                                    // 敲 `free` 直接回车就是执行 `free`；↑↓ 才选中，
+                                    // 选中后 Enter = 仅填入（替换），不执行。
                                     root.history-selected = -1;
                                 }
                                 key-pressed(e) => {
                                     // ((#cmd-hint-passive) 2026-11-02) 两处宿主
-                                    // 同一套契约：Enter = **直接执行**当前输入
-                                    //（提示框纯提示，开着也不拦 —— 两段式「填入→
-                                    // 再回车」多吃一次键，用户实测点名）；
-                                    // Shift+Enter = 执行**选中**候选（整行替换成
-                                    // apply 再发送，与终端内联 term-hint-run 同义，
-                                    // 也与脚注「Shift+Enter 执行选中」一致）。
-                                    // 要候选但先改改 → Tab 填入（下方分支）。
+                                    // (2026-11-05 用户定稿) 两处宿主同一套契约：
+                                    // Enter = **两段式**（整行≠选中候选 → 填入/
+                                    // 替换；整行==候选 → 执行当前行）；
+                                    // Shift+Enter = 直接执行**选中**候选（整行
+                                    // 替换成 apply 再发送，与终端内联
+                                    // term-hint-run 同义）；Tab 填入（下方分支）。
                                     if (e.text == Key.Return && e.modifiers.shift
                                             && root.hist-popup-visible
                                             && root.history-autocomplete
@@ -2930,11 +2963,23 @@ export component TerminalView inherits Rectangle {
                                         root.focus-pending = true;
                                         accept
                                     } else if (e.text == Key.Return) {
+                                        // (2026-11-05 用户定稿第二轮) 手动选中时
+                                        // Enter = **仅填入**（替换），不执行；
+                                        // 未选中 → 执行当前输入（敲 `free` 回车
+                                        // 就是执行 `free`）。
+                                        if (root.hist-popup-visible
+                                                && root.history-autocomplete
+                                                && root.history-selected >= 0
+                                                && root.hint-count() > 0) {
+                                            root.hint-accept();
+                                            accept
+                                        }
                                         root.run-command(self.text, root.scope-spec(), "");
                                         self.text = "";
                                         root.history-open = false;
                                         root.history-cursor = -1;
-                                        root.focus-pending = true;
+                                        root.focus-pending =
+                                            true;
                                         accept
                                     // ⌘R / Ctrl+R opens the searchable history dropdown and
                                     // focuses its search box — full keyboard history recall

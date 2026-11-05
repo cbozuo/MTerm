@@ -9879,7 +9879,16 @@ fn wire_session_callbacks(
         let _ = &ejc_submit;
         let registry = registry.clone();
         window.on_session_dialog_submit(move |draft: SessionDraft| {
+            // 2026-11-05：页脚「连接」在提交前把该标志置 true —— 保存成功后
+            // 立即开连接（复用 connect-session = 双击打开同一路径）。
+            // 读后立即复位：键盘回车等普通提交永不误开。
+            // ⚠ 闭包里不能直接碰 window（&AppWindow 不满足 'static）→ 走 weak。
+            let open_after = weak.upgrade()
+                .map(|w| w.get_session_dialog_open_after())
+                .unwrap_or(false);
+            if let Some(w) = weak.upgrade() { w.set_session_dialog_open_after(false); }
             let id = draft.id.to_string();
+            let connect_id = id.clone();
             let forwards = match validated_port_forwards(&edit_forwards.borrow()) {
                 Ok(forwards) => forwards,
                 Err(message) => {
@@ -10040,6 +10049,11 @@ fn wire_session_callbacks(
             registry.broadcast_config_changed();
             if let Some(w) = weak.upgrade() {
                 w.set_dialog_open(false);
+                // 「创建并打开」：保存完成后再开连接（与双击会话同一路径，
+                // 含终端的 tab 创建/RDP/VNC 分流与提示）
+                if open_after {
+                    w.invoke_connect_session(SharedString::from(connect_id.clone()));
+                }
             }
         });
     }
@@ -11505,7 +11519,8 @@ fn wire_key_input(
     // 命令管理弹框（#quick-cmd-manager 高保真 2026-10-24）：模型构建 + 回调。
     command_manager::install(&window, &store, &collapsed_quick_groups);
     // 标题栏 Ping 弹框（#titlebar-ping 高保真 2026-11-03 V13）：探测引擎 + 回调。
-    ping::install(&window, &store);
+    // runtime 供远端探测源（SSH tab）执行 ss/netstat/ping（execute_command 异步）
+    ping::install(&window, &store, ctx.runtime.clone());
     {
         let store_rc = store.clone();
         let weak = window.as_weak();

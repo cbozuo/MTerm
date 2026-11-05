@@ -75,30 +75,22 @@ pub(crate) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
         return subcommand_hint(store, &input, &q, context);
     }
 
-    // ★ 命令阶段整行搜索（§3 定稿）：第一个词不是已知命令时（中文快捷命令
-    //   名称「修 bug 并提交」、整行历史预测 `df -h | head -4`），匹配词是
-    //   **用户敲的整段**，不是最后一个词 —— 否则多词名称永远搜不到。
-    let match_q = if phase == HintPhase::Command {
-        input.line.to_lowercase()
-    } else {
-        q.clone()
-    };
+    // ★ 匹配单元统一 = **整行输入**（2026-11-05 全匹配口径）：候选集本身就是
+    //   整行命令（快捷命令/历史/内置子命令），按整行前缀比对最直接 ——
+    //   `free -h` 只命中以它开头的候选，`df -h`/`du -h …`（词/子串命中）全部
+    //   退出；路径补全（`cd /home/we` → 历史 `cd /home/web`）同样按整行前缀。
+    //   （曾按阶段分流：Command 用整行、Option/Path 用当前词 —— 后者在
+    //   `free -h` 这种整行命令上会把自己都筛掉。）
+    let match_q = input.line.to_lowercase();
 
-    // ── 相关度打分（高保真 §3 排序五级键；2026-10-30 四轮收紧）──────────
-    //   匹配度：精确 100 > 行前缀 80 > 词边界 65 > 子串 50。
-    //
-    //   ★ 模糊子序列档**删除**（用户实测：「无论怎么输入都有匹配」）：
-    //     原第 5 档（18 分）判定 = query 字符按序出现在候选里即可，2 字符
-    //     输入几乎能命中任何命令（`lh` → `sudo tee …aLias…`），内联建议被
-    //     噪音淹没。行业口径（fish/Warp 的内联建议、FinalShell 的自动提示）
-    //     都是**前缀 + 子串封顶**；fzf 级别的模糊只属于显式搜索场景。
-    //
-    //   ★ 中文/多词名称的搜索靠「切分子串」而不是字符模糊：query 与 text
-    //     各自按空白切词后，任一 query 词是任一 text 词的子串即命中
-    //     （40 分，介于词边界与整串子串之间）。「查看内存」切出「查看/
-    //     内存」，text 名称「查看内存占用」同样切词后子串命中——
-    //     中文无空格分词，这里按字符 2-gram 兜一层（`查内存` → 「查」
-    //     「内存」都能在名称里找到）。fuzzy 档删掉后中文搜索由它承接。
+    // ── 命中判据（2026-11-05 用户定稿「全匹配，不要模糊匹配」）──────────
+    //   只保留两档：精确 100 / **前缀** 80，其余一律不命中。
+    //   词边界（65）/子串（50）/切分子串（40）/模糊子序列 全删 ——
+    //   用户实测：敲 `free -h` 还会列出 `df -h`、`du -h …`（词/子串命中），
+    //   候选被噪音淹没。补全语境下「全匹配」= 候选必须**从匹配单元开头**
+    //   命中：Command/Subcommand 阶段按整行作前缀（`free -h` 只命中以它
+    //   开头的候选），Option/Path 阶段按正在补的词作前缀（`/home/wec/`
+    //   命中路径候选）。
     //
     //   来源平手裁决（第 2 级，`pri`）：快捷命令 0 < 内置 1 < 历史 2 ——
     //   用户自定义永远压过系统给的（Warp workflows / Raycast 口径）。
@@ -106,45 +98,6 @@ pub(crate) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
     //
     //   末级兜底是**字母序**（`text` 字典序）——同样的输入永远得到同样的
     //   列表顺序，排序不确定的补全器看起来像在「抖」（VS Code/JetBrains）。
-    fn word_boundary(text: &str, q: &str) -> bool {
-        if q.is_empty() {
-            return false;
-        }
-        let tl = text.to_lowercase();
-        let ql = q.to_lowercase();
-        tl.split_whitespace()
-            .skip(1)
-            .any(|w| w.starts_with(&ql))
-    }
-    /// 切分子串：两侧各按空白切词，任一 query 词是任一 text 词的子串 → 命中。
-    /// 中文（无空格）整段是一个「词」，退化为整串子串；若整串不中，再按
-    /// 字符 2-gram 切 query 兜一层（`查内存` → 「查」+「内存」）。
-    fn token_substring(text: &str, q: &str) -> bool {
-        let tl = text.to_lowercase();
-        let ql = q.to_lowercase();
-        let t_toks: Vec<&str> = tl.split_whitespace().collect();
-        let q_toks: Vec<&str> = ql.split_whitespace().collect();
-        // ① 词对词：任一 query 词是任一 text 词的子串。
-        if q_toks
-            .iter()
-            .any(|qw| t_toks.iter().any(|tw| tw.contains(qw)))
-        {
-            return true;
-        }
-        // ② 中文 2-gram 兜底：query 无空白切不出多词且 text 含任一 2-gram。
-        //    只对「含 CJK」的 query 启用 —— 英文短词的 2-gram 噪音太大。
-        let has_cjk = ql.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c));
-        if !has_cjk || ql.chars().count() < 2 {
-            return false;
-        }
-        let grams: Vec<String> = {
-            let cs: Vec<char> = ql.chars().collect();
-            (0..cs.len().saturating_sub(1))
-                .map(|i| cs[i..i + 2].iter().collect())
-                .collect()
-        };
-        grams.iter().any(|g| tl.contains(g.as_str()))
-    }
     fn five_level(text: &str, q: &str) -> i32 {
         if q.is_empty() {
             return 1;
@@ -156,15 +109,6 @@ pub(crate) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
         }
         if tl.starts_with(&ql) {
             return 80;
-        }
-        if word_boundary(text, q) {
-            return 65;
-        }
-        if tl.contains(&ql) {
-            return 50;
-        }
-        if token_substring(text, q) {
-            return 40;
         }
         -1 // 不命中
     }
@@ -197,7 +141,8 @@ pub(crate) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
                 c.command.clone(),
                 HintKind::Quick,
                 c.name.clone(),
-                t("快捷命令", "Quick command").to_string(),
+                // 徽章统一两个字（2026-11-05 用户定稿）：快捷 / 内置 / 历史
+                t("快捷", "Quick").to_string(),
                 c.command.clone(),
                 quick_desc,
                 0,
@@ -400,8 +345,10 @@ fn subcommand_hint(
             ));
         }
     }
-    // 子命令表里没有的，退回到历史里以 `command ` 开头且命中子命令的条目。
+    // 子命令表里没有的，退回到历史里**以整行输入为前缀**的条目
+    // （2026-11-05 全匹配口径：曾用 contains 模糊命中，噪音大）
     let history = store.command_history();
+    let line_lc = input.line.to_lowercase();
     for cmd in history.iter().rev() {
         if rows.len() >= HINT_MAX_ROWS {
             break;
@@ -409,7 +356,7 @@ fn subcommand_hint(
         if !cmd.starts_with(&format!("{command} ")) {
             continue;
         }
-        if q.is_empty() || cmd.to_lowercase().contains(q) {
+        if q.is_empty() || cmd.to_lowercase().starts_with(&line_lc) {
             if rows.iter().any(|r| r.text == *cmd) {
                 continue;
             }

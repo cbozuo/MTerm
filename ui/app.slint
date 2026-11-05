@@ -529,11 +529,13 @@ component IconBtn inherits Rectangle {
     size: Theme.fs-md;
 }
     // (#polish-topbar) tooltip 输出机制:按钮不自己渲染气泡,而是把
-    // (文本, 右缘 x, 顶 y) 写到 AppWindow 根的 topbar-tip-* 属性,由窗口
+    // (文本, **按钮中心 x**, 顶 y) 写到 AppWindow 根的 topbar-tip-* 属性,由窗口
     // 根的统一浮层渲染——浮层声明在所有内容之后,天然最顶层,不被标签行
     // /弹层遮挡;普通元素不拦截鼠标,hover 离开即时隐藏(PopupWindow 模
     // 态会冻结下层 hover 且多弹窗定位互扰,已弃用)。清空 text 即隐藏,
     // 仅清"自己正在显示的"提示,避免多按钮竞态。
+    // 2026-11-05 用户定稿:气泡在图标**正下方居中**(标题栏按钮都不贴边框,
+    // 有足够空间;渲染槽按中心 x 减半宽定位)。
     in-out property <string> tip-out-text;
     in-out property <length> tip-out-x;
     in-out property <length> tip-out-y;
@@ -544,7 +546,7 @@ component IconBtn inherits Rectangle {
             // 注意:Timer 回调内 self 指向 Timer 自身,这里必须用 root
             // (IconBtn 组件根)读写 tip-out-* 输出属性。
             root.tip-out-text = root.tooltip;
-            root.tip-out-x = ta.absolute-position.x + ta.width;
+            root.tip-out-x = ta.absolute-position.x + ta.width / 2;
             root.tip-out-y = ta.absolute-position.y + ta.height + 5px;
         }
     }
@@ -608,7 +610,7 @@ component TopbarBtn inherits Rectangle {
     // 气泡输出走回调而非 in-out 属性：标题栏上有 8 个实例共享窗口根那一个
     // 渲染槽，属性双向绑定会让 A 的文本被 B 覆写；回调带上「我是哪条文本」，
     // 隐藏时才知道该不该清（只清自己那条，与 IconBtn 的旧守卫同语义）。
-    callback tip-show(string /* text */, length /* right edge x */, length /* top y */);
+    callback tip-show(string /* text */, length /* center x */, length /* top y */);
     callback tip-hide(string /* text */);
     callback clicked();
     // (#topbar-ctx 2026-09-09) 右键也唤出同款菜单(用户要求左右键都能弹),
@@ -663,6 +665,13 @@ component TopbarBtn inherits Rectangle {
     }
     ta := TouchArea {
         clicked => {
+            // 2026-11-05 修「关闭命令栏」气泡消失不掉：tip 文案随状态**动态变**
+            // （开启/关闭命令栏），点击翻转状态后 tip 字符串已不是气泡里那条，
+            // 旧 hide 拿新文案比较永远不相等 → 气泡卡死。改为：点击立即按
+            // **已显示文案**（tip-shown）收起 + 停表，移出再移入才重新弹。
+            tip-delay.running = false;
+            root.tip-hide(root.tip-shown);
+            root.tip-shown = "";
             // (#topbar-click-anchor) 记录点击点(窗口内坐标)供弹层跟随。
             root.click-x = ta.absolute-position.x + self.mouse-x;
             root.click-y = ta.absolute-position.y + self.mouse-y;
@@ -676,6 +685,10 @@ component TopbarBtn inherits Rectangle {
         // (#topbar-ctx) 右键同样唤出菜单,位置跟随右击点。
         pointer-event(e) => {
             if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                // 右键唤菜单同样收起气泡（同左键口径）
+                tip-delay.running = false;
+                root.tip-hide(root.tip-shown);
+                root.tip-shown = "";
                 root.click-x = ta.absolute-position.x + self.mouse-x;
                 root.click-y = ta.absolute-position.y + self.mouse-y;
                 root.btn-x = root.absolute-position.x;
@@ -694,13 +707,17 @@ component TopbarBtn inherits Rectangle {
     // 没有桥接）。这里直接走 tip-show/tip-hide 回调，由标题栏实例转写到窗口
     // 根那唯一一个 topbar-tip-* 渲染槽。
     property <bool> tip-armed: ta.has-hover && root.icon-only && root.tip != "";
+    // 气泡当前实际显示的文案（2026-11-05）：tip 可能随状态动态变（命令栏
+    // 开启/关闭），收起时必须按**已显示的**文案比对，不能按新 tip 值。
+    property <string> tip-shown: "";
     tip-delay := Timer {
         interval: 300ms;
         triggered => {
             // changed 在初始求值时也会跑一次（has-hover 尚为 false），
             // 触发时必须复查确实悬浮着，否则启动即凭空弹泡。
             if (root.tip-armed) {
-                root.tip-show(root.tip, ta.absolute-position.x + ta.width,
+                root.tip-shown = root.tip;
+                root.tip-show(root.tip, ta.absolute-position.x + ta.width / 2,
                               ta.absolute-position.y + ta.height + 5px);
             }
         }
@@ -710,7 +727,8 @@ component TopbarBtn inherits Rectangle {
             tip-delay.restart();
         } else {
             tip-delay.running = false;
-            root.tip-hide(root.tip);
+            root.tip-hide(root.tip-shown);
+            root.tip-shown = "";
         }
     }
     HorizontalLayout {
@@ -739,8 +757,8 @@ component TopbarBtn inherits Rectangle {
     // (#logo-brand-btn 2026-10-08) 标题栏左上角的品牌 LOGO 按钮：黑底白 M
     // 徽章（assets/icons/logo-m.svg，深浅主题同一份）平时静默展示品牌；
     // 悬浮时徽章淡出、淡入 sidebar-left-collapse/expand 收/展面板图标
-    // （复用图标库现成 SVG），同时弹「收起侧边栏 / 展开侧边栏」提示气泡
-    // （文案随目标面板状态）；点击切换左侧面板（left-sidebar-collapsed，含持久
+    // （复用图标库现成 SVG），同时弹「切换侧边栏」提示气泡（含 Ctrl+B
+    // 快捷键提示）；点击切换左侧面板（left-sidebar-collapsed，含持久
     // 化）并**立即取消本次悬浮提示**（suppress 规则：has-hover 回落 false
     // 才复位——鼠标停在按钮上不再弹泡，移出再进才恢复）。
     // 徽章是彩色图（黑底渐变+白 M），不走 Icon 的单色 colorize 管道，直接
@@ -862,8 +880,9 @@ component TopbarBtn inherits Rectangle {
             border-width: 1px;
             border-color: Theme.border-strong;
             logo-tip-txt := Text {
-                text: root.collapsed ? (root.lang-en ? "Expand sidebar" : "展开侧边栏")
-                                     : (root.lang-en ? "Collapse sidebar" : "收起侧边栏");
+                // 2026-11-05 用户定稿：按钮是**切换**（收起/展开双向），文案
+                // 不再随状态写死「收起/展开」，统一「切换侧边栏」+ 快捷键提示
+                text: root.lang-en ? "Toggle sidebar  ·  Ctrl+B" : "切换侧边栏 · Ctrl+B";
                 color: Theme.text-primary;
                 font-size: Theme.fs-xs;
                 horizontal-alignment: center;
@@ -1420,6 +1439,7 @@ export component AppWindow inherits Window {
     in property <string> ping-summary: "";
     in property <bool> ping-has-error: false;
     in property <string> ping-input-error: "";
+    in property <string> ping-probe-error: "";
     in property <int> ping-listen-count: 0;
     in property <int> ping-listen-selected: 0;
     in-out property <string> ping-listen-search;
@@ -1429,6 +1449,8 @@ export component AppWindow inherits Window {
     callback ping-add-draft();
     callback ping-clear-draft();
     callback ping-clear-error();
+    // 弹框打开时通知 Rust：默认探测源 = 当前已连接 SSH tab（否则本机）
+    callback ping-open();
     callback ping-toggle-target(string);   // ＋ 下拉点选 / 清单勾选框：参与/不参与切换
     callback ping-toggle-all-targets();    // Ping 表头全选：全开↔全关（混合→全开）
     callback ping-select-target(string);
@@ -2141,6 +2163,10 @@ export component AppWindow inherits Window {
 
     // --- Dialog state ------------------------------------------------------
     in-out property <bool> dialog-open: false;
+    // 会话对话框提交时「保存后立即打开」标志（2026-11-05）：
+    // 「创建并打开」按钮在提交前写 true；Rust on_session_dialog_submit 读取
+    // 并复位（内部再 invoke_connect_session 走双击同一打开路径）。
+    in-out property <bool> session-dialog-open-after: false;
     in-out property <bool> dialog-editing: false;
     in-out property <string> dialog-id;
     in-out property <string> dialog-name;
@@ -2514,6 +2540,26 @@ export component AppWindow inherits Window {
                         || e.text == "\u{000e}")) {
                 root.new-window-clicked();
                 accept
+            // Toggle left sidebar: Ctrl+B (#sidebar-hotkey 2026-11-05). 终端聚焦
+            // 时 terminal_view 自己消费（见其 key-pressed），这里管非终端焦点
+            // （欢迎页/设置等）。⌘B on macOS arrives as \u{0002}.
+            } else if (e.modifiers.control && !e.modifiers.shift
+                    && !e.modifiers.alt
+                    && (e.text == "b" || e.text == "B"
+                        || e.text == "\u{0002}")) {
+                // 与 LOGO 按钮同一条路径：先翻属性（驱动收展动画/布局），
+                // 再回调 Rust 应用+持久化（Rust 侧只存配置，不反写属性）
+                root.left-sidebar-collapsed = !root.left-sidebar-collapsed;
+                root.set-left-sidebar-collapsed(root.left-sidebar-collapsed);
+                accept
+            // Toggle right sidebar: Ctrl+Alt+B（非终端焦点兜底；终端分支见
+            // terminal_view.slint）
+            } else if (e.modifiers.control && e.modifiers.alt
+                    && !e.modifiers.shift
+                    && (e.text == "b" || e.text == "B")) {
+                root.right-sidebar-collapsed = !root.right-sidebar-collapsed;
+                root.set-right-sidebar-collapsed(root.right-sidebar-collapsed);
+                accept
             // Font zoom: Ctrl+= / Ctrl+- / Ctrl+0 zooms the active session;
             // adding Alt zooms every session in this window (Alt, not Shift:
             // Ctrl+Shift is the IME-switch hotkey on Chinese Windows). Same
@@ -2625,6 +2671,7 @@ export component AppWindow inherits Window {
                     TopbarBtn { height: parent.height;
                         icon: "new-session";   // 终端框+角标加号 —— 项目图标库现成的新建会话图标
                         label: "";
+                        // 2026-11-05：气泡文案；Ctrl+N 绑定已按用户要求撤销
                         tip: root.lang-en ? "New session" : "新建会话";
                         tip-show(t, tx, ty) => { root.topbar-tip-text = t; root.topbar-tip-x = tx; root.topbar-tip-y = ty; }
                         tip-hide(t) => { if (root.topbar-tip-text == t) { root.topbar-tip-text = ""; } }
@@ -2634,13 +2681,19 @@ export component AppWindow inherits Window {
                     }
                     // 命令栏开关 —— 每会话独立(#polish-topbar-r4):只切换
                     // 当前活动终端,状态由 Rust 维护并在切标签时联动。
+                    // 2026-11-05 用户定稿：①气泡文案随状态分「开启/关闭命令栏」；
+                    // ②无终端（未连接任何 tab）时命令栏不存在=关闭态——按钮不亮，
+                    // 连接后（新会话 cmd_bar_hidden=false）默认开启。
                     TopbarBtn { height: parent.height;
                         icon: "command-bar";   // terminal
                         label: "";
-                        tip: root.lang-en ? "Command bar" : "命令栏";
+                        property <bool> cmd-on: root.terminals.length > 0 && !root.cmd-bar-hidden;
+                        tip: cmd-on
+                            ? (root.lang-en ? "Close command bar" : "关闭命令栏")
+                            : (root.lang-en ? "Open command bar" : "开启命令栏");
                         tip-show(t, tx, ty) => { root.topbar-tip-text = t; root.topbar-tip-x = tx; root.topbar-tip-y = ty; }
                         tip-hide(t) => { if (root.topbar-tip-text == t) { root.topbar-tip-text = ""; } }
-                        active: !root.cmd-bar-hidden;
+                        active: cmd-on;
                         clicked => { root.toggle-cmd-bar-active(); }
                     }
                     // 会话同步 —— (#sync-dialog 2026-10-08) 点击弹**同步输入**
@@ -2729,6 +2782,9 @@ export component AppWindow inherits Window {
                             root.settings-open = false;
                             root.download-open = false;
                             root.ping-dialog-open = !root.ping-dialog-open;
+                            // 2026-11-05: 打开时让 Rust 把默认探测源设为当前
+                            // 已连接 SSH tab（断线/未打开才回落本机）
+                            if (root.ping-dialog-open) { root.ping-open(); }
                         }
                     }
                     // 弹性：把工具钮组顶向 LOGO（左组左对齐，#topbar-icon-only 修订）。
@@ -2823,6 +2879,9 @@ export component AppWindow inherits Window {
                     }
                     // Right-sidebar toggle: sits left of the window controls.
                     // Icon follows state (expand when collapsed / collapse when open).
+                    // 悬浮气泡（2026-11-05 用户定稿）：与标题栏其它按钮同款
+                    // topbar-tip-* 管道，按**按钮中心 x** 在图标正下方居中；
+                    // 文案含快捷键 Ctrl+Alt+B。点按清泡（与 LOGO 按钮一致）。
                     rb-toggle-ta := TouchArea {
                         width: 40px;
                         height: parent.height;
@@ -2830,6 +2889,25 @@ export component AppWindow inherits Window {
                         clicked => {
                             root.right-sidebar-collapsed = !root.right-sidebar-collapsed;
                             root.set-right-sidebar-collapsed(root.right-sidebar-collapsed);
+                            if (root.topbar-tip-text == rb-tip) { root.topbar-tip-text = ""; }
+                        }
+                        property <string> rb-tip: root.lang-en ? "Toggle sidebar · Ctrl+Alt+B" : "切换侧边栏 · Ctrl+Alt+B";
+                        tip-delay := Timer {
+                            interval: 300ms;
+                            triggered => {
+                                if (rb-toggle-ta.has-hover) {
+                                    root.topbar-tip-text = rb-tip;
+                                    root.topbar-tip-x = rb-toggle-ta.absolute-position.x + rb-toggle-ta.width / 2;
+                                    root.topbar-tip-y = rb-toggle-ta.absolute-position.y + rb-toggle-ta.height + 5px;
+                                }
+                            }
+                        }
+                        changed has-hover => {
+                            if (self.has-hover) { tip-delay.restart(); }
+                            else {
+                                tip-delay.running = false;
+                                if (root.topbar-tip-text == rb-tip) { root.topbar-tip-text = ""; }
+                            }
                         }
                         Rectangle {
                             width: 100%; height: 100%;
@@ -3968,6 +4046,17 @@ export component AppWindow inherits Window {
                             root.diagnose-key-event(term.id, key, control, meta, alt, shift);
                         }
                         cycle-tab(reverse) => { root.cycle-tab(reverse); }
+                        // Ctrl+B 切换左侧栏（#sidebar-hotkey 2026-11-05）：终端
+                        // 聚焦时由 TerminalView 的 key-pressed 拦截上报。
+                        // 先翻属性（视觉/动画）再回调（Rust 持久化）
+                        toggle-sidebar-key() => {
+                            root.left-sidebar-collapsed = !root.left-sidebar-collapsed;
+                            root.set-left-sidebar-collapsed(root.left-sidebar-collapsed);
+                        }
+                        toggle-right-sidebar-key() => {
+                            root.right-sidebar-collapsed = !root.right-sidebar-collapsed;
+                            root.set-right-sidebar-collapsed(root.right-sidebar-collapsed);
+                        }
                         new-window-key() => { root.new-window-clicked(); }
                         zoom-key(direction, window-wide) => { root.zoom-term-font(term.id, direction, window-wide); }
                         zen-key() => { root.toggle-zen-key(); }
@@ -4366,7 +4455,8 @@ export component AppWindow inherits Window {
 
     // (#polish-topbar 2026-09-05) 标题栏按钮 tooltip 的统一浮层:声明在窗
     if topbar-tip-text != "" : Rectangle {
-        x: parent.topbar-tip-x - self.width;
+        // 居中于按钮（tip-x 是按钮中心 x，2026-11-05 定稿）
+        x: parent.topbar-tip-x - self.width / 2;
         y: parent.topbar-tip-y;
         width: topbar-tip-txt.preferred-width + 16px;
         height: 22px;
@@ -4387,7 +4477,7 @@ export component AppWindow inherits Window {
     }
 
     // (#logo-brand-btn) 标题栏左上角品牌 LOGO 按钮：平时静默展示品牌徽章，
-    // 悬浮淡入收/展图标 +「收起/展开侧边栏」提示，点击切换左侧面板（快速
+    // 悬浮淡入收/展图标 +「切换侧边栏 · Ctrl+B」提示，点击切换左侧面板（快速
     // 连接 welcome 侧栏，走 set-left-sidebar-collapsed 持久化）。声明在 dock-area
     // 之后 → 徽章与提示气泡天然盖在下方内容之上。
     if root.custom-titlebar : BrandLogoBtn {
@@ -8061,6 +8151,8 @@ export component AppWindow inherits Window {
         forwards: root.dialog-forwards;
         triggers: root.dialog-triggers;
         submit(draft) => { root.session-dialog-submit(draft); }
+        // 提交时「保存后立即打开」标志（2026-11-05）：submit 回调同步读取
+        submit-open-after <=> root.session-dialog-open-after;
         test-connection(draft) => { root.session-dialog-test(draft); }
         cancel => { root.session-dialog-cancel(); }
         pick-key-file => { root.session-dialog-pick-key(); }
@@ -8673,6 +8765,7 @@ export component AppWindow inherits Window {
         summary: root.ping-summary;
         has-error: root.ping-has-error;
         input-error: root.ping-input-error;
+        probe-error: root.ping-probe-error;
         listen-count: root.ping-listen-count;
         listen-selected: root.ping-listen-selected;
         listen-search <=> root.ping-listen-search;
