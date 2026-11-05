@@ -1457,6 +1457,8 @@ export component TerminalView inherits Rectangle {
     // Temporary on-device diagnostics for #312. Rust redacts printable text.
     callback diagnose-key-event(string, bool, bool, bool, bool);
     callback cycle-tab(bool /* reverse */);
+    // Ctrl+B (⌘B on macOS) — toggle the left sidebar (#sidebar-hotkey 2026-11-05).
+    callback toggle-sidebar-key();
     // Ctrl+Shift+N (⌘⇧N on macOS) — open a new application window (#multi-window).
     callback new-window-key();
     // Font zoom: Ctrl+= / Ctrl+- / Ctrl+0 (⌘ on macOS). Direction:
@@ -2309,6 +2311,14 @@ export component TerminalView inherits Rectangle {
                             && (event.text == Key.Tab || event.text == Key.Backtab)) {
                         root.cycle-tab(event.modifiers.shift || event.text == Key.Backtab);
                         accept
+                    // ── Toggle left sidebar: Ctrl+B / ⌘B (#sidebar-hotkey) ──
+                    // 终端聚焦时按键先到这里（否则会作为 ^B 发进 PTY）。
+                    // ⌘B on macOS arrives as the C0 char \u{0002}.
+                    } else if (event.modifiers.control && !event.modifiers.shift
+                            && (event.text == "b" || event.text == "B"
+                                || event.text == "\u{0002}")) {
+                        root.toggle-sidebar-key();
+                        accept
                     // ── Find: ⌘F / Ctrl+F (mirrors right-click → Find) ──
                     // (v3.6 §04 打开行) 再按一次 = 全选已有查询词（由
                     // select-all-seq 递增通知 FindBar 内部 select()）。
@@ -3140,7 +3150,7 @@ export component TerminalView inherits Rectangle {
                                 clicked => { root.open-send-window(cmd-input.text); }
                             }
                             Icon {
-                                glyph: "open-in-full";
+                                glyph: "pop-out";
                                 tint: exp-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
                                 size: 14px;
                             }

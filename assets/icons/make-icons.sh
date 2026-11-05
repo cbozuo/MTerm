@@ -178,7 +178,8 @@ mk connectivity-test '<path d="M3 12h4.5l2.5-6 4 12 2.5-6H21"/>'
 #    同时高度 16→18 更接近全库中位 20。
 mk tunnel '<path d="M3 4h18M3 20h18"/><path d="M7 12h10m0 0-3-3m3 3-3 3"/>'
 mk checkbox '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="m8 12 3 3 5-6"/>'
-mk open-in-full '<path d="M21 11V3h-8M3 13v8h8M21 3l-7 7M3 21l7-7"/>'
+mk pop-out '<path d="M21 11V3h-8M3 13v8h8M21 3l-7 7M3 21l7-7"/>'
+mk pop-in '<path d="M14 3v7h7M21 3l-7 7M10 21v-7H3M3 21l7-7"/>'
 mk maximize '<rect x="4" y="4" width="16" height="16" rx="2"/>'
 mk restore '<rect x="4" y="8" width="12" height="12" rx="2"/><path d="M10 4h6a4 4 0 0 1 4 4v6"/>'
 # 最小化到托盘。按 Microsoft UX Guide（Notification Area）"Prefer icons with unique
@@ -192,7 +193,7 @@ mk restore '<rect x="4" y="8" width="12" height="12" rx="2"/><path d="M10 4h6a4 
 mk minimize-to-tray '<rect x="9" y="3" width="12" height="12" rx="1.5" stroke-dasharray="4 3"/><path d="M3 5.5v13a2 2 0 0 0 2 2h13"/>'
 # 全屏 / 退出全屏：成对出现，靠括号朝向区分方向 ——
 # 进入 = 拐点在画面外角（撑满四角）；退出 = 拐点移到画面内侧（从四角收回）。
-# 刻意不用对角箭头：那会和 open-in-full（缩放展开手柄）撞进同一个箭头家族。
+# 刻意不用对角箭头：那会和 pop-out（弹出/收回对角箭头，原名 open-in-full）撞进同一个箭头家族。
 mk fullscreen-enter '<path d="M8 3H6a3 3 0 0 0-3 3v2M16 3h2a3 3 0 0 1 3 3v2M8 21H6a3 3 0 0 1-3-3v-2M16 21h2a3 3 0 0 0 3-3v-2"/>'
 mk fullscreen-exit '<path d="M8 3v2a3 3 0 0 1-3 3H3M16 3v2a3 3 0 0 0 3 3h2M8 21v-2a3 3 0 0 0-3-3H3M16 21v-2a3 3 0 0 1 3-3h2"/>'
 mk sidebar-left-collapse '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/>'
