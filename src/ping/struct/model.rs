@@ -121,27 +121,6 @@ impl PingState {
     pub(crate) fn selected_addr(&self) -> Option<&str> {
         self.targets.iter().find(|t| t.selected).map(|t| t.addr.as_str())
     }
-
-    /// 汇总视图取「最慢」目标名（供标题/图表）——只看参与探测的行。
-    pub(crate) fn worst_target(&self) -> Option<&TargetState> {
-        let mut worst: Option<&TargetState> = None;
-        for t in &self.targets {
-            if !t.enabled { continue; }
-            if t.mode == "idle" || t.mode == "testing" { continue; }
-            if t.mode == "offline" {
-                if worst.map(|w| w.mode != "offline").unwrap_or(true) { worst = Some(t); }
-                continue;
-            }
-            if let Some(last) = t.last() {
-                let better = match worst {
-                    None => true,
-                    Some(w) => w.mode != "offline" && w.last().map(|wl| last > wl).unwrap_or(true),
-                };
-                if better { worst = Some(t); }
-            }
-        }
-        worst
-    }
 }
 
 /// 解析草稿 → 去重后的目标原文列表（分隔符：空白/逗号/分号/中英标点）。

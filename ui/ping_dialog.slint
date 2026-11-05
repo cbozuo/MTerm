@@ -69,7 +69,9 @@ export struct PingHostInfo {
 }
 
 // 悬浮信息卡（tab 悬浮卡同款视觉，app.slint tab-card 块的参数照搬）：
-// elevated 底 / 9px 圆角 / subtle 边框 / 行距 2px / 键值单行连排 / 名称行主色；
+// elevated 底 / 9px 圆角 / subtle 边框 / 行距 2px / 键值单行连排 /
+// 全行 text-primary（#hover-card-uniform：与 app.slint tab 卡同款亮度，
+// 2026-11-05 用户反馈「两个下拉悬浮框字体明暗一致」——曾名称行亮、其余灰）；
 // 行按空值消隐；宽 = 最宽行 + 键列余量，钳到卡宽；投影按 #popup-no-shadow 删。
 // 定位跟手（x/y=卡片局部坐标——上报处已减 card.absolute-position，jumptip
 // 同款坑：卡片局部系吃窗口绝对坐标会恒偏整个 card 的位置），翻转防出卡。
@@ -122,7 +124,7 @@ component HostCard inherits Rectangle {
         spacing: 2px;
         if (c-proto != "") : Text {
             text: (root.lang-en ? "Protocol:" : "协议：") + c-proto;
-            color: Theme.text-secondary; font-size: Theme.fs-xs; overflow: elide;
+            color: Theme.text-primary; font-size: Theme.fs-xs; overflow: elide;
         }
         Text {
             text: (root.lang-en ? "Name:" : "名称：") + c-name;
@@ -130,23 +132,23 @@ component HostCard inherits Rectangle {
         }
         if (c-host != "") : Text {
             text: (root.lang-en ? "Host:" : "主机：") + c-host;
-            color: Theme.text-secondary; font-size: Theme.fs-xs; overflow: elide;
+            color: Theme.text-primary; font-size: Theme.fs-xs; overflow: elide;
         }
         if (c-user != "") : Text {
             text: (root.lang-en ? "User:" : "用户：") + c-user;
-            color: Theme.text-secondary; font-size: Theme.fs-xs; overflow: elide;
+            color: Theme.text-primary; font-size: Theme.fs-xs; overflow: elide;
         }
         if (c-auth != "") : Text {
             text: (root.lang-en ? "Auth:" : "认证：") + c-auth;
-            color: Theme.text-secondary; font-size: Theme.fs-xs; overflow: elide;
+            color: Theme.text-primary; font-size: Theme.fs-xs; overflow: elide;
         }
         if (c-group != "") : Text {
             text: (root.lang-en ? "Group:" : "分组：") + c-group;
-            color: Theme.text-secondary; font-size: Theme.fs-xs; overflow: elide;
+            color: Theme.text-primary; font-size: Theme.fs-xs; overflow: elide;
         }
         if (c-note != "") : Text {
             text: (root.lang-en ? "Note:" : "备注：") + c-note;
-            color: Theme.text-secondary; font-size: Theme.fs-xs; overflow: elide;
+            color: Theme.text-primary; font-size: Theme.fs-xs; overflow: elide;
         }
     }
 }
@@ -172,7 +174,68 @@ component MethodSeg inherits Rectangle {
         vertical-alignment: center;
         overflow: elide;
     }
-    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    ta := TouchArea { clicked => { root.clicked(); } }
+}
+
+// 弹框内三处搜索框统一组件（源下拉 / ＋下拉 / 监听表，2026-11-05 用户反馈）：
+// ① 占位符**聚焦即隐**（草稿框既有惯例，否则聚焦时提示文字还压着光标）；
+// ② 有输入才出 ✕ 清空钮（草稿 ✕ 缩小版 16px/9px 图标，hover 提亮不清焦点）。
+// 清空经 edited("") 回报——源/监听的过滤模型在 Rust 重建，必须走回调；
+// ＋下拉过滤是行内 ip-hit 纯回调吃属性，不接 edited 也自动生效。
+component SearchBox inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    callback edited(string);
+    height: 28px; border-radius: 6px;
+    border-width: 1px;
+    border-color: inp.has-focus ? Theme.accent-solid : Theme.border-control;
+    animate border-color { duration: 120ms; }
+    background: Theme.popup-field;
+    // 聚焦光环（highlight inp 同款：3px accent-soft 外环）
+    if (inp.has-focus) : Rectangle {
+        x: -3px; y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        border-radius: 9px;
+        border-width: 3px;
+        border-color: Theme.accent-soft;
+    }
+    HorizontalLayout {
+        padding-left: 9px; padding-right: 5px; spacing: 6px;
+        // Icon 直接进布局（HL 交叉轴 stretch 撑到行高居中，套固定高盒子会被
+        // 顶对齐——#icon 注释里的坑）
+        Icon { glyph: "search"; size: 12px; tint: Theme.text-muted; }
+        inp := TextInput {
+            horizontal-stretch: 1;
+            text <=> root.text;
+            font-size: 11px; color: Theme.text-primary;
+            single-line: true; vertical-alignment: center;
+            edited() => { root.edited(self.text); }
+        }
+        // ✕ 清空钮：固定高子项在 HL 交叉轴顶对齐（勾选框同款坑）→ 套 VL center
+        if (root.text != "") : VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 16px; height: 16px; border-radius: 8px;
+                background: clr-ta.has-hover ? Theme.bg-hover : transparent;
+                Icon { glyph: "close"; size: 9px;
+                    tint: clr-ta.has-hover ? Theme.text-primary : Theme.text-muted; }
+                clr-ta := TouchArea {
+                    clicked => {
+                        root.text = "";
+                        root.edited("");
+                    }
+                }
+            }
+        }
+    }
+    // 占位符绝对叠放（放 HL 里会被 TextInput 挤出空隙，2026-11-04 截图坑）
+    if (root.text == "" && !inp.has-focus) : Text {
+        x: 27px;
+        text: root.placeholder;
+        font-size: 11px; color: Theme.text-muted; vertical-alignment: center;
+        width: parent.width - 27px - 6px;
+    }
 }
 
 export component PingDialog inherits Rectangle {
@@ -188,6 +251,7 @@ export component PingDialog inherits Rectangle {
     in property <string> source-name: "本机";
     in-out property <string> draft;
     in property <int> target-count: 0;
+    in property <int> enabled-count: 0;             // 参与探测的行数（表头全选三态）
 
     in property <string> result-target: "";
     in property <string> method-label: "ICMP";
@@ -230,7 +294,9 @@ export component PingDialog inherits Rectangle {
     callback run();
     callback add-draft();
     callback clear-draft();
+    callback clear-error();                         // 草稿重新输入时撤页脚告警（Rust 落 has-error）
     callback toggle-target(string);                 // 清单勾选框 / ＋下拉行：参与/不参与切换
+    callback toggle-all-targets();                  // 表头全选：全开↔全关（混合→全开，Rust 裁决）
     callback select-target(string);
     callback toggle-auto(bool);
     callback set-method(string);
@@ -278,6 +344,13 @@ export component PingDialog inherits Rectangle {
     property <string> hc-note;
     property <length> hc-x;
     property <length> hc-y;
+    // 按钮悬浮提示（#ping-btn-tip 2026-11-05）：小按钮不自渲染气泡，hover 时把
+    // （文本, 按钮底缘中点=卡片局部坐标——HostCard 同款换算）写到这里，由 card
+    // 末尾的气泡统一渲染（app.slint topbar / sftp_panel 同款机制：恒在最上层，
+    // 不被后续兄弟盖住）。
+    property <string> tip-text;
+    property <length> tip-x;
+    property <length> tip-y;
     property <length> card-w: 760px;
     property <length> card-h: 460px;
     property <length> base-w;
@@ -313,10 +386,12 @@ export component PingDialog inherits Rectangle {
         // 边框/圆角与高亮设置弹框同款（2026-11-04 用户定稿）：radius-xl
         // （16px×缩放）+ hairline（1 设备像素，125% 下不跨两行发虚）+
         // border-strong；投影同款透明（blur 留着无碍）
+        // 底色=popup-bg（2026-11-05 用户反馈「与其它弹框颜色对齐」：曾用主窗口
+        // 表面 bg-elevated，比全库弹框的 popup-bg 偏暗偏实）
         border-width: Theme.hairline();
         border-color: Theme.border-strong;
         border-radius: Theme.radius-xl;
-        background: Theme.bg-elevated;
+        background: Theme.popup-bg;
         drop-shadow-blur: 26px;
         drop-shadow-color: transparent;
         clip: true;
@@ -453,14 +528,17 @@ export component PingDialog inherits Rectangle {
                     // 等分格（#seg-uniform-cells：否则滑块步长与格子错位）。
                     HorizontalLayout {
                         height: 28px; spacing: 6px; alignment: stretch;
-                        // 源下拉（.opt-chip：名称 accent 加粗，caret 9px）
+                        // 源下拉（.opt-chip：名称 accent 加粗，caret 9px）。
+                        // 端口模式源不生效（本机快照，远端枚举是三期）：置灰
+                        // 禁点，显示名由 Rust 强制为「本机」；切回 Ping 恢复
                         Rectangle {
                             width: 92px; height: 28px; border-radius: 5px;
                             border-width: 1px;
                             border-color: source-open ? Theme.accent-solid : Theme.border-control;
                             background: source-open ? Theme.accent-soft : Theme.popup-field;
+                            opacity: root.method == "icmp" ? 1.0 : 0.5;
                             src-btn := TouchArea {
-                                mouse-cursor: pointer;
+                                enabled: root.method == "icmp";
                                 clicked => {
                                     root.refresh-hosts();
                                     root.source-search = "";
@@ -496,10 +574,16 @@ export component PingDialog inherits Rectangle {
                         }
                     }
 
-                    // 源提示（Ping 模式）
+                    // 源提示（Ping 模式）。动态跟随所选源（2026-11-05「本机歧义」
+                    // 反馈）：源=本机说「你 → 目标」；源=tab 时点名「tab 名 → 目标」
+                    // ——本机永远指物理机，不会被误读成打开的 tab
                     if (root.method == "icmp") : Text {
                         height: 14px;
-                        text: root.lang-en ? "From local: result reflects \"you → target\"" : "从本机发起：结果反映「你 → 目标」的链路";
+                        text: root.source-key == "local"
+                            ? (root.lang-en ? "From local: result reflects \"you → target\"" : "从本机发起：结果反映「你 → 目标」的链路")
+                            : (root.lang-en
+                                ? "From \"" + root.source-name + "\": result reflects \"" + root.source-name + " → target\""
+                                : "从「" + root.source-name + "」发起：结果反映「" + root.source-name + " → 目标」的链路");
                         font-size: 9px; color: Theme.text-muted; vertical-alignment: center;
                         horizontal-stretch: 1;
                     }
@@ -572,6 +656,9 @@ export component PingDialog inherits Rectangle {
                                             vertical-alignment: dscroll.content-height > dscroll.visible-height + 0.5px
                                                 ? top : center;
                                             text <=> root.draft;
+                                            // 重新输入即撤告警（2026-11-05 用户反馈）：
+                                            // has-error 由 Rust 下发，经回调清
+                                            edited() => { root.clear-error(); }
                                             font-size: 11px;
                                             color: Theme.text-primary;
                                             single-line: false;
@@ -607,7 +694,19 @@ export component PingDialog inherits Rectangle {
                                                 tint: clr-ta.has-hover ? Theme.popup-bg-elevated : Theme.text-muted; }
                                             clr-ta := TouchArea {
                                                 visible: root.draft != "";
-                                                mouse-cursor: pointer; clicked => { root.clear-draft(); } }
+                                                clicked => { root.clear-draft(); }
+                                                // 悬浮提示（#ping-btn-tip）：写 root，card 末尾气泡统一渲染
+                                                property <string> tip: root.lang-en ? "Clear input" : "清空输入";
+                                                changed has-hover => {
+                                                    if (self.has-hover) {
+                                                        root.tip-text = self.tip;
+                                                        root.tip-x = self.absolute-position.x + self.width / 2
+                                                            - card.absolute-position.x;
+                                                        root.tip-y = self.absolute-position.y + self.height + 5px
+                                                            - card.absolute-position.y;
+                                                    } else if (root.tip-text == self.tip) { root.tip-text = ""; }
+                                                }
+                                            }
                                         }
                                     }
                                     VerticalLayout { alignment: center;
@@ -615,9 +714,19 @@ export component PingDialog inherits Rectangle {
                                             height: 22px; border-radius: 11px;
                                             background: add-ta.has-hover && field.draft-ready > 0 ? Theme.accent-solid.darker(0.08) : (field.draft-ready > 0 ? Theme.accent-solid : Theme.bg-active);
                                             add-ta := TouchArea {
-                                                mouse-cursor: field.draft-ready > 0 ? pointer : default;
                                                 enabled: field.draft-ready > 0;
                                                 clicked => { root.add-draft(); }
+                                                // 悬浮提示（#ping-btn-tip）；禁用（空草稿）不提示
+                                                property <string> tip: root.lang-en ? "Add input to targets" : "将输入加入清单";
+                                                changed has-hover => {
+                                                    if (self.has-hover && field.draft-ready > 0) {
+                                                        root.tip-text = self.tip;
+                                                        root.tip-x = self.absolute-position.x + self.width / 2
+                                                            - card.absolute-position.x;
+                                                        root.tip-y = self.absolute-position.y + self.height + 5px
+                                                            - card.absolute-position.y;
+                                                    } else if (root.tip-text == self.tip) { root.tip-text = ""; }
+                                                }
                                             }
                                             HorizontalLayout {
                                                 padding-left: 10px; padding-right: 10px;
@@ -641,8 +750,10 @@ export component PingDialog inherits Rectangle {
                         alignment: stretch;
                         HorizontalLayout {
                             height: 20px; spacing: 6px;
-                            Text { text: root.lang-en ? "Targets " + root.target-count : "清单 " + root.target-count; font-size: 10.5px; font-weight: 600;
-                                color: Theme.text-secondary; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                            // 区标题（2026-11-05 用户反馈「重要文字」）：12/700/
+                            // primary——高于列头 9.5/600/muted 一级的层级
+                            Text { text: root.lang-en ? "Targets " + root.target-count : "清单 " + root.target-count; font-size: 12px; font-weight: 700;
+                                color: Theme.text-primary; vertical-alignment: center; font-family: Theme.ui-font-family; }
                             Rectangle { }
                             // ＋ 从主机加入（本机 IP 下拉；三期扩为主机+最近列表）
                             Rectangle {
@@ -650,25 +761,69 @@ export component PingDialog inherits Rectangle {
                                 background: (hp-touch.has-hover || root.ip-open) ? (root.ip-open ? Theme.accent-soft : Theme.bg-hover) : transparent;
                                 Icon { glyph: "add"; size: 12px; tint: root.ip-open ? Theme.accent-solid : Theme.text-muted; }
                                 hp-touch := TouchArea {
-                                    mouse-cursor: pointer;
                                     clicked => {
                                         root.refresh-targets();
                                         root.source-open = false;
                                         root.ip-filter = "";
                                         root.ip-open = !root.ip-open;
                                     }
+                                    // 悬浮提示（#ping-btn-tip，同 clr-ta 机制）
+                                    property <string> tip: root.lang-en ? "Add from saved hosts" : "从已维护主机加入";
+                                    changed has-hover => {
+                                        if (self.has-hover) {
+                                            root.tip-text = self.tip;
+                                            root.tip-x = self.absolute-position.x + self.width / 2
+                                                - card.absolute-position.x;
+                                            root.tip-y = self.absolute-position.y + self.height + 5px
+                                                - card.absolute-position.y;
+                                        } else if (root.tip-text == self.tip) { root.tip-text = ""; }
+                                    }
                                 }
                             }
                         }
-                        // 表头
+                        // 表头（2026-11-05：全选框占行勾选框同列，「目标」标签
+                        // 右移到地址文字正上方——曾压在勾选框列上）
                         Rectangle {
                             height: 22px;
                             HorizontalLayout {
                                 padding-left: 6px; padding-right: 8px; spacing: 10px;
-                                Text { text: root.lang-en ? "TARGET" : "目标"; width: 132px; font-size: 9.5px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
-                                Text { text: root.lang-en ? "STATE" : "状态"; width: 40px; font-size: 9.5px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
-                                Text { text: root.lang-en ? "RTT" : "延迟"; width: 48px; font-size: 9.5px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
-                                Text { text: root.lang-en ? "LOSS" : "丢包"; width: 44px; font-size: 9.5px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                                HorizontalLayout {
+                                    width: 132px; spacing: 7px;
+                                    // 全选框：三态显示（全勾=accent 勾选框 / 混合=
+                                    // muted 勾选框 / 全空=空框）；行内布局镜像
+                                    // [勾选16][7][点5][7][地址]
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            width: 16px; height: 16px;
+                                            Icon {
+                                                // 三态（2026-11-05 用户定稿）：全勾=
+                                                // checkbox/accent；混合=现成资产
+                                                // checkbox-indeterminate.svg + accent
+                                                // （半选不置灰）；全空=checkbox-blank/muted
+                                                glyph: root.enabled-count > 0 && root.enabled-count == root.target-count ? "checkbox"
+                                                    : (root.enabled-count > 0 ? "checkbox-indeterminate" : "checkbox-blank");
+                                                tint: root.enabled-count > 0 ? Theme.accent-solid : Theme.text-muted;
+                                            }
+                                            TouchArea {
+                                                clicked => { root.toggle-all-targets(); }
+                                            }
+                                        }
+                                    }
+                                    // 状态点列占位（5px）：「目标」由此与行内地址同 x
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Rectangle { width: 5px; height: 5px; }
+                                    }
+                                    // 列头（2026-11-05 两轮定稿）：11px/600/
+                                    // text-secondary——与左侧 16px 全选框同排
+                                    // 协调，比行内容 10px 高半级
+                                    Text { text: root.lang-en ? "TARGET" : "目标"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                                    Rectangle { horizontal-stretch: 1; }
+                                }
+                                Text { text: root.lang-en ? "STATE" : "状态"; width: 40px; font-size: 11px; font-weight: 600; color: Theme.text-secondary; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                                Text { text: root.lang-en ? "RTT" : "延迟"; width: 48px; font-size: 11px; font-weight: 600; color: Theme.text-secondary; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                                Text { text: root.lang-en ? "LOSS" : "丢包"; width: 44px; font-size: 11px; font-weight: 600; color: Theme.text-secondary; vertical-alignment: center; font-family: Theme.ui-font-family; }
                                 Rectangle { }
                             }
                         }
@@ -692,7 +847,6 @@ export component PingDialog inherits Rectangle {
                                         // 不参与探测：整行置灰保留（空框态）
                                         opacity: t.enabled ? 1.0 : 0.45;
                                         lt-touch := TouchArea {
-                                            mouse-cursor: pointer;
                                             clicked => { root.select-target(t.addr); }
                                         }
                                         HorizontalLayout {
@@ -707,16 +861,20 @@ export component PingDialog inherits Rectangle {
                                                 // 参与探测勾选框（项目 checkbox / checkbox-blank
                                                 // svg 双态，2026-11-05 用户定稿）：点击在勾/空
                                                 // 间切换，行保留置灰、不直接消失
-                                                Rectangle {
-                                                    width: 16px; height: 16px;
-                                                    Icon {
-                                                        glyph: t.enabled ? "checkbox" : "checkbox-blank";
-                                                        size: 16px;
-                                                        tint: t.enabled ? Theme.accent-solid : Theme.text-muted;
-                                                    }
-                                                    TouchArea {
-                                                        mouse-cursor: pointer;
-                                                        clicked => { root.toggle-target(t.addr); }
+                                                // HL 交叉轴对固定高子项默认顶对齐（状态点
+                                                // 同款坑）→ 套 VL center 垂直居中
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    Rectangle {
+                                                        width: 16px; height: 16px;
+                                                        Icon {
+                                                            glyph: t.enabled ? "checkbox" : "checkbox-blank";
+                                                            size: 16px;
+                                                            tint: t.enabled ? Theme.accent-solid : Theme.text-muted;
+                                                        }
+                                                        TouchArea {
+                                                            clicked => { root.toggle-target(t.addr); }
+                                                        }
                                                     }
                                                 }
                                                 // 状态点：VL center 保证在行内垂直居中
@@ -757,50 +915,19 @@ export component PingDialog inherits Rectangle {
                         alignment: stretch;
                         HorizontalLayout {
                             height: 28px; spacing: 6px;
-                            Text { text: root.lang-en ? "Listening " + root.listen-count : "监听端口 " + root.listen-count; font-size: 9px; font-weight: 600;
-                                color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                            // 区标题同「清单」：12/700/primary（曾 9/600/muted
+                            // 弱得像注释，2026-11-05 用户反馈）
+                            Text { text: root.lang-en ? "Listening " + root.listen-count : "监听端口 " + root.listen-count; font-size: 12px; font-weight: 700;
+                                color: Theme.text-primary; vertical-alignment: center; font-family: Theme.ui-font-family; }
                             Rectangle { }
                             // 搜索框：常规 28px / 11px（对齐源下拉/＋下拉同款
-                            // 规格，2026-11-04 用户反馈「调整正常态」）+ 聚焦
-                            // accent 描边 + 光环（highlight inp 同款）
-                            Rectangle {
-                                width: 140px; height: 28px; border-radius: 6px;
-                                border-width: 1px;
-                                border-color: lsearch.has-focus ? Theme.accent-solid : Theme.border-control;
-                                animate border-color { duration: 120ms; }
-                                background: Theme.popup-field;
-                                // 聚焦光环（3px accent-soft 外环）
-                                if (lsearch.has-focus) : Rectangle {
-                                    x: -3px; y: -3px;
-                                    width: parent.width + 6px;
-                                    height: parent.height + 6px;
-                                    border-radius: 9px;
-                                    border-width: 3px;
-                                    border-color: Theme.accent-soft;
-                                }
-                                // 占位符绝对叠放（与源下拉菜单搜索框同构）：放
-                                // HorizontalLayout 里当独立子项会被 TextInput 挤出
-                                // 一段空隙（2026-11-04 用户反馈截图），图标也只占
-                                // 紧凑一格
-                                HorizontalLayout {
-                                    padding-left: 9px; padding-right: 7px; spacing: 6px;
-                                    // Icon 直接进布局（HL 交叉轴 stretch 撑到行高居中，
-                                    // 固定高盒子会被顶对齐——#icon 注释里的坑）
-                                    Icon { glyph: "search"; size: 12px; tint: Theme.text-muted; }
-                                    lsearch := TextInput {
-                                        horizontal-stretch: 1;
-                                        text <=> root.listen-search;
-                                        font-size: 11px; color: Theme.text-primary;
-                                        single-line: true; vertical-alignment: center;
-                                        edited() => { root.listen-search-edited(self.text); }
-                                    }
-                                }
-                                if (root.listen-search == "") : Text {
-                                    x: 27px;
-                                    text: root.lang-en ? "port / process" : "搜端口 / 进程";
-                                    font-size: 11px; color: Theme.text-muted; vertical-alignment: center;
-                                    width: parent.width - 27px - 6px;
-                                }
+                            // 规格，2026-11-04 用户反馈「调整正常态」）
+                            // SearchBox 统一组件：占位符聚焦即隐 + 有输入出 ✕
+                            SearchBox {
+                                width: 140px;
+                                text <=> root.listen-search;
+                                placeholder: root.lang-en ? "port / process" : "搜端口 / 进程";
+                                edited(text) => { root.listen-search-edited(text); }
                             }
                         }
                         Rectangle {
@@ -830,7 +957,6 @@ export component PingDialog inherits Rectangle {
                                         height: 28px; border-radius: 4px;
                                         background: l.selected ? Theme.accent-soft : (ll-touch.has-hover ? Theme.bg-hover : transparent);
                                         ll-touch := TouchArea {
-                                            mouse-cursor: pointer;
                                             clicked => { root.listen-select(l.port); }
                                         }
                                         HorizontalLayout {
@@ -854,16 +980,19 @@ export component PingDialog inherits Rectangle {
                     alignment: stretch;
                     spacing: 0;
 
-                    // 结果头
+                    // 结果头（2026-11-05 用户反馈「上上下下」）：固定高子项
+                    // （18px chip / 16px 标签 / 18px 复制钮）在 HL 交叉轴默认
+                    // 顶对齐、文字又各自居中 → 全部压 22px 行竖直中线
                     HorizontalLayout {
                         height: 22px; spacing: 6px; alignment: stretch;
+                        cross-axis-alignment: center;
                         sel-tag := Rectangle {
                             visible: root.selected-target-active;
                             height: 18px; border-radius: 4px;
                             horizontal-stretch: 0;
                             background: Theme.accent-soft;
                             border-width: 1px; border-color: Theme.accent-solid.with-alpha(0.26);
-                            st-touch := TouchArea { mouse-cursor: pointer; clicked => { root.select-target(""); } }
+                            st-touch := TouchArea { clicked => { root.select-target(""); } }
                             HorizontalLayout {
                                 padding-left: 7px; padding-right: 7px;
                                 Text { text: root.lang-en ? "← All" : "← 全部"; font-size: 9px; font-weight: 600; color: Theme.accent-solid; vertical-alignment: center; }
@@ -886,20 +1015,38 @@ export component PingDialog inherits Rectangle {
                         copy-btn := Rectangle {
                             width: 18px; height: 18px; border-radius: 3px;
                             Icon { glyph: "copy"; size: 11px; tint: cp-ta.has-hover ? Theme.text-primary : Theme.text-muted; }
-                            cp-ta := TouchArea { mouse-cursor: pointer; clicked => { root.copy-target(); } }
+                            cp-ta := TouchArea {
+                                clicked => { root.copy-target(); }
+                                // 悬浮提示（#ping-btn-tip，同 clr-ta 机制）
+                                property <string> tip: root.lang-en ? "Copy addresses" : "复制地址";
+                                changed has-hover => {
+                                    if (self.has-hover) {
+                                        root.tip-text = self.tip;
+                                        root.tip-x = self.absolute-position.x + self.width / 2
+                                            - card.absolute-position.x;
+                                        root.tip-y = self.absolute-position.y + self.height + 5px
+                                            - card.absolute-position.y;
+                                    } else if (root.tip-text == self.tip) { root.tip-text = ""; }
+                                }
+                            }
                         }
                     }
 
-                    // hero：主数值 + 质量标签
+                    // hero：主数值 + 质量标签。padding-top 2px（2026-11-05：CJK
+                    // 「超时」30px 行高≈40px，label+间距+值 ≈54px 需吃满 56px
+                    // 容器——曾 padding 6 + 38px 字盖到下方图表框）
                     HorizontalLayout {
                         height: 56px;
-                        padding-top: 6px;
+                        padding-top: 2px;
                         VerticalLayout {
                             alignment: center; spacing: 2px;
                             Text { text: root.rtt-label; font-size: 8.5px; font-weight: 600; color: Theme.text-muted; font-family: Theme.ui-font-family; }
                             HorizontalLayout {
                                 spacing: 4px;
-                                Text { text: root.rtt-value; font-size: root.method == "port" ? 34px : 38px; font-weight: 600; color: Theme.text-primary; vertical-alignment: center;
+                                // 超时态主值是全角 CJK「超时」：38px 行高超出容器
+                                // ink 盖图表框（拉丁数字 ink 小看不出）→ 30px
+                                Text { text: root.rtt-value; font-size: root.method == "port" ? 34px
+                                    : (root.rtt-value == "超时" ? 30px : 38px); font-weight: 600; color: Theme.text-primary; vertical-alignment: center;
                                     font-family: Theme.ui-font-family; }
                                 Text { text: root.rtt-unit; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
                             }
@@ -907,30 +1054,37 @@ export component PingDialog inherits Rectangle {
                         Rectangle { }
                         VerticalLayout {
                             alignment: center; spacing: 3px;
-                            Rectangle {
-                                height: 20px; border-radius: 4px;
-                                border-width: 1px;
-                                border-color: root.quality-tone == "good" ? Theme.success.with-alpha(0.32)
-                                    : (root.quality-tone == "fair" ? Theme.warning.with-alpha(0.32)
-                                    : (root.quality-tone == "bad" ? Theme.danger.with-alpha(0.32)
-                                    : (root.quality-tone == "testing" ? Theme.accent-solid.with-alpha(0.32) : Theme.border-subtle)));
-                                background: root.quality-tone == "good" ? Theme.success.with-alpha(0.11)
-                                    : (root.quality-tone == "fair" ? Theme.warning.with-alpha(0.11)
-                                    : (root.quality-tone == "bad" ? Theme.danger.with-alpha(0.11)
-                                    : (root.quality-tone == "testing" ? Theme.accent-soft : transparent)));
-                                HorizontalLayout {
-                                    padding-left: 7px; padding-right: 7px; spacing: 5px;
-                                    Rectangle { width: 4px; height: 4px; border-radius: 2px; y: 8px;
-                                        background: root.quality-tone == "good" ? Theme.success
-                                            : (root.quality-tone == "fair" ? Theme.warning
-                                            : (root.quality-tone == "bad" ? Theme.danger
-                                            : (root.quality-tone == "testing" ? Theme.accent-solid : Theme.text-muted))); }
-                                    Text { text: root.quality-text; font-size: 10px; font-weight: 600; vertical-alignment: center;
-                                        color: root.quality-tone == "good" ? Theme.success
-                                            : (root.quality-tone == "fair" ? Theme.warning
-                                            : (root.quality-tone == "bad" ? Theme.danger
-                                            : (root.quality-tone == "testing" ? Theme.accent-solid : Theme.text-muted)));
-                                        font-family: Theme.ui-font-family; }
+                            // 徽章宽度贴自身文字（2026-11-05 用户反馈「徽章和字体
+                            // 长度协调」）：VL 交叉轴默认把 Rectangle 拉满列宽——
+                            // 短文字（超时）配 hint（请检查地址或网络）同宽大框；
+                            // HL end 收缩贴右，与 hint 右对齐齐缘
+                            HorizontalLayout {
+                                alignment: end;
+                                Rectangle {
+                                    height: 20px; border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: root.quality-tone == "good" ? Theme.success.with-alpha(0.32)
+                                        : (root.quality-tone == "fair" ? Theme.warning.with-alpha(0.32)
+                                        : (root.quality-tone == "bad" ? Theme.danger.with-alpha(0.32)
+                                        : (root.quality-tone == "testing" ? Theme.accent-solid.with-alpha(0.32) : Theme.border-subtle)));
+                                    background: root.quality-tone == "good" ? Theme.success.with-alpha(0.11)
+                                        : (root.quality-tone == "fair" ? Theme.warning.with-alpha(0.11)
+                                        : (root.quality-tone == "bad" ? Theme.danger.with-alpha(0.11)
+                                        : (root.quality-tone == "testing" ? Theme.accent-soft : transparent)));
+                                    HorizontalLayout {
+                                        padding-left: 7px; padding-right: 7px; spacing: 5px;
+                                        Rectangle { width: 4px; height: 4px; border-radius: 2px; y: 8px;
+                                            background: root.quality-tone == "good" ? Theme.success
+                                                : (root.quality-tone == "fair" ? Theme.warning
+                                                : (root.quality-tone == "bad" ? Theme.danger
+                                                : (root.quality-tone == "testing" ? Theme.accent-solid : Theme.text-muted))); }
+                                        Text { text: root.quality-text; font-size: 10px; font-weight: 600; vertical-alignment: center;
+                                            color: root.quality-tone == "good" ? Theme.success
+                                                : (root.quality-tone == "fair" ? Theme.warning
+                                                : (root.quality-tone == "bad" ? Theme.danger
+                                                : (root.quality-tone == "testing" ? Theme.accent-solid : Theme.text-muted)));
+                                            font-family: Theme.ui-font-family; }
+                                    }
                                 }
                             }
                             Text { text: root.quality-hint; font-size: 9.5px; color: Theme.text-muted; horizontal-alignment: right; font-family: Theme.ui-font-family; }
@@ -992,7 +1146,9 @@ export component PingDialog inherits Rectangle {
                         }
                     }
 
-                    // 三格统计（端口模式下隐藏；空态同样隐藏——「—」孤块）
+                    // 三格统计（端口模式下隐藏；空态同样隐藏——「—」孤块）。
+                    // 无分隔竖线（2026-11-05 用户反馈「割裂感」）：三格靠
+                    // 均分排布，去掉 1px 边框竖线
                     if (root.method != "port" && !root.empty-view) : Rectangle {
                         height: 40px;
                         HorizontalLayout {
@@ -1001,13 +1157,11 @@ export component PingDialog inherits Rectangle {
                                 Text { text: root.stat-1-label; font-size: 9px; color: Theme.text-secondary; font-family: Theme.ui-font-family; }
                                 Text { text: root.stat-1-value; font-size: 13px; font-weight: 600; color: Theme.text-primary; font-family: Theme.ui-font-family; }
                             }
-                            Rectangle { width: 1px; background: Theme.border-subtle; }
                             VerticalLayout {
                                 alignment: center; spacing: 3px;
                                 Text { text: root.stat-2-label; font-size: 9px; color: Theme.text-secondary; font-family: Theme.ui-font-family; }
                                 Text { text: root.stat-2-value; font-size: 13px; font-weight: 600; color: Theme.text-primary; font-family: Theme.ui-font-family; }
                             }
-                            Rectangle { width: 1px; background: Theme.border-subtle; }
                             VerticalLayout {
                                 alignment: center; spacing: 3px;
                                 Text { text: root.stat-3-label; font-size: 9px; color: Theme.text-secondary; font-family: Theme.ui-font-family; }
@@ -1048,7 +1202,7 @@ export component PingDialog inherits Rectangle {
                     property <bool> hot: self.has-hover && !root.auto-disabled;
                     // stretch 0：缺省会被外层均分拉宽，2s 飘到组右端脱离开关
                     horizontal-stretch: 0;
-                    mouse-cursor: root.auto-disabled ? default : pointer;
+                    mouse-cursor: default;
                     enabled: !root.auto-disabled;
                     clicked => { root.toggle-auto(!root.auto-on); }
                     HorizontalLayout {
@@ -1077,7 +1231,19 @@ export component PingDialog inherits Rectangle {
                         Text { text: root.lang-en ? "Continuous" : "连续 Ping"; font-size: 10px; color: Theme.text-secondary; vertical-alignment: center;
                             opacity: root.auto-disabled ? 0.45 : (auto-row.hot ? 1.0 : 0.85); font-family: Theme.ui-font-family; horizontal-stretch: 0;
                             animate opacity { duration: 120ms; easing: ease-in-out; } }
-                        Text { text: "2s"; font-size: 9.5px; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; horizontal-stretch: 0; }
+                        // 「2s」收进圆角小底做成标签 chip（2026-11-05 用户反馈
+                        // 「左下角整体分裂」）：裸灰字飘在文案旁像第二个控件，
+                        // 与弹框 ICMP/本机标签同语言后整组聚拢；禁用同步置灰
+                        Rectangle {
+                            height: 14px; border-radius: 4px;
+                            background: Theme.bg-active;
+                            opacity: root.auto-disabled ? 0.45 : 1.0;
+                            horizontal-stretch: 0;
+                            HorizontalLayout {
+                                padding-left: 4px; padding-right: 4px;
+                                Text { text: "2s"; font-size: 9px; color: Theme.text-muted; vertical-alignment: center; font-family: Theme.ui-font-family; }
+                            }
+                        }
                     }
                 }
                 Rectangle { }
@@ -1106,7 +1272,6 @@ export component PingDialog inherits Rectangle {
                             opacity: run-ta.has-hover && !root.testing ? 0.12 : (run-ta.pressed && !root.testing ? 0.22 : 0);
                         }
                         run-ta := TouchArea {
-                            mouse-cursor: root.testing ? default : pointer;
                             enabled: !root.testing;
                             clicked => { root.run(); }
                         }
@@ -1121,7 +1286,6 @@ export component PingDialog inherits Rectangle {
                         border-width: 1px; border-color: Theme.border-strong;
                         background: clear-ta.has-hover ? Theme.bg-hover : transparent;
                         clear-ta := TouchArea {
-                            mouse-cursor: pointer;
                             clicked => { root.clear-results(); }
                         }
                         HorizontalLayout {
@@ -1168,8 +1332,9 @@ export component PingDialog inherits Rectangle {
             }
         }
 
-        // ── 源下拉菜单（高保真 .opt-menu：左 16 / 锚源行下方 / 宽 280——
-        // 2026-11-04 用户反馈「两侧宽度调小些」，320→280）────
+        // ── 源下拉菜单（高保真 .opt-menu：左 16 / 锚源行下方 / 宽 220——
+        // 2026-11-04 用户反馈「两侧宽度调小些」320→280；2026-11-05 再缩
+        // 「还是太宽」280→220，只缩源下拉，＋下拉维持 280）────
         // 点外部关闭层必须先声明：后声明者在上层，菜单才会盖住它、条目才点得到。
         // （此前顺序反了 → 关闭层盖全卡，点条目只关闭不选中。）
         if (root.source-open) : TouchArea {
@@ -1180,7 +1345,7 @@ export component PingDialog inherits Rectangle {
             // 锚源行正下方 4px（2026-11-04 用户反馈「往上贴边」：曾隔提示行
             // 14px+间隙 5px 悬太远；菜单浮层盖住提示行无碍——点条目即关）
             y: 54px + 12px + 26px + 4px;   // 头 + 顶距 + 源钮 + 间隙
-            width: 280px;
+            width: 220px;
             height: min(63px + root.hosts.length * 28px, 262px);
             border-width: 1px; border-color: Theme.border-strong; border-radius: 6px;
             background: Theme.popup-bg-elevated;
@@ -1188,42 +1353,12 @@ export component PingDialog inherits Rectangle {
             VerticalLayout {
                 padding: 4px;
                 spacing: 6px;
-                // 搜索框（.menu-search）——常规高度 28px / 11px 字号（对齐
-                // command_manager 搜索框规格，2026-11-04 用户反馈「太小」）；
-                // 占位符绝对叠放（与监听搜索框同款）
-                Rectangle {
-                    height: 28px; border-radius: 6px;
-                    border-width: 1px;
-                    border-color: ssearch.has-focus ? Theme.accent-solid : Theme.border-control;
-                    animate border-color { duration: 120ms; }
-                    background: Theme.popup-field;
-                    // 聚焦光环（highlight inp 同款：3px accent-soft 外环）
-                    if (ssearch.has-focus) : Rectangle {
-                        x: -3px; y: -3px;
-                        width: parent.width + 6px;
-                        height: parent.height + 6px;
-                        border-radius: 9px;
-                        border-width: 3px;
-                        border-color: Theme.accent-soft;
-                    }
-                    HorizontalLayout {
-                        padding-left: 9px; padding-right: 7px; spacing: 6px;
-                        // Icon 直接进布局（同监听搜索框）
-                        Icon { glyph: "search"; size: 12px; tint: Theme.text-muted; }
-                        ssearch := TextInput {
-                            horizontal-stretch: 1;
-                            text <=> root.source-search;
-                            font-size: 11px; color: Theme.text-primary;
-                            single-line: true; vertical-alignment: center;
-                            edited => { root.source-search-edited(self.text); }
-                        }
-                    }
-                    if (root.source-search == "") : Text {
-                        x: 27px;
-                        text: root.lang-en ? "Search name / address" : "搜索主机名 / 地址";
-                        font-size: 11px; color: Theme.text-muted; vertical-alignment: center;
-                        width: parent.width - 27px - 6px;
-                    }
+                // 搜索框（.menu-search）——SearchBox 统一组件（占位符聚焦即隐 +
+                // 有输入出 ✕，2026-11-05 用户反馈）
+                SearchBox {
+                    text <=> root.source-search;
+                    placeholder: root.lang-en ? "Search name / address" : "搜索主机名 / 地址";
+                    edited(text) => { root.source-search-edited(text); }
                 }
                 // 标签（.pick-label）
                 Text {
@@ -1243,7 +1378,6 @@ export component PingDialog inherits Rectangle {
                                 height: 28px; border-radius: 4px;
                                 background: h.key == root.source-key ? Theme.accent-soft : (hs-touch.has-hover && h.online ? Theme.bg-hover : transparent);
                                 hs-touch := TouchArea {
-                                    mouse-cursor: h.online ? pointer : default;
                                     enabled: h.online;
                                     clicked => { root.set-source(h.key); root.source-open = false; root.hc-name = ""; }
                                     // 悬浮上报（tab 卡同款数据；＋下拉行同款交互）。
@@ -1279,7 +1413,10 @@ export component PingDialog inherits Rectangle {
                                     Rectangle { }
                                     Text {
                                         visible: h.key == "local";
-                                        text: root.lang-en ? "Local" : "本机";
+                                        // 行尾 tag 给地址不给「本机」：名称已表意，
+                                        // 重复零信息量；地址行直指物理机，与已开
+                                        // tab 行（会话名）一眼可辨（2026-11-05 反馈）
+                                        text: "127.0.0.1";
                                         font-size: 9px; color: Theme.text-muted; vertical-alignment: center;
                                         font-family: Theme.ui-font-family;
                                     }
@@ -1316,42 +1453,11 @@ export component PingDialog inherits Rectangle {
             VerticalLayout {
                 padding: 4px;
                 spacing: 6px;
-                // 搜索框（.menu-search，常规 28px/11px——同源下拉；
-                // 占位符绝对叠放）
-                Rectangle {
-                    height: 28px; border-radius: 6px;
-                    border-width: 1px;
-                    border-color: ip-filter-ta.has-focus ? Theme.accent-solid : Theme.border-control;
-                    animate border-color { duration: 120ms; }
-                    background: Theme.popup-field;
-                    // 聚焦光环（highlight inp 同款：3px accent-soft 外环）
-                    if (ip-filter-ta.has-focus) : Rectangle {
-                        x: -3px; y: -3px;
-                        width: parent.width + 6px;
-                        height: parent.height + 6px;
-                        border-radius: 9px;
-                        border-width: 3px;
-                        border-color: Theme.accent-soft;
-                    }
-                    HorizontalLayout {
-                        padding-left: 9px; padding-right: 7px; spacing: 6px;
-                        // Icon 直接进布局（HL 交叉轴默认 stretch 撑到行高，
-                        // 内部 Image 在整行内居中——外面套固定高盒子会被
-                        // HL 顶对齐，图标顶死上沿）
-                        Icon { glyph: "search"; size: 12px; tint: Theme.text-muted; }
-                        ip-filter-ta := TextInput {
-                            horizontal-stretch: 1;
-                            text <=> root.ip-filter;
-                            font-size: 11px; color: Theme.text-primary;
-                            single-line: true; vertical-alignment: center;
-                        }
-                    }
-                    if (root.ip-filter == "") : Text {
-                        x: 27px;
-                        text: root.lang-en ? "Search name / host" : "搜索名称 / 主机";
-                        font-size: 11px; color: Theme.text-muted; vertical-alignment: center;
-                        width: parent.width - 27px - 6px;
-                    }
+                // 搜索框（.menu-search，SearchBox 统一组件；＋下拉过滤走行内
+                // ip-hit 纯回调吃属性，无需 edited 接线——✕ 清空也自动生效）
+                SearchBox {
+                    text <=> root.ip-filter;
+                    placeholder: root.lang-en ? "Search name / host" : "搜索名称 / 主机";
                 }
                 // 标签（.pick-label）
                 Text {
@@ -1378,7 +1484,6 @@ export component PingDialog inherits Rectangle {
                                 // 菜单不关——2026-11-04 用户定稿
                                 background: ip.selected ? Theme.accent-soft : (ipt-touch.has-hover ? Theme.bg-hover : transparent);
                                 ipt-touch := TouchArea {
-                                    mouse-cursor: pointer;
                                     clicked => { root.toggle-target(ip.key); }
                                     // 悬浮上报：pointer-event move 跟手（moved 只在
                                     // 按住时触发）——tabs SingleTab 同款。坐标换算
@@ -1406,12 +1511,17 @@ export component PingDialog inherits Rectangle {
                                     padding-left: 10px; padding-right: 6px; spacing: 8px;
                                     // 勾选态（与清单行同款 svg：勾=在清单，空框=不在；
                                     // 点行切换）
-                                    Rectangle {
-                                        width: 16px; height: 16px;
-                                        Icon {
-                                            glyph: ip.selected ? "checkbox" : "checkbox-blank";
-                                            size: 16px;
-                                            tint: ip.selected ? Theme.accent-solid : Theme.text-muted;
+                                    // HL 交叉轴对固定高子项默认顶对齐（清单行
+                                    // 勾选框同款坑）→ 套 VL center 垂直居中
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            width: 16px; height: 16px;
+                                            Icon {
+                                                glyph: ip.selected ? "checkbox" : "checkbox-blank";
+                                                size: 16px;
+                                                tint: ip.selected ? Theme.accent-solid : Theme.text-muted;
+                                            }
                                         }
                                     }
                                     Text { text: ip.name; font-size: 11px; font-weight: 600; color: Theme.text-primary; vertical-alignment: center;
@@ -1446,6 +1556,29 @@ export component PingDialog inherits Rectangle {
             c-note: hc-note;
             c-x: hc-x;
             c-y: hc-y;
+        }
+
+        // 按钮悬浮提示气泡（#ping-btn-tip）：card 最后一个子元素 = 恒在最上层；
+        // x 居中于上报点并钳在卡内，y = 按钮底缘下 5px（上报处算好）。
+        // HostCard 同款视觉：elevated 底 / subtle~strong 边 / #popup-no-shadow 无投影。
+        if (root.tip-text != "") : Rectangle {
+            x: clamp(root.tip-x - self.width / 2, 8px, card.width - self.width - 8px);
+            y: root.tip-y;
+            width: tip-t.preferred-width + 14px;
+            height: 18px;
+            border-radius: Theme.radius-sm;
+            background: Theme.popup-bg-elevated;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            tip-t := Text {
+                width: 100%; height: 100%;
+                text: root.tip-text;
+                color: Theme.text-primary;
+                font-size: Theme.fs-xs;
+                font-family: Theme.ui-font-family;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
         }
     }
 

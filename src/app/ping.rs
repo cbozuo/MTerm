@@ -56,9 +56,11 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
     /// 直接从 TabInfo 透传（Rust 建 tab 时已填好 proto/host/user/auth/group/note）。
     fn build_hosts(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigStore>>) -> Vec<HostEntry> {
         let mut seen: Vec<String> = Vec::new();
+        // 本机行 host 填 127.0.0.1：悬浮卡出「主机：127.0.0.1」行——名称「本机」
+        // 之外再给一层物理机语义，不会被误读成某个已开的 tab（2026-11-05 反馈）
         let mut out: Vec<HostEntry> =
             vec![("local".to_string(), "本机".to_string(), false,
-                  String::new(), String::new(), String::new(), String::new(),
+                  String::new(), "127.0.0.1".to_string(), String::new(), String::new(),
                   String::new(), String::new())];
         for i in 0..window.get_tabs().row_count() {
             let Some(t) = window.get_tabs().row_data(i) else { continue };
@@ -257,10 +259,12 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
                 w.set_ping_input_error(SharedString::from(err));
                 return;
             }
-            if skipped > 0 {
-                w.set_ping_input_error(SharedString::from(format!("一次最多 {} 个目标 · 已跳过 {} 个", MAX_TARGETS, skipped)));
-                w.set_ping_has_error(true);
-            }
+            // 告警显隐收口：有错报错、超限提示保留，正常加入清掉旧告警
+            //（2026-11-05 用户反馈「重新输入后告警应同步消失」）
+            w.set_ping_has_error(skipped > 0);
+            w.set_ping_input_error(SharedString::from(if skipped > 0 {
+                format!("一次最多 {} 个目标 · 已跳过 {} 个", MAX_TARGETS, skipped)
+            } else { String::new() }));
             w.set_ping_draft(SharedString::new());
             refresh_all(&w, &state);
             let _ = added;
@@ -274,6 +278,14 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
             let Some(w) = w.upgrade() else { return };
             w.set_ping_draft(SharedString::new());
             w.set_ping_has_error(false);
+        });
+    }
+
+    // 草稿重新输入时撤告警（2026-11-05 用户反馈：报错后改输入，页脚红字同步消失）
+    {
+        let w = w.clone();
+        window.on_ping_clear_error(move || {
+            if let Some(w) = w.upgrade() { w.set_ping_has_error(false); }
         });
     }
 
@@ -303,6 +315,24 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
             }
             refresh_all(&w, &state);
             // 下拉勾选态同步：勾选来自清单 enabled 成员关系，重建下拉模型即可
+            rebuild_target_opts(&w, &store.borrow(), &state, w.get_lang_en());
+        });
+    }
+
+    // 表头全选（2026-11-05）：全开→全关；混合/全关→全开（Rust 按 state 裁决，
+    // Slint 只报点击）。勾选态同步 ＋ 下拉模型（与 toggle-target 同套）
+    {
+        let w = w.clone();
+        let state = state.clone();
+        let store = Rc::clone(store);
+        window.on_ping_toggle_all_targets(move || {
+            if let Ok(mut st) = state.lock() {
+                let all_on = st.targets.iter().all(|t| t.enabled);
+                let next = !all_on;
+                for t in &mut st.targets { t.enabled = next; }
+            }
+            let Some(w) = w.upgrade() else { return };
+            refresh_all(&w, &state);
             rebuild_target_opts(&w, &store.borrow(), &state, w.get_lang_en());
         });
     }
@@ -517,6 +547,13 @@ pub(super) fn install(window: &AppWindow, store: &Rc<std::cell::RefCell<ConfigSt
             };
             if let Ok(mut st) = state.lock() {
                 st.source = key.to_string();
+                // 结果反映「源 → 目标」链路：源变了旧结果全部作废（2026-11-05
+                // 用户反馈「切换源还保持上一个的样子」）。清采样回 idle，清单
+                // 翻「待测」、右栏/汇总随 idle 重渲染；选中保留（聚焦不跳）。
+                for t in &mut st.targets {
+                    t.samples.clear();
+                    t.mode = "idle".into();
+                }
             }
             let Some(w) = w.upgrade() else { return };
             w.set_ping_source_key(SharedString::from(key.as_str()));
@@ -532,11 +569,14 @@ fn start_round(w: &AppWindow, state: &Arc<Mutex<PingState>>, targets: Vec<String
     // 行/右栏**保持上次数据**——不再把目标集体翻成 testing 模式渲染成
     // 「测试中/—」再翻回来；按钮文字用 round_active 渲染「测试中…」做在飞
     // 反馈。防重入：轮次在飞时直接忽略新触发。）
-    {
+    // 顺带记下发起源：落地时源已切换则本轮作废（结果反映发起源链路，
+    // 2026-11-05 源切换清结果配套——不然切源瞬间在飞的旧源结果照落）。
+    let src_at_start = {
         let Ok(mut st) = state.lock() else { return };
         if st.round_active { return; }
         st.round_active = true;
-    }
+        st.source.clone()
+    };
     refresh_all(w, state);
     let w2 = w.as_weak();
     let state2 = state.clone();
@@ -574,18 +614,20 @@ fn start_round(w: &AppWindow, state: &Arc<Mutex<PingState>>, targets: Vec<String
             let Some(w) = w2.upgrade() else { return };
             let mut done = 0usize;
             if let Ok(mut st) = state2.lock() {
-                let cur_sel: Option<String> = st.selected_addr().map(|s| s.to_string());
-                for (addr, ts) in results {
-                    if let Some(t) = st.targets.iter_mut().find(|t| t.addr == addr) {
-                        *t = ts;
-                        t.selected = cur_sel.as_deref() == Some(&t.addr);
+                if st.source == src_at_start {
+                    let cur_sel: Option<String> = st.selected_addr().map(|s| s.to_string());
+                    for (addr, ts) in results {
+                        if let Some(t) = st.targets.iter_mut().find(|t| t.addr == addr) {
+                            *t = ts;
+                            t.selected = cur_sel.as_deref() == Some(&t.addr);
+                        }
+                        done += 1;
                     }
-                    done += 1;
                 }
                 st.round_active = false;
             }
             refresh_all(&w, &state2);
-            toast(&w, &format!("Ping 完成 · {} 个目标", done));
+            if done > 0 { toast(&w, &format!("Ping 完成 · {} 个目标", done)); }
         });
     });
 }
@@ -623,6 +665,11 @@ fn refresh_all(w: &AppWindow, state: &Arc<Mutex<PingState>>) {
 
     if st.method == "port" {
         // 已持锁 → 用持锁版渲染（render_listen 会二次 lock，重入即死锁）
+        // 端口模式=本机快照（GetExtendedTcpTable 仅本机；远端枚举端口要三期
+        // SSH 远端执行 netstat）：源 chip 与结果头标签强制显示本机，避免
+        // 「选了 tab、端口列表还是本机」的误导（2026-11-05 用户反馈）。
+        // 切回 Ping 模式时 refresh_all 末尾按 st.source 恢复真实源名。
+        w.set_ping_source_name(SharedString::from(if lang { "Local" } else { "本机" }));
         render_listen_locked(w, &st);
         // 端口模式右栏
         let sel = st.listen_sel.and_then(|p| st.listen_rows.iter().find(|r| r.port == p));
@@ -666,6 +713,16 @@ fn refresh_all(w: &AppWindow, state: &Arc<Mutex<PingState>>) {
     let selected_active = sel_addr.is_some();
     w.set_ping_selected_target_active(selected_active);
 
+    // 发起源显示名：owner 解析行前缀 + 源 chip 共用（「本机 · ip」/「tab名 · ip」
+    // ——从哪个源发起一目了然，2026-11-05「本机歧义」配套）
+    let src_disp = if st.source == "local" {
+        if lang { "Local".to_string() } else { "本机".to_string() }
+    } else {
+        st.hosts_full.iter().find(|(hk, _, _, _, _, _, _, _, _)| *hk == st.source)
+            .map(|(_, n, _, _, _, _, _, _, _)| n.clone())
+            .unwrap_or_else(|| st.source.clone())
+    };
+
     // 在飞反馈（2026-11-04 用户定稿：探测期间行/右栏保持上次数据，不集体
     // 翻「测试中」；只把按钮文字换成「测试中…」+ 禁点）
     let testing = st.round_active;
@@ -673,6 +730,8 @@ fn refresh_all(w: &AppWindow, state: &Arc<Mutex<PingState>>) {
     // has_any / 计数只看参与探测的行（空框=不参与，2026-11-05 定稿）
     let has_any = st.targets.iter().any(|t| t.enabled && t.mode != "idle");
     let enabled_count = st.targets.iter().filter(|t| t.enabled).count();
+    // 表头全选三态用（Slint 按 enabled==target-count 判全勾）
+    w.set_ping_enabled_count(enabled_count as i32);
     // 空态：无选中、无数据 → 图表占位框/三格统计整块隐藏（右栏不再悬着
     // 「—」孤块和空占位框，2026-11-04 用户反馈截图）
     w.set_ping_empty_view(!has_any);
@@ -683,6 +742,32 @@ fn refresh_all(w: &AppWindow, state: &Arc<Mutex<PingState>>) {
         let Some(t) = st.targets.iter().find(|t| &t.addr == addr) else {
             return;
         };
+        // 未探测的目标（新增/源切换清空后）：右栏保持「待测」中性态。不拦
+        // 的话会落进下面按 mode 推导的尾部——idle 被渲染成「优秀/连接稳定」+
+        // 上一个目标的解析卡残留（2026-11-05 用户反馈「新增即优秀」）。
+        if t.mode == "idle" {
+            (
+                (if lang { "Current RTT" } else { "当前 RTT" }).to_string(),
+                "—".to_string(),
+                "ms".to_string(),
+                (if lang { "Idle" } else { "待测" }).to_string(),
+                "neutral".to_string(),
+                (if lang { "Not probed yet" } else { "尚未探测" }).to_string(),
+                t.addr.clone(),
+                false,
+                Vec::new(),
+                String::new(),
+                None,
+                [
+                    (if lang { "Avg" } else { "平均" }).to_string(),
+                    "—".into(),
+                    (if lang { "Jitter" } else { "抖动" }).to_string(),
+                    "—".into(),
+                    (if lang { "Loss" } else { "丢包" }).to_string(),
+                    "—".into(),
+                ],
+            )
+        } else {
         let offline = t.mode == "offline";
         let last = t.last();
         let st_ = t;
@@ -710,9 +795,10 @@ fn refresh_all(w: &AppWindow, state: &Arc<Mutex<PingState>>) {
             true,
             t.samples.clone(),
             loss_path(&t.samples),
-            Some((t.addr.clone(), format!("本机 · {}", t.ip.map(|i| i.to_string()).unwrap_or_else(|| t.addr.clone())))),
+            Some((t.addr.clone(), format!("{} · {}", src_disp, t.ip.map(|i| i.to_string()).unwrap_or_else(|| t.addr.clone())))),
             stats,
         )
+        }
     } else if has_any {
         // 汇总：最慢 + 最快 + 平均抖动 + 丢包目标
         let mut worst_v: Option<f64> = None;
@@ -722,8 +808,10 @@ fn refresh_all(w: &AppWindow, state: &Arc<Mutex<PingState>>) {
         let mut jit_sum = 0.0f64;
         let mut jit_n = 0usize;
         let mut worst_name = String::new();
+        let mut idle_n = 0usize;
         for t in &st.targets {
             if !t.enabled { continue; }   // 空框行不进汇总
+            if t.mode == "idle" { idle_n += 1; }
             if t.mode == "idle" || t.mode == "testing" { continue; }
             if t.mode == "offline" || t.mode == "degraded" { bad_n += 1; }
             if t.loss_pct() > 0.0 { loss_n += 1; }
@@ -735,16 +823,30 @@ fn refresh_all(w: &AppWindow, state: &Arc<Mutex<PingState>>) {
             }
             if let Some(j) = t.jitter() { jit_sum += j; jit_n += 1; }
         }
-        let chart_src = st.worst_target().map(|t| t.samples.clone()).unwrap_or_default();
-        let worst_title = st.worst_target().map(|t| t.addr.clone()).unwrap_or_default();
+        // 图表与「最慢」数字**同源**（2026-11-05 用户问「全部态图示怎么展示」）：
+        // 曾用 worst_target()——它偏袒 offline 目标当最慢，最慢是超时目标时采样
+        // 全空、图表只剩红丢包刻度近乎空白，与「最慢 14ms」数字（只统计有响应
+        // 目标）张冠李戴。改为取循环跟踪的最慢（非 offline）目标采样；全 offline
+        // 时回退到任一有采样目标（红刻度=丢包史仍有意义），真没有则图表隐藏。
+        let chart_src = st.targets.iter().find(|t| t.addr == worst_name)
+            .map(|t| t.samples.clone())
+            .unwrap_or_else(|| st.targets.iter()
+                .find(|t| t.enabled && !t.samples.is_empty())
+                .map(|t| t.samples.clone())
+                .unwrap_or_default());
         (
             if lang { "Slowest" } else { "最慢" }.to_string(),
             worst_v.map(|v| format!("{:.0}", v)).unwrap_or_else(|| "—".into()),
             "ms".to_string(),
-            if bad_n > 0 { format!("{} 个异常", bad_n) } else { "全部正常".into() },
-            if bad_n > 0 { "fair".to_string() } else { "good".to_string() },
-            format!("{} 个目标 · 最慢来自 {}", enabled_count, if worst_name.is_empty() { "—".into() } else { worst_title }),
-            format!("{} 个目标", enabled_count),
+            if bad_n > 0 { format!("{} {}", bad_n, if lang { "bad" } else { "个异常" }) }
+                else if idle_n > 0 { format!("{} {}", idle_n, if lang { "pending" } else { "个待测" }) }
+                else { if lang { "All normal" } else { "全部正常" }.to_string() },
+            if bad_n > 0 { "fair".to_string() } else if idle_n > 0 { "neutral".to_string() } else { "good".to_string() },
+            format!("{} {} · {} {}",
+                enabled_count, if lang { "targets" } else { "个目标" },
+                if lang { "slowest" } else { "最慢" },
+                if worst_name.is_empty() { "—".into() } else { worst_name.clone() }),
+            format!("{} {}", enabled_count, if lang { "targets" } else { "个目标" }),
             true,
             chart_src.clone(),
             loss_path(&chart_src),
@@ -803,23 +905,29 @@ fn refresh_all(w: &AppWindow, state: &Arc<Mutex<PingState>>) {
     } else { format!("探测 {} 个", enabled_count) }));
     let auto_disabled = testing || !has_any;
     w.set_ping_auto_disabled(auto_disabled);
+    let idle_n = st.targets.iter().filter(|t| t.enabled && t.mode == "idle").count();
     let summary = if st.targets.is_empty() {
         (if lang { "No targets" } else { "勾选目标，或在上方输入 IP 后加入" }).to_string()
     } else if enabled_count == 0 {
         (if lang { "No enabled targets" } else { "全部未勾选 · 点行首空框重新参与" }).to_string()
     } else {
         let bad = st.targets.iter().filter(|t| t.enabled && (t.mode == "offline" || t.mode == "degraded")).count();
-        format!("{} 个目标 · {}", enabled_count, if bad > 0 { format!("{} 个异常", bad) } else { "全部正常".into() })
+        if lang {
+            format!("{} targets · {}", enabled_count,
+                if bad > 0 { format!("{} bad", bad) }
+                else if idle_n > 0 { format!("{} pending", idle_n) }
+                else { "all normal".into() })
+        } else {
+            format!("{} 个目标 · {}", enabled_count,
+                if bad > 0 { format!("{} 个异常", bad) }
+                else if idle_n > 0 { format!("{} 个待测", idle_n) }
+                else { "全部正常".into() })
+        }
     };
     w.set_ping_summary(SharedString::from(summary));
 
-    // 源提示（一期固定本机；非 local 显示主机名而非裸 id）
-    w.set_ping_source_name(SharedString::from(match st.source.as_str() {
-        "local" => "本机".into(),
-        k => st.hosts_full.iter().find(|(hk, _, _, _, _, _, _, _, _)| hk == k)
-            .map(|(_, n, _, _, _, _, _, _, _)| n.clone())
-            .unwrap_or_else(|| k.to_string()),
-    }));
+    // 源 chip 显示名（src_disp 上面已算好——本地引擎一期，UI 语义按所选源）
+    w.set_ping_source_name(SharedString::from(src_disp));
 }
 
 /// 引擎行 → Slint struct（唯一转换点）。
