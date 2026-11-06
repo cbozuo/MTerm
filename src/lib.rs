@@ -25,6 +25,9 @@ pub mod rdp;
 pub mod remote;
 pub mod resource;
 pub mod session;
+// (#left-panel-v3-r2 2026-11-06) 左侧会话面板引擎:树形拍平/定位/行几何
+// (struct 零 Slint;Slint 桥在 crate::app::session_models)。
+pub mod session_tree;
 pub mod sftp;
 pub mod ssh;
 pub mod terminal;

@@ -78,6 +78,9 @@ export struct CtxRowHit {
 // --- SessionRow ------------------------------------------------------------
 component SessionRow inherits Rectangle {
     in property <SessionInfo> session;
+    // (#left-panel-v3-r2) 左侧栏下行:当前会话(accent 渐变底)/ 定位闪烁行 id。
+    in property <string> active-session-id: "";
+    in property <string> locate-flash-id: "";
     in property <bool> compact;
     callback connect();
     callback edit();
@@ -207,7 +210,7 @@ component SessionRow inherits Rectangle {
     // (#drag-pitch-real 2026-09-11) 40px → 真实行距(30/32 行高 + 2px 间隙):
     // 槽位框高度、±pitch 偏移与让位阈值(line-half)全部由此派生,失配
     // 会导致框比行高 8px、错位半行(用户截图),让位手感也迟钝。
-    in-out property <length> drag-pitch: root.compact ? 34px : 32px;
+    in-out property <length> drag-pitch: 36px; // (#tree-geom) 34 行高 + 2 间距
     // (#drag-step-real 2026-09-12 → #member-gap 2026-09-21) **让位步长 = 行距**。
     // 旧世界:成员行紧贴(sess-list spacing 0),排布步长 = 行高 = pitch - 2px。
     // 现在(#member-gap):成员行之间有 2px 间距,真实排布步长 = 行高 + 2px
@@ -340,10 +343,11 @@ component SessionRow inherits Rectangle {
     property <length> grab-y;
     property <length> grab-x;
 
-    // (#density 2026-09-11) 行高收紧 36→30(窄栏 38→32):36/38px 配 13px 字号
-    // 显得空旷(用户反馈),30/32 更接近设计稿的紧凑列表观感,同时保留
-    // "桌面端比 28px 宽松一档"的可点性。drag-pitch = 本高 + 2 自动跟随。
-    height: root.compact ? 32px : 30px;
+    // (#left-panel-v3-r2 2026-11-06 #tree-geom) 行高统一 34px(mockup V3.6
+    // 会话行 34;主机/用户只在悬停卡)。drag-pitch = 34 + MEMBER_GAP(2) = 36,
+    // 与 crate::session_tree::row::ROW_HEIGHT_SESSION 同一张表(改任一侧必须
+    // 同步另一侧 + locate 滚动坐标)。
+    height: 34px;
     // (#slot-shift) 让位位移:配合外包 wrapper 使用(布局子元素不能设 y)。
     y: root.shift-y;
     // 让位动画 = 物理弹簧 spring(0.35) / 90ms。用弹簧而非贝塞尔:animate 由属性变化驱动,
@@ -627,12 +631,18 @@ component SessionRow inherits Rectangle {
         // 不消失了,体验很不好")。菜单一旦失效(离开安全区自动关闭 / Esc /
         // 选中一项),高亮立刻归位:列表的任何高亮都能被"鼠标在哪 + 菜单开
         // 没开"完整解释,没有第三个隐藏状态。
-        background: (touch.has-hover || root.ctx-open-key == session.id)
-            && !root.list-dragging ? Theme.bg-hover : transparent;
+        // (#left-panel-v3-r2) 行底三态(mockup srow):当前会话(accent 渐变带)
+        // > 定位闪烁(accent 淡染 + 描边,在下方独立层)> 悬停/菜单锚点(hover)。
+        background: session.id != "" && session.id == root.active-session-id
+            ? @linear-gradient(90deg, Theme.zone-sidebar-accent-soft 0%, transparent 72%)
+            : (touch.has-hover || root.ctx-open-key == session.id)
+                && !root.list-dragging ? Theme.bg-hover : transparent;
         animate background { duration: 120ms; }
 
     HorizontalLayout {
-        padding-left: 10px + root.content-indent;
+        // (#icon-col-align) 内距 10 → 12 与组头同锚:depth1 成员图标左缘
+        // = 12 + 20 = 32 = 组头 folder 左缘(12+16+4)。
+        padding-left: 12px + root.content-indent;
         padding-right: 10px;
         // (#row-icon-align-r2 2026-09-22) 图标槽 15→16px 时曾把间距同步放到
         // 10px,实测偏空(用户截图)。图标视觉宽已从 12.86 增到 14.91,槽内留白
@@ -670,51 +680,113 @@ component SessionRow inherits Rectangle {
 
         // (#session-hover-card-r2 2026-09-05) 成员行单行化:只显示名称,
         // 与图标垂直居中对齐(主机/用户/备注等详情移至悬停信息卡片)。
-        // 原双行(名称+副标题)布局废弃,行高与组头一致更整齐。
-        if root.compact : Text {
+        // (#left-panel-v3-r2) 两种模式合一(旧 compact 双分支退役)。
+        Text {
             horizontal-stretch: 1;
             text: session.name;
             color: Theme.text-primary;
-            // (#fs-align-design 2026-09-10) 侧栏(compact)成员名 fs-sm(12px)
-            // → fs-md(13px),与组名**完全同号**。此前成员比组名小 1px,用户
-            // 截图对比 HTML 设计稿反馈"组名和成员不一样大"——设计稿里两者
-            // 都是 13px(仅字重 600/400 区分),这里补齐。
             font-size: Theme.fs-md;
-            // (#default-group-header) 字重统一 400:成员就是成员,不再有
-            // "默认组成员伪装成组头"的 700 字重分支。
-            font-weight: Theme.fw-regular;
+            font-weight: session.id == root.locate-flash-id ? Theme.fw-strong : Theme.fw-regular;
             vertical-alignment: center;
             overflow: elide;
-        }
-        if !root.compact : Text {
-            text: session.name;
-            color: Theme.text-primary;
-            // (#fs-align-design 2026-09-10) 宽列表同样收口到 fs-md:top-level
-            // (默认组)成员原为 fs-lg(15px) 比组名大一档,与设计稿不符。
-            font-size: Theme.fs-md;
-            // (#default-group-header) 字重统一 400:成员就是成员,不再有
-            // "默认组成员伪装成组头"的 700 字重分支。
-            font-weight: Theme.fw-regular;
-            vertical-alignment: center;
-            width: 180px;
-            overflow: elide;
-        }
-        if !root.compact : Text {
-            text: session.port > 0 ? session.host + ":" + session.port : session.host;
-            color: Theme.text-secondary;
-            font-size: Theme.fs-sm;
-            vertical-alignment: center;
-            width: 180px;
-            overflow: elide;
-        }
-        if !root.compact : Text {
-            text: session.user;
-            color: Theme.text-secondary;
-            font-size: Theme.fs-sm;
-            vertical-alignment: center;
-            horizontal-stretch: 1;
+            // (#hover-jump) 名称右缘动态让位给覆盖层:悬停 62px(动作带)、
+            // 在线 30px(LIVE 徽章)、未连接 14px(点);布局宽随宽度属性
+            // 收缩 —— Text 自身 width 由 stretch 决定,elide 兜底长名。
+            width: parent.width - (touch.has-hover ? 66px
+                : session.conn-state == 2 ? 34px
+                : session.conn-state == 1 ? 16px : 8px);
         }
     }
+    }
+
+    // (#hover-jump 2026-11-06 用户反馈"碰到图标会跳动") 行尾覆盖层:状态
+    // (LIVE/空心点)与悬停操作钮**绝对定位**,不占 HorizontalLayout 布局 ——
+    // 悬停时名称列几何零变化(mockup .gactions/.sactions absolute 同款)。
+    // 常态右侧留 20px 给状态点;悬停时操作钮盖住状态区(56px 带底)。
+    Rectangle {
+        x: parent.width - self.width - 6px;
+        y: (parent.height - self.height) / 2;
+        width: !touch.has-hover ? (session.conn-state == 2 ? 36px : 8px)
+            : session.builtin ? 0px : 56px;
+        height: 22px;
+        visible: self.width > 0px;
+        // 常态:状态展示。
+        if !touch.has-hover && session.conn-state == 2 : Rectangle {
+            width: parent.width;
+            height: 16px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 3px;
+            background: Theme.zone-sidebar-accent-soft;
+            border-width: 1px;
+            border-color: Theme.zone-sidebar-accent;
+            live-pill := Text {
+                x: (parent.width - self.width) / 2;
+                height: parent.height;
+                vertical-alignment: center;
+                text: "LIVE";
+                color: Theme.zone-sidebar-accent;
+                font-size: 8px;
+                font-weight: Theme.fw-strong;
+            }
+        }
+        if !touch.has-hover && session.conn-state == 1 : Rectangle {
+            width: 6px;
+            height: 6px;
+            x: 1px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 3px;
+            border-width: 1px;
+            border-color: Theme.zone-sidebar-accent;
+        }
+        // 悬停:三操作钮(带 palt 底托,mockup .gactions background:var(--palt))。
+        if touch.has-hover && !session.builtin : Rectangle {
+            width: parent.width;
+            height: parent.height;
+            border-radius: Theme.radius-sm;
+            background: Theme.panel-solid;
+            HorizontalLayout {
+                spacing: 2px;
+                Rectangle {
+                    width: 18px;
+                    height: 18px;
+                    y: 2px;
+                    border-radius: 3px;
+                    background: act-edit.has-hover ? Theme.bg-hover : transparent;
+                    animate background { duration: 100ms; }
+                    Icon { glyph: "edit"; tint: act-edit.has-hover ? Theme.zone-sidebar-accent : Theme.text-secondary; size: 13px; }
+                    act-edit := TouchArea {
+                        mouse-cursor: default;
+                        clicked => { root.edit(); }
+                    }
+                }
+                Rectangle {
+                    width: 18px;
+                    height: 18px;
+                    y: 2px;
+                    border-radius: 3px;
+                    background: act-copy.has-hover ? Theme.bg-hover : transparent;
+                    animate background { duration: 100ms; }
+                    Icon { glyph: "copy"; tint: act-copy.has-hover ? Theme.zone-sidebar-accent : Theme.text-secondary; size: 13px; }
+                    act-copy := TouchArea {
+                        mouse-cursor: default;
+                        clicked => { root.duplicate(); }
+                    }
+                }
+                Rectangle {
+                    width: 18px;
+                    height: 18px;
+                    y: 2px;
+                    border-radius: 3px;
+                    background: act-del.has-hover ? Theme.bg-hover : transparent;
+                    animate background { duration: 100ms; }
+                    Icon { glyph: "delete"; tint: act-del.has-hover ? Theme.danger-strong : Theme.text-secondary; size: 13px; }
+                    act-del := TouchArea {
+                        mouse-cursor: default;
+                        clicked => { root.remove(); }
+                    }
+                }
+            }
+        }
     }
 
     // (#slot-box-persist 2026-09-21) 框从 `if box-show` 条件元素改为**常驻元素
@@ -755,90 +827,11 @@ component SessionRow inherits Rectangle {
         border-radius: 6px;
     }
 
-    // (#tree-guide-keep-on-drag 2026-09-09) 树形引导竖线提到 card 之外:
-    // 拖动期间 card.opacity 归零(原槽成洞),树线若留在 card 内会一并消失,
-    // 原槽留下一段断线(用户截图反馈"左侧竖线要补全")。移为 SessionRow
-    // 根同级元素后它不受 card.opacity 影响,始终锚在原槽位置补全竖线;非
-    // 拖动态视觉不变(竖线位于左侧内缩区,不与内容重叠)。
-    if root.tree-guide : Rectangle {
-        // 脊线段:2px 宽 / 组色 / 全行高。y 用 `-root.y` 抵消行自身的位移(root.y 即行 y
-        // 的动画后值),段因此钉死在自己的槽位 —— 让位时只有成员行滑动、竖线不动,段间
-        // 边界恒等于静止时的精确铺贴关系,不会出现亚像素暗缝。
-        // (#group-hue-align-html 2026-09-10) 2px + α0.30:对齐 HTML 原型
-        // 规格(2px 组色 α0.28);2px 同时更抗 femtovg 邻接重绘闪烁。
-        // 竖线取**全行高**:从组头卡下方开始(组头卡不含 tree-guide),不穿组头也不断线。
-        // (#tree-line-hover 2026-09-10) 悬停该组(组头或组内任一行)→ 整条
-        // 脊线高亮。`hover-group != ""` 是必需的保护——空字符串是共享状态
-        // 的初值,若不排除,所有 group == "" 的行会被判定为常亮(幽灵高亮)。
-        // 高亮只抬不透明度(0.30 → 0.90),宽度与位置恒定 —— 改几何会让半像素落在像素边界上,
-        // 出现"半透边缘 + 邻接重绘"的抖动。
-        // 点亮范围 = 鼠标所在的组 ∪ 右键菜单锚点所在的组;菜单失效即熄灭,没有第三个隐藏状态。
-        // (#spine-highlight-drag 2026-09-11) 拖动期间**被拖行所在组**的脊线
-        // 保持点亮(hover 在 grab 期间冻结,改由拖动状态驱动)。
-        // 高亮值由组件级 spine-hot 统一给出:悬停 / 菜单锚点 / 拖动中 ghost 所在组 → 0.90。
-        // 每段向上外延 2px(上桥接):首成员接住组头卡下方那道缝,其余成员吃成员间的
-        // 2px 缝。相邻段因此首尾精确相接、零重叠 —— 重叠会让组色 α0.30 叠成 α0.51,
-        // 在交界处糊出一段比线身更亮的线。
-        x: 10px + (root.content-indent / 2) - 1px;
-        y: -2px - root.y;
-        width: 2px;
-        height: parent.height + 2px;
-        background: Theme.group-color(root.session.group-color-hex != "", root.session.group-color).with-alpha(root.spine-hot ? 0.90 : 0.30);
-        animate background { duration: 120ms; easing: ease-out; }
-    }
-
-    // (#tree-branch 2026-09-10) 成员横线:竖线 → 成员图标的 ├ 拐角。
-    // 原型里脊线靠一条 9px 横杠接到成员圆点,成员才真正"长在"组上;没有
-    // 横杠时竖线与成员只是"并排",从属关系靠脑补。x = 脊线右缘(20px),
-    // 宽 8px 至图标方块左缘(28px);conn-state 圆点(x 24..30)绘制在上层,
-    // 视觉正好呈现"竖线 — 横线 — 圆点"。竖线/横线同色同透明度,共成一根
-    // 连续枝干。
-    // (#tree-branch-drag-hide 2026-09-11) 被拖行本体隐形后**横线一并消失**
-    // (设计:拖起时横线不存在——枝干跟着成员走了);竖线不同,它是**组级**
-    // 脊线,拖走成员后仍要补全(上一条注释的既定行为),二者故意不同。
-    if root.tree-guide && root.session.id != root.drag-id : Rectangle {
-        // (#tree-line-hover 2026-09-10) 悬停该成员行 → 它自己的横线提亮。
-        // 横线只属于这一行,所以条件用本行 hover 而非组级状态。
-        // (#line-highlight-color-only 2026-09-10) **只提亮、不加粗**:与竖线
-        // 同一原则(几何恒定优于动几何)。同时保证**竖线恒比横线粗**——
-        // 竖 2px / 横恒 1px,高亮态也不改变这个权重关系,"主干 > 分支"的
-        // 层级在任何状态下都成立(上版高亮时横线 1px→2px 会瞬间追平竖线,
-        // 枝干层级在高亮瞬间被抹掉)。长度同样锁定 8px:再长会伸进图标
-        // 方块(图标起于 28px,横线止于 28px 正好搭边)。
-        // (#ctx-highlight-scope) 横线是**这一行自己的**枝干,点亮范围严格
-        // 等于这一行:悬停本行,或本行是当前菜单锚点(菜单开着时鼠标可能已
-        // 移到菜单上,横线不该跟着黑掉)。与底色同源、同范围。
-        // (#ghost-cover-line-hot 2026-09-12) 拖动中扩一条:ghost 卡的**顶边
-        // 落到本行里**(向上拖时顶边碰到本行下边、继续上抬就压住本行)时,
-        // 本行的横线一起点亮 —— 卡片盖住哪一行,那行的枝干就亮,拖动路径
-        // 一眼看得清(用户要求)。判定用 ghost 顶边的内容坐标,与让位同源。
-        // (#ghost-cover-line-lead 2026-09-13) 高亮用**拖动方向的反向边**:
-        // 向上拖看卡顶、向下拖看卡底 —— 两端都与成员行的命中/让位同一把尺子。
-        // 旧实现恒用卡顶:向下拖时,卡底早就碰到成员上边了,卡顶还在上一行,
-        // 于是该亮的行不亮、上一行反而亮着(用户实测:"ghost 的底边碰到成员的
-        // 上边,该成员左侧的横线要高亮")。
-        // (#in-group-only 2026-09-14) **仅限本组成员**:拖出本组范围后,ghost
-        // 盖到别的组的行不再点亮其横线(用户定稿:其它组的枝干与本次拖动
-        // 无关,亮了反而像"可以拖进去")。
-        property <bool> ghost-covers:
-            root.list-dragging && root.drag-id != ""
-            && root.drag-id != root.session.id
-            && !root.drag-fly-home
-            && root.session.group == root.drag-group
-            && (root.drag-dy > 0px
-                ? (root.ghost-bottom-y >= root.slot-y
-                    && root.ghost-bottom-y <= root.slot-y + root.height)
-                : (root.ghost-top-y >= root.slot-y
-                    && root.ghost-top-y <= root.slot-y + root.height));
-        property <bool> hot: touch.has-hover || root.ctx-open-key == root.session.id
-            || self.ghost-covers;
-        x: 10px + (root.content-indent / 2) + 1px;
-        y: (parent.height - 1px) / 2;
-        width: 8px;
-        height: 1px;
-        background: Theme.group-color(root.session.group-color-hex != "", root.session.group-color).with-alpha(self.hot ? 0.90 : 0.30);
-        animate background { duration: 120ms; easing: ease-out; }
-    }
+    // (#left-panel-v3-r2) 树形引导竖线/横枝线整体退役(mockup V3「去掉树脊
+    // 线」:328px 深色侧栏里树线与组色/悬浮底/选中态争抢注意力,层级线索 =
+    // 缩进 + 分组带 + 文件夹图标)。原 #tree-guide-keep-on-drag(808-891 行)
+    // 两块随之删除;SessionRow.tree-guide 属性保留为死参数(调用点置 false),
+    // 后续轮次彻底摘除。
 
     // (#single-drop-slot 2026-09-07) 插入指示线整体退役:行顶/行底两条线是
     // "两成员间两个位置"错觉的视觉根源(即使语义等价,用户也会把蓝线在 A 底
@@ -878,8 +871,42 @@ export component LeftSidebar inherits Rectangle {
     // changed 处理器统一落焦 —— 加了聚焦外环之后，焦点常驻会让青环一直亮着。
     property <int> search-blur-token: 0;
     changed search-blur-token => {
-        if (search-input.has-focus) { search-input.clear-focus(); }
+        if (search-input.has-focus) {
+            search-input.clear-focus();
+            // (#hotkey-focus-return) 失焦后焦点悬空(无新焦点接管)时,
+            // 快捷键链断线 —— 归还给 shortcut-scope。
+            root.return-hotkey-focus();
+        }
     }
+    // (#left-panel-v3-r2 2026-11-06) V3 面板 chrome:标题行「会话 + 总数徽章 +
+    // 搜索/新建/定位/更多」四裸图标(26px);搜索行**按需展开**(mockup V3.9,
+    // 默认只有标题栏搜索图标);定位 = Rust 下发滚动坐标 + 1.8s 闪烁行 id
+    // (IDEA Select in Project View 同款,引擎在 crate::session_tree)。
+    in property <int> session-total: 0;
+    // (#left-panel-v3-r2) 活动终端 tab 的会话 id:当前会话行的 accent 渐变底
+    // (mockup srow.active)与 LIVE 徽章判定的数据源;Rust 在
+    // refresh_session_markers_win 里随行回写。
+    in property <string> active-session-id: "";
+    in property <length> locate-scroll-y: 0px;
+    in-out property <string> locate-flash-id: "";
+    callback locate-current-session();
+    // (#menu-v2) ⋯ 菜单「面板设置」:打开接口设置弹框的「侧栏」页
+    // (app.slint 转发到 interface-open + ifd-page="sidebar")。
+    callback open-panel-settings();
+    // (#hotkey-focus-return) 搜索框失焦/收起时把焦点交还快捷键链
+    // (app.slint 转发 shortcut-scope.focus())。
+    callback return-hotkey-focus();
+    // 搜索行展开态(两个实例各自持有;展开即聚焦,空内容 Esc 收起)。
+    property <bool> search-open: false;
+    // 展开聚焦/收起清空都由标题行搜索钮的 clicked 处理(见 header);这里只留状态。
+    // (#menu-v2) ⋯ 菜单锚点:标题行底 = 根级别名(菜单块与 card 平级时
+    // parent 不是 card,header-y 不可见;锚钮在标题行,菜单 y = 标题行底+2)。
+    property <length> header-y-for-menu:
+        (root.compact ? 0px : 8px) + 36px
+        + (root.import-hint != "" ? 18px : 0px) + 2px;
+    // (#left-panel-v3-r2) 标题行「⋯」面板菜单(新建分组/导入/全部展开/折叠/
+    // 本地终端显隐)。仿 ping 弹层惯例:菜单开 = 全面板透明 backdrop,点击即关。
+    property <bool> more-open: false;
     // (#session-hover-card) 成员行 hover 信息卡片的中转槽:SessionRow 写入,
     // 实例侧绑定到 AppWindow 根的集中浮层(链路 SessionRow→Welcome→根)。
     in-out property <string> card-out-name;
@@ -908,7 +935,7 @@ export component LeftSidebar inherits Rectangle {
     // (#drag-pitch-real 2026-09-11) 40px → 真实行距(30/32 行高 + 2px 间隙):
     // 槽位框高度、±pitch 偏移与让位阈值(line-half)全部由此派生,失配
     // 会导致框比行高 8px、错位半行(用户截图),让位手感也迟钝。
-    in-out property <length> drag-pitch: root.compact ? 34px : 32px;
+    in-out property <length> drag-pitch: 36px; // (#tree-geom) 34 行高 + 2 间距
     // (#drag-step-real 2026-09-12 → #member-gap 2026-09-21) 让位步长 = **行距**。
     // 旧行紧贴时步长 = 行高(pitch - 2px);现在成员行之间有 2px 间距
     // (#member-gap),真实排布步长 = 行高 + 2px = drag-pitch(32/34)。
@@ -1301,71 +1328,218 @@ export component LeftSidebar inherits Rectangle {
         border-width: root.compact ? 0px : Theme.hairline();
         border-color: Theme.border-subtle;
 
-        // 头部行(绝对 y=12,高 30,容纳 30px 的主按钮)。
+        // (#left-panel-v3-r2 2026-11-06) V3 面板 chrome 布局计算:标题行 36px,
+        // 其下导入结果提示(可选 18px),再其下按需搜索行(38px,含上下呼吸 2px)。
+        // 列表 y 由 content-y + 搜索行开合派生 —— mockup V3.9「搜索非常显」:
+        // 默认只有标题栏搜索图标,激活才展开搜索行。
+        property <length> header-y: root.compact ? 0px : 8px;
+        property <length> content-y: self.header-y + 36px
+            + (root.import-hint != "" ? 18px : 0px);
+        // (#topline-gap 2026-11-06 三轮定稿): 首组与标题行底线**不贴死** ——
+        // mockup .tree padding-top 6px(此前误记 2px),留一档呼吸更协调。
+        // 搜索行展开才让位 38px。
+        property <length> list-y: self.content-y + (root.search-open ? 38px : 6px);
+
+        // 标题行:「会话」+ 总数徽章 + 右侧 搜索/新建/定位/更多 四裸图标(26px)。
+        // (#left-panel-v3) mockup §V4 面板标题层:新建收进标题栏(大按钮退役),
+        // 「＋」默认与其它图标同色、悬停转强调色;停靠拖动 TouchArea 保留。
         Rectangle {
-            x: 16px;
-            y: 12px;
-            width: parent.width - 32px;
-            height: 30px;
-                    TouchArea {
-                        enabled: root.compact;
-                        mouse-cursor: move;
-                        moved => {
-                            root.dock-drag-move(self.absolute-position.x + self.mouse-x,
-                                                self.absolute-position.y + self.mouse-y);
-                        }
-                        pointer-event(ev) => {
-                            if (ev.kind == PointerEventKind.up) { root.dock-drag-end(); }
-                        }
-                    }
-                    header-row := HorizontalLayout {
-                        spacing: 8px;
-                        if root.compact && root.show-collapse && root.dock-edge != "left" : CollapseButton {
-                            glyph: root.dock-edge == "right" ? "chevron-right"
-                                 : root.dock-edge == "top" ? "expand-less"
-                                 : "expand-more";
-                            clicked => { root.collapse(); }
-                        }
-                        Text {
-                            text: @tr("Quick connect");
-                            color: Theme.text-primary;
-                            font-size: Theme.fs-lg;
-                            font-weight: Theme.fw-strong;
-                            vertical-alignment: center;
-                            horizontal-stretch: 1;
-                        }
-                        if root.compact && root.show-collapse && root.dock-edge == "left" : CollapseButton {
-                            glyph: "chevron-left";
-                            clicked => { root.collapse(); }
-                        }
-                        Text {
-                            text: root.import-hint;
-                            color: Theme.text-muted;
-                            font-size: Theme.fs-sm;
-                            vertical-alignment: center;
-                        }
-                        if !root.compact : PrimaryButton {
-                        surface-alpha: Theme.sidebar-alpha;
-                            text: @tr("+ New session");
-                            clicked => { root.new-session(); }
-                        }
+            x: 0px;
+            y: parent.header-y;
+            width: parent.width;
+            height: 36px;
+            // (#topbar-line 2026-11-06 用户反馈"没有标题行的底线"):mockup
+            // .panel-top border-bottom 1px --line —— 标题行与树画布的分界。
+            Rectangle {
+                x: 0px;
+                y: parent.height - 1px;
+                width: parent.width;
+                height: 1px;
+                background: Theme.zone-sidebar-line;
+            }
+            // (#dock-redrag) 停靠态整行可拖动换边(原 Quick connect 头部行为)。
+            TouchArea {
+                enabled: root.compact && !root.more-open;
+                mouse-cursor: move;
+                moved => {
+                    root.dock-drag-move(self.absolute-position.x + self.mouse-x,
+                                        self.absolute-position.y + self.mouse-y);
+                }
+                pointer-event(ev) => {
+                    if (ev.kind == PointerEventKind.up) { root.dock-drag-end(); }
+                }
+            }
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 8px;
+                spacing: 2px;
+                if root.compact && root.show-collapse && root.dock-edge != "left" : CollapseButton {
+                    glyph: root.dock-edge == "right" ? "chevron-right"
+                         : root.dock-edge == "top" ? "expand-less"
+                         : "expand-more";
+                    clicked => { root.collapse(); }
+                }
+                Text {
+                    // (#left-panel-v3) 面板标题 = 「会话」(mockup panel-title);
+                    // 旧「快速连接」标题退役 —— 面板只表达"这是会话面板"。
+                    text: @tr("Sessions");
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-md;
+                    font-weight: Theme.fw-strong;
+                    vertical-alignment: center;
+                }
+                // (#left-panel-v3) 总数徽章:当前过滤下的会话行数(Rust 统计下发)。
+                Rectangle {
+                    // (#badge-center 2026-11-06) 徽章 16px 高 + y 手工居中:
+                    // HL 交叉轴默认 stretch 会把 16px 拉到 36px 行高(mockup
+                    // panel-title-count 15px 居中),y 显式钳回中位。
+                    width: max(16px, total-num.preferred-width + 10px);
+                    height: 16px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 8px;
+                    background: Theme.zone-sidebar-accent-soft;
+                    total-num := Text {
+                        x: (parent.width - self.width) / 2;
+                        height: parent.height;
+                        vertical-alignment: center;
+                        text: "\{root.session-total}";
+                        color: Theme.zone-sidebar-accent;
+                        font-size: Theme.fs-2xs;
+                        font-weight: Theme.fw-strong;
                     }
                 }
-                if root.compact : PrimaryButton {
-                        surface-alpha: Theme.sidebar-alpha;
-                    x: 16px;
-                    y: 50px;
-                    width: parent.width - 32px;
-                    height: 30px;
-                    text: @tr("+ New session");
-                    clicked => { root.new-session(); }
+                Rectangle { horizontal-stretch: 1; }
+                if root.compact && root.show-collapse && root.dock-edge == "left" : CollapseButton {
+                    glyph: "chevron-left";
+                    clicked => { root.collapse(); }
                 }
+                // 搜索钮:展开/收起搜索行;开着或查询非空时强调色淡染(mockup
+                // searchToggle.search-on 同款)。
+                header-tool := Rectangle {
+                    y: 5px;
+                    width: 26px;
+                    height: 26px;
+                    border-radius: Theme.radius-sm;
+                    background: (root.search-open || root.search-query != "")
+                        && header-tool-ta.has-hover ? Theme.zone-sidebar-active
+                        : (root.search-open || root.search-query != "")
+                            ? Theme.zone-sidebar-accent-soft
+                            : header-tool-ta.has-hover ? Theme.bg-hover
+                            : transparent;
+                    animate background { duration: 110ms; }
+                    Icon {
+                        glyph: "search";
+                        tint: (root.search-open || root.search-query != "")
+                            ? Theme.zone-sidebar-accent
+                            : header-tool-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        size: 14px;
+                    }
+                    header-tool-ta := TouchArea {
+                        mouse-cursor: default;
+                        clicked => {
+                        root.search-open = !root.search-open;
+                        // 收起即清空:旧查询残留会让列表停在过滤态且无输入框可见。
+                        if (!root.search-open && root.search-query != "") {
+                            root.search-query = "";
+                            root.search-changed("");
+                        }
+                        if (root.search-open) {
+                            search-input.focus();
+                        } else {
+                            // (#hotkey-focus-return 2026-11-06) 收起即归还焦点:
+                            // 焦点滞留在隐藏的 TextInput 上时,终端与
+                            // shortcut-scope 都收不到 Ctrl+B / Ctrl+Alt+B
+                            // (两个面板快捷键失效的根因)。
+                            root.return-hotkey-focus();
+                        }
+                    }
+                    }
+                }
+                // 新建会话钮:默认中性色,悬停转强调色(mockup「＋不再常亮」)。
+                Rectangle {
+                    y: 5px;
+                    width: 26px;
+                    height: 26px;
+                    border-radius: Theme.radius-sm;
+                    background: new-ta.has-hover ? Theme.bg-hover : transparent;
+                    animate background { duration: 110ms; }
+                    Icon {
+                        glyph: "new-session";
+                        tint: new-ta.has-hover ? Theme.zone-sidebar-accent : Theme.text-secondary;
+                        size: 14px;
+                    }
+                    new-ta := TouchArea {
+                        mouse-cursor: default;
+                        clicked => { root.new-session(); }
+                    }
+                }
+                // 定位当前终端钮:⌖(IDEA Select in Project View);回调走 Rust
+                // 引擎(展开祖先 → 滚动 → 闪烁)。
+                Rectangle {
+                    y: 5px;
+                    width: 26px;
+                    height: 26px;
+                    border-radius: Theme.radius-sm;
+                    background: locate-ta.has-hover ? Theme.bg-hover : transparent;
+                    animate background { duration: 110ms; }
+                    Icon {
+                        glyph: "click-locate";
+                        tint: locate-ta.has-hover ? Theme.zone-sidebar-accent : Theme.text-secondary;
+                        size: 14px;
+                    }
+                    locate-ta := TouchArea {
+                        mouse-cursor: default;
+                        clicked => { root.locate-current-session(); }
+                    }
+                }
+                // 更多钮:面板菜单(⋯)。(#menu-open-pin) 菜单开着时 z 提升
+                // 到 backdrop 之上(否则后绘的 backdrop 盖钮,active 选中底被吞)。
+                Rectangle {
+                    z: 2;
+                    y: 5px;
+                    width: 26px;
+                    height: 26px;
+                    border-radius: Theme.radius-sm;
+                    background: root.more-open ? Theme.zone-sidebar-active
+                        : more-ta.has-hover ? Theme.bg-hover : transparent;
+                    animate background { duration: 110ms; }
+                    Icon {
+                        glyph: "more-vert";
+                        tint: root.more-open || more-ta.has-hover
+                            ? Theme.text-primary : Theme.text-secondary;
+                        size: 14px;
+                    }
+                    more-ta := TouchArea {
+                        mouse-cursor: default;
+                        clicked => { root.more-open = !root.more-open; }
+                    }
+                }
+            }
+        }
+
+        // 导入结果提示(可选一行,仅在刚导入后非空)。
+        if root.import-hint != "" : Text {
+            x: 12px;
+            y: parent.header-y + 36px;
+            width: parent.width - 24px;
+            height: 16px;
+            text: root.import-hint;
+            color: Theme.text-muted;
+            font-size: Theme.fs-2xs;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
 
                 // Filter saved and built-in sessions by display name or host.
+                // (#left-panel-v3-r2) 搜索行**按需展开**(mockup V3.9):默认收起
+                // (visible=false;绝对定位不占布局,树画布自然上移)。搜索框保持
+                // 无条件实例 —— search-input 的组件级 id 可见性(blur/focus 依赖)。
                 Rectangle {
-                    x: 16px;
-                    y: root.compact ? 88px : 50px;
-                    width: parent.width - 32px;
+                    visible: root.search-open;
+                    x: 12px;
+                    y: parent.content-y + 2px;
+                    width: parent.width - 24px;
                     height: 32px;
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
@@ -1497,10 +1671,10 @@ export component LeftSidebar inherits Rectangle {
                 }
 
                 if sessions.length == 0 : Rectangle {
-                    x: 16px;
-                    y: root.compact ? 128px : 90px;
-                    width: parent.width - 32px;
-                    height: parent.height - (root.compact ? 144px : 106px);
+                    x: 12px;
+                    y: parent.list-y;
+                    width: parent.width - 24px;
+                    height: parent.height - parent.list-y - 6px;
                     background: Theme.zone-sidebar-root;
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
@@ -1596,6 +1770,16 @@ export component LeftSidebar inherits Rectangle {
                     // 度】、被比较的 slot-y 却是【内容坐标】:列表一滚动,内容
                     // 坐标远大于可视高度,落点被死死钉在首尾两行、拖过头也不
                     // 变——"首尾粘住""长列表拖不到位"的公共根因。
+                    // (#left-panel-v3-r2) 「定位当前终端」滚动:Rust 下发目标行
+                    // 中心派生的内容坐标(引擎 session_tree::row_metrics 累计),
+                    // 变化即平移视口(Flickable content-y 为负值域)。changed 只能
+                    // 监听本元素属性 → 桥接属性中转(同 ctx-open-watch 惯例)。
+                    property <length> locate-scroll-watch: root.locate-scroll-y;
+                    changed locate-scroll-watch => {
+                        if (root.locate-scroll-y > 0px) {
+                            flick.content-y = -root.locate-scroll-y;
+                        }
+                    }
                     property <length> drag-pointer-y:
                         root.drag-origin-y + root.drag-dy + root.drag-scroll-dy;
                     // (#ghost-follow-x-r2 2026-09-11) 指针 x(**列表内容坐标**):
@@ -1635,10 +1819,10 @@ export component LeftSidebar inherits Rectangle {
                         // 反馈的"拖动不跟手"(拖到底部附近卡片不走了)。现在
                         // 与出组态统一:只受面板可视底约束,卡片全程贴指针。
                         max(0px, -flick.content-y + flick.height) - self.ghost-h);
-                    x: 16px;
-                    y: root.compact ? 128px : 90px;
-                    width: parent.width - 32px;
-                    height: parent.height - (root.compact ? 144px : 106px);
+                    x: 0px;
+                    y: parent.list-y;
+                    width: parent.width;
+                    height: parent.height - parent.list-y;
                     // (#ghost-panel-overlay 2026-09-11) 裁切职责下移到 flick:
                     // list-host 不再 clip,ghost 卡才能越出列表边界浮到面板上
                     // (滚动内容仍由 flick 裁,互不影响)。
@@ -1693,10 +1877,20 @@ export component LeftSidebar inherits Rectangle {
                         // 贡献):可见成员行 padding 2px(原外层 spacing 补偿),
                         // 可见组头行 padding 6px(原 4px + 外层 2px 并入),
                         // 组间净距在收起/展开/搜索三态恒定 6px。
+                        // (#gap-uniform 2026-11-06 用户反馈"每组间距不一致"):
+                        // 组头 padding 恒 6px(旧 i>0 条件让"当前可见首组"贴顶,
+                        // 但前一行若是被隐藏的 system 组,间距就少 6px —— 各组
+                        // 起步高度漂移)。首组贴顶由列表容器的 padding-top 兜住
+                        // (见 tree 区域 2px),组间净距三态恒 6px。
                         padding-top: !self.visible ? 0px
                             : session.row-kind == "group" ? (i > 0 ? 6px : 0px)
                             : 2px;
-                        spacing: 2px;
+                        // (#gap-uniform-r2 2026-11-06) wrapper spacing 归 0:
+                        // 它只会加在"组头↔本组首子行"之间,折叠组(仅组头)
+                        // 没有这一段 —— 展开组的组尾到下一组头因此比折叠组
+                        // 多 2px,组与组"忽大忽小"。归 0 后成员间距全由成员行
+                        // 自身 padding-top 2px 承担(视觉不变),组间净距恒 6px。
+                        spacing: 0px;
                         // (#left-panel-v3) 组头独立行(row-kind == "group")。
                         // Click anywhere on it to collapse / expand the group.
                         if session.row-kind == "group" : gh-shell := Rectangle {
@@ -1748,8 +1942,11 @@ export component LeftSidebar inherits Rectangle {
                             }
                                 // (#in-group-only) 组头不做"进组"命中、也不让位;保留的交互:点击
                                 // 折叠/展开、右键菜单、组头自身的拖动排序。
-                            // (#density) 组头 38→32,与成员行同比例收紧。
-                            height: 32px;
+                            // (#tree-geom 2026-11-06) 组头高度按深度分级(mockup
+                            // V4.1:父组 30 / 一级子组 27 / 更深 26;与引擎
+                            // session_tree::row::ROW_GROUP_D* 同一张表)。
+                            height: session.depth <= 0 ? 30px
+                                : session.depth == 1 ? 27px : 26px;
                             // (#group-sort-line-r2 2026-09-11) 组排序**插入线**的
                             // 落点上报:2px 主题色 + 两端圆点,画在**组与组之间的
                             // 间隙**里 —— 绝不落进组内成员区(用户定稿)。
@@ -1766,8 +1963,9 @@ export component LeftSidebar inherits Rectangle {
                             // 约 8px 落在任何组头的命中区之外 —— 指针走到组尾时线不再
                             // 换手、冻结在上一组(用户反馈的"拖到下面就不丝滑了")。
                             property <length> seg-hit-h:
-                                session.collapsed ? 32px
-                                : (i > 0 ? 6px : 0px) + 34px
+                                session.collapsed ? (session.depth <= 0 ? 30px
+                                    : session.depth == 1 ? 27px : 26px)
+                                : (i > 0 ? 6px : 0px) + 36px
                                     + session.group-size * root.drag-step;
                             // (#group-sort-hit-lead 2026-09-13) **命中区改成"从本组头上方
                             // 16px 到下一组头上方 16px"** —— 也就是每组只领走"自己头前
@@ -1833,18 +2031,81 @@ export component LeftSidebar inherits Rectangle {
                                 y: 0px;
                                 width: 100%;
                                 height: 100%;
-                                // (#group-hierarchy-weight 2026-09-10) 组头常态
-                                // 给一层 panel-alt 底色:层级高的元素靠**底色块**
-                                // 变重,而不是靠字号变大。
-                                //   常态 bg-panel-alt → hover bg-hover
-                                background: (grp-ta.has-hover
-                                    || root.ctx-open-key == "hdr:" + session.group-id)
-                                        ? Theme.bg-hover : Theme.zone-sidebar-alt;
+                                // (#left-panel-v3-r2 2026-11-06) V3 分组带(mockup
+                                // .grow):组色从左向右淡染渐隐 + 同色细描边,深度越
+                                // 深越轻;悬停 = hover 底。Slint 不支持多层画笔 →
+                                // 底色(solid)与组色渐变分成父子两层。
+                                property <color> band: Theme.group-color(
+                                    session.group-color-hex != "", session.group-color);
+                                property <bool> menu-pin:
+                                    grp-ta.has-hover
+                                    || root.ctx-open-key == "hdr:" + session.group-id;
+                                // (#band-fix 2026-11-06 用户截图"渐变断层"):
+                                // (#band-smooth 2026-11-06 二轮:用户截图"渐变
+                                // 断层不丝滑") 断层根因 = 上版把渐变尾色改成
+                                // panel-solid **实色**:两段插值(组色 10%α → 实色)
+                                // 中段把 α 一路拉满,出现"先深后浅"的色脊,78% 处
+                                // 还有一道 α 跳变线。mockup 顺滑是因为全程低 α:
+                                // color-mix(gc 10%, transparent) → transparent,
+                                // 末端露出的是**与行底同源**的 panel 色。
+                                // 等价实现 = 底色 zone-sidebar(与面板同源)+
+                                // 渐变全程低 α(尾色 = 组色 0α,露出底色即无阶)。
+                                background: self.menu-pin ? Theme.zone-sidebar-active
+                                    : Theme.zone-sidebar;
+                                animate background { duration: 120ms; }
+                                border-radius: Theme.radius-sm;
+                                border-width: 1px;
+                                border-color: self.menu-pin ? Theme.zone-sidebar-line
+                                    : session.depth <= 0 ? self.band.with-alpha(0.16)
+                                    : session.depth == 1 ? self.band.with-alpha(0.08)
+                                    : transparent;
+                                // 组色淡染层(d0 10% / d1 4% / d2+ 无;悬停抬到 14%)。
+                                Rectangle {
+                                    x: 0px;
+                                    y: 0px;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    border-radius: parent.border-radius;
+                                    visible: parent.menu-pin || session.depth <= 0 || session.depth == 1;
+                                    background: @linear-gradient(90deg,
+                                        parent.band.with-alpha(parent.menu-pin ? 0.14
+                                            : session.depth <= 0 ? 0.10 : 0.04) 0%,
+                                        parent.band.with-alpha(0) 78%);
+                                }
+
                             // (#ctx-menu-backdrop 2026-09-08) 右键菜单迁往
                             // AppWindow 根集中浮层,组头仅在上报状态。
                             // 拖动手势状态(本组头局部):按下 x/y / 是否拖动。
                             // (#drag-threshold-omni 2026-09-11) 补 x 基准:
                             // 阈值改任意方向 5px(对齐设计 §1②),需要 dx。
+                            // (#gh-kebab 2026-11-06) 组菜单上报(右键与悬停
+                            // ⋮ 钮共用):弹层状态直写 Welcome 级,由 AppWindow
+                            // 根浮层渲染;key 带组头前缀防与成员行 id 撞车。
+                            // mx/my = 窗口内容坐标(调用点的 absolute-position
+                            // + 行内指针/钮位)。
+                            public function open-group-menu(mx: length, my: length) {
+                                root.ctx-gen += 1;
+                                root.ctx-open-key = "hdr:" + session.group-id;
+                                root.ctx-menu-kind = "group";
+                                root.ctx-menu-group = session.group;
+                                // (#group-color 2026-09-14) 当前组色随菜单注入
+                                // (单实例复用,不注入会残留上一组的色);取色面板
+                                // 每次换菜单收起。
+                                root.ctx-menu-group-color = session.group-color;
+                                root.ctx-menu-group-color-hex = session.group-color-hex;
+                                root.group-color-picker-open = false;
+                                root.ctx-menu-empty = session.id == "";
+                                root.ctx-menu-x = mx;
+                                root.ctx-menu-y = my;
+                                // (#ctx-menu-flip) 下方面积不足时菜单上翻。
+                                root.ctx-menu-space-below =
+                                    flick.absolute-position.y + flick.height - my;
+                                // (#ctx-menu-autoclose) 触发行(组头壳)矩形。
+                                root.ctx-row-x = self.absolute-position.x;
+                                root.ctx-row-y = self.absolute-position.y;
+                                root.ctx-row-w = self.width;
+                                root.ctx-row-h = self.height;
+                            }
                             property <length> g-press-x: 0px;
                             property <length> g-press-y: 0px;
                             property <bool> g-was-drag: false;
@@ -1880,8 +2141,13 @@ export component LeftSidebar inherits Rectangle {
                                 // empty); right-click opens the group menu.
                                 // 拖动过的 up 不触发折叠(g-was-drag 抑制)。
                                 clicked => {
+                                    // (#toggle-fix 2026-11-06) 发 **group-id**
+                                    // （组身份，V3 组头行独立字段）；旧值
+                                    // session.group 是显示名，store 按 id 键存
+                                    // 折叠态，组名≠id 后展开/折叠永远写不进
+                                    // （截图"计数 3 展开却空"的根因）。
                                     if (!parent.g-was-drag && root.search-query == "") {
-                                        root.toggle-group(session.group);
+                                        root.toggle-group(session.group-id);
                                     }
                                 }
                                 pointer-event(e) => {
@@ -1926,32 +2192,14 @@ export component LeftSidebar inherits Rectangle {
                                     // 用保留组条件隐藏(见 app.slint grp-menu-rect)。
                                     } else if (!root.group-dragging
                                         && e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
-                                        // (#ctx-menu-backdrop) 弹层状态直写
-                                        // Welcome 级,由 AppWindow 根浮层渲染;
-                                        // key 带组头前缀防与成员行 id 撞车。
-                                        root.ctx-gen += 1;
-                                        root.ctx-open-key = "hdr:" + session.group-id;
-                                        root.ctx-menu-kind = "group";
-                                        root.ctx-menu-group = session.group;
-                                        // (#group-color 2026-09-14) 当前组色随
-                                        // 菜单一起注入(单实例复用,不注入会残留
-                                        // 上一组的色);取色面板每次换菜单收起。
-                                        root.ctx-menu-group-color = session.group-color;
-                                        root.ctx-menu-group-color-hex = session.group-color-hex;
-                                        root.group-color-picker-open = false;
-                                        root.ctx-menu-empty = session.id == "";
-                                        root.ctx-menu-x = self.absolute-position.x + self.mouse-x;
-                                        root.ctx-menu-y = self.absolute-position.y + self.mouse-y;
+                                        // (#gh-kebab 2026-11-06) 右键与悬停 ⋮ 钮
+                                        // 共用同一上报函数(抽到 gh-shell 级
+                                        // open-group-menu,坐标由调用点给)。
+                                        parent.open-group-menu(
+                                            self.absolute-position.x + self.mouse-x,
+                                            self.absolute-position.y + self.mouse-y);
                                         // (#ctx-menu-flip) 本组头到面板底的余量,
                                         // 供浮层做"超面板底上翻"。事件期读几何安全。
-                                        root.ctx-menu-space-below =
-                                            flick.absolute-position.y + flick.height
-                                            - (self.absolute-position.y + self.mouse-y);
-                                        // (#ctx-menu-autoclose) 触发行(组头壳)矩形。
-                                        root.ctx-row-x = self.absolute-position.x;
-                                        root.ctx-row-y = self.absolute-position.y;
-                                        root.ctx-row-w = self.width;
-                                        root.ctx-row-h = self.height;
                                     }
                                 }
                                 // (#ctx-menu-autoclose) 菜单打开时注册本组头矩形
@@ -2099,26 +2347,43 @@ export component LeftSidebar inherits Rectangle {
                                 // 重合。折叠/展开切换时三角只换字形不改位,轴心
                                 // 恒稳定——组头与成员由同一根轴串起来,不再左右
                                 // 错半格。原值 4px 会让三角偏左 6px。
-                                padding-left: 10px;
-                                // (#group-count-badge-r6) 右缘留白:计数徽章不
-                                // 再被组头 hover 圆角收腰切割。
+                                // (#icon-col-align 2026-11-06 用户截图"组图标
+                                // 与成员图标不对齐"): 图标列锚同一公式 —— 组头
+                                // folder 左缘 = 12 + chevron 槽 16 + gap 4 = 32;
+                                // 成员图标左缘 = 12 + 20×depth(depth1 = 32)。
+                                // chevron 从"字形自然宽(fs-xl advance 18)"固定为
+                                // 16px 槽(13px 图标居中),folder 列不再随字形漂。
+                                padding-left: 12px;
                                 padding-right: 10px;
                                 spacing: 4px;
                                 // Collapse chevron — shown for every group, empty
                                 // folders included, so they line up and can be
                                 // toggled (an empty group just expands to nothing).
                                 // (#session-tree-hierarchy-r4) 双字形切换(▸/▾)。
-                                Icon {
-                                        // (#group-color-chevron-r2 2026-09-14) chevron
-                                        // **跟随组色**(用户改稿):折叠箭头与文件夹同属
-                                        // 组头的"身份区",组定了色而箭头仍是灰色,用户
-                                        // 读成"颜色没生效/丢了一半"。与文件夹同口径:
-                                        // 无色时由 group-color() 回落次级前景色。
-    glyph: session.collapsed ? "chevron-right" : "expand-more";
-    tint: Theme.group-color(session.group-color-hex != "", session.group-color);
-    size: Theme.fs-xl;
-}
-                                Icon {
+                                Rectangle {
+                                    // (#gh-icon-center 2026-11-06 用户截图"三个
+                                    // 图标都没居中"): HL 对固定高子项**顶对齐**
+                                    // (老坑再踩),16px 槽顶在行顶 → 图标偏上。
+                                    // 与标题行四钮同款 y 钳中位。
+                                    y: (parent.height - self.height) / 2;
+                                    width: 16px;
+                                    height: 16px;
+                                    icon-c-slot := Icon {
+                                        // (#left-panel-v3-r2) chevron 回中性灰(mockup
+                                        // .gtwisty = t3;V3 身份色集中在文件夹与分组带,
+                                        // 折叠箭头是"机构"不是"身份")。
+                                        glyph: session.collapsed ? "chevron-right" : "expand-more";
+                                        tint: Theme.text-secondary;
+                                        size: 13px;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                }
+                                Rectangle {
+                                    y: (parent.height - self.height) / 2;
+                                    width: 16px;
+                                    height: 16px;
+                                    Icon {
                                         // (#folder-open-state 2026-09-05) 文件夹随
                                         // 分组状态切换:闭合 E2C7 / 打开 E2C8,与
                                         // chevron(▸/▾)同向联动。
@@ -2131,8 +2396,11 @@ export component LeftSidebar inherits Rectangle {
                                         // 再把色标抹掉等于丢掉"这是哪个组"。
     glyph: session.collapsed ? "folder" : "folder-open";
     tint: Theme.group-color(session.group-color-hex != "", session.group-color);
-    size: Theme.fs-xl;
-}
+    size: 15px;
+    x: (parent.width - self.width) / 2;
+    y: (parent.height - self.height) / 2;
+                                    }
+                                }
                                 Text {
                                     // (#group-name-i18n 2026-09-08) 内置保留组
                                     // "system" 仅在【显示层】翻译(中文=本地终端
@@ -2167,44 +2435,77 @@ export component LeftSidebar inherits Rectangle {
                                     // 表达:组头底色块 + 字重 600 + 左侧脊线 +
                                     // 成员缩进,字号保持同级。
                                     font-size: Theme.fs-md;
-                                    font-weight: Theme.fw-strong;
+                                    // (#left-panel-v3-r2) 层级由**字重分级**表达
+                                    // (mockup V4.1:d0 600 / d1 500 / d2+ 400)。
+                                    font-weight: session.depth <= 0 ? Theme.fw-strong
+                                        : session.depth == 1 ? 500 : Theme.fw-regular;
                                     vertical-alignment: center;
                                     horizontal-stretch: 1;       // fill → text stays left
                                     horizontal-alignment: left;
                                 }
-                                // (#group-count-badge-r4) 徽章与组名垂直对齐:
-                                // HorizontalLayout 中固定高度的子项默认顶对
-                                // 齐,外包 alignment: center 的 VL 强制居中。
-                                // (#group-count-badge-r6 2026-09-05) 切割修复:
-                                // 徽章原本贴到组头行右缘,而组头 hover 高亮的
-                                // 圆角在右缘"收腰",视觉上把徽章右端切掉一块
-                                // (用户反馈)。组头布局补 padding-right: 10px
-                                // 让徽章内收;内边距 5→6px 给数字更多余量。
-                                VerticalLayout {
-                                    alignment: center;
-                                    Rectangle {
-                                        // (#badge-plain 2026-09-11) 去掉落点预览:
-                                        // 原来拖拽中把徽章改写成 `5 → 6` 并转主题色
-                                        // (对齐原型),但——① 组内拖动时数量根本不变,
-                                        // 显示"会多一个"是错的(用户实测"展示的也不
-                                        // 准确");② 那个箭头标识本身也被要求去掉。
-                                        // 现在徽章恒为**本组成员数**,不再随拖动变化,
-                                        // 主题色预览一并退役。
-                                        height: 16px;
-                                        width: num.preferred-width + 12px;
-                                        border-radius: 8px;
-                                        background: (grp-ta.has-hover
-                                                || root.ctx-open-key == "hdr:" + session.group-id)
-                                                ? Theme.zone-sidebar-active : Theme.zone-sidebar-elev;
-                                        animate background { duration: 120ms; }
-                                        num := Text {
-                                            x: 6px;
-                                            height: parent.height;
-                                            text: "\{session.group-size}";
-                                            color: Theme.text-secondary;
-                                            font-size: Theme.fs-xs;
-                                            vertical-alignment: center;
-                                            y: 1px;
+                                // (#left-panel-v3-r2) 组名后「N组」(mockup .gsub):
+                                // 直接子组数,搜索态不显示(引擎置 0)。
+                                if session.group-subs > 0 : Text {
+                                    text: "\{session.group-subs}组";
+                                    color: Theme.text-muted;
+                                    font-size: Theme.fs-2xs;
+                                    vertical-alignment: center;
+                                    // (HL 内 Text 无显式高,交叉轴 fill 行高,
+                                    // vertical-alignment 已居中;显式补齐防漂。)
+                                }
+                                // (#left-panel-v3-r2) 组头行尾 = 含子树会话总数
+                                // (mockup .gmeta:右对齐数字,无胶囊底)。
+                                // (#kebab-coexist 2026-11-06 用户反馈) 数字**恒显**
+                                // —— 悬停 ⋮ 出现在数字右侧,不再互斥让位
+                                // (旧互斥方案在点 ⋮ 瞬间 visible 双翻转,布局
+                                // 瞬时重排 = 跳动)。
+                                Text {
+                                    text: "\{session.group-total}";
+                                    color: Theme.text-secondary;
+                                    font-size: Theme.fs-2xs;
+                                    vertical-alignment: center;
+                                }
+                                // (#gh-kebab / #kebab-coexist) 悬停 ⋮ 钮:点击弹
+                                // 组菜单(同右键);菜单开着保持高亮(选中态)。
+                                // **元素常驻 + opacity 渐隐**(不再 visible 翻转):
+                                // opacity 不参与布局,悬停进出与点击瞬间几何
+                                // 零变化 —— 跳动根除;TouchArea 常驻但 opacity 0
+                                // 时 enabled:false,不拦截右侧点击。
+                                Rectangle {
+                                    opacity: (grp-ta.has-hover
+                                        || root.ctx-open-key == "hdr:" + session.group-id) ? 1 : 0;
+                                    animate opacity { duration: 110ms; }
+                                    y: (parent.height - self.height) / 2;
+                                    width: 20px;
+                                    height: 20px;
+                                    border-radius: 3px;
+                                    background: gh-kebab-ta.has-hover
+                                        || root.ctx-open-key == "hdr:" + session.group-id
+                                        ? Theme.bg-hover : transparent;
+                                    animate background { duration: 100ms; }
+                                    Icon {
+                                        glyph: "more-vert";
+                                        tint: gh-kebab-ta.has-hover
+                                            || root.ctx-open-key == "hdr:" + session.group-id
+                                            ? Theme.text-primary : Theme.text-secondary;
+                                        size: 13px;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                    gh-kebab-ta := TouchArea {
+                                        // (#kebab-coexist) opacity 0 时关闭命中:
+                                        // 常驻元素不拦右侧空白点击。
+                                        enabled: (grp-ta.has-hover
+                                            || root.ctx-open-key == "hdr:" + session.group-id);
+                                        mouse-cursor: default;
+                                        clicked => {
+                                            if (root.ctx-open-key != "hdr:" + session.group-id) {
+                                                gh-card.open-group-menu(
+                                                    gh-kebab-ta.absolute-position.x + self.width / 2,
+                                                    gh-kebab-ta.absolute-position.y + self.height + 4px);
+                                            } else {
+                                                root.ctx-open-key = "";
+                                            }
                                         }
                                     }
                                 }
@@ -2217,7 +2518,7 @@ export component LeftSidebar inherits Rectangle {
                         if session.row-kind == "empty" : Rectangle {
                             height: 22px;
                             Text {
-                                x: 10px + 18px;   // 与成员行缩进对齐
+                                x: 10px + 20px;   // 与成员行缩进对齐(#tree-geom 20/级)
                                 y: 0;
                                 height: parent.height;
                                 text: @tr("Empty");
@@ -2238,12 +2539,14 @@ export component LeftSidebar inherits Rectangle {
                             // (#density 2026-09-11) 行高收紧 36→30(窄栏 38→32):36/38px 配 13px 字号
     // 显得空旷(用户反馈),30/32 更接近设计稿的紧凑列表观感,同时保留
     // "桌面端比 28px 宽松一档"的可点性。drag-pitch = 本高 + 2 自动跟随。
-    height: root.compact ? 32px : 30px;
+    height: 34px; // (#tree-geom) 见 SessionRow 注释
                             clip: false;
                             srow := SessionRow {
                                 width: parent.width;
                                 height: parent.height;
                             session: session;
+                            active-session-id: root.active-session-id;
+                            locate-flash-id: root.locate-flash-id;
                             compact: root.compact;
                             // (#session-hover-card) 信息卡片坐标/文本中转到
                             // Welcome,再由实例侧绑到 AppWindow 根浮层。
@@ -2333,13 +2636,28 @@ export component LeftSidebar inherits Rectangle {
                                     root.drag-drop-group = root.drag-group;
                                 }
                             }
+                            // (#left-panel-v3-r2) 「定位当前终端」闪烁层:1.8s
+                            // 内目标行 accent 淡染 + 内描边(mockup srow.located),
+                            // 声明在 srow 之后 = 画在其上,只描边不遮内容。
+                            if session.id != "" && session.id == root.locate-flash-id : Rectangle {
+                                x: 0px;
+                                y: 0px;
+                                width: parent.width;
+                                height: parent.height;
+                                border-radius: Theme.radius-sm;
+                                border-width: 2px;
+                                border-color: Theme.zone-sidebar-accent;
+                                background: Theme.zone-sidebar-accent-soft;
+                            }
                             // (#default-group-header 2026-09-10) default(默认组)
                             // 现在是**正常分组**:有组头、可折叠,成员同样缩进并
                             // 挂树线。原先给 default 开的"无缩进 / 无树线"特例一
                             // 并退役——那是"未分组成员平铺在顶层"那版的遗留,而
                             // 平铺正是用户要求消灭的"单独会话"。
-                            content-indent: 18px;
-                            tree-guide: true;
+                            // (#left-panel-v3-r2) 缩进 = 深度 × 20px(mockup
+                            // gchildren margin-left 20/级);树线已退役,置 false。
+                            content-indent: 20px * max(0, session.depth);
+                            tree-guide: false;
                             all-sessions: root.sessions;
                             // Drag-reorder is meaningless while the list is a
                             // filtered subset, and system rows can't move.
@@ -2767,5 +3085,225 @@ export component LeftSidebar inherits Rectangle {
                         }
                     }
                 }
+        }
+
+        // (#menu-v2 2026-11-06 二轮重写) ⋯ 面板菜单 = mockup
+        // openContextMenu('panel') 的最终规格:
+        //   · 条目 8 项:新建会话(Ctrl+N) / 新建分组 / 导入 SSH 配置 | 展开/折叠
+        //     全部 | 收起面板 / 面板设置(旧版的「本地终端显隐」属 V2 空白右键
+        //     菜单,不在 panel 菜单 —— 移除;「面板设置」落点 = 接口设置弹框
+        //     「侧栏」页,PanelAnimGroup 已在那里)。
+        //   · 材质 .ctx-menu:min-width 212 / padding 4 / radius 8 / elev 底 /
+        //     lstr 边;阴影 = --pop-shadow 双层(大晕 44 + 近影 8)。
+        //   · 行 .ctx-item:高 28 / gap 8 / 内距 0 8 / 圆角 4 / 图标 13px /
+        //     文本 11.5px;悬停 hov 底 + t1 文字。
+        //   · 快捷键列 .sc:右对齐 9px mono t3 —— Slint 侧用 property 占位
+        //     (MenuRow 的 sc,空则不占)。
+        //   · 分隔线 .ctx-sep:h1 / margin 4x6。
+        //   · 定位:锚钮左缘下方 4px(mockup r.left, r.bottom+4;旧版右对齐)。
+        if root.more-open : Rectangle {
+            // (#menu-open-pin) z 层序:标题行更多钮(2) < backdrop(1) < 菜单卡(3)
+            // —— 钮在 backdrop 之上保证"点击选中态"可见;backdrop 兜"点外即关"。
+            z: 1;
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            TouchArea {
+                mouse-cursor: default;
+                clicked => { root.more-open = false; }
+            }
+        }
+        if root.more-open : Rectangle {
+            z: 3;
+            // (#menu-pos-right 2026-11-06 用户反馈"应出现在右侧区域"):
+            // mockup openContextMenu('panel') 传 r.left = 锚钮左缘 → 菜单
+            // 右缘与钮右缘近似对齐(面板 328 宽下菜单位于右侧区域)。
+            x: parent.width - self.width - 8px;
+            y: root.header-y-for-menu;
+            width: 212px;
+            // 8 项 28px + 2 分隔线(1+8) + 内距 4x2 = 244px。
+            height: 244px;
+            border-radius: 8px;
+            background: Theme.zone-sidebar-elev;
+            border-width: 1px;
+            border-color: Theme.zone-sidebar-line;
+            drop-shadow-blur: 24px;
+            drop-shadow-offset-y: 8px;
+            drop-shadow-color: #00000088;
+
+            // —— 条目区(8 行 + 2 线,绝对定位;行高 28,行距 4;两条分隔
+            //     线各占 9(1px 线 + 上下 4margin);总高 = 8*28 + 20 = 244 ——
+            //     内联展开:每行一个 Rectangle,背景/图标/文本/TouchArea 一致,
+            //     图标 13px、文本 11.5px、sc 列 9px,水平 padding 12+8、gap 8,
+            //     即 .ctx-item 的 gap:8 padding:0 8(内联后图标列再让 4px 与
+            //     mockup 左缘对齐)。 ——
+            Rectangle {
+                x: 4px; y: 4px;
+                width: parent.width - 8px;
+                height: 28px;
+                border-radius: 4px;
+                background: hover1.has-hover ? Theme.bg-hover : transparent;
+                animate background { duration: 100ms; }
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 8px;
+                    Icon { glyph: "new-session"; tint: hover1.has-hover ? Theme.text-primary : Theme.text-secondary; size: 13px; }
+                    Text { text: @tr("New session"); color: hover1.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 11.5px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                    Text { text: "Ctrl+N"; color: Theme.text-muted; font-size: 9px; vertical-alignment: center; }
+                }
+                hover1 := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.more-open = false;
+                        root.new-session();
+                    }
+                }
+            }
+            Rectangle {
+                x: 4px; y: 32px;
+                width: parent.width - 8px;
+                height: 28px;
+                border-radius: 4px;
+                background: hover2.has-hover ? Theme.bg-hover : transparent;
+                animate background { duration: 100ms; }
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 8px;
+                    spacing: 8px;
+                    Icon { glyph: "create-new-folder"; tint: hover2.has-hover ? Theme.text-primary : Theme.text-secondary; size: 13px; }
+                    Text { text: @tr("New group"); color: hover2.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 11.5px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                }
+                hover2 := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.more-open = false;
+                        root.new-group();
+                    }
+                }
+            }
+            Rectangle {
+                x: 4px; y: 60px;
+                width: parent.width - 8px;
+                height: 28px;
+                border-radius: 4px;
+                background: hover3.has-hover ? Theme.bg-hover : transparent;
+                animate background { duration: 100ms; }
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 8px;
+                    spacing: 8px;
+                    Icon { glyph: "move-in"; tint: hover3.has-hover ? Theme.text-primary : Theme.text-secondary; size: 13px; }
+                    Text { text: @tr("Import ~/.ssh/config"); color: hover3.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 11.5px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                }
+                hover3 := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.more-open = false;
+                        root.import-ssh-config();
+                    }
+                }
+            }
+            Rectangle {
+                x: 6px; y: 94px;
+                width: parent.width - 12px;
+                height: 1px;
+                background: Theme.zone-sidebar-line;
+            }
+            Rectangle {
+                x: 4px; y: 103px;
+                width: parent.width - 8px;
+                height: 28px;
+                border-radius: 4px;
+                background: hover4.has-hover ? Theme.bg-hover : transparent;
+                animate background { duration: 100ms; }
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 8px;
+                    spacing: 8px;
+                    Icon { glyph: "unfold-more"; tint: hover4.has-hover ? Theme.text-primary : Theme.text-secondary; size: 13px; }
+                    Text { text: @tr("Expand all"); color: hover4.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 11.5px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                }
+                hover4 := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.more-open = false;
+                        root.set-all-groups-collapsed(false);
+                    }
+                }
+            }
+            Rectangle {
+                x: 4px; y: 131px;
+                width: parent.width - 8px;
+                height: 28px;
+                border-radius: 4px;
+                background: hover5.has-hover ? Theme.bg-hover : transparent;
+                animate background { duration: 100ms; }
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 8px;
+                    spacing: 8px;
+                    Icon { glyph: "unfold-less"; tint: hover5.has-hover ? Theme.text-primary : Theme.text-secondary; size: 13px; }
+                    Text { text: @tr("Collapse all"); color: hover5.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 11.5px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                }
+                hover5 := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.more-open = false;
+                        root.set-all-groups-collapsed(true);
+                    }
+                }
+            }
+            Rectangle {
+                x: 6px; y: 165px;
+                width: parent.width - 12px;
+                height: 1px;
+                background: Theme.zone-sidebar-line;
+            }
+            Rectangle {
+                x: 4px; y: 174px;
+                width: parent.width - 8px;
+                height: 28px;
+                border-radius: 4px;
+                background: hover6.has-hover ? Theme.bg-hover : transparent;
+                animate background { duration: 100ms; }
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 8px;
+                    spacing: 8px;
+                    Icon { glyph: "sidebar-left-collapse"; tint: hover6.has-hover ? Theme.text-primary : Theme.text-secondary; size: 13px; }
+                    Text { text: @tr("Collapse panel"); color: hover6.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 11.5px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                }
+                hover6 := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.more-open = false;
+                        root.collapse();
+                    }
+                }
+            }
+            Rectangle {
+                x: 4px; y: 202px;
+                width: parent.width - 8px;
+                height: 28px;
+                border-radius: 4px;
+                background: hover7.has-hover ? Theme.bg-hover : transparent;
+                animate background { duration: 100ms; }
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 8px;
+                    spacing: 8px;
+                    Icon { glyph: "settings"; tint: hover7.has-hover ? Theme.text-primary : Theme.text-secondary; size: 13px; }
+                    Text { text: @tr("Panel settings"); color: hover7.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 11.5px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                }
+                hover7 := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.more-open = false;
+                        root.open-panel-settings();
+                    }
+                }
+            }
         }
 }

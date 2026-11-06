@@ -1,11 +1,16 @@
 use super::*;
 // (#left-panel-v3 2026-11-06) 树形分组:组从组名字符串升级为一等实体
-// (GroupRecord),本文件重写为「递归拍平 → 带 depth/row-kind 扁平行」的
-// 模型层;旧 named_display_groups / display_group_of 的组名路径退役。
+// (GroupRecord)。(#left-panel-v3-r2 2026-11-06 引擎提取) 拍平/匹配/排序/
+// builtin 本地终端集整体迁往 crate::session_tree 三段式引擎(struct 零 Slint),
+// 本文件降级为**宿主桥**:TreeRow → ui::SessionInfo 转换、模型下发、会话
+// 对话框/跳板/代理/RDP 等桥层助手。
 // (#tab-group-bar 2026-09-14) 标签底部色条要用与左侧会话行同一套组色语义。
 // (#group-color 2026-09-14) 分组颜色(旧:组名表;新:record 有效色)。
-use std::collections::{HashMap, HashSet};
-use std::cmp::Ordering;
+use std::collections::HashSet;
+
+// (#left-panel-v3-r2) 引擎层类型经桥层转呈 app.rs(glob 导入 `use
+// self::session_models::*` 的既有调用点不变)。
+pub(super) use crate::session_tree::{builtin_local_sessions, GroupSort};
 
 /// (#group-color 2026-09-14) 解析 `"#RRGGBB"` / `"#RGB"`(前导 `#` 可省)为颜色。
 /// Slint 的 `Color` **没有实现 `FromStr`**,所以这里手工解析。其他形式一律视为
@@ -39,19 +44,6 @@ pub(super) fn normalize_hex(hex: &str) -> Option<String> {
         c.green(),
         c.blue()
     ))
-}
-
-/// (#left-panel-v3) 面板排序方式(设置弹层「排序方式」三档)。
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-pub(super) enum GroupSort {
-    /// 存储序:组 = record Vec 顺序(用户拖动维护);会话 = sessions Vec 内
-    /// 同组相对顺序。默认。
-    #[default]
-    Storage,
-    /// 名称:组与会话各自按名称排序(小写比较;无 locale 依赖)。
-    Name,
-    /// 最近:按 last_used 降序(ISO 字符串字典序即时间序),空值垫底。
-    Recent,
 }
 
 /// (#tab-group-bar 2026-09-14) 标签底部色条用的组色:`(绘制色, hex)`。
@@ -399,324 +391,44 @@ pub(super) fn build_jump_pool(store: &ConfigStore, exclude_id: &str, skip: &Hash
     out
 }
 
-fn normalized_query(query: &str) -> String {
-    query.trim().to_lowercase()
-}
+// ---------------------------------------------------------------------------
+// (引擎迁移) normalized_query / session_matches_* / last_used_rank 已迁
+// crate::session_tree::row —— 本文件不再重复定义。
+// ---------------------------------------------------------------------------
 
-#[cfg(test)]
-fn session_matches_query(session: &Session, query: &str) -> bool {
-    let query = normalized_query(query);
-    session_matches_normalized_query(session, &query)
-}
+// ---------------------------------------------------------------------------
+// (引擎迁移 #left-panel-v3-r2 2026-11-06) FlatCtx 拍平上下文 / sort_members /
+// build_session_rows 整体迁往 crate::session_tree::flatten(引擎层,零 Slint)。
+// 本文件只保留 TreeRow → ui::SessionInfo 的转换与模型下发(见下 sync_*)。
+// ---------------------------------------------------------------------------
 
-/// (V3) 匹配口径(设计稿 T2):名称 / 主机 / 用户 / 备注 / 协议 / 认证方式。
-/// 组名的命中(整组带出)由 `FlatCtx::matches` 的祖先链回溯承担。
-fn session_matches_normalized_query(session: &Session, query: &str) -> bool {
-    query.is_empty()
-        || session.name.to_lowercase().contains(query)
-        || session.host.to_lowercase().contains(query)
-        || session.user.to_lowercase().contains(query)
-        || session.note.to_lowercase().contains(query)
-        || session.kind.as_str().to_lowercase().contains(query)
-}
-
-/// (V3) last_used 排序键:ISO 字符串字典序即时间序;空值恒垫底。
-fn last_used_rank(s: &Session) -> (bool, String) {
-    match &s.last_used {
-        Some(v) if !v.trim().is_empty() => (true, v.clone()),
-        _ => (false, String::new()),
+/// 引擎行 → Slint 行的逐字段转换(桥层唯一职责)。`slint::Color` 在这里解析
+/// (引擎只持 hex 原文);conn_state 恒 0,由 refresh_session_markers_win 回写。
+fn to_session_info(row: crate::session_tree::TreeRow) -> SessionInfo {
+    let hex = row.color_hex.clone();
+    SessionInfo {
+        row_kind: row.row_kind_str().into(),
+        id: row.id.into(),
+        name: row.name.into(),
+        kind: row.kind.into(),
+        host: row.host.into(),
+        port: row.port,
+        user: row.user.into(),
+        auth: row.auth.into(),
+        group_id: row.group_id.into(),
+        group: row.group.into(),
+        depth: row.depth,
+        collapsed: row.collapsed,
+        builtin: row.builtin,
+        conn_state: 0,
+        group_index: row.group_index,
+        group_size: row.group_size,
+        group_total: row.group_total,
+        group_subs: row.group_subs,
+        note: row.note.into(),
+        group_color: parse_hex_color(&hex).unwrap_or_default(),
+        group_color_hex: hex.into(),
     }
-}
-
-/// (V3) 树形拍平上下文:递归展开 group_records 树,产出「组头行 → 子组 →
-/// 成员」扁平序列。关键决策(设计稿 §06 迁移顺序 #2):
-///  - Slint 只吃扁平行,递归布局一律不做;
-///  - 同组内**子组在前**、成员在后(成员块连续,组内拖拽几何才成立);
-///  - 折叠(非搜索态)时子层不进模型,组头行保留(计数徽章仍可见);
-///  - 搜索时强制展开且**不写回**折叠态;组名命中带出全部子孙;组头计数 = 匹配数;
-///  - 根层顺序:system(本地终端,可被 hide_system 整组剔除)→ default
-///    (仅当有成员)→ 用户根组(record 顺序)——与旧版行序一致,迁移零 surprise。
-struct FlatCtx<'a> {
-    records: &'a [crate::config::GroupRecord],
-    by_group: HashMap<&'a str, Vec<&'a Session>>,
-    /// 有效色预计算:id -> (Color, hex)("" = 无色)。
-    colors: HashMap<&'a str, (slint::Color, String)>,
-    name_hit: HashSet<&'a str>,
-    searching: bool,
-    sort: GroupSort,
-}
-
-impl<'a> FlatCtx<'a> {
-    fn children(&self, parent: &str) -> Vec<&'a crate::config::GroupRecord> {
-        self.records.iter().filter(|r| r.parent_id == parent).collect()
-    }
-
-    /// 会话自身字段 + 祖先组名链的联合匹配。
-    fn matches_with(&self, s: &Session, query: &str) -> bool {
-        if !self.searching {
-            return true;
-        }
-        if session_matches_normalized_query(s, query) {
-            return true;
-        }
-        let mut cur = if s.group_id.is_empty() {
-            crate::config::GROUP_ID_DEFAULT.to_string()
-        } else {
-            s.group_id.clone()
-        };
-        for _ in 0..16 {
-            if self.name_hit.contains(cur.as_str()) {
-                return true;
-            }
-            match self.records.iter().find(|r| r.id == cur) {
-                Some(r) if !r.parent_id.is_empty() => cur = r.parent_id.clone(),
-                _ => break,
-            }
-        }
-        false
-    }
-
-    /// 子树会话总数(不过滤)。
-    fn subtree_total(&self, gid: &str) -> usize {
-        let own = self.by_group.get(gid).map(|v| v.len()).unwrap_or(0);
-        own + self
-            .children(gid)
-            .iter()
-            .map(|r| self.subtree_total(&r.id))
-            .sum::<usize>()
-    }
-
-    /// 子树匹配会话数(搜索态组头计数)。
-    fn subtree_matches(&self, gid: &str, query: &str) -> usize {
-        let own = self
-            .by_group
-            .get(gid)
-            .map(|v| v.iter().filter(|s| self.matches_with(s, query)).count())
-            .unwrap_or(0);
-        own + self
-            .children(gid)
-            .iter()
-            .map(|r| self.subtree_matches(&r.id, query))
-            .sum::<usize>()
-    }
-
-    fn color_of(&self, gid: &str) -> (slint::Color, String) {
-        self.colors
-            .get(gid)
-            .cloned()
-            .unwrap_or((slint::Color::default(), String::new()))
-    }
-
-    /// 递归展开一个组:组头行 + (未折叠时)子组 + 成员 + 空组占位。
-    fn emit_group(&self, gid: &str, depth: usize, query: &str, out: &mut Vec<SessionInfo>) {
-        let Some(record) = self.records.iter().find(|r| r.id == gid) else {
-            return;
-        };
-        let mut members: Vec<&Session> = self.by_group.get(gid).cloned().unwrap_or_default();
-        let kids = self.children(gid);
-        let force = self.name_hit.contains(gid);
-        let match_count = self.subtree_matches(gid, query);
-        // 搜索可见性:组名未命中且子树零匹配 → 整组不出现。
-        if self.searching && !force && match_count == 0 {
-            return;
-        }
-        sort_members(&mut members, self.sort);
-        let shown: Vec<&&Session> = members
-            .iter()
-            .filter(|s| self.matches_with(s, query))
-            .collect();
-
-        let (gc, hex) = self.color_of(gid);
-        let total = if self.searching { match_count } else { self.subtree_total(gid) };
-        let subs = kids.iter().filter(|r| !r.reserved).count();
-        let collapsed = record.collapsed && !self.searching;
-        out.push(SessionInfo {
-            id: "".into(),
-            name: record.name.as_str().into(),
-            kind: "".into(),
-            host: "".into(),
-            port: 0,
-            user: "".into(),
-            auth: "".into(),
-            group_id: record.id.as_str().into(),
-            group: record.name.as_str().into(),
-            depth: depth as i32,
-            collapsed,
-            builtin: record.id == crate::config::GROUP_ID_SYSTEM,
-            conn_state: 0,
-            group_index: 0,
-            group_size: 0,
-            group_total: total as i32,
-            group_subs: if self.searching { 0 } else { subs as i32 },
-            note: "".into(),
-            group_color: gc,
-            group_color_hex: hex.as_str().into(),
-            row_kind: "group".into(),
-        });
-        if collapsed {
-            return;
-        }
-        // 子组在前(设计稿 §06:成员块必须连续,组内拖拽几何才成立)。
-        for kid in &kids {
-            self.emit_group(&kid.id, depth + 1, query, out);
-        }
-        if shown.is_empty() {
-            if !self.searching || force {
-                // 空组占位(非搜索态;搜索时组名命中也显示)。
-                out.push(SessionInfo {
-                    id: "".into(),
-                    name: "".into(),
-                    kind: "".into(),
-                    host: "".into(),
-                    port: 0,
-                    user: "".into(),
-                    auth: "".into(),
-                    group_id: record.id.as_str().into(),
-                    group: record.name.as_str().into(),
-                    depth: (depth + 1) as i32,
-                    collapsed: false,
-                    builtin: false,
-                    conn_state: 0,
-                    group_index: 0,
-                    group_size: 0,
-                    group_total: 0,
-                    group_subs: 0,
-                    note: "".into(),
-                    group_color: gc,
-                    group_color_hex: hex.as_str().into(),
-                    row_kind: "empty".into(),
-                });
-            }
-            return;
-        }
-        let group_size = shown.len() as i32;
-        for (i, s) in shown.iter().enumerate() {
-            let s = **s;
-            out.push(SessionInfo {
-                id: s.id.clone().into(),
-                name: s.name.clone().into(),
-                kind: s.kind.as_str().into(),
-                host: s.host.clone().into(),
-                port: s.port as i32,
-                user: s.user.clone().into(),
-                // (#conn-path) 认证方式原始值:悬浮信息卡「认证」行。
-                auth: s.auth.as_str().into(),
-                note: s.note.clone().into(),
-                group_id: record.id.as_str().into(),
-                group: record.name.as_str().into(),
-                depth: (depth + 1) as i32,
-                collapsed: false,
-                builtin: record.id == crate::config::GROUP_ID_SYSTEM,
-                conn_state: 0,
-                group_index: i as i32,
-                group_size,
-                group_total: 0,
-                group_subs: 0,
-                group_color: gc,
-                group_color_hex: hex.as_str().into(),
-                row_kind: "session".into(),
-            });
-        }
-    }
-}
-
-fn sort_members(members: &mut Vec<&Session>, sort: GroupSort) {
-    match sort {
-        GroupSort::Storage => {}
-        GroupSort::Name => members.sort_by(|a, b| {
-            a.name
-                .to_lowercase()
-                .cmp(&b.name.to_lowercase())
-        }),
-        GroupSort::Recent => members.sort_by(|a, b| last_used_rank(b).cmp(&last_used_rank(a))),
-    }
-}
-
-
-fn build_session_rows(
-    store: &ConfigStore,
-    builtin_sessions: &[Session],
-    query: &str,
-    // (#hide-system-group 2026-09-13) 隐藏"本地终端"保留组:**模型层过滤**。
-    // Slint 的 `visible:false` 只隐藏不回收空间,列表上方会残留一整块空白。
-    hide_system: bool,
-    sort: GroupSort,
-) -> Vec<SessionInfo> {
-    let query = normalized_query(query);
-    let searching = !query.is_empty();
-    let records = store.group_records();
-
-    // 组名命中集(搜索:组名匹配 → 整组带出,设计稿 T2)。
-    let name_hit: HashSet<&str> = if searching {
-        records
-            .iter()
-            .filter(|r| r.name.to_lowercase().contains(&query))
-            .map(|r| r.id.as_str())
-            .collect()
-    } else {
-        HashSet::new()
-    };
-
-    // 会话按组分桶(builtin 归 system,与旧版一致)。存储序保持。
-    let mut by_group: HashMap<&str, Vec<&Session>> = HashMap::new();
-    for s in store.sessions() {
-        let gid = if s.group_id.is_empty() {
-            crate::config::GROUP_ID_DEFAULT
-        } else {
-            s.group_id.as_str()
-        };
-        by_group.entry(gid).or_default().push(s);
-    }
-    for b in builtin_sessions {
-        by_group
-            .entry(crate::config::GROUP_ID_SYSTEM)
-            .or_default()
-            .push(b);
-    }
-
-    // 有效色预计算(本组 → 最近祖先 → 无)。
-    let mut colors: HashMap<&str, (slint::Color, String)> = HashMap::new();
-    for r in records {
-        let hex = store
-            .group_effective_color(&r.id)
-            .filter(|h| !h.trim().is_empty())
-            .unwrap_or_default();
-        let color = parse_hex_color(&hex).unwrap_or_default();
-        colors.insert(r.id.as_str(), (color, hex));
-    }
-
-    let ctx = FlatCtx {
-        records,
-        by_group,
-        colors,
-        name_hit,
-        searching,
-        sort,
-    };
-
-    let mut rows: Vec<SessionInfo> = Vec::new();
-    // 1) system(本地终端):builtin 恒存在时显示;hide_system 整组剔除。
-    if !hide_system && records.iter().any(|r| r.id == crate::config::GROUP_ID_SYSTEM) {
-        ctx.emit_group(crate::config::GROUP_ID_SYSTEM, 0, &query, &mut rows);
-    }
-    // 2) default(默认组):有成员(或搜索命中)才显示,与旧版 has_default 同语义。
-    let default_hit = if searching {
-        ctx.name_hit.contains(crate::config::GROUP_ID_DEFAULT)
-            || ctx.subtree_matches(crate::config::GROUP_ID_DEFAULT, &query) > 0
-    } else {
-        ctx.subtree_total(crate::config::GROUP_ID_DEFAULT) > 0
-    };
-    if default_hit {
-        ctx.emit_group(crate::config::GROUP_ID_DEFAULT, 0, &query, &mut rows);
-    }
-    // 3) 用户根组(record 顺序;空组保留显示 —— 显式建组就该可见)。
-    for kid in ctx.children("") {
-        if kid.reserved {
-            continue;
-        }
-        ctx.emit_group(&kid.id, 0, &query, &mut rows);
-    }
-    rows
 }
 
 pub(super) fn sync_sessions_to_model_with_filter(
@@ -736,7 +448,17 @@ pub(super) fn sync_sessions_to_model_with_sort(
     sort: GroupSort,
 ) {
     let builtin_sessions = builtin_local_sessions(store.wsl_profiles());
-    let rows = build_session_rows(store, &builtin_sessions, query, store.system_group_hidden(), sort);
+    // (#left-panel-v3-r2) 引擎拍平 → 桥层转换 → 模型下发。
+    let rows = crate::session_tree::build_tree_rows(
+        store,
+        &builtin_sessions,
+        query,
+        store.system_group_hidden(),
+        sort,
+    )
+    .into_iter()
+    .map(to_session_info)
+    .collect::<Vec<_>>();
     model.set_vec(rows);
 }
 
@@ -753,13 +475,16 @@ pub(super) fn refresh_session_rows_in_place(
 ) -> bool {
     use slint::Model as _;
     let builtin_sessions = builtin_local_sessions(store.wsl_profiles());
-    let rows = build_session_rows(
+    let rows = crate::session_tree::build_tree_rows(
         store,
         &builtin_sessions,
         query,
         store.system_group_hidden(),
         GroupSort::Storage,
-    );
+    )
+    .into_iter()
+    .map(to_session_info)
+    .collect::<Vec<_>>();
     if rows.len() == model.row_count() {
         for (i, row) in rows.into_iter().enumerate() {
             model.set_row_data(i, row);
@@ -775,79 +500,9 @@ pub(super) fn sync_sessions_to_model(store: &ConfigStore, model: &VecModel<Sessi
     sync_sessions_to_model_with_filter(store, model, "");
 }
 
-pub(super) fn builtin_local_sessions(wsl_profiles: &[crate::config::WslProfile]) -> Vec<Session> {
-    let mut out = Vec::new();
-    #[cfg(windows)]
-    {
-        out.push(builtin_local_session(
-            "system:powershell",
-            "PowerShell",
-            "powershell",
-        ));
-        out.push(builtin_local_session("system:cmd", "CMD", "cmd"));
-        if wsl_available() {
-            if wsl_profiles.is_empty() {
-                let mut session = builtin_local_session("system:wsl", "WSL", "wsl");
-                session.local_working_dir = "~".to_string();
-                out.push(session);
-            } else {
-                for profile in wsl_profiles {
-                    let mut session = builtin_local_session(
-                        &format!("system:wsl:{}", profile.id),
-                        profile.name.clone(),
-                        "wsl",
-                    );
-                    session.local_distribution = profile.distribution.clone();
-                    session.local_working_dir = if profile.directory.trim().is_empty() {
-                        "~".to_string()
-                    } else {
-                        profile.directory.clone()
-                    };
-                    out.push(session);
-                }
-            }
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        let name = std::path::Path::new(&shell)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Shell")
-            .to_string();
-        out.push(builtin_local_session("system:shell", name, "shell"));
-    }
-    out
-}
-
-pub(super) fn builtin_local_session(id: &str, name: impl Into<String>, host: &str) -> Session {
-    let mut s = Session::new_empty();
-    s.id = id.to_string();
-    s.name = name.into();
-    s.host = host.to_string();
-    s.user = std::env::var("USERNAME")
-        .or_else(|_| std::env::var("USER"))
-        .unwrap_or_default();
-    s.group = "system".to_string();
-    s.kind = SessionKind::Local;
-    s
-}
-
-#[cfg(windows)]
-pub(super) fn wsl_available() -> bool {
-    use std::os::windows::process::CommandExt;
-
-    static AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *AVAILABLE.get_or_init(|| {
-        std::process::Command::new("wsl.exe")
-            .arg("--status")
-            .creation_flags(0x08000000)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    })
-}
+// (引擎迁移) builtin_local_sessions / builtin_local_session / wsl_available
+// 已迁 crate::session_tree::flatten;本文件经上方 `pub(super) use` 转呈
+// app.rs 的 glob 导入,既有调用点(bare 调用)不变。
 
 // ---------------------------------------------------------------------------
 // RDP display settings
@@ -1091,193 +746,10 @@ pub(super) fn session_from_draft(
     }
 }
 
-#[cfg(test)]
-mod search_tests {
-    use super::*;
-
-    fn session(id: &str, name: &str, host: &str, group: &str) -> Session {
-        let mut value = Session::new_empty();
-        value.id = id.into();
-        value.name = name.into();
-        value.host = host.into();
-        value.group = group.into();
-        value
-    }
-
-    #[test]
-    fn session_search_matches_name_and_host_case_insensitively() {
-        let value = session("1", "Prod API", "DB.EXAMPLE.COM", "prod");
-        assert!(session_matches_query(&value, "  prod  "));
-        assert!(session_matches_query(&value, "example.com"));
-        assert!(!session_matches_query(&value, "staging"));
-    }
-
-    #[test]
-    fn filtered_rows_hide_empty_groups_and_expand_matches() {
-        let saved = vec![session("1", "Prod API", "10.0.0.8", "prod")];
-        let builtins = vec![session("local", "Local terminal", "localhost", "system")];
-        let groups = vec!["empty".to_string(), "prod".to_string()];
-        let collapsed = vec!["prod".to_string(), "system".to_string()];
-
-        let rows = build_session_rows(&saved, &groups, Some(&collapsed), &HashMap::new(), &builtins, "prod", false);
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].name.as_str(), "Prod API");
-        assert_eq!(rows[0].group_header.as_str(), "prod");
-        assert!(!rows[0].collapsed);
-    }
-
-    #[test]
-    fn filtered_rows_include_matching_builtin_sessions() {
-        let builtins = vec![session("local", "Local terminal", "localhost", "system")];
-
-        let rows = build_session_rows(
-            &[],
-            &[],
-            Some(&["system".to_string()]),
-            &HashMap::new(),
-            &builtins,
-            "LOCALHOST",
-            false,
-        );
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].name.as_str(), "Local terminal");
-        assert_eq!(rows[0].group_header.as_str(), "system");
-        assert!(rows[0].builtin);
-        assert!(!rows[0].collapsed);
-    }
-
-    #[test]
-    fn filtered_rows_are_empty_when_nothing_matches() {
-        let saved = vec![session("1", "Prod API", "10.0.0.8", "prod")];
-        let builtins = vec![session("local", "Local terminal", "localhost", "system")];
-
-        let rows = build_session_rows(&saved, &[], None, &HashMap::new(), &builtins, "staging", false);
-
-        assert!(rows.is_empty());
-    }
-
-    #[test]
-    fn empty_query_restores_saved_groups_and_collapse_state() {
-        let saved = vec![session("1", "Prod API", "10.0.0.8", "prod")];
-        let groups = vec!["empty".to_string(), "prod".to_string()];
-        let collapsed = vec!["prod".to_string()];
-
-        let rows = build_session_rows(&saved, &groups, Some(&collapsed), &HashMap::new(), &[], "", false);
-
-        assert!(rows
-            .iter()
-            .any(|row| row.group.as_str() == "empty" && row.id.is_empty()));
-        assert!(rows
-            .iter()
-            .any(|row| row.group.as_str() == "prod" && row.collapsed));
-    }
-}
-
-#[cfg(test)]
-
-mod drag_order_tests {
-    use super::*;
-
-    fn sess(id: &str, name: &str, group: &str) -> Session {
-        let mut value = Session::new_empty();
-        value.id = id.into();
-        value.name = name.into();
-        value.group = group.into();
-        value
-    }
-
-    /// (#drag-cross-group-fix 2026-09-06) 显示组序必须等于存储组序(组头拖动
-    /// 换位维护的顺序),不得按字母重排——否则跨组拖动的"相邻组"判定与显示
-    /// 相邻组不符,向上拖会被判进保留组 system 而静默 no-op(首行卡在组边
-    /// 界)。且每一行都要携带真实 group_size:非首行旧实现填 0,拖拽起拖时
-    /// drag-size 取自被拖行,组内窗口 dn∈[-gi, size-1-gi] 塌缩,组内排序
-    /// 被误判成跨组移动。
-    #[test]
-    fn group_rows_follow_stored_order_and_carry_group_size() {
-        let saved = vec![
-            sess("1", "202", "测试"),
-            sess("2", "s", "Test"),
-            sess("3", "t2", "Test"),
-        ];
-        // 存储顺序:测试 在 Test 之前(字母序会把它排到后面)。
-        let groups = vec!["测试".to_string(), "Test".to_string()];
-
-        let rows = build_session_rows(&saved, &groups, None, &HashMap::new(), &[], "", false);
-
-        let headers: Vec<&str> = rows
-            .iter()
-            .filter(|r| !r.group_header.is_empty())
-            .map(|r| r.group_header.as_str())
-            .collect();
-        assert_eq!(headers, ["测试", "Test"]);
-
-        for row in rows.iter().filter(|r| r.group.as_str() == "Test") {
-            assert_eq!(row.group_size, 2, "every row must carry the real group size");
-        }
-        let first_test = rows.iter().find(|r| r.group.as_str() == "Test").unwrap();
-        assert_eq!(first_test.group_header.as_str(), "Test");
-        assert_eq!(first_test.group_index, 0);
-        let second_test = rows
-            .iter()
-            .filter(|r| r.group.as_str() == "Test")
-            .nth(1)
-            .unwrap();
-        assert_eq!(second_test.group_index, 1);
-    }
-}
-
-#[cfg(test)]
-mod row_display_tests {
-    use super::*;
-
-    // (#proto-icon 2026-09-17) 每一行的 kind 必须原样带出协议名 —— 它是成员行
-    // 图标(Theme.protocol-icon)的唯一数据源。各协议各测一遍。
-    #[test]
-    fn rows_carry_the_protocol_kind_for_the_row_icon() {
-        for (kind, expected) in [
-            (SessionKind::Ssh, "ssh"),
-            (SessionKind::Serial, "serial"),
-            (SessionKind::Telnet, "telnet"),
-            (SessionKind::Local, "local"),
-        ] {
-            let mut session = Session::new_empty();
-            session.kind = kind;
-            let rows = build_session_rows(&[session], &[], None, &HashMap::new(), &[], "", false);
-            assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].kind.as_str(), expected);
-        }
-    }
-
-    // 内置本地会话(builtin)走另一条构造分支,kind 同样要带出来(local)。
-    #[test]
-    fn builtin_rows_carry_local_kind() {
-        let builtin = builtin_local_session("id", "PowerShell", "powershell");
-        let rows = build_session_rows(&[], &[], None, &HashMap::new(), &[builtin], "", false);
-        let row = rows
-            .iter()
-            .find(|r| r.builtin && r.name.as_str() == "PowerShell")
-            .expect("builtin row");
-        assert_eq!(row.kind.as_str(), "local");
-    }
-
-    #[test]
-    fn network_rows_keep_their_address_fields() {
-        for kind in [SessionKind::Ssh, SessionKind::Telnet] {
-            let mut session = Session::new_empty();
-            session.kind = kind;
-            session.host = "example.com".into();
-            session.port = 2222;
-            session.user = "alice".into();
-            let rows = build_session_rows(&[session], &[], None, &HashMap::new(), &[], "", false);
-            assert_eq!(rows[0].host.as_str(), "example.com");
-            assert_eq!(rows[0].port, 2222);
-            assert_eq!(rows[0].user.as_str(), "alice");
-        }
-    }
-}
-
+// (引擎迁移) search_tests / drag_order_tests / row_display_tests 三个 V2
+// 拍平测试模块已随引擎迁走并以 ConfigStore 重写为
+// session_tree::{flatten,locate} 的测试(旧版基于 group_header/组名字符串
+// 的用例在 V3 数据模型下无意义,保留只会让 cargo test 编译失败)。
 #[cfg(test)]
 mod rdp_display_tests {
     use super::*;

@@ -7787,6 +7787,29 @@ pub(crate) fn refresh_session_markers_win(window: &AppWindow) {
             model.set_row_data(i, row);
         }
     }
+    // (#badge-total-fix 2026-11-06 用户截图"收起后徽章变 0"): 标题行徽章 =
+    // **管理的会话总数**,与展开态无关 —— 旧统计数"当前模型里的 session 行",
+    // 折叠时子层不进模型,全收起就剩 0。改为累加**顶层组头行的 group_total**
+    // (引擎拍平时已算好"含子树总数";折叠只裁子层,组头行恒在模型里,每个
+    // 顶层组的 group_total 覆盖全部子孙,搜索态自然变成匹配数 —— mockup
+    // gmeta.match 同款)。所有模型重建路径都以本函数收尾,一处统计全覆盖。
+    let total: i32 = (0..model.row_count())
+        .filter_map(|i| model.row_data(i))
+        .filter(|r| r.row_kind.as_str() == "group" && r.depth == 0)
+        .map(|r| r.group_total)
+        .sum();
+    window.set_session_total(total);
+    // (#left-panel-v3-r2) 活动终端 tab 的会话 id:当前会话行的 accent 渐变底
+    // 判定源。welcome / 非 terminal 活动页 → 空串(无渐变行)。
+    let active = window.get_active_tab_id().to_string();
+    let active_session = (0..tabs.row_count()).find_map(|i| {
+        let t = tabs.row_data(i)?;
+        (t.id.as_str() == active
+            && t.kind.as_str() == "terminal"
+            && !t.session_id.is_empty())
+        .then(|| t.session_id.to_string())
+    });
+    window.set_active_session_id(active_session.unwrap_or_default().into());
 }
 
 fn refresh_session_markers(window: &slint::Weak<AppWindow>) {
@@ -8974,6 +8997,13 @@ fn wire_session_callbacks(
         let store = store.clone();
         let sessions_model = sessions_model.clone();
         window.on_toggle_group(move |group: SharedString| {
+            // (#toggle-fix 2026-11-06 用户截图"展开无会话"): V3 拍平模型下
+            // Slint 侧发 **group-id**（组头行的 group-id 字段 = 组身份），旧
+            // 代码按 row.group（显示组名）匹配 + 原地翻行、不重建 —— 组名
+            // ≠ id 后 store 永远写不进（set_group_collapsed 按 id 查），
+            // 下一次任何重建按旧 collapsed 拍平，展开的子行整组蒸发。修复
+            // = 以组头行的 group_id 定位 + 直接改 store + 全量重建（折叠态
+            // 的唯一真源在 store，UI 是投影）。
             if weak
                 .upgrade()
                 .map(|window| !window.get_host_search_query().trim().is_empty())
@@ -8983,33 +9013,29 @@ fn wire_session_callbacks(
             }
             use slint::Model as _;
             let target = group.to_string();
-            let n = sessions_model.row_count();
-            // New state = the opposite of the group's first row.
+            // 从组头行（row-kind == "group" 且 group-id 匹配）取当前折叠态。
             let mut new_state = false;
-            for i in 0..n {
-                if let Some(row) = sessions_model.row_data(i) {
-                    if row.group.as_str() == target {
-                        new_state = !row.collapsed;
-                        break;
-                    }
-                }
-            }
-            for i in 0..n {
-                if let Some(mut row) = sessions_model.row_data(i) {
-                    if row.group.as_str() == target {
-                        row.collapsed = new_state;
-                        sessions_model.set_row_data(i, row);
+            {
+                let n = sessions_model.row_count();
+                for i in 0..n {
+                    if let Some(row) = sessions_model.row_data(i) {
+                        if row.row_kind.as_str() == "group"
+                            && row.group_id.as_str() == target
+                        {
+                            new_state = !row.collapsed;
+                            break;
+                        }
                     }
                 }
             }
             {
                 let mut store = store.borrow_mut();
-                // (#left-panel-v3) target = 组头行的 group-id(V3 组头独立行)。
                 store.set_group_collapsed(&target, new_state);
                 if let Err(err) = store.save() {
                     tracing::warn!("failed to save Quick Connect folder state: {err:#}");
                 }
             }
+            sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
             if let Some(w) = weak.upgrade() {
                 let _ = w.get_sessions();
             }
@@ -9058,6 +9084,78 @@ fn wire_session_callbacks(
             }
             if let Some(w) = weak.upgrade() {
                 let _ = w.get_sessions();
+            }
+        });
+    }
+
+    // (#left-panel-v3-r2 2026-11-06 V3「定位当前终端」) 面板标题行 ⌖ 钮:
+    // 活动终端 tab → 会话 → 引擎展开祖先分组(session_tree::expand_ancestors,
+    // 有变更才落盘) → 重建模型 → 引擎行几何(session_tree::row_metrics)累计
+    // 目标行中心 → 下发滚动 + 1.8s 闪烁高亮(IDEA Select in Project View 同款)。
+    // 拍平/展开/几何全部在 crate::session_tree;本处理器只做模型读取与属性下发。
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let sessions_model = sessions_model.clone();
+        window.on_locate_current_session(move || {
+            use slint::Model as _;
+            let Some(window) = weak.upgrade() else { return };
+            let active = window.get_active_tab_id().to_string();
+            let tabs = window.get_tabs();
+            let mut session_id = String::new();
+            for i in 0..tabs.row_count() {
+                if let Some(t) = tabs.row_data(i) {
+                    if t.id.as_str() == active
+                        && t.kind.as_str() == "terminal"
+                        && !t.session_id.is_empty()
+                    {
+                        session_id = t.session_id.to_string();
+                        break;
+                    }
+                }
+            }
+            if session_id.is_empty() {
+                return;
+            }
+            // 展开祖先分组;有实际展开才需要落盘。
+            let expanded = {
+                let mut store = store.borrow_mut();
+                let n = crate::session_tree::expand_ancestors(&mut store, &session_id);
+                if n > 0 {
+                    if let Err(err) = store.save() {
+                        tracing::warn!("failed to save expanded group state: {err:#}");
+                    }
+                }
+                n
+            };
+            let _ = expanded;
+            sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
+            // 目标行的内容坐标:对拍平后的模型行逐行套引擎行度量(#tree-geom,
+            // 与 Slint 行 wrapper 的 padding-top/height 同一张表)。
+            let mut y = 0.0f32;
+            let mut found: Option<f32> = None;
+            for i in 0..sessions_model.row_count() {
+                let Some(r) = sessions_model.row_data(i) else { continue };
+                let (pad, h) =
+                    crate::session_tree::row_metrics(r.row_kind.as_str(), r.depth);
+                let pad = if r.row_kind.as_str() == "group" && i == 0 { 0.0 } else { pad };
+                if r.row_kind.as_str() == "session" && r.id.as_str() == session_id {
+                    found = Some(y + pad + h / 2.0);
+                    break;
+                }
+                y += pad + h;
+            }
+            if let Some(center) = found {
+                // 让目标行落在可视区上沿之下 ~90px(近似高保真"定位条"下方的
+                // 首屏位置);列表比这短时 Slint 侧钳回 0。
+                window.set_locate_scroll_y((center - 90.0).max(0.0));
+                window.set_locate_flash_id(session_id.into());
+                let weak_flash = weak.clone();
+                slint::Timer::single_shot(std::time::Duration::from_millis(1800), move || {
+                    if let Some(w) = weak_flash.upgrade() {
+                        w.set_locate_flash_id("".into());
+                    }
+                });
             }
         });
     }
