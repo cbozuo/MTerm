@@ -2642,21 +2642,36 @@ impl ConfigStore {
 
     /// (#left-panel-v3) 设定分组颜色(id 键);`hex` 传空串 = 清除。
     /// (#group-color-reserved 2026-09-14) 保留组也可着色(用户定稿)。
+    /// (#group-color-name-compat 2026-11-07 用户实测"右击与分组管理设色
+    /// 都不生效")V3 存储按 id 键后,Slint 四条设色链的入参仍是**显示组名**
+    /// (既有接口契约:右击 ctx-menu-group = session.group、分组管理
+    /// color-for = groups[i].name、组弹框提交 = 新名、新建行挑色 = 新名)
+    /// —— id 未命中时按名回退,否则全部静默 return、颜色永远写不进。
     pub fn set_group_color(&mut self, id: &str, hex: &str) {
-        let Some(record) = self
-            .cache
-            .group_records
-            .iter_mut()
-            .find(|g| g.id == id)
-        else {
-            return;
-        };
         let hex = hex.trim();
-        record.color = if hex.is_empty() {
+        let color = if hex.is_empty() {
             None
         } else {
             Some(hex.to_string())
         };
+        if let Some(record) = self
+            .cache
+            .group_records
+            .iter_mut()
+            .find(|g| g.id == id)
+        {
+            record.color = color;
+            return;
+        }
+        // 名回退(传来的名是 Slint 侧原文,精确匹配即可)。
+        if let Some(record) = self
+            .cache
+            .group_records
+            .iter_mut()
+            .find(|g| g.name == id.trim())
+        {
+            record.color = color;
+        }
     }
 
     pub fn save(&self) -> Result<()> {
@@ -2910,6 +2925,33 @@ mod tests {
             cache: ConfigFile::default(),
             key: [7u8; 32],
         }
+    }
+
+    #[test]
+    fn set_group_color_accepts_id_and_display_name() {
+        // (#group-color-name-compat 2026-11-07) Slint 设色链传显示组名,
+        // 存储按 id 键 —— 名回退必须成立,否则右击/分组管理设色全静默失效。
+        let mut store = temp_store();
+        let gid = store
+            .add_group("生产环境".into(), "")
+            .expect("add group");
+        // 按 id 写入(V3 主路径)。
+        store.set_group_color(&gid, "#ff5500");
+        assert_eq!(
+            store.group_effective_color(&gid).as_deref(),
+            Some("#ff5500")
+        );
+        // 按显示组名写入(Slint 既有契约)——修复前这里静默 return。
+        store.set_group_color("生产环境", "#00aa88");
+        assert_eq!(
+            store.group_effective_color(&gid).as_deref(),
+            Some("#00aa88")
+        );
+        // 名传空 = 清除;未知键静默不动。
+        store.set_group_color("生产环境", "");
+        assert_eq!(store.group_effective_color(&gid).as_deref(), None);
+        store.set_group_color("不存在的组", "#123456");
+        assert_eq!(store.group_effective_color(&gid).as_deref(), None);
     }
 
     #[test]

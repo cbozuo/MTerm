@@ -1102,10 +1102,20 @@ export component AppWindow inherits Window {
     in-out property <string> ctx-menu-group-color-hex;
     // (#group-color 2026-09-14) 取色面板是否展开(点菜单项切换)。**菜单本身
     // 不关闭** —— 改色时左侧列表要实时联动、看得见才有意义。
+    // (#gh-ctx-swatch 2026-11-07) 面板本体换成分组管理同款 SwatchPopup(模态
+    // 大色板),见根尾实例;旧 GroupColorField 贴菜单小面板退役。
     in-out property <bool> group-color-picker-open: false;
+    // (#gh-ctx-swatch 2026-11-07) 右击链「调色盘」(SwatchPopup 的自定义色入口)
+    // 的根级状态:hex 为唯一事实源,轮子位置等其余绑定走 ColorPickerDialog 默认值。
+    in-out property <bool> ctx-pick-open: false;
+    in-out property <string> ctx-pick-hex: "";
     // (#group-color 2026-09-14) 取色面板的 24 个候选色(hex 原文 + 已解析色值)。
     // 由 Rust 注入:单一数据源在 Rust(GROUP_COLOR_PALETTE),见 app.rs。
+    // (#accent-swatch-single-source 2026-11-07) accent-presets = **同一 ModelRc
+    // 实例**的另一引用(rebuild_group_palette 双写),强调色弹层网格与分组
+    // 色板数据单源,内联 48 项数组退役。
     in property <[GroupSwatch]> group-palette: [];
+    in property <[GroupSwatch]> accent-presets: [];
     // (#group-color 2026-09-14) 提交分组颜色:hex 形如 "#RRGGBB",空串 = 清除
     // (回落无色)。保留组(system / 本地终端、default / 默认组)一并支持。
     callback set-group-color(string /* name */, string /* hex */);
@@ -4548,6 +4558,10 @@ export component AppWindow inherits Window {
         clicked => {
             root.ctx-open-key = "";
             root.ctx-menu-kind = "";
+            // (#gh-ctx-swatch 2026-11-07) 改色弹层随菜单锚定同生命周期:
+            // 菜单关,大色板/调色盘一并收(否则 applied 会写到悬空的锚定组)。
+            root.group-color-picker-open = false;
+            root.ctx-pick-open = false;
         }
         pointer-event(e) => {
             if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
@@ -4620,6 +4634,10 @@ export component AppWindow inherits Window {
             if (e.text == Key.Escape) {
                 root.ctx-open-key = "";
                 root.ctx-menu-kind = "";
+                // (#gh-ctx-swatch 2026-11-07) Esc 关菜单时改色弹层一并收
+                // (焦点仍在本 FocusScope,色板自己没有键盘处理,不收会悬空)。
+                root.group-color-picker-open = false;
+                root.ctx-pick-open = false;
                 // (#esc-cancel-drag 2026-09-13) Esc 也要**取消正在进行的拖拽**:
                 // 走与 Rust 轮询完全同一条通路(seq +1 → Welcome 的
                 // changed drag-cancel-seq → cancel-drag),ghost 飞回原槽、
@@ -5222,60 +5240,10 @@ export component AppWindow inherits Window {
         }
 
         // (#group-color 2026-09-14) 取色面板:与菜单**并存**(菜单不消失)。
-        // 必须声明在 grp-menu-rect **内部** —— Slint 不允许从条件元素外部访问
-        // 它的 id(实测 "Cannot access id 'grp-menu-rect'"),而面板要贴菜单边缘
-        // 就得读菜单几何。作为菜单的子元素绝对定位到菜单矩形之外即可(父元素
-        // 默认不裁剪)。z 序在 grp-menu-vl 之后 = 最上层:指针落在面板上时
-        // backdrop 的 has-hover 为 false,自动关闭逻辑天然把它算作安全区。
-        if root.group-color-picker-open : gc-panel := Rectangle {
-            // (#group-color-field-r2 2026-09-15) 200 → 242px:容纳 32px 大色格
-            // (6 列 222px + 内边距 20px = 242)。宽度必须与内容严丝合缝 ——
-            // GridLayout 会拉伸子项,面板过宽时色格变宽扁、不再是正方形(实测)。
-            property <length> pw: 242px;
-            // 相对菜单:右侧(菜单宽 + 4px)/ 左侧(x 为负)。4px 缝是刻意的
-            // (两块卡片分离),鼠标横穿几毫秒,不足以触发 150ms 的关闭防抖。
-            property <length> right-x: parent.width + 4px;
-            property <length> left-x: -self.pw - 4px;
-            // 菜单贴窗口右缘时右侧放不下 → 翻到左侧;左侧也越界则钳到窗口左缘
-            // (极端窄窗口下与菜单重叠,兜底)。
-            property <bool> fits-right: parent.x + self.right-x + self.pw + 8px <= root.width;
-            x: self.fits-right ? self.right-x : max(8px - parent.x, self.left-x);
-            // 顶与菜单对齐;面板比菜单高时上移,保证底边不越窗口底。
-            y: min(0px, root.height - parent.y - self.height - 8px);
-            width: self.pw;
-            height: gc-body.preferred-height;
-            background: Theme.popup-bg;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.border-strong;
-            drop-shadow-blur: 12px;
-            drop-shadow-color: transparent;
-
-            // 垫底:吃掉面板空白处的点击(与菜单的 g-pad 同责),不让它落到
-            // backdrop 上把菜单关掉。
-            gc-pad := TouchArea { width: 100%; height: 100%; }
-
-            gc-body := VerticalLayout {
-                padding: 10px;
-                spacing: 0px;
-                // (#group-color-field 2026-09-14) 面板内容整体交给共用组件:与新建 /
-                // 编辑分组对话框**同一套控件**,布局只在组件里维护一份。
-                // 面板语义 = 点即提交(写盘 + 广播 + 回写菜单色块),与对话框的
-                // "先暂存、随确定提交"区别只体现在这个回调里。
-                // (#picker-no-dup-header 2026-09-15) 关掉头部:菜单项已经是
-                // 「分组颜色 + 色块 + hex」,面板再画一行圆点/标题/hex 就是
-                // 重复(用户截图)。面板只留色格 + 无颜色 + 输入。
-                GroupColorField {
-                    show-header: false;
-                    hex <=> root.ctx-menu-group-color-hex;
-                    value: root.ctx-menu-group-color;
-                    palette: root.group-palette;
-                    // 面板语义 = 点即提交:落盘 + 广播 + 回写这两个 property,
-                    // 颜色因此由 Rust 归一化后的结果决定,不在 UI 侧猜。
-                    picked(hex) => { root.set-group-color(root.ctx-menu-group, hex); }
-                }
-            }
-        }
+        // (#gh-ctx-swatch 2026-11-07 用户要求"分组管理同款")旧贴菜单的
+        // GroupColorField 小面板退役——换成分组管理同款 SwatchPopup(48 色
+        // 大色格+选定/调色盘+页脚),实例与右击链取色盘挂**窗口根尾**
+        // (gm 的改色弹层同层,见 7063 注释:模态全屏遮罩,无需贴菜单几何)。
     }
 
     // (#session-hover-card 2026-09-05) 成员行悬停信息卡片的集中浮层:
@@ -7103,6 +7071,63 @@ export component AppWindow inherits Window {
         }
     }
 
+    // --- 右击组别改色弹层(#gh-ctx-swatch 2026-11-07 用户要求"分组管理同款")--
+    // 旧贴菜单 GroupColorField 小面板退役。语义对齐 gm 弹层:模态、点色块只
+    // stage、「应用」落盘;但落盘目标 = ctx-menu-group(右击锚定组),且落盘
+    // 后连菜单锚定一并清掉(下次右击重新注入)。`!gm-open` 防两实例同帧。
+    if root.group-color-picker-open && !root.gm-open : SwatchPopup {
+        swatches: root.group-palette;
+        initial: root.ctx-menu-group-color-hex;
+        baseline: root.ctx-menu-group-color-hex;
+        recent: root.ctx-menu-group-color-hex != "" ? [root.ctx-menu-group-color-hex] : [];
+        en: root.lang-en;
+        allow-random: false;      // 分组色没有「随机」(同 gm)
+        allow-clear: true;        // 分组可以「无颜色」(同 gm)
+        dismissed => { root.group-color-picker-open = false; }
+        cleared => {
+            root.set-group-color(root.ctx-menu-group, "");
+            root.group-color-picker-open = false;
+        }
+        applied(hex) => {
+            root.set-group-color(root.ctx-menu-group, hex);
+            root.group-color-picker-open = false;
+        }
+        picker-requested(hex) => {
+            // 大色板不关:取消取色盘即回到色板继续选(同 gm 口径)
+            root.ctx-pick-hex = hex;
+            root.ctx-pick-open = true;
+        }
+    }
+
+    // 右击链「调色盘」(#gh-ctx-swatch):与 gm 内取色盘同款 ColorPickerDialog,
+    // 状态挂根(ctx-pick-*)。轮子位置等次要绑定走组件默认值(重开复位,可接受;
+    // gm 那份是弹框内常驻状态才需要全套双绑)。
+    if root.ctx-pick-open : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Scrim { }
+        TouchArea { clicked => { root.ctx-pick-open = false; } }
+        ColorPickerDialog {
+            x: clamp((parent.width - self.width) / 2, 8px,
+                max(8px, parent.width - self.width - 8px));
+            y: clamp((parent.height - self.height) / 2, 8px,
+                max(8px, parent.height - self.height - 8px));
+            bounds-w: root.width;
+            bounds-h: root.height;
+            title: root.lang-en ? "Palette" : "调色盘";
+            en: root.lang-en;
+            hex <=> root.ctx-pick-hex;
+            copy-requested(h) => { root.copy-text(h); }
+            cancelled => { root.ctx-pick-open = false; }
+            confirmed => {
+                root.set-group-color(root.ctx-menu-group, root.ctx-pick-hex);
+                root.group-color-picker-open = false;
+                root.ctx-pick-open = false;
+            }
+        }
+    }
+
     // --- Rename-session dialog ----------------------------------------------
     // Tab context menu → Rename: a display-name override for one open session.
     // Submitting an empty name restores the saved session name.
@@ -8834,6 +8859,9 @@ export component AppWindow inherits Window {
         lang-en: root.lang-en;
         bounds-w: root.width;
         bounds-h: root.height;
+        // (#accent-swatch-single-source 2026-11-07) 色板网格改吃共享 model
+        // (与 accent-presets 同一 ModelRc 实例,真源 = ACCENT_PRESETS)。
+        swatch-model: root.group-palette;
         enabled: root.output-highlight-enabled;
         presets: root.highlight-presets;
         customs: root.highlight-customs;
@@ -9702,42 +9730,31 @@ export component AppWindow inherits Window {
                     // 「最近」之后紧接着就是最近使用色块,与网格左缘同一列起排。
                     Rectangle { horizontal-stretch: 1; }
                 }
-                // ── 47 预设网格：按色相重排，8 列，名称 + 色号（点选仅选中）──
+                // ── 48 预设网格：按色相重排，8 列，名称 + 色号（点选仅选中）──
                 // (#accent-preset-swap 2026-10-16) 「白光色 #FAFAFA」「MTerm 青
                 // #1FC8B4」两块换成 Stripe 紫 / GitHub 绿：色相环量过，白光色是
                 // 唯一 sat=0 的块（深色弹框里几乎看不出色相），MTerm 青与相邻
                 // 青绿/薄荷 ΔE 仅 8~16 挤成一团。Stripe 紫(243°)落在网格最大
                 // 空档225°→259°正中，GitHub 绿(137°)落在 126°→149° 之间。
-                // minΔE(CIE76) 对其余 46 块 = 31.1 / 13.1（网格中位 18.9）。
-                // 与 ACCENT_PRESETS 同源，改一处必须同步另一处。
+                // (#accent-swatch-single-source 2026-11-07 用户"公共方法别抄
+                // 两套")内联 48 项数组退役,改绑 accent-presets model(与分组
+                // 色板同一 ModelRc 实例,真源 = Rust ACCENT_PRESETS);微信绿
+                // 是后来补的,本表当时已 48 项。
                 GridLayout {
                     spacing: 6px;
-                    for p[i] in [
-                        { n: "番茄色", h: "#F44333" }, { n: "植物红", h: "#B71C1C" }, { n: "珊瑚色", h: "#FF7F6B" }, { n: "鲑鱼色", h: "#F29E7B" },
-                        { n: "橘黄色", h: "#FFA565" }, { n: "橙色", h: "#F0862C" }, { n: "琥珀橙", h: "#FF9B0B" }, { n: "金色", h: "#FFC069" },
-                        { n: "茶色", h: "#FFC100" }, { n: "蟹青色", h: "#FFE831" }, { n: "青柠", h: "#C8FF00" }, { n: "钢色", h: "#B9B119" },
-                        { n: "苔藓色", h: "#B1C784" }, { n: "黄绿色", h: "#A5FF80" }, { n: "鲜绿色", h: "#7CB342" }, { n: "绝命毒药色", h: "#368A3F" }, { n: "GitHub 绿", h: "#2DA44E" },
-                        { n: "微信绿", h: "#07C160" }, { n: "翡翠绿", h: "#29A383" }, { n: "薄荷色", h: "#95E0C1" }, { n: "绿松石色", h: "#88CBBC" }, { n: "海蓝宝石色", h: "#64FFDD" },
-                        { n: "青绿色", h: "#089B8B" }, { n: "天空色", h: "#64FFFF" }, { n: "水蓝色", h: "#5CCFE6" }, { n: "鲜蓝色", h: "#73D8FF" },
-                        { n: "水色", h: "#42A5F5" }, { n: "品牌蓝", h: "#0969DA" }, { n: "宝蓝色", h: "#2979F5" }, { n: "霓虹色", h: "#1D49B1" },
-                        { n: "靛蓝色", h: "#2F51B5" }, { n: "Stripe 紫", h: "#635BFF" }, { n: "仿紫色", h: "#651FFF" }, { n: "夜色", h: "#676E9A" },
-                        { n: "石板色", h: "#607D8B" }, { n: "海星色", h: "#546E7A" }, { n: "淡紫色", h: "#DFBFFF" }, { n: "薰衣草色", h: "#7E57C2" }, { n: "紫水晶色", h: "#AB47BC" },
-                        { n: "深红色", h: "#E916B5" }, { n: "草绿粉", h: "#FF40CC" }, { n: "洋红", h: "#E1306C" }, { n: "玫瑰色", h: "#F279B9" },
-                        { n: "沙色", h: "#D9AE91" }, { n: "咖啡色", h: "#795548" }, { n: "灰色", h: "#9E9E9E" },
-                        { n: "铅黑色", h: "#616161" }, { n: "碳素色", h: "#424242" },
-                    ] : Rectangle {
+                    for p[i] in root.accent-presets : Rectangle {
                         row: i / 8;
                         col: Math.mod(i, 8);
                         width: 72px;
                         height: 40px;
                         border-radius: 8px;
-                        background: root.accent-hex-color(p.h);
-                        border-width: root.accent-stage == p.h ? 2px : p-ta.has-hover ? 2px : 1px;
+                        background: root.accent-hex-color(p.hex);
+                        border-width: root.accent-stage == p.hex ? 2px : p-ta.has-hover ? 2px : 1px;
                         // 悬停环 = 自适应字色 @72%：深色块白环、浅色块黑环，
                         // 半透明更柔和；选中态保持全强度以区分层级
-                        border-color: root.accent-stage == p.h
-                            ? root.accent-ink-on(p.h)
-                            : p-ta.has-hover ? root.accent-ink-on(p.h).with-alpha(0.72) : #ffffff1a;
+                        border-color: root.accent-stage == p.hex
+                            ? root.accent-ink-on(p.hex)
+                            : p-ta.has-hover ? root.accent-ink-on(p.hex).with-alpha(0.72) : #ffffff1a;
                         // 悬浮突起：投影 + 提亮，移出还原（高保真 hover 效果）；
                         // 不 clip —— 投影要落在色块边界外才有「浮起」感
                         drop-shadow-blur: p-ta.has-hover ? 12px : 0px;
@@ -9753,15 +9770,15 @@ export component AppWindow inherits Window {
                             padding-right: 5px;
                             alignment: center;
                             Text {
-                                text: p.n;
-                                color: root.accent-ink-on(p.h);
+                                text: p.name;
+                                color: root.accent-ink-on(p.hex);
                                 font-size: 10px;
                                 font-weight: 600;
                                 overflow: elide;
                             }
                             Text {
-                                text: p.h;
-                                color: root.accent-ink-on(p.h);
+                                text: p.hex;
+                                color: root.accent-ink-on(p.hex);
                                 opacity: 0.78;
                                 font-size: 8.5px;
                                 font-family: Theme.term-font-family;
@@ -9770,7 +9787,7 @@ export component AppWindow inherits Window {
                         }
                         p-ta := TouchArea {
                             mouse-cursor: default;
-                            clicked => { root.accent-stage = p.h; }
+                            clicked => { root.accent-stage = p.hex; }
                         }
                     }
                 }

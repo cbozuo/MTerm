@@ -17,6 +17,7 @@ import { Icon } from "icons.slint";
 import { Scrim, DialogClose } from "widgets.slint";
 import { ScrollView } from "std-widgets.slint";
 import { ColorPickerDialog, PickerMath, InfoSwatch, ColorInfoCard } from "color_picker.slint";
+import { GroupSwatch } from "group_types.slint";
 
 export struct HighlightPresetItem {
     id: string,
@@ -157,6 +158,10 @@ export component HighlightDialog inherits Rectangle {
     // 同款：Rust 侧开盘时回填位置、关时复位）。in-out：卡内「应用/随机/取消」
     // 都要改写它。
     in-out property <string> new-color: "#1FC8B4";
+    // (#accent-swatch-single-source 2026-11-07) 色板网格与强调色弹层/分组
+    // 色板同源:绑定处传 root.group-palette(与 accent-presets 同一 ModelRc
+    // 实例,真源 = Rust ACCENT_PRESETS),内联 48 项数组退役。
+    in property <[GroupSwatch]> swatch-model;
     in-out property <string> pick-fmt: "rgb";
     in-out property <float> wheel-mx: 0.5;          // 色轮取样点（0..1，my 向下 +）
     in-out property <float> wheel-my: 0.5;
@@ -1174,30 +1179,17 @@ export component HighlightDialog inherits Rectangle {
                     }
                     GridLayout {
                         spacing: 6px;
-                        for p[i] in [
-                            { n: "番茄色", h: "#F44333" }, { n: "植物红", h: "#B71C1C" }, { n: "珊瑚色", h: "#FF7F6B" }, { n: "鲑鱼色", h: "#F29E7B" },
-                            { n: "橘黄色", h: "#FFA565" }, { n: "橙色", h: "#F0862C" }, { n: "琥珀橙", h: "#FF9B0B" }, { n: "金色", h: "#FFC069" },
-                            { n: "茶色", h: "#FFC100" }, { n: "蟹青色", h: "#FFE831" }, { n: "青柠", h: "#C8FF00" }, { n: "钢色", h: "#B9B119" },
-                            { n: "苔藓色", h: "#B1C784" }, { n: "黄绿色", h: "#A5FF80" }, { n: "鲜绿色", h: "#7CB342" }, { n: "绝命毒药色", h: "#368A3F" }, { n: "GitHub 绿", h: "#2DA44E" },
-                            { n: "微信绿", h: "#07C160" }, { n: "翡翠绿", h: "#29A383" }, { n: "薄荷色", h: "#95E0C1" }, { n: "绿松石色", h: "#88CBBC" }, { n: "海蓝宝石色", h: "#64FFDD" },
-                            { n: "青绿色", h: "#089B8B" }, { n: "天空色", h: "#64FFFF" }, { n: "水蓝色", h: "#5CCFE6" }, { n: "鲜蓝色", h: "#73D8FF" },
-                            { n: "水色", h: "#42A5F5" }, { n: "品牌蓝", h: "#0969DA" }, { n: "宝蓝色", h: "#2979F5" }, { n: "霓虹色", h: "#1D49B1" },
-                            { n: "靛蓝色", h: "#2F51B5" }, { n: "Stripe 紫", h: "#635BFF" }, { n: "仿紫色", h: "#651FFF" }, { n: "夜色", h: "#676E9A" },
-                            { n: "石板色", h: "#607D8B" }, { n: "海星色", h: "#546E7A" }, { n: "淡紫色", h: "#DFBFFF" }, { n: "薰衣草色", h: "#7E57C2" }, { n: "紫水晶色", h: "#AB47BC" },
-                            { n: "深红色", h: "#E916B5" }, { n: "草绿粉", h: "#FF40CC" }, { n: "洋红", h: "#E1306C" }, { n: "玫瑰色", h: "#F279B9" },
-                            { n: "沙色", h: "#D9AE91" }, { n: "咖啡色", h: "#795548" }, { n: "灰色", h: "#9E9E9E" },
-                            { n: "铅黑色", h: "#616161" }, { n: "碳素色", h: "#424242" },
-                        ] : Rectangle {
+                        for p[i] in root.swatch-model : Rectangle {
                             row: i / 8;
                             col: Math.mod(i, 8);
                             width: 72px;
                             height: 40px;
                             border-radius: 8px;
-                            background: PickerMath.hex-color(p.h);
-                            border-width: root.new-color == p.h ? 2px : p-ta.has-hover ? 2px : 1px;
-                            border-color: root.new-color == p.h
-                                ? PickerMath.ink-on(p.h)
-                                : p-ta.has-hover ? PickerMath.ink-on(p.h).with-alpha(0.72) : #ffffff1a;
+                            background: PickerMath.hex-color(p.hex);
+                            border-width: root.new-color == p.hex ? 2px : p-ta.has-hover ? 2px : 1px;
+                            border-color: root.new-color == p.hex
+                                ? PickerMath.ink-on(p.hex)
+                                : p-ta.has-hover ? PickerMath.ink-on(p.hex).with-alpha(0.72) : #ffffff1a;
                             // (#hl-pal-parity) 悬停反馈与强调色弹框同款：柔和投影 +
                             // 10% 白叠 + 边框加粗提亮（原来悬停只有边框变色，太弱）。
                             drop-shadow-blur: p-ta.has-hover ? 12px : 0px;
@@ -1213,15 +1205,15 @@ export component HighlightDialog inherits Rectangle {
                                 padding-right: 5px;
                                 alignment: center;
                                 Text {
-                                    text: p.n;
-                                    color: PickerMath.ink-on(p.h);
+                                    text: p.name;
+                                    color: PickerMath.ink-on(p.hex);
                                     font-size: 10px;
                                     font-weight: Theme.fw-strong;
                                     overflow: elide;
                                 }
                                 Text {
-                                    text: p.h;
-                                    color: PickerMath.ink-on(p.h);
+                                    text: p.hex;
+                                    color: PickerMath.ink-on(p.hex);
                                     opacity: 0.78;
                                     font-size: 8.5px;
                                     font-family: Theme.term-font-family;
@@ -1230,7 +1222,7 @@ export component HighlightDialog inherits Rectangle {
                             }
                             p-ta := TouchArea {
                                 mouse-cursor: default;
-                                clicked => { root.new-color = p.h; }
+                                clicked => { root.new-color = p.hex; }
                             }
                         }
                     }

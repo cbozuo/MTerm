@@ -472,8 +472,11 @@ pub fn default_for(dark: bool) -> &'static str {
     if dark { palettes::DEFAULT_DARK } else { palettes::DEFAULT_LIGHT }
 }
 
-/// 刷新分组取色面板的候选 24 色（§3-调整⑤：按当前主题查表）。切主题时由
-/// on_set_theme 路径调用。
+/// 刷新色板 model 的候选色(§3-调整⑤:按当前主题查表;强调色弹层与
+/// 分组取色面板共用)。(#accent-swatch-single-source 2026-11-07 用户
+/// "公共方法别抄两套")强调色弹层的内联 48 项数组退役,**同一 ModelRc
+/// 实例双写** accent-presets(弹层网格)与 group-palette(SwatchPopup),
+/// 数据单源在 ACCENT_PRESETS。切主题时由 on_set_theme 路径调用。
 pub fn rebuild_group_palette(win: &crate::ui::AppWindow, _p: &Palette) {
     // (#gm-accent-palette 2026-10-25) 分组色板改为**主题强调色预设同款**
     // （设置页外观那套 ACCENT_PRESETS，用户点名）——自动分配色（next_group_color）
@@ -486,7 +489,9 @@ pub fn rebuild_group_palette(win: &crate::ui::AppWindow, _p: &Palette) {
             name: name.into(),
         })
         .collect();
-    win.set_group_palette(ModelRc::from(Rc::new(VecModel::from(swatches))));
+    let model = ModelRc::from(Rc::new(VecModel::from(swatches)));
+    win.set_group_palette(model.clone());
+    win.set_accent_presets(model);
 }
 
 pub fn by_id(id: &str) -> Option<&'static Palette> {
