@@ -1,0 +1,1586 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark" data-lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MTerm · 多行粘贴确认弹框 · 三档自适应 / 危险标记 / 只粘贴不执行 高保真（2026-11-06 v1.1）</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════════════════
+   MTerm · 「确认多行粘贴」专用评审面 高保真
+   ─────────────────────────────────────────────────────────────────────────
+   事实底稿 = docs/design/multiline-paste-spec-2026-11-06.md
+     · §4.1 权威色板 mterm-dark / mterm-light（src/theme/palettes.rs）
+     · §4.2 派生 token（ui/theme.slint：popup-bg / border-strong / line-2）
+     · §4.3 现状弹框几何（ui/confirm_dialog.slint：30px 按钮 / radius-sm /
+            radius-lg / popup-bg / Scrim / 评审档 min(w-40,1160)×min(h-40,760)）
+   取样口径沿用 docs/design/left-panel-session-hifi-2026-10-28-v3.html，
+   故本页与既有高保真页同构：页面壳（header/hero/设计说明）+ 模拟器两层，
+   主题切换时整页明暗互换，模拟器即为真实主题观感。
+   颜色全部走 CSS 变量；每个变量注释标注对应的 slot-* / Theme token 名。
+   零外链：无 CDN、无外部字体、无外部图片，图标全部内联 SVG sprite。
+   ═══════════════════════════════════════════════════════════════════════════ */
+/* ── 原始 token：, ---- 与 spec §4.1 逐值一致 ------------------------------ */
+:root{ --ff-ui:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  --ff-display:"Bahnschrift","Segoe UI Variable Display","Segoe UI","Microsoft YaHei UI",sans-serif;
+  --ff-mono:"Cascadia Mono","Cascadia Code","JetBrains Mono",Consolas,"Sarasa Mono SC","Microsoft YaHei",monospace;
+  /* 动效与几何（Theme.radius-* = 4/6/10/16 px × ui-scale，ui/theme.slint:541-544） */
+  --ease:cubic-bezier(.2,0,0,1); --r-sm:4px; --r-md:6px; --r-lg:10px; --r-xl:16px;
+  /* 间距：严格 4/8px 节奏 */
+  --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-5:20px; --s-6:24px; --s-7:32px; --s-8:40px;
+  /* 字号（Theme.fs-* = 10/11/13/13/15/18 px，ui/theme.slint:453-458） */
+  --fs-2xs:10px; --fs-xs:11px; --fs-sm:13px; --fs-md:13px; --fs-lg:15px; --fs-xl:18px;
+  /* 字号倍率（spec §5.2：预览行高 1.55；行号列宽固定防跳动） */
+  --lh-preview:1.55;
+  --gutter-w:44px;      /* 行号列固定宽 → 1 行/47 行切换不推动布局 */
+  --stats-h:26px;       /* 统计条固定高 */
+  --badge-w:96px;       /* 危险徽标固定宽 */
+  /* 控件尺寸：终端场景按钮视觉 ≥28px、命中 ≥32px（UX 规范第 8 条） */
+  --btn-h:30px;         /* 与 ui/confirm_dialog.slint:10 现状按钮高一致 */
+  --btn-hit:32px;       /* 命中区扩展（负外边距，不改布局） */
+  --btn-min-w:80px;     /* ui/confirm_dialog.slint:11 */
+  --focus-w:1px;        /* focus-visible 环：1px accent，不改布局尺寸 */}
+/* ── 暗色：mterm-dark，spec §4.1 逐值一致 -------------------------------- */
+html[data-theme="dark"],[data-skin="dark"]{
+  /* 文档壳（沿用既有高保真页取样口径）；唯一偏离取样源的是 --doc-t3：源值暗 #6E747E 压 doc-panel 3.99:1、亮 #969188 2.83:1 均 <3:1，故各上调一档（暗 → #7C828D 4.78 ✓ / 亮 → #6F6B64 5.00 ✓，见对账表第 19 行），刻意偏离取样源而非笔误 */
+  --page:#0B0C0E; --stage:#0E1013; --doc-panel:#121417; --doc-elev:#17191D; --doc-line:#26292F; --doc-line2:#33373F; --doc-t1:#E8EAEE; --doc-t2:#9BA1AC; --doc-t3:#7C828D;
+  --slot-root:#161619; --slot-panel:#181A1D; --slot-palt:#1B1D21; --slot-elev:#1E2024; --slot-hov:#22262D; --slot-act:#252A33; --slot-line:#232428; --slot-lstr:#4E5157;
+  --slot-t1:#BCBEC4; --slot-t2:#7A7E85; --slot-t3:#6F737A; --slot-tbg:#181A1D; --slot-tfg:#BCBEC4; --slot-ac:#1FC8B4; --slot-ok:#73B00A; --slot-wr:#E8A33E; --slot-dg:#F75464;   /* slot 中文语义集中注释：slot-root 应用底 / slot-panel 面板 / slot-palt 面板次层 / slot-elev 浮层 / slot-hov 悬停 / slot-act 按下 / slot-line 分隔线 / slot-lstr 强边·描边 / slot-t1 正文 / slot-t2 次要 / slot-t3 装饰·行号 / slot-tbg 终端底 / slot-tfg 终端字 / slot-ac 强调 / slot-ok 安全 / slot-wr 警告 / slot-dg 危险 */
+  /* ── spec §4.2 派生 token ───────────────────────────────────────────── */
+  --popup-bg:rgba(24,26,29,.98);         /* Theme.popup-bg = base-bg-panel × popup-alpha（ui/theme.slint:240） */
+  --popup-bg-elev:rgba(30,32,36,.99);    /* Theme.popup-bg-elevated = base-bg-elevated × popup-alpha（ui/theme.slint:260） */
+  --popup-bg-inset:#161619;   /* Theme.popup-bg-inset = base-bg-root × popup-alpha = slot-root（ui/theme.slint:251）→ 暗 #161619 / 亮 #F2F0EC。全稿 0 引用，仅为 §4.2 对账完整性保留 */
+  --border-strong:var(--slot-lstr);      /* Theme.border-strong = slot-lstr（ui/theme.slint:276） */
+  --field:rgba(25,27,33,1);              /* Theme.field = dark ? #191b21 : #f4f5f8（ui/theme.slint:284） */
+  --field-2:#1D2027;                     /* Theme.field-2 = dark ? #1d2027 : #eef0f4（ui/theme.slint:285）。全稿 0 引用，仅为对账完整性保留 */
+  --line-2:#3F444F;                      /* Theme.line-2 = dark ? #3f444f : #c7c7cc（ui/theme.slint:286） */
+  --danger:var(--slot-dg);               /* Theme.danger = slot-dg（:398） */
+  --danger-strong:#dc4b44;               /* Theme.danger-strong = #dc4b44（主题无关常量，ui/theme.slint:335）。全稿 0 引用，仅为对账完整性保留 */
+  /* 强调/危险派生：Theme.accent-soft = accent × alpha（暗 .16 / 亮 .12） */
+  --ac-soft:rgba(31,200,180,.16); --ac-tonal:rgba(31,200,180,.10); --ac-line:rgba(31,200,180,.42);
+  /* 危险底纹：danger × 11%（spec §5.2 要求 8–12% alpha，不用纯红底纯白字） */
+  --dg-soft:rgba(247,84,100,.11);
+  --dg-soft-2:rgba(247,84,100,.16);      /* hover 行 */ --dg-line:rgba(247,84,100,.45);
+  /* 危险「文字」按 spec §4.4：--slot-dg 直接可用（→panel 5.32 ✅）。
+     --dg-ink 只在「压在 danger 淡染底上」时使用；暗色等于 slot-dg 原值，
+     亮色取加深一档 #8E2F28（→ 11% 淡染 6.55 ✅，因 #B0463F 压淡染仅 4.47 ⚠）。 */
+  --dg-ink:#F75464;
+  /* 实心按钮上的字色（spec §4.4 第 4/5 条）：暗 = root #161619，亮 = panel #FAF8F4 */
+  --on-solid:#161619;
+  /* 主按钮 hover 底 = Theme.accent-hover（ui/theme.slint:317 accent-solid.brighter(0.12)，此处按 L×1.12 近似）：暗 #25DDC8 / 亮 #238478，两者都比各自的 --slot-ac 更亮；字色仍 --on-solid → 对比度只升不降 */
+  --ac-hov:#25DDC8; --ok-soft:rgba(115,176,10,.14); --wr-line:rgba(232,163,62,.45);
+  /* B 级（提权 / 管道执行）淡染：slot-wr 11%，与 A 级同口径；见 spec §4.4 第 3 条 */
+  --wr-soft:rgba(232,163,62,.11); --wr-soft-2:rgba(232,163,62,.16);
+  --wr-ink:#E8A33E;      /* slot-wr 原值，仅用于压在 --wr-soft 上的行号 */
+  /* Scrim = Theme.modal-scrim：scrim-base（暗 #0c0d11 / 亮 #f4f5f8）× scrim-strength 0.32（ui/theme.slint:374 / :348；渲染 ui/widgets.slint:804-815）。scrim-style 9 档与浓度滑杆不在本稿范围 */
+  --scrim:rgba(12,13,17,.32); --shadow:0 22px 60px -18px rgba(0,0,0,.82), 0 3px 10px -4px rgba(0,0,0,.55); --pop-shadow:0 18px 44px -12px rgba(0,0,0,.78), 0 2px 8px -3px rgba(0,0,0,.5);
+  --mark:rgba(31,200,180,.26);}
+/* ── 亮色：mterm-light，spec §4.1 逐值一致 ------------------------------- */
+html[data-theme="light"],[data-skin="light"]{ --page:#EDEBE7; --stage:#F6F4F0; --doc-panel:#FAF8F4; --doc-elev:#FFFEFA; --doc-line:#DEDAD3; --doc-line2:#CCC7BE;
+  --doc-t1:#302E2A; --doc-t2:#75716B; --doc-t3:#6F6B64; --slot-root:#F2F0EC; --slot-panel:#FAF8F4; --slot-palt:#E9E6DF; --slot-elev:#FFFEFA; --slot-hov:#E8E5E1; --slot-act:#DFDDD9;
+  --slot-line:#E0DEDA; --slot-lstr:#D0CECB; --slot-t1:#33302C; --slot-t2:#7B766F; --slot-t3:#968F85; --slot-tbg:#FAF8F4; --slot-tfg:#33302C; --slot-ac:#1F766B; --slot-ok:#427213;
+  --slot-wr:#8F631C; --slot-dg:#B0463F; --popup-bg:rgba(250,248,244,.98); --popup-bg-elev:rgba(255,254,250,.99); --popup-bg-inset:#F2F0EC; --border-strong:var(--slot-lstr);
+  --field:rgba(244,245,248,1); --field-2:#EEF0F4; --line-2:#C7C7CC; --danger:var(--slot-dg); --danger-strong:#dc4b44; --ac-soft:rgba(31,118,107,.12);
+  --ac-tonal:rgba(31,118,107,.08); --ac-line:rgba(31,118,107,.42); --dg-soft:rgba(176,70,63,.11); --dg-soft-2:rgba(176,70,63,.16); --dg-line:rgba(176,70,63,.40);
+  /* 亮色下 danger 原值 (#B0463F) 压在 11% 淡染上为 4.47:1（<4.5，差一点）；
+     故「压在 danger 淡染底上」的文字另取加深 1 档的 #8E2F28（6.55:1 ✓），
+     --danger/--slot-dg 本身仍严格等于权威色板原值，用于竖标/描边/压在 panel 上的文字。 */
+  --dg-ink:#8E2F28; --ac-hov:#238478; --ok-soft:rgba(66,114,19,.12); --wr-line:rgba(143,99,28,.45); --wr-soft:rgba(143,99,28,.11);
+  --wr-soft-2:rgba(143,99,28,.16);
+  --wr-ink:#8F631C;      /* slot-wr 原值 */ --scrim:rgba(244,245,248,.32); --shadow:0 22px 60px -18px rgba(60,55,45,.28), 0 3px 10px -4px rgba(60,55,45,.18);
+  --pop-shadow:0 18px 44px -12px rgba(60,55,45,.34), 0 2px 8px -3px rgba(60,55,45,.2); --mark:rgba(31,118,107,.22);   /* spec §4.1 原始槽位（17 个 --slot-*，逐值 = src/theme/palettes.rs mterm-light）与 --doc-t3 说明：亮色 --doc-t3 同暗色上调，取样源 #969188 仅 2.83:1 → 取 #6F6B64 = 5.00:1 ✓（见对账表第 19 行）；slot 中文语义同暗色块集中注释 */}*{box-sizing:border-box}
+/* 内联 SVG 线性图标：统一 stroke 口径（UX 规范第 7 条：一律内联 SVG、统一 stroke-width、无 emoji） */
+.ic{fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}html,body{margin:0;padding:0}
+body{ background:var(--page); color:var(--doc-t1); font-family:var(--ff-ui); font-size:13.5px; line-height:1.7; -webkit-font-smoothing:antialiased;}
+.wrap{max-width:1500px;margin:0 auto;padding:0 var(--s-7) 96px}@media (max-width:900px){ .wrap{padding:0 var(--s-4) 64px} }
+/* focus-visible：1px accent，不改变布局尺寸（UX 规范第 2 条） */
+:focus{outline:none}
+:focus-visible{ outline:var(--focus-w) solid var(--slot-ac); outline-offset:2px; border-radius:var(--r-sm);}
+/* 等宽数字：状态切换时数字宽度不跳动（UX 规范第 3 条） */
+/* ── 顶栏 ──────────────────────────────────────────────────────────────── */
+.doc-header{ position:sticky;top:0;z-index:60; background:color-mix(in srgb,var(--page) 88%,transparent); backdrop-filter:blur(14px); border-bottom:1px solid var(--doc-line);}
+.doc-header .inner{ max-width:1500px;margin:0 auto;padding:var(--s-3) var(--s-7); display:flex;align-items:center;gap:var(--s-4);}
+@media (max-width:900px){ .doc-header .inner{padding:var(--s-3) var(--s-4)} }.brand{display:flex;align-items:center;gap:var(--s-2);min-width:0}
+.brand .logo{ width:26px;height:26px;border-radius:var(--r-md);flex:0 0 auto; background:linear-gradient(140deg,var(--slot-ac),var(--slot-ok));
+  display:grid;place-items:center;color:var(--on-solid);}.brand .logo svg{width:16px;height:16px}
+.brand b{font-family:var(--ff-display);font-size:14px;letter-spacing:.02em;color:var(--doc-t1);white-space:nowrap}
+.brand span{font-size:11.5px;color:var(--doc-t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.spacer{flex:1 1 auto}
+.toolbar{display:flex;align-items:center;gap:var(--s-2);flex:0 0 auto}
+.tbtn{ height:var(--btn-h);min-width:var(--btn-min-w); display:inline-flex;align-items:center;justify-content:center;gap:var(--s-2); padding:0 var(--s-3);
+  font-family:var(--ff-ui);font-size:12px;font-weight:600; color:var(--doc-t2);background:var(--doc-elev); border:1px solid var(--doc-line);border-radius:var(--r-sm);
+  cursor:pointer;transition:background .12s var(--ease),color .12s var(--ease),border-color .12s var(--ease); position:relative;}
+/* 命中区扩到 32px，视觉仍 30px（UX 规范第 8 条） */
+.tbtn::after{content:"";position:absolute;left:0;right:0;top:-1px;bottom:-1px}.tbtn:hover{background:var(--slot-hov);color:var(--doc-t1);border-color:var(--doc-line2)}
+.tbtn:active{background:var(--slot-act)}.tbtn svg{width:14px;height:14px;flex:0 0 auto}
+.seg{display:flex;border:1px solid var(--doc-line);border-radius:var(--r-sm);overflow:hidden;background:var(--doc-elev)}
+.seg button{ height:var(--btn-h);padding:0 var(--s-3);border:0;background:transparent;cursor:pointer; font-family:var(--ff-ui);font-size:12px;font-weight:600;color:var(--doc-t3);
+  display:inline-flex;align-items:center;gap:6px;}.seg button+button{border-left:1px solid var(--doc-line)}.seg button[aria-pressed="true"]{background:var(--ac-soft);color:var(--slot-ac)}
+.seg button:hover{color:var(--doc-t1)}@media (max-width:760px){ .brand span{display:none} }
+/* ── hero ──────────────────────────────────────────────────────────────── */
+.hero{padding:var(--s-8) 0 0;position:relative}
+.hero .kick{ display:inline-flex;align-items:center;gap:var(--s-2); font-family:var(--ff-mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--slot-ac);margin-bottom:var(--s-3);}.hero .kick::after{content:"";width:54px;height:1px;background:var(--ac-line)}
+.hero h1{ font-family:var(--ff-display);font-size:38px;line-height:1.16;letter-spacing:-.015em; margin:0 0 var(--s-3);color:var(--doc-t1);font-weight:600;}
+.hero h1 em{font-style:normal;color:var(--slot-ac);position:relative;white-space:nowrap}
+.hero h1 em::after{content:"";position:absolute;left:0;right:0;bottom:2px;height:4px;background:var(--ac-soft);z-index:-1}
+.hero .lead{font-size:14px;line-height:2;color:var(--doc-t2);max-width:88ch;margin:0 0 var(--s-6)}.hero .lead b{color:var(--doc-t1);font-weight:600}
+.hero .lead code{ font-family:var(--ff-mono);font-size:.9em;background:var(--slot-hov); padding:1px 5px;border-radius:var(--r-sm);color:var(--doc-t1);}
+.hero-grid{display:grid;grid-template-columns:1fr 340px;gap:var(--s-6);align-items:start}@media (max-width:1080px){ .hero-grid{grid-template-columns:1fr} .hero-side{display:none} }
+.hero-side{ background:var(--doc-panel);border:1px solid var(--doc-line);border-radius:var(--r-lg); padding:var(--s-4) var(--s-4);}
+.hero-side .row{display:flex;justify-content:space-between;gap:10px;font-size:11.5px;color:var(--doc-t3)}.hero-side .row+.row{margin-top:6px}
+.hero-side .row b{font-weight:500;color:var(--doc-t2);font-family:var(--ff-mono);font-size:10.5px;letter-spacing:.03em}
+.hero-side .note{font-size:11px;line-height:1.75;color:var(--doc-t3);margin-top:var(--s-3);padding-top:11px;border-top:1px solid var(--doc-line)}
+/* ── 通用分节 ──────────────────────────────────────────────────────────── */
+section.blk{margin-top:var(--s-8)}.sec-head{display:flex;align-items:baseline;gap:var(--s-3);margin:0 0 var(--s-4);flex-wrap:wrap}
+.sec-head h2{ font-family:var(--ff-display);font-size:19px;font-weight:600;margin:0;color:var(--doc-t1);letter-spacing:-.005em;}
+.sec-head .n{ font-family:var(--ff-mono);font-size:10.5px;color:var(--slot-ac); border:1px solid var(--ac-line);background:var(--ac-tonal);
+  padding:2px 7px;border-radius:var(--r-sm);letter-spacing:.06em;}.sec-head .sub{font-size:12px;color:var(--doc-t3)}
+p.sub{font-size:12.5px;color:var(--doc-t2);line-height:1.85;margin:0 0 var(--s-4);max-width:100ch}p.sub b{color:var(--doc-t1);font-weight:600}
+p.sub code{font-family:var(--ff-mono);font-size:.9em;background:var(--slot-hov);padding:1px 5px;border-radius:var(--r-sm);color:var(--doc-t1)}
+/* ── 文档卡片 / 表格 ───────────────────────────────────────────────────── */
+.cards{display:grid;gap:var(--s-4)}.cards.c2{grid-template-columns:1fr 1fr}@media (max-width:820px){ .cards.c2{grid-template-columns:1fr} }
+.card{ background:var(--doc-panel);border:1px solid var(--doc-line); border-radius:var(--r-lg);padding:var(--s-4) var(--s-4);}
+.card h3{ font-family:var(--ff-display);font-size:13.5px;font-weight:600;margin:0 0 var(--s-2); color:var(--doc-t1);display:flex;align-items:center;gap:var(--s-2);}
+.card h3 svg{width:14px;height:14px;color:var(--slot-ac);flex:0 0 auto}.card ul{margin:0;padding-left:1.15em}.card li{font-size:12px;line-height:1.85;color:var(--doc-t2);margin:2px 0}
+.card li b{color:var(--doc-t1);font-weight:600}.card p{font-size:12px;line-height:1.85;color:var(--doc-t2);margin:0 0 var(--s-2)}
+.card code{font-family:var(--ff-mono);font-size:.9em;background:var(--slot-hov);padding:1px 5px;border-radius:var(--r-sm);color:var(--doc-t1)}
+  padding:2px 7px;border-radius:var(--r-sm);border:1px solid var(--doc-line); color:var(--doc-t3);background:var(--doc-elev);}
+.tagline.new{border-color:var(--ac-line);color:var(--slot-ac);background:var(--ac-soft)}
+.table-wrap{ border:1px solid var(--doc-line);border-radius:var(--r-lg);overflow:hidden;background:var(--doc-panel);}table{border-collapse:collapse;width:100%}
+th,td{ text-align:left;padding:7px 12px;font-size:11.5px;line-height:1.7; border-bottom:1px solid var(--doc-line);vertical-align:top;}
+th{ background:var(--doc-elev);color:var(--doc-t3);font-weight:600; font-family:var(--ff-mono);font-size:10px;letter-spacing:.07em;text-transform:uppercase;
+  position:sticky;top:49px;z-index:5;}tbody tr:last-child td{border-bottom:0}td{color:var(--doc-t2)}td b{color:var(--doc-t1);font-weight:600}
+td code,th code{font-family:var(--ff-mono);font-size:10.5px;color:var(--doc-t1);background:var(--slot-hov);padding:1px 4px;border-radius:3px}.tbl-scroll{max-height:520px;overflow:auto}
+/* 色样 */
+.pass{color:var(--slot-ok);font-weight:600;font-family:var(--ff-mono);font-size:10.5px}.warnp{color:var(--slot-wr);font-weight:600;font-family:var(--ff-mono);font-size:10.5px}
+.ratio{font-family:var(--ff-mono);font-size:11px;color:var(--doc-t1);font-variant-numeric:tabular-nums}
+/* 现状对照里的「旧样式」样例，仅作反面标注使用，不在任何新档出现 */
+.legacy-btn{ height:30px;min-width:80px;border-radius:var(--r-sm);border:0; background:#F75464;color:#fff;font-weight:700;font-size:13px; font-family:var(--ff-ui);cursor:not-allowed;}
+/* 决策点 */
+.dec{border:1px solid var(--doc-line);border-radius:var(--r-lg);background:var(--doc-panel);overflow:hidden}.dec+.dec{margin-top:var(--s-3)}
+.dec .dh{ display:flex;align-items:center;gap:var(--s-3);padding:var(--s-3) var(--s-4); border-bottom:1px solid var(--doc-line);background:var(--doc-elev);flex-wrap:wrap;}
+.dec .dh .id{ font-family:var(--ff-mono);font-size:11px;font-weight:700;color:var(--slot-ac);
+  border:1px solid var(--ac-line);background:var(--ac-tonal);border-radius:var(--r-sm);padding:1px 7px;}.dec .dh .ttl{font-size:13px;font-weight:600;color:var(--doc-t1)}
+.dec .dh .verdict{ margin-left:auto;font-family:var(--ff-mono);font-size:10.5px;letter-spacing:.05em; padding:2px 8px;border-radius:var(--r-sm);border:1px solid var(--ac-line);
+  background:var(--ac-soft);color:var(--slot-ac);white-space:nowrap;}.dec .body{padding:var(--s-3) var(--s-4) var(--s-4)}
+.dec .body p{font-size:12px;line-height:1.85;color:var(--doc-t2);margin:0 0 var(--s-2)}.dec .body p:last-child{margin-bottom:0}.dec .body b{color:var(--doc-t1);font-weight:600}
+.dec .body .why{ margin-top:var(--s-2);padding:var(--s-2) var(--s-3);border-left:2px solid var(--ac-line); background:var(--ac-tonal);border-radius:0 var(--r-sm) var(--r-sm) 0;
+  font-size:11.5px;line-height:1.8;color:var(--doc-t2);}
+/* 状态索引 */
+.idx{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--s-2)}@media (max-width:1080px){ .idx{grid-template-columns:repeat(2,1fr)} }
+@media (max-width:620px){ .idx{grid-template-columns:1fr} }
+.idx a{ display:flex;align-items:center;gap:var(--s-2);text-decoration:none; border:1px solid var(--doc-line);background:var(--doc-panel);border-radius:var(--r-md);
+  padding:var(--s-2) var(--s-3);color:var(--doc-t2);font-size:11.5px; transition:background .12s var(--ease),border-color .12s var(--ease),color .12s var(--ease);}
+.idx a:hover{background:var(--doc-elev);border-color:var(--ac-line);color:var(--doc-t1)}
+.idx a .k{ font-family:var(--ff-mono);font-size:10px;color:var(--slot-ac); border:1px solid var(--ac-line);border-radius:3px;padding:0 4px;flex:0 0 auto;}
+.idx a .k.dot{width:8px;height:8px;padding:0;border-radius:50%;background:var(--slot-ac);border:0}
+/* ═══ 模拟器 ═══════════════════════════════════════════════════════════════
+   MTerm 真实窗口底：标题栏 / 标签栏 / 终端区；弹框浮在其上并带 Scrim。
+   ═══════════════════════════════════════════════════════════════════════ */
+.gallery{display:grid;gap:var(--s-6)}.frame{ border:1px solid var(--doc-line);border-radius:var(--r-lg);background:var(--doc-panel); overflow:hidden;scroll-margin-top:64px;}
+.frame-head{ display:flex;align-items:center;gap:var(--s-3);padding:var(--s-3) var(--s-4); border-bottom:1px solid var(--doc-line);background:var(--doc-elev);flex-wrap:wrap;}
+.frame-head .ang{ font-family:var(--ff-mono);font-size:10.5px;font-weight:700;letter-spacing:.06em; padding:2px 8px;border-radius:var(--r-sm);
+  border:1px solid var(--ac-line);background:var(--ac-soft);color:var(--slot-ac); flex:0 0 auto;}.frame-head .ft{font-size:12.5px;font-weight:600;color:var(--doc-t1)}
+.frame-head .fd{font-size:11px;color:var(--doc-t3);flex:1 1 240px;min-width:0}.frame-head .tools{display:flex;gap:var(--s-2);margin-left:auto;flex-wrap:wrap}
+.mini{ height:26px;display:inline-flex;align-items:center;gap:6px;padding:0 9px; font-family:var(--ff-ui);font-size:11px;font-weight:600;cursor:pointer;
+  color:var(--doc-t2);background:var(--doc-panel);border:1px solid var(--doc-line); border-radius:var(--r-sm);position:relative;
+  transition:background .12s var(--ease),color .12s var(--ease),border-color .12s var(--ease);}
+/* 视觉 26px，命中扩到 32px */
+.mini::after{content:"";position:absolute;left:0;right:0;top:-3px;bottom:-3px}.mini:hover{background:var(--slot-hov);color:var(--doc-t1);border-color:var(--doc-line2)}
+.mini[aria-pressed="true"]{background:var(--ac-soft);border-color:var(--ac-line);color:var(--slot-ac)}.mini svg{width:12px;height:12px;flex:0 0 auto}
+/* 足迹/说明条 */
+.trace{ display:flex;align-items:center;gap:var(--s-2);padding:var(--s-2) var(--s-4); border-bottom:1px solid var(--doc-line);background:var(--doc-panel);
+  font-family:var(--ff-mono);font-size:10.5px;color:var(--doc-t3);min-height:29px;}.trace .lab{color:var(--slot-ac);flex:0 0 auto}.trace[data-empty="1"]{color:var(--doc-t3)}
+.frame-note{ padding:var(--s-3) var(--s-4);font-size:11.5px;line-height:1.85;color:var(--doc-t2); border-top:1px solid var(--doc-line);background:var(--doc-panel);}
+.frame-note b{color:var(--doc-t1);font-weight:600}
+.frame-note code{font-family:var(--ff-mono);font-size:10.5px;background:var(--slot-hov);padding:1px 4px;border-radius:3px;color:var(--doc-t1)}
+.frame-note .kv{display:flex;gap:var(--s-4);flex-wrap:wrap;margin-bottom:var(--s-2)}.frame-note .kv span{font-family:var(--ff-mono);font-size:10px;color:var(--doc-t3)}
+.frame-note .kv b{font-family:var(--ff-mono);font-size:10px;color:var(--doc-t2);font-weight:600}
+/* ── MTerm 窗口底（标题栏 / 标签栏 / 终端区）──────────────────────────── */
+.sim{position:relative;height:470px;overflow:hidden;background:var(--slot-root)}.sim.tall{height:600px}.sim.short{height:400px}
+.win{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--slot-tbg)}
+.win-title{ height:32px;flex:0 0 auto;display:flex;align-items:center;gap:var(--s-2); padding:0 var(--s-3);background:var(--slot-palt);border-bottom:1px solid var(--slot-line);}
+.win-title .m{ width:18px;height:18px;border-radius:var(--r-sm);flex:0 0 auto; background:linear-gradient(140deg,var(--slot-ac),var(--slot-ok));
+  display:grid;place-items:center;color:var(--on-solid);}.win-title .m svg{width:11px;height:11px}
+.win-title .t{font-family:var(--ff-display);font-size:11px;color:var(--slot-t1);font-weight:600}
+/* host chip：亮色下 t3 压 palt 仅 2.57 ❌ → 改用 t1×.85（暗 6.93 ✓ / 亮 6.96 ✓） */
+.win-title .host{ font-family:var(--ff-mono);font-size:11px;color:var(--slot-t1);opacity:.85; border:1px solid var(--slot-line);border-radius:var(--r-sm);padding:0 6px;height:19px;
+  display:inline-flex;align-items:center;}.win-title .wbtns{margin-left:auto;display:flex;gap:var(--s-2);color:var(--slot-t3)}.win-title .wbtns svg{width:12px;height:12px}
+.win-tabs{ height:31px;flex:0 0 auto;display:flex;align-items:stretch; background:var(--slot-panel);border-bottom:1px solid var(--slot-line);padding-left:var(--s-2);}
+.tab{ display:flex;align-items:center;gap:6px;padding:0 var(--s-3); font-size:11px;color:var(--slot-t1);border-right:1px solid var(--slot-line); font-family:var(--ff-ui);white-space:nowrap;}
+/* 非激活标签用「t1 + opacity .8」而不是 t2 —— t2 在 panel 上仅 4.28 ❌（spec §4.4）：
+   暗 t1×.8 压 palt = 6.30 ✓，亮 = 6.04 ✓ */
+.tab .tl{opacity:.8}.tab.on .tl{opacity:1}.tab svg{width:12px;height:12px;color:var(--slot-t3);flex:0 0 auto}
+.tab.on{background:var(--slot-tbg);color:var(--slot-t1);box-shadow:inset 0 2px 0 var(--slot-ac)}
+.tab.on svg{color:var(--slot-ac)}
+.tab .dot{width:6px;height:6px;border-radius:50%;background:var(--slot-ok);flex:0 0 auto}
+.tab .dot.dg{background:var(--slot-dg)}
+.term{ flex:1 1 auto;overflow:hidden;padding:var(--s-3) var(--s-4); font-family:var(--ff-mono);font-size:11px;line-height:1.62;color:var(--slot-tfg); background:var(--slot-tbg);}
+.term .ln{white-space:pre;overflow:hidden}
+.term .p{color:var(--slot-ac)}
+.term .dim{color:var(--slot-t1);opacity:.72}
+.term .ok{color:var(--slot-ok)}
+.term .wr{color:var(--slot-wr)}
+.term .dg{color:var(--slot-dg)}
+.term .cursor{ display:inline-block;width:7px;height:13px;background:var(--slot-tfg); vertical-align:-2px;animation:blink 1.1s steps(1,end) infinite;}
+@keyframes blink{0%,50%{opacity:1}50.01%,100%{opacity:0}}
+/* ── Scrim（Theme.modal-scrim：单层，40–60%）─────────────────────────── */
+.scrim{position:absolute;inset:0;background:var(--scrim);z-index:10}
+/* ── 弹框卡片（popup-bg + radius-lg，可拖动、打开回中）───────────────── */
+.dlg{ position:absolute;z-index:11;left:50%;top:50%;transform:translate(-50%,-50%); display:flex;flex-direction:column;max-height:calc(100% - 40px);
+  background:var(--popup-bg);border:1px solid var(--border-strong); border-radius:var(--r-lg);box-shadow:var(--pop-shadow);overflow:hidden;}
+.dlg.compact{width:380px}                        /* spec §5.1 紧凑档，沿用现状 */
+.dlg.standard{width:640px}                       /* spec §5.1 标准档 560–680px */
+.dlg.review{width:min(calc(100% - 40px),1160px);max-height:min(calc(100% - 40px),760px)}
+.grip{ height:5px;flex:0 0 auto;display:grid;place-items:center;cursor:grab; color:var(--slot-t3);background:var(--popup-bg-elev);}
+.grip svg{width:22px;height:5px;opacity:.8}
+.dlg-head{ flex:0 0 auto;display:flex;align-items:flex-start;gap:var(--s-3); padding:var(--s-4) var(--s-4) var(--s-3);border-bottom:1px solid var(--slot-line);}
+.dlg-head .ic{ width:28px;height:28px;flex:0 0 auto;border-radius:var(--r-md);display:grid;place-items:center; background:var(--ac-soft);color:var(--slot-ac);border:1px solid var(--ac-line);}
+.dlg-head .ic.dg{background:var(--dg-soft);color:var(--dg-ink);border-color:var(--dg-line)}
+.dlg-head .ic svg{width:15px;height:15px}
+.dlg-head .tt{min-width:0;flex:1 1 auto}
+.dlg-head h4{ margin:0;font-family:var(--ff-display);font-size:15px;font-weight:600;color:var(--slot-t1); display:flex;align-items:center;gap:var(--s-2);flex-wrap:wrap;}
+.dlg-head h4 .lvl{ font-family:var(--ff-mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+  border:1px solid var(--slot-line);border-radius:3px;padding:1px 6px;color:var(--slot-t1);}
+.dlg-head .st{font-size:11px;color:var(--slot-t1);line-height:1.7;margin-top:3px}
+.dlg-close{ width:26px;height:26px;flex:0 0 auto;display:grid;place-items:center;cursor:pointer; background:transparent;border:1px solid transparent;border-radius:var(--r-sm);
+  color:var(--slot-t3);position:relative;}
+.dlg-close::after{content:"";position:absolute;inset:-3px}
+.dlg-close:hover{background:var(--slot-hov);color:var(--slot-t1);border-color:var(--slot-line)}
+.dlg-close svg{width:13px;height:13px}
+.dlg-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:var(--s-3);padding:var(--s-3) var(--s-4)}
+.dlg-foot{ flex:0 0 auto;display:flex;align-items:center;gap:var(--s-3); padding:var(--s-3) var(--s-4);border-top:1px solid var(--slot-line); background:var(--slot-root);flex-wrap:wrap;}
+/* ↑ 页脚条改压在 slot-root 上：t1→root 暗 9.72 ✓ / 亮 11.53 ✓；
+   popup-bg-elevated 在暗色是 #1E2024，slot-t2 压上去只有 4.00 ❌（spec §4.4 表格已注明），
+   故凡是承载正文/按钮文字的面一律退回 popup-bg 或 root，elev/inset 只留给无文字装饰件。 */
+/* 上下文 chips（粘贴目标 / 括号粘贴能力）*/
+.chips{display:flex;gap:var(--s-2);flex-wrap:wrap;align-items:center}
+.chip{ display:inline-flex;align-items:center;gap:6px;height:23px;padding:0 var(--s-2); border:1px solid var(--slot-line);border-radius:var(--r-sm);
+  background:var(--popup-bg);font-size:11px;color:var(--slot-t1);white-space:nowrap;}
+.chip svg{width:12px;height:12px;flex:0 0 auto}
+.chip b{color:var(--slot-t1);font-weight:600;font-family:var(--ff-mono);font-size:11px}
+.chip.accent{border-color:var(--ac-line);background:var(--ac-tonal);color:var(--slot-ac)}
+.chip.accent b{color:var(--slot-ac)}
+/* 警示 chip：底色换成不透明 popup-bg，让文字压在 panel 上（wr→panel 暗 8.09 ✓ / 亮 4.99 ✓），
+   避免压在 12–14% 淡染上时亮色只剩 4.05 ❌ */
+.chip.warn{border-color:var(--wr-line);background:var(--popup-bg);color:var(--slot-wr)}
+.chip.warn b{color:var(--slot-wr)}
+/* 提示条 */
+.notice{ display:flex;align-items:flex-start;gap:var(--s-2); padding:var(--s-2) var(--s-3);border-radius:var(--r-sm); font-size:11px;line-height:1.7;border:1px solid transparent;}
+.notice svg{width:13px;height:13px;flex:0 0 auto;margin-top:2px}
+/* 警示条：同样压在 panel（不透明）上，理由同 .chip.warn */
+.notice.warn{background:var(--popup-bg);border-color:var(--wr-line);color:var(--slot-wr)}
+.notice.dg{background:var(--dg-soft);border-color:var(--dg-line);color:var(--dg-ink)}
+.notice b{font-weight:600}
+.notice .en{display:none}
+html[data-lang="en"] .notice .zh{display:none}
+html[data-lang="en"] .notice .en{display:inline}
+/* ── 预览区（spec §5.2 七项必备元素）────────────────────────────────── */
+.pv{ display:flex;flex-direction:column;min-height:0;flex:1 1 auto; border:1px solid var(--slot-line);border-radius:var(--r-md); background:var(--popup-bg);overflow:hidden;}
+/* 预览底 = popup-bg（等价 panel #181A1D）：slot-t1 压 panel 暗 9.38 ✓ / 亮 12.37 ✓，
+   行号 slot-t3 压 panel 暗 3.66 ✓ / 亮 3.02 ✓（spec §4.4 明确允许 t3 仅作装饰/行号）。
+   注：4.14 是 slot-t2 压 slot-palt（#1B1D21）、4.00 是 slot-t2 压 slot-elev；slot-t1 压它们实为 9.08 / 8.78（.tmp-lead/contrast.mjs 逐值可复现）。
+   popup-bg-inset = base-bg-root × popup-alpha（= slot-root #161619，不是 slot-palt），本稿不用于承载文字的面。 */
+.pv-bar{ height:var(--stats-h);flex:0 0 auto;display:flex;align-items:center;gap:var(--s-3); padding:0 var(--s-3);border-bottom:1px solid var(--slot-line);
+  background:var(--popup-bg);font-size:11px;color:var(--slot-t1);}
+/* 统计条：数字区固定宽 + tabular-nums → 1 行 ↔ 47 行切换不推动布局 */
+.stat{display:flex;align-items:center;gap:5px;flex:0 0 auto}
+.stat .k{color:var(--slot-t1);font-size:11px}
+.stat .v{ font-family:var(--ff-mono);font-size:11px;font-weight:600;color:var(--slot-t1); font-variant-numeric:tabular-nums;}
+/* 风险计数用 slot-dg：压在 popup-bg（=panel）上（暗 5.32 ✓ / 亮 5.22 ✓） */
+.stat .v.risk{color:var(--slot-dg)}
+.stat .v.safe{color:var(--slot-ok)}
+.stat .v.n-lines{min-width:34px;display:inline-block;text-align:right}
+.stat .v.n-chars{min-width:56px;display:inline-block;text-align:right}
+.stat .v.n-risks{min-width:30px;display:inline-block;text-align:right}
+.pv-bar .sep{width:1px;height:12px;background:var(--slot-line);flex:0 0 auto}
+.pv-bar .right{margin-left:auto;display:flex;align-items:center;gap:var(--s-2)}
+.pv-toggle{ height:21px;display:inline-flex;align-items:center;gap:5px;padding:0 var(--s-2); font-family:var(--ff-ui);font-size:11px;font-weight:600;cursor:pointer;
+  border:1px solid var(--slot-line);border-radius:var(--r-sm); background:var(--popup-bg);color:var(--slot-t1);position:relative;}
+.pv-toggle::after{content:"";position:absolute;inset:-6px -2px}
+.pv-toggle svg{width:11px;height:11px}
+.pv-toggle[aria-pressed="true"]{border-color:var(--ac-line);background:var(--ac-tonal);color:var(--slot-ac)}
+.pv-toggle:hover{color:var(--slot-t1)}
+.pv-toggle .en{display:none}
+html[data-lang="en"] .pv-toggle .zh{display:none}
+html[data-lang="en"] .pv-toggle .en{display:inline}
+.pv-scroll{overflow:auto;min-height:0;flex:1 1 auto;scrollbar-width:thin}
+.pv-line{ display:flex;align-items:flex-start;position:relative; font-family:var(--ff-mono);font-size:11px;line-height:var(--lh-preview);
+  color:var(--slot-t1);min-height:calc(11px * var(--lh-preview));}
+.pv-line:hover{background:var(--slot-hov)}
+/* 危险行：2px 左竖标（slot-dg）+ 11% 淡染 + 行尾类别徽标（图标+文字，色盲可辨） */
+.pv-line.dg{background:var(--dg-soft)}
+.pv-line.dg::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--slot-dg)}
+.pv-line.dg:hover{background:var(--dg-soft-2)}
+.pv-line.dg .pv-g{color:var(--dg-ink)}
+.pv-g{ flex:0 0 auto;width:var(--gutter-w);text-align:right;padding-right:var(--s-2); color:var(--slot-t3);font-size:11px;user-select:none;-webkit-user-select:none;
+  font-variant-numeric:tabular-nums;}
+.pv-t{flex:1 1 auto;min-width:0;white-space:pre;overflow-x:auto;padding-right:var(--s-2);tab-size:4}
+.pv.wrap-on .pv-t{white-space:pre-wrap;overflow-wrap:anywhere;overflow-x:hidden}
+/* 折叠提示必须用 t1（spec §4.4 第 2 条：不得用 t3 承载正文），仅用斜体+符号区分 */
+.pv-line.fold .pv-t{color:var(--slot-t1);font-style:italic;opacity:.9}
+/* 虚拟化通告行：语义与「折叠提示」不同（未被折叠，而是未进入 DOM）→ 用独立类名，避免与折叠账混淆 */
+.pv-line.note{ border-top:1px dashed var(--slot-line);border-bottom:1px dashed var(--slot-line)}
+.pv-line.note .pv-t{color:var(--slot-t1);font-style:italic;opacity:.9}
+.pv-badge{ flex:0 0 auto;width:var(--badge-w);display:flex;align-items:center;justify-content:flex-end; gap:4px;padding-right:var(--s-2);font-size:10px;line-height:1.5;
+  font-weight:600;color:var(--slot-dg);white-space:nowrap;overflow:hidden;}
+/* 徽标文字压在 11% 淡染上会掉到 4.47（亮）⚠，故给它一层不透明 popup-bg 小胶囊：
+   文字 → panel 的实测比值 暗 5.32 ✓ / 亮 5.22 ✓，与 spec §4.4 第 3 条完全一致 */
+.pv-badge .bdg{ display:inline-flex;align-items:center;gap:4px;height:15px;padding:0 5px; border:1px solid var(--dg-line);border-radius:3px;background:var(--popup-bg);}
+.pv-badge svg{width:11px;height:11px;flex:0 0 auto}
+.pv-badge .en{display:none}
+html[data-lang="en"] .pv-badge .zh{display:none}
+html[data-lang="en"] .pv-badge .en{display:inline}
+.pv-hint{ display:flex;align-items:center;gap:var(--s-2);padding:5px var(--s-3); border-top:1px solid var(--slot-line);background:var(--popup-bg);
+  font-size:11px;color:var(--slot-t1);font-family:var(--ff-mono);}
+.pv-hint svg{width:11px;height:11px;flex:0 0 auto}
+/* 折叠行（"展开全部"入口，绝不静默截断）*/
+.pv-fold{ display:flex;align-items:center;justify-content:center;gap:var(--s-2); padding:5px var(--s-3);cursor:pointer;font-size:11px; color:var(--slot-ac);background:var(--ac-tonal);
+  border-top:1px dashed var(--ac-line);border-bottom:1px dashed var(--ac-line); position:relative;}
+.pv-fold::after{content:"";position:absolute;inset:0}
+.pv-fold svg{width:12px;height:12px}
+.pv-fold:hover{background:var(--ac-soft)}
+.pv-fold b{font-family:var(--ff-mono);font-variant-numeric:tabular-nums}
+.pv-fold .en{display:none}
+html[data-lang="en"] .pv-fold .zh{display:none}
+html[data-lang="en"] .pv-fold .en{display:inline}
+/* ── 按钮（沿用 ui/confirm_dialog.slint：30px 高 / radius-sm / min-w 80）──
+   与项目现状同步：GhostButton/PrimaryButton/DangerButton 的 dialog-chrome 口径
+   下按钮只渲染文字（glyph 为空则不实例化图标），且不带快捷键键帽 —— 见
+   ui/widgets.slint:225-236（if root.glyph != "" : Icon）。取消 = 透明底 +
+   1px Theme.line-2 + text-muted，hover 底 popup-field-2。 */
+.btns{display:flex;align-items:center;gap:var(--s-2);margin-left:var(--s-4);flex-wrap:wrap}
+.btn{ height:var(--btn-h);min-width:var(--btn-min-w);padding:0 14px; display:inline-flex;align-items:center;justify-content:center;
+  font-family:var(--ff-ui);font-size:var(--fs-md);font-weight:700; border:1px solid transparent;border-radius:var(--r-sm);cursor:pointer; position:relative;white-space:nowrap;
+  transition:background .12s var(--ease),border-color .12s var(--ease),color .12s var(--ease);}
+.btn::after{content:"";position:absolute;left:0;right:0;top:-1px;bottom:-1px}  /* 命中 32px */
+.btn.ghost{background:transparent;border-color:var(--line-2);color:var(--slot-t2)}
+/* 取消键 6px 圆角：GhostButton（ui/widgets.slint:167-202）btn-radius = radius-md = 6px，
+   覆盖 .btn 基类的 radius-sm；危险按钮 .btn.dg-out 保持 r-sm（DangerButton 语义，不改）。 */
+.btn.ghost{border-radius:var(--r-md)}
+.btn.ghost:hover{background:var(--field-2);color:var(--slot-t1);border-color:var(--border-strong)}
+/* 危险动作（「粘贴并执行」）：spec §4.4 第 5 条首选「描边式」——danger 字 + 1px danger 边 + 透明底
+   （暗 5.32 ✓ / 亮 5.22 ✓）。按下/悬停转实心红底时字色换成 --on-solid（root），
+   即 slint 现状 #ec6a6a/#c44a4a 的合规化：不得沿用白字（白字 on 暗 dg 仅 3.28 ❌）。 */
+.btn.dg-out{background:transparent;border-color:var(--slot-dg);color:var(--slot-dg)}
+.btn.dg-out:hover{background:var(--slot-dg);color:var(--on-solid)}
+.btn.dg-out:active{background:var(--slot-dg);color:var(--on-solid);
+  box-shadow:inset 0 2px 5px rgba(0,0,0,.30)}
+/* 主按钮（安全默认动作）：spec §4.4 第 4 条
+   暗 = ac 实底 + #161619 字（8.58 ✓）；亮 = ac 实底 + #FAF8F4 字（5.13 ✓） */
+.btn.primary{background:var(--slot-ac);border-color:var(--slot-ac);color:var(--on-solid)}
+/* hover 只变描边、不变底色：--ac-hov 亮色是 #238478，若作底则 #FAF8F4 字只有 4.26:1 ❌，
+   故 hover/active 底色一律保持 slot-ac（亮 5.13 ✓ / 暗 8.58 ✓）。反馈更强靠 2px 外环：
+   border-color 与 box-shadow 外环同取 --ac-hov（既有 token，不新增色相）；外环对底 暗 10.54:1 / 亮 3.97:1（≥3:1 非文本边界）。
+   注：--ac-soft 按 alpha 合成后对底仅 暗 1.32:1 / 亮 1.17:1，作外环肉眼几乎不可见，故不采用。 */
+.btn.primary:hover{background:var(--slot-ac);border-color:var(--ac-hov);color:var(--on-solid);
+  box-shadow:0 0 0 2px var(--ac-hov)}
+.btn.primary:active{background:var(--slot-ac);border-color:var(--slot-ac);
+  box-shadow:inset 0 2px 5px rgba(0,0,0,.22)}
+.btn .en{display:none}
+html[data-lang="en"] .btn .zh{display:none}
+html[data-lang="en"] .btn .en{display:inline}
+/* Enter 语义可视化：默认动作带 1px accent 焦点环；快捷键说明移到页脚左侧一行文字（无键帽 chip） */
+.btn.is-default{outline:var(--focus-w) solid var(--slot-ac);outline-offset:2px}
+.enter-note{ font-size:11px;color:var(--slot-t1);font-family:var(--ff-mono); display:flex;align-items:center;gap:5px;}
+.enter-note svg{width:11px;height:11px}
+.enter-note .en{display:none}
+html[data-lang="en"] .enter-note .zh{display:none}
+html[data-lang="en"] .enter-note .en{display:inline}
+/* 勾选项 */
+.opts{display:flex;align-items:center;gap:var(--s-4);flex-wrap:wrap;min-width:0;margin-left:auto}
+.opt{ display:inline-flex;align-items:center;gap:6px;cursor:pointer; font-size:11px;color:var(--slot-t1);position:relative;}
+.opt::after{content:"";position:absolute;inset:-8px -4px}
+.opt:hover{color:var(--slot-t1)}
+.opt svg{width:13px;height:13px;flex:0 0 auto;color:var(--slot-t3)}
+.opt[data-on="1"] svg{color:var(--slot-ac)}
+.opt[data-on="1"]{color:var(--slot-t1)}
+.opt .en{display:none}
+.opt-note{color:var(--slot-t1);font-size:10px;line-height:1.4;border-left:1px solid var(--slot-line);padding-left:var(--s-2)}
+.opt-note .en{display:none}
+html[data-lang="en"] .opt .zh{display:none}
+html[data-lang="en"] .opt .en{display:inline}
+/* 操作结果条（点击按钮后的可见反馈）*/
+.result{ display:flex;align-items:center;gap:var(--s-2);padding:6px var(--s-3); border-radius:var(--r-sm);font-size:11px;border:1px solid transparent;
+  font-family:var(--ff-mono);min-height:29px;}
+.result svg{width:12px;height:12px;flex:0 0 auto}
+.result.ok{background:var(--ac-tonal);border-color:var(--ac-line);color:var(--slot-ac)}
+.result.dg{background:var(--dg-soft);border-color:var(--dg-line);color:var(--dg-ink)}
+.result.cancel{background:var(--slot-hov);border-color:var(--slot-line);color:var(--slot-t1)}
+.result .en{display:none}
+html[data-lang="en"] .result .zh{display:none}
+html[data-lang="en"] .result .en{display:inline}
+.is-hidden{display:none !important}
+/* 双语：全局兜底（各控件另有 display:inline 覆盖，避免 span 变块级） */
+html[data-lang="zh"] .en{display:none}
+html[data-lang="en"] .zh{display:none}
+/* 评审档「内部滚动」演示：给滚动容器封顶，确保出现真实滚动条 */
+.pv-scroll.cap{max-height:238px}
+.pv-scroll::-webkit-scrollbar{width:10px;height:10px}
+.pv-scroll::-webkit-scrollbar-thumb{background:var(--slot-lstr);border-radius:5px;border:2px solid var(--popup-bg)}
+.pv-scroll::-webkit-scrollbar-track{background:transparent}
+/* 连续性对比（现状 380px ↔ 新档）*/
+.cmp{display:grid;grid-template-columns:minmax(400px,470px) 1fr;gap:var(--s-4);align-items:start}
+@media (max-width:1080px){ .cmp{grid-template-columns:1fr} }
+.cmp .col{display:flex;flex-direction:column;gap:var(--s-2)}
+.cmp .col h4{margin:0;font-size:12px;font-weight:600;color:var(--doc-t1);display:flex;align-items:center;gap:var(--s-2)}
+.spec-list{display:grid;grid-template-columns:repeat(2,1fr);gap:var(--s-2)}
+@media (max-width:820px){ .spec-list{grid-template-columns:1fr} }
+.spe{display:flex;gap:var(--s-2);align-items:flex-start;font-size:11px;color:var(--doc-t2);line-height:1.75}
+.spe .k{font-family:var(--ff-mono);font-size:10px;color:var(--doc-t3);flex:0 0 auto;min-width:78px}
+.spe .v{color:var(--doc-t1)}
+footer.docfoot{ margin-top:var(--s-8);padding-top:var(--s-4);border-top:1px solid var(--doc-line); font-size:11px;color:var(--doc-t3);display:flex;gap:var(--s-4);flex-wrap:wrap;}
+/* ═══ B 级（提权 / 管道执行）行标：与 A 级同构，仅色相不同（slot-wr 代替 slot-dg） ═══
+   spec §4.4：wr→panel 暗 8.09 ✓ / 亮 4.99 ✓，故徽标与行号可直接用 slot-wr 系。 */
+.pv-line.wr{background:var(--wr-soft)}
+.pv-line.wr::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--slot-wr)}
+.pv-line.wr:hover{background:var(--wr-soft-2)}
+.pv-line.wr .pv-g{color:var(--wr-ink)}
+.pv-badge.wr{color:var(--slot-wr)}
+.pv-badge.wr .bdg{border-color:var(--wr-line);color:var(--slot-wr)}
+/* 并列一等按钮「粘贴（去掉尾部回车）」：accent 软底 + accent 描边（ac→ac-tonal 暗 7.44 ✓ / 亮 4.61 ✓） */
+/* 危险行级别图例（统计条右侧） */
+.legend{display:flex;align-items:center;gap:var(--s-2);font-size:10px;color:var(--slot-t1)}
+.legend i{width:8px;height:8px;border-radius:2px;display:inline-block}
+.legend i.a{background:var(--slot-dg)}
+.legend i.b{background:var(--slot-wr)}
+@media (prefers-reduced-motion:reduce){ *{animation:none !important;transition:none !important} }
+</style>
+</head>
+<body>
+
+<!-- ═══ 内联 SVG 图标集（零外链：不使用 assets/ 外链，路径按 24×24 线性口径内联） ═══ -->
+<svg width="0" height="0" style="position:absolute;overflow:hidden" aria-hidden="true" focusable="false">
+  <symbol id="i-logo" viewBox="0 0 24 24"><path d="M5 8l4 4-4 4"/><path d="M12 16h7"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.6 2.5 15.4 0 18M12 3c-2.5 2.6-2.5 15.4 0 18"/></symbol>
+  <symbol id="i-paste" viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></symbol>
+  <symbol id="i-clipboard-check" viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M9 14l2 2 4-4"/></symbol>
+  <symbol id="i-warning" viewBox="0 0 24 24"><path d="M10.3 3.9 1.9 18a2 2 0 0 0 1.7 3h16.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9.5v4"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-error" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-5"/><path d="M12 8h.01"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-enter" viewBox="0 0 24 24"><path d="M20 6v6a3 3 0 0 1-3 3H6"/><path d="M9 12l-3 3 3 3"/></symbol>
+  <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/></symbol>
+  <symbol id="i-host" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 9l3 3-3 3"/><path d="M12 15h6"/></symbol>
+  <symbol id="i-split" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></symbol>
+  <symbol id="i-rows" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9.3h18M3 14.6h18"/></symbol>
+  <symbol id="i-wrap" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M3 12h12a3 3 0 0 1 0 6h-3"/><path d="M14 15l-2 3 2 3"/><path d="M3 18h6"/></symbol>
+  <symbol id="i-hscroll" viewBox="0 0 24 24"><path d="M4 12h16"/><path d="M8 8l-4 4 4 4"/><path d="M16 8l4 4-4 4"/></symbol>
+  <symbol id="i-unfold-more" viewBox="0 0 24 24"><path d="M7 9l5-5 5 5"/><path d="M7 15l5 5 5-5"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6z"/><path d="M9 12l2 2 4-4"/></symbol>
+  <symbol id="i-shield-alert" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6z"/><path d="M12 8v4"/><path d="M12 15h.01"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></symbol>
+  <symbol id="i-disk" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 20h16"/></symbol>
+  <symbol id="i-file-x" viewBox="0 0 24 24"><path d="M14 3v5h5"/><path d="M19 8v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7z"/><path d="M10 12.5l4 4M14 12.5l-4 4"/></symbol>
+  <symbol id="i-tune" viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></symbol>
+  <symbol id="i-drag" viewBox="0 0 24 6"><path d="M8 3h8"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M6 4l14 8-14 8z"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></symbol>
+  <symbol id="i-window-asset" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M7 6.5h.01M10 6.5h.01"/></symbol>
+</svg>
+
+<!-- ═══ 页面壳 · 顶栏 ═══ -->
+<header class="doc-header"><div class="inner"><div class="brand">
+      <span class="logo"><svg class="ic" aria-hidden="true"><use href="#i-logo"/></svg></span>
+      <b>MTerm</b>
+      <span>多行粘贴确认弹框 · Multi-line paste confirm — 高保真稿 v1.1 · 2026-11-06</span>
+    </div>
+    <span class="spacer"></span>
+    <div class="toolbar"><div class="seg" role="group" aria-label="语言 / Language">
+        <button type="button" data-set-lang="zh" aria-pressed="true">中文</button>
+        <button type="button" data-set-lang="en" aria-pressed="false">EN</button>
+      </div><div class="seg" role="group" aria-label="主题 / Theme"><button type="button" data-set-theme="dark" aria-pressed="true">
+          <svg class="ic" aria-hidden="true"><use href="#i-moon"/></svg> 暗
+        </button><button type="button" data-set-theme="light" aria-pressed="false">
+          <svg class="ic" aria-hidden="true"><use href="#i-sun"/></svg> 亮
+        </button></div><a class="tbtn" href="#sec-states">
+        <svg class="ic" aria-hidden="true"><use href="#i-layers"/></svg>
+        <span class="zh">状态索引</span><span class="en">States</span>
+      </a></div></div></header>
+
+<main class="wrap">
+
+  <!-- ═══ Hero ═══ -->
+  <section class="hero">
+    <div class="kick">MTerm · ui/confirm_dialog.slint 家族 · review surface v1</div>
+    <h1>确认多行粘贴 <em>Confirm multi-line paste</em></h1>
+    <div class="hero-grid"><div><p class="lead">
+          本稿把「粘贴多行文本」从通用 <code>ConfirmDialog</code>（380px、为 SFTP 删除/主机密钥设计的窄卡片）
+          升级为一个<b>专用评审面</b>：一次看清<b>多少行、多少字符、几处风险、会不会立即执行、粘到哪个会话</b>。
+          版式继承同一组件家族——同一 <code>popup-bg</code> 卡片、<code>radius-lg</code>、同款 <code>Scrim</code>、
+          同一 30px / <code>radius-sm</code> 按钮，只做「加宽 + 预览区 + 危险前置」，不另起一套风格。
+          三档自适应：<b>紧凑 380px（1–3 行 <b>且</b> ≤600 字符）</b>、<b>标准 640px（4–12 行 <b>且</b> ≤600 字符）</b>、
+          <b>评审 min(宽-40px,1160px)（&gt;12 行 <b>或</b> &gt;600 字符，任一超出即评审档）</b>。权威规则：<code>src/terminal/impls/input.rs:93-104</code>（<code>COMPACT_LINE_LIMIT=12</code> / <code>COMPACT_CHAR_LIMIT=600</code>）。
+        </p><p class="sub">
+          事实底稿：<code>docs/design/multiline-paste-spec-2026-11-06.md</code>（§4 色板、§4.4 对比度、§5.1 三档、§5.2 预览七项、§5.3 D1–D5、§6 验收）。
+          所有颜色值均可追溯到 §4 槽位名（<code>slot-*</code>），页面内逐处注释标注。暗/亮为整页切换，zh/en 为页内切换 + 关键文案并列。
+        </p></div><aside class="hero-side">
+        <div class="row"><span>稿子 / Draft</span><b>v1.1 · 2026-11-06</b></div>
+        <div class="row"><span>唯一写入文件</span><b>docs/design/multiline-paste-hifi-2026-11-06-v1.html</b></div>
+        <div class="row"><span>状态数 / States</span><b>7（暗 4 · 亮 3）</b></div>
+        <div class="row"><span>档位 / Sizes</span><b>380 · 640 · min(1160)</b></div>
+        <div class="row"><span>按钮 / Buttons</span><b>30px h · min-w 80px · r-sm</b></div>
+        <div class="row"><span>正文对比度</span><b>9.38:1 暗 / 12.37:1 亮</b></div>
+        <div class="row"><span>D1–D5</span><b>已按 spec §5.3 终态定稿</b></div>
+        <div class="note">
+          零外链：无 CDN、无外链字体、无外链图片；图标全部内联 SVG（24×24 线性、统一 stroke-width 2）。
+          单文件离线可开。<b>本稿只画视觉与交互规格，不改任何 ui/、src/ 代码。</b>
+<b>主题作用域：</b>顶栏暗/亮切换整页同步（页面壳、文档层、对账表、连续性区模拟器）；7 个<b>状态帧</b>按状态名固定肤色（A/B/C/F 暗、D/E/G 亮），因此任一主题下都能同时对照两种观感——这是评审稿的刻意选择，不是主题失效。
+        </div></aside></div></section>
+
+  <!-- ═══ 1 · 设计说明 ═══ -->
+  <section class="blk" id="sec-notes"><div class="sec-head">
+      <span class="n">01</span>
+      <h2>设计说明</h2>
+      <span class="sub">现状 vs 新设计 · 对标取舍 · D1–D5 结论 · 对比度实测 · 验收对照</span>
+    </div>
+
+    <div class="cards c2"><div class="card">
+        <h3><svg class="ic" aria-hidden="true"><use href="#i-error"/></svg>现状：380px 通用确认框扛不住多行粘贴</h3>
+        <ul>
+          <li>触发：中键 / <code>Ctrl+Shift+V</code> → 文本含 <code>\r</code>/<code>\n</code> 时弹通用 <b>ConfirmDialog</b>（<code>src/app.rs:12759</code>）。</li>
+          <li>预览是<b>原文整段裸文本</b>：无行号、无等宽约束、无危险标记、无折行策略、无截断出路（<code>src/app.rs:12762</code>）。</li>
+          <li>没有「只粘贴不执行」出口：尾部换行会被 <code>normalize_pasted_newlines</code> 归一成 <code>CR</code>，<b>粘完就回车、直接执行</b>。</li>
+          <li>两档切换生硬（380 ↔ 1160），5–12 行的中等内容无档位；控制字符被 <code>encode_pasted_text</code> 静默剥离。</li>
+          <li><code>confirm-on-enter</code> 让 Enter 直接确认（<code>#392</code>）；危险行与白字红底按钮的对比度也不达标（白字 on <code>slot-dg</code> 仅 <b>3.28:1</b> ❌）。</li>
+        </ul></div><div class="card">
+        <h3><svg class="ic" aria-hidden="true"><use href="#i-shield"/></svg>新设计：加宽档 + 危险前置 + 默认安全</h3>
+        <ul>
+          <li><b>G1 一眼可判</b>：顶部统计条固定宽 <code>N 行 · M 字符 · K 处风险</code>（tabular-nums，1↔47 行不跳动）。</li>
+          <li><b>G2 危险前置</b>：危险行 = 左 2px 竖标 + 11% 淡染 + 行尾「图标 + 中文类别名」徽标（颜色不是唯一载体）。</li>
+          <li><b>G3 执行必须显式</b>：主按钮「粘贴（不含末尾回车）」是安全动作（<b>Enter = 主按钮</b>）；「粘贴并执行」是描边式危险按钮，只能点击或按 <code>Alt+P</code>；<code>Esc</code> = 取消。</li>
+          <li><b>G4 同源</b>：仍是 <code>popup-bg</code> 卡片 + <code>radius-lg</code> + <code>Scrim</code> + 30px 按钮（主/危险 <code>radius-sm</code>，取消 = GhostButton <code>radius-md</code>）+ 可拖动，可看出是「同一家族的加宽档」。</li>
+          <li><b>G5 三档</b>（紧凑 1–3 行 <b>且</b> ≤600 字符 / 标准 4–12 行 <b>且</b> ≤600 字符 / 评审 &gt;12 行 <b>或</b> &gt;600 字符，任一超出；<code>src/terminal/impls/input.rs:93-104</code>）与 <b>G6 键盘可达</b>：Tab 序 = 视觉序、Esc = 取消、Enter = 安全动作，焦点环 1px accent。</li>
+          <li><b>对账完整性</b>：<code>--field-2</code> / <code>--danger-strong</code> / <code>--popup-bg-inset</code> 三个派生 token 已按权威值逐值对齐（<code>ui/theme.slint:285 / 335 / 251</code>），但<b>全稿 0 引用</b>，仅为 spec §4.2 对账完整性保留，不参与渲染。</li>
+        </ul></div></div>
+
+    <p class="sub" style="margin-top:var(--s-3)"><b>比值来源分两类，便于逐项对账。</b>（1）<b>权威脚本逐值复现</b>（<code>node .tmp-lead/contrast.mjs</code>）：9.38 / 12.37（<code>t1</code>→panel）、9.72 / 11.53（<code>t1</code>→root）、5.32 / 5.22（<code>dg</code>→panel）、8.29（<code>ac</code>→panel 暗）/ 5.13（亮）、8.58 / 5.13（实心底上的字）、3.28（白字 on 暗 <code>dg</code>）、4.28 / 4.25（<code>t2</code>）、2.57（亮 <code>t3</code>→<code>palt</code>）、4.00 / 4.14（elev/inset 上的 <code>t1</code>）、3.66 / 3.02（<code>t3</code>）。（2）<b>含 alpha/opacity 合成或文档层变量、权威脚本未覆盖，由本稿按同一 WCAG 2.1 相对亮度公式复算</b>：<code>popup-bg</code> = 暗 <code>rgba(24,26,29,.98)</code> 压 <code>slot-root</code> → <code>rgb(24,26,29)</code>、亮 <code>rgba(250,248,244,.98)</code> 压 <code>slot-root</code> → <code>rgb(250,248,244)</code>；11% danger 淡染合成后 = 暗 <code>rgb(49,32,37)</code>、亮 <code>rgb(242,228,224)</code>；透明度系数 <code>×.72 / ×.8 / ×.85</code> 按「字色先与底色合成、再算对比」处理；文档层直接取 <code>--doc-*</code> 变量原值。此前手算的 3 处偏差（动作条 8.04、警告 8.23、安全 6.72）已按实算值 <b>9.72 / 8.09 / 6.60</b> 更正。判定阈值取 spec §4.4：正文 ≥4.5、次要/装饰 ≥3、大字号 ≥3。</p>
+
+<div class="cards c2" style="margin-top:var(--s-4)"><div class="card">
+        <h3><svg class="ic" aria-hidden="true"><use href="#i-globe"/></svg>与主流对标的取舍（依据研究稿 10 家对标）</h3>
+        <ul>
+          <li><b>默认动作（D1 · 终态）</b>：主按钮 = 「<b>粘贴（不含末尾回车）</b>」（安全动作：剥离尾 CR/LF，最后一行留在命令行<b>不执行</b>）；「<b>粘贴并执行</b>」= 描边式危险按钮，等价现状 <code>encode_pasted_text</code> 原样行为；<b>原文末尾无换行时只渲染一个主按钮「粘贴」</b>（无危险按钮）。iTerm2 的 <code>Paste Without Newline</code> 与 VS Code 对单行尾换行的处理正是这个方向的证据。</li>
+          <li><b>键盘（D2 · 终态）</b>：主流把 Enter 绑成首选动作（WT <code>DefaultButton="Primary"</code>、Tabby <code>defaultId:0</code>）——本稿保留 Enter 的可用性但把它<b>重定向到安全动作</b>：<code>Enter</code> = 主按钮（不含末尾回车），<code>Alt+P</code> = 粘贴并执行，<code>Esc</code> = 取消。<b>Enter 绝不触发执行。</b></li>
+          <li><b>可记忆（D3）</b>：VS Code 有「Do not ask me again」并持久化为 <code>never</code>；iTerm2 按 identifier 静默；WT / Tabby 无复选框只有设置项。→ 采纳复选框，写回既有 <code>paste_confirm_enabled</code>（不新增设置键）。</li>
+          <li><b>危险前置（D4）</b>：<b>10 家全部没有任何危险命令标记</b>（行级语义提示是本稿的增量）。kitty 对危险控制码也只做确认而非拒绝 → 本稿行级标记<b>只提示、不阻断</b>，可容忍误报。</li>
+          <li><b>bracketed 不等于安全（D5）</b>：WT GH#13014 证明 bracketed paste 可被远端用逃逸序列开启，从而让多行警告失效；PowerShell/cmd 就是「支持该模式但不做多行保护」的反例。→ 故本稿<b>不</b>用「bracketed 已开」免除确认：<b>两种状态都要确认，主按钮文案也不因 bracketed 而改</b>，只用顶部一行说明与徽标<b>调整提示强度</b>（关闭时改说「远端未开启 bracketed paste：整段多行将逐行执行。」）。这与 WT <code>Automatic</code> 的做法相反。</li>
+          <li><b>取舍</b>：不引入「逐行复选框」等重交互（SSH 场景要快），复杂度只放在<b>一眼可判</b>与<b>安全默认</b>两件事上。</li>
+        </ul></div><div class="card">
+        <h3><svg class="ic" aria-hidden="true"><use href="#i-keyboard"/></svg>键盘与焦点（G6 / §5.4）</h3>
+        <ul>
+          <li><b>Enter = 主按钮</b>（安全动作「粘贴（不含末尾回车）」）——<b>Enter 绝不触发「粘贴并执行」</b>；执行类动作必须显式点击或按 <code>Alt+P</code>。</li>
+          <li><b>Alt+P</b> = 粘贴并执行（危险动作的快捷键）；<b>Esc</b> = 取消并关闭（点背板不关闭，与现状 <code>dismiss-on-backdrop=false</code> 一致，<code>#262</code>）。</li>
+          <li><b>Tab / Shift+Tab</b> = 视觉顺序 = DOM 顺序：关闭 ✕ → 折行开关 → 预览区（<code>tabindex="0"</code>，可聚焦滚动）→ 取消 → 主按钮 → 粘贴并执行 → 不再提示多行粘贴。</li>
+          <li><b>默认焦点</b>落在主按钮上（accent 实底 + <code>outline:1px slot-ac</code> 焦点环）——「Enter 命中安全动作」在视觉上可直接读出。</li>
+          <li><b>焦点管理</b>：初始化 <code>focus()</code> 到首个未关闭状态帧的主按钮（静态稿用 <code>autofocus</code> + <code>focus()</code> 演示，落地时对应 <code>terminal-focus-sequence += 1</code>）；取消 / 关闭后把焦点交回该帧终端区（<code>tabindex="-1"</code>）；弹框内可聚焦元素均带显式 <code>tabindex</code>，顺序 = 视觉序。</li>
+          <li><b>焦点环</b>：<code>outline:1px solid slot-ac</code> + <code>outline-offset:2px</code>，不改变布局尺寸。</li>
+        </ul></div></div>
+
+    <div class="sec-head" style="margin-top:var(--s-6)">
+      <span class="n">1.1</span>
+      <h2 style="font-size:15px">决策点 D1–D5 · 本稿采用结论</h2>
+      <span class="sub">研究稿已落地（<code>multiline-paste-research-2026-11-06.md</code>，204 行 / 33 个来源）；D1–D5 以 Lead 终态裁定与 spec §5.3 为准</span>
+    </div>
+
+    <div class="cards c2"><div class="dec">
+        <div class="dh"><span class="id">D1</span><span class="ttl">默认动作</span><span class="verdict">改造后采纳</span></div>
+        <div class="body">
+          <p><b>终态（Lead 裁定）：主按钮 = 「粘贴（不含末尾回车）」</b>（accent 实底 + 深色字，<b>默认焦点 / <code>Enter</code></b>）——剥离尾 CR/LF，最后一行留在命令行<b>不执行</b>；「<b>粘贴并执行</b>」是<b>描边式危险按钮</b>（<code>slot-dg</code> 字 + 1px <code>slot-dg</code> 边 + 透明底，<code>Alt+P</code>），等价现状 <code>encode_pasted_text</code> 的原样行为；<b>原文末尾无换行时只渲染一个主按钮「粘贴」</b>（不出现危险按钮）。命中 <b>A 级</b>危险命令时主按钮文案追加后缀 → 「<b>粘贴（已去掉末尾回车）</b>」。三个变体在本页都有实例：无尾换行 = A 帧、有尾换行无 A 级 = D 帧、有尾换行 + A 级 = B / C / E / F / G 帧。</p>
+          <p class="why">理由：尾换行经 <code>normalize_pasted_newlines</code> 归一成 <code>CR</code> → 粘贴即回车 = 远程执行且不可逆；VS Code 对「单行 + 尾换行」静默去尾以防剪贴板劫持，iTerm2 专门提供 <code>Paste Without Newline</code>——把「执行」从默认路径里拿掉、留一个显式出口，是这两条既有证据的直接延伸。文案：<code>粘贴（不含末尾回车） / Paste without trailing newline</code> · <code>粘贴并执行 / Paste and run</code> · <code>取消 / Cancel</code>。</p>
+          <p><b>与研究稿的差异说明</b>：研究稿 §③ D1 的建议是「原样粘贴」为主按钮、「去掉尾部回车」并列一等。本页<b>以 Lead 终态裁定为准（spec §5.3 已改写），取更保守的排布</b>：主按钮 = 安全动作「粘贴（不含末尾回车）」，「原样执行」降级为描边式危险按钮「粘贴并执行」并配 <code>Alt+P</code>。理由：终端无法预知远端 shell 语义（研究稿 §②.10 的 bracketed 反例已说明「远端支持该模式」≠「远端不会执行粘贴内容」），<b>默认路径必须是不会执行的那一条</b>；方向与 iTerm2 <code>Paste Without Newline</code>、VS Code 单行去尾一致，只是把它从「并列」提升为「默认」。文案：<code>粘贴（不含末尾回车） / Paste without trailing newline</code> · <code>粘贴并执行 / Paste and run</code> · <code>取消 / Cancel</code>。</p>
+          <p><b>hover 只变描边、不变底色</b>：主按钮 hover/active 的背景恒为 <code>slot-ac</code>，<code>--ac-hov</code>（暗 <code>#25DDC8</code> / 亮 <code>#238478</code>）只用于 <code>border-color</code>。因为亮色 <code>--ac-hov</code> 作底时 <code>--on-solid</code>（<code>#FAF8F4</code>）只有 <b>4.26:1 &lt; 4.5 ❌</b>；保持 <code>slot-ac</code> 实底则亮色 5.13:1 ✓、暗色 8.58:1 ✓，与对账表「主按钮 <code>.btn.primary</code>」行（表内第 8 行、HTML 第 1226 行）的静态态一致。</p>
+        </div></div><div class="dec">
+        <div class="dh"><span class="id">D2</span><span class="ttl">回车语义</span><span class="verdict ok">安全默认</span></div>
+        <div class="body">
+          <p><b>终态（Lead 裁定）：<code>Enter</code> = 主按钮（安全动作「粘贴（不含末尾回车）」）</b>——<b>Enter 绝不触发「粘贴并执行」</b>；<code>Alt+P</code> = 粘贴并执行；<code>Esc</code> = 取消（关闭，不粘贴）。</p>
+          <p class="why">理由：主流把 Enter 绑成首选动作（WT <code>DefaultButton="Primary"</code>、Tabby <code>defaultId:0</code>）——本稿保留 Enter 的可用性但把它<b>重定向到不执行的那一侧</b>，于是「键盘流仍是一下 Enter 就结束」，而误触的代价从「远程执行」降到「多粘了一段文本」。也顺带修掉现状 <code>confirm-on-enter</code>（#392）把 Enter 当确认的过强语义。</p>
+          <p><b>可视化</b>：页脚左侧固定一行 <code>Enter = 主按钮「粘贴（不含末尾回车）」（安全动作，绝不执行）</code>，按钮本身不带图标、不带快捷键键帽（与项目现状 <code>ui/widgets.slint</code> GhostButton/PrimaryButton 的 dialog-chrome 口径一致，按钮只渲染文字）；快捷键以这行文字说明呈现，主按钮是默认焦点，带 1px accent 焦点环。</p>
+        </div></div><div class="dec">
+        <div class="dh"><span class="id">D3</span><span class="ttl">记住选择</span><span class="verdict ok">采纳</span></div>
+        <div class="body">
+          <p><b>采用（研究稿 D3）：一个复选框「不再提示多行粘贴」</b>，勾选并确认后写回既有设置 <code>paste_confirm_enabled = false</code>（<b>不新增设置键</b>）。</p>
+          <p class="why">理由：<code>paste_confirm_enabled</code> 已是默认 true 的既有设置项，映射无需新状态；VS Code 也是同类「Do not ask me again」并持久化。</p>
+          <p><b>边界（复选框下方常驻小字，Lead 终态要求）</b>：文案写「<b>含危险命令或超过 100 KB 时仍会提示</b>」——即该开关<b>不影响</b> 100 KB 强制复核路径（<code>force_review</code>）与 A/B 级危险命令提示。</p>
+        </div></div><div class="dec">
+        <div class="dh"><span class="id">D4</span><span class="ttl">危险命令清单与文案</span><span class="verdict">改造后采纳 · 只提示不阻断</span></div>
+        <div class="body">
+          <p><b>采用（研究稿 D4）：A/B 两级行级标记 + 中文类别名 + 框顶汇总「本段含 N 处危险命令」</b>。</p>
+          <p><b>A 级（不可逆破坏）标红</b>（<code>slot-dg</code> 11% 淡染 + 左 2px 竖标 + 行尾「图标 + 中文类别名」徽标）：<b>递归强制删除</b> <code>rm -rf</code>、<b>格式化文件系统</b> <code>mkfs</code>、<b>直写块设备</b> <code>dd of=/dev/</code>、<b>覆盖磁盘设备</b> <code>&gt;/dev/sd*</code>、<b>fork 炸弹</b>、<b>清空/截断文件</b> <code>:&gt; file</code> / <code>truncate -s 0</code>、<b>关机或重启</b> <code>shutdown/reboot/halt/poweroff/init 0|6</code>、<b>数据库破坏</b> <code>DROP DATABASE|TABLE</code> / <code>dropdb</code>。</p>
+          <p><b>B 级（提权 / 管道执行）标黄</b>（<code>slot-wr</code> 同口径）：<b>权限提升</b> <code>sudo</code> / <code>su -</code>、<b>权限全开</b> <code>chmod 777</code> / <code>chown -R</code>、<b>管道执行远端脚本</b> <code>curl|sh</code> / <code>wget|bash</code>、<b>账户与凭据变更</b> <code>useradd/usermod/passwd/visudo</code>、<b>防火墙变更</b> <code>iptables/nft/ufw/firewall-cmd</code>、<b>强制终止进程</b> <code>kill -9/pkill/killall</code>、<b>痕迹清理与持久化</b> <code>history -c</code> / <code>crontab -r</code>、<b>丢弃本地改动</b> <code>git reset --hard</code> / <code>git clean -f</code>、<b>卸载软件包</b> <code>apt remove|purge / yum|dnf remove</code>。共 <b>16 条模式</b>，逐条表见研究稿 §③（标注为「本设计建议」，非外部权威引用）。</p>
+          <p class="why">理由：终端无法解析 shell 语义（引号 / 变量 / 别名 / 函数），正则只能提示不能判定；kitty 对危险控制码也只做确认而非拒绝 → 本稿<b>只提示、不阻断</b>，可容忍误报。行级标记可解释，且颜色不是唯一载体（每行都有图标 + 中文类别名，满足 UX 规范第 5 条）。</p>
+          <p><b>A 级额外后果（Lead 终态）</b>：存在 A 级行时，主按钮文案追加后缀 → 「<b>粘贴（已去掉末尾回车）</b>」，把「剥离尾回车」从礼貌默认升级为强制默认；要原样执行必须显式走「粘贴并执行」。</p>
+        </div></div><div class="dec" style="grid-column:1/-1">
+        <div class="dh"><span class="id">D5</span><span class="ttl">目标上下文</span><span class="verdict ok">采纳</span></div>
+        <div class="body">
+          <p><b>采用（Lead 终态）</b>：卡片顶部一行 chips —— <code>粘贴到 &lt;tab 名&gt;</code> · <code>&lt;user@host:port&gt;</code> · <code>Bracketed paste 开/关</code>；只用一行，不放整段会话详情。</p>
+          <p><b>bracketed 关（D 帧）</b>：提示句「<b>远端未开启 bracketed paste：整段多行将逐行执行。</b>」（<code>.notice.warn</code>）。<b>bracketed 开（A/B/C/E/F 帧）</b>：提示句「<b>整段会进入编辑缓冲。</b>」（chips 里以徽标形式承载：<code>Bracketed 已启用 · 整段进入编辑缓冲</code>）。<b>两种状态都确认，主按钮文案不因 bracketed 而改</b>。</p>
+          <p class="why">理由：SSH 场景常在多标签间粘贴，「粘到哪个会话」是 0.5s 内必须可判的信息（G1）。而<b>不能用「bracketed 已开」免除多行确认</b>：WT GH#13014 已证明该模式可被远端用逃逸序列开启，从而使多行警告失效（PowerShell/cmd 就是支持模式但不做多行保护的反例）——故 bracketed 只用来<b>调整顶部说明与提示强度</b>（不改主按钮文案、不免除确认），这与 WT <code>Automatic</code> 的做法相反，也正是研究稿给出的本项目结论。</p>
+        </div></div></div></section>
+
+  <!-- ═══ 2 · 状态索引 ═══ -->
+  <section class="blk" id="sec-states"><div class="sec-head">
+      <span class="n">02</span>
+      <h2>状态索引 · 7 个状态</h2>
+      <span class="sub">暗 4 · 亮 3；每个状态都是「MTerm 窗口底 + Scrim + 弹框」的完整模拟器。帧内肤色由 <code>data-skin</code> 固定（与顶栏主题相互独立），以便 7 个状态在任一主题下都可对照</span>
+    </div><div class="idx">
+      <a href="#st-a"><span class="k">A</span>暗 · 紧凑 380px · 末尾无回车 → 单主按钮</a>
+      <a href="#st-b"><span class="k">B</span>暗 · 标准 640px · 含风险（A 级 → 主按钮带后缀）</a>
+      <a href="#st-c"><span class="k">C</span>暗 · 评审 1160px · 内部滚动</a>
+      <a href="#st-d"><span class="k">D</span>亮 · 标准 · bracketed 关闭（通用主按钮文案）</a>
+      <a href="#st-e"><span class="k">E</span>亮 · 评审 · 折叠/展开 + 控制字符</a>
+      <a href="#st-f"><span class="k">F</span>暗 · 评审 · 超长摘要 + 展开全部</a>
+      <a href="#st-g"><span class="k">G</span>亮 · 紧凑 · 单行尾回车 + A 级</a>
+    </div></section>
+
+  <!-- ═══ 3 · 模拟器 ═══ -->
+  <section class="blk" id="sec-sim"><div class="sec-head">
+      <span class="n">03</span>
+      <h2>模拟器 · 弹框压住终端</h2>
+      <span class="sub">窗口底（标题栏 / 标签栏 / 终端区）+ Scrim（单层，暗 52% · 亮 42%）+ 弹框卡片（popup-bg + radius-lg，可拖动）</span>
+    </div>
+
+    <div class="gallery">
+
+      <!-- ── A · 暗 · 紧凑档 380px ─────────────────────────────────────── -->
+      <article class="frame" id="st-a"><div class="frame-head">
+          <span class="ang">A</span>
+          <span class="ft">暗 · 紧凑档 380px</span>
+          <span class="fd">1–3 行且 ≤600 字符：沿用现状 380px，<b>原文 3 行不显示行号</b>，脚注给出真实行数；末尾<b>无</b>回车 → D1 规定只渲染<b>一个</b>主按钮「粘贴」（无「粘贴并执行」）。</span>
+          <span class="tools">
+            <button class="mini" data-act="restore" type="button"><svg class="ic"><use href="#i-refresh"/></svg>还原弹框</button>
+          </span></div>
+        <div class="trace" data-empty="1"><span class="lab">足迹</span><span data-role="trace">等待交互…</span></div>
+        <div class="sim short"><div class="win"><div class="win-title">
+              <span class="m"><svg class="ic"><use href="#i-logo"/></svg></span>
+              <span class="t">MTerm</span>
+              <span class="host">ops@web-01:22</span>
+              <span class="wbtns"><svg class="ic"><use href="#i-split"/></svg><svg class="ic"><use href="#i-terminal"/></svg><svg class="ic"><use href="#i-tune"/></svg></span>
+            </div><div class="win-tabs">
+              <div class="tab on"><span class="dot"></span><span class="tl">web-01</span></div>
+              <div class="tab"><span class="dot"></span><span class="tl">db-02</span></div>
+            </div><div class="term" tabindex="-1">
+              <div class="ln"><span class="p">ops@web-01:~$</span> uptime</div>
+              <div class="ln dim"> 09:14:02 up 42 days,  3:11,  1 user,  load average: 0.08, 0.12, 0.10</div>
+              <div class="ln"><span class="p">ops@web-01:~$</span> df -h /</div>
+              <div class="ln dim">Filesystem      Size  Used Avail Use% Mounted on</div>
+              <div class="ln dim">/dev/sda1        79G   31G   44G  42% /</div>
+              <div class="ln"><span class="p">ops@web-01:~$</span> <span class="cursor"></span></div>
+            </div></div>
+          <div class="scrim"></div>
+          <div class="dlg compact">
+            <div class="grip" title="拖动卡片"><svg class="ic"><use href="#i-drag"/></svg></div>
+            <div class="dlg-head">
+              <span class="ic"><svg class="ic"><use href="#i-clipboard-check"/></svg></span>
+              <div class="tt">
+                <h4>确认多行粘贴 <span class="lvl">compact</span></h4>
+                <div class="st">3 行文本将粘贴到当前光标位置。<span class="zh">末尾<b>没有</b>回车 → 只渲染一个主按钮「粘贴」，不执行。</span><span class="en">No trailing return → a single primary "Paste"; nothing executes.</span></div>
+              </div>
+              <button class="dlg-close" tabindex="0" data-do="cancel" type="button" aria-label="关闭"><svg class="ic"><use href="#i-close"/></svg></button>
+            </div><div class="dlg-body"><div class="chips">
+                <span class="chip"><svg class="ic"><use href="#i-terminal"/></svg><span class="zh">粘贴到</span><span class="en">Into</span><b>web-01</b></span>
+                <span class="chip"><svg class="ic"><use href="#i-host"/></svg><b>ops@web-01:22</b></span>
+                <span class="chip accent"><svg class="ic"><use href="#i-shield"/></svg><span class="zh">Bracketed 已启用 · 整段进入编辑缓冲</span><span class="en">Bracketed on · block buffered</span></span>
+              </div><div class="pv wrap-on"><div class="pv-bar">
+                  <span class="stat"><span class="k">行</span><span class="v n-lines">3</span></span>
+                  <span class="sep">·</span>
+                  <span class="stat"><span class="k">字符</span><span class="v n-chars">186</span></span>
+                  <span class="sep">·</span>
+                  <span class="stat"><span class="k">风险</span><span class="v n-risks safe">0</span></span>
+                  <span class="right">
+                    <button class="pv-toggle" tabindex="0" data-act="wrap" type="button" aria-pressed="true"><svg class="ic"><use href="#i-wrap"/></svg><span class="zh">软折行</span><span class="en">Soft wrap</span></button>
+                  </span></div><div class="pv-scroll" tabindex="0">
+                  <div class="pv-line"><span class="pv-t">cd /var/log &amp;&amp; tail -n 200 syslog | grep -i "error" &gt; /tmp/err.txt</span></div>
+                  <div class="pv-line"><span class="pv-t">scp /tmp/err.txt ops@10.0.0.4:/srv/reports/</span></div>
+                  <div class="pv-line"><span class="pv-t">echo "collect done"</span></div>
+                </div>
+                <div class="pv-hint"><svg class="ic"><use href="#i-info"/></svg><span class="zh">紧凑档按 spec §5.1 不显示行号；真实行数见统计条（3 行）。</span><span class="en">Compact tier shows no gutter (spec §5.1); the real count is in the stats bar.</span></div>
+              </div>
+              <div class="result is-hidden" data-role="result"></div>
+            </div><div class="dlg-foot">
+              <span class="enter-note"><svg class="ic"><use href="#i-info"/></svg><span class="zh">Enter = 主按钮「粘贴」（安全动作，不回显换行、不执行）</span><span class="en">Enter = primary "Paste" (safe, never runs)</span></span>
+                            <span class="btns">
+                <button class="btn ghost" tabindex="0" data-do="cancel" type="button"><span class="zh">取消</span><span class="en">Cancel</span></button>
+                <button class="btn primary is-default" autofocus tabindex="0" data-do="paste" type="button"><span class="zh">粘贴</span><span class="en">Paste</span></button>
+              </span>
+              <span class="opts"><span class="opt" data-toggle="1" data-on="0" role="checkbox" aria-checked="false" tabindex="0"><svg class="ic"><use href="#i-check"/></svg><span class="zh">不再提示多行粘贴</span><span class="en">Don't ask again</span></span><span class="opt-note"><span class="zh">含危险命令或超过 100 KB 时仍会提示</span><span class="en">Risk hits or &gt;100 KB still prompt</span></span></span></div></div></div><div class="frame-note"><div class="kv">
+            <span>卡片 <b>380px</b>（现状档）</span><span>行号列 <b>不显示</b></span><span>风险计数 <b>0 · slot-ok</b></span><span>默认动作 <b>粘贴（原样）</b></span>
+          </div>
+          与现状弹框的唯一差别是：统计条、折行开关、上下文 chips、<b>Enter = 主按钮</b>。窄卡片里这些仍是单行高度（<code>--stats-h:26px</code>），不会把 380px 撑高。末尾<b>没有</b>回车 → 按 D1 只渲染<b>一个主按钮「粘贴」</b>（不出现「粘贴并执行」）。Rust 侧对应 <code>paste_confirm_open / paste_confirm_text</code>（<code>ui/app.slint:2252-2256</code>）。
+        </div></article>
+
+      <!-- ── B · 暗 · 标准档 640px（含风险）─────────────────────────────── -->
+      <article class="frame" id="st-b"><div class="frame-head">
+          <span class="ang">B</span>
+          <span class="ft">暗 · 标准档 640px · 含危险命令（A 级红 / B 级黄）</span>
+          <span class="fd">4–12 行 <b>且</b> ≤600 字符的新增档（<code>src/terminal/impls/input.rs:93-104</code>：>12 行 <b>或</b> >600 字符才升级评审档；本帧 12 行 / 364 字符）。行号 + 等宽 + 首尾各留 1 行 <code>…</code> 折叠；A 级「<b>递归强制删除 / 清空·截断文件</b>」标红，B 级「<b>权限提升</b>」标黄；含 A 级 → 主按钮文案带后缀「已去掉末尾回车」。</span>
+          <span class="tools">
+            <button class="mini" data-act="wrap" type="button" aria-pressed="true"><svg class="ic"><use href="#i-wrap"/></svg><span class="zh">软折行</span><span class="en">Wrap</span></button>
+            <button class="mini" data-act="fold" type="button" aria-pressed="false"><svg class="ic"><use href="#i-unfold-more"/></svg><span class="zh">展开全部</span><span class="en">Expand all</span></button>
+            <button class="mini" data-act="restore" type="button"><svg class="ic"><use href="#i-refresh"/></svg>还原弹框</button>
+          </span></div>
+        <div class="trace" data-empty="1"><span class="lab">足迹</span><span data-role="trace">等待交互…</span></div>
+        <div class="sim" data-skin="dark"><div class="win"><div class="win-title">
+              <span class="m"><svg class="ic"><use href="#i-logo"/></svg></span>
+              <span class="t">MTerm</span>
+              <span class="host">root@db-02:2222</span>
+              <span class="wbtns"><svg class="ic"><use href="#i-split"/></svg><svg class="ic"><use href="#i-terminal"/></svg><svg class="ic"><use href="#i-tune"/></svg></span>
+            </div><div class="win-tabs">
+              <div class="tab"><span class="dot"></span><span class="tl">web-01</span></div>
+              <div class="tab on"><span class="dot dg"></span><span class="tl">db-02</span></div>
+            </div><div class="term" tabindex="-1">
+              <div class="ln"><span class="p">root@db-02:~#</span> ls -1 /var/tmp/cache | wc -l</div>
+              <div class="ln dim">18422</div>
+              <div class="ln"><span class="p">root@db-02:~#</span> systemctl status nginx --no-pager | head -4</div>
+              <div class="ln dim">● nginx.service - A high performance web server</div>
+              <div class="ln dim">     Active: <span class="ok">active (running)</span> since Thu 2026-11-06 07:02:11 UTC</div>
+              <div class="ln"><span class="p">root@db-02:~#</span> <span class="cursor"></span></div>
+            </div></div>
+          <div class="scrim"></div>
+          <div class="dlg standard">
+            <div class="grip" title="拖动卡片"><svg class="ic"><use href="#i-drag"/></svg></div>
+            <div class="dlg-head">
+              <span class="ic dg"><svg class="ic"><use href="#i-warning"/></svg></span>
+              <div class="tt">
+                <h4>确认多行粘贴 <span class="lvl">standard</span></h4>
+                <div class="st"><span class="zh">本段含 <b>3 处危险命令</b>（A 级 2 · B 级 1），且<b>末尾回车会立即执行</b>。</span><span class="en">Contains <b>3 flagged commands</b> (2×A, 1×B); the trailing return executes immediately.</span></div>
+              </div>
+              <button class="dlg-close" tabindex="0" data-do="cancel" type="button" aria-label="关闭"><svg class="ic"><use href="#i-close"/></svg></button>
+            </div><div class="dlg-body"><div class="chips">
+                <span class="chip"><svg class="ic"><use href="#i-terminal"/></svg><span class="zh">粘贴到</span><span class="en">Into</span><b>db-02</b></span>
+                <span class="chip"><svg class="ic"><use href="#i-host"/></svg><b>root@db-02:2222</b></span>
+                <span class="chip accent"><svg class="ic"><use href="#i-shield"/></svg><span class="zh">Bracketed 已启用 · 整段进入编辑缓冲</span><span class="en">Bracketed on · block buffered</span></span>
+              </div>
+              <div class="notice dg"><svg class="ic"><use href="#i-warning"/></svg><span class="zh">末尾含回车：主按钮会<b>剥离这个回车</b>，最后一行留在命令行<b>不执行</b>；「粘贴并执行」等价现状 <code>encode_pasted_text</code> 的原样行为。含 A 级命令，默认动作已固定为剥离尾回车。</span><span class="en">Trailing return: the primary <b>strips it</b>, leaving the last line unexecuted at the prompt; “Paste and run” matches today’s raw <code>encode_pasted_text</code> behaviour. A-level hits pin the default to stripping.</span></div>
+              <div class="pv wrap-on"><div class="pv-bar">
+                  <span class="stat"><span class="k">行</span><span class="v n-lines">12</span></span>
+                  <span class="sep">·</span>
+                  <span class="stat"><span class="k">字符</span><span class="v n-chars">364</span></span>
+                  <span class="sep">·</span>
+                  <span class="stat"><span class="k">风险</span><span class="v n-risks risk">3</span></span>
+                  <span class="legend"><i class="a"></i>A 级<i class="b"></i>B 级</span>
+                  <span class="right">
+                    <button class="pv-toggle" tabindex="0" data-act="wrap" type="button" aria-pressed="true"><svg class="ic"><use href="#i-wrap"/></svg><span class="zh">软折行</span><span class="en">Soft wrap</span></button>
+                  </span></div><div class="pv-scroll" tabindex="0">
+                  <div class="pv-line"><span class="pv-g">1</span><span class="pv-t">set -euo pipefail</span></div>
+                  <div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">2</span><span class="pv-t">export DEBIAN_FRONTEND=noninteractive</span></div>
+                  <div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">3</span><span class="pv-t">cd /var/tmp/cache</span></div>
+                  <div class="pv-line fold" data-fold="1"><span class="pv-g">…</span><span class="pv-t">… 以上另有 2 行（已折叠）</span></div>
+                  <div class="pv-line dg"><span class="pv-g">4</span><span class="pv-t">rm -rf /var/tmp/cache/*</span><span class="pv-badge"><span class="bdg"><svg class="ic"><use href="#i-trash"/></svg><span class="zh">递归强制删除</span><span class="en">recursive delete</span></span></span></div>
+                  <div class="pv-line wr"><span class="pv-g">5</span><span class="pv-t">sudo systemctl restart nginx</span><span class="pv-badge wr"><span class="bdg"><svg class="ic"><use href="#i-shield-alert"/></svg><span class="zh">权限提升</span><span class="en">privilege escalation</span></span></span></div>
+                  <div class="pv-line"><span class="pv-g">6</span><span class="pv-t">sleep 2 &amp;&amp; curl -fsS 127.0.0.1:8080/healthz</span></div>
+                  <div class="pv-line"><span class="pv-g">7</span><span class="pv-t">echo "deploy finished at $(date -Is)"</span></div>
+                  <div class="pv-line dg"><span class="pv-g">8</span><span class="pv-t">:&gt; /var/log/nginx/error.log</span><span class="pv-badge"><span class="bdg"><svg class="ic"><use href="#i-file-x"/></svg><span class="zh">清空/截断文件</span><span class="en">truncate file</span></span></span></div>
+                  <div class="pv-line"><span class="pv-g">9</span><span class="pv-t">tail -n 20 /var/log/nginx/access.log</span></div>
+                  <div class="pv-line"><span class="pv-g">10</span><span class="pv-t">ssh ops@10.0.0.7 'systemctl status nginx'</span></div>
+                  <div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">11</span><span class="pv-t">echo done</span></div>
+                  <div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">12</span><span class="pv-t">pg_isready -h 127.0.0.1 -p 5432</span></div>
+                  <div class="pv-line fold" data-fold="1"><span class="pv-g">…</span><span class="pv-t">… 以下另有 2 行（已折叠）</span></div>
+                </div>
+                <div class="pv-fold" data-act="fold"><svg class="ic"><use href="#i-unfold-more"/></svg><span class="zh">展开全部（另有 <b>4</b> 行）</span><span class="en">Expand all (<b>4</b> folded)</span></div>
+                <div class="pv-hint"><svg class="ic"><use href="#i-info"/></svg><span class="zh">危险行 = 左侧 2px 竖标 + 11% 淡染 + 行尾「图标 + 中文类别名」徽标；行内正文保持 slot-t1（色盲可辨，颜色不是唯一载体）。</span><span class="en">Danger rows use a 2px bar + 11% tint + an icon+label badge; body text stays slot-t1.</span></div>
+              </div>
+              <div class="result is-hidden" data-role="result"></div>
+            </div><div class="dlg-foot">
+              <span class="enter-note"><svg class="ic"><use href="#i-info"/></svg><span class="zh">Enter = 主按钮「粘贴（已去掉末尾回车）」（安全动作，绝不执行；「粘贴并执行」须显式点击）</span><span class="en">Enter = primary "Paste (return removed)" (safe, never runs; "Paste and run" needs an explicit click)</span></span>
+                            <span class="btns">
+                <button class="btn ghost" tabindex="0" data-do="cancel" type="button"><span class="zh">取消</span><span class="en">Cancel</span></button>
+                <button class="btn primary is-default" tabindex="0" data-do="paste-noreturn" type="button"><span class="zh">粘贴（已去掉末尾回车）</span><span class="en">Paste (return removed)</span></button>
+                <button class="btn dg-out" tabindex="0" data-do="paste-run" type="button"><span class="zh">粘贴并执行</span><span class="en">Paste and run</span></button>
+              </span>
+              <span class="opts"><span class="opt" data-toggle="1" data-on="0" role="checkbox" aria-checked="false" tabindex="0"><svg class="ic"><use href="#i-check"/></svg><span class="zh">不再提示多行粘贴</span><span class="en">Don't ask again</span></span><span class="opt-note"><span class="zh">含危险命令或超过 100 KB 时仍会提示</span><span class="en">Risk hits or &gt;100 KB still prompt</span></span></span></div></div></div><div class="frame-note"><div class="kv">
+            <span>卡片 <b>640px</b>（新增档 560–680）</span><span>行号列 <b>slot-t3</b> 装饰</span><span>危险行 <b>2px 竖标 + 11% 淡染</b></span><span>折叠 <b>首尾各 1 行 …</b></span>
+          </div>
+          统计条的「行 / 字符 / 风险」三格宽度固定（<code>tabular-nums</code>），12 行 ↔ 1 行切换不会推动卡片布局；行号列 1–12 连续不跳号，折叠账 = 上折 2 + 下折 2 = 按钮 4 = 实际 <code>is-hidden</code> 4 行；字符数 = 12 行正文 + 末尾换行。D1：主按钮 = <b>「粘贴（不含末尾回车）」</b>（安全动作，默认焦点 / <code>Enter</code>），<b>「粘贴并执行」</b>是描边式危险按钮（<code>Alt+P</code>）——Enter 绝不触发执行。A 级命令命中时默认动作固定为剥离尾回车（D4）。若勾选「不再提示」，本档在含危险命令时<b>仍会弹</b>（D3 边界）。
+        </div></article>
+
+      <!-- ── C · 暗 · 评审档 1160px（内部滚动）────────────────────────── -->
+      <article class="frame" id="st-c"><div class="frame-head">
+          <span class="ang">C</span>
+          <span class="ft">暗 · 评审档 min(宽-40px,1160px) · &gt;12 行 + 内部滚动</span>
+          <span class="fd">对齐 <code>paste_requires_large_review</code>：&gt;12 行 <b>或</b> &gt;600 字符<b>任一超出</b>即评审档（<code>src/terminal/impls/input.rs:93-104</code>）；本帧 18 行 / 1146 字符。完整行号 + 危险标记 + 顶部统计条；预览区自身滚动（<code>max-height:238px</code>），窗口不被撑高。</span>
+          <span class="tools">
+            <button class="mini" data-act="wrap" type="button" aria-pressed="true"><svg class="ic"><use href="#i-wrap"/></svg><span class="zh">软折行</span><span class="en">Wrap</span></button>
+            <button class="mini" data-act="hscroll" type="button" aria-pressed="false"><svg class="ic"><use href="#i-hscroll"/></svg><span class="zh">横向滚动</span><span class="en">H-scroll</span></button>
+            <button class="mini" data-act="restore" type="button"><svg class="ic"><use href="#i-refresh"/></svg>还原弹框</button>
+          </span></div>
+        <div class="trace" data-empty="1"><span class="lab">足迹</span><span data-role="trace">等待交互…</span></div>
+        <div class="sim tall" data-skin="dark"><div class="win"><div class="win-title">
+              <span class="m"><svg class="ic"><use href="#i-logo"/></svg></span>
+              <span class="t">MTerm</span>
+              <span class="host">deploy@edge-03:22</span>
+              <span class="wbtns"><svg class="ic"><use href="#i-split"/></svg><svg class="ic"><use href="#i-terminal"/></svg><svg class="ic"><use href="#i-tune"/></svg></span>
+            </div><div class="win-tabs">
+              <div class="tab"><span class="dot"></span><span class="tl">web-01</span></div>
+              <div class="tab"><span class="dot"></span><span class="tl">db-02</span></div>
+              <div class="tab on"><span class="dot dg"></span><span class="tl">edge-03</span></div>
+            </div><div class="term" tabindex="-1">
+              <div class="ln"><span class="p">deploy@edge-03:~$</span> cat /etc/os-release | head -2</div>
+              <div class="ln dim">PRETTY_NAME="Ubuntu 24.04.1 LTS"</div>
+              <div class="ln dim">VERSION_ID="24.04"</div>
+              <div class="ln"><span class="p">deploy@edge-03:~$</span> docker ps --format '{{.Names}}' | wc -l</div>
+              <div class="ln dim">12</div>
+              <div class="ln"><span class="p">deploy@edge-03:~$</span> <span class="cursor"></span></div>
+            </div></div>
+          <div class="scrim"></div>
+          <div class="dlg review">
+            <div class="grip" title="拖动卡片"><svg class="ic"><use href="#i-drag"/></svg></div>
+            <div class="dlg-head">
+              <span class="ic dg"><svg class="ic"><use href="#i-warning"/></svg></span>
+              <div class="tt">
+                <h4>确认多行粘贴 <span class="lvl">review · large</span></h4>
+                <div class="st"><span class="zh">18 行 · 1,146 字符，含 <b>4 处危险命令</b>（A 级 2 · B 级 2）。已进入评审档：预览区可滚动。</span><span class="en">18 lines · 1,146 chars, <b>4 flagged</b> (2×A, 2×B). Review tier: the preview scrolls.</span></div>
+              </div>
+              <button class="dlg-close" tabindex="0" data-do="cancel" type="button" aria-label="关闭"><svg class="ic"><use href="#i-close"/></svg></button>
+            </div><div class="dlg-body"><div class="chips">
+                <span class="chip"><svg class="ic"><use href="#i-terminal"/></svg><span class="zh">粘贴到</span><span class="en">Into</span><b>edge-03</b></span>
+                <span class="chip"><svg class="ic"><use href="#i-host"/></svg><b>deploy@edge-03:22</b></span>
+                <span class="chip accent"><svg class="ic"><use href="#i-shield"/></svg><span class="zh">Bracketed 已启用 · 整段进入编辑缓冲</span><span class="en">Bracketed on · block buffered</span></span>
+                <span class="chip warn"><svg class="ic"><use href="#i-info"/></svg><span class="zh">评审档 · 可滚动</span><span class="en">Review tier</span></span>
+              </div>
+              <div class="notice dg"><svg class="ic"><use href="#i-warning"/></svg><span class="zh">末尾含回车 · 存在 A 级命令（不可逆破坏）。默认动作固定为<b>剥离尾回车</b>：最后一行留在命令行不执行；要原样执行请显式点「粘贴并执行」。</span><span class="en">Trailing return + level-A command: the default is pinned to <b>stripping it</b> so the last line stays unexecuted; run it only by explicitly choosing “Paste and run”.</span></div>
+              <div class="pv wrap-on"><div class="pv-bar">
+                  <span class="stat"><span class="k">行</span><span class="v n-lines">18</span></span>
+                  <span class="sep">·</span>
+                  <span class="stat"><span class="k">字符</span><span class="v n-chars">1146</span></span>
+                  <span class="sep">·</span>
+                  <span class="stat"><span class="k">风险</span><span class="v n-risks risk">4</span></span>
+                  <span class="legend"><i class="a"></i>A 级<i class="b"></i>B 级</span>
+                  <span class="right">
+                    <button class="pv-toggle" tabindex="0" data-act="wrap" type="button" aria-pressed="true"><svg class="ic"><use href="#i-wrap"/></svg><span class="zh">软折行</span><span class="en">Soft wrap</span></button>
+                  </span></div><div class="pv-scroll cap" tabindex="0">
+                  <div class="pv-line"><span class="pv-g">1</span><span class="pv-t">#!/usr/bin/env bash</span></div>
+                  <div class="pv-line"><span class="pv-g">2</span><span class="pv-t">set -euo pipefail</span></div>
+                  <div class="pv-line"><span class="pv-g">3</span><span class="pv-t">cd /srv/app/current</span></div>
+                  <div class="pv-line wr"><span class="pv-g">4</span><span class="pv-t">sudo -u deploy git fetch --all --prune</span><span class="pv-badge wr"><span class="bdg"><svg class="ic"><use href="#i-shield-alert"/></svg><span class="zh">权限提升</span><span class="en">privilege escalation</span></span></span></div>
+                  <div class="pv-line"><span class="pv-g">5</span><span class="pv-t">git checkout "release/2026-11"</span></div>
+                  <div class="pv-line"><span class="pv-g">6</span><span class="pv-t">docker compose pull --quiet</span></div>
+                  <div class="pv-line dg"><span class="pv-g">7</span><span class="pv-t">rm -rf ./tmp/* ./public/assets/*</span><span class="pv-badge"><span class="bdg"><svg class="ic"><use href="#i-trash"/></svg><span class="zh">递归强制删除</span><span class="en">recursive delete</span></span></span></div>
+                  <div class="pv-line"><span class="pv-g">8</span><span class="pv-t">docker compose up -d --remove-orphans</span></div>
+                  <div class="pv-line wr"><span class="pv-g">9</span><span class="pv-t">curl -fsSL get.example.com/agent.sh | bash</span><span class="pv-badge wr"><span class="bdg"><svg class="ic"><use href="#i-download"/></svg><span class="zh">管道执行远端脚本</span><span class="en">pipe to shell</span></span></span></div>
+                  <div class="pv-line"><span class="pv-g">10</span><span class="pv-t">for i in $(seq 1 12); do</span></div>
+                  <div class="pv-line"><span class="pv-g">11</span><span class="pv-t">  curl -fsS "127.0.0.1:808$i/healthz" || echo "node $i down"</span></div>
+                  <div class="pv-line"><span class="pv-g">12</span><span class="pv-t">done</span></div>
+                  <div class="pv-line"><span class="pv-g">13</span><span class="pv-t">journalctl -u app@*.service --since "10 min ago" --no-pager | tail -40</span></div>
+                  <div class="pv-line dg"><span class="pv-g">14</span><span class="pv-t">:&gt; /var/log/app/access.log</span><span class="pv-badge"><span class="bdg"><svg class="ic"><use href="#i-file-x"/></svg><span class="zh">文件截断</span><span class="en">truncate</span></span></span></div>
+                  <div class="pv-line"><span class="pv-g">15</span><span class="pv-t">sleep 3</span></div>
+                  <div class="pv-line"><span class="pv-g">16</span><span class="pv-t">curl -fsS 127.0.0.1:8080/healthz -o /tmp/hz.json</span></div>
+                  <div class="pv-line"><span class="pv-g">17</span><span class="pv-t">cat /tmp/hz.json | head -5</span></div>
+                  <div class="pv-line"><span class="pv-g">18</span><span class="pv-t">echo "rollout ok"</span></div>
+                </div>
+                <div class="pv-hint"><svg class="ic"><use href="#i-info"/></svg><span class="zh">评审档内部滚动：卡片高度锁在 min(高-40px,760px)，预览区独立滚动条（spec §5.1/§5.2）。</span><span class="en">Review tier scrolls internally; the card stays within min(100%-40px, 760px).</span></div>
+              </div>
+              <div class="result is-hidden" data-role="result"></div>
+            </div><div class="dlg-foot">
+              <span class="enter-note"><svg class="ic"><use href="#i-info"/></svg><span class="zh">Enter = 主按钮「粘贴（已去掉末尾回车）」（安全动作，绝不执行；「粘贴并执行」须显式点击）</span><span class="en">Enter = primary "Paste (return removed)" (safe, never runs; "Paste and run" needs an explicit click)</span></span>
+                            <span class="btns">
+                <button class="btn ghost" tabindex="0" data-do="cancel" type="button"><span class="zh">取消</span><span class="en">Cancel</span></button>
+                <button class="btn primary is-default" tabindex="0" data-do="paste-noreturn" type="button"><span class="zh">粘贴（已去掉末尾回车）</span><span class="en">Paste (return removed)</span></button>
+                <button class="btn dg-out" tabindex="0" data-do="paste-run" type="button"><span class="zh">粘贴并执行</span><span class="en">Paste and run</span></button>
+              </span>
+              <span class="opts"><span class="opt" data-toggle="1" data-on="0" role="checkbox" aria-checked="false" tabindex="0"><svg class="ic"><use href="#i-check"/></svg><span class="zh">不再提示多行粘贴</span><span class="en">Don't ask again</span></span><span class="opt-note"><span class="zh">含危险命令或超过 100 KB 时仍会提示</span><span class="en">Risk hits or &gt;100 KB still prompt</span></span></span></div></div></div><div class="frame-note"><div class="kv">
+            <span>卡片 <b>min(宽-40px,1160px)</b></span><span>预览 <b>内部滚动 cap 238px</b></span><span>默认动作 <b>固定为剥离尾回车</b></span><span>危险动作 <b>描边式 slot-dg</b></span>
+          </div>
+          D1/D2 的落地：<code>Enter</code> = 主按钮（安全动作，绝不执行），<code>Alt+P</code> = 「粘贴并执行」（命中 A 级命令时主按钮文案带后缀「已去掉末尾回车」，见本帧与 B 帧）。执行类动作因此是<b>显式选择</b>（<code>.btn.dg-out</code> = 透明底 + 1px <code>slot-dg</code> 边 + <code>slot-dg</code> 字，暗 5.32:1 ✓；<b>不用</b>现状 DangerButton 的白字红底 3.28:1 ❌）。
+        </div></article>
+
+      <!-- ── D · 亮 · 标准档（bracketed 关闭）──────────────────────────── -->
+      <article class="frame" id="st-d"><div class="frame-head">
+          <span class="ang">D</span>
+          <span class="ft">亮 · 标准档 640px · bracketed paste <b>未启用</b></span>
+          <span class="fd">D5 终态：bracketed 关 → 顶部提示「远程未开启 bracketed paste：整段多行将逐行执行。」；<b>bracketed 状态不改变确认行为</b>（开也不等于安全）。本帧无风险命令，主按钮取通用文案「粘贴（不含末尾回车）」。</span>
+          <span class="tools">
+            <button class="mini" data-act="wrap" type="button" aria-pressed="true"><svg class="ic"><use href="#i-wrap"/></svg><span class="zh">软折行</span><span class="en">Wrap</span></button>
+            <button class="mini" data-act="restore" type="button"><svg class="ic"><use href="#i-refresh"/></svg>还原弹框</button>
+          </span></div>
+        <div class="trace" data-empty="1"><span class="lab">足迹</span><span data-role="trace">等待交互…</span></div>
+        <div class="sim" data-skin="light"><div class="win"><div class="win-title">
+              <span class="m"><svg class="ic"><use href="#i-logo"/></svg></span>
+              <span class="t">MTerm</span>
+              <span class="host">Administrator@win-dev:22</span>
+              <span class="wbtns"><svg class="ic"><use href="#i-split"/></svg><svg class="ic"><use href="#i-terminal"/></svg><svg class="ic"><use href="#i-tune"/></svg></span>
+            </div><div class="win-tabs">
+              <div class="tab on"><span class="dot"></span><span class="tl">win-dev</span></div>
+              <div class="tab"><span class="dot"></span><span class="tl">build-07</span></div>
+            </div><div class="term" tabindex="-1">
+              <div class="ln"><span class="p">PS C:\Users\Administrator&gt;</span> Get-Service sshd | Select Status,Name</div>
+              <div class="ln dim">Status   Name</div>
+              <div class="ln dim">Running  sshd</div>
+              <div class="ln"><span class="p">PS C:\Users\Administrator&gt;</span> <span class="cursor"></span></div>
+            </div></div>
+          <div class="scrim"></div>
+          <div class="dlg standard">
+            <div class="grip" title="拖动卡片"><svg class="ic"><use href="#i-drag"/></svg></div>
+            <div class="dlg-head">
+              <span class="ic"><svg class="ic"><use href="#i-clipboard-check"/></svg></span>
+              <div class="tt">
+                <h4>确认多行粘贴 <span class="lvl">standard</span></h4>
+                <div class="st"><span class="zh">6 行文本，无风险命令；远端<b>未启用</b> bracketed paste，多行会按逐行送达。</span><span class="en">6 lines, no flagged command; the remote does not enable bracketed paste, so lines arrive one by one.</span></div>
+              </div>
+              <button class="dlg-close" tabindex="0" data-do="cancel" type="button" aria-label="关闭"><svg class="ic"><use href="#i-close"/></svg></button>
+            </div><div class="dlg-body"><div class="chips">
+                <span class="chip"><svg class="ic"><use href="#i-terminal"/></svg><span class="zh">粘贴到</span><span class="en">Into</span><b>win-dev</b></span>
+                <span class="chip"><svg class="ic"><use href="#i-host"/></svg><b>Administrator@win-dev:22</b></span>
+                <span class="chip warn"><svg class="ic"><use href="#i-shield-alert"/></svg><span class="zh">Bracketed 未启用 · 将逐行执行</span><span class="en">Bracketed off · line by line</span></span>
+              </div>
+              <div class="notice warn"><svg class="ic"><use href="#i-info"/></svg><span class="zh">远端未开启 bracketed paste：整段多行将逐行执行。注意：bracketed 开启本身也不等于安全（远端可自行开启该模式），因此<b>两种状态都要确认</b>。</span><span class="en">The remote has not enabled bracketed paste: the block runs line by line. Note that bracketed mode is not a safety guarantee either — the remote can turn it on itself — so <b>both states confirm</b>.</span></div>
+              <div class="pv wrap-on"><div class="pv-bar">
+                  <span class="stat"><span class="k">行</span><span class="v n-lines">6</span></span>
+                  <span class="sep">·</span>
+                  <span class="stat"><span class="k">字符</span><span class="v n-chars">204</span></span>
+                  <span class="sep">·</span>
+                  <span class="stat"><span class="k">风险</span><span class="v n-risks safe">0</span></span>
+                  <span class="right">
+                    <button class="pv-toggle" tabindex="0" data-act="wrap" type="button" aria-pressed="true"><svg class="ic"><use href="#i-wrap"/></svg><span class="zh">软折行</span><span class="en">Soft wrap</span></button>
+                  </span></div><div class="pv-scroll" tabindex="0">
+                  <div class="pv-line"><span class="pv-g">1</span><span class="pv-t">$ErrorActionPreference = 'Stop'</span></div>
+                  <div class="pv-line"><span class="pv-g">2</span><span class="pv-t">Set-Location C:\build\mterm</span></div>
+                  <div class="pv-line"><span class="pv-g">3</span><span class="pv-t">git fetch --all --prune</span></div>
+                  <div class="pv-line"><span class="pv-g">4</span><span class="pv-t">git switch main</span></div>
+                  <div class="pv-line"><span class="pv-g">5</span><span class="pv-t">cargo build --release</span></div>
+                  <div class="pv-line"><span class="pv-g">6</span><span class="pv-t">Write-Host "local build ok"</span></div>
+                </div>
+                <div class="pv-hint"><svg class="ic"><use href="#i-info"/></svg><span class="zh">亮色主题：正文 <code>slot-t1 #33302C</code> 压 <code>slot-panel #FAF8F4</code> = 12.37:1 ✓；行号 <code>slot-t3 #968F85</code> = 3.02:1（仅装饰，spec §4.4 允许）。</span><span class="en">Light theme: slot-t1 on slot-panel = 12.37:1; gutter slot-t3 = 3.02:1 (decorative only).</span></div>
+              </div>
+              <div class="result is-hidden" data-role="result"></div>
+            </div><div class="dlg-foot">
+              <span class="enter-note"><svg class="ic"><use href="#i-info"/></svg><span class="zh">Enter = 主按钮「粘贴（不含末尾回车）」（安全动作，绝不执行）</span><span class="en">Enter = primary "Paste without trailing newline" (safe, never runs)</span></span>
+                            <span class="btns">
+                <button class="btn ghost" tabindex="0" data-do="cancel" type="button"><span class="zh">取消</span><span class="en">Cancel</span></button>
+                <button class="btn primary is-default" tabindex="0" data-do="paste-noreturn" type="button"><span class="zh">粘贴（不含末尾回车）</span><span class="en">Paste without trailing newline</span></button>
+                <button class="btn dg-out" tabindex="0" data-do="paste-run" type="button"><span class="zh">粘贴并执行</span><span class="en">Paste and run</span></button>
+              </span>
+              <span class="opts"><span class="opt" data-toggle="1" data-on="0" role="checkbox" aria-checked="false" tabindex="0"><svg class="ic"><use href="#i-check"/></svg><span class="zh">不再提示多行粘贴</span><span class="en">Don't ask again</span></span><span class="opt-note"><span class="zh">含危险命令或超过 100 KB 时仍会提示</span><span class="en">Risk hits or &gt;100 KB still prompt</span></span></span></div></div></div><div class="frame-note"><div class="kv">
+            <span>主题 <b>mterm-light</b></span><span>Bracketed <b>未启用</b></span><span>主按钮 <b>粘贴（不含末尾回车）</b></span><span>顶部 <b>notice.warn</b></span>
+          </div>
+          亮色下 bracketed 徽标用 <code>slot-wr #8F631C</code> 压不透明 <code>popup-bg #FAF8F4</code> = 4.99:1 ✓（<b>不</b>压在 12–14% 淡染上，否则只剩 4.15:1 ❌）。
+        </div></article>
+
+      <!-- ── E · 亮 · 评审档 · 折叠/展开 + 控制字符剥离 ─────────────── -->
+      <article class="frame" id="st-e"><div class="frame-head">
+          <span class="ang">E</span>
+          <span class="ft">亮 · 评审档 1160px · 折叠/展开 + 控制字符剥离提示</span>
+          <span class="fd">spec §5.2 第 ⑦ 项：bracketed 已启用且原文含 <code>ESC</code> / <code>Ctrl-C</code> 时提示一次「将剥离 N 个控制字符」。本帧同时演示「首尾折叠 + 展开全部（另有 N 行）」——折叠不是静默截断，出入口都在。</span>
+          <span class="tools">
+            <button class="mini" data-act="wrap" type="button" aria-pressed="true"><svg class="ic"><use href="#i-wrap"/></svg><span class="zh">软折行</span><span class="en">Wrap</span></button>
+            <button class="mini" data-act="fold" type="button" aria-pressed="false"><svg class="ic"><use href="#i-unfold-more"/></svg><span class="zh">展开全部</span><span class="en">Expand all</span></button>
+            <button class="mini" data-act="restore" type="button"><svg class="ic"><use href="#i-refresh"/></svg>还原弹框</button>
+          </span></div>
+        <div class="trace" data-empty="1"><span class="lab">足迹</span><span data-role="trace">等待交互…</span></div>
+        <div class="sim tall" data-skin="light"><div class="win"><div class="win-title">
+              <span class="m"><svg class="ic"><use href="#i-logo"/></svg></span>
+              <span class="t">MTerm</span>
+              <span class="host">Administrator@win-dev:22</span>
+              <span class="wbtns"><svg class="ic"><use href="#i-split"/></svg><svg class="ic"><use href="#i-terminal"/></svg><svg class="ic"><use href="#i-tune"/></svg></span>
+            </div><div class="win-tabs">
+              <div class="tab on"><span class="dot"></span><span class="tl">win-dev</span></div>
+              <div class="tab"><span class="dot"></span><span class="tl">web-01</span></div>
+            </div><div class="term" tabindex="-1">
+              <div class="ln"><span class="p">PS C:\srv\app&gt;</span> git log --oneline -3</div>
+              <div class="ln dim">f3a91c2  release: 2026.11-rc3</div>
+              <div class="ln dim">9b02e77  fix: retry on transient 502</div>
+              <div class="ln dim">1c4e0a1  chore: bump deps</div>
+              <div class="ln"><span class="p">PS C:\srv\app&gt;</span> <span class="cursor"></span></div>
+            </div></div>
+          <div class="scrim"></div>
+          <div class="dlg review">
+            <div class="grip" title="拖动卡片"><svg class="ic"><use href="#i-drag"/></svg></div>
+            <div class="dlg-head">
+              <span class="ic"><svg class="ic"><use href="#i-clipboard-check"/></svg></span>
+              <div class="tt">
+                <h4>确认多行粘贴 <span class="lvl">review</span></h4>
+                <div class="st"><span class="zh">24 行 / 881 字符；bracketed 已启用，<b>2 个控制字符将被剥离</b>。</span><span class="en">24 lines / 881 chars; bracketed is on, <b>2 control bytes will be stripped</b>.</span></div>
+              </div>
+              <button class="dlg-close" tabindex="0" data-do="cancel" type="button" aria-label="关闭"><svg class="ic"><use href="#i-close"/></svg></button>
+            </div><div class="dlg-body"><div class="chips">
+                <span class="chip"><svg class="ic"><use href="#i-terminal"/></svg><span class="zh">粘贴到</span><span class="en">Into</span><b>win-dev</b></span>
+                <span class="chip"><svg class="ic"><use href="#i-host"/></svg><b>Administrator@win-dev:22</b></span>
+                <span class="chip accent"><svg class="ic"><use href="#i-shield"/></svg><span class="zh">Bracketed 已启用 · 整段进入编辑缓冲</span><span class="en">Bracketed on · block buffered</span></span>
+              </div>
+              <div class="notice warn"><svg class="ic"><use href="#i-warning"/></svg><span class="zh">控制字符：原文含 <b>1 个 ESC (0x1b)</b> 与 <b>1 个 Ctrl-C (0x03)</b>。bracketed 开启时 <code>encode_pasted_text</code> 先<b>剥离</b>它们、再包进 <code>ESC[200~ … ESC[201~</code>（共剥 2 个）；被剥掉的字节不会出现在终端里。</span><span class="en">Control bytes: 1× ESC (0x1b) and 1× Ctrl-C (0x03). With bracketed on, <code>encode_pasted_text</code> strips them before wrapping in <code>ESC[200~ … ESC[201~</code> (2 removed); stripped bytes never reach the terminal.</span></div>
+              <div class="pv wrap-on"><div class="pv-bar">
+                  <span class="stat"><span class="k">行</span><span class="v n-lines">24</span></span>
+                  <span class="sep">·</span>
+                  <span class="stat"><span class="k">字符</span><span class="v n-chars">881</span></span>
+                  <span class="sep">·</span>
+                  <span class="stat"><span class="k">风险</span><span class="v n-risks risk">2</span></span>
+                  <span class="legend"><i class="a"></i>A 级<i class="b"></i>B 级</span>
+                  <span class="right">
+                    <button class="pv-toggle" tabindex="0" data-act="wrap" type="button" aria-pressed="true"><svg class="ic"><use href="#i-wrap"/></svg><span class="zh">软折行</span><span class="en">Soft wrap</span></button>
+                  </span></div><div class="pv-scroll cap" tabindex="0">
+<div class="pv-line"><span class="pv-g">1</span><span class="pv-t">set -euo pipefail</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">2</span><span class="pv-t">export KUBECONFIG=/etc/rancher/k3s/k3s.yaml</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">3</span><span class="pv-t">kubectl -n prod get pods -o wide</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">4</span><span class="pv-t">kubectl -n prod rollout restart deploy/api</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">5</span><span class="pv-t">kubectl -n prod rollout status deploy/api --timeout=180s</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">6</span><span class="pv-t">kubectl -n prod scale deploy/worker --replicas=6</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">7</span><span class="pv-t">kubectl -n prod get events --sort-by=.lastTimestamp | tail -20</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">8</span><span class="pv-t">docker system prune -f --filter "until=168h"</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">9</span><span class="pv-t">docker volume prune -f</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">10</span><span class="pv-t">journalctl --vacuum-time=7d</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">11</span><span class="pv-t">find /srv/app/releases -maxdepth 1 -type d -mtime +14</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">12</span><span class="pv-t">systemctl restart k3s</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">13</span><span class="pv-t">systemctl status k3s --no-pager | head -12</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">14</span><span class="pv-t">curl -fsS 127.0.0.1:8080/healthz</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">15</span><span class="pv-t">curl -fsS 127.0.0.1:9090/-/ready</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">16</span><span class="pv-t">df -h / /var/lib/docker</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">17</span><span class="pv-t">free -m</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">18</span><span class="pv-t">uptime -p</span></div>
+<div class="pv-line fold" data-fold="1"><span class="pv-g">…</span><span class="pv-t">… 以上另有 17 行（已折叠）</span></div>
+<div class="pv-line dg"><span class="pv-g">19</span><span class="pv-t">rm -rf /srv/app/releases/*</span><span class="pv-badge"><span class="bdg"><svg class="ic"><use href="#i-trash"/></svg><span class="zh">递归强制删除</span><span class="en">recursive delete</span></span></span></div>
+<div class="pv-line wr"><span class="pv-g">20</span><span class="pv-t">sudo systemctl daemon-reload</span><span class="pv-badge wr"><span class="bdg"><svg class="ic"><use href="#i-shield-alert"/></svg><span class="zh">权限提升</span><span class="en">privilege escalation</span></span></span></div>
+<div class="pv-line"><span class="pv-g">21</span><span class="pv-t">kubectl -n prod rollout status deploy/worker --timeout=240s</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">22</span><span class="pv-t">kubectl -n prod logs -l app=api --tail=40 --since=10m</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">23</span><span class="pv-t">curl -fsS 127.0.0.1:8080/metrics | head -5</span></div>
+<div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">24</span><span class="pv-t">echo "deploy finished at $(date -Is)"</span></div>
+<div class="pv-line fold" data-fold="1"><span class="pv-g">…</span><span class="pv-t">… 以下另有 3 行（已折叠）</span></div>
+                </div>
+                <button class="pv-fold" data-act="fold" type="button" aria-pressed="false"><svg class="ic"><use href="#i-unfold-more"/></svg><span class="zh">展开全部（另有 20 行）</span><span class="en">Expand all (20 more)</span></button>
+                <div class="pv-hint"><svg class="ic"><use href="#i-info"/></svg><span class="zh">折叠提示用 <code>slot-t1</code>（暗 9.38:1 ✓ / 亮 12.37:1 ✓）；预览正文同样 <code>slot-t1</code>，行号才是 <code>slot-t3</code> 装饰（亮 3.02:1，spec §4.4 允许）。</span><span class="en">Fold hints use slot-t1 (9.38:1 / 12.37:1); only the gutter uses decorative slot-t3.</span></div>
+              </div>
+              <div class="result is-hidden" data-role="result"></div>
+            </div><div class="dlg-foot">
+              <span class="enter-note"><svg class="ic"><use href="#i-info"/></svg><span class="zh">Enter = 主按钮「粘贴（已去掉末尾回车）」（安全动作，绝不执行；「粘贴并执行」须显式点击）</span><span class="en">Enter = primary "Paste (return removed)" (safe, never runs; "Paste and run" needs an explicit click)</span></span>
+                            <span class="btns">
+                <button class="btn ghost" tabindex="0" data-do="cancel" type="button"><span class="zh">取消</span><span class="en">Cancel</span></button>
+                <button class="btn primary is-default" tabindex="0" data-do="paste-noreturn" type="button"><span class="zh">粘贴（已去掉末尾回车）</span><span class="en">Paste (return removed)</span></button>
+                <button class="btn dg-out" tabindex="0" data-do="paste-run" type="button"><span class="zh">粘贴并执行</span><span class="en">Paste and run</span></button>
+              </span>
+              <span class="opts"><span class="opt" data-toggle="1" data-on="0" role="checkbox" aria-checked="false" tabindex="0"><svg class="ic"><use href="#i-check"/></svg><span class="zh">不再提示多行粘贴</span><span class="en">Don't ask again</span></span><span class="opt-note"><span class="zh">含危险命令或超过 100 KB 时仍会提示</span><span class="en">Risk hits or &gt;100 KB still prompt</span></span></span></div></div></div><div class="frame-note"><div class="kv">
+            <span>主题 <b>mterm-light</b>（帧内 <code>data-skin="light"</code>）</span><span>折叠 <b>20 行（17 + 3）· 全量渲染</b></span><span>控制字符 <b>剥 2 个</b></span><span>危险动作 <b>描边式</b></span>
+          </div>
+          折叠出入口成对出现：顶部「… 以上另有 17 行（已折叠）」、底部「… 以下另有 3 行（已折叠）」——折叠账自洽：两个折叠提示行数字之和（17 + 3）＝ 按钮「展开全部（另有 20 行）」＝ DOM 中 <code>data-fold-hidden</code> 行数（20），三者相等。按 UX 规范第 ④ 条，<b>不允许静默截断</b>。控制字符提示是 spec §5.2 第 ⑦ 项，只在 <code>bracketed &amp;&amp; 含 ESC/0x03</code> 时出现一次（<code>src/terminal/impls/input.rs:62</code>）。
+        </div></article>
+
+      <!-- ── F · 暗 · 评审档 · 超长内容摘要 + 展开全部（虚拟化） ────── -->
+      <article class="frame" id="st-f"><div class="frame-head">
+          <span class="ang">F</span>
+          <span class="ft">暗 · 评审档 1160px · 超长摘要（&gt;200 行 / &gt;100 KB）+ 展开全部</span>
+          <span class="fd">spec §5.2 第 ⑥ 项：超过 200 行或 100 KB 时先给<b>摘要</b>与「展开全部」。超过 100 KB 还会命中 <code>force_review</code>——<b>即使关掉 <code>paste_confirm_enabled</code> 也必须复核</b>（<code>src/app.rs:12759-12761</code>）。</span>
+          <span class="tools">
+            <button class="mini" data-act="wrap" type="button" aria-pressed="true"><svg class="ic"><use href="#i-wrap"/></svg><span class="zh">软折行</span><span class="en">Wrap</span></button>
+            <button class="mini" data-act="fold" type="button" aria-pressed="false"><svg class="ic"><use href="#i-unfold-more"/></svg><span class="zh">展开全部</span><span class="en">Expand all</span></button>
+            <button class="mini" data-act="restore" type="button"><svg class="ic"><use href="#i-refresh"/></svg>还原弹框</button>
+          </span></div>
+        <div class="trace" data-empty="1"><span class="lab">足迹</span><span data-role="trace">等待交互…</span></div>
+        <div class="sim tall" data-skin="dark"><div class="win"><div class="win-title">
+              <span class="m"><svg class="ic"><use href="#i-logo"/></svg></span>
+              <span class="t">MTerm</span>
+              <span class="host">ops@edge-nvme:2200</span>
+              <span class="wbtns"><svg class="ic"><use href="#i-split"/></svg><svg class="ic"><use href="#i-terminal"/></svg><svg class="ic"><use href="#i-tune"/></svg></span>
+            </div><div class="win-tabs">
+              <div class="tab on"><span class="dot dg"></span><span class="tl">edge-nvme</span></div>
+              <div class="tab"><span class="dot"></span><span class="tl">edge-02</span></div>
+              <div class="tab"><span class="dot"></span><span class="tl">jump-host</span></div>
+            </div><div class="term" tabindex="-1">
+              <div class="ln"><span class="p">ops@edge-nvme:~$</span> lsblk -o NAME,SIZE,TYPE</div>
+              <div class="ln dim">nvme0n1   1.8T  disk</div>
+              <div class="ln dim">└─nvme0n1p1  1.8T  part /</div>
+              <div class="ln"><span class="p">ops@edge-nvme:~$</span> <span class="wr">warning:</span> 上一次粘贴已被取消</div>
+              <div class="ln"><span class="p">ops@edge-nvme:~$</span> <span class="cursor"></span></div>
+            </div></div>
+          <div class="scrim"></div>
+          <div class="dlg review">
+            <div class="grip" title="拖动卡片"><svg class="ic"><use href="#i-drag"/></svg></div>
+            <div class="dlg-head">
+              <span class="ic"><svg class="ic"><use href="#i-clipboard-check"/></svg></span>
+              <div class="tt">
+                <h4>确认多行粘贴 <span class="lvl">review</span></h4>
+                <div class="st"><span class="zh">8 412 行 / 104 300 字符（约 102 KB）——超过 100 KB，已强制进入评审档。</span><span class="en">8,412 lines / 104,300 chars (~102 KB) — over 100 KB, forced into review.</span></div>
+              </div>
+              <button class="dlg-close" tabindex="0" data-do="cancel" type="button" aria-label="关闭"><svg class="ic"><use href="#i-close"/></svg></button>
+            </div><div class="dlg-body"><div class="chips">
+                <span class="chip"><svg class="ic"><use href="#i-terminal"/></svg><span class="zh">粘贴到</span><span class="en">Into</span><b>edge-nvme</b></span>
+                <span class="chip"><svg class="ic"><use href="#i-host"/></svg><b>ops@edge-nvme:2200</b></span>
+                <span class="chip accent"><svg class="ic"><use href="#i-shield"/></svg><span class="zh">Bracketed 已启用 · 整段进入编辑缓冲</span><span class="en">Bracketed on · block buffered</span></span>
+                <span class="chip warn"><svg class="ic"><use href="#i-layers"/></svg><span class="zh">超长 · 仅渲染摘要</span><span class="en">Huge · summary only</span></span>
+              </div>
+              <div class="notice dg"><svg class="ic"><use href="#i-warning"/></svg><span class="zh">内容约 <b>102 KB</b>，跨过 <code>force_review</code> 阈值（100 KB）：<b>即使关闭「不再提示多行粘贴」也必须复核</b>。此段含 <b>2 处 A 级</b>不可逆破坏（格式化文件系统、直写块设备）。</span><span class="en">About <b>102 KB</b> — past the <code>force_review</code> threshold (100 KB): this prompt appears <b>even when "don't ask again" is on</b>. Contains <b>2 grade-A</b> irreversible hits.</span></div>
+              <div class="pv wrap-on"><div class="pv-bar">
+                  <span class="stat"><span class="k">行</span><span class="v n-lines">8412</span></span>
+                  <span class="sep">·</span>
+                  <span class="stat"><span class="k">字符</span><span class="v n-chars">104300</span></span>
+                  <span class="sep">·</span>
+                  <span class="stat"><span class="k">风险</span><span class="v n-risks risk">3</span></span>
+                  <span class="legend"><i class="a"></i>A 级<i class="b"></i>B 级</span>
+                  <span class="right">
+                    <button class="pv-toggle" tabindex="0" data-act="wrap" type="button" aria-pressed="true"><svg class="ic"><use href="#i-wrap"/></svg><span class="zh">软折行</span><span class="en">Soft wrap</span></button>
+                  </span></div><div class="pv-scroll cap" tabindex="0">
+                  <div class="pv-line note"><span class="pv-g">—</span><span class="pv-t">虚拟化通告：本段共 8 412 行 / 104 300 字符（&gt;100 KB → force_review），此处只渲染 12 行样本；其余 8 400 行未进入 DOM，展开时按可视窗口按需渲染。</span></div>
+                  <div class="pv-line dg"><span class="pv-g">1</span><span class="pv-t">mkfs.ext4 -F /dev/nvme0n1p2</span><span class="pv-badge"><span class="bdg"><svg class="ic"><use href="#i-disk"/></svg><span class="zh">格式化文件系统</span><span class="en">format fs</span></span></span></div>
+                  <div class="pv-line dg"><span class="pv-g">2</span><span class="pv-t">dd if=/dev/zero of=/dev/nvme0n1 bs=1M status=progress</span><span class="pv-badge"><span class="bdg"><svg class="ic"><use href="#i-disk"/></svg><span class="zh">直写块设备</span><span class="en">raw write</span></span></span></div>
+                  <div class="pv-line wr"><span class="pv-g">3</span><span class="pv-t">iptables -F &amp;&amp; iptables -X</span><span class="pv-badge wr"><span class="bdg"><svg class="ic"><use href="#i-shield-alert"/></svg><span class="zh">防火墙变更</span><span class="en">firewall change</span></span></span></div>
+                  <div class="pv-line"><span class="pv-g">4</span><span class="pv-t">partprobe /dev/nvme0n1</span></div>
+                  <div class="pv-line"><span class="pv-g">5</span><span class="pv-t">mount -o noatime /dev/nvme0n1p2 /srv/data</span></div>
+                  <div class="pv-line"><span class="pv-g">6</span><span class="pv-t">export PGOPTIONS='-c statement_timeout=0'</span></div>
+                  <div class="pv-line"><span class="pv-g">7</span><span class="pv-t">psql -U ops -d warehouse -f /srv/data/rebuild.sql</span></div>
+                  <div class="pv-line"><span class="pv-g">8</span><span class="pv-t">sync &amp;&amp; systemctl restart postgresql@16-main</span></div>
+                  <div class="pv-line fold" data-fold="1"><span class="pv-g">…</span><span class="pv-t">… 以下另有 4 行（已折叠）</span></div>
+                  <div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">9</span><span class="pv-t">systemctl restart postgresql@16-main</span></div>
+                  <div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">10</span><span class="pv-t">journalctl -u postgresql@16-main -n 200 --no-pager</span></div>
+                  <div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">11</span><span class="pv-t">df -h /srv/data &amp;&amp; du -sh /srv/data/*</span></div>
+                  <div class="pv-line is-hidden" data-fold-hidden="1"><span class="pv-g">12</span><span class="pv-t">pg_isready -h 127.0.0.1 -p 5432</span></div>
+                </div>
+                <button class="pv-fold" data-act="fold" type="button" aria-pressed="false"><svg class="ic"><use href="#i-unfold-more"/></svg><span class="zh">展开全部（另有 4 行）</span><span class="en">Expand all (4 more)</span></button>
+                <div class="pv-hint"><svg class="ic"><use href="#i-info"/></svg><span class="zh">展开全部后列表按可视窗口渲染（虚拟化），避免一次布局 8 000+ 行；被折叠的行同时可用 Ctrl+F 搜索。两个数字口径不同：按钮与折叠提示计的是 <b>DOM 内被折叠的 4 行</b>，而虚拟化通告计的是<b>未进入 DOM 的 8 400 行</b>。</span><span class="en">After expanding, rows render through a virtual window so 8,000+ lines are never laid out at once.</span></div>
+              </div>
+              <div class="result is-hidden" data-role="result"></div>
+            </div><div class="dlg-foot">
+              <span class="enter-note"><svg class="ic"><use href="#i-info"/></svg><span class="zh">Enter = 主按钮「粘贴（已去掉末尾回车）」（安全动作，绝不执行；「粘贴并执行」须显式点击）</span><span class="en">Enter = primary "Paste (return removed)" (safe, never runs; "Paste and run" needs an explicit click)</span></span>
+                            <span class="btns">
+                <button class="btn ghost" tabindex="0" data-do="cancel" type="button"><span class="zh">取消</span><span class="en">Cancel</span></button>
+                <button class="btn primary is-default" tabindex="0" data-do="paste-noreturn" type="button"><span class="zh">粘贴（已去掉末尾回车）</span><span class="en">Paste (return removed)</span></button>
+                <button class="btn dg-out" tabindex="0" data-do="paste-run" type="button"><span class="zh">粘贴并执行</span><span class="en">Paste and run</span></button>
+              </span>
+              <span class="opts"><span class="opt" data-toggle="1" data-on="0" role="checkbox" aria-checked="false" tabindex="0"><svg class="ic"><use href="#i-check"/></svg><span class="zh">不再提示多行粘贴</span><span class="en">Don't ask again</span></span><span class="opt-note"><span class="zh">含危险命令或超过 100 KB 时仍会提示</span><span class="en">Risk hits or &gt;100 KB still prompt</span></span></span></div></div></div><div class="frame-note"><div class="kv">
+            <span>主题 <b>mterm-dark</b>（帧内 <code>data-skin="dark"</code>）</span><span>规模 <b>8 412 行 / ≈102 KB</b></span><span>强制复核 <b>force_review 100 KB</b></span><span>危险动作 <b>描边式</b></span>
+          </div>
+          对应 spec §5.2 第 ⑥ 项与 §2.1 的 <code>force_review</code>：<b>规模本身就是安全信号</b>，此时「不再提示」复选框失效（勾选后仍会弹）。摘要/虚拟化通告行用 <code>slot-t1</code> 而非 t3，与折叠提示同一规则。折叠账自洽：折叠提示行数字（4）＝按钮数字（4）＝ DOM 中 <code>data-fold-hidden</code> 行数（4）；而 8 400 行是<b>未进入 DOM</b> 的量，两个口径不同、不冲突。
+        </div></article>
+
+      <!-- ── G · 亮 · 紧凑档 · 单行 + 末尾回车 + A 级 ───────────────── -->
+      <article class="frame" id="st-g"><div class="frame-head">
+          <span class="ang">G</span>
+          <span class="ft">亮 · 紧凑档 380px · 单行 + 末尾回车 + A 级（主按钮带后缀）</span>
+          <span class="fd">紧凑档（1–3 行且 ≤600 字符）沿用现状 380px 宽；本帧演示「有尾回车 + 命中 A 级」时主按钮文案自动追加 <b>（已去掉末尾回车）</b>——同一个组件、同一个页脚，只是文案随命中级别变化。</span>
+          <span class="tools">
+            <button class="mini" data-act="wrap" type="button" aria-pressed="true"><svg class="ic"><use href="#i-wrap"/></svg><span class="zh">软折行</span><span class="en">Wrap</span></button>
+            <button class="mini" data-act="restore" type="button"><svg class="ic"><use href="#i-refresh"/></svg>还原弹框</button>
+          </span></div>
+        <div class="trace" data-empty="1"><span class="lab">足迹</span><span data-role="trace">等待交互…</span></div>
+        <div class="sim short" data-skin="light"><div class="win"><div class="win-title">
+              <span class="m"><svg class="ic"><use href="#i-logo"/></svg></span>
+              <span class="t">MTerm</span>
+              <span class="host">Administrator@web-01:22</span>
+              <span class="wbtns"><svg class="ic"><use href="#i-split"/></svg><svg class="ic"><use href="#i-terminal"/></svg><svg class="ic"><use href="#i-tune"/></svg></span>
+            </div><div class="win-tabs">
+              <div class="tab on"><span class="dot"></span><span class="tl">web-01</span></div>
+              <div class="tab"><span class="dot"></span><span class="tl">win-dev</span></div>
+            </div><div class="term" tabindex="-1">
+              <div class="ln dim">Last login: Thu Nov  6 09:12:44 2026 from 10.8.0.4</div>
+              <div class="ln"><span class="p">Administrator@web-01:~$</span> df -h /var/lib/docker</div>
+              <div class="ln dim">/dev/sda1        98G   71G   22G  77% /var/lib/docker</div>
+              <div class="ln"><span class="p">Administrator@web-01:~$</span> <span class="cursor"></span></div>
+            </div></div>
+          <div class="scrim"></div>
+          <div class="dlg compact">
+            <div class="grip" title="拖动卡片"><svg class="ic"><use href="#i-drag"/></svg></div>
+            <div class="dlg-head">
+              <span class="ic dg"><svg class="ic"><use href="#i-warning"/></svg></span>
+              <div class="tt">
+                <h4>确认多行粘贴 <span class="lvl">compact</span></h4>
+                <div class="st"><span class="zh">1 行 / 71 字符，<b>末尾有回车</b>；命中 A 级「递归强制删除」。</span><span class="en">1 line / 71 chars, <b>trailing return</b>; grade-A "recursive delete" hit.</span></div>
+              </div>
+              <button class="dlg-close" tabindex="0" data-do="cancel" type="button" aria-label="关闭"><svg class="ic"><use href="#i-close"/></svg></button>
+            </div><div class="dlg-body"><div class="chips">
+                <span class="chip"><svg class="ic"><use href="#i-terminal"/></svg><span class="zh">粘贴到</span><span class="en">Into</span><b>web-01</b></span>
+                <span class="chip"><svg class="ic"><use href="#i-host"/></svg><b>Administrator@web-01:22</b></span>
+                <span class="chip accent"><svg class="ic"><use href="#i-shield"/></svg><span class="zh">Bracketed 已启用 · 整段进入编辑缓冲</span><span class="en">Bracketed on · block buffered</span></span>
+              </div>
+              <div class="notice dg"><svg class="ic"><use href="#i-warning"/></svg><span class="zh">末尾回车会立刻执行这一行。默认动作已改为<b>剥离末尾回车</b>，最后一行留在命令行等你按回车；要立即执行请显式点「粘贴并执行」。</span><span class="en">A trailing return would run this line instantly. The default now <b>strips it</b>, leaving the line at the prompt; use "Paste and run" to execute deliberately.</span></div>
+              <div class="pv wrap-on"><div class="pv-bar">
+                  <span class="stat"><span class="k">行</span><span class="v n-lines">1</span></span>
+                  <span class="sep">·</span>
+                  <span class="stat"><span class="k">字符</span><span class="v n-chars">71</span></span>
+                  <span class="sep">·</span>
+                  <span class="stat"><span class="k">风险</span><span class="v n-risks risk">1</span></span>
+                  <span class="legend"><i class="a"></i>A 级</span>
+                  <span class="right">
+                    <button class="pv-toggle" tabindex="0" data-act="wrap" type="button" aria-pressed="true"><svg class="ic"><use href="#i-wrap"/></svg><span class="zh">软折行</span><span class="en">Soft wrap</span></button>
+                  </span></div><div class="pv-scroll" tabindex="0">
+                  <div class="pv-line dg"><span class="pv-t">rm -rf /var/lib/docker/overlay2/* /var/lib/docker/volumes/*</span><span class="pv-badge"><span class="bdg"><svg class="ic"><use href="#i-trash"/></svg><span class="zh">递归强制删除</span><span class="en">recursive delete</span></span></span></div>
+                </div>
+                <div class="pv-hint"><svg class="ic"><use href="#i-rows"/></svg><span class="zh">紧凑档：1–3 行不画行号列，行数见上方统计条与脚注（spec §5.1）。</span><span class="en">Compact: no gutter for 1–3 lines; line count lives in the stats bar and the footnote.</span></div>
+              </div>
+              <div class="result is-hidden" data-role="result"></div>
+            </div><div class="dlg-foot">
+              <span class="enter-note"><svg class="ic"><use href="#i-info"/></svg><span class="zh">Enter = 主按钮「粘贴（已去掉末尾回车）」</span><span class="en">Enter = primary "Paste (return removed)"</span></span>
+                            <span class="btns">
+                <button class="btn ghost" tabindex="0" data-do="cancel" type="button"><span class="zh">取消</span><span class="en">Cancel</span></button>
+                <button class="btn primary is-default" tabindex="0" data-do="paste-noreturn" type="button"><span class="zh">粘贴（已去掉末尾回车）</span><span class="en">Paste (return removed)</span></button>
+                <button class="btn dg-out" tabindex="0" data-do="paste-run" type="button"><span class="zh">粘贴并执行</span><span class="en">Paste and run</span></button>
+              </span>
+              <span class="opts"><span class="opt" data-toggle="1" data-on="0" role="checkbox" aria-checked="false" tabindex="0"><svg class="ic"><use href="#i-check"/></svg><span class="zh">不再提示多行粘贴</span><span class="en">Don't ask again</span></span><span class="opt-note"><span class="zh">含危险命令或超过 100 KB 时仍会提示</span><span class="en">Risk hits or &gt;100 KB still prompt</span></span></span></div></div></div><div class="frame-note"><div class="kv">
+            <span>主题 <b>mterm-light</b>（帧内 <code>data-skin="light"</code>）</span><span>档位 <b>compact 380px</b></span><span>命中 <b>A 级 ×1</b></span><span>按钮 <b>取消 / 粘贴并执行 / 主按钮</b></span>
+          </div>
+          紧凑档三点与现状保持一致：卡片 380px、按钮 30px 高 / min-width 80px / <code>radius-sm</code>、危险按钮虽然描边但仍是 <code>slot-dg</code> 语义色。差别只在<b>文案显式化</b>与<b>多出一个安全出口</b>。
+        </div></article></div></section>
+
+  <!-- ── 04 · 对比度实测对账 ───────────────────────────────────────── -->
+  <section class="blk" id="sec-contrast"><div class="sec-head">
+      <span class="n">04</span>
+      <div>
+        <h2>对比度实测对账 · WCAG 2.1</h2>
+        <p class="sub">spec §4.4 第 ⑥ 条：页面壳必须列出本稿<b>实际用到</b>的每一对前景/背景实测比值。下表每一行都对应稿子里的一个真实落点，比值按 §4.1 色值用 WCAG 2.1 相对亮度公式实算（复现脚本 <code>node .tmp-lead/contrast.mjs</code>）。</p>
+      </div></div>
+
+    <div class="table-wrap"><div class="tbl-scroll"><table><thead><tr>
+              <th>稿中落点</th><th>前景 token</th><th>背景</th><th>暗 mterm-dark</th><th>亮 mterm-light</th><th>判定</th>
+            </tr></thead><tbody>
+            <tr><td>预览正文 / 统计条 / chip / 折叠提示</td><td><code>slot-t1</code></td><td><code>popup-bg</code>（≈ <code>slot-panel</code>）</td><td class="ratio">9.38:1</td><td class="ratio">12.37:1</td><td class="pass">PASS ≥4.5</td></tr>
+            <tr><td>动作条文字（<code>.dlg-foot</code>）</td><td><code>slot-t1</code></td><td><code>slot-root</code></td><td class="ratio">9.72:1</td><td class="ratio">11.53:1</td><td class="pass">PASS ≥4.5</td></tr>
+            <tr><td>危险行行尾徽标文字</td><td><code>slot-dg</code></td><td><code>popup-bg</code> 不透明小胶囊</td><td class="ratio">5.32:1</td><td class="ratio">5.22:1</td><td class="pass">PASS ≥4.5</td></tr>
+            <tr><td>危险提示文字（压在 11% danger 淡染上）</td><td><code>--dg-ink</code></td><td><code>slot-dg</code> × 11% 淡染</td><td class="ratio">4.70:1</td><td class="ratio">6.55:1</td><td class="pass">PASS ≥4.5</td></tr>
+            <tr><td>危险行行内正文</td><td><code>slot-t1</code></td><td><code>slot-dg</code> × 11% 淡染</td><td class="ratio">8.29:1</td><td class="ratio">10.59:1</td><td class="pass">PASS ≥4.5</td></tr>
+            <tr><td>警告提示（控制字符 / bracketed 关闭）</td><td><code>slot-wr</code></td><td><code>popup-bg</code></td><td class="ratio">8.09:1</td><td class="ratio">4.99:1</td><td class="pass">PASS ≥4.5</td></tr>
+            <tr><td>安全态文字（无风险计数）</td><td><code>slot-ok</code></td><td><code>popup-bg</code></td><td class="ratio">6.60:1</td><td class="ratio">5.43:1</td><td class="pass">PASS ≥4.5</td></tr>
+            <tr><td>主按钮 <code>.btn.primary</code>（accent 实底）</td><td><code>--on-solid</code> = <code>slot-root</code></td><td><code>slot-ac</code> 实底</td><td class="ratio">8.58:1</td><td class="ratio">5.13:1</td><td class="pass">PASS ≥4.5</td></tr>
+            <tr><td>危险按钮 <code>.btn.dg-out</code>（描边式）</td><td><code>slot-dg</code></td><td><code>popup-bg</code> 透明底</td><td class="ratio">5.32:1</td><td class="ratio">5.22:1</td><td class="pass">PASS ≥4.5</td></tr>
+            <tr><td>危险按钮 hover/active 转实心</td><td><code>--on-solid</code></td><td><code>slot-dg</code> 实底</td><td class="ratio">5.51:1</td><td class="ratio">5.22:1</td><td class="pass">PASS ≥4.5</td></tr>
+            <tr><td>终端正文</td><td><code>slot-t1</code></td><td><code>slot-tbg</code></td><td class="ratio">9.38:1</td><td class="ratio">12.37:1</td><td class="pass">PASS ≥4.5</td></tr>
+<tr><td>终端提示符</td><td><code>slot-ac</code></td><td><code>slot-tbg</code></td><td class="ratio">8.29:1</td><td class="ratio">5.13:1</td><td class="pass">PASS ≥4.5</td></tr>
+            <tr><td>终端次要行（<code>slot-t1</code> × .72 透明度）</td><td><code>slot-t1</code></td><td><code>slot-tbg</code></td><td class="ratio">5.46:1</td><td class="ratio">5.22:1</td><td class="pass">PASS ≥4.5</td></tr>
+            <tr><td>标签栏文字（<code>slot-t1</code> × .8）</td><td><code>slot-t1</code></td><td><code>slot-palt</code></td><td class="ratio">6.30:1</td><td class="ratio">6.04:1</td><td class="pass">PASS ≥4.5</td></tr>
+            <tr><td>标题栏主机名（<code>slot-t1</code> × .85）</td><td><code>slot-t1</code></td><td><code>slot-palt</code></td><td class="ratio">6.93:1</td><td class="ratio">6.96:1</td><td class="pass">PASS ≥4.5</td></tr>
+            <tr><td>行号列（非选择装饰）</td><td><code>slot-t3</code></td><td><code>popup-bg</code></td><td class="ratio">3.66:1</td><td class="ratio">3.02:1</td><td class="warnp">仅装饰 ≥3</td></tr>
+            <tr><td>文档层正文</td><td><code>--doc-t1</code></td><td><code>--doc-panel</code></td><td class="ratio">15.32:1</td><td class="ratio">12.77:1</td><td class="pass">PASS ≥4.5</td></tr>
+            <tr><td>文档层次要</td><td><code>--doc-t2</code></td><td><code>--doc-panel</code></td><td class="ratio">7.11:1</td><td class="ratio">4.57:1</td><td class="pass">PASS ≥4.5</td></tr>
+            <tr><td>文档层装饰（本稿已抬到达标）</td><td><code>--doc-t3</code></td><td><code>--doc-panel</code></td><td class="ratio">4.78:1</td><td class="ratio">5.00:1</td><td class="pass">PASS ≥3</td></tr>
+          </tbody></table></div></div>
+
+    <div class="cards c2" style="margin-top:var(--s-4)"><div class="card">
+        <h3><svg class="ic"><use href="#i-error"/></svg>继承自权威色板的不达标项（未改色值）</h3>
+        <ul>
+          <li><b><code>slot-t2</code> 4.28:1（暗）/ 4.25:1（亮）</b> —— 不达正文 4.5:1。本稿<b>没有让 <code>t2</code> 承载任何正文</b>：预览正文、统计条、标签栏、提示一律 <code>slot-t1</code>。</li>
+          <li><b>白字 + <code>slot-dg</code> 实心 = 3.28:1（暗）</b> —— 这正是现状 <code>DangerButton</code> 实心态的问题（<code>ui/confirm_dialog.slint:7-31</code>）。本稿的危险动作改<b>描边式</b>（5.32 / 5.22 ✓），仅 hover 转实心且字色换 <code>slot-root</code>。</li>
+          <li><b><code>slot-t3</code> 压 <code>slot-palt</code> 亮色仅 2.57:1</b> —— 本稿在主按钮与标题栏改用 <code>slot-t1</code> 加透明度系数（6.04–6.96 ✓）。</li>
+          <li><b><code>slot-t2</code> 压 <code>slot-palt</code> / <code>slot-elev</code> 只有 4.14 / 4.00:1</b>（<code>slot-t1</code> 压同两个面实为 9.08 / 8.78，可用）—— 本稿把<b>所有承载文字的面退回 <code>popup-bg</code> 或 <code>slot-root</code></b>，elev/inset 只留给无文字的装饰件（拖动条、关闭图标），且从不让 <code>slot-t2</code> 承载正文。</li>
+          <li>以上均源自身份色板 <code>src/theme/palettes.rs</code> 自身，按 spec §4.4 第 ⑦ 条，高保真<b>不得为达标而改 §4.1 色值</b>，只能按用法规则选色——此处只做用法规避，色值一字未动。</li>
+        </ul></div><div class="card">
+        <h3><svg class="ic"><use href="#i-check"/></svg>本稿新增的「用法 token」（非色板值）</h3>
+        <ul>
+          <li><code>--on-solid</code> = 暗 <code>#161619</code> / 亮 <code>#FAF8F4</code>：定义即 <code>slot-root</code> / <code>slot-panel</code> 的原值，只是给「实心底上的字」一个名字，用于 <code>.btn.primary</code> 与危险按钮 hover 态。</li>
+          <li><code>--dg-ink</code> = 暗 <code>slot-dg</code> 原值 <code>#F75464</code> / 亮 <code>#8E2F28</code>：<b>唯一非 §4.1 原值</b>的用法色，只用于「压在 11% danger 淡染上的文字」。亮色下 <code>slot-dg</code> 原值压淡染只有 4.47:1（差一点不达标），故压到 <code>#8E2F28</code> 得 6.55:1。它<b>不改变任何既有 slot 的取值</b>，也不出现在危险色实心底/徽标上（那里仍用 <code>slot-dg</code> 原值）。</li>
+          <li><code>--wr-line</code> / <code>--wr-soft</code> / <code>--ac-hov</code>：都是「既有色 + alpha」或「同相提亮」的派生用法，未引入新色相。</li>
+          <li>请评审重点确认 <code>--dg-ink</code> 是否被判定为「引入新色值」；若判定为不允许，替代方案是危险提示文字直接用 <code>slot-dg</code>（亮 4.47:1，仅差 0.03）或把提示底改成不透明 <code>popup-bg</code>。</li>
+        </ul></div></div></section>
+
+  <!-- ── 05 · 与现状的连续性 ───────────────────────────────────────── -->
+  <section class="blk" id="sec-continuity"><div class="sec-head">
+      <span class="n">05</span>
+      <div>
+        <h2>与现状弹框的连续性 · 同一组件家族的加宽档</h2>
+        <p class="sub">spec §6 第 ⑤ 条要求「看得出是同一组件家族的加宽档」。左边是现状 380px 通用 <code>ConfirmDialog</code>（含它的实测短板），右边逐项说明本稿保留了什么、只改了什么。</p>
+      </div></div>
+
+    <div class="cmp"><div class="col">
+        <h4><svg class="ic"><use href="#i-window-asset"/></svg>现状 · 通用 ConfirmDialog（380px）</h4>
+        <div class="sim short" data-skin="dark"><div class="win"><div class="win-title">
+              <span class="m"><svg class="ic"><use href="#i-logo"/></svg></span>
+              <span class="t">MTerm</span>
+              <span class="host">root@db-02:2222</span>
+              <span class="wbtns"><svg class="ic"><use href="#i-split"/></svg><svg class="ic"><use href="#i-terminal"/></svg></span>
+            </div><div class="win-tabs">
+              <div class="tab on"><span class="dot"></span><span class="tl">db-02</span></div>
+            </div><div class="term" tabindex="-1">
+              <div class="ln dim">Last login: Thu Nov  6 08:41:07 2026</div>
+              <div class="ln"><span class="p">root@db-02:~#</span> <span class="cursor"></span></div>
+            </div></div>
+          <div class="scrim"></div>
+          <div class="dlg compact">
+            <div class="grip" title="拖动卡片"><svg class="ic"><use href="#i-drag"/></svg></div>
+            <div class="dlg-head">
+              <span class="ic"><svg class="ic"><use href="#i-info"/></svg></span>
+              <div class="tt">
+                <h4>确认多行粘贴 <span class="lvl">legacy</span></h4>
+                <div class="st"><span class="zh">剪贴板内容包含换行，粘贴后可能连续执行多个命令，请确认内容后再继续。</span><span class="en">The clipboard contains line breaks and may execute multiple commands. Review it before pasting.</span></div>
+              </div></div><div class="dlg-body">
+              <div class="notice"><svg class="ic"><use href="#i-info"/></svg><span class="zh"><code>message</code> 与 <code>confirm-label</code> 已按 <code>ui/app.slint:8212-8217</code> 逐字对齐。预览为<b>原文整段</b>：无行号、无等宽约束、无危险标记、无折行策略、无统计条。</span><span class="en">Preview is the raw block: no gutter, no mono constraint, no risk marking, no wrap policy, no stats.</span></div>
+              <div class="notice dg"><svg class="ic"><use href="#i-warning"/></svg><span class="zh">末尾换行会被归一化成 CR → 粘完等于按下回车 → <b>直接执行</b>；且没有「只粘贴不执行」的出口。</span><span class="en">A trailing newline normalizes to CR → pasting runs it; there is no "paste without running" exit.</span></div>
+            </div><div class="dlg-foot">
+              <span class="enter-note"><svg class="ic"><use href="#i-info"/></svg><span class="zh">Enter = 确认（<code>confirm-on-enter</code>）</span><span class="en">Enter = confirm</span></span>
+              <span class="btns">
+                <button class="btn ghost" tabindex="0" type="button" disabled><span class="zh">取消</span><span class="en">Cancel</span></button>
+                <span class="legacy-btn"><span class="zh">粘贴</span><span class="en">Paste</span></span>
+              </span></div></div></div>
+        <p class="sub" style="margin:0">⚠ 本块仅作<b>反面样例</b>标注（含白字实心红 <code>3.28:1 ❌</code>），本稿新档中<b>不存在</b>这种按钮。</p>
+      </div>
+
+      <div class="col">
+        <h4><svg class="ic"><use href="#i-check"/></svg>本稿保留 / 新增 / 改动</h4>
+        <div class="spec-list">
+          <div class="spe"><span class="k">保留</span><span class="v">卡片底 = <code>popup-bg</code>，1px <code>border-strong</code>，<code>radius-lg</code>，pop-shadow</span></div>
+          <div class="spe"><span class="k">保留</span><span class="v"><code>detail: root.paste-confirm-preview</code>、<code>large-detail: root.paste-confirm-large</code>（→ <code>min(宽-40px,1160px) × min(高-40px,760px)</code>）、<code>confirm-on-enter: true</code>（<code>ui/app.slint:8210-8216</code>）</span></div>
+          <div class="spe"><span class="k">保留</span><span class="v">顶部 5px <code>grip</code> 可拖动、打开回中</span></div>
+          <div class="spe"><span class="k">保留</span><span class="v">背板 = <code>Theme.modal-scrim</code>（单一遮罩：<code>scrim-base</code> + <code>scrim-strength 0.32</code> → 暗 <code>#0c0d11</code> / 亮 <code>#f4f5f8</code>；<code>ui/theme.slint:374/348</code> + <code>ui/widgets.slint:804-815</code>，与本稿 <code>--scrim</code> 同值）</span></div>
+          <div class="spe"><span class="k">保留</span><span class="v">按钮 30px 高 / min-width 80px（主按钮与危险按钮 <code>radius-sm</code>；取消 = GhostButton <code>radius-md</code>，<code>ui/widgets.slint:167-202</code>）；命中区 32px</span></div>
+          <div class="spe"><span class="k">保留</span><span class="v">标题文案「确认多行粘贴 / Confirm multi-line paste」</span></div>
+          <div class="spe"><span class="k">保留</span><span class="v">点击背板不取消（<code>dismiss-on-backdrop = false</code>，#262）</span></div>
+          <div class="spe"><span class="k">新增</span><span class="v">标准档 640px（4–12 行 <b>且</b> ≤600 字符），补上 380 ↔ 1160 之间的断层</span></div>
+          <div class="spe"><span class="k">新增</span><span class="v">预览 7 件套：行号列 / 等宽正文 / 危险竖标+淡染+徽标 / 统计条 / 折行开关 / 摘要+展开全部 / 控制字符提示</span></div>
+          <div class="spe"><span class="k">新增</span><span class="v">框顶上下文行：tab 名 · user@host:port + bracketed 徽标</span></div>
+          <div class="spe"><span class="k">新增</span><span class="v">安全出口「粘贴（不含末尾回车）」为主按钮，执行降级为显式动作</span></div>
+          <div class="spe"><span class="k">改动</span><span class="v">Enter 从「确认」改为「主按钮（绝不执行）」，执行移给 <code>Alt+P</code></span></div>
+          <div class="spe"><span class="k">改动</span><span class="v">危险按钮由白字实心红改为<b>描边式</b>（危险色文字 + 1px 危险边 + 透明底）</span></div>
+        </div>
+        <p class="sub" style="margin:var(--s-2) 0 0">一句话：<b>几何与材质全部沿用现状，变的只是「信息量」与「默认动作的安全性」</b>——所以它看起来是同家族里更宽、更能干的那个档位，而不是第三种弹框风格（spec G4）。</p>
+      </div></div></section>
+
+  <footer class="docfoot"><div>
+      <b>多行粘贴确认弹框 · 高保真视觉稿 v1</b> · 2026-11-06 · MTerm（Rust + Slint）·
+      单文件离线，无任何外链（无 CDN / 无外部字体 / 无外部图片），图标全部内联 SVG。
+    </div><div>
+      事实底稿 <code>docs/design/multiline-paste-spec-2026-11-06.md</code>（§4.4 对比度约束 / §5.1 三档 / §5.2 预览七项 / §5.3 D1–D5）·
+      对标 <code>docs/design/multiline-paste-research-2026-11-06.md</code>（204 行，33 个 URL）·
+      视觉同源 <code>ui/confirm_dialog.slint</code> · 结构参照 <code>docs/design/left-panel-session-hifi-2026-10-28-v3.html</code>。
+    </div><div>
+      范围声明：本稿只交付视觉与交互规格，<b>不修改</b> <code>ui/*.slint</code>、<code>src/**</code>，也不含 <code>cargo build/test</code>（spec §7）。
+      细节以右侧评审报告 <code>docs/design/multiline-paste-hifi-2026-11-06-v1.review.md</code> 为准。
+    </div></footer>
+
+  <script>
+  (function () {
+    'use strict';
+    var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
+    var frameOf = function (el) { return (el && el.closest) ? el.closest('.frame') : null; };
+    var bi = function (zh, en) { return '<span class="zh">' + zh + '</span><span class="en">' + en + '</span>'; };
+    /* 焦点工具：静态稿用 focus() 演示；落地时对应 ui/app.slint 的 terminal-focus-sequence += 1。
+       preventScroll 避免初始化时把页面滚到状态帧。 */
+    function focusEl(el) {
+      if (!el || !el.focus) return;
+      try { el.focus({ preventScroll: true }); } catch (e) { try { el.focus(); } catch (e2) { } }
+    }
+    function focusPrimary(frame) { if (frame) focusEl(frame.querySelector('.btn.primary')); }
+    function focusTerm(frame) { if (frame) focusEl(frame.querySelector('.term')); }
+    /* ── 足迹：每个状态都有自己的 trace 行，任何交互都要写出可见变化 ── */
+    function trace(frame, text) {
+      if (!frame) return;
+      var box = frame.querySelector('[data-role="trace"]');
+      if (box) box.textContent = text;
+      var row = frame.querySelector('.trace');
+      if (row) row.removeAttribute('data-empty');
+    }
+    /* ── 1. 页面主题切换（整页同步：所有颜色都走 CSS 变量） ─────────── */
+    function setTheme(name) {
+      document.documentElement.setAttribute('data-theme', name);
+      $$('[data-set-theme]').forEach(function (b) {
+        b.setAttribute('aria-pressed', String(b.getAttribute('data-set-theme') === name));
+      });
+    }
+    /* ── 2. 语言切换（zh / en 双份文案并存，只切可见性） ────────────── */
+    function setLang(name) {
+      document.documentElement.setAttribute('data-lang', name);
+      $$('[data-set-lang]').forEach(function (b) {
+        b.setAttribute('aria-pressed', String(b.getAttribute('data-set-lang') === name));
+      });
+    }
+    /* ── 3. 折行开关：软折行 ↔ 横向滚动（默认软折行，spec §5.2 ⑤） ──── */
+    function setWrap(btn, force) {
+      var frame = frameOf(btn);
+      if (!frame) return;
+      var pv = frame.querySelector('.pv');
+      if (!pv) return;
+      var on = (typeof force === 'boolean') ? force : !pv.classList.contains('wrap-on');
+      pv.classList.toggle('wrap-on', on);
+      $$('[data-act="wrap"]', frame).forEach(function (b) {
+        b.setAttribute('aria-pressed', String(on));
+      });
+      trace(frame, on
+        ? '折行：软折行（默认，长行折到第二行）'
+        : '折行：横向滚动（长行不折，出现横向滚动条）');
+    }
+    /* ── 4. 折叠 / 展开全部：不允许静默截断（UX 规范第 ④ 条） ──────── */
+    function toggleFold(btn) {
+      var frame = frameOf(btn);
+      if (!frame) return;
+      var pv = frame.querySelector('.pv');
+      if (!pv) return;
+      var expanded = pv.getAttribute('data-fold-open') === '1';
+      var next = !expanded;
+      pv.setAttribute('data-fold-open', next ? '1' : '0');
+      /* 被折叠的正文行：[data-fold-hidden] 但不是折叠提示行 */
+      $$('[data-fold-hidden]:not([data-fold])', pv).forEach(function (el) {
+        el.classList.toggle('is-hidden', !next);
+      });
+      /* 折叠提示行（「以上/以下另有 N 行」）：展开后整体撤掉 */
+      $$('[data-fold]', pv).forEach(function (el) {
+        el.classList.toggle('is-hidden', next);
+      });
+      /* 按钮文案与状态：展开全部（另有 N 行） ↔ 收起 */
+      $$('[data-act="fold"]', frame).forEach(function (b) {
+        if (!b.hasAttribute('data-label-collapsed')) {
+          var zh0 = b.querySelector('.zh');
+          var en0 = b.querySelector('.en');
+          b.setAttribute('data-label-collapsed', zh0 ? zh0.textContent : '展开全部');
+          b.setAttribute('data-label-collapsed-en', en0 ? en0.textContent : 'Expand all');
+        }
+        var zh = b.querySelector('.zh');
+        var en = b.querySelector('.en');
+        if (zh) zh.textContent = next ? '收起' : b.getAttribute('data-label-collapsed');
+        if (en) en.textContent = next ? 'Collapse' : b.getAttribute('data-label-collapsed-en');
+        b.setAttribute('aria-pressed', String(next));
+      });
+      var n = 0;
+      $$('[data-fold-hidden]:not([data-fold])', pv).forEach(function () { n += 1; });
+      trace(frame, next
+        ? '展开全部：折叠的 ' + n + ' 行样本已加入视图（虚拟化：按可视窗口渲染）'
+        : '已收起：只保留首尾 1 行与统计条，折叠行数不再占用布局');
+    }
+    /* ── 5. 关闭 / 还原：弹框与遮罩同时收起，结果写进 .result 条 ────── */
+    function closeDlg(frame, kind, zh, en) {
+      var dlg = frame.querySelector('.dlg');
+      var scrim = frame.querySelector('.scrim');
+      if (dlg) dlg.classList.add('is-hidden');
+      if (scrim) scrim.classList.add('is-hidden');
+      frame.setAttribute('data-closed', '1');
+      var res = frame.querySelector('[data-role="result"]');
+      if (res) {
+        res.classList.remove('ok', 'dg', 'cancel');
+        res.classList.add(kind);
+        res.innerHTML = bi(zh, en);
+        res.classList.remove('is-hidden');
+      }
+      focusTerm(frame);
+      trace(frame, '弹框已关闭：' + zh + ' · 焦点已交回终端区（tabindex="-1"）');
+    }
+    function restoreDlg(frame) {
+      var dlg = frame.querySelector('.dlg');
+      var scrim = frame.querySelector('.scrim');
+      if (dlg) dlg.classList.remove('is-hidden');
+      if (scrim) scrim.classList.remove('is-hidden');
+      frame.removeAttribute('data-closed');
+      var res = frame.querySelector('[data-role="result"]');
+      if (res) { res.classList.add('is-hidden'); res.innerHTML = ''; }
+      focusPrimary(frame);
+      trace(frame, '弹框已还原（等价于重新打开确认框，焦点回到主按钮）');
+    }
+    function runPaste(frame, doIt) {
+      if (doIt === 'paste-run') {
+        closeDlg(frame, 'dg',
+          '已按「粘贴并执行」发送：原文含末尾回车，等价现状 encode_pasted_text(text, bracketed) 的原样行为。',
+          'Sent via "Paste and run": trailing return kept, same as the current encode_pasted_text path.');
+      } else if (doIt === 'paste-noreturn') {
+        closeDlg(frame, 'ok',
+          '已按「粘贴（不含末尾回车）」发送：末尾 CR/LF 被剥离，最后一行留在命令行，等你按回车才执行。',
+          'Sent via "Paste without trailing newline": the final CR/LF was stripped, the last line waits at the prompt.');
+      } else {
+        closeDlg(frame, 'ok',
+          '已按「粘贴」发送：原文末尾没有换行，不会触发执行。',
+          'Sent via "Paste": no trailing newline, so nothing runs.');
+      }
+    }
+    /* ── 6. 点击分发（一个委托监听覆盖全部交互控件） ───────────────── */
+    document.addEventListener('click', function (ev) {
+      var t = ev.target;
+      if (!t || !t.closest) return;
+      var btn = t.closest('[data-set-theme],[data-set-lang],[data-act],[data-do],[data-toggle]');
+      if (!btn) return;
+      var theme = btn.getAttribute('data-set-theme');
+      if (theme) { setTheme(theme); return; }
+      var lang = btn.getAttribute('data-set-lang');
+      if (lang) { setLang(lang); return; }
+      if (btn.hasAttribute('data-toggle')) {
+        var on = btn.getAttribute('data-on') === '1';
+        btn.setAttribute('data-on', on ? '0' : '1');
+        btn.setAttribute('aria-checked', String(!on));
+        trace(frameOf(btn), !on
+          ? '已勾选「不再提示多行粘贴」：命中危险命令或超过 100 KB 时仍会提示。'
+          : '已取消勾选：每次多行粘贴都会确认。');
+        return;
+      }
+      var act = btn.getAttribute('data-act');
+      if (act === 'wrap') { setWrap(btn); return; }
+      if (act === 'hscroll') { setWrap(btn, false); return; }
+      if (act === 'fold') { toggleFold(btn); return; }
+      if (act === 'restore') { var f0 = frameOf(btn); if (f0) restoreDlg(f0); return; }
+      var doIt = btn.getAttribute('data-do');
+      if (doIt) {
+        var frame = frameOf(btn);
+        if (!frame) return;
+        if (doIt === 'cancel') {
+          closeDlg(frame, 'cancel',
+            '已取消：未发送任何字节，终端焦点交还（terminal-focus-sequence + 1）。',
+            'Cancelled: nothing was sent; focus returns to the terminal.');
+        } else {
+          runPaste(frame, doIt);
+        }
+      }
+    });
+    /* ── 7. 卡片拖动（沿用现状「卡片可拖动」的交互） ───────────────── */
+    var drag = null;
+    document.addEventListener('pointerdown', function (ev) {
+      var grip = ev.target && ev.target.closest ? ev.target.closest('.grip') : null;
+      if (!grip) return;
+      var frame = frameOf(grip);
+      var dlg = frame && frame.querySelector('.dlg');
+      if (!dlg) return;
+      drag = { dlg: dlg, x: ev.clientX, y: ev.clientY, dx: 0, dy: 0, frame: frame };
+      dlg.style.cursor = 'grabbing';
+      try { grip.setPointerCapture(ev.pointerId); } catch (e) { /* 无指针捕获能力时降级为普通拖动 */ }
+    });
+    document.addEventListener('pointermove', function (ev) {
+      if (!drag) return;
+      drag.dx = ev.clientX - drag.x;
+      drag.dy = ev.clientY - drag.y;
+      drag.dlg.style.transform =
+        'translate(calc(-50% + ' + drag.dx + 'px), calc(-50% + ' + drag.dy + 'px))';
+    });
+    document.addEventListener('pointerup', function () {
+      if (!drag) return;
+      drag.dlg.style.cursor = '';
+      trace(drag.frame, '卡片已拖动：水平 ' + Math.round(drag.dx) + 'px / 垂直 ' + Math.round(drag.dy)
+        + 'px（松手后停在当前位置，「还原弹框」可复位）');
+      drag = null;
+    });
+    /* ── 8. 键盘（D2 终态）：Esc 取消 · Enter = 主按钮（绝不执行）· Alt+P 执行 ── */
+    function activeFrame() {
+      var f = frameOf(document.activeElement);
+      if (f) return f;
+      var open = $$('.frame').filter(function (x) {
+        return x.querySelector('.dlg') && !x.hasAttribute('data-closed');
+      });
+      if (!open.length) return null;
+      var mid = (window.innerHeight || 800) / 2;
+      var best = open[0];
+      var bestD = Infinity;
+      open.forEach(function (x) {
+        var r = x.getBoundingClientRect();
+        var d = Math.abs((r.top + r.bottom) / 2 - mid);
+        if (d < bestD) { bestD = d; best = x; }
+      });
+      return best;
+    }
+    document.addEventListener('keydown', function (ev) {
+      var ae = document.activeElement;
+      if (ev.key === ' ' && ae && ae.hasAttribute && ae.hasAttribute('data-toggle')) {
+        ev.preventDefault();
+        ae.click();
+        return;
+      }
+      var frame = frameOf(ae) || activeFrame();
+      if (!frame) return;
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        var c = frame.querySelector('[data-do="cancel"]');
+        if (c) c.click();
+        return;
+      }
+      if (ev.key === 'Enter' && ae && ae.hasAttribute && ae.hasAttribute('data-toggle')) {
+        ev.preventDefault();
+        ae.click();
+        return;
+      }
+      if (ev.key === 'Enter') {
+        var primary = frame.querySelector('.btn.primary');
+        if (primary) { ev.preventDefault(); primary.click(); }
+        return;
+      }
+      if (ev.altKey && (ev.key === 'p' || ev.key === 'P')) {
+        ev.preventDefault();
+        var danger = frame.querySelector('[data-do="paste-run"]');
+        if (danger) danger.click();
+      }
+    });
+    /* ── 9. 初始化：把两个切换器的初始态写进 aria-pressed ──────────── */
+    setTheme(document.documentElement.getAttribute('data-theme') || 'dark');
+    setLang(document.documentElement.getAttribute('data-lang') || 'zh');
+    /* 初始化焦点：首个未关闭状态帧的主按钮（A 帧另有 autofocus 作静态兜底）。 */
+    focusPrimary($$('.frame').filter(function (f) { return !f.hasAttribute('data-closed'); })[0]);
+  })();
+  </script>
+</body>
+</html>
