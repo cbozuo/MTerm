@@ -108,6 +108,24 @@ fn main() {
     ui.set_interface_open(false);
     std::thread::sleep(std::time::Duration::from_millis(100));
 
+    // 图 4:高亮设置「添加新规则」表单(#hl-add-row-r2 布局验证)——表单区
+    // 静态,不依赖 model;status 错误条给固定文案看贴靠位置。
+    ui.set_highlight_dialog_open(true);
+    ui.set_hl_tab(1);
+    ui.set_highlight_rule_status("请输入正则表达式".into());
+    let mut buf = vec![PremultipliedRgbaColor::default(); W * H];
+    ui.window().request_redraw();
+    WIN.with(|win| {
+        win.draw_if_needed(|r| {
+            r.render(&mut buf, W);
+        });
+    });
+    save_rgba(&buf, "output/left-panel/hl-form.png");
+    ui.set_highlight_dialog_open(false);
+    ui.set_hl_tab(0);
+    ui.set_highlight_rule_status("".into());
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
     // 图 1 复位:关掉弹层再抓组头行(弹层是全屏遮罩,必须后抓)。
     ui.set_group_color_picker_open(false);
     std::thread::sleep(std::time::Duration::from_millis(100));
