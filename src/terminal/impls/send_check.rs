@@ -130,7 +130,7 @@ fn strip_prefix(mut s: &str) -> &str {
 /// 危险词命中,返回展示名(如 "rm -rf");未命中返回空串。
 /// (#send-cmd-p1) 检测口径 = 设计稿 §04④:先剥引号内容再按段首匹配,
 /// `grep shutdown app.log` 不误报,`rm -rf /data` 会命中。
-pub(crate) fn danger_token(text: &str) -> String {
+pub fn danger_token(text: &str) -> String {
     if text.trim().is_empty() {
         return String::new();
     }
@@ -158,6 +158,44 @@ pub(crate) fn danger_token(text: &str) -> String {
     String::new()
 }
 
+/// 危险行集合:0-based 行号,按行剥引号后切段判 seg_danger。
+/// (#send-cmd-v2 2026-11-07) 行号槽三角 + 危险行背景条的数据源;与
+/// danger_token 同一套词表/前缀规则(单一出处),只是粒度到行 —— 行号槽
+/// 需要「哪一行危险」,整体 token 只说「第一个危险词是什么」。
+pub fn danger_lines(text: &str) -> Vec<usize> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        // 逐行剥「行内配对」的引号(echo "rm -rf x" 不误报),再按分隔符切段
+        let stripped = strip_quoted(line);
+        let mut hit = false;
+        let mut rest = stripped.as_str();
+        while !rest.is_empty() {
+            match find_sep(rest) {
+                Some((pos, len)) => {
+                    if seg_danger(strip_prefix(&rest[..pos])).is_some() {
+                        hit = true;
+                        break;
+                    }
+                    rest = &rest[pos + len..];
+                }
+                None => {
+                    if seg_danger(strip_prefix(rest)).is_some() {
+                        hit = true;
+                    }
+                    break;
+                }
+            }
+        }
+        if hit {
+            out.push(i);
+        }
+    }
+    out
+}
+
 /// 找下一个命令分隔符,返回 (字节位置, 长度)。&& / || 优先于单字符。
 fn find_sep(s: &str) -> Option<(usize, usize)> {
     let b = s.as_bytes();
@@ -181,7 +219,7 @@ fn find_sep(s: &str) -> Option<(usize, usize)> {
 /// 口径 = 设计稿 §10①:**完整的 for…do…done 不算风险**(闭合的,逐行敲本来就能用),
 /// 只有「没写完」才需要兜;引号按整段逐字符配对(跨行引号合法),
 /// 块结构逐块开合计数(两个块并存时,一个闭合 + 一个没写完也要报)。
-pub(crate) fn continuation_risk(text: &str) -> String {
+pub fn continuation_risk(text: &str) -> String {
     if text.trim().is_empty() {
         return String::new();
     }
@@ -357,11 +395,54 @@ mod tests {
         assert_eq!(continuation_risk(""), "");
         assert_eq!(continuation_risk("rm -rf /data"), "");
     }
+
+    // (#send-cmd-v2 2026-11-07) 行号槽三角 + 危险行背景条的数据源
+    #[test]
+    fn danger_lines_by_row() {
+        assert_eq!(danger_lines("rm -rf /data"), vec![0]);
+        assert_eq!(danger_lines("df -h\nrm -rf /data\necho hi"), vec![1]);
+        // 一行多段命中只算一行
+        assert_eq!(danger_lines("mkfs /dev/sda; reboot"), vec![0]);
+        // 引号里的危险词不误报;行内剥引号
+        assert_eq!(danger_lines("echo \"rm -rf x\"\nrm -fr /data"), vec![1]);
+        // 空文本与纯安全文本
+        assert!(danger_lines("").is_empty());
+        assert!(danger_lines("ls -la\ndf -h").is_empty());
+        // 分行:第 3 行命中(0-based 2)
+        assert_eq!(danger_lines("echo a\nshutdown -h now\necho b"), vec![1]);
+        // 段内前缀:time/sudo 剥掉后命中
+        assert_eq!(danger_lines("time rm -rf /data"), vec![0]);
+    }
+
+    #[test]
+    fn insert_indent_exact() {
+        // 行中插入:光标在第 2 行(col=3)
+        let (t, c) = insert_indent("ls\ncd tmp", 1, 3);
+        assert_eq!(t, "ls\ncd     tmp");
+        assert_eq!(c, "ls\ncd ".len() + 4);
+        // 行首插入
+        let (t, c) = insert_indent("abc", 0, 0);
+        assert_eq!(t, "    abc");
+        assert_eq!(c, 4);
+        // 末尾插入
+        let (t, _) = insert_indent("ls -l", 0, 5);
+        assert_eq!(t, "ls -l    ");
+        // 列越界钳到行尾
+        let (t, _) = insert_indent("ab", 0, 99);
+        assert_eq!(t, "ab    ");
+        // 行号越界钳到最后一行
+        let (t, _) = insert_indent("ab\ncd", 99, 0);
+        assert_eq!(t, "ab\n    cd");
+        // 空文本
+        let (t, c) = insert_indent("", 0, 0);
+        assert_eq!(t, "    ");
+        assert_eq!(c, 4);
+    }
 }
 
 /// (#send-cmd-p1 §04⑤) 多行 + 段首含 sudo：第二行起会被当密码吞掉。
 /// 通知信息区补一句提示(不拦发送)。
-pub(crate) fn sudo_hint(text: &str) -> bool {
+pub fn sudo_hint(text: &str) -> bool {
     let lines: Vec<&str> = text.lines().collect();
     if lines.len() < 2 { return false; }
     for line in &lines {
@@ -380,7 +461,7 @@ pub(crate) fn sudo_hint(text: &str) -> bool {
 /// 规则与沙盘 insertCmd 同一口径:绝不把用户正在写的行劈成两半。
 const NL: char = 0x0A as char;
 const NL_CH: char = NL;
-pub(crate) fn insert_at_cursor(text: &str, line: usize, col: usize, cmd: &str) -> (String, usize) {
+pub fn insert_at_cursor(text: &str, line: usize, col: usize, cmd: &str) -> (String, usize) {
     if cmd.is_empty() { return (text.to_string(), text.len()); }
     let lines: Vec<&str> = if text.is_empty() { vec![""] } else { text.split(NL).collect() };
     let li = line.min(lines.len().saturating_sub(1));
@@ -406,4 +487,27 @@ pub(crate) fn insert_at_cursor(text: &str, line: usize, col: usize, cmd: &str) -
     let new_text = format!("{before}{ins}{after}");
     let caret = before.len() + ins.len();
     (new_text, caret)
+}
+
+/// (#send-cmd-v2 2026-11-07) Tab 缩进:在光标(行,列)处精确插入 4 个空格,
+/// 不换行、不劈行 —— 与 insert_at_cursor(行尾插入+换行包裹)是两条语义,
+/// 不能混用。返回 (新文本, 光标字节偏移)。
+pub fn insert_indent(text: &str, line: usize, col: usize) -> (String, usize) {
+    const INDENT: &str = "    ";
+    let lines: Vec<&str> = if text.is_empty() { vec![""] } else { text.split(NL).collect() };
+    let li = line.min(lines.len().saturating_sub(1));
+    let row = lines[li];
+    let col = col.min(row.chars().count());
+    // 行列 → 字符偏移(与 insert_at_cursor 同一套换算口径)
+    let mut off = 0usize;
+    for l in lines.iter().take(li) {
+        off += l.chars().count() + 1;
+    }
+    off += col;
+    let byte_at = |chars: usize| -> usize {
+        text.char_indices().nth(chars).map(|(b, _)| b).unwrap_or(text.len())
+    };
+    let at = byte_at(off);
+    let new_text = format!("{}{}{}", &text[..at], INDENT, &text[at..]);
+    (new_text, at + INDENT.len())
 }

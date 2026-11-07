@@ -10,8 +10,9 @@ mod line;
 mod input;
 // (#send-cmd-p1) 发送命令窗口的文字检测(危险词 + 续行风险):单一出处。
 // Slint 的 string 没有逐字符访问,引号扫描/块计数必须在 Rust 侧做。
+// (#send-cmd-v2) 升 pub:纯函数检测库,examples/send_check_probe 探针也要用。
 #[path = "impls/send_check.rs"]
-pub(crate) mod send_check;
+pub mod send_check;
 #[path = "impls/json_output.rs"]
 mod json_output;
 #[path = "impls/charset.rs"]

@@ -213,6 +213,8 @@ fn refresh_send_scopes(window: &AppWindow, store: &ConfigStore) {
                     .unwrap_or_default(),
                 online: true,
                 current: t.id.as_str() == active_id,
+                // (#send-cmd-v2) 回执态:待发送。发送/清回执时按 receipt 重建 targets。
+                receipt: 0,
             }
         })
         .collect();
@@ -2719,13 +2721,20 @@ fn open_window(
                 sw.set_text(draft.clone());
                 // (#send-cmd-p1) 带入的草稿要立刻算一次检测(危险词/续行风险),
                 // 面板时代的左栏没有这层;不 invoke(窗口刚建,事件循环未跑稳),
-                // 直接同步 set —— 与 on_check_text 同一份口径。
+                // 直接同步 set —— 与 on_check_text 同一份口径(v2 含统计与危险行)。
                 sw.set_danger_token(SharedString::from(
                     crate::terminal::send_check::danger_token(draft.as_ref()),
                 ));
                 sw.set_risk_info(SharedString::from(
                     crate::terminal::send_check::continuation_risk(draft.as_ref()),
                 ));
+                sw.set_sudo_hint(crate::terminal::send_check::sudo_hint(draft.as_ref()));
+                sw.set_char_count(draft.chars().count() as i32);
+                let rows: Vec<i32> = crate::terminal::send_check::danger_lines(draft.as_ref())
+                    .iter()
+                    .map(|n| *n as i32)
+                    .collect();
+                sw.set_danger_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
                 place_send_cmd_window(&main, &sw);
                 let _ = sw.show();
                 // (#send-cmd-dpr 2026-10-27) 创建时主窗还没映射，主窗的
@@ -2764,9 +2773,26 @@ fn open_window(
             let receipt = main.invoke_run_command(tab, cmd, scope, mode);
             let bad = receipt.iter().filter(|r| !r.ok).count() as i32;
             let okn = receipt.row_count() as i32 - bad;
-            sw.set_receipt(receipt);
+            sw.set_receipt(receipt.clone());
             sw.set_receipt_bad(bad);
             sw.set_receipt_ok(okn);
+            // (#send-cmd-v2) 回执逐台落回 targets:投递栏行尾状态直接读模型
+            // (SendReceiptItem 只有 id/ok,不携带显示字段 —— Slint 侧遍历
+            // receipt 模型做逐台匹配又不可行,所以在这里单源重建)。
+            let marked: Vec<crate::ui::SendTarget> = sw
+                .get_targets()
+                .iter()
+                .map(|t| {
+                    let mut t2 = t.clone();
+                    t2.receipt = receipt
+                        .iter()
+                        .find(|r| r.id == t.id)
+                        .map(|r| if r.ok { 1 } else { 2 })
+                        .unwrap_or(0);
+                    t2
+                })
+                .collect();
+            sw.set_targets(ModelRc::from(Rc::new(VecModel::from(marked))));
             // 发完历史多了一条：窗口里的「最近」跟着刷（面板数据源）
             sw.set_command_history(main.get_command_history());
             sw.window().with_winit_window(|ww| ww.focus_window());
@@ -2787,6 +2813,15 @@ fn open_window(
             ));
             // (#send-cmd-p1 §04⑤) 多行 + sudo:后面几行会被当密码吞
             sw.set_sudo_hint(crate::terminal::send_check::sudo_hint(text.as_ref()));
+            // (#send-cmd-v2 2026-11-07) 编辑器头部字符数 + 危险行集合(0-based):
+            // Slint 的 string 没有逐字符访问,统计与行扫描必须 Rust 做;
+            // 行集合用 int 模型(danger-rows),行号槽红条与内容区红条 for 遍历。
+            sw.set_char_count(text.chars().count() as i32);
+            let rows: Vec<i32> = crate::terminal::send_check::danger_lines(text.as_ref())
+                .iter()
+                .map(|n| *n as i32)
+                .collect();
+            sw.set_danger_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
         });
     }
     {
@@ -2835,6 +2870,22 @@ fn open_window(
         });
     }
     {
+        // (#send-cmd-v2) 「全选在线」:Slint 拼不了 CSV,Rust 把全部在线 target id
+        // 写进 host-sel(尾逗号 CSV,与 "H:" scope 串同源)。
+        let snd_weak = send_win.as_weak();
+        send_win.on_select_all_hosts(move || {
+            let Some(sw) = snd_weak.upgrade() else { return };
+            let mut csv = String::new();
+            for t in sw.get_targets().iter() {
+                if t.online {
+                    csv.push_str(t.id.as_str());
+                    csv.push(',');
+                }
+            }
+            sw.set_host_sel(SharedString::from(csv));
+        });
+    }
+    {
         // (#send-cmd-p2 §04②) 插入到光标处:Slint 按光标像素反推行列(等宽
         // 字体),切片拼接在 Rust —— 不劈开正在写的行,光标落插入内容末尾。
         let snd_weak = send_win.as_weak();
@@ -2844,6 +2895,21 @@ fn open_window(
                 line.max(0) as usize,
                 col.max(0) as usize,
                 cmd.as_ref(),
+            );
+            crate::ui::InsertResult {
+                text: SharedString::from(new_text),
+                caret: caret as i32,
+            }
+        });
+    }
+    {
+        // (#send-cmd-v2 2026-11-07) Tab 缩进:光标(行,列)处精确插 4 空格,
+        // 不换行、不劈行 —— 与 insert-at(行尾插入)是两条语义。
+        send_win.on_tab_indent(move |text: SharedString, line: i32, col: i32| {
+            let (new_text, caret) = crate::terminal::send_check::insert_indent(
+                text.as_ref(),
+                line.max(0) as usize,
+                col.max(0) as usize,
             );
             crate::ui::InsertResult {
                 text: SharedString::from(new_text),
@@ -2875,6 +2941,16 @@ fn open_window(
             sw.set_receipt(ModelRc::from(Rc::new(VecModel::from(Vec::<crate::ui::SendReceiptItem>::new()))));
             sw.set_receipt_bad(0);
             sw.set_receipt_ok(0);
+            // (#send-cmd-v2) 投递栏行尾状态复位为「待发送」
+            let reset: Vec<crate::ui::SendTarget> = sw
+                .get_targets()
+                .iter()
+                .map(|mut t| {
+                    t.receipt = 0;
+                    t
+                })
+                .collect();
+            sw.set_targets(ModelRc::from(Rc::new(VecModel::from(reset))));
         });
     }
     {

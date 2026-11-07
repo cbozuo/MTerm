@@ -1,22 +1,26 @@
-// 「发送命令」独立窗口 —— §16 定稿:命令面板(方案 E)。
+// 「发送命令」独立窗口 —— v2 重排(2026-11-07,高保真 send-command-hifi-2026-11-06-v2)。
 //
-// 2026-10-31 按 send-command-hifi-2026-10-27.html 定稿版落地:
-//   * 左栏(快捷命令 + 历史的常驻列)、页签、左栏搜索框、分隔条、折叠按钮
-//     全部退役 —— 编辑器吃满全宽,命令唯一入口 = 标题栏「命令库」唤出的
-//     **居中命令面板**(480 宽,搜索驱动,分段,↑↓/Enter,插入即关);
-//   * 页脚中间升级为**信息区**(图标 + 状态 + 可点动作):多行的送达方式
-//     胶囊(逐行回车 ↔ 整段粘贴,续行风险自动切 block,用户可手动切回);
-//   * 危险键两段式(§11):红色只负责警告,第一次点击仍是「发送」,
-//     armed 之后才变成「再点一次确认」,3 秒未动自动解除,改字符即解除;
-//   * 危险词 / 续行风险检测在 Rust(src/terminal/impls/send_check.rs),
-//     Slint 的 string 没有逐字符访问,引号扫描与块计数必须 Rust 做。
+// 结构:一块编辑器 + 一条投递轨(双列) ——
+//   * 左列:editor-head 统计条(行/字符) + 编辑器(gutter 36 常驻 + 危险行红条) +
+//     sendbar 56(送达胶囊两段 + 危险/风险/回执状态位 + Ctrl+Enter 助记 + 发送钮);
+//   * 右列:280px 投递栏(可收 44 竖条):rail-head 范围键 + rail-list 逐台目标
+//     (行尾回执态) + rail-foot 汇总/重试失败/复制 —— 「发给谁」「落没落」常驻可见,
+//     页脚不再兼职(旧 28px 危险告警槽 / ScopeButton 页脚键 / tipcard 全部退役);
+//   * 弹层:范围弹层(326,频道|主机两段,互斥草稿+应用)锚定 rail-head;
+//     命令面板(462)锚定标题栏「命令库」钮下 —— 均为窗口内自绘(非 PopupWindow);
+//   * 检测不变:danger/risk/sudo 在 Rust(src/terminal/impls/send_check.rs 单一出处);
+//     Slint string 没有逐字符访问,字符数/危险行集合也是 Rust 镜像(check-text 算)。
+//   * Tab = 光标处精确缩进 4 空格(P1 新增,tab-indent 回调);
+//     Esc 层级:命令库 → 范围弹层 → 关窗(草稿保留) —— 方案 E 契约原样保留。
 import { Icon } from "icons.slint";
+import { SegGroup } from "seg.slint";
 import { ScrollView, Palette } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { DialogClose } from "widgets.slint";
 import { WindowFrame } from "window_frame.slint";
-// ScopeButton / SendScope 定义在 terminal_view.slint(导出过的),页脚范围键同款。
-import { ScopeButton, SendScope, QuickCmd, SendTarget } from "terminal_view.slint";
+// SendScope / SendTarget(含 #send-cmd-v2 新增 receipt 字段)定义在 terminal_view.slint。
+// v2 页脚范围键退役:ScopeButton 仍服务主命令栏,此处不再引用。
+import { SendScope, QuickCmd, SendTarget, ScopeRow } from "terminal_view.slint";
 
 // (#send-cmd-p1) 面板行:Rust 生成(含段头),Slint 只渲染。
 // kind: 0 = 段头(text 为标题) / 1 = 快捷命令行(text=名称,sub=命令串) /
@@ -43,11 +47,12 @@ export struct InsertResult {
 
 export component SendCmdWindow inherits Window {
     title: "MTerm - " + @tr("Send command");
-    // §04⑦:默认 760×500(面板时代的 620×420 偏挤),最小 620×420。
-    preferred-width: 760px;
-    preferred-height: 500px;
-    min-width: 620px;
-    min-height: 420px;
+    // (#send-cmd-v2) v2 定稿 940×600(方案 E 为 760×500),最小 800×540;
+    // 1366×768 笔记本上四周留白 ≥ 40px 仍完整显示。
+    preferred-width: 940px;
+    preferred-height: 600px;
+    min-width: 800px;
+    min-height: 540px;
     default-font-family: Theme.ui-font-family;
     in property <bool> custom-titlebar;
     no-frame: root.custom-titlebar;
@@ -73,8 +78,7 @@ export component SendCmdWindow inherits Window {
     }
 
     // ── 数据(打开时由 Rust 镜像)──
-    // quick-commands / command-history 不再直接渲染(左栏退役),但仍是
-    // refresh-lib 的**数据通道**:Rust 在回调里读它们算 lib-rows。
+    // quick-commands / command-history 不再直接渲染,但仍是 refresh-lib 的数据通道。
     in property <[QuickCmd]> quick-commands: [];
     in property <[string]> command-history: [];
     in property <[SendScope]> scopes: [];
@@ -84,6 +88,11 @@ export component SendCmdWindow inherits Window {
     // ── 检测结果(Rust 镜像,check-text 触发重算)──
     in property <string> danger-token;
     in property <string> risk-info;
+    in property <bool> sudo-hint: false;
+    // (#send-cmd-v2) 编辑器头部字符数 + 危险行集合(0-based):Slint 的 string
+    // 没有逐字符访问,统计与逐行扫描必须 Rust 做(check-text 里一起算)。
+    in property <int> char-count: 0;
+    in property <[int]> danger-rows: [];
 
     // ── 状态 ──
     in-out property <string> text: "";
@@ -92,8 +101,8 @@ export component SendCmdWindow inherits Window {
     in-out property <bool> ch-b: false;
     in-out property <bool> ch-c: false;
     in-out property <bool> ch-d: false;
-    property <bool> scope-open: false;
-    property <bool> sent-flash: false;
+    // in-out:离屏渲染 example 也要驱动弹层态(06-scope)
+    in-out property <bool> scope-open: false;
     property <bool> text-push: false;
     property <bool> focus-pending: false;
     property <bool> caret-pending: false;
@@ -107,51 +116,101 @@ export component SendCmdWindow inherits Window {
     // paste-override = 用户点过胶囊 → 不再自动判定。
     in-out property <string> paste-mode: "line";
     in-out property <bool> paste-override: false;
-    // 命令面板(§16 定稿)
+    // 命令面板(方案 E 契约保留;v2 从居中模态改为锚定标题栏钮下)
     in-out property <bool> lib-open: false;
-    // (#send-cmd-p2/p3) 目标/回执提示卡(§13:信息只能看,还要能用 —— 可复制)
-    in-out property <bool> tip-open: false;
     in-out property <string> lib-search: "";
     // ↑↓ 选中索引由 Rust 维护(lib-move 跳过段头),Slint 只读。
     in-out property <int> lib-hi: 0;
     in property <[LibRow]> lib-rows: [];
-    // (#send-cmd-p2) 逐台主机明细(范围菜单/提示卡/回执名字)
+    // (#send-cmd-p2) 逐台主机明细(范围弹层/投递栏/回执名字)
     in property <[SendTarget]> targets: [];
     in-out property <string> host-sel: "";   // 自选主机 CSV(尾逗号),Rust 维护
     // (#send-cmd-p3) 逐台回执(发送后到下次编辑/清空前常驻)
     in property <[SendReceiptItem]> receipt: [];
-    // (#send-cmd-p1 §04⑤) 多行 + sudo:第二行起会被当密码吞
-    in property <bool> sudo-hint: false;
+    // 回执统计由 Rust 在 set_receipt 时算好(Slint 表达式没有模型聚合)
+    in property <int> receipt-bad: 0;
+    in property <int> receipt-ok: 0;
+
+    // ── v2 新增状态 ──
+    // 投递栏收起:280 ↔ 44 竖条(编辑器自动扩展)。
+    in-out property <bool> rail-collapsed: false;
+    // (#send-cmd-v2) 投递栏宽。主体双列用**绝对定位**(不进 HorizontalLayout):
+    // Layout 内子项 width 绑定会被内容 preferred 覆盖(rail-list 把 rail 撑到
+    // 730、min/max 钳不住),绝对定位 + 显式 width + animate 才是收展的正解;
+    // 编辑器列宽反向跟随(parent.width - rail-w)。
+    property <length> rail-w: root.rail-collapsed ? 44px : 280px;
+    // 收展动画开关:离屏截图(无时钟)置 false 拿稳态帧;实机默认 true。
+    in property <bool> rail-anim: true;
+    // 范围弹层草稿:频道段勾选走草稿 d-*(应用才写回 ch-*);主机段沿用现有
+    // host-toggle 实时写回协议(取消时还原打开备份)。seg: 1=频道 2=主机。
+    in-out property <int> scope-seg: 2;
+    property <bool> d-a: false;
+    property <bool> d-b: false;
+    property <bool> d-c: false;
+    property <bool> d-d: false;
+    property <string> host-filter: "";       // 主机段搜索词
+    // 打开弹层时的备份(取消 = 还原这份快照)
+    property <bool> bak-all: false;
+    property <bool> bak-a: false;
+    property <bool> bak-b: false;
+    property <bool> bak-c: false;
+    property <bool> bak-d: false;
+    property <string> bak-host-sel: "";
+    // toast(发送完成/范围更新/重试收窄;2.3s 回落,照 command_manager 模式)
+    property <string> toast-text: "";
+    property <int> toast-kind: 0;   // 0 = accent / 1 = warning / 2 = danger
+    // accent 半透明描边(高保真 .accent-line;theme.slint 没有这个槽,就地派生)
+    property <color> accent-line: Theme.accent.with-alpha(0.42);
 
     // ── 对外 ──
-    // 第三参 = 送达方式:"" 单行(与旧口径一致)/ "line" 逐行回车 / "block" 整段粘贴。
+    // 第三参 = 送达方式:"" 单行 / "line" 逐行回车 / "block" 整段粘贴。
     callback send(string /* cmd */, string /* scope */, string /* mode */);
     callback host-toggle(string /* id */);
     callback copy-text(string /* text */);
     callback insert-at(string /* text */, int /* line */, int /* col */, string /* cmd */) -> InsertResult;
+    // (#send-cmd-v2) Tab 缩进:光标(行,列)处精确插 4 空格,不劈行。
+    callback tab-indent(string /* text */, int /* line */, int /* col */) -> InsertResult;
+    // (#send-cmd-v2) 「全选在线」:Slint 拼不了 CSV,Rust 把在线 target id 全量写进 host-sel。
+    callback select-all-hosts();
     callback retry-bad-csv() -> string;
-    // (#send-cmd-p2/p3) 复制在 Rust 剪贴板(名单/结果全文 Slint 拼不了)
     callback copy-list();
     callback copy-result-clip();
     callback clear-receipt();   // 回执清空走 Rust(bad/ok 计数同步归零)
-    callback check-text(string /* text */);          // Rust 重算 danger/risk
+    callback check-text(string /* text */);          // Rust 重算 danger/risk/统计
     callback refresh-lib(string /* query */);        // Rust 重建 lib-rows
     callback lib-move(int /* delta: ±1 */);          // Rust 移动 lib-hi(跳过段头)
-    // (#menu-seg2-fix) 菜单打开瞬间从主窗现拉 scopes/targets —— 窗口开着时
-    // 用户在主窗加了频道/开了新标签,只有打开时镜像一次的话滑块与列表全是
-    // 旧快照(实机截图:频道 B 已加入,滑块仍只有「主机」一段)。
+    // 菜单打开瞬间从主窗现拉 scopes/targets(窗口开着时主窗数据可能已变)。
     callback refresh-scopes();
     callback request-close();
     callback win-drag();
     callback win-resize-se();
 
-    // ── 纯函数 ──
+    // ── 测量与派生 ──
+    // 行距/字宽由隐藏文本实测(等宽字体),行号槽、危险行红条、光标反推共用。
+    ln-p1 := Text {
+        visible: false;
+        text: "1";
+        font-family: Theme.font-mono;
+        font-size: Theme.fs-sm;
+    }
+    ln-p2 := Text {
+        visible: false;
+        text: "1\n2";
+        font-family: Theme.font-mono;
+        font-size: Theme.fs-sm;
+    }
+    property <length> pitch: ln-p2.preferred-height - ln-p1.preferred-height;
+    property <length> char-w: ln-p1.preferred-width;
+    // 光标所在行(0-based):行号高亮用(length/length 隐式取整,与插入反推同口径)
+    property <int> cur-line: root.pitch > 0pt ? (root.caret-y / root.pitch) : 0;
+
     function line-count(t: string) -> int {
         if (t == "") { return 1; }
         return t.character-count - t.replace-all("\n", "").character-count + 1;
     }
     property <int> lines: root.line-count(root.text);
     property <bool> multi-line: root.lines >= 2;
+    property <bool> has-text: root.text != "";
 
     // 送达方式:单行没有歧义;多行 = 用户手动档优先,否则风险自动切 block。
     property <string> resolved-paste-mode:
@@ -163,6 +222,7 @@ export component SendCmdWindow inherits Window {
     property <bool> danger-now:
         root.danger-token != ""
         || (root.risk-info != "" && root.resolved-paste-mode == "line");
+
     function applied-n() -> int {
         return (root.ch-a ? 1 : 0) + (root.ch-b ? 1 : 0)
              + (root.ch-c ? 1 : 0) + (root.ch-d ? 1 : 0);
@@ -174,24 +234,26 @@ export component SendCmdWindow inherits Window {
         if (root.scopes.length > 3 && root.scopes[3].letter == letter) { return root.scopes[3].count; }
         return 0;
     }
-    // 将发往台数:tab 模式 = 1(当前标签页);与危险槽的 danger-targets 区分
-    // (那个只在频道档才有台数概念)。
+    function scope-color-of(letter: string) -> color {
+        if (root.scopes.length > 0 && root.scopes[0].letter == letter) { return root.scopes[0].color; }
+        if (root.scopes.length > 1 && root.scopes[1].letter == letter) { return root.scopes[1].color; }
+        if (root.scopes.length > 2 && root.scopes[2].letter == letter) { return root.scopes[2].color; }
+        if (root.scopes.length > 3 && root.scopes[3].letter == letter) { return root.scopes[3].color; }
+        return transparent;
+    }
+    // 自选主机台数:CSV 尾逗号计数(段数 = 逗号数,id 不含逗号)
     function host-n() -> int {
         if (root.host-sel == "") { return 0; }
         return root.host-sel.character-count - root.host-sel.replace-all(",", "").character-count;
     }
+    function host-in(id: string) -> bool {
+        return root.host-sel != "" && root.host-sel.replace-all(id + ",", "") != root.host-sel;
+    }
+    // 将发往台数:与 scope-spec() 同一套互斥口径(host > 全部 > 频道 > 当前 1 台)
     function targets-n() -> int {
         if (root.host-n() > 0) { return root.host-n(); }
         if (root.all) { return root.tab-count; }
         if (root.applied-n() == 0) { return 1; }
-        return (root.ch-a ? root.scope-count-of("A") : 0)
-             + (root.ch-b ? root.scope-count-of("B") : 0)
-             + (root.ch-c ? root.scope-count-of("C") : 0)
-             + (root.ch-d ? root.scope-count-of("D") : 0);
-    }
-    function danger-targets() -> int {
-        if (root.all) { return root.tab-count; }
-        if (root.applied-n() == 0) { return 0; }
         return (root.ch-a ? root.scope-count-of("A") : 0)
              + (root.ch-b ? root.scope-count-of("B") : 0)
              + (root.ch-c ? root.scope-count-of("C") : 0)
@@ -204,10 +266,91 @@ export component SendCmdWindow inherits Window {
         return (root.ch-a ? "A," : "") + (root.ch-b ? "B," : "")
              + (root.ch-c ? "C," : "") + (root.ch-d ? "D," : "");
     }
+    // (#send-cmd-v2) 范围标签(范围键/状态位共用):四档互斥。
+    function scope-label-v2() -> string {
+        if (root.host-n() > 0) { return @tr("{0} hosts", root.host-n()); }
+        if (root.all) { return @tr("All tabs"); }
+        if (root.applied-n() == 0) { return @tr("This tab"); }
+        if (root.applied-n() == 1) {
+            if (root.ch-a) { return @tr("Channel {0}", "A"); }
+            if (root.ch-b) { return @tr("Channel {0}", "B"); }
+            if (root.ch-c) { return @tr("Channel {0}", "C"); }
+            return @tr("Channel {0}", "D");
+        }
+        return @tr("{0} channels", root.applied-n());
+    }
+    // 范围键副行:台数 · 在线概况(标签页开着 = PTY 活着,online 恒真 → 全部在线)
+    function scope-sub-v2() -> string {
+        let n = root.targets-n();
+        if (n == 0) { return @tr("No online tabs"); }
+        return @tr("{0} 台", n) + " · " + @tr("all online");
+    }
+    function scope-ico-v2() -> string {
+        if (root.host-n() > 0) { return "host-server"; }
+        if (root.all) { return "tabs"; }
+        if (root.applied-n() > 0) { return "hash"; }
+        return "tabs";
+    }
+    // (#send-cmd-v2) 投递栏行过滤:与 scope-spec() 同口径的互斥四档。
+    function visible-target-ch(t: SendTarget) -> bool {
+        if (root.host-n() > 0) { return root.host-in(t.id); }
+        if (root.all) { return true; }
+        if (root.applied-n() > 0) {
+            return (root.ch-a && t.ch == "A") || (root.ch-b && t.ch == "B")
+                || (root.ch-c && t.ch == "C") || (root.ch-d && t.ch == "D");
+        }
+        return t.current;
+    }
+    // 频道草稿台数合计(弹层底栏「已选 N 台」)
+    function draft-total() -> int {
+        return (root.d-a ? root.scope-count-of("A") : 0)
+             + (root.d-b ? root.scope-count-of("B") : 0)
+             + (root.d-c ? root.scope-count-of("C") : 0)
+             + (root.d-d ? root.scope-count-of("D") : 0);
+    }
+    // 弹层「已选 N 台」:频道段 = 草稿合计;主机段 = 当前档台数
+    function scope-picked-n() -> int {
+        if (root.scope-seg == 1) { return root.draft-total(); }
+        if (root.host-n() > 0) { return root.host-n(); }
+        return root.all ? root.tab-count : 1;
+    }
+
+    // ── 信息区文案:说「将要发生什么」,发送键说「你要做什么」。
+    // 优先级对齐高保真 JS:回执 > 危险(armed 分文案) > 续行风险 > sudo > 普通。
+    property <bool> has-receipt: root.receipt.length > 0;
+    property <string> note-text:
+        root.has-receipt ? (root.receipt-bad > 0
+            ? @tr("{0} failed · {1} ok", root.receipt-bad, root.receipt-ok)
+            : @tr("{0} hosts all delivered", root.receipt-ok))
+        : root.danger-token != "" ? (@tr("Detected {0} · to {1} hosts", root.danger-token, root.targets-n())
+            + (root.armed
+                ? @tr(" · tap again to confirm (3s)")
+                : @tr(" · first click only arms")))
+        : root.risk-info != "" && root.resolved-paste-mode == "block"
+            ? @tr("Continuation risk · {0} · sent as one block", root.risk-info)
+        : root.text != "" ? (@tr("To be sent to {0} hosts", root.targets-n())
+            + (root.sudo-hint ? @tr(" · sudo may eat later lines as password") : ""))
+        : "";
+    // 信息区颜色档:danger 红 / warn 琥珀(风险已兜住或 sudo)/ ok 绿 / 普通灰。
+    property <int> note-kind:
+        root.has-receipt ? (root.receipt-bad > 0 ? 2 : 3)
+        : root.danger-now ? 2
+        : (root.risk-info != "" && root.resolved-paste-mode == "block") ? 1
+        : root.sudo-hint ? 1
+        : 0;
+    property <color> note-color:
+        root.note-kind == 2 ? Theme.danger-strong
+        : root.note-kind == 1 ? Theme.warning
+        : root.note-kind == 3 ? Theme.success
+        : Theme.text-muted;
+    property <string> note-ico:
+        root.note-kind == 2 || root.note-kind == 1 ? "warning"
+        : root.note-kind == 3 ? "check" : "info";
 
     // 发送唯一入口:按钮与 Ctrl+Enter 同一个函数(§05 键盘契约)。
+    // 空/无目标:按钮 disabled + Ctrl+Enter 不动作,不弹 toast 噪音。
     function try-send() {
-        if (root.text == "") { return; }
+        if (root.text == "" || root.targets-n() == 0) { return; }
         // 危险态两段式:第一次触发只 arm,红色负责警告、文案负责语义。
         if (root.danger-now && !root.armed) {
             root.armed = true;
@@ -217,84 +360,138 @@ export component SendCmdWindow inherits Window {
     }
     function do-send() {
         root.armed = false;
-        // (#send-cmd-p3) 回执随发送返回:逐台 ok/失败,信息区与提示卡消费
+        // (#send-cmd-p3) 回执随发送返回:逐台 ok/失败进投递栏与状态位。
+        // send 回调同步完成,回来时 receipt/计数已是新值 → 直接 toast。
         root.send(root.text, root.scope-spec(), root.resolved-paste-mode);
-        root.sent-flash = true;
         root.focus-pending = true;
+        if (root.receipt-bad > 0) {
+            root.show-toast(@tr("{0} failed · retry in the rail", root.receipt-bad), 1);
+        } else {
+            root.show-toast(@tr("All delivered"), 0);
+        }
     }
 
-    // 回执统计由 Rust 在 set_receipt 时算好(Slint 表达式没有模型聚合)
-    in property <int> receipt-bad: 0;
-    in property <int> receipt-ok: 0;
-
-    // (#send-cmd-p3 §10③) 发送后清空:草稿/回执/armed/送达方式一起复位,
-    // 焦点回编辑器 —— 「要么重复(再发一次),要么重写(清空)」都只差一次点击。
     // (#send-cmd-p3 §10③) 重试失败项:目标收窄到没收到的那几台(host-sel 切换,
-    // 范围键变「N 台主机」),回执清掉、草稿保留、**不自动发** —— CSV 由 Rust 拼。
+    // 范围键变「N hosts」),回执清掉、草稿保留、**不自动发** —— CSV 由 Rust 拼。
     function retry-failed() {
         if (root.receipt-bad == 0) { return; }
         root.host-sel = root.retry-bad-csv();
         root.clear-receipt();
         root.armed = false;
+        root.show-toast(@tr("Narrowed to {0} failed hosts", root.host-n()), 1);
     }
 
-    function clear-all() {
-        root.text = "";
-        root.clear-receipt();
-        root.armed = false;
-        root.paste-mode = "line";
-        root.paste-override = false;
-        root.tip-open = false;
-        root.host-sel = "";
+    // toast:2.3s 自动回落;restart 保证连续 toast 的计时确实重跑。
+    function show-toast(msg: string, kind: int) {
+        root.toast-text = msg;
+        root.toast-kind = kind;
+        toast-timer.restart();
+    }
+
+    // ── 范围弹层 ──
+    function scope-open-fn() {
+        // 打开瞬间现拉 scopes/targets(主窗可能已加频道/开新标签)
+        root.refresh-scopes();
+        // 备份当前已应用范围:取消 = 还原这份快照
+        root.bak-all = root.all;
+        root.bak-a = root.ch-a;
+        root.bak-b = root.ch-b;
+        root.bak-c = root.ch-c;
+        root.bak-d = root.ch-d;
+        root.bak-host-sel = root.host-sel;
+        // 频道草稿 = 已应用的频道勾选
+        root.d-a = root.ch-a;
+        root.d-b = root.ch-b;
+        root.d-c = root.ch-c;
+        root.d-d = root.ch-d;
+        // 落段:频道模式落频道段,其余(自选/全部/当前)落主机段
+        root.scope-seg = (root.host-n() == 0 && !root.all && root.applied-n() > 0) ? 1 : 2;
+        root.host-filter = "";
+        root.scope-open = true;
+    }
+    function scope-cancel-fn() {
+        // 还原打开时的快照(主机段实时 toggle 的改动一并回滚)
+        root.all = root.bak-all;
+        root.ch-a = root.bak-a;
+        root.ch-b = root.bak-b;
+        root.ch-c = root.bak-c;
+        root.ch-d = root.bak-d;
+        root.host-sel = root.bak-host-sel;
+        root.d-a = false; root.d-b = false; root.d-c = false; root.d-d = false;
+        root.scope-open = false;
+    }
+    function scope-apply-fn() {
+        if (root.scope-seg == 1) {
+            // 频道段:草稿写回(互斥档:主机/全部已在切段时清掉)
+            root.all = false;
+            root.host-sel = "";
+            root.ch-a = root.d-a;
+            root.ch-b = root.d-b;
+            root.ch-c = root.d-c;
+            root.ch-d = root.d-d;
+        }
+        // 主机段:radio/勾选已实时生效,应用 = 收下并关
+        root.d-a = false; root.d-b = false; root.d-c = false; root.d-d = false;
+        root.scope-open = false;
+        root.show-toast(@tr("Scope updated"), 0);
+    }
+    // 切段互斥(对齐高保真 JS:切段清另一侧选择)
+    function scope-seg-sync(to: int) {
+        if (to == root.scope-seg) { return; }
+        root.scope-seg = to;
+        root.host-filter = "";
+        if (to == 1) {
+            // 频道段:清主机/全部;频道草稿全空时自动勾第一个有台数的频道
+            root.host-sel = "";
+            root.all = false;
+            if (!(root.d-a || root.d-b || root.d-c || root.d-d)) {
+                if (root.scope-count-of("A") > 0) { root.d-a = true; }
+                else if (root.scope-count-of("B") > 0) { root.d-b = true; }
+                else if (root.scope-count-of("C") > 0) { root.d-c = true; }
+                else if (root.scope-count-of("D") > 0) { root.d-d = true; }
+            }
+        } else {
+            // 主机段:频道草稿丢弃;radio 反映现状(all 不动,host-sel 不动)
+            root.d-a = false; root.d-b = false; root.d-c = false; root.d-d = false;
+        }
+    }
+
+    // ── 编辑器写入统一入口:插入/Tab 都走「Rust 切片 + text-push 回灌」链 ──
+    function apply-editor-result(res: InsertResult) {
+        root.text = res.text;
+        root.caret-pos = res.caret;
         root.text-push = true;
     }
 
-    // ── 信息区(§13 状态区)文案:说「将要发生什么」,发送键说「你要做什么」。
-    property <bool> has-receipt: root.receipt.length > 0;
-    property <string> note-text:
-        root.has-receipt ? (root.receipt-bad > 0
-            ? @tr("{0} failed · {1} ok", root.receipt-bad, root.receipt-ok)
-            : @tr("{0} hosts all delivered", root.receipt-ok))
-        : root.danger-token != "" ? @tr("Detected {0} · to {1} hosts", root.danger-token, root.targets-n())
-        : root.risk-info != "" && root.resolved-paste-mode == "block" ? @tr("{0} · pasted as one block", root.risk-info)
-        : root.risk-info != "" ? @tr("{0} · line-by-line will hang on continuation", root.risk-info)
-        : root.text != "" ? (@tr("To be sent to {0} hosts", root.targets-n())
-            + (root.sudo-hint ? @tr(" · sudo may eat later lines as password") : ""))
-        : "";
-    // 信息区颜色档:danger 红 / warn 琥珀(风险已兜住)/ 普通灰。
-    property <int> note-kind:
-        root.has-receipt ? (root.receipt-bad > 0 ? 2 : 3)
-        : root.danger-now ? 2
-        : (root.risk-info != "" && root.resolved-paste-mode == "block") ? 1
-        : 0;
-    property <color> note-color:
-        root.note-kind == 2 ? Theme.danger-strong
-        : root.note-kind == 1 ? Theme.warning
-        : root.note-kind == 3 ? Theme.success
-        : Theme.text-muted;
-    property <string> note-ico: root.note-kind == 2 ? "warning" : (root.note-kind == 1 ? "info" : "check");
-
-    // 滚动条拖拽(照抄旧版)
-    property <length> grab-content-y;
-    property <length> grab-pointer-y;
+    // 插入面板行:kind 0 是段头(不可插);kind 1 的命令串在 sub,kind 2 在 text。
+    // 插入即关,焦点回编辑器,光标落插入内容末尾(复用 text-push/caret 机制)。
+    function lib-insert-row(idx: int) {
+        if (idx < 0 || idx >= root.lib-rows.length) { return; }
+        let r = root.lib-rows[idx];
+        if (r.kind == 0) { return; }
+        let cmd = r.kind == 1 ? r.sub : r.text;
+        if (cmd == "") { return; }
+        // (#send-cmd-p2 §04②) 插入到光标处:像素反推行列 → Rust 切片拼接
+        // (不劈开正在写的行,光标落插入内容末尾;中文行列有半格误差,末尾追加不受影响)
+        let res = root.insert-at(root.text,
+            root.caret-y / root.pitch, root.caret-x / root.char-w, cmd);
+        root.lib-open = false;
+        root.apply-editor-result(res);
+    }
 
     Rectangle {
         background: Theme.popup-bg;
 
-        // 面板开着时点面板外:关面板(全屏遮罩,z 低于面板本体)。
-        if root.lib-open : Rectangle {
+        // 弹层开着时点弹层外空白:关弹层(全屏透明遮罩,声明在最前 = z 最低,
+        // 点空白落到它身上;弹层本体声明在后面 = 压住遮罩)。
+        if root.lib-open || root.scope-open : Rectangle {
             width: 100%;
             height: 100%;
             background: transparent;
             TouchArea {
-                clicked => { root.lib-open = false; }
+                clicked => { root.lib-open = false; root.scope-open = false; }
             }
         }
-
-        // (#scope-menu-outside → #send-cmd-fix) 菜单的点外收起改由 ScopeButton
-        // 自带遮罩承担(outside-close: true —— 与菜单同层级、菜单压遮罩,
-        // 点空白必收且放行点击)。这里原来那份遮罩声明在 VerticalLayout 之前
-        // (z 最低),被编辑器等内容压住,点空白永远到不了它 —— 失效,删。
 
         // (#send-cmd-drag-blank) 空白也能拖窗:落在这层的按下交给 OS。
         Rectangle {
@@ -312,18 +509,48 @@ export component SendCmdWindow inherits Window {
         }
 
         VerticalLayout {
-            // 标题栏 46:标题 + 命令库 + 钉住 + 关闭
+            // ── 标题栏 46:MTERM / 标题 + 草稿点 ──
+            // (#tip-r2 2026-11-07) logo 徽章删掉(用户:没有意义);文案链从 13px 起。
             Rectangle {
                 height: 46px;
-                Text {
+                // 同级顺序引用(绝对定位下不设 width = preferred),链式排布
+                brand-m := Text {
                     x: 14px;
-                    width: parent.width - 140px;
+                    height: parent.height;
+                    text: "MTERM";
+                    color: Theme.text-primary;
+                    font-size: 10px;
+                    font-weight: 700;
+                    letter-spacing: 1.1px;
+                    vertical-alignment: center;
+                }
+                brand-s := Text {
+                    x: brand-m.x + brand-m.preferred-width + 5px;
+                    height: parent.height;
+                    text: "/";
+                    color: Theme.text-muted;
+                    font-size: 10px;
+                    font-family: Theme.font-mono;
+                    vertical-alignment: center;
+                }
+                brand-t := Text {
+                    x: brand-s.x + brand-s.preferred-width + 5px;
                     height: parent.height;
                     text: @tr("Send command");
                     color: Theme.text-primary;
-                    font-size: Theme.fs-md;
+                    font-size: 12px;
                     font-weight: Theme.fw-strong;
                     vertical-alignment: center;
+                }
+                // (#send-cmd-v2) 草稿点:有未发送草稿时亮起(warning 色),跟在标题后
+                Rectangle {
+                    x: brand-t.x + brand-t.preferred-width + 10px;
+                    y: (parent.height - self.height) / 2;
+                    width: 5px;
+                    height: 5px;
+                    border-radius: 3px;
+                    visible: root.has-text;
+                    background: Theme.warning;
                 }
                 TouchArea {
                     pointer-event(ev) => {
@@ -335,54 +562,57 @@ export component SendCmdWindow inherits Window {
                         EventResult.reject
                     }
                 }
-                // (#send-cmd-p1) 命令库:面板唯一入口(方案 E)。
-                    lib-btn := Rectangle {
-                        x: parent.width - 12px - 28px - 5px - 24px - 5px - self.width;
-                        y: (parent.height - self.height) / 2;
-                        width: 24px;
-                        height: 24px;
-                        border-radius: 5px;
-                        background: lib-ta.has-hover ? Theme.bg-hover : transparent;
-                        animate background { duration: 90ms; }
-                        Icon {
-                            glyph: "library";
-                            tint: lib-ta.has-hover ? Theme.text-primary : Theme.text-muted;
-                            size: 15px;
-                        }
-                        lib-ta := TouchArea {
-                            mouse-cursor: default;
-                            clicked => {
-                                root.lib-open = !root.lib-open;
-                                if (root.lib-open) {
-                                    root.lib-search = "";
-                                    root.lib-hi = 0;
-                                    root.refresh-lib("");
-                                    root.lib-focus-pending = true;
-                                }
+                // (#send-cmd-v2) 命令库入口:图标 + 文字(稿 .title-action),弹层锚定其下
+                lib-btn := Rectangle {
+                    x: parent.width - 12px - 24px - 5px - 24px - 5px - self.width;
+                    y: (parent.height - self.height) / 2;
+                    width: lib-btn-txt.preferred-width + 28px;
+                    height: 26px;
+                    border-radius: 4px;
+                    background: root.lib-open ? Theme.accent-soft
+                        : (lib-ta.has-hover ? Theme.bg-hover : transparent);
+                    border-width: 1px;
+                    border-color: root.lib-open ? root.accent-line : transparent;
+                    animate background, border-color { duration: 90ms; }
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 6px;
+                        Rectangle {
+                            width: 13px;
+                            height: parent.height;
+                            Icon {
+                                glyph: "library";
+                                tint: root.lib-open ? Theme.accent-solid
+                                    : (lib-ta.has-hover ? Theme.text-primary : Theme.text-muted);
+                                size: 13px;
                             }
                         }
-                        if lib-ta.has-hover : Rectangle {
-                            x: parent.width - self.width;
-                            y: parent.height + 6px;
-                            width: lib-tip.preferred-width + 16px;
-                            height: 24px;
-                            border-radius: Theme.radius-sm;
-                            background: Theme.popup-bg;
-                            border-width: 1px;
-                            border-color: Theme.border-strong;
-                            lib-tip := Text {
-                                width: parent.width;
-                                height: parent.height;
-                                text: @tr("命令库");
-                                color: Theme.text-primary;
-                                font-size: 11px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
+                        lib-btn-txt := Text {
+                            height: parent.height;
+                            text: @tr("Library");
+                            color: root.lib-open ? Theme.accent-solid
+                                : (lib-ta.has-hover ? Theme.text-primary : Theme.text-secondary);
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    lib-ta := TouchArea {
+                        mouse-cursor: default;
+                        clicked => {
+                            root.lib-open = !root.lib-open;
+                            if (root.lib-open) {
+                                root.scope-open = false;
+                                root.lib-search = "";
+                                root.lib-hi = 0;
+                                root.refresh-lib("");
+                                root.lib-focus-pending = true;
                             }
                         }
                     }
+                }
                 pin-btn := Rectangle {
-                    x: parent.width - 12px - 28px - 5px - self.width;
+                    x: parent.width - 12px - 24px - 5px - self.width;
                     y: (parent.height - self.height) / 2;
                     width: 24px;
                     height: 24px;
@@ -400,34 +630,16 @@ export component SendCmdWindow inherits Window {
                         mouse-cursor: default;
                         clicked => { root.pinned = !root.pinned; }
                     }
-                    if pin-ta.has-hover : Rectangle {
-                        x: parent.width - self.width;
-                        y: parent.height + 6px;
-                        width: pin-tip.preferred-width + 16px;
-                        height: 24px;
-                        border-radius: Theme.radius-sm;
-                        background: Theme.popup-bg;
-                        border-width: 1px;
-                        border-color: Theme.border-strong;
-                        pin-tip := Text {
-                            width: parent.width;
-                            height: parent.height;
-                            text: root.pinned ? @tr("取消置顶") : @tr("置顶(钉住)");
-                            color: Theme.text-primary;
-                            font-size: 11px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
+                    // tooltip 移到根级顶层(见文件尾 tip 层) —— 原挂按钮内会被
+                    // 主布局后续兄弟(z 更高)盖住(用户实测遮挡)。
                 }
                 DialogClose {
                     x: parent.width - 12px - self.width;
                     y: (parent.height - self.height) / 2;
-                    // (#send-cmd-fix) 28→24:悬停底色与左侧命令库/钉住钮同尺寸
-                    // (用户截图:关闭钮红色底明显大一圈)。
                     btn-size: 24px;
                     glyph-size: 14px;
-                    tip: @tr("关闭 (Esc)");
+                    // tip 传空 = 组件内不渲染(会被主布局盖住);本窗提示在根级 tip 层。
+                    tip: "";
                     clicked => { root.request-close(); }
                 }
                 Rectangle {
@@ -439,329 +651,1472 @@ export component SendCmdWindow inherits Window {
                 }
             }
 
-            // 主体:行号 + 编辑器(全宽,§16 定稿没有左栏)
-            HorizontalLayout {
+            // ── 主体双列:编辑器列 + 投递栏(280/44)──
+            // ⚠️ 绝对定位,不进 HorizontalLayout:Layout 内子项 width 绑定会被
+            // 内容 preferred 覆盖(rail-list 把 rail 撑到 730,min/max 也钳不住,
+            // 实测三次),收展只能走显式 x/width + animate;编辑器列宽反向跟随。
+            Rectangle {
                 vertical-stretch: 1;
 
+                // 左列:编辑器 + 发送条(宽 = 全窗宽 - 投递栏宽,随收展动画跟随)
                 Rectangle {
-                    horizontal-stretch: 1;
+                    x: 0;
+                    width: parent.width - root.rail-w;
+                    height: parent.height;
                     clip: true;
-                    exp-scroll := ScrollView {
-                        width: parent.width;
-                        height: parent.height;
-                        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-                        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
-                        // (#send-cmd-p1 §04⑤) 超宽命令行可横向平移核对
-                        // (wrap: no-wrap 之前超宽部分既看不见也滚不到)。
-                        content-width: max(self.visible-width, exp-input.preferred-width + 14px);
-                        content-height: max(self.visible-height, exp-input.preferred-height + 16px);
-                        HorizontalLayout {
-                            gutter := Rectangle {
-                                width: 34px;
-                                // (#send-cmd-p1 §04⑦) 单行时整列隐藏 —— 行号只为多行服务
-                                visible: root.lines > 1;
-                                height: exp-input.preferred-height + 16px;
-                                ln-p1 := Text {
-                                    visible: false;
-                                    text: "1";
-                                    font-family: Theme.font-mono;
-                                    font-size: Theme.fs-sm;
+
+                    VerticalLayout {
+                        // editor-head 34:COMMAND 标签 + 行/字符统计
+                        Rectangle {
+                            height: 34px;
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                spacing: 7px;
+                                Rectangle {
+                                    width: 12px;
+                                    height: parent.height;
+                                    // (#tip-r2 2026-11-07) 换项目 command-bar.svg(命令栏同款)
+                                    Icon { glyph: "command-bar"; tint: Theme.text-muted; size: 11px; }
                                 }
-                                ln-p2 := Text {
-                                    visible: false;
-                                    text: "1\n2";
+                                Text {
+                                    height: parent.height;
+                                    // 稿 .eh-label:风格化 mono 大写标签,不进翻译
+                                    text: "COMMAND";
+                                    color: Theme.text-muted;
+                                    font-size: 9.5px;
                                     font-family: Theme.font-mono;
-                                    font-size: Theme.fs-sm;
+                                    letter-spacing: 1.4px;
+                                    vertical-alignment: center;
                                 }
-                                property <length> pitch: ln-p2.preferred-height - ln-p1.preferred-height;
-                                property <length> char-w: ln-p1.preferred-width;
-                                VerticalLayout {
-                                    padding-top: 8px;
-                                    padding-right: 8px;
+                                Rectangle { horizontal-stretch: 1; }
+                                Text {
+                                    height: parent.height;
+                                    text: @tr("{0} lines · {1} chars", root.lines, root.char-count);
+                                    color: Theme.text-muted;
+                                    font-size: 10px;
+                                    font-family: Theme.font-mono;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            Rectangle {
+                                y: parent.height - Theme.hairline();
+                                width: parent.width;
+                                height: Theme.hairline();
+                                background: Theme.border-subtle;
+                            }
+                        }
+
+                        // 编辑器:gutter 36 常驻 + 输入区(危险行红条随内容滚动)
+                        Rectangle {
+                            vertical-stretch: 1;
+                            clip: true;
+                            background: exp-input.has-focus ? Theme.bg-active.with-alpha(0.2) : transparent;
+                            animate background { duration: 120ms; }
+
+                            exp-scroll := ScrollView {
+                                width: parent.width;
+                                height: parent.height;
+                                vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                                horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                                // (#send-cmd-p1 §04⑤) 超宽命令行可横向平移核对
+                                content-width: max(self.visible-width, exp-input.preferred-width + 14px);
+                                content-height: max(self.visible-height, exp-input.preferred-height + 28px);
+
+                                // (#send-cmd-v2) 危险行红条:for 遍历 Rust 镜像的危险行集合,
+                                // 画在输入文字之下(content 坐标系,随滚动同步 —— 稿里的
+                                // 独立滚动差值在 Slint 这套结构里天然不存在)。
+                                for d in root.danger-rows : Rectangle {
+                                    x: 36px;
+                                    width: exp-scroll.content-width - 48px;
+                                    y: 14px + d * root.pitch;
+                                    height: root.pitch;
+                                    background: Theme.danger-strong.with-alpha(0.10);
+                                    Rectangle {
+                                        x: 0;
+                                        width: 2px;
+                                        height: parent.height;
+                                        background: Theme.danger-strong.with-alpha(0.55);
+                                    }
+                                }
+
+                                HorizontalLayout {
                                     spacing: 0;
-                                    for i in [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29] : Text {
-                                        visible: i < root.lines;
-                                        height: (i < root.lines) ? gutter.pitch : 0px;
-                                        text: i + 1;
-                                        color: Theme.text-muted;
+                                    // 行号槽:36 常驻(v2 —— 单行时降透明度,不再整列消失,
+                                    // 避免换行时行号突然出现造成视线跳动)。危险行左缘红条。
+                                    Rectangle {
+                                        width: 36px;
+                                        height: exp-input.preferred-height + 28px;
+                                        VerticalLayout {
+                                            padding-top: 14px;
+                                            padding-right: 9px;
+                                            spacing: 0;
+                                            for i in [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29] : Text {
+                                                visible: i < root.lines;
+                                                height: (i < root.lines) ? root.pitch : 0px;
+                                                text: i + 1;
+                                                color: i == root.cur-line ? Theme.text-secondary
+                                                    : (root.lines > 1 ? Theme.text-muted : Theme.text-muted.with-alpha(0.7));
+                                                font-family: Theme.font-mono;
+                                                font-size: Theme.fs-sm;
+                                                vertical-alignment: top;
+                                                horizontal-alignment: right;
+                                            }
+                                        }
+                                        for d in root.danger-rows : Rectangle {
+                                            x: 0;
+                                            y: 14px + d * root.pitch;
+                                            width: 2px;
+                                            height: root.pitch;
+                                            background: Theme.danger-strong.with-alpha(0.55);
+                                        }
+                                    }
+                                    exp-input := TextInput {
+                                        horizontal-stretch: 1;
+                                        y: 14px;
+                                        height: max(exp-scroll.visible-height - 28px, self.preferred-height);
+                                        text: root.text;
+                                        color: Theme.text-primary;
                                         font-family: Theme.font-mono;
                                         font-size: Theme.fs-sm;
                                         vertical-alignment: top;
-                                        horizontal-alignment: right;
-                                    }
-                                }
-                            }
-                            exp-input := TextInput {
-                                horizontal-stretch: 1;
-                                y: 8px;
-                                height: max(exp-scroll.visible-height - 16px, self.preferred-height);
-                                text: root.text;
-                                color: Theme.text-primary;
-                                font-family: Theme.font-mono;
-                                font-size: Theme.fs-sm;
-                                vertical-alignment: top;
-                                wrap: no-wrap;
-                                single-line: false;
-                                text-cursor-width: root.cursor-style == "bar" ? 2px
-                                    : (root.cursor-style == "underline" ? 0px
-                                    : max(6px, gutter.char-w));
-                                cursor-position-changed(position) => {
-                                    root.caret-x = position.x;
-                                    root.caret-y = position.y;
-                                }
-                                edited => {
-                                    root.text = self.text;
-                                    // (#send-cmd-p1 §11) 改任何一个字符 → armed 立即解除
-                                    root.armed = false;
-                                    root.check-text(self.text);
-                                }
-                                key-pressed(e) => {
-                                    if (e.text == Key.Escape) {
-                                        // Esc 分层(§05):菜单开着 → 只收菜单;否则关窗(草稿保留)。
-                                        // 面板开着时焦点在面板搜索框,这里收不到 —— 分层天然成立。
-                                        if (root.scope-open) {
-                                            root.scope-open = false;
-                                        } else {
-                                            root.request-close();
+                                        wrap: no-wrap;
+                                        single-line: false;
+                                        text-cursor-width: root.cursor-style == "bar" ? 2px
+                                            : (root.cursor-style == "underline" ? 0px
+                                            : max(6px, root.char-w));
+                                        cursor-position-changed(position) => {
+                                            root.caret-x = position.x;
+                                            root.caret-y = position.y;
                                         }
-                                        accept
-                                    } else if (e.text == Key.Return && e.modifiers.control) {
-                                        root.try-send();
-                                        accept
-                                    } else {
-                                        reject
+                                        edited => {
+                                            root.text = self.text;
+                                            // (#send-cmd-p1 §11) 改任何一个字符 → armed 立即解除
+                                            root.armed = false;
+                                            root.check-text(self.text);
+                                        }
+                                        key-pressed(e) => {
+                                            if (e.text == Key.Escape) {
+                                                // Esc 分层(§05):菜单开着 → 只收菜单;否则关窗(草稿保留)。
+                                                // 面板开着时焦点在面板搜索框,这里收不到 —— 分层天然成立。
+                                                if (root.scope-open) {
+                                                    root.scope-open = false;
+                                                } else {
+                                                    root.request-close();
+                                                }
+                                                accept
+                                            } else if (e.text == Key.Return && e.modifiers.control) {
+                                                root.try-send();
+                                                accept
+                                            } else if (e.text == Key.Tab) {
+                                                // (#send-cmd-v2) Tab 缩进(P1 新增):光标处精确插 4 空格,
+                                                // 不抢焦点不跳出编辑器;Shift+Enter 换行走 TextInput 默认。
+                                                let res = root.tab-indent(root.text,
+                                                    root.caret-y / root.pitch, root.caret-x / root.char-w);
+                                                root.apply-editor-result(res);
+                                                accept
+                                            } else {
+                                                reject
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if root.cursor-style == "underline" : Rectangle {
+                                x: exp-input.absolute-position.x + root.caret-x
+                                    - parent.absolute-position.x;
+                                y: exp-input.absolute-position.y + root.caret-y
+                                    + root.pitch - 2px
+                                    - parent.absolute-position.y;
+                                width: max(6px, root.char-w);
+                                height: 2px;
+                                visible: exp-input.has-focus && root.caret-blink;
+                                background: Theme.text-primary;
+                            }
+                        }
+
+                        // ── 发送条 56:送达胶囊 + 状态位 + Ctrl+Enter 助记 + 发送钮 ──
+                        // (v2:旧 28px 危险告警槽退役,危险/风险提示并入左侧状态位 ——
+                        //  「信息只出现一次,贴着发送动作」。)
+                        Rectangle {
+                            height: 56px;
+                            Rectangle {
+                                y: Theme.snap-to-device(parent.absolute-position.y)
+                                    - parent.absolute-position.y;
+                                width: parent.width;
+                                height: Theme.hairline();
+                                background: Theme.border-subtle;
+                            }
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 12px;
+                                spacing: 10px;
+                                // 送达方式胶囊:仅多行出现;两段(逐行回车 | 整段粘贴)。
+                                // (#tip-r2 2026-11-07) 换公共 SegGroup 滑块(seg.slint,
+                                // 与同步弹框/范围菜单同一滑动语言);段内文字 active 用
+                                // accent 700,「整段粘贴」档带风险时琥珀警示保留。
+                                if root.multi-line : SegGroup {
+                                    height: 28px;
+                                    y: (parent.height - self.height) / 2;
+                                    active-index: root.resolved-paste-mode == "block" ? 1 : 0;
+                                    count: 2;
+                                    compact: true;
+                                    Rectangle {
+                                        height: parent.height - 6px;
+                                        TouchArea {
+                                            mouse-cursor: default;
+                                            clicked => {
+                                                root.paste-mode = "line";
+                                                root.paste-override = true;
+                                                if (root.armed && !root.danger-now) { root.armed = false; }
+                                                root.check-text(root.text);
+                                            }
+                                        }
+                                        cap-line-txt := Text {
+                                            width: parent.width;
+                                            height: parent.height;
+                                            text: @tr("Line by line");
+                                            color: root.resolved-paste-mode == "line" ? Theme.accent-solid : Theme.text-secondary;
+                                            font-size: 10.5px;
+                                            font-weight: root.resolved-paste-mode == "line" ? 700 : 400;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    Rectangle {
+                                        height: parent.height - 6px;
+                                        TouchArea {
+                                            mouse-cursor: default;
+                                            clicked => {
+                                                root.paste-mode = "block";
+                                                root.paste-override = true;
+                                                if (root.armed && !root.danger-now) { root.armed = false; }
+                                                root.check-text(root.text);
+                                            }
+                                        }
+                                        cap-block-txt := Text {
+                                            width: parent.width;
+                                            height: parent.height;
+                                            text: @tr("Paste as block");
+                                            color: (root.resolved-paste-mode == "block" && root.risk-info != "")
+                                                ? Theme.warning : (root.resolved-paste-mode == "block"
+                                                    ? Theme.accent-solid : Theme.text-secondary);
+                                            font-size: 10.5px;
+                                            font-weight: root.resolved-paste-mode == "block" ? 700 : 400;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                                // 状态位:图标 + 一句状态(危险红 / 风险琥珀 / 回执绿 / 普通灰)
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    height: parent.height;
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        if root.note-text != "" : Rectangle {
+                                            width: 12px;
+                                            height: parent.height;
+                                            Icon { glyph: root.note-ico; tint: root.note-color; size: 12px; }
+                                        }
+                                        if root.note-text != "" : Text {
+                                            height: parent.height;
+                                            text: root.note-text;
+                                            color: root.note-color;
+                                            font-size: 11.5px;
+                                            overflow: elide;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                        }
+                                    }
+                                }
+                                // Ctrl+Enter 助记(v2 恢复 —— 方案 E 时被信息区取代)
+                                Rectangle {
+                                    height: parent.height;
+                                    HorizontalLayout {
+                                        spacing: 2px;
+                                        Rectangle {
+                                            width: kbd1.preferred-width + 10px;
+                                            height: 16px;
+                                            y: (parent.height - 16px) / 2;
+                                            border-radius: 3px;
+                                            border-width: 1px;
+                                            border-color: Theme.line-2;
+                                            background: Theme.field;
+                                            kbd1 := Text {
+                                                width: parent.width;
+                                                height: parent.height;
+                                                text: "Ctrl";
+                                                color: Theme.text-secondary;
+                                                font-size: 9px;
+                                                font-family: Theme.font-mono;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                        Text {
+                                            width: 8px;
+                                            height: parent.height;
+                                            text: "+";
+                                            color: Theme.text-muted;
+                                            font-size: 9px;
+                                            vertical-alignment: center;
+                                            horizontal-alignment: center;
+                                        }
+                                        Rectangle {
+                                            width: kbd2.preferred-width + 10px;
+                                            height: 16px;
+                                            y: (parent.height - 16px) / 2;
+                                            border-radius: 3px;
+                                            border-width: 1px;
+                                            border-color: Theme.line-2;
+                                            background: Theme.field;
+                                            kbd2 := Text {
+                                                width: parent.width;
+                                                height: parent.height;
+                                                text: "Enter";
+                                                color: Theme.text-secondary;
+                                                font-size: 9px;
+                                                font-family: Theme.font-mono;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                                // 发送钮:全窗唯一 filled button(v2 契约 ③);
+                                // 空草稿/无目标 disabled(半透),armed 变红只改这一枚。
+                                exp-send := Rectangle {
+                                    width: max(96px, exp-send-txt.preferred-width + 40px);
+                                    height: 34px;
+                                    y: (parent.height - self.height) / 2;
+                                    border-radius: 6px;
+                                    opacity: (root.has-text && root.targets-n() > 0) || root.armed ? 1.0 : 0.42;
+                                    background: exp-send-ta.has-hover && !root.danger-now
+                                        ? Theme.accent-solid.brighter(0.08) : Theme.accent-solid;
+                                    // 危险底色用**条件元素**画在文字之下 —— background 绑定读
+                                    // danger-now 的求值有怪癖(条件元素由 property 直接驱动,可靠)。
+                                    animate background { duration: 110ms; }
+                                    exp-send-ta := TouchArea {
+                                        enabled: (root.has-text && root.targets-n() > 0) || root.armed;
+                                        mouse-cursor: default;
+                                        clicked => { root.try-send(); }
+                                    }
+                                    if root.danger-now : Rectangle {
+                                        x: 0; y: 0;
+                                        width: parent.width; height: parent.height;
+                                        border-radius: parent.border-radius;
+                                        background: root.armed
+                                            ? Theme.danger-strong.brighter(0.12) : Theme.danger-strong;
+                                        animate background { duration: 110ms; }
+                                    }
+                                    // (#tip-r2 2026-11-07) icon+文字整体居中:Layout 铺满 +
+                                    // Text 拉伸居中会把 icon 和文字撑开(实测大空隙)——
+                                    // 改内容按 preferred 取宽、x 手动居中,文字不再拉伸。
+                                    HorizontalLayout {
+                                        x: (parent.width - self.preferred-width) / 2;
+                                        spacing: 7px;
+                                        Rectangle {
+                                            width: 14px;
+                                            height: parent.height;
+                                            Icon {
+                                                glyph: "send";
+                                                tint: #ffffff;
+                                                size: 14px;
+                                            }
+                                        }
+                                        exp-send-txt := Text {
+                                            height: parent.height;
+                                            text: root.danger-now && root.armed
+                                                ? @tr("Tap again to confirm") : @tr("Send");
+                                            color: #ffffff;
+                                            font-size: 12.5px;
+                                            font-weight: Theme.fw-strong;
+                                            vertical-alignment: center;
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                    if root.cursor-style == "underline" : Rectangle {
-                        x: exp-input.absolute-position.x + root.caret-x
-                            - parent.absolute-position.x;
-                        y: exp-input.absolute-position.y + root.caret-y
-                            + gutter.pitch - 2px
-                            - parent.absolute-position.y;
-                        width: max(6px, gutter.char-w);
-                        height: 2px;
-                        visible: exp-input.has-focus && root.caret-blink;
-                        background: Theme.text-primary;
-                    }
                 }
-            }
 
-            // 危险告警槽(**预留 28px**,出现/消失不改窗口高度;与信息区并存,
-            // 槽负责「这条命令危险 + 词」,信息区负责「将发往几台」)
-            Rectangle {
-                height: 28px;
-                background: root.danger-token != "" ? Theme.danger-strong.with-alpha(0.10) : transparent;
-                if root.danger-token != "" : Rectangle {
-                    y: 0;
-                    width: parent.width;
-                    height: 1phx;
-                    background: Theme.danger-strong.with-alpha(0.28);
-                }
-                if root.danger-token != "" : Rectangle {
-                    y: parent.height - 1phx;
-                    width: parent.width;
-                    height: 1phx;
-                    background: Theme.danger-strong.with-alpha(0.28);
-                }
-                if root.danger-token != "" : HorizontalLayout {
-                    padding-left: 14px;
-                    padding-right: 14px;
-                    spacing: 7px;
-                    Rectangle {
-                        width: 12px;
-                        height: 28px;
-                        Icon { glyph: "warning"; tint: Theme.danger-strong; size: 12px; }
-                    }
-                    Text {
-                        text: @tr("Dangerous command");
-                        color: Theme.danger-strong;
-                        font-size: Theme.fs-xs;
-                        vertical-alignment: center;
-                    }
-                    Rectangle {
-                        width: dchip.preferred-width + 8px;
-                        height: 16px;
-                        border-radius: 3px;
-                        background: Theme.danger-strong.with-alpha(0.18);
-                        dchip := Text {
-                            width: parent.width;
-                            height: parent.height;
-                            text: root.danger-token;
-                            color: Theme.danger-strong;
-                            font-family: Theme.font-mono;
-                            font-size: 10px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                    }
-                    if root.danger-targets() > 0 : Text {
-                        text: @tr("· will be sent to {0} hosts", root.danger-targets());
-                        color: Theme.danger-strong;
-                        font-size: Theme.fs-xs;
-                        vertical-alignment: center;
-                    }
-                    Rectangle { horizontal-stretch: 1; }
-                    Text {
-                        text: @tr("Edit the command to cancel");
-                        color: Theme.text-muted;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-
-            // 页脚 54:范围键 + 信息区 + 发送键(§13 状态区,旧「Ctrl+Enter」助记被信息区取代)
-            Rectangle {
-                height: 56px;
-                Rectangle {
-                    y: Theme.snap-to-device(parent.absolute-position.y)
-                        - parent.absolute-position.y;
-                    width: parent.width;
-                    height: Theme.hairline();
-                    background: Theme.border-subtle;
-                }
-                ScopeButton {
-                    x: 12px;
-                    y: (parent.height - self.height) / 2;
-                    height: 32px;
-                    framed: true;
-                    on-popup: true;
-                    scopes: root.scopes;
-                    tab-count: root.tab-count;
-                    all <=> root.all;
-                    ch-a <=> root.ch-a;
-                    ch-b <=> root.ch-b;
-                    ch-c <=> root.ch-c;
-                    ch-d <=> root.ch-d;
-                    open <=> root.scope-open;
-                    menu-left: true;
-                    // (#send-cmd-fix) false→true:点菜单外空白收起菜单。组件自带
-                    // 9200px 遮罩与菜单同层级(菜单压遮罩),点空白必收且 reject
-                    // 放行(编辑器聚焦/标题栏拖动不受影响)。
-                    outside-close: true;
-                    // (#send-cmd-p2) 逐台主机段(搜索/勾选/已选计数都在组件内)
-                    hosts <=> root.targets;
-                    host-sel <=> root.host-sel;
-                    host-toggle(id) => { root.host-toggle(id); }
-                    // (#menu-seg2-fix) 菜单打开瞬间现拉 scopes/targets:
-                    // 窗口开着时主窗加了频道/开了新标签,打开时那次镜像已是旧快照。
-                    activated => { root.refresh-scopes(); }
-                }
-                // ── 信息区(§13 状态区):图标 + 状态文本 + 送达方式胶囊 ──
-                // 措辞原则:信息区说「将要发生什么」,发送键说「你要做什么」。
-                // 平时(无草稿)整块留空。布局交给 HorizontalLayout:元素
-                // 顺序天然紧跟,不用手算 x(胶囊宽度是文本驱动的)。
-                HorizontalLayout {
-                    x: 170px;
-                    y: 0;
-                    width: exp-send.x - 14px - self.x;
+                // ── 右列:投递栏 280(可收 44 竖条)──
+                rail-rect := Rectangle {
+                    x: parent.width - self.width;
+                    width: root.rail-w;
                     height: parent.height;
-                    spacing: 7px;
-                    if root.note-text != "" : Rectangle {
-                        width: 12px;
-                        height: 28px;
-                        Icon { glyph: root.note-ico; tint: root.note-color; size: 12px; }
-                    }
-                    if root.note-text != "" : Text {
-                        height: 28px;
-                        text: root.note-text;
-                        color: root.note-color;
-                        font-size: 11.5px;
-                        overflow: elide;
-                        vertical-alignment: center;
-                        horizontal-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    // 送达方式胶囊:只在多行时出现;点它切换 line ↔ block(手动档)。
-                    if root.multi-line : Rectangle {
-                        width: mode-txt.preferred-width + 14px;
-                        height: 20px;
-                        border-radius: 4px;
-                        border-width: 1px;
-                        border-color: (root.risk-info != "" && root.resolved-paste-mode == "line")
-                            ? Theme.danger-strong : Theme.border-control;
-                        background: (root.risk-info != "" && root.resolved-paste-mode == "line")
-                            ? transparent : Theme.field;
-                    mode-txt := Text {
-                        width: parent.width;
+                    animate width { duration: root.rail-anim ? 180ms : 0ms; }
+                    background: Theme.bg-panel;
+                    Rectangle {
+                        x: 0;
+                        width: Theme.hairline();
                         height: parent.height;
-                        text: (root.resolved-paste-mode == "block"
-                            ? @tr("{0} lines · pasted as one block", root.lines)
-                            : @tr("{0} lines · line-by-line", root.lines))
-                            + ((root.risk-info != "" && root.resolved-paste-mode == "line") ? @tr(" · risky") : "");
-                        color: (root.risk-info != "" && root.resolved-paste-mode == "line")
-                            ? Theme.danger-strong : Theme.text-secondary;
-                        font-size: 10.5px;
-                        font-family: Theme.font-mono;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                        background: Theme.border-subtle;
                     }
-                    TouchArea {
-                        mouse-cursor: default;
-                        clicked => {
-                            // 切换 + 标记手动档;若 armed 挂着而风险被兜住 → 就地解除
-                            root.paste-mode = root.resolved-paste-mode == "line" ? "block" : "line";
-                            root.paste-override = true;
-                            if (root.armed && !root.danger-now) { root.armed = false; }
-                            root.check-text(root.text);
+
+                    // ── 展开态 ──
+                    VerticalLayout {
+                        visible: !root.rail-collapsed;
+
+                        // rail-head:标题行 + 范围键
+                        Rectangle {
+                            height: 105px;
+                            VerticalLayout {
+                                padding-top: 9px;
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                padding-bottom: 12px;
+                                spacing: 10px;
+                                // 标题行:投递 TARGETS + 台数徽章 + 收起钮
+                                Rectangle {
+                                    height: 20px;
+                                    HorizontalLayout {
+                                        spacing: 7px;
+                                        Text {
+                                            height: parent.height;
+                                            text: @tr("Deliver targets");
+                                            color: Theme.text-muted;
+                                            font-size: 9.5px;
+                                            font-family: Theme.font-mono;
+                                            letter-spacing: 1.4px;
+                                            vertical-alignment: center;
+                                        }
+                                        Rectangle {
+                                            width: rail-count-txt.preferred-width + 10px;
+                                            height: 17px;
+                                            y: (parent.height - self.height) / 2;
+                                            border-radius: 3px;
+                                            background: Theme.accent-soft;
+                                            border-width: 1px;
+                                            border-color: root.accent-line;
+                                            rail-count-txt := Text {
+                                                width: parent.width;
+                                                height: parent.height;
+                                                text: @tr("{0} 台", root.targets-n());
+                                                color: Theme.accent-solid;
+                                                font-size: 9.5px;
+                                                font-family: Theme.font-mono;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        Rectangle {
+                                            width: 22px;
+                                            height: 22px;
+                                            y: (parent.height - self.height) / 2;
+                                            border-radius: 3px;
+                                            background: rail-clp-ta.has-hover ? Theme.bg-hover : transparent;
+                                            Icon {
+                                                glyph: "expand-more";
+                                                tint: rail-clp-ta.has-hover ? Theme.text-primary : Theme.text-muted;
+                                                size: 12px;
+                                            }
+                                            rail-clp-ta := TouchArea {
+                                                mouse-cursor: default;
+                                                clicked => {
+                                                    root.rail-collapsed = true;
+                                                    root.scope-open = false;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                // 范围键 54:图标槽 + 双行(label/sub) + chevron(稿 .scope-btn)
+                                scope-btn := Rectangle {
+                                    height: 54px;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: root.scope-open ? root.accent-line
+                                        : (scope-ta.has-hover ? Theme.border-strong : Theme.border-control);
+                                    background: root.scope-open ? Theme.bg-active
+                                        : (scope-ta.has-hover ? Theme.bg-hover : Theme.field);
+                                    animate background, border-color { duration: 110ms; }
+                                    HorizontalLayout {
+                                        padding-left: 9px;
+                                        padding-right: 9px;
+                                        spacing: 10px;
+                                        Rectangle {
+                                            width: 28px;
+                                            height: 28px;
+                                            y: (parent.height - self.height) / 2;
+                                            border-radius: 5px;
+                                            background: Theme.accent-soft;
+                                            Icon { glyph: root.scope-ico-v2(); tint: Theme.accent-solid; size: 14px; }
+                                        }
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            alignment: center;
+                                            spacing: 2px;
+                                            Text {
+                                                height: 17px;
+                                                text: root.scope-label-v2();
+                                                color: Theme.text-primary;
+                                                font-size: 12.5px;
+                                                font-weight: Theme.fw-strong;
+                                                overflow: elide;
+                                                vertical-alignment: center;
+                                            }
+                                            Text {
+                                                height: 14px;
+                                                text: root.scope-sub-v2();
+                                                color: Theme.text-muted;
+                                                font-size: 10px;
+                                                font-family: Theme.font-mono;
+                                                overflow: elide;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                        Rectangle {
+                                            width: 12px;
+                                            height: parent.height;
+                                            Icon {
+                                                // (Icon 无 rotation-angle —— 开合用 less/more 两枚 glyph 切换)
+                                                glyph: root.scope-open ? "expand-less" : "expand-more";
+                                                tint: Theme.text-muted;
+                                                size: 12px;
+                                            }
+                                        }
+                                    }
+                                    scope-ta := TouchArea {
+                                        mouse-cursor: default;
+                                        clicked => {
+                                            if (root.scope-open) {
+                                                root.scope-open = false;
+                                            } else {
+                                                root.scope-open-fn();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // rail-list:逐台目标(行尾回执态);滚动只发生在列表
+                        Rectangle {
+                            vertical-stretch: 1;
+                            clip: true;
+                            // 空态:没有可送达的标签页
+                            if root.targets-n() == 0 || root.targets.length == 0 : Rectangle {
+                                width: parent.width;
+                                height: parent.height;
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 8px;
+                                    Rectangle {
+                                        width: parent.width;
+                                        height: 22px;
+                                        Icon { glyph: "host-server"; tint: Theme.text-muted; size: 22px; }
+                                    }
+                                    Text {
+                                        width: parent.width;
+                                        height: 18px;
+                                        text: @tr("No deliverable tabs");
+                                        color: Theme.text-muted;
+                                        font-size: 11px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        width: parent.width;
+                                        height: 16px;
+                                        text: @tr("Try another scope");
+                                        color: Theme.text-muted;
+                                        font-size: 11px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle {
+                                        width: parent.width;
+                                        height: 24px;
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            Rectangle {
+                                                width: rail-scope-btn-txt.preferred-width + 20px;
+                                                height: 24px;
+                                                border-radius: 4px;
+                                                border-width: 1px;
+                                                border-color: Theme.border-control;
+                                                background: rail-scope-ta.has-hover ? Theme.bg-hover : Theme.field;
+                                                rail-scope-btn-txt := Text {
+                                                    width: parent.width;
+                                                    height: parent.height;
+                                                    text: @tr("Switch scope");
+                                                    color: Theme.text-secondary;
+                                                    font-size: 10.5px;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
+                                                rail-scope-ta := TouchArea {
+                                                    mouse-cursor: default;
+                                                    clicked => { root.scope-open-fn(); }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            ScrollView {
+                                width: 100%;
+                                height: 100%;
+                                VerticalLayout {
+                                    alignment: start;
+                                    padding-top: 6px;
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    padding-bottom: 6px;
+                                    spacing: 0;
+                                    for t in root.targets : Rectangle {
+                                        // 过滤壳:与 scope-spec() 同口径;不命中的行 0 高 +
+                                        // visible:false(Slint 的 for 不能直接接 if 条件元素)
+                                        height: root.visible-target-ch(t) ? 52px : 0px;
+                                        visible: root.visible-target-ch(t);
+                                        border-radius: 5px;
+                                        border-width: 1px;
+                                        // (#tip-r3 2026-11-07) 「当前」标识(tag/行高亮)与
+                                        // 在线状态点全删 —— 发送命令是独立窗口,列表里
+                                        // 没有当前概念、也不需要状态点。
+                                        border-color: host-row-ta.has-hover ? Theme.border-control : transparent;
+                                        background: host-row-ta.has-hover ? Theme.bg-hover : transparent;
+                                        animate background { duration: 110ms; }
+                                        host-row-ta := TouchArea {
+                                            mouse-cursor: default;
+                                            // 点行 = 逐台勾选该主机(host 档) —— 与范围弹层主机段同一协议
+                                            clicked => { root.host-toggle(t.id); }
+                                        }
+                                        HorizontalLayout {
+                                            padding-left: 10px;
+                                            padding-right: 10px;
+                                            spacing: 9px;
+                                            // 主机名 / user · 频道
+                                            VerticalLayout {
+                                                horizontal-stretch: 1;
+                                                alignment: center;
+                                                spacing: 3px;
+                                                Text {
+                                                    height: 16px;
+                                                    text: t.title == "" ? t.id : t.title;
+                                                    color: Theme.text-primary;
+                                                    font-size: 11.5px;
+                                                    font-family: Theme.font-mono;
+                                                    font-weight: Theme.fw-strong;
+                                                    overflow: elide;
+                                                    vertical-alignment: center;
+                                                }
+                                                Text {
+                                                    height: 13px;
+                                                    text: t.user + " · " + t.ch;
+                                                    color: Theme.text-muted;
+                                                    font-size: 9.5px;
+                                                    font-family: Theme.font-mono;
+                                                    overflow: elide;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                            // 行尾回执态:待发送 / 成功 / 失败
+                                            Rectangle {
+                                                width: receipt-st-txt.preferred-width + 18px;
+                                                height: parent.height;
+                                                HorizontalLayout {
+                                                    spacing: 4px;
+                                                    if t.receipt == 1 : Rectangle {
+                                                        width: 11px;
+                                                        height: parent.height;
+                                                        Icon { glyph: "check"; tint: Theme.success; size: 11px; }
+                                                    }
+                                                    if t.receipt == 2 : Rectangle {
+                                                        width: 11px;
+                                                        height: parent.height;
+                                                        Icon { glyph: "warning"; tint: Theme.danger-strong; size: 11px; }
+                                                    }
+                                                    receipt-st-txt := Text {
+                                                        height: parent.height;
+                                                        text: t.receipt == 1 ? @tr("ok")
+                                                            : t.receipt == 2 ? @tr("failed") : @tr("pending");
+                                                        color: t.receipt == 1 ? Theme.success
+                                                            : t.receipt == 2 ? Theme.danger-strong
+                                                            : Theme.text-muted;
+                                                        font-size: 9.5px;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // rail-foot:发送前提示+复制目标 / 回执汇总+重试+复制结果
+                        Rectangle {
+                            height: 58px;
+                            Rectangle {
+                                y: 0;
+                                width: parent.width;
+                                height: Theme.hairline();
+                                background: Theme.border-subtle;
+                            }
+                            // 有回执:汇总 + 重试失败(accent) + 复制结果
+                            if root.has-receipt : HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 6px;
+                                Text {
+                                    horizontal-stretch: 1;
+                                    min-width: 0;
+                                    height: parent.height;
+                                    text: root.receipt-bad > 0
+                                        ? @tr("{0} failed", root.receipt-bad) + " · " + @tr("{0} ok", root.receipt-ok)
+                                        : @tr("{0} ok", root.receipt-ok);
+                                    color: root.receipt-bad > 0 ? Theme.danger-strong : Theme.success;
+                                    font-size: 10.5px;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+                                if root.receipt-bad > 0 : Rectangle {
+                                    width: foot-retry-txt.preferred-width + 14px;
+                                    height: 23px;
+                                    y: (parent.height - self.height) / 2;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: root.accent-line;
+                                    background: foot-retry-ta.has-hover ? Theme.accent-soft : Theme.accent-solid.with-alpha(0.096);
+                                    HorizontalLayout {
+                                        padding-left: 7px;
+                                        padding-right: 7px;
+                                        spacing: 4px;
+                                        Rectangle {
+                                            width: 10px;
+                                            height: parent.height;
+                                            Icon { glyph: "retry"; tint: Theme.accent-solid; size: 10px; }
+                                        }
+                                        foot-retry-txt := Text {
+                                            height: parent.height;
+                                            text: @tr("Retry failed");
+                                            color: Theme.accent-solid;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    foot-retry-ta := TouchArea {
+                                        mouse-cursor: default;
+                                        clicked => { root.retry-failed(); }
+                                    }
+                                }
+                                Rectangle {
+                                    width: foot-copy-txt.preferred-width + 14px;
+                                    height: 23px;
+                                    y: (parent.height - self.height) / 2;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: Theme.border-control;
+                                    background: foot-copy-ta.has-hover ? Theme.bg-hover : transparent;
+                                    HorizontalLayout {
+                                        padding-left: 7px;
+                                        padding-right: 7px;
+                                        spacing: 4px;
+                                        Rectangle {
+                                            width: 10px;
+                                            height: parent.height;
+                                            Icon { glyph: "copy"; tint: Theme.text-secondary; size: 10px; }
+                                        }
+                                        foot-copy-txt := Text {
+                                            height: parent.height;
+                                            text: @tr("Copy result");
+                                            color: Theme.text-secondary;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    foot-copy-ta := TouchArea {
+                                        mouse-cursor: default;
+                                        clicked => { root.copy-result-clip(); }
+                                    }
+                                }
+                            }
+                            // 无回执:发送后逐台显示结果 + 复制目标
+                            if !root.has-receipt : HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 6px;
+                                Rectangle {
+                                    width: 11px;
+                                    height: parent.height;
+                                    Icon { glyph: "info"; tint: Theme.text-muted; size: 11px; }
+                                }
+                                Text {
+                                    horizontal-stretch: 1;
+                                    height: parent.height;
+                                    text: @tr("Results per host after send");
+                                    color: Theme.text-muted;
+                                    font-size: 10px;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle {
+                                    width: foot-copylist-txt.preferred-width + 18px;
+                                    height: 23px;
+                                    y: (parent.height - self.height) / 2;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: Theme.border-control;
+                                    background: foot-copylist-ta.has-hover ? Theme.bg-hover : transparent;
+                                    HorizontalLayout {
+                                        padding-left: 7px;
+                                        padding-right: 7px;
+                                        spacing: 4px;
+                                        Rectangle {
+                                            width: 10px;
+                                            height: parent.height;
+                                            Icon { glyph: "copy"; tint: Theme.text-secondary; size: 10px; }
+                                        }
+                                        foot-copylist-txt := Text {
+                                            height: parent.height;
+                                            text: @tr("Copy list");
+                                            color: Theme.text-secondary;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    foot-copylist-ta := TouchArea {
+                                        mouse-cursor: default;
+                                        clicked => { root.copy-list(); }
+                                    }
+                                }
+                            }
                         }
                     }
-                    // (#send-cmd-p3) 信息区动作四段暂时摘除 —— 见文件尾注记:
-                    // tipcard/回执呈现层的 Slint 生成代码在这台机器上触发
-                    // LLVM codegen 崩(exit 3,二分实锤),P3 呈现转下一轮,
-                    // 数据链(send_raw 返回值/回执统计)保留在 Rust 侧。
-                }
-                } // ── HorizontalLayout(信息区)──
-                exp-send := Rectangle {
-                    x: parent.width - 12px - self.width;
-                    y: (parent.height - self.height) / 2;
-                    width: max(64px, exp-send-txt.preferred-width + 24px);
-                    height: 32px;
-                    border-radius: 7px;
-                    background: exp-send-ta.has-hover && !root.danger-now
-                        ? Theme.accent-solid.brighter(0.08) : Theme.accent-solid;
-                    // (#send-cmd-p2/p3) 危险底色用**条件元素**画在文字之下,
-                    // 不用 background 三目 —— background 绑定读 danger-now 的
-                    // 求值有怪癖(离屏帧像素实测:信息区同源读到 true、这里
-                    // 稳定 false;条件元素的显隐由 property 直接驱动,可靠)。
-                    animate background { duration: 110ms; }
-                    exp-send-ta := TouchArea {
-                        mouse-cursor: default;
-                        clicked => { root.try-send(); }
-                    }
-                    if root.danger-now : Rectangle {
-                        x: 0; y: 0;
-                        width: parent.width; height: parent.height;
-                        border-radius: parent.border-radius;
-                        background: root.armed
-                            ? Theme.danger-strong.brighter(0.12) : Theme.danger-strong;
-                        animate background { duration: 110ms; }
-                    }
-                    exp-send-txt := Text {
-                        width: parent.width;
-                        height: parent.height;
-                        text: root.sent-flash ? @tr("Sent")
-                            : (root.danger-now && root.armed ? @tr("Tap again to confirm") : @tr("Send"));
-                        color: #ffffff;
-                        font-size: Theme.fs-sm;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+
+                    // ── 收起态:44px 竖条 ──
+                    Rectangle {
+                        visible: root.rail-collapsed;
+                        VerticalLayout {
+                            padding-top: 10px;
+                            padding-bottom: 10px;
+                            spacing: 10px;
+                            alignment: center;
+                            // 展开钮
+                            Rectangle {
+                                width: 26px;
+                                height: 26px;
+                                border-radius: 4px;
+                                background: mini-exp-ta.has-hover ? Theme.bg-hover : transparent;
+                                Icon {
+                                    glyph: "expand-less";
+                                    tint: mini-exp-ta.has-hover ? Theme.text-primary : Theme.text-muted;
+                                    size: 13px;
+                                }
+                                mini-exp-ta := TouchArea {
+                                    mouse-cursor: default;
+                                    clicked => { root.rail-collapsed = false; }
+                                }
+                            }
+                            // 台数徽章
+                            Rectangle {
+                                width: 26px;
+                                height: 18px;
+                                border-radius: 3px;
+                                background: Theme.accent-soft;
+                                border-width: 1px;
+                                border-color: root.accent-line;
+                                Text {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    text: root.targets-n();
+                                    color: Theme.accent-solid;
+                                    font-size: 9.5px;
+                                    font-family: Theme.font-mono;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            // 竖排「投递 TARGETS」(逐字一行近似稿子的竖排文字)。
+                            // ⚠️ width 用固定 44(= rail 宽):写 parent.width 会把
+                            // 收起态 preferred 卷进 Layout 分配环(Recursion detected)。
+                            Text {
+                                width: 44px;
+                                vertical-stretch: 1;
+                                text: "投\n递\n\nT\nA\nR\nG\nE\nT\nS";
+                                color: Theme.text-muted;
+                                font-size: 9.5px;
+                                font-family: Theme.font-mono;
+                                letter-spacing: 1px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // ── 命令面板(§16 定稿,方案 E)──
-        // 居中 480 宽;搜索驱动;「快捷命令 / 历史」由 Rust 分好段(lib-rows
-        // 里带段头);↑↓/Enter 与点击插入即关。z 声明在布局之后 = 最顶层。
+        // ── 范围弹层 326:锚定 rail-head 范围键下(窗口内自绘,z 高于遮罩)──
+        Rectangle {
+            visible: root.scope-open;
+            x: max(8px, parent.width - self.width - 12px);
+            y: 145px;
+            width: 326px;
+            height: min(408px, parent.height - 155px);
+            border-radius: 10px;
+            background: Theme.popup-bg;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 18px;
+            drop-shadow-color: #00000070;
+            clip: true;
+
+            VerticalLayout {
+                // 头:标题 + 将收到台数 + × + 两段滑块
+                Rectangle {
+                    height: 76px;
+                    VerticalLayout {
+                        padding-top: 12px;
+                        padding-left: 13px;
+                        padding-right: 13px;
+                        padding-bottom: 10px;
+                        spacing: 10px;
+                        Rectangle {
+                            height: 22px;
+                            Text {
+                                x: 0;
+                                width: parent.width - 26px;
+                                height: parent.height;
+                                text: @tr("Send scope");
+                                color: Theme.text-primary;
+                                font-size: 12.5px;
+                                font-weight: Theme.fw-strong;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                x: parent.width - 220px;
+                                width: 180px;
+                                height: parent.height;
+                                text: @tr("{0} 台", root.scope-picked-n()) + @tr(" will receive");
+                                color: Theme.text-muted;
+                                font-size: 9.5px;
+                                font-family: Theme.font-mono;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+                            Rectangle {
+                                x: parent.width - 22px;
+                                width: 22px;
+                                height: 22px;
+                                border-radius: 3px;
+                                background: scope-x-ta.has-hover ? Theme.bg-hover : transparent;
+                                Icon { glyph: "close"; tint: scope-x-ta.has-hover ? Theme.text-primary : Theme.text-muted; size: 12px; }
+                                scope-x-ta := TouchArea {
+                                    mouse-cursor: default;
+                                    clicked => { root.scope-open = false; }
+                                }
+                            }
+                        }
+                        // 两段滑块:频道 | 主机(切段清另一侧,互斥)。
+                        // (#tip-r2 2026-11-07) 换公共 SegGroup 滑块,段内保留 icon。
+                        SegGroup {
+                            height: 28px;
+                            active-index: root.scope-seg == 1 ? 0 : 1;
+                            count: 2;
+                            compact: true;
+                            Rectangle {
+                                height: parent.height - 6px;
+                                // icon+文字整体居中(Text 不拉伸,防 icon/文字分离)
+                                HorizontalLayout {
+                                    x: (parent.width - self.preferred-width) / 2;
+                                    spacing: 5px;
+                                    Rectangle {
+                                        width: 12px;
+                                        height: parent.height;
+                                        Icon { glyph: "hash"; tint: root.scope-seg == 1 ? Theme.accent-solid : Theme.text-muted; size: 12px; }
+                                    }
+                                    Text {
+                                        height: parent.height;
+                                        text: @tr("Channel");
+                                        color: root.scope-seg == 1 ? Theme.accent-solid : Theme.text-secondary;
+                                        font-size: 10.5px;
+                                        font-weight: root.scope-seg == 1 ? 700 : 400;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle { width: 5px; }
+                                }
+                                seg-ch-ta := TouchArea {
+                                    mouse-cursor: default;
+                                    clicked => { root.scope-seg-sync(1); }
+                                }
+                            }
+                            Rectangle {
+                                height: parent.height - 6px;
+                                HorizontalLayout {
+                                    x: (parent.width - self.preferred-width) / 2;
+                                    spacing: 5px;
+                                    Rectangle {
+                                        width: 12px;
+                                        height: parent.height;
+                                        Icon { glyph: "host-server"; tint: root.scope-seg == 2 ? Theme.accent-solid : Theme.text-muted; size: 12px; }
+                                    }
+                                    Text {
+                                        height: parent.height;
+                                        text: @tr("Hosts");
+                                        color: root.scope-seg == 2 ? Theme.accent-solid : Theme.text-secondary;
+                                        font-size: 10.5px;
+                                        font-weight: root.scope-seg == 2 ? 700 : 400;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle { width: 5px; }
+                                }
+                                seg-host-ta := TouchArea {
+                                    mouse-cursor: default;
+                                    clicked => { root.scope-seg-sync(2); }
+                                }
+                            }
+                        }
+                    }
+                }
+                Rectangle { height: Theme.hairline(); background: Theme.border-subtle; }
+
+                // 体:频道段(多选) / 主机段(tab 单选×2 + 挑选主机 + 搜索 + 全选)
+                Rectangle {
+                    vertical-stretch: 1;
+                    clip: true;
+                    if root.scope-seg == 1 : Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        ScrollView {
+                            width: 100%;
+                            height: 100%;
+                            VerticalLayout {
+                                alignment: start;
+                                padding: 6px;
+                                spacing: 0;
+                                // (#tip-r3 2026-11-07) 频道行换项目同款 ScopeRow
+                                // (terminal_view 导出复用):复选+频道色点+名称+右对齐台数,
+                                // 0 台频道灰化禁用(row-enabled)。
+                                for s in root.scopes : ScopeRow {
+                                    checked: root.d-sel(s.letter);
+                                    dot: s.color;
+                                    label: @tr("Channel {0}", s.letter);
+                                    trailing: @tr("{0} 台", s.count);
+                                    row-enabled: s.count > 0;
+                                    clicked => {
+                                        // 点频道行 = 频道档:清主机/全部,勾选落草稿
+                                        root.host-sel = "";
+                                        root.all = false;
+                                        if (s.letter == "A") { root.d-a = !root.d-a; }
+                                        else if (s.letter == "B") { root.d-b = !root.d-b; }
+                                        else if (s.letter == "C") { root.d-c = !root.d-c; }
+                                        else { root.d-d = !root.d-d; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if root.scope-seg == 2 : Rectangle {
+                        width: 100%;
+                        height: 100%;
+                        ScrollView {
+                            width: 100%;
+                            height: 100%;
+                            VerticalLayout {
+                                alignment: start;
+                                padding: 6px;
+                                spacing: 0;
+                                // 「当前标签页」单选(radio)
+                                Rectangle {
+                                    height: 38px;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: (!root.all && root.host-n() == 0) ? root.accent-line : transparent;
+                                    background: (!root.all && root.host-n() == 0) ? Theme.accent-soft
+                                        : (tab-cur-ta.has-hover ? Theme.bg-hover : transparent);
+                                    animate background { duration: 110ms; }
+                                    tab-cur-ta := TouchArea {
+                                        mouse-cursor: default;
+                                        clicked => {
+                                            root.all = false;
+                                            root.host-sel = "";
+                                            root.d-a = false; root.d-b = false; root.d-c = false; root.d-d = false;
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: 9px;
+                                        padding-right: 9px;
+                                        spacing: 9px;
+                                        Rectangle {
+                                            width: 14px;
+                                            height: parent.height;
+                                            Rectangle {
+                                                y: (parent.height - self.height) / 2;
+                                                width: 14px;
+                                                height: 14px;
+                                                border-radius: 8px;
+                                                border-width: 1.5px;
+                                                border-color: (!root.all && root.host-n() == 0) ? Theme.accent-solid : Theme.border-strong;
+                                                background: (!root.all && root.host-n() == 0) ? Theme.accent-solid : transparent;
+                                                animate background, border-color { duration: 120ms; }
+                                                Rectangle {
+                                                    x: (parent.width - self.width) / 2;
+                                                    y: (parent.height - self.height) / 2;
+                                                    width: 5px;
+                                                    height: 5px;
+                                                    border-radius: 3px;
+                                                    background: Theme.dark ? #0A0B0E : #ffffff;
+                                                    visible: !root.all && root.host-n() == 0;
+                                                }
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            alignment: center;
+                                            spacing: 1px;
+                                            Text {
+                                                height: 17px;
+                                                text: @tr("This tab");
+                                                color: (!root.all && root.host-n() == 0) ? Theme.text-primary : Theme.text-secondary;
+                                                font-size: 11.5px;
+                                                overflow: elide;
+                                                vertical-alignment: center;
+                                            }
+                                            Text {
+                                                height: 13px;
+                                                text: @tr("Only the active tab");
+                                                color: Theme.text-muted;
+                                                font-size: 9.5px;
+                                                font-family: Theme.font-mono;
+                                                overflow: elide;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                                // 「全部标签页」单选
+                                Rectangle {
+                                    height: 38px;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: root.all ? root.accent-line : transparent;
+                                    background: root.all ? Theme.accent-soft
+                                        : (tab-all-ta.has-hover ? Theme.bg-hover : transparent);
+                                    animate background { duration: 110ms; }
+                                    tab-all-ta := TouchArea {
+                                        mouse-cursor: default;
+                                        clicked => {
+                                            root.all = true;
+                                            root.host-sel = "";
+                                            root.d-a = false; root.d-b = false; root.d-c = false; root.d-d = false;
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: 9px;
+                                        padding-right: 9px;
+                                        spacing: 9px;
+                                        Rectangle {
+                                            width: 14px;
+                                            height: parent.height;
+                                            Rectangle {
+                                                y: (parent.height - self.height) / 2;
+                                                width: 14px;
+                                                height: 14px;
+                                                border-radius: 8px;
+                                                border-width: 1.5px;
+                                                border-color: root.all ? Theme.accent-solid : Theme.border-strong;
+                                                background: root.all ? Theme.accent-solid : transparent;
+                                                animate background, border-color { duration: 120ms; }
+                                                Rectangle {
+                                                    x: (parent.width - self.width) / 2;
+                                                    y: (parent.height - self.height) / 2;
+                                                    width: 5px;
+                                                    height: 5px;
+                                                    border-radius: 3px;
+                                                    background: Theme.dark ? #0A0B0E : #ffffff;
+                                                    visible: root.all;
+                                                }
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            alignment: center;
+                                            spacing: 1px;
+                                            Text {
+                                                height: 17px;
+                                                text: @tr("All tabs");
+                                                color: root.all ? Theme.text-primary : Theme.text-secondary;
+                                                font-size: 11.5px;
+                                                overflow: elide;
+                                                vertical-alignment: center;
+                                            }
+                                            Text {
+                                                height: 13px;
+                                                text: @tr("Every open online tab");
+                                                color: Theme.text-muted;
+                                                font-size: 9.5px;
+                                                font-family: Theme.font-mono;
+                                                overflow: elide;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                                // 分区标题「挑选主机」+ 已选计数
+                                Rectangle {
+                                    height: 28px;
+                                    HorizontalLayout {
+                                        padding-left: 9px;
+                                        padding-right: 9px;
+                                        Text {
+                                            height: parent.height;
+                                            text: @tr("Pick hosts");
+                                            color: Theme.text-muted;
+                                            font-size: 10px;
+                                            font-family: Theme.font-mono;
+                                            letter-spacing: 1px;
+                                            vertical-alignment: center;
+                                        }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        if root.host-n() > 0 : Text {
+                                            height: parent.height;
+                                            text: @tr("{0} 台", root.host-n()) + @tr(" picked");
+                                            color: Theme.accent-solid;
+                                            font-size: 9px;
+                                            font-family: Theme.font-mono;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                                // 搜索框(v2 常显 —— 不再 >6 台才出现;
+                                // Slint 没有 margin —— 用 34 高容器装 30 高输入行,底缝 4px)
+                                Rectangle {
+                                    height: 34px;
+                                    Rectangle {
+                                        x: 4px;
+                                        width: parent.width - 8px;
+                                        height: 30px;
+                                        border-radius: 4px;
+                                        border-width: 1px;
+                                        border-color: Theme.border-control;
+                                        background: Theme.field;
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        spacing: 7px;
+                                        Rectangle {
+                                            width: 12px;
+                                            height: parent.height;
+                                            Icon { glyph: "search"; tint: Theme.text-muted; size: 12px; }
+                                        }
+                                        TextInput {
+                                            horizontal-stretch: 1;
+                                            height: parent.height;
+                                            text: root.host-filter;
+                                            color: Theme.text-primary;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                            single-line: true;
+                                            edited => { root.host-filter = self.text; }
+                                            key-pressed(e) => {
+                                                if (e.text == Key.Escape) {
+                                                    root.scope-open = false;
+                                                    accept
+                                                } else {
+                                                    reject
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // placeholder 手工模拟(TextInput 无此属性;不吞点击)
+                                    if root.host-filter == "" : Text {
+                                        x: 27px;
+                                        width: parent.width - 34px;
+                                        height: parent.height;
+                                        text: @tr("Search host or address…");
+                                        color: Theme.text-muted;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                    }
+                                }
+                                // 「全选在线」(Slint 拼不了 CSV,Rust 全量写 host-sel)
+                                Rectangle {
+                                    height: 24px;
+                                    HorizontalLayout {
+                                        padding-right: 7px;
+                                        Rectangle { horizontal-stretch: 1; }
+                                        Rectangle {
+                                            width: allhost-txt.preferred-width + 16px;
+                                            height: 22px;
+                                            border-radius: 4px;
+                                            border-width: 1px;
+                                            border-color: Theme.border-control;
+                                            background: allhost-ta.has-hover ? Theme.bg-hover : transparent;
+                                            allhost-txt := Text {
+                                                width: parent.width;
+                                                height: parent.height;
+                                                text: @tr("Select online");
+                                                color: Theme.text-secondary;
+                                                font-size: 9.5px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                            allhost-ta := TouchArea {
+                                                mouse-cursor: default;
+                                                clicked => {
+                                                    root.all = false;
+                                                    root.d-a = false; root.d-b = false; root.d-c = false; root.d-d = false;
+                                                    root.select-all-hosts();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                // 主机行(搜索过滤壳;非 host 档时置灰可点=切档)
+                                for t in root.targets : Rectangle {
+                                    height: root.host-match(t) ? 38px : 0px;
+                                    visible: root.host-match(t);
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: root.host-in(t.id) ? root.accent-line : transparent;
+                                    background: root.host-in(t.id) ? Theme.accent-soft
+                                        : (s-host-ta.has-hover ? Theme.bg-hover : transparent);
+                                    opacity: t.online ? 1.0 : 0.45;
+                                    animate background { duration: 110ms; }
+                                    s-host-ta := TouchArea {
+                                        enabled: t.online;
+                                        mouse-cursor: default;
+                                        clicked => {
+                                            root.d-a = false; root.d-b = false; root.d-c = false; root.d-d = false;
+                                            root.all = false;
+                                            root.host-toggle(t.id);
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: 9px;
+                                        padding-right: 9px;
+                                        spacing: 9px;
+                                        Rectangle {
+                                            width: 15px;
+                                            height: parent.height;
+                                            Rectangle {
+                                                y: (parent.height - self.height) / 2;
+                                                width: 15px;
+                                                height: 15px;
+                                                border-radius: 4px;
+                                                border-width: 1px;
+                                                border-color: root.host-in(t.id) ? Theme.accent-solid : Theme.border-control;
+                                                background: root.host-in(t.id) ? Theme.accent-solid : transparent;
+                                                animate background, border-color { duration: 120ms; }
+                                                Icon {
+                                                    glyph: root.host-in(t.id) ? "check" : "";
+                                                    tint: Theme.dark ? #0A0B0E : #ffffff;
+                                                    size: 11px;
+                                                }
+                                            }
+                                        }
+                                        // (#tip-r3 2026-11-07) 频道色点与「当前」tag 删 —— 不需要状态点
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            alignment: center;
+                                            spacing: 1px;
+                                            Text {
+                                                height: 17px;
+                                                text: t.title == "" ? t.id : t.title;
+                                                color: Theme.text-primary;
+                                                font-size: 11.5px;
+                                                overflow: elide;
+                                                vertical-alignment: center;
+                                            }
+                                            Text {
+                                                height: 13px;
+                                                text: t.user + " · " + @tr("Channel {0}", t.ch) + (t.online ? "" : " · " + @tr("offline"));
+                                                color: Theme.text-muted;
+                                                font-size: 9.5px;
+                                                font-family: Theme.font-mono;
+                                                overflow: elide;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Rectangle { height: Theme.hairline(); background: Theme.border-subtle; }
+
+                // 底:已选计数 + 取消 + 应用
+                Rectangle {
+                    height: 44px;
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 8px;
+                        Text {
+                            horizontal-stretch: 1;
+                            height: parent.height;
+                            text: @tr("{0} selected", root.scope-picked-n());
+                            color: Theme.text-muted;
+                            font-size: 10px;
+                            font-family: Theme.font-mono;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        Rectangle {
+                            width: scope-cancel-txt.preferred-width + 20px;
+                            height: 27px;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: Theme.border-control;
+                            background: scope-cancel-ta.has-hover ? Theme.bg-hover : transparent;
+                            scope-cancel-txt := Text {
+                                width: parent.width;
+                                height: parent.height;
+                                text: @tr("Cancel");
+                                color: Theme.text-secondary;
+                                font-size: 10.5px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            scope-cancel-ta := TouchArea {
+                                mouse-cursor: default;
+                                clicked => { root.scope-cancel-fn(); }
+                            }
+                        }
+                        Rectangle {
+                            width: scope-apply-txt.preferred-width + 24px;
+                            height: 27px;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: root.accent-line;
+                            background: root.scope-picked-n() > 0 ? Theme.accent-soft : Theme.accent-solid.with-alpha(0.056);
+                            opacity: root.scope-picked-n() > 0 ? 1.0 : 0.5;
+                            scope-apply-txt := Text {
+                                width: parent.width;
+                                height: parent.height;
+                                text: @tr("Apply");
+                                color: Theme.accent-solid;
+                                font-size: 10.5px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            scope-apply-ta := TouchArea {
+                                enabled: root.scope-picked-n() > 0;
+                                mouse-cursor: default;
+                                clicked => { root.scope-apply-fn(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 命令面板 462:锚定标题栏「命令库」钮下(v2 —— 居中模态退役)──
         Rectangle {
             visible: root.lib-open;
-            x: (parent.width - self.width) / 2;
-            y: 84px;
-            width: 480px;
+            x: max(8px, parent.width - self.width - 86px);
+            y: 37px;
+            width: 462px;
             height: min(380px, parent.height - 100px);
             border-radius: 10px;
             background: Theme.popup-bg;
@@ -772,53 +2127,67 @@ export component SendCmdWindow inherits Window {
             clip: true;
 
             VerticalLayout {
-                // 搜索框 40:唤出即聚焦(键盘 ↑↓/Enter 在这里处理)
+                // 搜索行 42:唤出即聚焦(键盘 ↑↓/Enter 在这里处理)
                 Rectangle {
-                    height: 40px;
-                    lib-srch := TextInput {
-                        x: 12px;
-                        width: parent.width - 48px;
-                        y: (parent.height - self.preferred-height) / 2;
-                        text: root.lib-search;
-                        color: Theme.text-primary;
-                        font-size: 13px;
-                        vertical-alignment: center;
-                        single-line: true;
-                        edited => {
-                            root.lib-search = self.text;
-                            root.lib-hi = 0;
-                            root.refresh-lib(self.text);
+                    height: 42px;
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 10px;
+                        spacing: 8px;
+                        Rectangle {
+                            width: 14px;
+                            height: parent.height;
+                            Icon { glyph: "search"; tint: Theme.text-muted; size: 14px; }
                         }
-                        key-pressed(e) => {
-                            if (e.text == Key.Escape) {
-                                root.lib-open = false;
-                                accept
-                            } else if (e.text == Key.DownArrow) {
-                                root.lib-move(1);
-                                accept
-                            } else if (e.text == Key.UpArrow) {
-                                root.lib-move(-1);
-                                accept
-                            } else if (e.text == Key.Return) {
-                                root.lib-insert-row(root.lib-hi);
-                                accept
-                            } else {
-                                reject
+                        lib-srch := TextInput {
+                            horizontal-stretch: 1;
+                            height: parent.height;
+                            text: root.lib-search;
+                            color: Theme.text-primary;
+                            font-size: 12.5px;
+                            vertical-alignment: center;
+                            single-line: true;
+                            edited => {
+                                root.lib-search = self.text;
+                                root.lib-hi = 0;
+                                root.refresh-lib(self.text);
+                            }
+                            key-pressed(e) => {
+                                if (e.text == Key.Escape) {
+                                    root.lib-open = false;
+                                    accept
+                                } else if (e.text == Key.DownArrow) {
+                                    root.lib-move(1);
+                                    accept
+                                } else if (e.text == Key.UpArrow) {
+                                    root.lib-move(-1);
+                                    accept
+                                } else if (e.text == Key.Return) {
+                                    root.lib-insert-row(root.lib-hi);
+                                    accept
+                                } else {
+                                    reject
+                                }
                             }
                         }
-                    }
-                    Rectangle {
-                        x: parent.width - 30px;
-                        width: 20px;
-                        height: parent.height;
-                        Icon {
-                            glyph: "close";
-                            tint: lib-clr-ta.has-hover ? #ffffff : Theme.text-muted;
-                            size: 12px;
-                        }
-                        lib-clr-ta := TouchArea {
-                            mouse-cursor: default;
-                            clicked => { root.lib-open = false; }
+                        Rectangle {
+                            width: lib-esc-txt.preferred-width + 10px;
+                            height: 16px;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: 3px;
+                            border-width: 1px;
+                            border-color: Theme.line-2;
+                            background: Theme.field;
+                            lib-esc-txt := Text {
+                                width: parent.width;
+                                height: parent.height;
+                                text: "Esc";
+                                color: Theme.text-muted;
+                                font-size: 9px;
+                                font-family: Theme.font-mono;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
                         }
                     }
                     Rectangle {
@@ -826,6 +2195,17 @@ export component SendCmdWindow inherits Window {
                         width: parent.width;
                         height: Theme.hairline();
                         background: Theme.border-subtle;
+                    }
+                    // placeholder 手工模拟(TextInput 无此属性;盖在搜索行上,不吞点击)
+                    if root.lib-search == "" : Text {
+                        x: 34px;
+                        width: parent.width - 100px;
+                        height: parent.height;
+                        text: @tr("Search quick commands or history…");
+                        color: Theme.text-muted;
+                        font-size: 12.5px;
+                        vertical-alignment: center;
+                        overflow: elide;
                     }
                 }
                 // 列表:分段由 Rust 排好(kind 0=段头 / 1=命令 / 2=历史)
@@ -849,25 +2229,27 @@ export component SendCmdWindow inherits Window {
                         lib-col := VerticalLayout {
                             alignment: start;
                             padding-top: 4px;
-                            padding-left: 8px;
-                            padding-right: 8px;
+                            padding-left: 5px;
+                            padding-right: 5px;
                             padding-bottom: 10px;
                             spacing: 0;
                             for r[i] in root.lib-rows : VerticalLayout {
                                 // 段头
                                 if r.kind == 0 : Text {
-                                    height: 26px;
+                                    height: 25px;
                                     text: r.text;
                                     color: Theme.text-muted;
-                                    font-size: 10px;
+                                    font-size: 9px;
                                     font-weight: 600;
-                                    letter-spacing: 1px;
+                                    letter-spacing: 1.2px;
                                     vertical-alignment: center;
                                 }
-                                // 快捷命令行(名称 + 命令串两行,40 高)
+                                // 快捷命令行:glyph + 名称/命令两行 + 右缘 kind 签
                                 if r.kind == 1 : Rectangle {
-                                    height: 40px;
-                                    border-radius: 5px;
+                                    height: 43px;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: i == root.lib-hi ? root.accent-line : transparent;
                                     background: (i == root.lib-hi || lib-row-ta.has-hover)
                                         ? Theme.bg-hover : transparent;
                                     animate background { duration: 90ms; }
@@ -875,24 +2257,60 @@ export component SendCmdWindow inherits Window {
                                         mouse-cursor: default;
                                         clicked => { root.lib-insert-row(i); }
                                     }
-                                    VerticalLayout {
+                                    HorizontalLayout {
                                         padding-left: 8px;
                                         padding-right: 8px;
-                                        padding-top: 4px;
-                                        padding-bottom: 4px;
-                                        spacing: 1px;
-                                        Text {
-                                            text: r.text;
-                                            color: Theme.text-primary;
-                                            font-size: Theme.fs-xs;
-                                            overflow: elide;
+                                        spacing: 9px;
+                                        Rectangle {
+                                            width: 22px;
+                                            height: 22px;
+                                            y: (parent.height - self.height) / 2;
+                                            border-radius: 4px;
+                                            background: i == root.lib-hi ? Theme.accent-soft : Theme.bg-panel-alt;
+                                            border-width: 1px;
+                                            border-color: i == root.lib-hi ? root.accent-line : Theme.border-control;
+                                            Icon {
+                                                glyph: "bolt";
+                                                tint: i == root.lib-hi ? Theme.accent-solid : Theme.text-muted;
+                                                size: 11px;
+                                            }
                                         }
-                                        Text {
-                                            text: r.sub;
-                                            color: Theme.text-muted;
-                                            font-family: Theme.font-mono;
-                                            font-size: 10.5px;
-                                            overflow: elide;
+                                        VerticalLayout {
+                                            horizontal-stretch: 1;
+                                            alignment: center;
+                                            spacing: 2px;
+                                            Text {
+                                                height: 15px;
+                                                text: r.text;
+                                                color: Theme.text-primary;
+                                                font-size: 11.5px;
+                                                overflow: elide;
+                                            }
+                                            Text {
+                                                height: 13px;
+                                                text: r.sub;
+                                                color: Theme.text-muted;
+                                                font-family: Theme.font-mono;
+                                                font-size: 9.5px;
+                                                overflow: elide;
+                                            }
+                                        }
+                                        Rectangle {
+                                            width: lib-kind1-txt.preferred-width + 10px;
+                                            height: 15px;
+                                            y: (parent.height - self.height) / 2;
+                                            border-radius: 3px;
+                                            border-width: 1px;
+                                            border-color: Theme.border-control;
+                                            lib-kind1-txt := Text {
+                                                width: parent.width;
+                                                height: parent.height;
+                                                text: @tr("quick");
+                                                color: Theme.text-muted;
+                                                font-size: 8.5px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
                                         }
                                     }
                                     if i == root.lib-hi || lib-row-ta.has-hover : Rectangle {
@@ -905,7 +2323,7 @@ export component SendCmdWindow inherits Window {
                                         Text {
                                             width: parent.width;
                                             height: parent.height;
-                                            text: "↵ 插入";
+                                            text: "↵ " + @tr("insert");
                                             color: Theme.accent-solid;
                                             font-size: 9px;
                                             horizontal-alignment: center;
@@ -916,7 +2334,9 @@ export component SendCmdWindow inherits Window {
                                 // 历史行(单行等宽,30 高)
                                 if r.kind == 2 : Rectangle {
                                     height: 30px;
-                                    border-radius: 5px;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: i == root.lib-hi ? root.accent-line : transparent;
                                     background: (i == root.lib-hi || lib-hist-ta.has-hover)
                                         ? Theme.bg-hover : transparent;
                                     animate background { duration: 90ms; }
@@ -924,16 +2344,51 @@ export component SendCmdWindow inherits Window {
                                         mouse-cursor: default;
                                         clicked => { root.lib-insert-row(i); }
                                     }
-                                    Text {
-                                        x: 8px;
-                                        width: parent.width - 60px;
-                                        height: parent.height;
-                                        text: r.text;
-                                        color: Theme.text-secondary;
-                                        font-family: Theme.font-mono;
-                                        font-size: 10.5px;
-                                        vertical-alignment: center;
-                                        overflow: elide;
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+                                        spacing: 9px;
+                                        Rectangle {
+                                            width: 22px;
+                                            height: 22px;
+                                            y: (parent.height - self.height) / 2;
+                                            border-radius: 4px;
+                                            background: i == root.lib-hi ? Theme.accent-soft : Theme.bg-panel-alt;
+                                            border-width: 1px;
+                                            border-color: i == root.lib-hi ? root.accent-line : Theme.border-control;
+                                            Icon {
+                                                glyph: "clock";
+                                                tint: i == root.lib-hi ? Theme.accent-solid : Theme.text-muted;
+                                                size: 11px;
+                                            }
+                                        }
+                                        Text {
+                                            horizontal-stretch: 1;
+                                            height: parent.height;
+                                            text: r.text;
+                                            color: Theme.text-secondary;
+                                            font-family: Theme.font-mono;
+                                            font-size: 10.5px;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                        Rectangle {
+                                            width: lib-kind2-txt.preferred-width + 10px;
+                                            height: 15px;
+                                            y: (parent.height - self.height) / 2;
+                                            border-radius: 3px;
+                                            border-width: 1px;
+                                            border-color: Theme.border-control;
+                                            lib-kind2-txt := Text {
+                                                width: parent.width;
+                                                height: parent.height;
+                                                text: @tr("history");
+                                                color: Theme.text-muted;
+                                                font-size: 8.5px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                        }
                                     }
                                     if i == root.lib-hi || lib-hist-ta.has-hover : Rectangle {
                                         x: parent.width - 44px;
@@ -945,7 +2400,7 @@ export component SendCmdWindow inherits Window {
                                         Text {
                                             width: parent.width;
                                             height: parent.height;
-                                            text: "↵ 插入";
+                                            text: "↵ " + @tr("insert");
                                             color: Theme.accent-solid;
                                             font-size: 9px;
                                             horizontal-alignment: center;
@@ -957,272 +2412,210 @@ export component SendCmdWindow inherits Window {
                         }
                     }
                 }
-            }
-        }
-
-        /* (#send-cmd-p3) 提示卡呈现层暂时摘除 —— 同信息区动作四段:
-           这台机器的 LLVM codegen 对本文件的某段组合稳定崩(exit 3,
-           check 阶段全部通过、独立单测全过,排除代码错误;二分实锤指向
-           tipcard/回执呈现)。数据链(SendTarget/receipt/复制回调)保留,
-           下一轮换 Slint 版本或拆组件后再挂回来。
-        if root.tip-open : Rectangle {
-            x: parent.width - self.width - 12px;
-            y: parent.height - self.height - 64px;
-            width: 300px;
-            height: min(360px, parent.height - 120px);
-            border-radius: 9px;
-            background: Theme.field;
-            border-width: 1px;
-            border-color: root.note-kind == 2 ? Theme.danger-strong : Theme.border-strong;
-            drop-shadow-blur: 16px;
-            drop-shadow-color: #00000070;
-            clip: true;
-
-            VerticalLayout {
-                // 头:汇总 + 关闭
+                // 底部快捷键提示条(v2 新增)
                 Rectangle {
-                    height: 30px;
-                    Text {
-                        x: 10px;
-                        width: parent.width - 60px;
-                        height: parent.height;
-                        text: root.has-receipt
-                            ? (root.receipt-bad > 0
-                                ? @tr("{0} failed · {1} ok", root.receipt-bad, root.receipt-ok)
-                                : @tr("{0} hosts all delivered", root.receipt-ok))
-                            : @tr("To be sent to {0} hosts", root.targets-n());
-                        color: root.note-color;
-                        font-size: 11px;
-                        font-weight: 700;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
+                    height: 32px;
                     Rectangle {
-                        x: parent.width - 26px;
-                        width: 20px;
-                        height: parent.height;
-                        Icon {
-                            glyph: "close";
-                            tint: tip-x-ta.has-hover ? #ffffff : Theme.text-muted;
-                            size: 11px;
-                        }
-                        tip-x-ta := TouchArea {
-                            mouse-cursor: default;
-                            clicked => { root.tip-open = false; }
-                        }
-                    }
-                    Rectangle {
-                        y: parent.height - Theme.hairline();
+                        y: 0;
                         width: parent.width;
                         height: Theme.hairline();
                         background: Theme.border-subtle;
                     }
-                }
-                // 列表:回执态(失败优先)/ 目标态
-                tip-scroll := ScrollView {
-                    vertical-stretch: 1;
-                    vertical-scrollbar-policy: ScrollBarPolicy.always-off;
-                    horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
-                    content-width: self.visible-width;
-                    VerticalLayout {
-                        alignment: start;
-                        padding-top: 4px;
-                        padding-left: 6px;
-                        padding-right: 6px;
-                        padding-bottom: 6px;
-                        spacing: 0;
-                        // 回执态:失败在前,点击行复制 id
-                        if root.has-receipt : VerticalLayout {
-                        for r in root.receipt : Rectangle {
-                            height: 28px;
-                            border-radius: 5px;
-                            background: tip-ta.has-hover ? Theme.bg-hover : transparent;
-                            tip-ta := TouchArea {
-                                mouse-cursor: default;
-                                clicked => { root.copy-text(r.id); }
-                            }
-                            Text {
-                                x: 8px;
-                                width: parent.width - 90px;
-                                height: parent.height;
-                                text: r.id;
-                                color: Theme.text-primary;
-                                font-family: Theme.font-mono;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                                overflow: elide;
-                            }
-                            Text {
-                                x: parent.width - 84px;
-                                width: 76px;
-                                height: parent.height;
-                                text: r.ok ? @tr("delivered") : @tr("failed");
-                                color: r.ok ? Theme.success : Theme.danger-strong;
-                                font-size: 10px;
-                                horizontal-alignment: right;
-                                vertical-alignment: center;
-                            }
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 14px;
+                        Text {
+                            height: parent.height;
+                            text: "↑↓ " + @tr("select");
+                            color: Theme.text-muted;
+                            font-size: 9px;
+                            font-family: Theme.font-mono;
+                            vertical-alignment: center;
                         }
+                        Text {
+                            height: parent.height;
+                            text: "Enter " + @tr("insert");
+                            color: Theme.text-muted;
+                            font-size: 9px;
+                            font-family: Theme.font-mono;
+                            vertical-alignment: center;
                         }
-                        if !root.has-receipt : VerticalLayout {
-                        // 目标态:逐台(频道点+user@id+频道/断开+当前)
-                        for t in root.targets : Rectangle {
-                            height: 28px;
-                            border-radius: 5px;
-                            background: tip-t2.has-hover ? Theme.bg-hover : transparent;
-                            tip-t2 := TouchArea {
-                                mouse-cursor: default;
-                                clicked => { root.copy-text(t.user + "@" + t.id); }
-                            }
-                            Rectangle {
-                                x: 10px;
-                                y: (parent.height - 8px) / 2;
-                                width: 8px;
-                                height: 8px;
-                                border-radius: 4px;
-                                background: t.online ? t.color : Theme.text-muted;
-                            }
-                            Text {
-                                x: 26px;
-                                width: parent.width - 120px;
-                                height: parent.height;
-                                text: t.user + "@" + t.id + (t.current ? @tr(" · current") : "");
-                                color: t.current ? Theme.accent-solid : Theme.text-primary;
-                                font-family: Theme.font-mono;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                                overflow: elide;
-                            }
-                            Text {
-                                x: parent.width - 88px;
-                                width: 80px;
-                                height: parent.height;
-                                text: t.online ? @tr("Channel {0}", t.ch) : @tr("offline");
-                                color: t.online ? Theme.text-muted : Theme.danger-strong;
-                                font-size: 10px;
-                                horizontal-alignment: right;
-                                vertical-alignment: center;
-                            }
+                        Text {
+                            height: parent.height;
+                            text: "Esc " + @tr("close");
+                            color: Theme.text-muted;
+                            font-size: 9px;
+                            font-family: Theme.font-mono;
+                            vertical-alignment: center;
                         }
-                    }
-                        }
+                        Rectangle { horizontal-stretch: 1; }
                     }
                 }
-                // 底:复制名单/复制结果
+            }
+        }
+
+        // ── toast:标题栏下居中(2.3s 回落;ok/warn/danger 三档色点)──
+        Rectangle {
+            visible: root.toast-text != "";
+            x: (parent.width - self.width) / 2;
+            y: 52px;
+            width: toast-txt.preferred-width + 34px;
+            height: 30px;
+            border-radius: 15px;
+            background: Theme.popup-bg-elevated;
+            border-width: 1px;
+            border-color: Theme.line-2;
+            drop-shadow-blur: 14px;
+            drop-shadow-color: #00000059;
+            HorizontalLayout {
+                padding-left: 13px;
+                padding-right: 13px;
+                spacing: 7px;
                 Rectangle {
-                    height: 30px;
-                    Text {
-                        x: 10px;
-                        height: parent.height;
-                        text: @tr("Copy list");
-                        color: Theme.accent-solid;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                        width: self.preferred-width;
-                        cp1-ta := TouchArea {
-                            mouse-cursor: default;
-                            clicked => { root.copy-list(); }
-                        }
-                    }
-                    Text {
-                        x: 90px;
-                        height: parent.height;
-                        text: @tr("Copy result");
-                        color: root.has-receipt ? Theme.accent-solid : Theme.text-muted;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                        width: self.preferred-width;
-                        cp2-ta := TouchArea {
-                            mouse-cursor: default;
-                            clicked => { if (root.has-receipt) { root.copy-result-clip(); } }
-                        }
-                    }
+                    width: 6px;
+                    height: 6px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 3px;
+                    background: root.toast-kind == 2 ? Theme.danger-strong
+                        : root.toast-kind == 1 ? Theme.warning : Theme.accent-solid;
+                }
+                toast-txt := Text {
+                    height: parent.height;
+                    text: root.toast-text;
+                    color: Theme.text-primary;
+                    font-size: 11px;
+                    vertical-alignment: center;
                 }
             }
-        */
         }
 
-        exp-text-timer := Timer {
-            interval: 0ms;
-            running: root.text-push;
-            triggered => {
-                exp-input.text = root.text;
-                root.text-push = false;
+        // ── 标题栏 tooltip 层(根级 = z 最高)──
+        // (#tip-layer 2026-11-07) 原挂在按钮内部,弹到标题栏下方时被主布局
+        // 后续兄弟(编辑器/投递栏,z 更高)盖住 —— 用户实测「悬浮提示被遮挡」。
+        // 提到根级最后声明 = 顶层;条件引用按钮 TouchArea 的 has-hover;
+        // x 与按钮右缘对齐(DialogClose .tip 同款惯例),y = 标题栏底 + 6。
+        if lib-ta.has-hover : Rectangle {
+            x: lib-btn.x + lib-btn.width - self.width;
+            y: 52px;
+            width: tip-lib.preferred-width + 16px;
+            height: 24px;
+            border-radius: Theme.radius-sm;
+            background: Theme.popup-bg;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            tip-lib := Text {
+                width: parent.width;
+                height: parent.height;
+                text: @tr("命令库");
+                color: Theme.text-primary;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        if pin-ta.has-hover : Rectangle {
+            x: pin-btn.x + pin-btn.width - self.width;
+            y: 52px;
+            width: tip-pin.preferred-width + 16px;
+            height: 24px;
+            border-radius: Theme.radius-sm;
+            background: Theme.popup-bg;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            tip-pin := Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.pinned ? @tr("取消置顶") : @tr("置顶(钉住)");
+                color: Theme.text-primary;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    // (#send-cmd-v2) 频道草稿查表(弹层复选框/徽章共用;Slint 表达式无循环,逐档判)
+    function d-sel(letter: string) -> bool {
+        if (letter == "A") { return root.d-a; }
+        if (letter == "B") { return root.d-b; }
+        if (letter == "C") { return root.d-c; }
+        return root.d-d;
+    }
+    // (#send-cmd-v2) 主机段搜索过滤(标题/用户名/id;主机名常态小写,不做大小写归一)。
+    // Slint string 没有 contains —— replace-all 把子串挖空后变短 = 含子串。
+    function host-match(t: SendTarget) -> bool {
+        if (root.host-filter == "") { return true; }
+        return t.title.replace-all(root.host-filter, "").character-count < t.title.character-count
+            || t.user.replace-all(root.host-filter, "").character-count < t.user.character-count
+            || t.id.replace-all(root.host-filter, "").character-count < t.id.character-count;
+    }
+
+    // ── 定时器链(机制保留)──
+    exp-text-timer := Timer {
+        interval: 0ms;
+        running: root.text-push;
+        triggered => {
+            exp-input.text = root.text;
+            root.text-push = false;
+            exp-input.focus();
+            root.caret-pending = true;
+            // 插入/Tab/外部写入也算「文本变了」:检测要跟上
+            root.check-text(root.text);
+        }
+    }
+    exp-caret-timer := Timer {
+        interval: 0ms;
+        running: root.caret-pending;
+        triggered => {
+            root.caret-pending = false;
+            // 插入/Tab 用 Rust 算好的光标偏移;末尾追加走旧钳尾路径
+            if (root.caret-pos >= 0) {
+                exp-input.set-selection-offsets(root.caret-pos, root.caret-pos);
+                root.caret-pos = -1;
+            } else {
+                exp-input.set-selection-offsets(999999, 999999);
+            }
+        }
+    }
+    exp-blink-timer := Timer {
+        interval: 530ms;
+        running: root.cursor-style == "underline" && exp-input.has-focus;
+        triggered => { root.caret-blink = !root.caret-blink; }
+    }
+    exp-focus-timer := Timer {
+        interval: 0ms;
+        running: root.focus-pending;
+        triggered => {
+            if (root.focus-pending) {
+                root.focus-pending = false;
                 exp-input.focus();
-                root.caret-pending = true;
-                // 插入/外部写入也算「文本变了」:检测要跟上
-                root.check-text(root.text);
             }
         }
-        exp-caret-timer := Timer {
-            interval: 0ms;
-            running: root.caret-pending;
-            triggered => {
-                root.caret-pending = false;
-                // (#send-cmd-p2) 插入用 Rust 算好的光标偏移;末尾追加走旧钳尾路径
-                if (root.caret-pos >= 0) {
-                    exp-input.set-selection-offsets(root.caret-pos, root.caret-pos);
-                    root.caret-pos = -1;
-                } else {
-                    exp-input.set-selection-offsets(999999, 999999);
-                }
+    }
+    // (#send-cmd-p1) 面板搜索框「唤出即聚焦」:clicked 回调里直接 focus()
+    // 会丢(visible 变化在同一帧还没生效),排到下一轮。
+    lib-focus-timer := Timer {
+        interval: 0ms;
+        running: root.lib-focus-pending;
+        triggered => {
+            if (root.lib-focus-pending) {
+                root.lib-focus-pending = false;
+                lib-srch.focus();
             }
         }
-        exp-sent-timer := Timer {
-            interval: 1400ms;
-            running: root.sent-flash;
-            triggered => { root.sent-flash = false; }
-        }
-        exp-blink-timer := Timer {
-            interval: 530ms;
-            running: root.cursor-style == "underline" && exp-input.has-focus;
-            triggered => { root.caret-blink = !root.caret-blink; }
-        }
-        exp-focus-timer := Timer {
-            interval: 0ms;
-            running: root.focus-pending;
-            triggered => {
-                if (root.focus-pending) {
-                    root.focus-pending = false;
-                    exp-input.focus();
-                }
-            }
-        }
-        // (#send-cmd-p1) 面板搜索框「唤出即聚焦」:clicked 回调里直接 focus()
-        // 会丢(lib-open 的 visible 变化在同一帧还没生效),排到下一轮。
-        lib-focus-timer := Timer {
-            interval: 0ms;
-            running: root.lib-focus-pending;
-            triggered => {
-                if (root.lib-focus-pending) {
-                    root.lib-focus-pending = false;
-                    lib-srch.focus();
-                }
-            }
-        }
-        // (#send-cmd-p1 §11) armed 的 3 秒自动解除:阶段 2 停留太久就退回阶段 1
-        arm-timer := Timer {
-            interval: 3000ms;
-            running: root.armed;
-            triggered => { root.armed = false; }
-        }
-
-    // 插入面板行:kind 0 是段头(不可插);kind 1 的命令串在 sub,kind 2 在 text。
-    // 插入即关,焦点回编辑器,光标到末尾(复用 text-push/caret-pending 机制)。
-    function lib-insert-row(idx: int) {
-        if (idx < 0 || idx >= root.lib-rows.length) { return; }
-        let r = root.lib-rows[idx];
-        if (r.kind == 0) { return; }
-        let cmd = r.kind == 1 ? r.sub : r.text;
-        if (cmd == "") { return; }
-        // (#send-cmd-p2 §04②) 插入到光标处:像素反推行列 → Rust 切片拼接
-        // (不劈开正在写的行,光标落插入内容末尾;中文行列有半格误差,末尾追加不受影响)
-        let res = root.insert-at(root.text,
-            root.caret-y / gutter.pitch, root.caret-x / gutter.char-w, cmd);
-        root.text = res.text;
-        root.caret-pos = res.caret;
-        root.lib-open = false;
-        root.text-push = true;
+    }
+    // (#send-cmd-p1 §11) armed 的 3 秒自动解除:阶段 2 停留太久就退回阶段 1
+    arm-timer := Timer {
+        interval: 3000ms;
+        running: root.armed;
+        triggered => { root.armed = false; }
+    }
+    // (#send-cmd-v2) toast 2.3s 回落
+    toast-timer := Timer {
+        interval: 2300ms;
+        running: root.toast-text != "";
+        triggered => { root.toast-text = ""; }
     }
 
     if root.custom-titlebar : WindowFrame {
