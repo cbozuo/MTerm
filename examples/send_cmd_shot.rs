@@ -171,19 +171,20 @@ fn main() {
     ui3.set_scope_seg(1);
     ui3.set_host_sel("".into());
     grab(&ui3, &mut frame, "output/send-cmd/08-channel.png");
-    // ── 07 tooltip:置顶钮悬停 → 根级 tip 层不被主布局遮挡 ──
-    // (#tip-layer 2026-11-07) PointerMoved 进按钮触发 has-hover;
-    // pin-btn 在 940 宽下 x=940-12-24-5-24=875,中心 (887,23)。
+    // ── 07 光标实证:underline 模式聚焦编辑器,看内置+自绘是否双光标 ──
     let ui4 = SendCmdWindow::new().expect("build send window 4");
     setup(&ui4);
-    ui4.window().dispatch_event(slint::platform::WindowEvent::PointerMoved {
-        position: slint::LogicalPosition::new(887.0, 23.0),
+    ui4.set_cursor_style(slint::SharedString::from("underline"));
+    ui4.set_text("cd /home".into());
+    ui4.window().dispatch_event(slint::platform::WindowEvent::PointerPressed {
+        position: slint::LogicalPosition::new(300.0, 160.0),
+        button: slint::platform::PointerEventButton::Left,
     });
-    std::thread::sleep(std::time::Duration::from_millis(120));
-    ui4.window().dispatch_event(slint::platform::WindowEvent::PointerMoved {
-        position: slint::LogicalPosition::new(887.0, 23.0),
+    ui4.window().dispatch_event(slint::platform::WindowEvent::PointerReleased {
+        position: slint::LogicalPosition::new(300.0, 160.0),
+        button: slint::platform::PointerEventButton::Left,
     });
-    grab(&ui4, &mut frame, "output/send-cmd/07-tooltip.png");
+    grab(&ui4, &mut frame, "output/send-cmd/07-caret.png");
 }
 
 fn crate_row(kind: i32, text: &str, sub: &str) -> mterm::ui::LibRow {

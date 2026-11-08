@@ -552,9 +552,32 @@ export component SendCmdWindow inherits Window {
                         EventResult.reject
                     }
                 }
+                // (#tip-r9 2026-11-08) 投递栏收/展开关:标题栏右上角与命令库并排,
+                // 图标用主界面侧栏同款 sidebar-right 两态(收/展跟随切换),tooltip 走根级 tip 层。
+                rail-toggle := Rectangle {
+                    x: lib-btn.x - 5px - self.width;
+                    y: (parent.height - self.height) / 2;
+                    width: 24px;
+                    height: 24px;
+                    border-radius: 5px;
+                    background: rail-tg-ta.has-hover ? Theme.bg-hover : transparent;
+                    animate background { duration: 90ms; }
+                    Icon {
+                        glyph: root.rail-collapsed ? "sidebar-right-expand" : "sidebar-right-collapse";
+                        tint: rail-tg-ta.has-hover ? Theme.text-primary : Theme.text-muted;
+                        size: 14px;
+                    }
+                    rail-tg-ta := TouchArea {
+                        mouse-cursor: default;
+                        clicked => {
+                            root.rail-collapsed = !root.rail-collapsed;
+                            root.scope-open = false;
+                        }
+                    }
+                }
                 // (#send-cmd-v2) 命令库入口:图标 + 文字(稿 .title-action),弹层锚定其下
                 lib-btn := Rectangle {
-                    x: parent.width - 12px - 24px - 5px - 24px - 5px - self.width;
+                    x: parent.width - 12px - 24px - 5px - 24px - 5px - 24px - 5px - self.width;
                     y: (parent.height - self.height) / 2;
                     width: lib-btn-txt.preferred-width + 28px;
                     height: 26px;
@@ -716,12 +739,17 @@ export component SendCmdWindow inherits Window {
                                 // (#send-cmd-v2) 危险行红条:for 遍历 Rust 镜像的危险行集合,
                                 // 画在输入文字之下(content 坐标系,随滚动同步 —— 稿里的
                                 // 独立滚动差值在 Slint 这套结构里天然不存在)。
+                                // (#tip-r7 2026-11-08) 照高保真 .danger-line-bg 同款:
+                                // 视口宽(不随超宽内容无限延伸)+ 90° 渐变 74% 处淡出。
                                 for d in root.danger-rows : Rectangle {
                                     x: 36px;
-                                    width: exp-scroll.content-width - 48px;
+                                    width: max(exp-scroll.visible-width - 44px,
+                                        exp-input.preferred-width + 14px);
                                     y: 14px + d * root.pitch;
                                     height: root.pitch;
-                                    background: Theme.danger-strong.with-alpha(0.10);
+                                    background: @linear-gradient(90deg,
+                                        Theme.danger-strong.with-alpha(0.16) 0%,
+                                        transparent 74%);
                                     Rectangle {
                                         x: 0;
                                         width: 2px;
@@ -1107,25 +1135,8 @@ export component SendCmdWindow inherits Window {
                                             }
                                         }
                                         Rectangle { horizontal-stretch: 1; }
-                                        Rectangle {
-                                            width: 22px;
-                                            height: 22px;
-                                            y: (parent.height - self.height) / 2;
-                                            border-radius: 3px;
-                                            background: rail-clp-ta.has-hover ? Theme.bg-hover : transparent;
-                                            Icon {
-                                                glyph: "expand-more";
-                                                tint: rail-clp-ta.has-hover ? Theme.text-primary : Theme.text-muted;
-                                                size: 12px;
-                                            }
-                                            rail-clp-ta := TouchArea {
-                                                mouse-cursor: default;
-                                                clicked => {
-                                                    root.rail-collapsed = true;
-                                                    root.scope-open = false;
-                                                }
-                                            }
-                                        }
+                                        // (#tip-r9 2026-11-08) 收起钮移标题栏右上角(与命令库
+                                        // 并排+tooltip+sidebar-right 同款图标)——此处只留标题。
                                     }
                                 }
                                 // 范围键 54:图标槽 + 双行(label/sub) + chevron(稿 .scope-btn)
@@ -1304,6 +1315,9 @@ export component SendCmdWindow inherits Window {
                                             padding-right: 10px;
                                             spacing: 9px;
                                             // 主机名 / user · 频道
+                                            // (#tip-r8) 副行条件渲染:user/ch 全空的标签页
+                                            // 不渲染副行(空 Text 占位会把主行顶偏),主行独占时
+                                            // 由 alignment:center 在 52px 行内垂直居中。
                                             VerticalLayout {
                                                 horizontal-stretch: 1;
                                                 alignment: center;
@@ -1318,9 +1332,11 @@ export component SendCmdWindow inherits Window {
                                                     overflow: elide;
                                                     vertical-alignment: center;
                                                 }
-                                                Text {
+                                                if (t.user != "" || t.ch != "") : Text {
                                                     height: 13px;
-                                                    text: (t.user == "" ? "" : t.user + " · ") + t.ch;
+                                                    text: (t.user == "" ? "" : t.user)
+                                                        + ((t.user != "" && t.ch != "") ? " · " : "")
+                                                        + t.ch;
                                                     color: Theme.text-muted;
                                                     font-size: 9.5px;
                                                     font-family: Theme.font-mono;
@@ -1503,29 +1519,15 @@ export component SendCmdWindow inherits Window {
                     }
 
                     // ── 收起态:44px 竖条 ──
+                    // (#tip-r9 2026-11-08) 重排:展开走标题栏右上角同一枚钮(竖条里
+                    // 不再放钮),徽章+竖排文字紧凑一组垂直居中,视觉聚拢协调。
                     Rectangle {
                         visible: root.rail-collapsed;
                         VerticalLayout {
                             padding-top: 10px;
                             padding-bottom: 10px;
-                            spacing: 10px;
+                            spacing: 12px;
                             alignment: center;
-                            // 展开钮
-                            Rectangle {
-                                width: 26px;
-                                height: 26px;
-                                border-radius: 4px;
-                                background: mini-exp-ta.has-hover ? Theme.bg-hover : transparent;
-                                Icon {
-                                    glyph: "expand-less";
-                                    tint: mini-exp-ta.has-hover ? Theme.text-primary : Theme.text-muted;
-                                    size: 13px;
-                                }
-                                mini-exp-ta := TouchArea {
-                                    mouse-cursor: default;
-                                    clicked => { root.rail-collapsed = false; }
-                                }
-                            }
                             // 台数徽章
                             Rectangle {
                                 width: 26px;
@@ -1550,7 +1552,6 @@ export component SendCmdWindow inherits Window {
                             // 收起态 preferred 卷进 Layout 分配环(Recursion detected)。
                             Text {
                                 width: 44px;
-                                vertical-stretch: 1;
                                 text: "投\n递\n\nT\nA\nR\nG\nE\nT\nS";
                                 color: Theme.text-muted;
                                 font-size: 9.5px;
@@ -1957,6 +1958,8 @@ export component SendCmdWindow inherits Window {
                                             }
                                         }
                                         // (#tip-r3 2026-11-07) 频道色点与「当前」tag 删 —— 不需要状态点
+                                        // (#tip-r8) 副行条件渲染:user/ch 全空不渲染(防「频道」孤字
+                                        // 与主行偏上);非空段用「 · 」连接。
                                         VerticalLayout {
                                             horizontal-stretch: 1;
                                             alignment: center;
@@ -1969,9 +1972,12 @@ export component SendCmdWindow inherits Window {
                                                 overflow: elide;
                                                 vertical-alignment: center;
                                             }
-                                            Text {
+                                            if (t.user != "" || t.ch != "") : Text {
                                                 height: 13px;
-                                                text: (t.user == "" ? "" : t.user + " · ") + @tr("Channel {0}", t.ch) + (t.online ? "" : " · " + @tr("offline"));
+                                                text: (t.user == "" ? "" : t.user)
+                                                    + ((t.user != "" && t.ch != "") ? " · " : "")
+                                                    + (t.ch == "" ? "" : @tr("Channel {0}", t.ch))
+                                                    + (t.online ? "" : " · " + @tr("offline"));
                                                 color: Theme.text-muted;
                                                 font-size: 9.5px;
                                                 font-family: Theme.font-mono;
@@ -2399,11 +2405,13 @@ export component SendCmdWindow inherits Window {
             }
         }
 
-        // ── toast:标题栏下居中(2.3s 回落;ok/warn/danger 三档色点)──
+        // ── toast:页脚居中(2.3s 回落;ok/warn/danger 三档色点)──
+        // (#tip-r7 2026-11-08) 从标题栏下移到窗口底部居中(底缘上 20px)——
+        // 顶部位置会压 COMMAND 统计行,页脚空旷不遮内容。
         Rectangle {
             visible: root.toast-text != "";
             x: (parent.width - self.width) / 2;
-            y: 52px;
+            y: parent.height - self.height - 20px;
             width: toast-txt.preferred-width + 34px;
             height: 30px;
             border-radius: 15px;
@@ -2471,6 +2479,26 @@ export component SendCmdWindow inherits Window {
                 width: parent.width;
                 height: parent.height;
                 text: root.pinned ? @tr("取消置顶") : @tr("置顶(钉住)");
+                color: Theme.text-primary;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        // (#tip-r9) 投递栏收/展开关:图标两态,tooltip 文案跟随状态
+        if rail-tg-ta.has-hover : Rectangle {
+            x: rail-toggle.x + rail-toggle.width - self.width;
+            y: 52px;
+            width: tip-rail.preferred-width + 16px;
+            height: 24px;
+            border-radius: Theme.radius-sm;
+            background: Theme.popup-bg;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            tip-rail := Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.rail-collapsed ? @tr("展开投递栏") : @tr("收起投递栏");
                 color: Theme.text-primary;
                 font-size: 11px;
                 horizontal-alignment: center;
