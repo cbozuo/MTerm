@@ -308,11 +308,11 @@ export component SendCmdWindow inherits Window {
              + (root.d-c ? root.scope-count-of("C") : 0)
              + (root.d-d ? root.scope-count-of("D") : 0);
     }
-    // 弹层「已选 N 台」:频道段 = 草稿合计;主机段 = 当前档台数
+    // 弹层「已选 N 台」:频道段 = 草稿合计;主机段 = 已勾台数。
+    // (#tip-r4) 主机段 0 台也可应用 = 清空选择,恢复默认档(发主窗当前标签页)。
     function scope-picked-n() -> int {
         if (root.scope-seg == 1) { return root.draft-total(); }
-        if (root.host-n() > 0) { return root.host-n(); }
-        return root.all ? root.tab-count : 1;
+        return root.host-n();
     }
 
     // ── 信息区文案:说「将要发生什么」,发送键说「你要做什么」。
@@ -482,18 +482,8 @@ export component SendCmdWindow inherits Window {
     Rectangle {
         background: Theme.popup-bg;
 
-        // 弹层开着时点弹层外空白:关弹层(全屏透明遮罩,声明在最前 = z 最低,
-        // 点空白落到它身上;弹层本体声明在后面 = 压住遮罩)。
-        if root.lib-open || root.scope-open : Rectangle {
-            width: 100%;
-            height: 100%;
-            background: transparent;
-            TouchArea {
-                clicked => { root.lib-open = false; root.scope-open = false; }
-            }
-        }
-
         // (#send-cmd-drag-blank) 空白也能拖窗:落在这层的按下交给 OS。
+        // (弹层开着时此层被上层关弹层遮罩压住,点外 = 关弹层,不拖窗。)
         Rectangle {
             width: 100%;
             height: 100%;
@@ -782,8 +772,11 @@ export component SendCmdWindow inherits Window {
                                         vertical-alignment: top;
                                         wrap: no-wrap;
                                         single-line: false;
+                                        // (#tip-r4 2026-11-08) underline 档内置光标用 -1px
+                                        // 而非 0px:0px 实测仍渲染 1px 竖线(与自绘横线成双光标,
+                                        // 离屏 07 实证);负宽 fill 不画,自绘横线独自承担底杠形态。
                                         text-cursor-width: root.cursor-style == "bar" ? 2px
-                                            : (root.cursor-style == "underline" ? 0px
+                                            : (root.cursor-style == "underline" ? -1px
                                             : max(6px, root.char-w));
                                         cursor-position-changed(position) => {
                                             root.caret-x = position.x;
@@ -847,22 +840,27 @@ export component SendCmdWindow inherits Window {
                                 height: Theme.hairline();
                                 background: Theme.border-subtle;
                             }
-                            HorizontalLayout {
-                                padding-left: 14px;
-                                padding-right: 12px;
-                                spacing: 10px;
-                                // 送达方式胶囊:仅多行出现;两段(逐行回车 | 整段粘贴)。
-                                // (#tip-r2 2026-11-07) 换公共 SegGroup 滑块(seg.slint,
-                                // 与同步弹框/范围菜单同一滑动语言);段内文字 active 用
-                                // accent 700,「整段粘贴」档带风险时琥珀警示保留。
-                                if root.multi-line : SegGroup {
-                                    height: 28px;
-                                    y: (parent.height - self.height) / 2;
+                            // (#tip-r4 2026-11-08) sendbar 绝对定位(不进 Layout):
+                            // 空状态位时 stretch 不生效,发送钮会左堆(实测)——
+                            // 从右往左链式声明:发送钮恒靠编辑器右缘+贴底,
+                            // 助记、状态位、送达胶囊依次向左排。
+                            // 送达方式胶囊:仅多行出现;两段(逐行回车 | 整段粘贴)。
+                            // SegGroup 恒渲染(visible 切换)——cap 后链的 note 要读
+                            // 它的 content-w 定左缘(条件元素引用不稳,恒渲染最稳)。
+                            cap-seg := SegGroup {
+                                visible: root.multi-line;
+                                x: 14px;
+                                y: (parent.height - self.height) / 2;
+                                width: self.content-w;
+                                height: 30px;
                                     active-index: root.resolved-paste-mode == "block" ? 1 : 0;
                                     count: 2;
                                     compact: true;
                                     Rectangle {
                                         height: parent.height - 6px;
+                                        horizontal-stretch: 1;
+                                        min-width: 0px;
+                                        preferred-width: 0px;
                                         TouchArea {
                                             mouse-cursor: default;
                                             clicked => {
@@ -885,6 +883,9 @@ export component SendCmdWindow inherits Window {
                                     }
                                     Rectangle {
                                         height: parent.height - 6px;
+                                        horizontal-stretch: 1;
+                                        min-width: 0px;
+                                        preferred-width: 0px;
                                         TouchArea {
                                             mouse-cursor: default;
                                             clicked => {
@@ -909,8 +910,9 @@ export component SendCmdWindow inherits Window {
                                     }
                                 }
                                 // 状态位:图标 + 一句状态(危险红 / 风险琥珀 / 回执绿 / 普通灰)
-                                Rectangle {
-                                    horizontal-stretch: 1;
+                                note-row := Rectangle {
+                                    x: root.multi-line ? 14px + cap-seg.content-w + 12px : 14px;
+                                    width: max(0px, kbd-row.x - self.x - 12px);
                                     height: parent.height;
                                     HorizontalLayout {
                                         spacing: 6px;
@@ -931,7 +933,8 @@ export component SendCmdWindow inherits Window {
                                     }
                                 }
                                 // Ctrl+Enter 助记(v2 恢复 —— 方案 E 时被信息区取代)
-                                Rectangle {
+                                kbd-row := Rectangle {
+                                    x: exp-send.x - self.preferred-width - 10px;
                                     height: parent.height;
                                     HorizontalLayout {
                                         spacing: 2px;
@@ -986,7 +989,10 @@ export component SendCmdWindow inherits Window {
                                 }
                                 // 发送钮:全窗唯一 filled button(v2 契约 ③);
                                 // 空草稿/无目标 disabled(半透),armed 变红只改这一枚。
+                                // (#tip-r4) x 恒靠编辑器列右缘(距右 12px),与输入框
+                                // 底部 hairline 同行(56px 条内垂直居中)。
                                 exp-send := Rectangle {
+                                    x: parent.width - 12px - self.width;
                                     width: max(96px, exp-send-txt.preferred-width + 40px);
                                     height: 34px;
                                     y: (parent.height - self.height) / 2;
@@ -1036,7 +1042,6 @@ export component SendCmdWindow inherits Window {
                                         }
                                     }
                                 }
-                            }
                         }
                     }
                 }
@@ -1281,9 +1286,18 @@ export component SendCmdWindow inherits Window {
                                         background: host-row-ta.has-hover ? Theme.bg-hover : transparent;
                                         animate background { duration: 110ms; }
                                         host-row-ta := TouchArea {
+                                            // (#tip-r6) 弹层开着时禁用(hover 高亮会透过弹层
+                                            // 显示成「被选中」,点击也会穿透 toggle)。
+                                            enabled: !root.scope-open;
                                             mouse-cursor: default;
-                                            // 点行 = 逐台勾选该主机(host 档) —— 与范围弹层主机段同一协议
-                                            clicked => { root.host-toggle(t.id); }
+                                            // 点行 = 勾选该主机(host 档快速添加) —— 与范围弹层
+                                            // 主机段同一协议;已选中的行点了**不取消**(投递列表
+                                            // 只增不减,取消走弹层的勾选/清空)。
+                                            clicked => {
+                                                root.all = false;
+                                                root.ch-a = false; root.ch-b = false; root.ch-c = false; root.ch-d = false;
+                                                if (!root.host-in(t.id)) { root.host-toggle(t.id); }
+                                            }
                                         }
                                         HorizontalLayout {
                                             padding-left: 10px;
@@ -1306,7 +1320,7 @@ export component SendCmdWindow inherits Window {
                                                 }
                                                 Text {
                                                     height: 13px;
-                                                    text: t.user + " · " + t.ch;
+                                                    text: (t.user == "" ? "" : t.user + " · ") + t.ch;
                                                     color: Theme.text-muted;
                                                     font-size: 9.5px;
                                                     font-family: Theme.font-mono;
@@ -1375,7 +1389,7 @@ export component SendCmdWindow inherits Window {
                                     vertical-alignment: center;
                                 }
                                 if root.receipt-bad > 0 : Rectangle {
-                                    width: foot-retry-txt.preferred-width + 14px;
+                                    width: foot-retry-txt.preferred-width + 32px;
                                     height: 23px;
                                     y: (parent.height - self.height) / 2;
                                     border-radius: 4px;
@@ -1405,7 +1419,7 @@ export component SendCmdWindow inherits Window {
                                     }
                                 }
                                 Rectangle {
-                                    width: foot-copy-txt.preferred-width + 14px;
+                                    width: foot-copy-txt.preferred-width + 32px;
                                     height: 23px;
                                     y: (parent.height - self.height) / 2;
                                     border-radius: 4px;
@@ -1455,7 +1469,7 @@ export component SendCmdWindow inherits Window {
                                     vertical-alignment: center;
                                 }
                                 Rectangle {
-                                    width: foot-copylist-txt.preferred-width + 18px;
+                                    width: foot-copylist-txt.preferred-width + 32px;
                                     height: 23px;
                                     y: (parent.height - self.height) / 2;
                                     border-radius: 4px;
@@ -1551,6 +1565,21 @@ export component SendCmdWindow inherits Window {
             }
         }
 
+        // ── 弹层点外关闭遮罩 ──
+        // (#tip-r6 2026-11-08) 原先声明在主布局之前(z 最低),点外永远先落到
+        // 主布局的编辑器/拖窗层上,点外关闭从未生效 —— 移到主布局之后 = 盖住
+        // 主内容,弹层(scope-pop/lib-pop/toast)声明在其后 = 压住遮罩。
+        // 第一次点弹层外 = 只关弹层(标准模态);点范围键/命令库钮同层也被
+        // 遮罩盖住 = 再点一次等于关掉,符合预期。
+        if root.lib-open || root.scope-open : Rectangle {
+            width: 100%;
+            height: 100%;
+            background: transparent;
+            TouchArea {
+                clicked => { root.lib-open = false; root.scope-open = false; }
+            }
+        }
+
         // ── 范围弹层 326:锚定 rail-head 范围键下(窗口内自绘,z 高于遮罩)──
         Rectangle {
             visible: root.scope-open;
@@ -1558,12 +1587,13 @@ export component SendCmdWindow inherits Window {
             y: 145px;
             width: 326px;
             height: min(408px, parent.height - 155px);
-            border-radius: 10px;
+            // (#tip-r5) 弹框外壳照 highlight 同款:hairline 细边 + radius-xl + 透明阴影
+            border-radius: Theme.radius-xl;
             background: Theme.popup-bg;
-            border-width: 1px;
+            border-width: Theme.hairline();
             border-color: Theme.border-strong;
-            drop-shadow-blur: 18px;
-            drop-shadow-color: #00000070;
+            drop-shadow-blur: 26px;
+            drop-shadow-color: transparent;
             clip: true;
 
             VerticalLayout {
@@ -1599,17 +1629,15 @@ export component SendCmdWindow inherits Window {
                                 horizontal-alignment: right;
                                 vertical-alignment: center;
                             }
-                            Rectangle {
+                            // (#tip-r6) 关闭钮换 DialogClose(项目统一:24px+红 hover 白叉)
+                            DialogClose {
                                 x: parent.width - 22px;
                                 width: 22px;
                                 height: 22px;
-                                border-radius: 3px;
-                                background: scope-x-ta.has-hover ? Theme.bg-hover : transparent;
-                                Icon { glyph: "close"; tint: scope-x-ta.has-hover ? Theme.text-primary : Theme.text-muted; size: 12px; }
-                                scope-x-ta := TouchArea {
-                                    mouse-cursor: default;
-                                    clicked => { root.scope-open = false; }
-                                }
+                                btn-size: 22px;
+                                glyph-size: 12px;
+                                tip: "";
+                                clicked => { root.scope-open = false; }
                             }
                         }
                         // 两段滑块:频道 | 主机(切段清另一侧,互斥)。
@@ -1621,6 +1649,9 @@ export component SendCmdWindow inherits Window {
                             compact: true;
                             Rectangle {
                                 height: parent.height - 6px;
+                                        horizontal-stretch: 1;
+                                        min-width: 0px;
+                                        preferred-width: 0px;
                                 // icon+文字整体居中(Text 不拉伸,防 icon/文字分离)
                                 HorizontalLayout {
                                     x: (parent.width - self.preferred-width) / 2;
@@ -1647,6 +1678,9 @@ export component SendCmdWindow inherits Window {
                             }
                             Rectangle {
                                 height: parent.height - 6px;
+                                        horizontal-stretch: 1;
+                                        min-width: 0px;
+                                        preferred-width: 0px;
                                 HorizontalLayout {
                                     x: (parent.width - self.preferred-width) / 2;
                                     spacing: 5px;
@@ -1721,148 +1755,16 @@ export component SendCmdWindow inherits Window {
                                 alignment: start;
                                 padding: 6px;
                                 spacing: 0;
-                                // 「当前标签页」单选(radio)
-                                Rectangle {
-                                    height: 38px;
-                                    border-radius: 4px;
-                                    border-width: 1px;
-                                    border-color: (!root.all && root.host-n() == 0) ? root.accent-line : transparent;
-                                    background: (!root.all && root.host-n() == 0) ? Theme.accent-soft
-                                        : (tab-cur-ta.has-hover ? Theme.bg-hover : transparent);
-                                    animate background { duration: 110ms; }
-                                    tab-cur-ta := TouchArea {
-                                        mouse-cursor: default;
-                                        clicked => {
-                                            root.all = false;
-                                            root.host-sel = "";
-                                            root.d-a = false; root.d-b = false; root.d-c = false; root.d-d = false;
-                                        }
-                                    }
-                                    HorizontalLayout {
-                                        padding-left: 9px;
-                                        padding-right: 9px;
-                                        spacing: 9px;
-                                        Rectangle {
-                                            width: 14px;
-                                            height: parent.height;
-                                            Rectangle {
-                                                y: (parent.height - self.height) / 2;
-                                                width: 14px;
-                                                height: 14px;
-                                                border-radius: 8px;
-                                                border-width: 1.5px;
-                                                border-color: (!root.all && root.host-n() == 0) ? Theme.accent-solid : Theme.border-strong;
-                                                background: (!root.all && root.host-n() == 0) ? Theme.accent-solid : transparent;
-                                                animate background, border-color { duration: 120ms; }
-                                                Rectangle {
-                                                    x: (parent.width - self.width) / 2;
-                                                    y: (parent.height - self.height) / 2;
-                                                    width: 5px;
-                                                    height: 5px;
-                                                    border-radius: 3px;
-                                                    background: Theme.dark ? #0A0B0E : #ffffff;
-                                                    visible: !root.all && root.host-n() == 0;
-                                                }
-                                            }
-                                        }
-                                        VerticalLayout {
-                                            horizontal-stretch: 1;
-                                            alignment: center;
-                                            spacing: 1px;
-                                            Text {
-                                                height: 17px;
-                                                text: @tr("This tab");
-                                                color: (!root.all && root.host-n() == 0) ? Theme.text-primary : Theme.text-secondary;
-                                                font-size: 11.5px;
-                                                overflow: elide;
-                                                vertical-alignment: center;
-                                            }
-                                            Text {
-                                                height: 13px;
-                                                text: @tr("Only the active tab");
-                                                color: Theme.text-muted;
-                                                font-size: 9.5px;
-                                                font-family: Theme.font-mono;
-                                                overflow: elide;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                    }
-                                }
-                                // 「全部标签页」单选
-                                Rectangle {
-                                    height: 38px;
-                                    border-radius: 4px;
-                                    border-width: 1px;
-                                    border-color: root.all ? root.accent-line : transparent;
-                                    background: root.all ? Theme.accent-soft
-                                        : (tab-all-ta.has-hover ? Theme.bg-hover : transparent);
-                                    animate background { duration: 110ms; }
-                                    tab-all-ta := TouchArea {
-                                        mouse-cursor: default;
-                                        clicked => {
-                                            root.all = true;
-                                            root.host-sel = "";
-                                            root.d-a = false; root.d-b = false; root.d-c = false; root.d-d = false;
-                                        }
-                                    }
-                                    HorizontalLayout {
-                                        padding-left: 9px;
-                                        padding-right: 9px;
-                                        spacing: 9px;
-                                        Rectangle {
-                                            width: 14px;
-                                            height: parent.height;
-                                            Rectangle {
-                                                y: (parent.height - self.height) / 2;
-                                                width: 14px;
-                                                height: 14px;
-                                                border-radius: 8px;
-                                                border-width: 1.5px;
-                                                border-color: root.all ? Theme.accent-solid : Theme.border-strong;
-                                                background: root.all ? Theme.accent-solid : transparent;
-                                                animate background, border-color { duration: 120ms; }
-                                                Rectangle {
-                                                    x: (parent.width - self.width) / 2;
-                                                    y: (parent.height - self.height) / 2;
-                                                    width: 5px;
-                                                    height: 5px;
-                                                    border-radius: 3px;
-                                                    background: Theme.dark ? #0A0B0E : #ffffff;
-                                                    visible: root.all;
-                                                }
-                                            }
-                                        }
-                                        VerticalLayout {
-                                            horizontal-stretch: 1;
-                                            alignment: center;
-                                            spacing: 1px;
-                                            Text {
-                                                height: 17px;
-                                                text: @tr("All tabs");
-                                                color: root.all ? Theme.text-primary : Theme.text-secondary;
-                                                font-size: 11.5px;
-                                                overflow: elide;
-                                                vertical-alignment: center;
-                                            }
-                                            Text {
-                                                height: 13px;
-                                                text: @tr("Every open online tab");
-                                                color: Theme.text-muted;
-                                                font-size: 9.5px;
-                                                font-family: Theme.font-mono;
-                                                overflow: elide;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                    }
-                                }
-                                // 分区标题「挑选主机」+ 已选计数
+                                // 分区标题「挑选主机」+ 右侧 全选/清空 双钮。
+                                // (#tip-r4 2026-11-08) radio 两行删(独立窗口没有
+                                // 当前/全部标签页概念);全选=Rust 拼在线全量 CSV,
+                                // 清空=host-sel 置空(恢复默认档,发主窗当前标签页)。
                                 Rectangle {
                                     height: 28px;
                                     HorizontalLayout {
                                         padding-left: 9px;
                                         padding-right: 9px;
+                                        spacing: 6px;
                                         Text {
                                             height: parent.height;
                                             text: @tr("Pick hosts");
@@ -1873,18 +1775,63 @@ export component SendCmdWindow inherits Window {
                                             vertical-alignment: center;
                                         }
                                         Rectangle { horizontal-stretch: 1; }
-                                        if root.host-n() > 0 : Text {
-                                            height: parent.height;
-                                            text: @tr("{0} 台", root.host-n()) + @tr(" picked");
-                                            color: Theme.accent-solid;
-                                            font-size: 9px;
-                                            font-family: Theme.font-mono;
-                                            vertical-alignment: center;
+                                        Rectangle {
+                                            width: pick-all-txt.preferred-width + 16px;
+                                            height: 22px;
+                                            y: (parent.height - self.height) / 2;
+                                            border-radius: 4px;
+                                            border-width: 1px;
+                                            border-color: Theme.border-control;
+                                            background: pick-all-ta.has-hover ? Theme.bg-hover : transparent;
+                                            pick-all-txt := Text {
+                                                width: parent.width;
+                                                height: parent.height;
+                                                text: @tr("Select all");
+                                                color: Theme.text-secondary;
+                                                font-size: 9.5px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                            pick-all-ta := TouchArea {
+                                                mouse-cursor: default;
+                                                clicked => {
+                                                    root.all = false;
+                                                    root.d-a = false; root.d-b = false; root.d-c = false; root.d-d = false;
+                                                    root.select-all-hosts();
+                                                }
+                                            }
+                                        }
+                                        Rectangle {
+                                            width: pick-clear-txt.preferred-width + 16px;
+                                            height: 22px;
+                                            y: (parent.height - self.height) / 2;
+                                            border-radius: 4px;
+                                            border-width: 1px;
+                                            border-color: Theme.border-control;
+                                            background: pick-clear-ta.has-hover ? Theme.bg-hover : transparent;
+                                            pick-clear-txt := Text {
+                                                width: parent.width;
+                                                height: parent.height;
+                                                text: @tr("Clear");
+                                                color: Theme.text-secondary;
+                                                font-size: 9.5px;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                            pick-clear-ta := TouchArea {
+                                                mouse-cursor: default;
+                                                clicked => {
+                                                    root.all = false;
+                                                    root.d-a = false; root.d-b = false; root.d-c = false; root.d-d = false;
+                                                    root.host-sel = "";
+                                                }
+                                            }
                                         }
                                     }
                                 }
-                                // 搜索框(v2 常显 —— 不再 >6 台才出现;
-                                // Slint 没有 margin —— 用 34 高容器装 30 高输入行,底缝 4px)
+                                // 搜索框(v2 常显;Slint 没有 margin —— 34 容器装 30 输入行)。
+                                // (#tip-r5 2026-11-08) 聚焦效果照 ping 同款:1px accent 边 +
+                                // 3px accent-soft 外环;聚焦即收 placeholder;有文字出清空钮。
                                 Rectangle {
                                     height: 34px;
                                     Rectangle {
@@ -1893,8 +1840,19 @@ export component SendCmdWindow inherits Window {
                                         height: 30px;
                                         border-radius: 4px;
                                         border-width: 1px;
-                                        border-color: Theme.border-control;
+                                        border-color: hs-input.has-focus ? Theme.accent : Theme.border-control;
+                                        animate border-color { duration: 120ms; }
                                         background: Theme.field;
+                                        // 聚焦光环(3px accent-soft 外环,探出框外,ping 同款)
+                                        if hs-input.has-focus : Rectangle {
+                                            x: -3px;
+                                            y: -3px;
+                                            width: parent.width + 6px;
+                                            height: parent.height + 6px;
+                                            border-radius: 9px;
+                                            border-width: 3px;
+                                            border-color: Theme.accent-soft;
+                                        }
                                     HorizontalLayout {
                                         padding-left: 8px;
                                         padding-right: 8px;
@@ -1904,7 +1862,7 @@ export component SendCmdWindow inherits Window {
                                             height: parent.height;
                                             Icon { glyph: "search"; tint: Theme.text-muted; size: 12px; }
                                         }
-                                        TextInput {
+                                        hs-input := TextInput {
                                             horizontal-stretch: 1;
                                             height: parent.height;
                                             text: root.host-filter;
@@ -1922,9 +1880,27 @@ export component SendCmdWindow inherits Window {
                                                 }
                                             }
                                         }
+                                        // 清空钮:有输入才出现(照 lib-srch 的 × 同款)
+                                        if root.host-filter != "" : Rectangle {
+                                            width: 16px;
+                                            height: parent.height;
+                                            Icon {
+                                                glyph: "close";
+                                                tint: hs-clr-ta.has-hover ? Theme.text-primary : Theme.text-muted;
+                                                size: 11px;
+                                            }
+                                            hs-clr-ta := TouchArea {
+                                                mouse-cursor: default;
+                                                clicked => {
+                                                    root.host-filter = "";
+                                                    hs-input.focus();
+                                                }
+                                            }
+                                        }
                                     }
-                                    // placeholder 手工模拟(TextInput 无此属性;不吞点击)
-                                    if root.host-filter == "" : Text {
+                                    // placeholder 手工模拟(TextInput 无此属性;不吞点击);
+                                    // (#tip-r5) 聚焦即收起
+                                    if root.host-filter == "" && !hs-input.has-focus : Text {
                                         x: 27px;
                                         width: parent.width - 34px;
                                         height: parent.height;
@@ -1936,39 +1912,7 @@ export component SendCmdWindow inherits Window {
                                     }
                                     }
                                 }
-                                // 「全选在线」(Slint 拼不了 CSV,Rust 全量写 host-sel)
-                                Rectangle {
-                                    height: 24px;
-                                    HorizontalLayout {
-                                        padding-right: 7px;
-                                        Rectangle { horizontal-stretch: 1; }
-                                        Rectangle {
-                                            width: allhost-txt.preferred-width + 16px;
-                                            height: 22px;
-                                            border-radius: 4px;
-                                            border-width: 1px;
-                                            border-color: Theme.border-control;
-                                            background: allhost-ta.has-hover ? Theme.bg-hover : transparent;
-                                            allhost-txt := Text {
-                                                width: parent.width;
-                                                height: parent.height;
-                                                text: @tr("Select online");
-                                                color: Theme.text-secondary;
-                                                font-size: 9.5px;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-                                            allhost-ta := TouchArea {
-                                                mouse-cursor: default;
-                                                clicked => {
-                                                    root.all = false;
-                                                    root.d-a = false; root.d-b = false; root.d-c = false; root.d-d = false;
-                                                    root.select-all-hosts();
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                // (#tip-r4) 旧「全选在线」悬浮钮删除 —— 全选并入 section 头
                                 // 主机行(搜索过滤壳;非 host 档时置灰可点=切档)
                                 for t in root.targets : Rectangle {
                                     height: root.host-match(t) ? 38px : 0px;
@@ -2027,7 +1971,7 @@ export component SendCmdWindow inherits Window {
                                             }
                                             Text {
                                                 height: 13px;
-                                                text: t.user + " · " + @tr("Channel {0}", t.ch) + (t.online ? "" : " · " + @tr("offline"));
+                                                text: (t.user == "" ? "" : t.user + " · ") + @tr("Channel {0}", t.ch) + (t.online ? "" : " · " + @tr("offline"));
                                                 color: Theme.text-muted;
                                                 font-size: 9.5px;
                                                 font-family: Theme.font-mono;
@@ -2089,8 +2033,8 @@ export component SendCmdWindow inherits Window {
                             border-radius: 4px;
                             border-width: 1px;
                             border-color: root.accent-line;
-                            background: root.scope-picked-n() > 0 ? Theme.accent-soft : Theme.accent-solid.with-alpha(0.056);
-                            opacity: root.scope-picked-n() > 0 ? 1.0 : 0.5;
+                            // (#tip-r4) 0 台也可应用 = 清空选择恢复默认档,不再禁用
+                            background: Theme.accent-soft;
                             scope-apply-txt := Text {
                                 width: parent.width;
                                 height: parent.height;
@@ -2101,7 +2045,6 @@ export component SendCmdWindow inherits Window {
                                 vertical-alignment: center;
                             }
                             scope-apply-ta := TouchArea {
-                                enabled: root.scope-picked-n() > 0;
                                 mouse-cursor: default;
                                 clicked => { root.scope-apply-fn(); }
                             }
@@ -2118,12 +2061,13 @@ export component SendCmdWindow inherits Window {
             y: 37px;
             width: 462px;
             height: min(380px, parent.height - 100px);
-            border-radius: 10px;
+            // (#tip-r5) 弹框外壳照 highlight 同款:hairline 细边 + radius-xl + 透明阴影
+            border-radius: Theme.radius-xl;
             background: Theme.popup-bg;
-            border-width: 1px;
+            border-width: Theme.hairline();
             border-color: Theme.border-strong;
-            drop-shadow-blur: 18px;
-            drop-shadow-color: #00000070;
+            drop-shadow-blur: 26px;
+            drop-shadow-color: transparent;
             clip: true;
 
             VerticalLayout {
