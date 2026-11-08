@@ -2713,6 +2713,8 @@ fn open_window(
             // (#send-cmd-cursor 2026-10-26) 设置 › 终端 › 光标类型也镜像过去：
             // 编辑器光标的宽度按它算（块状 = 一个字符宽，竖线 = 2px）。
             sw.set_cursor_style(main.get_term_cursor_style());
+            // (#tip-r12 2026-11-08) 光标颜色也镜像(「终端是什么就是什么」)
+            sw.set_cursor_color(main.get_term_cursor_color());
             if sw.window().is_visible() {
                 // (#send-cmd-single 2026-10-27) 已经开着：只弹到前台，不动
                 // 位置/尺寸（用户拖过的大小要留），也不覆盖草稿 —— 窗里
@@ -2734,6 +2736,9 @@ fn open_window(
                     .iter()
                     .map(|n| *n as i32)
                     .collect();
+                // (#tip-r13 2026-11-08) 逐行 flag 先算(rows 所有权随后交给模型)
+                let flags: Vec<bool> = (0..30).map(|i| rows.contains(&(i as i32))).collect();
+                sw.set_danger_line_flags(ModelRc::from(Rc::new(VecModel::from(flags))));
                 sw.set_danger_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
                 place_send_cmd_window(&main, &sw);
                 let _ = sw.show();
@@ -2821,6 +2826,10 @@ fn open_window(
                 .iter()
                 .map(|n| *n as i32)
                 .collect();
+            // (#tip-r13 2026-11-08) 逐行危险 flag(30 行定长,与行号循环对齐):
+            // 行号数字变红 + 左侧实心三角按索引取,Slint 表达式无 contains。
+            let flags: Vec<bool> = (0..30).map(|i| rows.contains(&(i as i32))).collect();
+            sw.set_danger_line_flags(ModelRc::from(Rc::new(VecModel::from(flags))));
             sw.set_danger_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
         });
     }

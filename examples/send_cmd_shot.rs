@@ -120,7 +120,11 @@ fn main() {
     ui.set_text(slint::SharedString::from("rm -rf /var/log/*\nsystemctl stop nginx"));
     ui.set_char_count(33);
     let danger_rows: Vec<i32> = vec![0];
-    ui.set_danger_rows(ModelRc::from(Rc::new(VecModel::from(danger_rows))));
+    ui.set_danger_rows(ModelRc::from(Rc::new(VecModel::from(danger_rows.clone()))));
+    // (#tip-r13) 行号红字+三角的逐行 flag(实机由 Rust check_text 镜像,离屏手补)
+    ui.set_danger_line_flags(ModelRc::from(Rc::new(VecModel::from(
+        (0..30).map(|i| danger_rows.contains(&i)).collect::<Vec<bool>>(),
+    ))));
     ui.set_danger_token("rm -rf".into());
     ui.set_risk_info("".into());
     ui.set_lib_rows(ModelRc::from(Rc::new(VecModel::from(Vec::new()))));
@@ -171,20 +175,23 @@ fn main() {
     ui3.set_scope_seg(1);
     ui3.set_host_sel("".into());
     grab(&ui3, &mut frame, "output/send-cmd/08-channel.png");
-    // ── 07 光标实证:underline 模式聚焦编辑器,看内置+自绘是否双光标 ──
-    let ui4 = SendCmdWindow::new().expect("build send window 4");
-    setup(&ui4);
-    ui4.set_cursor_style(slint::SharedString::from("underline"));
-    ui4.set_text("cd /home".into());
-    ui4.window().dispatch_event(slint::platform::WindowEvent::PointerPressed {
-        position: slint::LogicalPosition::new(300.0, 160.0),
-        button: slint::platform::PointerEventButton::Left,
-    });
-    ui4.window().dispatch_event(slint::platform::WindowEvent::PointerReleased {
-        position: slint::LogicalPosition::new(300.0, 160.0),
-        button: slint::platform::PointerEventButton::Left,
-    });
-    grab(&ui4, &mut frame, "output/send-cmd/07-caret.png");
+    // ── 07 光标实证(#tip-r14):三档(block/bar/underline)各聚焦编辑器出图,
+    // 看内置(-1px 应不画)+ 自绘 overlay 是否双光标/形态是否正确 ──
+    for (tag, style) in [("block", "block"), ("bar", "bar"), ("uline", "underline")] {
+        let ui4 = SendCmdWindow::new().expect("build send window cursor");
+        setup(&ui4);
+        ui4.set_cursor_style(slint::SharedString::from(style));
+        ui4.set_text("cd /home".into());
+        ui4.window().dispatch_event(slint::platform::WindowEvent::PointerPressed {
+            position: slint::LogicalPosition::new(300.0, 160.0),
+            button: slint::platform::PointerEventButton::Left,
+        });
+        ui4.window().dispatch_event(slint::platform::WindowEvent::PointerReleased {
+            position: slint::LogicalPosition::new(300.0, 160.0),
+            button: slint::platform::PointerEventButton::Left,
+        });
+        grab(&ui4, &mut frame, &format!("output/send-cmd/07-caret-{tag}.png"));
+    }
 }
 
 fn crate_row(kind: i32, text: &str, sub: &str) -> mterm::ui::LibRow {

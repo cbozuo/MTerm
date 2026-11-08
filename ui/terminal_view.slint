@@ -279,55 +279,12 @@ export component ScopeButton inherits Rectangle {
     }
     function host-n() -> int {
         // CSV 尾逗号计数:段数 = 逗号数(id 不含逗号,主机名口径保证)
+        // (#tip-r15) 命令栏菜单主机段退役后恒为 0;保留函数(按钮色点链仍读 host-sel)
         if (root.host-sel == "") { return 0; }
         return root.host-sel.character-count - root.host-sel.replace-all(",", "").character-count;
     }
     function host-in(id: string) -> bool {
         return root.host-sel != "" && root.host-sel.replace-all(id + ",", "") != root.host-sel;
-    }
-    // (#menu-seg 2026-11-01) 三段滑块的可见段与联动:
-    //   · has-channel / has-host —— 空段不渲染(用户反馈 ①:没有频道就没有频道段);
-    //   · seg-count / seg-vi(i) —— 可见段编号压缩(隐藏段不占格,滑块步长按可见数算);
-    //   · menu-seg-clamp —— 数据变化时把当前段钳回有效区间(纯函数供菜单打开时调用)。
-    // (#menu-seg-互斥 2026-11-01 用户反馈) 三档是**互斥的发送语义**:
-    // 自选主机(含「当前标签页」=单台)/ 全部标签页 / 按频道群发,不能同时成立。
-    // 规则:进入某段 → 先清掉其它档的选择,再落本段的默认;
-    // 点行则只清其它档、保留本段已有勾选。
-    property <bool> has-channel: root.scopes.length > 0;
-    // 主机段恒存在:「当前/全部标签页」对命令栏也永远有意义。
-    property <bool> has-host: true;
-    function seg-count() -> int {
-        return (root.has-channel ? 1 : 0) + 1;
-    }
-    function seg-vi(i: int) -> int {
-        if (i == 1) { return 0; }
-        return root.has-channel ? 1 : 0;
-    }
-    function menu-seg-clamp() {
-        if (root.menu-seg == 1 && !root.has-channel) { root.menu-seg = 2; }
-    }
-    // 进段即互斥落位(用户反馈 ①③):
-    //   频道段 → 清主机/全部,勾第一个有人的频道;
-    //   主机段 → 清频道,落「当前标签页」单台档(等价 hosts 里的 current 台)。
-    function menu-seg-sync() {
-        root.menu-seg-clamp();
-        if (root.menu-seg == 1) {
-            root.d-all = false;
-            root.host-sel = "";
-            if (root.draft-n() == 0) {
-                if (root.scope-count-of("A") > 0) { root.draft-toggle("A"); }
-                else if (root.scope-count-of("B") > 0) { root.draft-toggle("B"); }
-                else if (root.scope-count-of("C") > 0) { root.draft-toggle("C"); }
-                else if (root.scope-count-of("D") > 0) { root.draft-toggle("D"); }
-            }
-        }
-        if (root.menu-seg == 2) {
-            root.d-a = false; root.d-b = false; root.d-c = false; root.d-d = false;
-            root.d-all = false;
-            root.host-sel = "";
-            // 落「当前标签页」:不预勾任何主机行(顶部单选行已表达该档,
-            // 行勾了反而变成自选档 —— 与单选行互斥)。
-        }
     }
     function scope-label() -> string {
         if (root.host-n() > 0) { return @tr("{0} hosts", root.host-n()); }
@@ -389,59 +346,17 @@ export component ScopeButton inherits Rectangle {
         if (root.ch-a && root.ch-b && root.ch-c) { return root.scope-color-of("C"); }
         return root.scope-color-of("D");
     }
-    function draft-n() -> int {
-        return root.ch-count(root.d-a, root.d-b, root.d-c, root.d-d);
-    }
-    function draft-total() -> int {
-        return root.ch-total(root.d-a, root.d-b, root.d-c, root.d-d);
-    }
     function draft-of(letter: string) -> bool {
         if (letter == "A") { return root.d-a; }
         if (letter == "B") { return root.d-b; }
         if (letter == "C") { return root.d-c; }
         return root.d-d;
     }
-    function draft-single() -> string {
-        if (root.d-a) { return "A"; }
-        if (root.d-b) { return "B"; }
-        if (root.d-c) { return "C"; }
-        return "D";
-    }
-    function draft-toggle(letter: string) {
-        // (#menu-seg-互斥) 点频道行 = 按频道群发档:清自选主机与全部标签页。
-        root.host-sel = "";
-        root.d-all = false;
-        if (letter == "A") { root.d-a = !root.d-a; }
-        else if (letter == "B") { root.d-b = !root.d-b; }
-        else if (letter == "C") { root.d-c = !root.d-c; }
-        else { root.d-d = !root.d-d; }
-    }
-    function draft-summary() -> string {
-        if (root.d-all) { return @tr("{0} tabs", root.tab-count); }
-        if (root.draft-n() == 0) { return @tr("This tab only"); }
-        if (root.draft-n() == 1) {
-            return @tr("Channel {0} · {1} hosts", root.draft-single(), root.draft-total());
-        }
-        return @tr("{0} channels · {1} hosts", root.draft-n(), root.draft-total());
-    }
     function scope-menu-open() {
+        // (#tip-r15 2026-11-09) 菜单只剩「当前/全部标签页」两行,打开只同步
+        // d-all(行勾选态);草稿/段机制随精简退役。
         root.d-all = root.all;
-        root.d-a = root.ch-a;
-        root.d-b = root.ch-b;
-        root.d-c = root.ch-c;
-        root.d-d = root.ch-d;
-        // (#menu-seg2) 两段制:默认落在「主机」段(单选/全选/搜索都在这,
-        // 是最常用的落点);无主机的会话(罕见)由 menu-seg-clamp 兜回。
-        root.menu-seg = 2;
         root.open = true;
-    }
-    function scope-commit() {
-        root.all = root.d-all;
-        root.ch-a = root.d-a;
-        root.ch-b = root.d-b;
-        root.ch-c = root.d-c;
-        root.ch-d = root.d-d;
-        root.open = false;
     }
     function scope-pick(all: bool) {
         // (#menu-seg-互斥) 单选/全选 = 互斥模型的两个档:清掉频道与自选主机,
@@ -451,7 +366,6 @@ export component ScopeButton inherits Rectangle {
         root.ch-b = false;
         root.ch-c = false;
         root.ch-d = false;
-        root.host-sel = "";
         root.open = false;
     }
 
@@ -624,13 +538,9 @@ export component ScopeButton inherits Rectangle {
         y: Theme.snap-to-device(parent.absolute-position.y - self.height - 6px)
             - parent.absolute-position.y;
         width: 300px;
-        // (#menu-seg-高度 用户反馈 ②) 段切换不跳高:给内容列一个**最小高度**
-        // (= 段 0 两行 + 段 2 八行的估算值),矮段被撑到与高段同高 —— 三个段
-        // 的菜单外框尺寸恒定,只有行内容在换。hosts 空的会话(命令栏)不参与,
-        // 那里仍跟 preferred(段少内容少,固定反而空)。
-        height: root.hosts.length > 0
-            ? Theme.snap-to-device(Math.max(Math.min(scope-col.preferred-height, 340px), 300px))
-            : Theme.snap-to-device(Math.min(scope-col.preferred-height, 340px));
+        // (#tip-r15 2026-11-09) 菜单精简成两行后,段高恒定逻辑(300-340 最小高)
+        // 退役 —— 高度直接跟内容(≈64px),向上弹出方向不变。
+        height: Theme.snap-to-device(scope-col.preferred-height);
         background: root.on-popup ? Theme.field : Theme.popup-bg;
         border-radius: 9px;
         border-width: Theme.hairline();
@@ -650,80 +560,13 @@ export component ScopeButton inherits Rectangle {
             padding: 6px;
             spacing: 1px;
 
-            // ── 两段滑块（#menu-seg2 2026-11-01）：频道 | 主机 ──
-            // 用户反馈:标签页段没必要(「当前标签页」语义被主机段的单选/全选
-            // 覆盖)——去掉;原「当前/全部标签页」收进主机段顶部。
-            // 无频道的会话只有「主机」一段(滑块退化为单格,视觉即静态头)。
-            SegGroup {
-                active-index: root.menu-seg == 1 ? root.seg-vi(1)
-                    : root.seg-vi(2);
-                count: root.seg-count();
-                compact: true;
-                height: 30px;
-                if root.has-channel : Rectangle {
-                    height: parent.height - 6px;
-                    TouchArea {
-                        mouse-cursor: default;
-                        clicked => { root.menu-seg = 1; root.menu-seg-sync(); }
-                    }
-                    Text {
-                        text: @tr("频道");
-                        color: root.menu-seg == 1 ? Theme.accent-solid : Theme.text-secondary;
-                        font-size: Theme.fs-xs;
-                        font-weight: root.menu-seg == 1 ? 700 : 400;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-                if root.has-host : Rectangle {
-                    height: parent.height - 6px;
-                    TouchArea {
-                        mouse-cursor: default;
-                        clicked => { root.menu-seg = 2; root.menu-seg-sync(); }
-                    }
-                    Text {
-                        text: @tr("主机");
-                        color: root.menu-seg == 2 ? Theme.accent-solid : Theme.text-secondary;
-                        font-size: Theme.fs-xs;
-                        font-weight: root.menu-seg == 2 ? 700 : 400;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-            // ── 段 1：同步频道（多选；勾选只改草稿）──
-            if root.menu-seg == 1 && root.scopes.length > 0 : Rectangle {
-                height: 26px;
-                Text {
-                    x: 9px;
-                    width: parent.width - 18px;
-                    height: parent.height;
-                    text: @tr("Sync channels");
-                    color: Theme.text-muted;
-                    font-size: 10px;
-                    letter-spacing: 1px;
-                    vertical-alignment: center;
-                }
-            }
-            if root.menu-seg == 1 : VerticalLayout {
-            for sc in root.scopes : ScopeRow {
-                checked: root.draft-of(sc.letter);
-                dot: sc.color;
-                label: @tr("Channel {0}", sc.letter);
-                trailing: @tr("{0} 台", sc.count);
-                row-enabled: sc.count > 0;
-                clicked => { root.draft-toggle(sc.letter); }
-            }
-            }
-            // ── 段 2：主机(用户反馈 ①):单选「当前标签页」/ 全选「全部标签页」
-            // 收进本段顶部,搜索继续;勾主机行 = 自选档。
-            if root.menu-seg == 2 : Rectangle {
-                height: Theme.hairline();
-                background: Theme.line-2;
-            }
-            if root.menu-seg == 2 : VerticalLayout {
+            // ── (#tip-r15 2026-11-09) 命令栏范围菜单精简(用户定稿):只留
+            // 「当前标签页 / 全部标签页」两档,点行即应用并关菜单(scope-pick
+            // 直接写应用值)。主机挑选/频道群发/搜索/草稿+完成钮全退役 ——
+            // 那些功能走发送窗的范围弹框。默认档 = 当前标签页(scope-all
+            // 默认 false,菜单打开即高亮本行)。
             ScopeRow {
-                checked: !root.d-all && root.host-n() == 0;
+                checked: !root.d-all;
                 dot: transparent;
                 label: @tr("This tab");
                 clicked => { root.scope-pick(false); }
@@ -734,122 +577,6 @@ export component ScopeButton inherits Rectangle {
                 label: @tr("All tabs");
                 trailing: "" + root.tab-count;
                 clicked => { root.scope-pick(true); }
-            }
-            }
-            if root.menu-seg == 2 && root.hosts.length > 0 : Rectangle {
-                height: 26px;
-                Text {
-                    x: 9px;
-                    width: parent.width - 80px;
-                    height: parent.height;
-                    text: @tr("Pick hosts");
-                    color: Theme.text-muted;
-                    font-size: 10px;
-                    letter-spacing: 1px;
-                    vertical-alignment: center;
-                }
-                if root.host-n() > 0 : Text {
-                    x: parent.width - 76px;
-                    width: 64px;
-                    height: parent.height;
-                    text: @tr("{0} picked", root.host-n());
-                    color: Theme.accent-solid;
-                    font-size: 10px;
-                    horizontal-alignment: right;
-                    vertical-alignment: center;
-                }
-            }
-            if root.menu-seg == 2 && root.hosts.length > 6 : Rectangle {
-                height: 28px;
-                margin-h := Rectangle {
-                    x: 6px;
-                    width: parent.width - 12px;
-                    height: parent.height;
-                    border-radius: 4px;
-                    border-width: 1px;
-                    border-color: host-srch.has-focus ? Theme.accent-solid.with-alpha(0.42) : Theme.border-control;
-                    background: Theme.popup-bg;
-                    host-srch := TextInput {
-                        x: 8px;
-                        width: parent.width - 16px;
-                        y: (parent.height - self.preferred-height) / 2;
-                        text: root.host-search;
-                        color: Theme.text-primary;
-                        font-size: 12px;
-                        vertical-alignment: center;
-                        single-line: true;
-                        edited => { root.host-search = self.text; }
-                        key-pressed(e) => {
-                            if (e.text == Key.Escape) { root.host-search = ""; accept; }
-                            else { reject; }
-                        }
-                    }
-                }
-            }
-            if root.menu-seg == 2 && root.hosts.length > 0 : VerticalLayout {
-            for h in root.hosts : ScopeRow {
-                checked: root.host-in(h.id);
-                dot: root.scope-color-of(h.ch);
-                // (#hosts-title 用户反馈 ②) 显示 tab 标题(202 (copy) 这种),
-                // 原来显示 tab 内部 id(term-xxx UUID)—— 用户认识的是标题;
-                // title 空才退回 id。当前台行尾仍标「· 当前」。
-                label: (h.title == "" ? h.id : h.title)
-                    + (h.current ? @tr(" · current") : "");
-                trailing: h.online ? h.user + " · " + h.ch : @tr("offline");
-                row-enabled: true;
-                clicked => {
-                    root.d-all = false;
-                    root.d-a = false; root.d-b = false; root.d-c = false; root.d-d = false;
-                    root.host-toggle(h.id);
-                }
-            }
-            }
-            // 4 草稿汇总（高保真 .sum：勾了什么、合计几台，实时算）
-            if root.scopes.length > 0 : Rectangle {
-                height: Theme.hairline();
-                background: Theme.line-2;
-            }
-            Rectangle {
-                height: 30px;
-                Text {
-                    x: 9px;
-                    width: parent.width - 18px;
-                    height: parent.height;
-                    text: root.draft-summary();
-                    color: Theme.text-muted;
-                    font-size: Theme.fs-xs;
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
-            }
-            // 5 完成：把草稿写回按钮（高保真 .acts .done；悬停转
-            // accent 实心 —— 它是这个菜单唯一的落点）
-            Rectangle {
-                height: 36px;
-                done-btn := Rectangle {
-                    x: parent.width - 6px - self.width;
-                    y: 4px;
-                    width: 64px;
-                    height: 28px;
-                    border-radius: 7px;
-                    border-width: 1px;
-                    border-color: done-ta.has-hover ? Theme.accent-solid : Theme.border-control;
-                    background: done-ta.has-hover ? Theme.accent-solid : transparent;
-                    animate background, border-color { duration: 120ms; }
-                    done-ta := TouchArea {
-                        mouse-cursor: default;
-                        clicked => { root.scope-commit(); }
-                    }
-                    Text {
-                        width: parent.width;
-                        height: parent.height;
-                        text: @tr("Done");
-                        color: done-ta.has-hover ? #ffffff : Theme.text-primary;
-                        font-size: Theme.fs-xs;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
             }
         }
         } // menu-scroll
