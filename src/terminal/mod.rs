@@ -13,6 +13,11 @@ mod input;
 // (#send-cmd-v2) 升 pub:纯函数检测库,examples/send_check_probe 探针也要用。
 #[path = "impls/send_check.rs"]
 pub mod send_check;
+// (#multiline-paste-hifi 2026-11-10) 多行粘贴确认弹框的分析层:档位/A·B 危险
+// 行/控制字符计数/折叠窗口/预览行模型/页脚文案。复用 send_check 的防误报
+// 口径,规则表独立。pub:examples/paste_confirm_shot 出图探针也要用。
+#[path = "impls/paste_review.rs"]
+pub mod paste_review;
 #[path = "impls/json_output.rs"]
 mod json_output;
 #[path = "impls/charset.rs"]

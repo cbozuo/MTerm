@@ -73,7 +73,9 @@ fn seg_danger(seg: &str) -> Option<&'static str> {
 
 /// 剥掉引号内容(单引号对保留占位 `''`,双引号对保留 `""`)。
 /// 只剥「同一行内配对」的引号 —— 跨行引号由续行风险单独检测。
-fn strip_quoted(line: &str) -> String {
+/// (#multiline-paste-hifi 2026-11-10) 放宽 pub(crate):粘贴弹框的分析层
+/// (paste_review)复用同一套防误报口径,词表仍各自独立。
+pub(crate) fn strip_quoted(line: &str) -> String {
     let bytes: Vec<char> = line.chars().collect();
     let mut out = String::with_capacity(line.len());
     let mut i = 0;
@@ -102,7 +104,7 @@ fn strip_quoted(line: &str) -> String {
 }
 
 /// 剥掉段首前缀(sudo/env/time/nohup/exec/\)。
-fn strip_prefix(mut s: &str) -> &str {
+pub(crate) fn strip_prefix(mut s: &str) -> &str {
     loop {
         let t = s.trim_start();
         let changed = t.len() != s.len();
@@ -197,7 +199,7 @@ pub fn danger_lines(text: &str) -> Vec<usize> {
 }
 
 /// 找下一个命令分隔符,返回 (字节位置, 长度)。&& / || 优先于单字符。
-fn find_sep(s: &str) -> Option<(usize, usize)> {
+pub(crate) fn find_sep(s: &str) -> Option<(usize, usize)> {
     let b = s.as_bytes();
     let mut i = 0;
     while i < b.len() {

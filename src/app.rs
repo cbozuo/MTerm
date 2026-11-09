@@ -450,14 +450,19 @@ use crate::terminal::c0_letter_key_down;
 use crate::terminal::{
     bare_ctrl_marker_workaround_enabled, compile_highlight_rules,
     encode_command_bar_input, encode_mouse_event, encode_pasted_text, is_terminal_interrupt,
-    key_to_pty_bytes, paste_requires_large_review, rainbow_parens_enabled,
-    should_drop_bare_ctrl_marker, terminal_uses_bracketed_paste, CsiState, RenderGates,
-    TabRenderGate, TermBuffer, TermBufferHandle, TermBuffers,
+    key_to_pty_bytes, rainbow_parens_enabled, should_drop_bare_ctrl_marker,
+    terminal_uses_bracketed_paste, CsiState, RenderGates, TabRenderGate, TermBuffer,
+    TermBufferHandle, TermBuffers,
+};
+// (#multiline-paste-hifi 2026-11-10) 多行粘贴评审面：分析层单一出处。
+use crate::terminal::paste_review::{
+    analyze_paste, build_preview_rows, enter_note_text, expand_all_label, hint_text,
+    main_button_label, notice_kind, notice_text, subtitle_text,
 };
 #[cfg(test)]
 use crate::terminal::{
-    build_row, highlight_plain_output, normalize_pasted_newlines, text_cell_width, vt_span_colors,
-    CompiledOutputRule, HistSpan, Line,
+    build_row, highlight_plain_output, normalize_pasted_newlines, paste_requires_large_review,
+    text_cell_width, vt_span_colors, CompiledOutputRule, HistSpan, Line,
 };
 #[cfg(any(target_os = "windows", test))]
 use crate::terminal::{windows_process_ctrl_release, CtrlKeySide};
@@ -12800,74 +12805,253 @@ fn wire_key_input(
     }
 
     // Middle-click / Ctrl+Shift+V: paste clipboard text into PTY.
+    // (#multiline-paste-hifi 2026-11-10) 弹框升级为专用评审面：后台线程
+    // analyze_paste（档位 / A·B 危险行 / 控制字符 / 折叠窗口），文案与行模型
+    // 在线程内按当前语言组合，经 invoke_from_event_loop 一次性下发。
     {
         let handles = handles.clone();
         let bufs = bufs.clone();
+        let store = store.clone();
         let weak = window.as_weak();
         window.on_paste_from_clipboard(move |tab_id: SharedString| {
-            // Clone the (Send) command sender for this tab so the clipboard read
-            // can run off the UI thread.  Reading arboard on the event-loop
-            // thread is what froze the app on middle-click / paste — see the
-            // copy handler above for the deadlock explanation.
-            let sender = handles
-                .borrow()
-                .get(tab_id.as_str())
-                .map(|h| h.commands.clone());
-            let Some(sender) = sender else { return };
-            let bracketed = terminal_uses_bracketed_paste(&bufs, tab_id.as_str());
-            let confirm_multiline = weak
-                .upgrade()
-                .map(|w| w.get_paste_confirm_enabled())
-                .unwrap_or(true);
-            let weak = weak.clone();
-            let tab_id = tab_id.to_string();
-            std::thread::spawn(move || {
-                match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
-                    Ok(text) => {
-                        let force_review = text.len() > 100 * 1024;
-                        if text.contains(['\r', '\n']) && (confirm_multiline || force_review) {
-                            let large = paste_requires_large_review(&text);
-                            let preview = text.clone();
-                            let _ = slint::invoke_from_event_loop(move || {
-                                if let Some(w) = weak.upgrade() {
-                                    w.set_paste_confirm_tab(tab_id.into());
-                                    w.set_paste_confirm_text(text.into());
-                                    w.set_paste_confirm_preview(preview.into());
-                                    w.set_paste_confirm_large(large);
-                                    w.set_paste_confirm_open(true);
-                                }
-                            });
-                        } else {
-                            let bytes = encode_pasted_text(&text, bracketed);
-                            let _ = sender.send(SessionCommand::RawInput(bytes));
-                        }
-                    }
-                    Err(e) => tracing::warn!("paste_from_clipboard: clipboard error: {}", e),
+                // §5.4：弹框已开时再次粘贴 = 忽略（避免叠加弹框）。
+                if weak
+                    .upgrade()
+                    .map(|w| w.get_paste_confirm_open())
+                    .unwrap_or(false)
+                {
+                    return;
                 }
-            });
+                // Clone the (Send) command sender for this tab so the clipboard read
+                // can run off the UI thread.  Reading arboard on the event-loop
+                // thread is what froze the app on middle-click / paste — see the
+                // copy handler above for the deadlock explanation.
+                let sender = handles
+                    .borrow()
+                    .get(tab_id.as_str())
+                    .map(|h| h.commands.clone());
+                let Some(sender) = sender else { return };
+                let bracketed = terminal_uses_bracketed_paste(&bufs, tab_id.as_str());
+                let confirm_multiline = weak
+                    .upgrade()
+                    .map(|w| w.get_paste_confirm_enabled())
+                    .unwrap_or(true);
+                // 评审面上下文（D5）：「粘贴到 <tab 名>」· user@host:port
+                //（本地会话无 host → 退回会话名，口径同 close_session_rows）。
+                // tab 元数据（title / session_id）从本窗口的 tabs 模型反查
+                //（WIN_IO，与 sync-dialog 同一注册表）。
+                let (tab_name, target) = {
+                    let tabs_model = WIN_IO.with(|m| {
+                        m.borrow().get(&window_id).map(|e| e.tabs.clone())
+                    });
+                    let tab = tabs_model.and_then(|model| {
+                        (0..model.row_count()).find_map(|i| {
+                            let row = model.row_data(i)?;
+                            (row.id.as_str() == tab_id.as_str()).then_some(row)
+                        })
+                    });
+                    let session_id = tab
+                        .as_ref()
+                        .map(|t| t.session_id.to_string())
+                        .unwrap_or_default();
+                    let title = tab
+                        .map(|t| t.title.to_string())
+                        .unwrap_or_default();
+                    let st = store.borrow();
+                    let sess = st
+                        .sessions()
+                        .iter()
+                        .find(|s| s.id == session_id.as_str());
+                    let host = sess.map(|s| {
+                        if s.host.is_empty() {
+                            s.name.clone()
+                        } else if s.user.is_empty() {
+                            format!("{}:{}", s.host, s.port)
+                        } else {
+                            format!("{}@{}:{}", s.user, s.host, s.port)
+                        }
+                    });
+                    let name = if title.is_empty() {
+                        sess.map(|s| s.name.clone()).unwrap_or_default()
+                    } else {
+                        title
+                    };
+                    (name, host.unwrap_or_default())
+                };
+                let weak = weak.clone();
+                let tab_id = tab_id.to_string();
+                std::thread::spawn(move || {
+                    match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
+                        Ok(text) => {
+                            let force_review = text.len() > 100 * 1024;
+                            let analysis = analyze_paste(&text);
+                            // 弹框条件：含换行 &&（设置开启 || 强制复核 ||
+                            // A 级命中）—— D3 例外：A 级危险内容不受
+                            // 「不再提示多行粘贴」静默。
+                            let must_prompt = text.contains(['\r', '\n'])
+                                && (confirm_multiline || force_review || analysis.a_count > 0);
+                            if must_prompt {
+                                let kind = notice_kind(&analysis, bracketed);
+                                let model = build_preview_rows(&analysis, false);
+                                let rows: Vec<crate::ui::PastePreviewRow> = model
+                                    .rows
+                                    .into_iter()
+                                    .map(|r| crate::ui::PastePreviewRow {
+                                        kind: r.kind,
+                                        gutter: r.gutter.into(),
+                                        text: r.text.into(),
+                                        level: r.level,
+                                        badge: r.badge.into(),
+                                        badge_icon: r.badge_icon.into(),
+                                    })
+                                    .collect();
+                                let hint_icon = if analysis.tier
+                                    == crate::terminal::paste_review::PasteTier::Compact
+                                {
+                                    "table-rows"
+                                } else {
+                                    "info"
+                                };
+                                let tier_name = match analysis.tier {
+                                    crate::terminal::paste_review::PasteTier::Compact => "compact",
+                                    crate::terminal::paste_review::PasteTier::Standard => "standard",
+                                    crate::terminal::paste_review::PasteTier::Review => "review",
+                                };
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    if let Some(w) = weak.upgrade() {
+                                        w.set_paste_confirm_tab(tab_id.into());
+                                        w.set_paste_confirm_text(text.into());
+                                        w.set_paste_confirm_tab_name(tab_name.into());
+                                        w.set_paste_confirm_target(target.into());
+                                        w.set_paste_confirm_bracketed(bracketed);
+                                        w.set_paste_confirm_badge(tier_name.into());
+                                        w.set_paste_confirm_subtitle(
+                                            subtitle_text(&analysis).into(),
+                                        );
+                                        w.set_paste_confirm_notice_kind(kind);
+                                        w.set_paste_confirm_notice_text(
+                                            notice_text(&analysis, kind).into(),
+                                        );
+                                        w.set_paste_confirm_lines(analysis.line_count as i32);
+                                        w.set_paste_confirm_chars(analysis.char_count as i32);
+                                        w.set_paste_confirm_risk_a(analysis.a_count as i32);
+                                        w.set_paste_confirm_risk_b(analysis.b_count as i32);
+                                        w.set_paste_confirm_trailing(analysis.trailing_newline);
+                                        w.set_paste_confirm_main_label(
+                                            main_button_label(&analysis).into(),
+                                        );
+                                        w.set_paste_confirm_enter_note(
+                                            enter_note_text(&analysis).into(),
+                                        );
+                                        w.set_paste_confirm_hint(
+                                            hint_text(&analysis, analysis.virtualized).into(),
+                                        );
+                                        w.set_paste_confirm_hint_icon(hint_icon.into());
+                                        w.set_paste_confirm_virtual(analysis.virtualized);
+                                        w.set_paste_confirm_force(analysis.force_review);
+                                        w.set_paste_confirm_fold_count(model.fold_count as i32);
+                                        w.set_paste_confirm_expand_label(
+                                            expand_all_label(model.fold_count).into(),
+                                        );
+                                        w.set_paste_confirm_rows(slint::ModelRc::from(
+                                            std::rc::Rc::new(slint::VecModel::from(rows)),
+                                        ));
+                                        // 竞态护栏：每次下发递增，refresh 的
+                                        // 迟到结果按序号丢弃。
+                                        w.set_paste_confirm_seq(w.get_paste_confirm_seq() + 1);
+                                        w.set_paste_confirm_open(true);
+                                    }
+                                });
+                            } else {
+                                let bytes = encode_pasted_text(&text, bracketed);
+                                let _ = sender.send(SessionCommand::RawInput(bytes));
+                            }
+                        }
+                        Err(e) => tracing::warn!("paste_from_clipboard: clipboard error: {}", e),
+                    }
+                });
         });
     }
 
-    // Accept a previously reviewed multi-line paste (#262).
+    // Accept a previously reviewed multi-line paste (#262, #multiline-paste-hifi).
+    // run = false → 安全默认（D1）：剥离尾部 CR/LF，最后一行留在命令行不执行；
+    // run = true → 原样（等价旧 encode_pasted_text 行为，仅显式入口或 Alt+P）。
+    // 勾选「不再提示」→ 写回既有 paste_confirm_enabled = false（D3，不新增设置键）。
     {
         let handles_paste = handles.clone();
         let bufs_paste = bufs.clone();
+        let store_paste = store.clone();
         let weak = window.as_weak();
-        window.on_paste_confirmed(move |tab_id: SharedString| {
-            let Some(sender) = handles_paste
-                .borrow()
-                .get(tab_id.as_str())
-                .map(|h| h.commands.clone())
-            else {
-                return;
-            };
+        window.on_paste_confirmed(
+            move |tab_id: SharedString, run: bool, dont_ask: bool| {
+                let Some(sender) = handles_paste
+                    .borrow()
+                    .get(tab_id.as_str())
+                    .map(|h| h.commands.clone())
+                else {
+                    return;
+                };
+                let Some(w) = weak.upgrade() else { return };
+                if dont_ask {
+                    {
+                        let mut s = store_paste.borrow_mut();
+                        s.set_paste_confirm_enabled(false);
+                        let _ = s.save();
+                    }
+                    w.set_paste_confirm_enabled(false);
+                }
+                let text = w.get_paste_confirm_text().to_string();
+                let bracketed = terminal_uses_bracketed_paste(&bufs_paste, tab_id.as_str());
+                let bytes = if run {
+                    encode_pasted_text(&text, bracketed)
+                } else {
+                    let stripped = text.trim_end_matches(['\r', '\n']);
+                    encode_pasted_text(stripped, bracketed)
+                };
+                let _ = sender.send(SessionCommand::RawInput(bytes));
+                w.set_paste_confirm_open(false);
+            },
+        );
+    }
+
+    // (#multiline-paste-hifi) 展开全部 / 收起：后台线程重建行模型（重新分析
+    // 代价毫秒级），seq 护栏丢弃迟到结果。
+    {
+        let weak = window.as_weak();
+        window.on_paste_refresh_rows(move |expanded: bool| {
             let Some(w) = weak.upgrade() else { return };
             let text = w.get_paste_confirm_text().to_string();
-            let bracketed = terminal_uses_bracketed_paste(&bufs_paste, tab_id.as_str());
-            let _ = sender.send(SessionCommand::RawInput(encode_pasted_text(
-                &text, bracketed,
-            )));
-            w.set_paste_confirm_open(false);
+            let seq = w.get_paste_confirm_seq() + 1;
+            w.set_paste_confirm_seq(seq);
+            let weak = weak.clone();
+            std::thread::spawn(move || {
+                let analysis = analyze_paste(&text);
+                let model = build_preview_rows(&analysis, expanded);
+                let rows: Vec<crate::ui::PastePreviewRow> = model
+                    .rows
+                    .into_iter()
+                    .map(|r| crate::ui::PastePreviewRow {
+                        kind: r.kind,
+                        gutter: r.gutter.into(),
+                        text: r.text.into(),
+                        level: r.level,
+                        badge: r.badge.into(),
+                        badge_icon: r.badge_icon.into(),
+                    })
+                    .collect();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(w) = weak.upgrade() {
+                        if w.get_paste_confirm_seq() != seq {
+                            return;
+                        }
+                        w.set_paste_confirm_rows(slint::ModelRc::from(std::rc::Rc::new(
+                            slint::VecModel::from(rows),
+                        )));
+                        w.set_paste_confirm_fold_count(model.fold_count as i32);
+                        w.set_paste_confirm_expand_label(expand_all_label(model.fold_count).into());
+                    }
+                });
+            });
         });
     }
 
