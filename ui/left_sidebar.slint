@@ -342,6 +342,10 @@ component SessionRow inherits Rectangle {
     property <bool> grab-dragging: false;
     property <length> grab-y;
     property <length> grab-x;
+    // (#kebab-steal-fix 2026-11-09) 成员行 ⋮ 钮同组头:悬停进钮时 touch 被
+    // 顶者独占抢走 hover(touch.has-hover 塌 false),本桥由 kebab-ta 的
+    // changed 写回,overlay 显隐/enabled 靠它撑住不塌。
+    property <bool> kebab-hot: false;
 
     // (#left-panel-v3-r2 2026-11-06 #tree-geom) 行高统一 34px(mockup V3.6
     // 会话行 34;主机/用户只在悬停卡)。drag-pitch = 34 + MEMBER_GAP(2) = 36,
@@ -365,7 +369,9 @@ component SessionRow inherits Rectangle {
     // 负责把点击点(行内坐标)经 ctx-opening 上报。
     // (#ctx-menu-pin-r2) 菜单打开高亮改全局单值 key(Welcome 级),本行
     // 被右击时保持 hover 高亮;键被顶掉/背景点击清空即熄灭。
-    in property <string> ctx-open-key: "";
+    // (#kebab-steal-fix) in → in-out:成员行 ⋮ 再点同钮要写 "" 关菜单
+    // (实例侧 <=> 双向接到 Welcome 全局 key,内部写自动同步出去)。
+    in-out property <string> ctx-open-key: "";
     // (#ctx-line-keep 2026-09-10) 当前右键菜单的锚点是否落在**本组**内。
     // 菜单一弹出鼠标就离开行,hover 全线失效:若竖线只认 hover,就会出现
     // "底色/横线还亮着、整组竖线先黑掉"的割裂(用户截图:右击成员或组头后
@@ -393,7 +399,10 @@ component SessionRow inherits Rectangle {
             if (self.has-hover) {
                 root.hover-key = root.session.id + "|" + root.session.group;
                 root.hover-group = root.session.group;
-            } else if (root.hover-key == root.session.id + "|" + root.session.group) {
+            } else if (root.hover-key == root.session.id + "|" + root.session.group
+                // (#kebab-steal-fix) 移进 ⋮ 属抢占非离行,不清脊线;从 ⋮ 直接
+                // 离行由 kebab-ta 的 changed 兜底清。
+                && !root.kebab-hot) {
                 root.hover-key = "";
                 root.hover-group = "";
             }
@@ -401,16 +410,9 @@ component SessionRow inherits Rectangle {
         // Connect is handled in pointer-event below so a finished drag never
         // counts as a click.
         pointer-event(e) => {
-            // (#hover-card-follow 2026-10-06) 信息卡悬停跟手:pointer-event 的
-            // move 通知在**纯悬停移动时每次都触发**(slint 1.18 探针实证);moved
-            // 回调只在按住时触发——旧「moved 跟随」从不工作,卡只锚在弹出瞬间,
-            // 指针移动卡不动(用户感知「离鼠标太远」)。按下/拖拽期间不跟。
-            if (e.kind == PointerEventKind.move && !self.pressed
-                && !root.list-dragging
-                && root.card-out-name == root.session.name) {
-                root.card-out-x = self.absolute-position.x + self.mouse-x;
-                root.card-out-y = self.absolute-position.y + self.mouse-y;
-            }
+            // (#hover-card-hifi 2026-11-09) 信息卡改锚**行右缘**(稿 hoverCard:
+            // left = rect.right + 10,top = clamp(rect.top - 2)),不再跟手
+            // —— 旧「#hover-card-follow 指针跟随」整块退役,写出点在 info-delay。
             // Built-in PowerShell/CMD/WSL rows have no edit/move/delete actions.
             // All menu items are conditional on !system-row, so opening the
             // popup for them only produces an empty rectangle (#336).
@@ -527,8 +529,8 @@ component SessionRow inherits Rectangle {
     in-out property <length> drag-out-dy;   // (#session-drag-smooth) 拖动中的指针偏移输出
     in-out property <length> drag-out-dx;   // (#ghost-follow-x-r2) 指针**窗口绝对 x**:ghost 窄卡横向跟手用
     // (#conn-path 2026-10-04 高保真 #proxy-fields) 150ms 延迟(原 450ms);
-    // 信息卡改为**跟随鼠标、光标上方**(靠右缘翻左侧/贴顶翻下方,见
-    // pointer-follow 与 app.slint 渲染处的翻转公式)。
+    // (#hover-card-hifi 2026-11-09) 信息卡改锚**行右缘**(稿 hoverCard 同款,
+    // 不再跟手)——渲染层在 app.slint(+10 横偏 / 纵向 clamp)。
     info-delay := Timer {
         interval: 150ms;
         running: touch.has-hover && !root.list-dragging;   // 拖动中不弹信息卡
@@ -545,9 +547,11 @@ component SessionRow inherits Rectangle {
                 root.card-out-user = root.session.user;
                 root.card-out-auth = root.session.auth;
                 root.card-out-note = root.session.note;
-                // 锚点 = 指针(窗口坐标);翻转在渲染层按卡宽/卡高修正。
-                root.card-out-x = touch.absolute-position.x + touch.mouse-x;
-                root.card-out-y = touch.absolute-position.y + touch.mouse-y;
+                // (#hover-card-hifi 2026-11-09) 锚点 = **行右缘 + 行顶-2**(窗口
+                // 坐标;稿 hoverCard:rect.right + 10 / rect.top - 2,+10 与纵向
+                // clamp 在 app.slint 渲染层)。
+                root.card-out-x = touch.absolute-position.x + touch.width;
+                root.card-out-y = touch.absolute-position.y - 2px;
             }
         }
     }
@@ -689,10 +693,12 @@ component SessionRow inherits Rectangle {
             font-weight: session.id == root.locate-flash-id ? Theme.fw-strong : Theme.fw-regular;
             vertical-alignment: center;
             overflow: elide;
-            // (#hover-jump) 名称右缘动态让位给覆盖层:悬停 62px(动作带)、
-            // 在线 30px(LIVE 徽章)、未连接 14px(点);布局宽随宽度属性
-            // 收缩 —— Text 自身 width 由 stretch 决定,elide 兜底长名。
-            width: parent.width - (touch.has-hover ? 66px
+            // (#hover-jump) 名称右缘动态让位给覆盖层:悬停 32px(⋮ 单钮,稿
+            // .sactions 只有一枚 more-vert;#hover-card-hifi)、在线 30px(LIVE
+            // 徽章)、未连接 14px(点);布局宽随宽度属性收缩 —— Text 自身
+            // width 由 stretch 决定,elide 兜底长名。
+            width: parent.width - ((touch.has-hover || root.kebab-hot
+                || root.ctx-open-key == session.id) ? 32px
                 : session.conn-state == 2 ? 34px
                 : session.conn-state == 1 ? 16px : 8px);
         }
@@ -702,12 +708,16 @@ component SessionRow inherits Rectangle {
     // (#hover-jump 2026-11-06 用户反馈"碰到图标会跳动") 行尾覆盖层:状态
     // (LIVE/空心点)与悬停操作钮**绝对定位**,不占 HorizontalLayout 布局 ——
     // 悬停时名称列几何零变化(mockup .gactions/.sactions absolute 同款)。
-    // 常态右侧留 20px 给状态点;悬停时操作钮盖住状态区(56px 带底)。
+    // 常态右侧留 20px 给状态点;悬停时操作钮盖住状态区。
+    // (#hover-card-hifi 2026-11-09) 稿 .sactions 只有一枚 ⋮(more-vert,
+    // 22px):三钮带(56px)退役,悬停宽 20px;菜单开着(.srow.menu-open)
+    // 与抢占桥期照常显示。
     Rectangle {
         x: parent.width - self.width - 6px;
         y: (parent.height - self.height) / 2;
-        width: !touch.has-hover ? (session.conn-state == 2 ? 36px : 8px)
-            : session.builtin ? 0px : 56px;
+        property <bool> act-on: (touch.has-hover || root.kebab-hot
+            || root.ctx-open-key == session.id) && !session.builtin;
+        width: !self.act-on ? (session.conn-state == 2 ? 36px : 8px) : 20px;
         height: 22px;
         visible: self.width > 0px;
         // 常态:状态展示。
@@ -738,51 +748,58 @@ component SessionRow inherits Rectangle {
             border-width: 1px;
             border-color: Theme.zone-sidebar-accent;
         }
-        // 悬停:三操作钮(带 palt 底托,mockup .gactions background:var(--palt))。
-        if touch.has-hover && !session.builtin : Rectangle {
+        // 悬停:稿同款单 ⋮ 钮(#hover-card-hifi:.sactions 只有一枚 more-vert;
+        // 点击/右键同成员行右键菜单,锚在钮下)。
+        if act-on : Rectangle {
             width: parent.width;
-            height: parent.height;
-            border-radius: Theme.radius-sm;
-            background: Theme.panel-solid;
-            HorizontalLayout {
-                spacing: 2px;
-                Rectangle {
-                    width: 18px;
-                    height: 18px;
-                    y: 2px;
-                    border-radius: 3px;
-                    background: act-edit.has-hover ? Theme.bg-hover : transparent;
-                    animate background { duration: 100ms; }
-                    Icon { glyph: "edit"; tint: act-edit.has-hover ? Theme.zone-sidebar-accent : Theme.text-secondary; size: 13px; }
-                    act-edit := TouchArea {
-                        mouse-cursor: default;
-                        clicked => { root.edit(); }
+            height: 20px;
+            y: 1px;
+            border-radius: 3px;
+            background: s-kebab-ta.has-hover || root.ctx-open-key == session.id
+                ? Theme.bg-hover : transparent;
+            animate background { duration: 100ms; }
+            Icon {
+                glyph: "more-vert";
+                tint: s-kebab-ta.has-hover || root.ctx-open-key == session.id
+                    ? Theme.text-primary : Theme.text-secondary;
+                size: 13px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+            s-kebab-ta := TouchArea {
+                // (#kebab-steal-fix) enabled 三源:touch 悬停(行体进入)、自身
+                // 悬停(进入钮后 touch 已塌)、菜单钉住(点外关闭要可达)。
+                enabled: touch.has-hover || self.has-hover
+                    || root.ctx-open-key == session.id;
+                mouse-cursor: default;
+                changed has-hover => {
+                    root.kebab-hot = self.has-hover;
+                    // 从 ⋮ 直接离行(不经行体):touch 已在进钮时被守卫,这里
+                    // 兜底清脊线,防卡亮。
+                    if (!self.has-hover && !touch.has-hover
+                        && root.hover-key == root.session.id + "|" + root.session.group) {
+                        root.hover-key = "";
+                        root.hover-group = "";
                     }
                 }
-                Rectangle {
-                    width: 18px;
-                    height: 18px;
-                    y: 2px;
-                    border-radius: 3px;
-                    background: act-copy.has-hover ? Theme.bg-hover : transparent;
-                    animate background { duration: 100ms; }
-                    Icon { glyph: "copy"; tint: act-copy.has-hover ? Theme.zone-sidebar-accent : Theme.text-secondary; size: 13px; }
-                    act-copy := TouchArea {
-                        mouse-cursor: default;
-                        clicked => { root.duplicate(); }
+                clicked => {
+                    if (root.ctx-open-key == session.id) {
+                        root.ctx-open-key = "";   // 再点同钮 = 关菜单
+                    } else {
+                        // 锚**行内**坐标(px/py 由实例 handler 加行绝对位):
+                        // parent = 20px 覆盖层,其 x/y 相对行 —— 钮中心 x /
+                        // 覆盖层底+4。
+                        root.ctx-opening(parent.x + parent.width / 2,
+                            parent.y + parent.height + 4px);
                     }
                 }
-                Rectangle {
-                    width: 18px;
-                    height: 18px;
-                    y: 2px;
-                    border-radius: 3px;
-                    background: act-del.has-hover ? Theme.bg-hover : transparent;
-                    animate background { duration: 100ms; }
-                    Icon { glyph: "delete"; tint: act-del.has-hover ? Theme.danger-strong : Theme.text-secondary; size: 13px; }
-                    act-del := TouchArea {
-                        mouse-cursor: default;
-                        clicked => { root.remove(); }
+                pointer-event(e) => {
+                    // 右键同组头 ⋮:恒热后 ⋮ 区右键落在本层,转发开菜单。
+                    if (!root.list-dragging
+                        && e.kind == PointerEventKind.down
+                        && e.button == PointerEventButton.right) {
+                        root.ctx-opening(parent.x + parent.width / 2,
+                            parent.y + parent.height + 4px);
                     }
                 }
             }
@@ -2040,6 +2057,15 @@ export component LeftSidebar inherits Rectangle {
                                 property <bool> menu-pin:
                                     grp-ta.has-hover
                                     || root.ctx-open-key == "hdr:" + session.group-id;
+                                // (#kebab-steal-fix 2026-11-09) ⋮ 钮 hover 抢占桥。引擎
+                                // send_exit_events 实证:重叠 TouchArea 悬停=顶者独占,
+                                // 指针进 ⋮ 时 grp-ta 落出事件链收 Exit → has-hover 塌
+                                // false,旧条件 opacity/enabled 双塌 = 无 hover 底+点
+                                // 不动(实机截图实证)。kebab-ta 的 has-hover 经 changed
+                                // 写回本桥;进入 ⋮ 的同批次 kebab-ta 先置 true、grp-ta
+                                // 后收 Exit(process_mouse_input 先派新链后补 Exit,
+                                // i-slint-core input.rs:1718)—— 桥接先行无竞态。
+                                property <bool> kebab-hot: false;
                                 // (#band-fix 2026-11-06 用户截图"渐变断层"):
                                 // (#band-smooth 2026-11-06 二轮:用户截图"渐变
                                 // 断层不丝滑") 断层根因 = 上版把渐变尾色改成
@@ -2132,7 +2158,11 @@ export component LeftSidebar inherits Rectangle {
                                     if (self.has-hover) {
                                         root.hover-key = "hdr:" + session.group;
                                         root.hover-group = session.group;
-                                    } else if (root.hover-key == "hdr:" + session.group) {
+                                    } else if (root.hover-key == "hdr:" + session.group
+                                        // (#kebab-steal-fix) 悬停移进 ⋮ 时 grp-ta 收 Exit
+                                        // 属抢占(kebab-hot 已置 true),不是真离行——不清
+                                        // 脊线;从 ⋮ 直接离行由 kebab-ta 的 changed 兜底清。
+                                        && !gh-card.kebab-hot) {
                                         root.hover-key = "";
                                         root.hover-group = "";
                                     }
@@ -2483,7 +2513,11 @@ export component LeftSidebar inherits Rectangle {
                                 VerticalLayout {
                                     alignment: center;
                                 Rectangle {
-                                    opacity: (grp-ta.has-hover
+                                    // (#kebab-steal-fix) opacity/enabled 各加 kebab-ta
+                                    // 自身 hover(同元素内前向引用,background 绑定先例)
+                                    // + kebab-hot 桥:指针在 ⋮ 上时 grp-ta 已塌 false,
+                                    // 单靠 grp-ta 条件按钮会自灭。
+                                    opacity: (grp-ta.has-hover || gh-kebab-ta.has-hover
                                         || root.ctx-open-key == "hdr:" + session.group-id) ? 1 : 0;
                                     animate opacity { duration: 110ms; }
                                     width: 20px;
@@ -2505,9 +2539,22 @@ export component LeftSidebar inherits Rectangle {
                                     gh-kebab-ta := TouchArea {
                                         // (#kebab-coexist) opacity 0 时关闭命中:
                                         // 常驻元素不拦右侧空白点击。
-                                        enabled: (grp-ta.has-hover
+                                        // (#kebab-steal-fix) enabled 加自身 hover + 桥:
+                                        // 指针在 ⋮ 上时 grp-ta 已被抢占塌 false,单靠
+                                        // grp-ta 条件 enabled 同帧塌 false = 点不动真身。
+                                        enabled: (grp-ta.has-hover || self.has-hover
                                             || root.ctx-open-key == "hdr:" + session.group-id);
                                         mouse-cursor: default;
+                                        changed has-hover => {
+                                            gh-card.kebab-hot = self.has-hover;
+                                            // 从 ⋮ 直接离行(不经行体):grp-ta 已在进 ⋮ 时
+                                            // 被清过守卫,这里兜底清脊线,防卡亮。
+                                            if (!self.has-hover && !grp-ta.has-hover
+                                                && root.hover-key == "hdr:" + session.group) {
+                                                root.hover-key = "";
+                                                root.hover-group = "";
+                                            }
+                                        }
                                         clicked => {
                                             if (root.ctx-open-key != "hdr:" + session.group-id) {
                                                 gh-card.open-group-menu(
@@ -2515,6 +2562,17 @@ export component LeftSidebar inherits Rectangle {
                                                     gh-kebab-ta.absolute-position.y + self.height + 4px);
                                             } else {
                                                 root.ctx-open-key = "";
+                                            }
+                                        }
+                                        pointer-event(e) => {
+                                            // (#kebab-steal-fix) 右键同 grp-ta:恒热后 ⋮
+                                            // 区右键落在本层,不转发就吞掉组菜单。
+                                            if (!root.group-dragging
+                                                && e.kind == PointerEventKind.down
+                                                && e.button == PointerEventButton.right) {
+                                                gh-card.open-group-menu(
+                                                    gh-kebab-ta.absolute-position.x + self.width / 2,
+                                                    gh-kebab-ta.absolute-position.y + self.height + 4px);
                                             }
                                         }
                                     }
