@@ -138,7 +138,39 @@ fn main() {
         });
     });
     save_rgba(&buf, "output/left-panel/group-head.png");
-    println!("saved output/left-panel/ctx-swatch.png + group-head.png");
+
+    // 图 5:搜索无匹配空态(#empty-compact 2026-11-09)——sessions 清空+给
+    // 搜索词,验证轻提示形态(无卡片框/一行小字居顶),不再是全高空框。
+    ui.set_sessions(ModelRc::from(Rc::new(VecModel::from(Vec::<SessionInfo>::new()))));
+    ui.set_host_search_query("11".into());
+    let mut buf = vec![PremultipliedRgbaColor::default(); W * H];
+    ui.window().request_redraw();
+    WIN.with(|win| {
+        win.draw_if_needed(|r| {
+            r.render(&mut buf, W);
+        });
+    });
+    save_rgba(&buf, "output/left-panel/empty-compact.png");
+    ui.set_host_search_query("".into());
+
+    // 图 6:面板 ⋯ 菜单 ctx 浮层(#panel-menu-ctx 2026-11-09)——kind="panel"
+    // 验证组菜单同款行规格/锚定(锚点取标题栏右侧附近坐标)。
+    ui.set_ctx_open_key("panel".into());
+    ui.set_ctx_menu_kind("panel".into());
+    ui.set_ctx_menu_x(250.0);
+    ui.set_ctx_menu_y(40.0);
+    ui.set_ctx_menu_space_below(500.0);
+    let mut buf = vec![PremultipliedRgbaColor::default(); W * H];
+    ui.window().request_redraw();
+    WIN.with(|win| {
+        win.draw_if_needed(|r| {
+            r.render(&mut buf, W);
+        });
+    });
+    save_rgba(&buf, "output/left-panel/panel-menu.png");
+    ui.set_ctx_open_key("".into());
+    ui.set_ctx_menu_kind("".into());
+    println!("saved output/left-panel/ctx-swatch.png + group-head.png + empty-compact.png + panel-menu.png");
 }
 
 fn save_rgba(buf: &[PremultipliedRgbaColor], path: &str) {

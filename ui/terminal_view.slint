@@ -317,17 +317,9 @@ export component ScopeButton inherits Rectangle {
         if (letter == "C") { return root.ch-c; }
         return root.ch-d;
     }
-    function scope-tip-head() -> string {
-        if (root.applied-n() > 1) {
-            return @tr("{0} channels · {1} hosts", root.applied-n(), root.applied-total());
-        }
-        return root.scope-label();
-    }
-    function scope-tip-sub() -> string {
-        if (root.all) { return @tr("{0} 台", root.tab-count); }
-        if (root.applied-n() == 1) { return @tr("{0} 台", root.applied-total()); }
-        return "";
-    }
+    // (#scope-tip-drop 2026-11-09 用户要求删) 悬停汇总气泡整块退役:
+    // 按钮文字本身已带「标签/台数」,气泡纯重复(scope-tip-head/sub
+    // 两个 function 随块删除)。
     function dot-color(i: int) -> color {
         if (i == 0) {
             if (root.ch-a) { return root.scope-color-of("A"); }
@@ -471,59 +463,22 @@ export component ScopeButton inherits Rectangle {
             vertical-alignment: center;
         }
         Icon {
-            glyph: "expand-more";
+            // (#scope-tip-drop 2026-11-09 用户要求) 开合同步:菜单开着箭头
+            // 转向上(expand-less),关着向下(expand-more)——与 send_cmd_window
+            // 的 rail scope-btn 同款两枚 glyph 切换(Icon 无 rotation)。
+            glyph: root.open ? "expand-less" : "expand-more";
             tint: Theme.text-muted;
             size: Theme.fs-sm;
         }
     }
 
-    // 悬停汇总气泡：向上弹（命令栏贴着窗口底边，往下没空间），
-    // 右缘贴按钮右缘。菜单打开时不画 —— 两者是同一个落点。
-    // 鼠标左右键都在按钮上时才出，不抢焦点、不吞点击（没有
-    // TouchArea：气泡只是画出来的）。
-    if !root.open && scope-ta.has-hover : Rectangle {
-        x: parent.width - self.width;
-        y: -self.height - 6px;
-        width: tip-col.preferred-width;
-        height: tip-col.preferred-height;
-        background: root.on-popup ? Theme.field : Theme.popup-bg;
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: Theme.border-strong;
-        drop-shadow-blur: 12px;
-        drop-shadow-color: transparent;
-        tip-col := VerticalLayout {
-            padding-left: 10px;
-            padding-right: 10px;
-            padding-top: 7px;
-            padding-bottom: 7px;
-            spacing: 2px;
-            Text {
-                text: root.scope-tip-head();
-                color: Theme.text-primary;
-                font-size: Theme.fs-xs;
-                font-weight: Theme.fw-strong;
-            }
-            if root.scope-tip-sub() != "" : Text {
-                text: root.scope-tip-sub();
-                color: Theme.text-muted;
-                font-size: Theme.fs-xs;
-            }
-            for sc in root.scopes : Text {
-                // 只有「多选」需要逐行摊开（单选/全部的台数
-                // 副行已经写全了）。visible 不脱布局，高度也要归零。
-                visible: root.applied-n() > 1 && root.ch-applied(sc.letter);
-                height: (root.applied-n() > 1 && root.ch-applied(sc.letter)) ? 15px : 0px;
-                text: @tr("Channel {0} · {1} hosts", sc.letter, sc.count);
-                color: Theme.text-muted;
-                font-size: Theme.fs-xs;
-            }
-        }
-    }
-
     // 菜单：**向上**展开（下面就是 SFTP 面板 / 窗口底边，往下长会
-    // 被推出去）；右缘贴按钮右缘，宽 300（高保真 .scope-menu.wide：
-    // 要同时放下复选框、色点、频道名和台数）。
+    // 被推出去）。
+    // (#scope-tip-drop / 居中收窄 2026-11-09 用户反馈):菜单精简成
+    // 「当前/全部标签页」两行后,300px 宽(.scope-menu.wide,为复选框+
+    // 色点+频道名+台数而生)与「右缘贴按钮右缘」的旧锚定一并退役 ——
+    // 宽度 = 按钮本体宽(两行内容放得下),水平**居中于按钮**,观感是
+    // 按钮正上方的同宽小面板。
     // 与快捷/历史浮层同一模式：绝对定位到命令栏上方，父层不裁。
     if root.open : Rectangle {
         // (#scope-menu-hairline 2026-10-27) 边线 1 逻辑 px → 1 **设备** px，
@@ -532,12 +487,13 @@ export component ScopeButton inherits Rectangle {
         // 和窗口的横线保持一致」）。snap 做法同 send_cmd_window 的标题栏
         // hairline：按**绝对坐标**对齐设备网格，再换回父级坐标 —— 菜单挂
         // 在页脚/命令栏里，自身 x/y 是布局算出来的，多半落在半像素上。
+        // (#scope-tip-drop) menu-left 参数随旧锚定退役(唯一实例恒 false)。
         x: Theme.snap-to-device(parent.absolute-position.x
-                + (root.menu-left ? 0px : parent.width - self.width))
+                + (parent.width - self.width) / 2)
             - parent.absolute-position.x;
         y: Theme.snap-to-device(parent.absolute-position.y - self.height - 6px)
             - parent.absolute-position.y;
-        width: 300px;
+        width: parent.width;
         // (#tip-r15 2026-11-09) 菜单精简成两行后,段高恒定逻辑(300-340 最小高)
         // 退役 —— 高度直接跟内容(≈64px),向上弹出方向不变。
         height: Theme.snap-to-device(scope-col.preferred-height);

@@ -720,8 +720,9 @@ component SessionRow inherits Rectangle {
         width: !self.act-on ? (session.conn-state == 2 ? 36px : 8px) : 20px;
         height: 22px;
         visible: self.width > 0px;
-        // 常态:状态展示。
-        if !touch.has-hover && session.conn-state == 2 : Rectangle {
+        // 常态:状态展示(#kebab-steal-fix-r2 条件挂 act-on:进 ⋮ 抢占期
+        // touch.has-hover 塌 false,旧条件会让 LIVE/点与 ⋮ 叠显)。
+        if !act-on && session.conn-state == 2 : Rectangle {
             width: parent.width;
             height: 16px;
             y: (parent.height - self.height) / 2;
@@ -739,7 +740,7 @@ component SessionRow inherits Rectangle {
                 font-weight: Theme.fw-strong;
             }
         }
-        if !touch.has-hover && session.conn-state == 1 : Rectangle {
+        if !act-on && session.conn-state == 1 : Rectangle {
             width: 6px;
             height: 6px;
             x: 1px;
@@ -750,7 +751,15 @@ component SessionRow inherits Rectangle {
         }
         // 悬停:稿同款单 ⋮ 钮(#hover-card-hifi:.sactions 只有一枚 more-vert;
         // 点击/右键同成员行右键菜单,锚在钮下)。
-        if act-on : Rectangle {
+        // (#kebab-steal-fix-r2 2026-11-09 用户反馈"成员 ⋮ 选取不到") 同组头
+        // gh-kebab 规则:**常驻 + opacity 渐隐**,不再 `if act-on` 条件元素 ——
+        // 指针移进 ⋮ 时行壳 touch 被"顶者独占"抢走 hover(塌 false),条件元素
+        // 当帧 act-on 重估塌 false → 自灭销毁,s-kebab-ta 的 Enter 随元素一起
+        // 蒸发,kebab-hot 桥永远写不成 true → 钮闪烁/点不到。常驻后元素跨抢占
+        // 存活,Enter 必达、桥必立,opacity/enabled 撑住不塌(与组头同构)。
+        Rectangle {
+            opacity: act-on ? 1 : 0;
+            animate opacity { duration: 110ms; }
             width: parent.width;
             height: 20px;
             y: 1px;
@@ -769,8 +778,11 @@ component SessionRow inherits Rectangle {
             s-kebab-ta := TouchArea {
                 // (#kebab-steal-fix) enabled 三源:touch 悬停(行体进入)、自身
                 // 悬停(进入钮后 touch 已塌)、菜单钉住(点外关闭要可达)。
-                enabled: touch.has-hover || self.has-hover
-                    || root.ctx-open-key == session.id;
+                // (#kebab-steal-fix-r2) 常驻后 opacity 0 仍可命中,补
+                // !session.builtin:内建行钮恒隐,点击/右键不得借尸开菜单(#336)。
+                enabled: !session.builtin
+                    && (touch.has-hover || self.has-hover
+                    || root.ctx-open-key == session.id);
                 mouse-cursor: default;
                 changed has-hover => {
                     root.kebab-hot = self.has-hover;
@@ -795,7 +807,8 @@ component SessionRow inherits Rectangle {
                 }
                 pointer-event(e) => {
                     // 右键同组头 ⋮:恒热后 ⋮ 区右键落在本层,转发开菜单。
-                    if (!root.list-dragging
+                    // (#kebab-steal-fix-r2) builtin 守卫同 enabled。
+                    if (!session.builtin && !root.list-dragging
                         && e.kind == PointerEventKind.down
                         && e.button == PointerEventButton.right) {
                         root.ctx-opening(parent.x + parent.width / 2,
@@ -916,14 +929,11 @@ export component LeftSidebar inherits Rectangle {
     // 搜索行展开态(两个实例各自持有;展开即聚焦,空内容 Esc 收起)。
     property <bool> search-open: false;
     // 展开聚焦/收起清空都由标题行搜索钮的 clicked 处理(见 header);这里只留状态。
-    // (#menu-v2) ⋯ 菜单锚点:标题行底 = 根级别名(菜单块与 card 平级时
-    // parent 不是 card,header-y 不可见;锚钮在标题行,菜单 y = 标题行底+2)。
-    property <length> header-y-for-menu:
-        (root.compact ? 0px : 8px) + 36px
-        + (root.import-hint != "" ? 18px : 0px) + 2px;
-    // (#left-panel-v3-r2) 标题行「⋯」面板菜单(新建分组/导入/全部展开/折叠/
-    // 本地终端显隐)。仿 ping 弹层惯例:菜单开 = 全面板透明 backdrop,点击即关。
-    property <bool> more-open: false;
+    // (#panel-menu-ctx 2026-11-09) more-open 退役:面板菜单并入 AppWindow 根
+    // ctx 浮层体系(kind="panel",组头菜单同款锚定/材质/关闭链)。钮只上报
+    // 锚点(按钮中心 x / 按钮底+4,窗口坐标——事件回调期读 absolute-position
+    // 安全,ctx-opening 先例),菜单本体与开关态全走根 ctx-open-key=="panel"。
+    callback panel-menu-opening(length, length /* anchor-x, anchor-y (窗口坐标) */);
     // (#session-hover-card) 成员行 hover 信息卡片的中转槽:SessionRow 写入,
     // 实例侧绑定到 AppWindow 根的集中浮层(链路 SessionRow→Welcome→根)。
     in-out property <string> card-out-name;
@@ -1376,7 +1386,7 @@ export component LeftSidebar inherits Rectangle {
             }
             // (#dock-redrag) 停靠态整行可拖动换边(原 Quick connect 头部行为)。
             TouchArea {
-                enabled: root.compact && !root.more-open;
+                enabled: root.compact && root.ctx-open-key != "panel";
                 mouse-cursor: move;
                 moved => {
                     root.dock-drag-move(self.absolute-position.x + self.mouse-x,
@@ -1509,26 +1519,36 @@ export component LeftSidebar inherits Rectangle {
                         clicked => { root.locate-current-session(); }
                     }
                 }
-                // 更多钮:面板菜单(⋯)。(#menu-open-pin) 菜单开着时 z 提升
-                // 到 backdrop 之上(否则后绘的 backdrop 盖钮,active 选中底被吞)。
+                // 更多钮:面板菜单(⋯)。(#panel-menu-ctx 2026-11-09) 菜单并入
+                // 根 ctx 浮层(kind="panel",组头菜单同款):开着 = ctx-open-key
+                // =="panel"(根全局键 <=> 转发,backdrop/Esc/点项自动关+熄灯);
+                // 点击上报锚点(按钮中心 x / 按钮底+4 窗口坐标),不再面板内
+                // 自绘 backdrop。
                 Rectangle {
-                    z: 2;
                     y: 5px;
                     width: 26px;
                     height: 26px;
                     border-radius: Theme.radius-sm;
-                    background: root.more-open ? Theme.zone-sidebar-active
+                    background: root.ctx-open-key == "panel" ? Theme.zone-sidebar-active
                         : more-ta.has-hover ? Theme.bg-hover : transparent;
                     animate background { duration: 110ms; }
                     Icon {
                         glyph: "more-vert";
-                        tint: root.more-open || more-ta.has-hover
+                        tint: root.ctx-open-key == "panel" || more-ta.has-hover
                             ? Theme.text-primary : Theme.text-secondary;
                         size: 14px;
                     }
                     more-ta := TouchArea {
                         mouse-cursor: default;
-                        clicked => { root.more-open = !root.more-open; }
+                        clicked => {
+                            if (root.ctx-open-key == "panel") {
+                                root.ctx-open-key = "";   // 再点同钮 = 关菜单
+                            } else {
+                                root.panel-menu-opening(
+                                    self.absolute-position.x + self.width / 2,
+                                    self.absolute-position.y + self.height + 4px);
+                            }
+                        }
                     }
                 }
             }
@@ -1692,9 +1712,14 @@ export component LeftSidebar inherits Rectangle {
                     y: parent.list-y;
                     width: parent.width - 24px;
                     height: parent.height - parent.list-y - 6px;
-                    background: Theme.zone-sidebar-root;
+                    // (#empty-compact 2026-11-09 用户反馈"无匹配没必要放这么大")
+                    // 空列表双形态:**无会话**=原全高引导卡(新用户第一眼画面);
+                    // **搜索无匹配**=轻提示——去卡片框(透明无边框)、一行小字
+                    // 居顶(搜索框正下方),不再拉满列表高的空框。命中区仍全高:
+                    // 点列表任意空白照旧触发搜索框离焦(#search-blur 不回归)。
+                    background: root.search-query == "" ? Theme.zone-sidebar-root : transparent;
                     border-radius: Theme.radius-sm;
-                    border-width: 1px;
+                    border-width: root.search-query == "" ? 1px : 0px;
                     border-color: Theme.border-subtle;
 
                     // (#search-blur) 空列表时没有 list-host/blank-ta，空白点击
@@ -1711,19 +1736,28 @@ export component LeftSidebar inherits Rectangle {
                         }
                     }
 
-                    VerticalLayout {
+                    // (#empty-compact) Slint 1.18 此作用域拿不到 VerticalAlignment
+                    // 枚举名(Cannot access id),枚举三元不可用 → 双形态各写各的。
+                    if root.search-query == "" : VerticalLayout {
                         alignment: center;
                         spacing: 6px;
                         Text {
-                            text: root.search-query == ""
-                                ? @tr("No sessions yet")
-                                : @tr("No matching sessions");
+                            text: @tr("No sessions yet");
                             color: Theme.text-secondary;
                             font-size: Theme.fs-md;
                             horizontal-alignment: center;
                         }
-                        if root.search-query == "" : Text {
+                        Text {
                             text: @tr("Use 'New session' (top-right) to add your first server");
+                            color: Theme.text-muted;
+                            font-size: Theme.fs-sm;
+                            horizontal-alignment: center;
+                        }
+                    }
+                    if root.search-query != "" : VerticalLayout {
+                        padding-top: 16px;
+                        Text {
+                            text: @tr("No matching sessions");
                             color: Theme.text-muted;
                             font-size: Theme.fs-sm;
                             horizontal-alignment: center;
@@ -3156,223 +3190,7 @@ export component LeftSidebar inherits Rectangle {
                 }
         }
 
-        // (#menu-v2 2026-11-06 二轮重写) ⋯ 面板菜单 = mockup
-        // openContextMenu('panel') 的最终规格:
-        //   · 条目 8 项:新建会话(Ctrl+N) / 新建分组 / 导入 SSH 配置 | 展开/折叠
-        //     全部 | 收起面板 / 面板设置(旧版的「本地终端显隐」属 V2 空白右键
-        //     菜单,不在 panel 菜单 —— 移除;「面板设置」落点 = 接口设置弹框
-        //     「侧栏」页,PanelAnimGroup 已在那里)。
-        //   · 材质 .ctx-menu:min-width 212 / padding 4 / radius 8 / elev 底 /
-        //     lstr 边;阴影 = --pop-shadow 双层(大晕 44 + 近影 8)。
-        //   · 行 .ctx-item:高 28 / gap 8 / 内距 0 8 / 圆角 4 / 图标 13px /
-        //     文本 11.5px;悬停 hov 底 + t1 文字。
-        //   · 快捷键列 .sc:右对齐 9px mono t3 —— Slint 侧用 property 占位
-        //     (MenuRow 的 sc,空则不占)。
-        //   · 分隔线 .ctx-sep:h1 / margin 4x6。
-        //   · 定位:锚钮左缘下方 4px(mockup r.left, r.bottom+4;旧版右对齐)。
-        if root.more-open : Rectangle {
-            // (#menu-open-pin) z 层序:标题行更多钮(2) < backdrop(1) < 菜单卡(3)
-            // —— 钮在 backdrop 之上保证"点击选中态"可见;backdrop 兜"点外即关"。
-            z: 1;
-            x: 0px;
-            y: 0px;
-            width: parent.width;
-            height: parent.height;
-            TouchArea {
-                mouse-cursor: default;
-                clicked => { root.more-open = false; }
-            }
-        }
-        if root.more-open : Rectangle {
-            z: 3;
-            // (#menu-pos-right 2026-11-06 用户反馈"应出现在右侧区域"):
-            // mockup openContextMenu('panel') 传 r.left = 锚钮左缘 → 菜单
-            // 右缘与钮右缘近似对齐(面板 328 宽下菜单位于右侧区域)。
-            x: parent.width - self.width - 8px;
-            y: root.header-y-for-menu;
-            width: 212px;
-            // 8 项 28px + 2 分隔线(1+8) + 内距 4x2 = 244px。
-            height: 244px;
-            border-radius: 8px;
-            background: Theme.zone-sidebar-elev;
-            border-width: 1px;
-            border-color: Theme.zone-sidebar-line;
-            drop-shadow-blur: 24px;
-            drop-shadow-offset-y: 8px;
-            drop-shadow-color: #00000088;
-
-            // —— 条目区(8 行 + 2 线,绝对定位;行高 28,行距 4;两条分隔
-            //     线各占 9(1px 线 + 上下 4margin);总高 = 8*28 + 20 = 244 ——
-            //     内联展开:每行一个 Rectangle,背景/图标/文本/TouchArea 一致,
-            //     图标 13px、文本 11.5px、sc 列 9px,水平 padding 12+8、gap 8,
-            //     即 .ctx-item 的 gap:8 padding:0 8(内联后图标列再让 4px 与
-            //     mockup 左缘对齐)。 ——
-            Rectangle {
-                x: 4px; y: 4px;
-                width: parent.width - 8px;
-                height: 28px;
-                border-radius: 4px;
-                background: hover1.has-hover ? Theme.bg-hover : transparent;
-                animate background { duration: 100ms; }
-                HorizontalLayout {
-                    padding-left: 8px;
-                    padding-right: 8px;
-                    spacing: 8px;
-                    Icon { glyph: "new-session"; tint: hover1.has-hover ? Theme.text-primary : Theme.text-secondary; size: 13px; }
-                    Text { text: @tr("New session"); color: hover1.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 11.5px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                    Text { text: "Ctrl+N"; color: Theme.text-muted; font-size: 9px; vertical-alignment: center; }
-                }
-                hover1 := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.more-open = false;
-                        root.new-session();
-                    }
-                }
-            }
-            Rectangle {
-                x: 4px; y: 32px;
-                width: parent.width - 8px;
-                height: 28px;
-                border-radius: 4px;
-                background: hover2.has-hover ? Theme.bg-hover : transparent;
-                animate background { duration: 100ms; }
-                HorizontalLayout {
-                    padding-left: 12px;
-                    padding-right: 8px;
-                    spacing: 8px;
-                    Icon { glyph: "create-new-folder"; tint: hover2.has-hover ? Theme.text-primary : Theme.text-secondary; size: 13px; }
-                    Text { text: @tr("New group"); color: hover2.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 11.5px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                }
-                hover2 := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.more-open = false;
-                        root.new-group();
-                    }
-                }
-            }
-            Rectangle {
-                x: 4px; y: 60px;
-                width: parent.width - 8px;
-                height: 28px;
-                border-radius: 4px;
-                background: hover3.has-hover ? Theme.bg-hover : transparent;
-                animate background { duration: 100ms; }
-                HorizontalLayout {
-                    padding-left: 12px;
-                    padding-right: 8px;
-                    spacing: 8px;
-                    Icon { glyph: "move-in"; tint: hover3.has-hover ? Theme.text-primary : Theme.text-secondary; size: 13px; }
-                    Text { text: @tr("Import ~/.ssh/config"); color: hover3.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 11.5px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                }
-                hover3 := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.more-open = false;
-                        root.import-ssh-config();
-                    }
-                }
-            }
-            Rectangle {
-                x: 6px; y: 94px;
-                width: parent.width - 12px;
-                height: 1px;
-                background: Theme.zone-sidebar-line;
-            }
-            Rectangle {
-                x: 4px; y: 103px;
-                width: parent.width - 8px;
-                height: 28px;
-                border-radius: 4px;
-                background: hover4.has-hover ? Theme.bg-hover : transparent;
-                animate background { duration: 100ms; }
-                HorizontalLayout {
-                    padding-left: 12px;
-                    padding-right: 8px;
-                    spacing: 8px;
-                    Icon { glyph: "unfold-more"; tint: hover4.has-hover ? Theme.text-primary : Theme.text-secondary; size: 13px; }
-                    Text { text: @tr("Expand all"); color: hover4.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 11.5px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                }
-                hover4 := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.more-open = false;
-                        root.set-all-groups-collapsed(false);
-                    }
-                }
-            }
-            Rectangle {
-                x: 4px; y: 131px;
-                width: parent.width - 8px;
-                height: 28px;
-                border-radius: 4px;
-                background: hover5.has-hover ? Theme.bg-hover : transparent;
-                animate background { duration: 100ms; }
-                HorizontalLayout {
-                    padding-left: 12px;
-                    padding-right: 8px;
-                    spacing: 8px;
-                    Icon { glyph: "unfold-less"; tint: hover5.has-hover ? Theme.text-primary : Theme.text-secondary; size: 13px; }
-                    Text { text: @tr("Collapse all"); color: hover5.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 11.5px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                }
-                hover5 := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.more-open = false;
-                        root.set-all-groups-collapsed(true);
-                    }
-                }
-            }
-            Rectangle {
-                x: 6px; y: 165px;
-                width: parent.width - 12px;
-                height: 1px;
-                background: Theme.zone-sidebar-line;
-            }
-            Rectangle {
-                x: 4px; y: 174px;
-                width: parent.width - 8px;
-                height: 28px;
-                border-radius: 4px;
-                background: hover6.has-hover ? Theme.bg-hover : transparent;
-                animate background { duration: 100ms; }
-                HorizontalLayout {
-                    padding-left: 12px;
-                    padding-right: 8px;
-                    spacing: 8px;
-                    Icon { glyph: "sidebar-left-collapse"; tint: hover6.has-hover ? Theme.text-primary : Theme.text-secondary; size: 13px; }
-                    Text { text: @tr("Collapse panel"); color: hover6.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 11.5px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                }
-                hover6 := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.more-open = false;
-                        root.collapse();
-                    }
-                }
-            }
-            Rectangle {
-                x: 4px; y: 202px;
-                width: parent.width - 8px;
-                height: 28px;
-                border-radius: 4px;
-                background: hover7.has-hover ? Theme.bg-hover : transparent;
-                animate background { duration: 100ms; }
-                HorizontalLayout {
-                    padding-left: 12px;
-                    padding-right: 8px;
-                    spacing: 8px;
-                    Icon { glyph: "settings"; tint: hover7.has-hover ? Theme.text-primary : Theme.text-secondary; size: 13px; }
-                    Text { text: @tr("Panel settings"); color: hover7.has-hover ? Theme.text-primary : Theme.text-secondary; font-size: 11.5px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                }
-                hover7 := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.more-open = false;
-                        root.open-panel-settings();
-                    }
-                }
-            }
-        }
+        // (#panel-menu-ctx 2026-11-09) ⋯ 面板菜单退役:整块(面板内 backdrop +
+        // 自绘菜单卡)迁往 AppWindow 根 ctx 浮层(kind="panel")——锚定/材质/
+        // 行规格/关闭链与组头菜单同款。钮见上方 more-ta。
 }

@@ -3139,6 +3139,18 @@ export component AppWindow inherits Window {
                     ctx-row-h <=> root.ctx-row-h;
                     ctx-gen <=> root.ctx-gen;
                     reg-ctx-row(info) => { root.reg-ctx-row(info); }
+                    // (#panel-menu-ctx 2026-11-09) 面板菜单锚点上报:并入根 ctx
+                    // 浮层(kind="panel",组头菜单同款)。锚 = 钮中心 x / 钮底+4
+                    // (窗口坐标,钮侧已算好);下方余量供浮层翻转。
+                    panel-menu-opening(ax, ay) => {
+                        root.ctx-gen += 1;
+                        root.ctx-open-key = "panel";
+                        root.ctx-menu-kind = "panel";
+                        root.group-color-picker-open = false;
+                        root.ctx-menu-x = ax;
+                        root.ctx-menu-y = ay;
+                        root.ctx-menu-space-below = root.height - ay;
+                    }
                     drag-cancel-seq: root.session-drag-cancel-seq;
                     move-session-to(id, target, after) => { root.move-session-to(id, target, after); }
                     reorder-group(g, before) => { root.reorder-group(g, before); }
@@ -3899,6 +3911,16 @@ export component AppWindow inherits Window {
                         ctx-row-h <=> root.ctx-row-h;
                         ctx-gen <=> root.ctx-gen;
                         reg-ctx-row(info) => { root.reg-ctx-row(info); }
+                        // (#panel-menu-ctx 2026-11-09) 欢迎页实例同款接线。
+                        panel-menu-opening(ax, ay) => {
+                            root.ctx-gen += 1;
+                            root.ctx-open-key = "panel";
+                            root.ctx-menu-kind = "panel";
+                            root.group-color-picker-open = false;
+                            root.ctx-menu-x = ax;
+                            root.ctx-menu-y = ay;
+                            root.ctx-menu-space-below = root.height - ay;
+                        }
                         drag-cancel-seq: root.session-drag-cancel-seq;
                         move-session-to(id, target, after) => { root.move-session-to(id, target, after); }
                         reorder-group(g, before) => { root.reorder-group(g, before); }
@@ -4601,7 +4623,9 @@ export component AppWindow inherits Window {
                 // 换菜单"的必要;移出就关让取色面板(贴菜单弹出)很难用。关闭
                 // 路径保持:点空白/点菜单项/Esc/右击别处。成员行菜单(kind=row)
                 // 维持原 hover 自动关闭。
-                if (root.ctx-menu-kind == "blank" || root.ctx-menu-kind == "group") {
+                if (root.ctx-menu-kind == "blank" || root.ctx-menu-kind == "group"
+                    // (#panel-menu-ctx 2026-11-09) 面板菜单同款「移出不消失」。
+                    || root.ctx-menu-kind == "panel") {
                     bd.unsafe-ticks = 0;
                 } else if (!bd.has-hover) {
                     bd.unsafe-ticks = 0;
@@ -5249,6 +5273,176 @@ export component AppWindow inherits Window {
         // (gm 的改色弹层同层,见 7063 注释:模态全屏遮罩,无需贴菜单几何)。
     }
 
+    // (#panel-menu-ctx 2026-11-09 用户要求"面板 ⋯ 菜单与组别菜单同款、在
+    // 右侧") 标题行 ⋯ 面板菜单 = ctx 浮层第四态(kind="panel"):自
+    // left_sidebar 面板内自绘(backdrop+菜单卡)整块迁入。锚定 = 钮中心 x /
+    // 钮底+4(超窗钳制同组菜单),材质与行规格完全复用 grp-menu-rect:
+    // popup-bg 底 / radius-sm / 1px border-strong / padding 5 / 行高 30 /
+    // padding-left 10 + spacing 9(图标 fs-sm 左缘起、文字 fs-md
+    // text-primary 撑满,图标与文字垂直居中由行布局保证) —— 旧面板菜单的
+    // 28px 行/8px 间距/首行 padding-left 8px(图标比其余行偏左 4px)退役。
+    // 8 项直排无分隔线(组菜单同款);Ctrl+N 快捷键列 muted 右贴。
+    // 关闭链 = ctx 体系通用:backdrop 点击/Esc/点项即关;同 blank/group
+    // 「移出不消失」(见 backdrop 4604 处条件)。收起面板按停靠语义写
+    // (欢迎页 tab 下原组件回调无 handler,点它静默无操作——现在收起的是
+    // 停靠面板,行为更明确)。
+    if root.ctx-open-key != "" && root.ctx-menu-kind == "panel" : Rectangle {
+        x: max(8px, min(root.ctx-menu-x, parent.width - self.width - 8px));
+        y: min(
+            self.height > root.ctx-menu-space-below
+                ? max(8px, root.ctx-menu-y - self.height)
+                : root.ctx-menu-y,
+            parent.height - self.height - 8px);
+        width: min(240px, max(212px, panel-menu-vl.preferred-width));
+        height: panel-menu-vl.preferred-height;
+        background: Theme.popup-bg;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 10px;
+        drop-shadow-color: transparent;
+        // 垫底探测:同组菜单,挡住 backdrop hover(「移出不消失」判定用)。
+        TouchArea { width: 100%; height: 100%; }
+        panel-menu-vl := VerticalLayout {
+            padding: 5px;
+            spacing: 0px;
+            Rectangle {
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: pm-1.has-hover ? Theme.bg-hover : transparent;
+                pm-1 := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.ctx-open-key = "";
+                        root.ctx-menu-kind = "";
+                        root.new-session-clicked();
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 10px; padding-right: 8px; spacing: 9px;
+                    Icon { glyph: "new-session"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    Text { text: @tr("New session"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                    Text { text: "Ctrl+N"; color: Theme.text-muted; font-size: Theme.fs-xs; vertical-alignment: center; }
+                }
+            }
+            Rectangle {
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: pm-2.has-hover ? Theme.bg-hover : transparent;
+                pm-2 := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.ctx-open-key = "";
+                        root.ctx-menu-kind = "";
+                        root.group-dialog-orig = "";
+                        root.group-dialog-name = "";
+                        root.group-dialog-error = "";
+                        root.group-dialog-color-hex = "";
+                        root.group-dialog-color = #00000000;
+                        root.group-dialog-open = true;
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 10px; spacing: 9px;
+                    Icon { glyph: "create-new-folder"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    Text { text: @tr("New group"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                }
+            }
+            Rectangle {
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: pm-3.has-hover ? Theme.bg-hover : transparent;
+                pm-3 := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.ctx-open-key = "";
+                        root.ctx-menu-kind = "";
+                        root.import-ssh-config();
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 10px; spacing: 9px;
+                    Icon { glyph: "move-in"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    Text { text: @tr("Import ~/.ssh/config"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                }
+            }
+            Rectangle {
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: pm-4.has-hover ? Theme.bg-hover : transparent;
+                pm-4 := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.ctx-open-key = "";
+                        root.ctx-menu-kind = "";
+                        root.set-all-groups-collapsed(false);
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 10px; spacing: 9px;
+                    Icon { glyph: "unfold-more"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    Text { text: @tr("Expand all"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                }
+            }
+            Rectangle {
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: pm-5.has-hover ? Theme.bg-hover : transparent;
+                pm-5 := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.ctx-open-key = "";
+                        root.ctx-menu-kind = "";
+                        root.set-all-groups-collapsed(true);
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 10px; spacing: 9px;
+                    Icon { glyph: "unfold-less"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    Text { text: @tr("Collapse all"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                }
+            }
+            Rectangle {
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: pm-6.has-hover ? Theme.bg-hover : transparent;
+                pm-6 := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.ctx-open-key = "";
+                        root.ctx-menu-kind = "";
+                        root.left-sidebar-collapsed = true;
+                        root.set-left-sidebar-collapsed(true);
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 10px; spacing: 9px;
+                    Icon { glyph: "sidebar-left-collapse"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    Text { text: @tr("Collapse panel"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                }
+            }
+            Rectangle {
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: pm-7.has-hover ? Theme.bg-hover : transparent;
+                pm-7 := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.ctx-open-key = "";
+                        root.ctx-menu-kind = "";
+                        root.ifd-page = "sidebar";
+                        root.interface-open = true;
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 10px; spacing: 9px;
+                    Icon { glyph: "settings"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    Text { text: @tr("Panel settings"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                }
+            }
+        }
+    }
+
     // (#session-hover-card 2026-09-05) 成员行悬停信息卡片的集中浮层:
     // SessionRow 经 Welcome 中转写入(名称/主机/备注 + 坐标),窗口根尾部
     // 渲染 = 最顶层且不被列表裁剪;普通元素不拦截鼠标,hover 离开即消失。
@@ -5269,10 +5463,12 @@ export component AppWindow inherits Window {
         property <int> row-n: 2 + (session-card-user != "" ? 1 : 0)
             + (session-card-auth != "" ? 1 : 0) + (session-card-note != "" ? 1 : 0);
         // (#hover-card-hifi 2026-11-09) 锚点改**行右缘/行顶**(card-x/y 由
-        // SessionRow info-delay 写行几何,不再跟随指针):x = 行右 + 10(溢出
-        // 翻左侧,阈值 8px 不变);y = 行顶 - 2 起排,clamp 贴窗。
-        x: session-card-x + 10px + self.width > parent.width - 8px
-            ? max(8px, session-card-x - self.width - 10px) : session-card-x + 10px;
+        // SessionRow info-delay 写行几何,不再跟随指针)。(#hover-card-hifi-r2
+        // 2026-11-09 用户"贴着边线") 行卡满宽 → 行右缘=面板右缘,+10 横偏退役:
+        // 卡片左缘直接贴住面板分隔线;溢出翻左时右缘贴线,阈值 8px 不变;
+        // y = 行顶 - 2 起排,clamp 贴窗。
+        x: session-card-x + self.width > parent.width - 8px
+            ? max(8px, session-card-x - self.width) : session-card-x;
         y: clamp(session-card-y, 8px, parent.height - self.height - 10px);
         // 卡宽 = 最宽行内容 + 键列 44 + 内边距;备注长则 elide。上限钳到窗宽。
         width: min(parent.width - 60px,
