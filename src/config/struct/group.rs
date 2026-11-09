@@ -111,11 +111,32 @@ pub(crate) fn migrate_group_records(
 }
 
 /// 组名是否为保留名(default / system,大小写不敏感)。
+/// (#group-name-guard 2026-11-09 用户反馈"组名写 default/默认/默认组不要再
+/// 新建默认组") 中文显示名变体一并入列 —— 它们与保留组显示名撞车(树里
+/// 出现两个「默认组」),任何建组入口都必须拦下:
+///   default 侧: default / 默认 / 默认组 / 默认分组 / 默认值
+///   system 侧: system / 本地终端 / 系统 / 系统组
 /// (#left-panel-v3) 新代码应优先用 id 常量判断;本函数仍被旧字符串路径
 /// (legacy 快照、显示名解析)使用。
 pub fn is_reserved_session_group(name: &str) -> bool {
+    reserved_session_group_id(name).is_some()
+}
+
+/// 保留名变体 → 保留组 id。None = 非保留名(普通组名)。
+/// 大小写不敏感(ASCII);中文名精确匹配(trim 由调用方或本函数处理)。
+pub fn reserved_session_group_id(name: &str) -> Option<&'static str> {
     let name = name.trim();
-    name.eq_ignore_ascii_case("default") || name.eq_ignore_ascii_case("system")
+    if name.eq_ignore_ascii_case("default")
+        || matches!(name, "默认" | "默认组" | "默认分组" | "默认值")
+    {
+        return Some(GROUP_ID_DEFAULT);
+    }
+    if name.eq_ignore_ascii_case("system")
+        || matches!(name, "本地终端" | "系统" | "系统组")
+    {
+        return Some(GROUP_ID_SYSTEM);
+    }
+    None
 }
 
 #[cfg(test)]

@@ -639,7 +639,7 @@ component SessionRow inherits Rectangle {
         // > 定位闪烁(accent 淡染 + 描边,在下方独立层)> 悬停/菜单锚点(hover)。
         background: session.id != "" && session.id == root.active-session-id
             ? @linear-gradient(90deg, Theme.zone-sidebar-accent-soft 0%, transparent 72%)
-            : (touch.has-hover || root.ctx-open-key == session.id)
+            : (touch.has-hover || root.kebab-hot || root.ctx-open-key == session.id)
                 && !root.list-dragging ? Theme.bg-hover : transparent;
         animate background { duration: 120ms; }
 
@@ -693,14 +693,16 @@ component SessionRow inherits Rectangle {
             font-weight: session.id == root.locate-flash-id ? Theme.fw-strong : Theme.fw-regular;
             vertical-alignment: center;
             overflow: elide;
-            // (#hover-jump) 名称右缘动态让位给覆盖层:悬停 32px(⋮ 单钮,稿
-            // .sactions 只有一枚 more-vert;#hover-card-hifi)、在线 30px(LIVE
-            // 徽章)、未连接 14px(点);布局宽随宽度属性收缩 —— Text 自身
-            // width 由 stretch 决定,elide 兜底长名。
+            // (#hover-jump) 名称右缘动态让位给覆盖层;布局宽随宽度属性收缩
+            // —— Text 自身 width 由 stretch 决定,elide 兜底长名。
+            // (#kebab-bg-fix 2026-11-09 用户截图"LIVE 压住名称尾部") 让位量按
+            // 覆盖层右侵几何重算(名称右缘 = W+6-让位):悬停/菜单(⋮ 20+6=26)
+            // → 34(右缘 W-28,留 2px 缓冲);LIVE 徽章(36+6=42)→ 50(右缘
+            // W-44,旧 34 压 18px=截图根因);无状态(透明 8px 区)→ 8 不变。
             width: parent.width - ((touch.has-hover || root.kebab-hot
-                || root.ctx-open-key == session.id) ? 32px
-                : session.conn-state == 2 ? 34px
-                : session.conn-state == 1 ? 16px : 8px);
+                || root.ctx-open-key == session.id) ? 34px
+                : session.conn-state == 2 ? 50px
+                : 8px);
         }
     }
     }
@@ -712,7 +714,12 @@ component SessionRow inherits Rectangle {
     // (#hover-card-hifi 2026-11-09) 稿 .sactions 只有一枚 ⋮(more-vert,
     // 22px):三钮带(56px)退役,悬停宽 20px;菜单开着(.srow.menu-open)
     // 与抢占桥期照常显示。
-    Rectangle {
+    // (#kebab-anchor-fix 2026-11-09) 覆盖层 id:⋮ 钮锚点引用。r2 改常驻后
+    // s-kebab-ta 的 parent 从覆盖层(if 元素之父)变成 ⋮ 壳(x=0),旧锚点
+    // parent.x+width/2 从"钮中心"回归成 10 → 菜单被钳到面板左缘(用户截图:
+    // 成员菜单飞左侧)。Slint 回调里 parent 不可链(parent.parent 编译错),
+    // 给覆盖层具名直引 —— 与组头 gh-kebab-ta absolute-position 同语义。
+    scope-ov := Rectangle {
         x: parent.width - self.width - 6px;
         y: (parent.height - self.height) / 2;
         property <bool> act-on: (touch.has-hover || root.kebab-hot
@@ -740,15 +747,9 @@ component SessionRow inherits Rectangle {
                 font-weight: Theme.fw-strong;
             }
         }
-        if !act-on && session.conn-state == 1 : Rectangle {
-            width: 6px;
-            height: 6px;
-            x: 1px;
-            y: (parent.height - self.height) / 2;
-            border-radius: 3px;
-            border-width: 1px;
-            border-color: Theme.zone-sidebar-accent;
-        }
+        // (#status-dot-drop 2026-11-09 用户要求删) 未连接空心状态点退役:
+        // 用户口径"组内成员的右侧状态点删除不需要了" —— 未连接态不再画
+        // 行尾点,LIVE 徽章保留;名称让位宽同步收(见上 width 绑定)。
         // 悬停:稿同款单 ⋮ 钮(#hover-card-hifi:.sactions 只有一枚 more-vert;
         // 点击/右键同成员行右键菜单,锚在钮下)。
         // (#kebab-steal-fix-r2 2026-11-09 用户反馈"成员 ⋮ 选取不到") 同组头
@@ -799,10 +800,11 @@ component SessionRow inherits Rectangle {
                         root.ctx-open-key = "";   // 再点同钮 = 关菜单
                     } else {
                         // 锚**行内**坐标(px/py 由实例 handler 加行绝对位):
-                        // parent = 20px 覆盖层,其 x/y 相对行 —— 钮中心 x /
-                        // 覆盖层底+4。
-                        root.ctx-opening(parent.x + parent.width / 2,
-                            parent.y + parent.height + 4px);
+                        // (#kebab-anchor-fix) scope-ov = 20px 覆盖层,其 x/y
+                        // 相对行 —— 钮中心 x / 覆盖层底+4(原 parent 引用自
+                        // 常驻化后指向 x=0 的 ⋮ 壳,菜单飞左缘,见覆盖层注释)。
+                        root.ctx-opening(scope-ov.x + scope-ov.width / 2,
+                            scope-ov.y + scope-ov.height + 4px);
                     }
                 }
                 pointer-event(e) => {
@@ -811,8 +813,8 @@ component SessionRow inherits Rectangle {
                     if (!session.builtin && !root.list-dragging
                         && e.kind == PointerEventKind.down
                         && e.button == PointerEventButton.right) {
-                        root.ctx-opening(parent.x + parent.width / 2,
-                            parent.y + parent.height + 4px);
+                        root.ctx-opening(scope-ov.x + scope-ov.width / 2,
+                            scope-ov.y + scope-ov.height + 4px);
                     }
                 }
             }
@@ -2090,6 +2092,11 @@ export component LeftSidebar inherits Rectangle {
                                     session.group-color-hex != "", session.group-color);
                                 property <bool> menu-pin:
                                     grp-ta.has-hover
+                                    // (#kebab-bg-pin 2026-11-09 用户反馈"移到菜单
+                                    // 上行背景被取消") ⋮ 悬停抢占期 grp-ta 塌 false,
+                                    // 行底只认 grp-ta 会灭(只剩 ⋮ 亮)——桥接:kebab-hot
+                                    // 立着时行底照常。
+                                    || kebab-hot
                                     || root.ctx-open-key == "hdr:" + session.group-id;
                                 // (#kebab-steal-fix 2026-11-09) ⋮ 钮 hover 抢占桥。引擎
                                 // send_exit_events 实证:重叠 TouchArea 悬停=顶者独占,

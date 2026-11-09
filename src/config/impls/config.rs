@@ -449,6 +449,10 @@ pub(crate) fn migrate_group_tree(cfg: &mut ConfigFile) -> bool {
             .find(|r| r.name.eq_ignore_ascii_case(name))
         {
             session.group_id = record.id.clone();
+        } else if let Some(rid) = crate::config::reserved_session_group_id(name) {
+            // (#group-name-guard 2026-11-09) 历史 JSON 里的保留名变体孤儿
+            // (group_id="默认组" 等)归保留组,不再补建成重复组。
+            session.group_id = rid.to_string();
         } else {
             let id = new_group_id();
             cfg.group_records
@@ -894,6 +898,37 @@ impl ConfigStore {
     }
 
     pub fn upsert(&mut self, mut session: Session) {
+        // (#group-name-guard 2026-11-09 用户反馈"组名写 default/默认/默认组
+        // 不要再新建默认组") 写库单点归一:提交链会把**组名字符串**直接当
+        // group_id 存(draft.group=名字直通),孤儿 id 在树里查不到组 —— load
+        // 后被 migrate 补建成重复组(用户实测:出现第二个「默认组」)。所有
+        // 会话写库都汇到 upsert,在此按序解析:
+        //   空 → grp-default;保留名变体(default/默认/默认组/默认分组/默认值
+        //   及 system 侧)→ 对应保留组;已有组名(大小写不敏感)→ 该组 id;
+        //   真新名 → 补建组记录(与 migrate_group_tree「未知名补建」同语义,
+        //   输入新名即建组的既有行为保留)。已是合法 id 的原样不动。
+        let raw = session.group_id.trim().to_string();
+        let valid_id = self.cache.group_records.iter().any(|r| r.id == raw);
+        if raw.is_empty() {
+            session.group_id = crate::config::GROUP_ID_DEFAULT.to_string();
+        } else if !valid_id {
+            if let Some(rid) = crate::config::reserved_session_group_id(&raw) {
+                session.group_id = rid.to_string();
+            } else if let Some(r) = self
+                .cache
+                .group_records
+                .iter()
+                .find(|r| r.name.trim().eq_ignore_ascii_case(&raw))
+            {
+                session.group_id = r.id.clone();
+            } else {
+                let id = new_group_id();
+                self.cache
+                    .group_records
+                    .push(GroupRecord::new(id.clone(), raw.clone(), String::new()));
+                session.group_id = id;
+            }
+        }
         if is_reserved_session_group(session.group.trim()) {
             session.group.clear();
         }
