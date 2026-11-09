@@ -771,7 +771,12 @@ export component SendCmdWindow inherits Window {
                                 }
 
                                 HorizontalLayout {
-                                    spacing: 0;
+                                    // (#tip-r17 2026-11-09) spacing 6px = 稿 #cmdInput
+                                    // padding-left:6px —— 危险行左缘红条(x=36)与文字不再
+                                    // 贴合(实机截图:条紧贴 r)。spacing 在 Layout 层推开
+                                    // exp-input,caret-x 仍相对其自身原点,列计算/overlay
+                                    // 公式零影响(条与渐变 x=36 不动)。
+                                    spacing: 6px;
                                     // 行号槽:36 常驻(v2 —— 单行时降透明度,不再整列消失,
                                     // 避免换行时行号突然出现造成视线跳动)。
                                     // (#tip-r13 2026-11-08) 照高保真 .gutter-num.danger:
@@ -914,7 +919,9 @@ export component SendCmdWindow inherits Window {
                                 x: 14px;
                                 y: (parent.height - self.height) / 2;
                                 width: self.content-w;
-                                height: 30px;
+                                // (#tip-r17 2026-11-09) 缩小照稿 .mode-cap:28 外框/22 opt,
+                                // 段宽 96→72(4 字 10.5px 文字够放,总宽 200→152)。
+                                height: 28px;
                                     active-index: root.resolved-paste-mode == "block" ? 1 : 0;
                                     count: 2;
                                     compact: true;
@@ -927,7 +934,7 @@ export component SendCmdWindow inherits Window {
                                         height: parent.height - 6px;
                                         horizontal-stretch: 1;
                                         min-width: 0px;
-                                        preferred-width: 96px;
+                                        preferred-width: 72px;
                                         TouchArea {
                                             mouse-cursor: default;
                                             clicked => {
@@ -952,7 +959,7 @@ export component SendCmdWindow inherits Window {
                                         height: parent.height - 6px;
                                         horizontal-stretch: 1;
                                         min-width: 0px;
-                                        preferred-width: 96px;
+                                        preferred-width: 72px;
                                         TouchArea {
                                             mouse-cursor: default;
                                             clicked => {
@@ -977,9 +984,12 @@ export component SendCmdWindow inherits Window {
                                     }
                                 }
                                 // 状态位:图标 + 一句状态(危险红 / 风险琥珀 / 回执绿 / 普通灰)
+                                // (#tip-r17 2026-11-09) Ctrl+Enter 助记删(用户定稿:发送钮
+                                // 旁的快捷键文字不要)——note-row 宽度右界从 kbd-row.x 改
+                                // exp-send.x,toast 避让公式同步(见根级 toast 层)。
                                 note-row := Rectangle {
                                     x: root.multi-line ? 14px + cap-seg.content-w + 12px : 14px;
-                                    width: max(0px, kbd-row.x - self.x - 12px);
+                                    width: max(0px, exp-send.x - self.x - 12px);
                                     height: parent.height;
                                     HorizontalLayout {
                                         spacing: 6px;
@@ -996,61 +1006,6 @@ export component SendCmdWindow inherits Window {
                                             overflow: elide;
                                             vertical-alignment: center;
                                             horizontal-stretch: 1;
-                                        }
-                                    }
-                                }
-                                // Ctrl+Enter 助记(v2 恢复 —— 方案 E 时被信息区取代)
-                                kbd-row := Rectangle {
-                                    x: exp-send.x - self.preferred-width - 10px;
-                                    height: parent.height;
-                                    HorizontalLayout {
-                                        spacing: 2px;
-                                        Rectangle {
-                                            width: kbd1.preferred-width + 10px;
-                                            height: 16px;
-                                            y: (parent.height - 16px) / 2;
-                                            border-radius: 3px;
-                                            border-width: 1px;
-                                            border-color: Theme.line-2;
-                                            background: Theme.field;
-                                            kbd1 := Text {
-                                                width: parent.width;
-                                                height: parent.height;
-                                                text: "Ctrl";
-                                                color: Theme.text-secondary;
-                                                font-size: 9px;
-                                                font-family: Theme.font-mono;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                        Text {
-                                            width: 8px;
-                                            height: parent.height;
-                                            text: "+";
-                                            color: Theme.text-muted;
-                                            font-size: 9px;
-                                            vertical-alignment: center;
-                                            horizontal-alignment: center;
-                                        }
-                                        Rectangle {
-                                            width: kbd2.preferred-width + 10px;
-                                            height: 16px;
-                                            y: (parent.height - 16px) / 2;
-                                            border-radius: 3px;
-                                            border-width: 1px;
-                                            border-color: Theme.line-2;
-                                            background: Theme.field;
-                                            kbd2 := Text {
-                                                width: parent.width;
-                                                height: parent.height;
-                                                text: "Enter";
-                                                color: Theme.text-secondary;
-                                                font-size: 9px;
-                                                font-family: Theme.font-mono;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
                                         }
                                     }
                                 }
@@ -2535,12 +2490,12 @@ export component SendCmdWindow inherits Window {
         // (#tip-r7 2026-11-08) 从标题栏下移到窗口底部居中(底缘上 20px)——
         // 顶部位置会压 COMMAND 统计行,页脚空旷不遮内容。
         // (#tip-r15 2026-11-09) 基准从窗口全宽改**编辑器列**(往左+居中于主内容区):
-        // 窗口居中会随 rail 占位右移,盖住发送钮左侧 Ctrl+Enter 助记(实机截图);
-        // 并钳右缘 ≤ 快捷键行左缘-12,窄窗极端也不遮。
+        // 窗口居中会随 rail 占位右移,盖住发送钮左侧助记(实机截图)。
+        // (#tip-r17 2026-11-09) 助记已删,右界钳到发送钮左缘-12。
         Rectangle {
             visible: root.toast-text != "";
             x: max(12px, min((parent.width - root.rail-w - self.width) / 2,
-                kbd-row.x - 12px - self.width));
+                exp-send.x - 12px - self.width));
             y: parent.height - self.height - 20px;
             width: toast-txt.preferred-width + 34px;
             height: 30px;
