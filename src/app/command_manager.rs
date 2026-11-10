@@ -57,10 +57,20 @@ fn parse_key(key: &str) -> Option<u64> {
     key.parse::<u64>().ok()
 }
 
-/// 组存储值归一：空串 / "default"（不分大小写）→ 默认分组（空串）。
+/// 组存储值归一：空串 / 保留名变体 → 默认分组（空串）。
+/// (#cm-group-guard 2026-11-10 用户要求"与新建会话里的规则对齐,都为默认
+/// 分组,而不是重新新建个") 保留名清单与 config/struct/group.rs
+/// reserved_session_group_id 的 default 侧同步:default/默认/默认组/默认分组
+/// /默认值 → 空(默认分组),不再各自成组。system 侧变体同样拦下 —— 快捷
+/// 分组没有"本地终端"这一档,统一归默认。
 fn normalize_group(g: &str) -> String {
     let t = g.trim();
-    if t.is_empty() || t.eq_ignore_ascii_case("default") {
+    if t.is_empty()
+        || t.eq_ignore_ascii_case("default")
+        || matches!(t, "默认" | "默认组" | "默认分组" | "默认值")
+        || t.eq_ignore_ascii_case("system")
+        || matches!(t, "本地终端" | "系统" | "系统组")
+    {
         String::new()
     } else {
         t.to_string()
@@ -68,7 +78,7 @@ fn normalize_group(g: &str) -> String {
 }
 
 fn group_display(g: &str) -> &str {
-    if g.is_empty() || g.eq_ignore_ascii_case("default") {
+    if normalize_group(g).is_empty() {
         CM_DEFAULT_DISPLAY
     } else {
         g
@@ -342,7 +352,10 @@ fn validate_group_name(store: &ConfigStore, text: &str, orig: &str) -> String {
     if n.is_empty() {
         return String::new();
     }
-    if n == CM_DEFAULT_DISPLAY || n.eq_ignore_ascii_case("default") {
+    // (#cm-group-guard 2026-11-10) 保留名变体与新建会话 #group-name-guard
+    // 同清单:default/默认/默认组/默认分组/默认值(system 侧同拦)→ 与默认
+    // 分组重名,不再放行建出第二个"默认组"。
+    if normalize_group(n).is_empty() {
         return "该名称与默认分组重名".into();
     }
     let seq = cm_group_seq(store);

@@ -391,8 +391,12 @@ component SessionRow inherits Rectangle {
         // hover 仍保持 default(行是命令项,不是链接 —— 规格 §4.1)。
         mouse-cursor: default;
         // (#session-hover-card) 悬停离开时清掉信息卡片(写入在 info-delay)。
+        // (#hover-card-kebab-keep 2026-11-10 用户反馈"鼠标在图标上时提示框
+        // 不显示了") 进 ⋮ 属抢占非离行(行体 touch 被顶者独占抢走塌 false)，
+        // 卡片保持 —— kebab-hot 桥管显隐同源;真离行(kebab-hot 也 false)
+        // 才清。菜单开着不隐的口径在 app.slint 渲染层(点 ⋮ 显式清)。
         changed has-hover => {
-            if (!self.has-hover && root.card-out-name != "") {
+            if (!self.has-hover && !root.kebab-hot && root.card-out-name != "") {
                 root.card-out-name = "";
             }
             // (#tree-line-hover) 上报/撤销"鼠标悬停所属组"。
@@ -533,7 +537,9 @@ component SessionRow inherits Rectangle {
     // 不再跟手)——渲染层在 app.slint(+10 横偏 / 纵向 clamp)。
     info-delay := Timer {
         interval: 150ms;
-        running: touch.has-hover && !root.list-dragging;   // 拖动中不弹信息卡
+        // (#hover-card-kebab-keep 2026-11-10) 进 ⋮ 抢占期(touch 塌 false)
+        // 卡片不灭:running 挂 kebab-hot 同源,只有真离行才停。
+        running: (touch.has-hover || root.kebab-hot) && !root.list-dragging;   // 拖动中不弹信息卡
         triggered => {
             // (#hover-card-drag) running 翻转与 triggered 的竞态防护:
             // 拖拽已拉起时不再写出信息卡。
@@ -1164,6 +1170,10 @@ export component LeftSidebar inherits Rectangle {
     // 调用方在 Windows/Linux（自绘标题栏，已有 LOGO 切换按钮）传 false 隐藏，
     // macOS 原生标题栏没有该按钮 → 保持显示，否则无法收起侧栏。
     in property <bool> show-collapse: true;
+    // (#new-btn-dialog-active 2026-11-10) 会话对话框(新建/编辑)开着 — 实例处
+    // 从 AppWindow.dialog-open 传入,面板顶部「新建会话」钮据此保持选中态
+    // (与标题栏同钮 active: dialog-open 同口径)。
+    in property <bool> dialog-open: false;
     callback dock-drag-move(length, length);
     callback dock-drag-end();
 
@@ -1349,6 +1359,17 @@ export component LeftSidebar inherits Rectangle {
         // 搜索行展开才让位 38px。
         property <length> list-y: self.content-y + (root.search-open ? 38px : 6px);
 
+        // (#topbtn-reveal 2026-11-10) 面板卡悬停感测:整卡只探 hover、不拦点击
+        // —— 声明在标题行/列表等内容**之前**(z 低),上层的一切 TouchArea
+        // (四钮/组头/成员行/⋯)照常收事件;标题行 tools-on 读它的 has-hover
+        // 决定四钮显隐,鼠标移出整卡才隐。
+        card-hover := TouchArea {
+            x: 0; y: 0;
+            width: 100%;
+            height: 100%;
+            mouse-cursor: default;
+        }
+
         // 标题行:「会话」+ 总数徽章 + 右侧 搜索/新建/定位/更多 四裸图标(26px)。
         // (#left-panel-v3) mockup §V4 面板标题层:新建收进标题栏(大按钮退役),
         // 「＋」默认与其它图标同色、悬停转强调色;停靠拖动 TouchArea 保留。
@@ -1357,6 +1378,18 @@ export component LeftSidebar inherits Rectangle {
             y: parent.header-y;
             width: parent.width;
             height: 36px;
+            // (#topbtn-reveal 2026-11-10 用户反馈"只有鼠标在面板上面才显示,
+            // 不然一直隐藏") 四钮显隐条件:面板卡悬停(card-hover,声明在面板
+            // 卡根层、z 在内容之下)或四钮自身 hover(指针进钮时卡感测被钮
+            // 独占抢走,同 #kebab-steal-fix 口径)或激活态(搜索行开着/有查询/
+            // 面板菜单开 —— IDEA 同款:激活态不藏)。动画同 #hover-card-r2
+            // 惯例 120ms 渐显渐隐。
+            property <bool> tools-on:
+                card-hover.has-hover
+                || header-tool-ta.has-hover || new-ta.has-hover
+                || locate-ta.has-hover || more-ta.has-hover
+                || root.search-open || root.search-query != ""
+                || root.ctx-open-key == "panel";
             // (#topbar-line 2026-11-06 用户反馈"没有标题行的底线"):mockup
             // .panel-top border-bottom 1px --line —— 标题行与树画布的分界。
             Rectangle {
@@ -1366,18 +1399,11 @@ export component LeftSidebar inherits Rectangle {
                 height: 1px;
                 background: Theme.zone-sidebar-line;
             }
-            // (#dock-redrag) 停靠态整行可拖动换边(原 Quick connect 头部行为)。
-            TouchArea {
-                enabled: root.compact && root.ctx-open-key != "panel";
-                mouse-cursor: move;
-                moved => {
-                    root.dock-drag-move(self.absolute-position.x + self.mouse-x,
-                                        self.absolute-position.y + self.mouse-y);
-                }
-                pointer-event(ev) => {
-                    if (ev.kind == PointerEventKind.up) { root.dock-drag-end(); }
-                }
-            }
+            // (#dock-redrag 2026-09-15) 停靠态整行可拖动换边 —— 原行为。
+            // (#dock-redrag-drop 2026-11-10 用户定稿"左侧面板不允许拖动,
+            // 属于禁止行为") 换边拖动退役:TouchArea/move 光标整块拆除,
+            // 面板停靠位置只由设置页管理;dock-drag-move/end 回调保留
+            // (右栏/快捷面板等其余宿主仍在用)。
             HorizontalLayout {
                 padding-left: 12px;
                 padding-right: 8px;
@@ -1432,6 +1458,11 @@ export component LeftSidebar inherits Rectangle {
                     width: 26px;
                     height: 26px;
                     border-radius: Theme.radius-sm;
+                    // (#topbtn-reveal 2026-11-10) 常态隐藏(opacity 0),面板卡
+                    // hover / 自身 hover / 激活态才显形;opacity 不参与布局,
+                    // 显隐几何零变化(组头 ⋮ 同款手法)。
+                    opacity: tools-on ? 1.0 : 0.0;
+                    animate opacity { duration: 120ms; }
                     background: header-tool-ta.pressed ? Theme.bg-active
                         : (root.search-open || root.search-query != "")
                             ? Theme.zone-sidebar-accent-soft
@@ -1439,9 +1470,11 @@ export component LeftSidebar inherits Rectangle {
                             : transparent;
                     Icon {
                         glyph: "search";
+                        // (#topbtn-solid-icon) 常态 text-secondary(次级灰)提
+                        // 到 text-primary:截图里"淡淡的"观感来自次级档。
                         tint: (root.search-open || root.search-query != "")
                             ? Theme.zone-sidebar-accent
-                            : Theme.text-secondary;
+                            : Theme.text-primary;
                         size: 14px;
                     }
                     header-tool-ta := TouchArea {
@@ -1473,11 +1506,21 @@ export component LeftSidebar inherits Rectangle {
                     width: 26px;
                     height: 26px;
                     border-radius: Theme.radius-sm;
+                    // (#topbtn-reveal) 常态隐藏,显隐条件见标题行 tools-on。
+                    opacity: tools-on ? 1.0 : 0.0;
+                    animate opacity { duration: 120ms; }
+                    // (#new-btn-dialog-active 2026-11-10 用户要求"点新建会话后
+                    // 图标高亮") 会话对话框(新建/编辑)开着 = 选中态:accent 淡染
+                    // 底 + 图标转强调色,与标题栏新建钮(active: dialog-open)
+                    // 同口径;标题栏 active 优先级同序(pressed 盖 hover 盖 active)。
                     background: new-ta.pressed ? Theme.zone-sidebar-accent-soft
+                        : root.dialog-open ? Theme.zone-sidebar-accent-soft
                         : new-ta.has-hover ? Theme.bg-hover : transparent;
                     Icon {
                         glyph: "new-session";
-                        tint: new-ta.pressed ? Theme.zone-sidebar-accent : Theme.text-secondary;
+                        // (#topbtn-solid-icon) 常态升 primary。
+                        tint: new-ta.pressed || root.dialog-open
+                            ? Theme.zone-sidebar-accent : Theme.text-primary;
                         size: 14px;
                     }
                     new-ta := TouchArea {
@@ -1494,11 +1537,15 @@ export component LeftSidebar inherits Rectangle {
                     width: 26px;
                     height: 26px;
                     border-radius: Theme.radius-sm;
+                    // (#topbtn-reveal) 常态隐藏,显隐条件见标题行 tools-on。
+                    opacity: tools-on ? 1.0 : 0.0;
+                    animate opacity { duration: 120ms; }
                     background: locate-ta.pressed ? Theme.zone-sidebar-accent-soft
                         : locate-ta.has-hover ? Theme.bg-hover : transparent;
                     Icon {
                         glyph: "click-locate";
-                        tint: locate-ta.pressed ? Theme.zone-sidebar-accent : Theme.text-secondary;
+                        // (#topbtn-solid-icon) 常态升 primary。
+                        tint: locate-ta.pressed ? Theme.zone-sidebar-accent : Theme.text-primary;
                         size: 14px;
                     }
                     locate-ta := TouchArea {
@@ -1516,6 +1563,10 @@ export component LeftSidebar inherits Rectangle {
                     width: 26px;
                     height: 26px;
                     border-radius: Theme.radius-sm;
+                    // (#topbtn-reveal) 常态隐藏,显隐条件见标题行 tools-on
+                    // (菜单开着已在条件里,不灭)。
+                    opacity: tools-on ? 1.0 : 0.0;
+                    animate opacity { duration: 120ms; }
                     // (#topbtn-titlebar-match) pressed=bg-active 抢在菜单开态前
                     // (标题栏按下优先级最高);菜单开(#topbtn-open-accent 2026-11-10
                     // 用户要求)=与搜索钮开启态同款:accent 淡染底 + 图标转强调色
@@ -1526,8 +1577,9 @@ export component LeftSidebar inherits Rectangle {
                         : more-ta.has-hover ? Theme.bg-hover : transparent;
                     Icon {
                         glyph: "more-vert";
+                        // (#topbtn-solid-icon) 常态升 primary(菜单开着仍强调色)。
                         tint: root.ctx-open-key == "panel"
-                            ? Theme.zone-sidebar-accent : Theme.text-secondary;
+                            ? Theme.zone-sidebar-accent : Theme.text-primary;
                         size: 14px;
                     }
                     more-ta := TouchArea {

@@ -9011,6 +9011,10 @@ fn wire_session_callbacks(
             if let Some(hit) = found {
                 w.set_ctx_open_key(hit.key.clone());
                 w.set_ctx_menu_kind(hit.kind.clone());
+                // (#hover-card-kebab-keep 2026-11-10) 菜单打开 = 显式清悬停
+                // 信息卡(用户定稿:点菜单图标时才不显示提示框)。菜单关闭后
+                // 指针仍悬在行/⋮ 上,kebab-hot 桥会让 info-delay 重写卡片。
+                w.set_session_card_name("".into());
                 w.set_ctx_menu_group(hit.group.clone());
                 w.set_ctx_menu_empty(hit.empty);
                 w.set_ctx_menu_x(x);

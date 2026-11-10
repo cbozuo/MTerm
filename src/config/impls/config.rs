@@ -1935,8 +1935,12 @@ impl ConfigStore {
 
     /// Create an empty quick-command group. Ignores blank, "default", duplicates.
     pub fn add_quick_group(&mut self, name: String) {
+        // (#cm-group-guard 2026-11-10 与新建会话 #group-name-guard 对齐)
+        // 保留名变体(默认/默认组/默认分组/默认值/system 侧)一律拦下 ——
+        // 上游 normalize_group 已归一,这里是建组入口的最后闸门,防其它
+        // 调用点把保留名当普通组名建出来。
         let n = name.trim().to_string();
-        if n.is_empty() || n.eq_ignore_ascii_case("default") {
+        if crate::config::is_reserved_session_group(&n) {
             return;
         }
         if !self.cache.quick_groups.iter().any(|g| g == &n) {
