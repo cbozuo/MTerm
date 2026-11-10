@@ -427,7 +427,10 @@ component SessionRow inherits Rectangle {
         // (#hover-card-debounce) 行体离行的一拍延迟清卡:触发时 kebab-hot
         // 已是终值 —— 进 ⋮ 抢占不清,真离行才清(闪/挂两 bug 同根同修)。
         card-clear-debounce := Timer {
-            interval: 0ms;
+            // (#hover-card-debounce-r2) 0ms 仍与 kebab-hot 写回同帧(部分机器
+            // 触发序更早) → 进 ⋮ 被误清"不显示"。16ms = 下一帧裁决,跨帧后
+            // kebab-hot 必为终值 —— 不闪(抢占不清)也不挂(真离行即清)。
+            interval: 16ms;
             triggered => {
                 if (!touch.has-hover && !root.kebab-hot
                     && root.card-out-name != "") {
@@ -1070,6 +1073,18 @@ export component LeftSidebar inherits Rectangle {
     callback tip-show(string /* text */, length /* center x */, length /* top y */);
     callback tip-hide(string /* text */);
     in property <bool> lang-en: false;   // (#sidebar-tip) 文案双语
+    // (#sidebar-tip-r3) 气泡聚合清道夫:四钮都不悬停(且面板菜单没开)时
+    // 统一清气泡 —— 代替逐钮 tip-hide,交界抖动不再互相覆盖(A 的 hide
+    // 与 B 的 show 交错 = "一会这个一会那个")。后钮 show 直接覆盖前钮。
+    callback tools-tip-hover-changed(bool);
+    property <bool> tools-tip-hover:
+        header-tool-ta.has-hover || new-ta.has-hover
+        || locate-ta.has-hover || more-ta.has-hover;
+    changed tools-tip-hover => {
+        if (!self.tools-tip-hover && root.ctx-open-key != "panel") {
+            root.tip-hide("");
+        }
+    }
     callback move-session-to(string /* session-id */, string /* target-id */, bool /* after */);   // (#drag-ghost-pointer) 几何落位转发 AppWindow
     callback import-ssh-config();
     callback connect-session(string);
@@ -1597,13 +1612,16 @@ export component LeftSidebar inherits Rectangle {
                             }
                         }
                         changed tip-hover => {
-                            if (self.tip-hover) {
-                                search-tip-delay.restart();
-                            } else {
-                                search-tip-delay.running = false;
-                                root.tip-hide(root.lang-en ? "Search" : "搜索");
-                            }
-                        }
+    if (self.tip-hover) {
+        search-tip-delay.restart();
+    } else {
+        // (#sidebar-tip-r3) 不再逐钮 tip-hide:相邻钮 26px 间距 2px,
+        // 指针在交界抖动时 A 的 hide 与 B 的 show 交错 = 气泡
+        // "一会这个一会那个"乱跳。改由标题行聚合器统一清
+        // (见 tools-tip-hover / row-tip-clear),后钮 show 覆盖前钮。
+        search-tip-delay.running = false;
+    }
+}
                         clicked => {
                         root.search-open = !root.search-open;
                         // 收起即清空:旧查询残留会让列表停在过滤态且无输入框可见。
@@ -1663,13 +1681,16 @@ export component LeftSidebar inherits Rectangle {
                             }
                         }
                         changed tip-hover => {
-                            if (self.tip-hover) {
-                                new-tip-delay.restart();
-                            } else {
-                                new-tip-delay.running = false;
-                                root.tip-hide(root.lang-en ? "New session" : "新建会话");
-                            }
-                        }
+    if (self.tip-hover) {
+        new-tip-delay.restart();
+    } else {
+        // (#sidebar-tip-r3) 不再逐钮 tip-hide:相邻钮 26px 间距 2px,
+        // 指针在交界抖动时 A 的 hide 与 B 的 show 交错 = 气泡
+        // "一会这个一会那个"乱跳。改由标题行聚合器统一清
+        // (见 tools-tip-hover / row-tip-clear),后钮 show 覆盖前钮。
+        new-tip-delay.running = false;
+    }
+}
                         clicked => { root.new-session(); }
                     }
                 }
@@ -1708,13 +1729,16 @@ export component LeftSidebar inherits Rectangle {
                             }
                         }
                         changed tip-hover => {
-                            if (self.tip-hover) {
-                                locate-tip-delay.restart();
-                            } else {
-                                locate-tip-delay.running = false;
-                                root.tip-hide(root.lang-en ? "Locate active session" : "定位当前会话");
-                            }
-                        }
+    if (self.tip-hover) {
+        locate-tip-delay.restart();
+    } else {
+        // (#sidebar-tip-r3) 不再逐钮 tip-hide:相邻钮 26px 间距 2px,
+        // 指针在交界抖动时 A 的 hide 与 B 的 show 交错 = 气泡
+        // "一会这个一会那个"乱跳。改由标题行聚合器统一清
+        // (见 tools-tip-hover / row-tip-clear),后钮 show 覆盖前钮。
+        locate-tip-delay.running = false;
+    }
+}
                         clicked => { root.locate-current-session(); }
                     }
                 }
@@ -1762,13 +1786,16 @@ export component LeftSidebar inherits Rectangle {
                             }
                         }
                         changed tip-hover => {
-                            if (self.tip-hover) {
-                                more-tip-delay.restart();
-                            } else {
-                                more-tip-delay.running = false;
-                                root.tip-hide(root.lang-en ? "More" : "更多");
-                            }
-                        }
+    if (self.tip-hover) {
+        more-tip-delay.restart();
+    } else {
+        // (#sidebar-tip-r3) 不再逐钮 tip-hide:相邻钮 26px 间距 2px,
+        // 指针在交界抖动时 A 的 hide 与 B 的 show 交错 = 气泡
+        // "一会这个一会那个"乱跳。改由标题行聚合器统一清
+        // (见 tools-tip-hover / row-tip-clear),后钮 show 覆盖前钮。
+        more-tip-delay.running = false;
+    }
+}
                         clicked => {
                             if (root.ctx-open-key == "panel") {
                                 root.ctx-open-key = "";   // 再点同钮 = 关菜单
