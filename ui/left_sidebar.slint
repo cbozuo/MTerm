@@ -543,7 +543,11 @@ component SessionRow inherits Rectangle {
         triggered => {
             // (#hover-card-drag) running 翻转与 triggered 的竞态防护:
             // 拖拽已拉起时不再写出信息卡。
-            if (!root.list-dragging) {
+            // (#hover-card-kebab-keep-r2 2026-11-10 用户截图"菜单出现了,
+            // 悬浮提示信息怎么还存在") r1 只在菜单打开瞬间清了一次卡,
+            // 150ms 后本 Timer 又把它写回来 —— 菜单开着期间不得重写
+            // (点 ⋮/右键 = 菜单卡互斥);菜单关后 kebab-hot 桥自然恢复。
+            if (!root.list-dragging && root.ctx-open-key != session.id) {
                 root.card-out-name = root.session.name;
                 root.card-out-host = root.session.builtin
                     ? root.session.host
@@ -1359,10 +1363,28 @@ export component LeftSidebar inherits Rectangle {
         // 搜索行展开才让位 38px。
         property <length> list-y: self.content-y + (root.search-open ? 38px : 6px);
 
+        // (#topbtn-reveal-r2 2026-11-10) 「指针在本面板卡上」的汇总键:
+        // 卡死区感测(card-hover) ∥ 列表空白(panel-blank-hot,下方 blank-ta
+        // 经 changed 上报 —— if 块内 id 不出块) ∥ 行体悬停(hover-key 非空,
+        // SessionRow touch 写,#tree-line-hover 同源)。标题行 tools-on 读它;
+        // 列表空时 blank-ta 不存在,panel-blank-hot 留着旧值?不会 —— 空态时
+        // 该分支不实例化,写它的路径也消失,保持上一次值;但空态下卡上只有
+        // card-hover 死区,行键也恒空,旧值若是 true 只发生在"有列表时悬停
+        // 空白后列表被删光"这种瞬态,随后指针必然重进死区或离卡,可自愈。
+        property <bool> panel-hot:
+            card-hover.has-hover || root.hover-key != ""
+            || panel-blank-hot;
+        property <bool> panel-blank-hot: false;
+
         // (#topbtn-reveal 2026-11-10) 面板卡悬停感测:整卡只探 hover、不拦点击
         // —— 声明在标题行/列表等内容**之前**(z 低),上层的一切 TouchArea
         // (四钮/组头/成员行/⋯)照常收事件;标题行 tools-on 读它的 has-hover
         // 决定四钮显隐,鼠标移出整卡才隐。
+        // (#topbtn-reveal-r2) 行/列表空白 TouchArea 会"抢走"卡的 hover
+        // (Slint hover 归最上层 TouchArea),卡感测只覆盖无 TouchArea 的
+        // 死区(标题行文字/徽章带)—— 列表区显隐由 blank-ta.has-hover 与
+        // hover-key(行体 touch 写的全局键,#tree-line-hover)两路补齐,
+        // 汇总在 panel-hot。
         card-hover := TouchArea {
             x: 0; y: 0;
             width: 100%;
@@ -1378,18 +1400,22 @@ export component LeftSidebar inherits Rectangle {
             y: parent.header-y;
             width: parent.width;
             height: 36px;
-            // (#topbtn-reveal 2026-11-10 用户反馈"只有鼠标在面板上面才显示,
-            // 不然一直隐藏") 四钮显隐条件:面板卡悬停(card-hover,声明在面板
-            // 卡根层、z 在内容之下)或四钮自身 hover(指针进钮时卡感测被钮
-            // 独占抢走,同 #kebab-steal-fix 口径)或激活态(搜索行开着/有查询/
-            // 面板菜单开 —— IDEA 同款:激活态不藏)。动画同 #hover-card-r2
-            // 惯例 120ms 渐显渐隐。
+            // (#topbtn-reveal-r2 2026-11-10 用户二图反馈"鼠标在面板上就要显示,
+            // 点新建会话出弹框了也要显示") 显隐源扩齐:
+            //   ① 卡片空白区(card-hover:标题行文字/徽章带 + 卡片四沿)
+            //   ② 列表空白区(blank-ta.has-hover —— 行 TouchArea 会抢走卡的
+            //      hover,空白区自己上报,#tree-line-hover 同一 steal 口径)
+            //   ③ 会话/组头行上(hover-key 非空 —— 行体 touch 写的全局键)
+            //   ④ 四钮自身 hover(进钮抢占兜底,#kebab-steal-fix 口径)
+            //   ⑤ 激活态恒显:搜索行开/有查询/面板菜单开/会话对话框开(IDEA
+            //      同款 —— 弹窗开着工具钮不藏)。
             property <bool> tools-on:
-                card-hover.has-hover
+                panel-hot
                 || header-tool-ta.has-hover || new-ta.has-hover
                 || locate-ta.has-hover || more-ta.has-hover
                 || root.search-open || root.search-query != ""
-                || root.ctx-open-key == "panel";
+                || root.ctx-open-key == "panel"
+                || root.dialog-open;
             // (#topbar-line 2026-11-06 用户反馈"没有标题行的底线"):mockup
             // .panel-top border-bottom 1px --line —— 标题行与树画布的分界。
             Rectangle {
@@ -1817,6 +1843,11 @@ export component LeftSidebar inherits Rectangle {
                     blank-ta := TouchArea {
                         width: 100%;
                         height: 100%;
+                        // (#topbtn-reveal-r2) 列表空白悬停上报:blank-ta 在 if
+                        // 块内(id 不出块),has-hover 经 changed 写到卡根层的
+                        // panel-blank-hot,panel-hot 读它(#tree-line-hover 的
+                        // changed 写回同款写法)。
+                        changed has-hover => { panel-blank-hot = self.has-hover; }
                         pointer-event(e) => {
                             if (e.kind == PointerEventKind.down
                                     && e.button == PointerEventButton.left) {
