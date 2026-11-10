@@ -59,18 +59,12 @@ fn parse_key(key: &str) -> Option<u64> {
 
 /// 组存储值归一：空串 / 保留名变体 → 默认分组（空串）。
 /// (#cm-group-guard 2026-11-10 用户要求"与新建会话里的规则对齐,都为默认
-/// 分组,而不是重新新建个") 保留名清单与 config/struct/group.rs
-/// reserved_session_group_id 的 default 侧同步:default/默认/默认组/默认分组
-/// /默认值 → 空(默认分组),不再各自成组。system 侧变体同样拦下 —— 快捷
-/// 分组没有"本地终端"这一档,统一归默认。
+/// 分组,而不是重新新建个") 保留名判定直接复用 config 层单点
+/// is_reserved_session_group(default/system 两侧变体全拦 —— 快捷分组没有
+/// "本地终端"这一档,统一归默认),清单变更只改 group.rs 一处。
 fn normalize_group(g: &str) -> String {
     let t = g.trim();
-    if t.is_empty()
-        || t.eq_ignore_ascii_case("default")
-        || matches!(t, "默认" | "默认组" | "默认分组" | "默认值")
-        || t.eq_ignore_ascii_case("system")
-        || matches!(t, "本地终端" | "系统" | "系统组")
-    {
+    if t.is_empty() || crate::config::is_reserved_session_group(t) {
         String::new()
     } else {
         t.to_string()
