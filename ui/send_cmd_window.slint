@@ -70,12 +70,11 @@ export component SendCmdWindow inherits Window {
     in property <string> cursor-style: "block";
     // (#tip-r12 2026-11-08) 光标颜色镜像终端设置(「终端是什么就是什么」),打开时 Rust 同步
     in property <color> cursor-color: Theme.text-primary;
-    // (#tip-r15 2026-11-09) 投递行 tooltip 输出(IconBtn tip-out 同款模式):
-    // 行不自己画气泡,写 (text,x,y) 由根级浮层渲染——for 行内气泡会被
-    // rail-list 的 clip 裁掉,z 也压不到后续兄弟。清空 text 即隐藏。
-    in-out property <string> rail-tip-text;
-    in-out property <length> rail-tip-x;
-    in-out property <length> rail-tip-y;
+    // (#tip-r15 2026-11-09) 投递行 tooltip 输出链已退役(#rail-tip-drop
+    // 2026-11-10):行内副标题本来就显示 user · 频道,tooltip 纯冗余;且
+    // 每次发送/清回执/refresh-scopes 都会整表重建 targets,行元素销毁
+    // 重建令 hover 链震荡 → 根级浮层反复挂卸,连接失败时表现为「root
+    // 一直闪跳」(用户反馈)。三个输出属性随之删除。
     property <length> caret-x;
     property <length> caret-y;
     property <bool> caret-blink: true;
@@ -1319,8 +1318,8 @@ export component SendCmdWindow inherits Window {
                                         // (#tip-r15 2026-11-09) 勾选态:host-in = 该台已在送达
                                         // 范围 —— accent-soft 底 + accent-line 边框,与范围
                                         // 弹框勾选行同款(列表即「将收到哪些台」的可视化)。
-                                        property <string> tip-txt: t.user
-                                            + ((t.user != "" && t.ch != "") ? " · " + t.ch : "");
+                                        // (#rail-tip-drop 2026-11-10) tip-txt 属性退役
+                                        // (消费方 tooltip 链已拆,见 host-row-ta 注释)。
                                         border-color: root.host-in(t.id) ? root.accent-line
                                             : (host-row-ta.has-hover ? Theme.border-control : transparent);
                                         background: root.host-in(t.id) ? Theme.accent-soft
@@ -1331,30 +1330,11 @@ export component SendCmdWindow inherits Window {
                                             // 显示成「被选中」,点击也会穿透 toggle)。
                                             enabled: !root.scope-open;
                                             mouse-cursor: default;
-                                            // (#tip-r15) tooltip 输出链(IconBtn tip-out 同款):
-                                            // 300ms 延迟后把 (user@host·ch, 行中心 x, 行底 y)
-                                            // 写到根级浮层;离开即清(仅清自己显示的,防竞态)。
-                                            // 回调里 parent 不可链(TouchArea 无 parent 属性,
-                                            // 编译实证)—— 用行显式 id row-rect 引用。
-                                            property <bool> tip-hover: self.has-hover && row-rect.tip-txt != "";
-                                            row-tip-delay := Timer {
-                                                interval: 300ms;
-                                                triggered => {
-                                                    root.rail-tip-text = row-rect.tip-txt;
-                                                    root.rail-tip-x = row-rect.absolute-position.x + row-rect.width / 2;
-                                                    root.rail-tip-y = row-rect.absolute-position.y + row-rect.height + 5px;
-                                                }
-                                            }
-                                            changed tip-hover => {
-                                                if (self.tip-hover) {
-                                                    row-tip-delay.restart();
-                                                } else {
-                                                    row-tip-delay.running = false;
-                                                    if (root.rail-tip-text == row-rect.tip-txt) {
-                                                        root.rail-tip-text = "";
-                                                    }
-                                                }
-                                            }
+                                            // (#rail-tip-drop 2026-11-10) tooltip 输出链退役:
+                                            // #tip-r15 的 300ms 延迟 Timer + changed 兜底 +
+                                            // 根级浮层整块拆除 —— 模型重建时行销毁令该链
+                                            // 震荡(浮层反复挂卸 =「root 闪跳」根因),信息
+                                            // 由行内副标题(user · 频道)承载,不再重复。
                                             // 点行 = 勾选该主机(host 档快速添加) —— 与范围弹层
                                             // 主机段同一协议;已选中的行点了**不取消**(投递列表
                                             // 只增不减,取消走弹层的勾选/清空)。
@@ -2593,28 +2573,10 @@ export component SendCmdWindow inherits Window {
                 vertical-alignment: center;
             }
         }
-        // (#tip-r15 2026-11-09) 投递行 tooltip 浮层:文本/坐标由行 tip-out 链写入,
-        // 根级声明 = 顶层不被裁;x 贴行中心,窄栏溢出 clamp 到栏内。
-        if root.rail-tip-text != "" : Rectangle {
-            width: rail-tip-txt.preferred-width + 16px;
-            height: 24px;
-            x: clamp(root.rail-tip-x - self.width / 2, 8px, parent.width - self.width - 8px);
-            y: min(root.rail-tip-y, parent.height - self.height - 6px);
-            border-radius: Theme.radius-sm;
-            background: Theme.popup-bg;
-            border-width: 1px;
-            border-color: Theme.border-strong;
-            rail-tip-txt := Text {
-                width: parent.width;
-                height: parent.height;
-                text: root.rail-tip-text;
-                color: Theme.text-primary;
-                font-size: 11px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                overflow: elide;
-            }
-        }
+        // (#rail-tip-drop 2026-11-10) #tip-r15 的投递行 tooltip 浮层整块退役:
+        // 文本与行内副标题重复,且模型重建时 hover 链震荡令浮层反复挂卸
+        // (连接失败时「root 一直闪跳」的直接来源)。rail-tg-ta 的收展 tooltip
+        // (上方 if 块)保留 —— 它挂在常驻元素上,无此问题。
     }
 
     // (#send-cmd-v2) 频道草稿查表(弹层复选框/徽章共用;Slint 表达式无循环,逐档判)

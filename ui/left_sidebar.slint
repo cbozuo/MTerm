@@ -695,22 +695,23 @@ component SessionRow inherits Rectangle {
             overflow: elide;
             // (#hover-jump) 名称右缘动态让位给覆盖层;布局宽随宽度属性收缩
             // —— Text 自身 width 由 stretch 决定,elide 兜底长名。
-            // (#kebab-bg-fix 2026-11-09 用户截图"LIVE 压住名称尾部") 让位量按
-            // 覆盖层右侵几何重算(名称右缘 = W+6-让位):悬停/菜单(⋮ 20+6=26)
-            // → 34(右缘 W-28,留 2px 缓冲);LIVE 徽章(36+6=42)→ 50(右缘
-            // W-44,旧 34 压 18px=截图根因);无状态(透明 8px 区)→ 8 不变。
+            // (#kebab-bg-fix 2026-11-09) 让位量按覆盖层右侵几何算:悬停/菜单
+            // (⋮ 20+6=26)→ 34(右缘 W-28,留 2px 缓冲);无状态(透明 8px 区)
+            // → 8 不变。
+            // (#live-pill-drop 2026-11-10 用户要求"LIVE 徽章删除不需要了")
+            // LIVE 态让位分支(50px)随之退役 —— 行尾不再有任何状态展示,
+            // 连接态信息由会话 tab 的 LIVE 徽章承载。
             width: parent.width - ((touch.has-hover || root.kebab-hot
                 || root.ctx-open-key == session.id) ? 34px
-                : session.conn-state == 2 ? 50px
                 : 8px);
         }
     }
     }
 
-    // (#hover-jump 2026-11-06 用户反馈"碰到图标会跳动") 行尾覆盖层:状态
-    // (LIVE/空心点)与悬停操作钮**绝对定位**,不占 HorizontalLayout 布局 ——
-    // 悬停时名称列几何零变化(mockup .gactions/.sactions absolute 同款)。
-    // 常态右侧留 20px 给状态点;悬停时操作钮盖住状态区。
+    // (#hover-jump 2026-11-06) 行尾覆盖层:悬停操作钮**绝对定位**,不占
+    // HorizontalLayout 布局 —— 悬停时名称列几何零变化(mockup .sactions
+    // absolute 同款)。(#live-pill-drop) 状态展示(LIVE 徽章/空心点)双双
+    // 退役,覆盖层只剩悬停 ⋮。
     // (#hover-card-hifi 2026-11-09) 稿 .sactions 只有一枚 ⋮(more-vert,
     // 22px):三钮带(56px)退役,悬停宽 20px;菜单开着(.srow.menu-open)
     // 与抢占桥期照常显示。
@@ -724,32 +725,11 @@ component SessionRow inherits Rectangle {
         y: (parent.height - self.height) / 2;
         property <bool> act-on: (touch.has-hover || root.kebab-hot
             || root.ctx-open-key == session.id) && !session.builtin;
-        width: !self.act-on ? (session.conn-state == 2 ? 36px : 8px) : 20px;
+        width: self.act-on ? 20px : 8px;
         height: 22px;
         visible: self.width > 0px;
-        // 常态:状态展示(#kebab-steal-fix-r2 条件挂 act-on:进 ⋮ 抢占期
-        // touch.has-hover 塌 false,旧条件会让 LIVE/点与 ⋮ 叠显)。
-        if !act-on && session.conn-state == 2 : Rectangle {
-            width: parent.width;
-            height: 16px;
-            y: (parent.height - self.height) / 2;
-            border-radius: 3px;
-            background: Theme.zone-sidebar-accent-soft;
-            border-width: 1px;
-            border-color: Theme.zone-sidebar-accent;
-            live-pill := Text {
-                x: (parent.width - self.width) / 2;
-                height: parent.height;
-                vertical-alignment: center;
-                text: "LIVE";
-                color: Theme.zone-sidebar-accent;
-                font-size: 8px;
-                font-weight: Theme.fw-strong;
-            }
-        }
-        // (#status-dot-drop 2026-11-09 用户要求删) 未连接空心状态点退役:
-        // 用户口径"组内成员的右侧状态点删除不需要了" —— 未连接态不再画
-        // 行尾点,LIVE 徽章保留;名称让位宽同步收(见上 width 绑定)。
+        // (#live-pill-drop 2026-11-10) LIVE 徽章块整块退役(连同空心点,
+        // #status-dot-drop 已删):行尾常态恒透明 8px 占位区,悬停 ⋮ 盖入。
         // 悬停:稿同款单 ⋮ 钮(#hover-card-hifi:.sactions 只有一枚 more-vert;
         // 点击/右键同成员行右键菜单,锚在钮下)。
         // (#kebab-steal-fix-r2 2026-11-09 用户反馈"成员 ⋮ 选取不到") 同组头
@@ -765,13 +745,13 @@ component SessionRow inherits Rectangle {
             height: 20px;
             y: 1px;
             border-radius: 3px;
-            background: s-kebab-ta.has-hover || root.ctx-open-key == session.id
-                ? Theme.bg-hover : transparent;
-            animate background { duration: 100ms; }
+            // (#kebab-accent-tint 2026-11-10) 同组头 ⋮:悬浮/菜单开=图标染
+            // 侧栏强调档,底色恒透明(无背景块,反馈全在图标)。
+            background: transparent;
             Icon {
                 glyph: "more-vert";
                 tint: s-kebab-ta.has-hover || root.ctx-open-key == session.id
-                    ? Theme.text-primary : Theme.text-secondary;
+                    ? Theme.zone-sidebar-accent : Theme.text-secondary;
                 size: 13px;
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
@@ -1444,23 +1424,24 @@ export component LeftSidebar inherits Rectangle {
                 }
                 // 搜索钮:展开/收起搜索行;开着或查询非空时强调色淡染(mockup
                 // searchToggle.search-on 同款)。
+                // (#topbtn-titlebar-match 2026-11-10 用户要求) 悬浮/点击效果与
+                // 主界面标题栏 IconBtn 同规范:pressed=bg-active、hover=bg-hover、
+                // 悬停不改图标色、背景无过渡动画(标题栏即瞬时)。
                 header-tool := Rectangle {
                     y: 5px;
                     width: 26px;
                     height: 26px;
                     border-radius: Theme.radius-sm;
-                    background: (root.search-open || root.search-query != "")
-                        && header-tool-ta.has-hover ? Theme.zone-sidebar-active
+                    background: header-tool-ta.pressed ? Theme.bg-active
                         : (root.search-open || root.search-query != "")
                             ? Theme.zone-sidebar-accent-soft
                             : header-tool-ta.has-hover ? Theme.bg-hover
                             : transparent;
-                    animate background { duration: 110ms; }
                     Icon {
                         glyph: "search";
                         tint: (root.search-open || root.search-query != "")
                             ? Theme.zone-sidebar-accent
-                            : header-tool-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                            : Theme.text-secondary;
                         size: 14px;
                     }
                     header-tool-ta := TouchArea {
@@ -1484,17 +1465,19 @@ export component LeftSidebar inherits Rectangle {
                     }
                     }
                 }
-                // 新建会话钮:默认中性色,悬停转强调色(mockup「＋不再常亮」)。
+                // 新建会话钮(#topbtn-titlebar-match):悬浮=bg-hover 底、按压=
+                // (#topbtn-open-accent) accent 淡染底 + 图标转强调色(与搜索钮
+                // 开启态同款,瞬时钮的"点开反馈"),图标色其余恒定。
                 Rectangle {
                     y: 5px;
                     width: 26px;
                     height: 26px;
                     border-radius: Theme.radius-sm;
-                    background: new-ta.has-hover ? Theme.bg-hover : transparent;
-                    animate background { duration: 110ms; }
+                    background: new-ta.pressed ? Theme.zone-sidebar-accent-soft
+                        : new-ta.has-hover ? Theme.bg-hover : transparent;
                     Icon {
                         glyph: "new-session";
-                        tint: new-ta.has-hover ? Theme.zone-sidebar-accent : Theme.text-secondary;
+                        tint: new-ta.pressed ? Theme.zone-sidebar-accent : Theme.text-secondary;
                         size: 14px;
                     }
                     new-ta := TouchArea {
@@ -1503,17 +1486,19 @@ export component LeftSidebar inherits Rectangle {
                     }
                 }
                 // 定位当前终端钮:⌖(IDEA Select in Project View);回调走 Rust
-                // 引擎(展开祖先 → 滚动 → 闪烁)。
+                // 引擎(展开祖先 → 滚动 → 闪烁)。(#topbtn-titlebar-match + 
+                // #topbtn-open-accent)同搜索钮:悬浮 bg-hover、按压 accent 淡染
+                // + 图标转强调色(瞬时钮的"点开反馈")。
                 Rectangle {
                     y: 5px;
                     width: 26px;
                     height: 26px;
                     border-radius: Theme.radius-sm;
-                    background: locate-ta.has-hover ? Theme.bg-hover : transparent;
-                    animate background { duration: 110ms; }
+                    background: locate-ta.pressed ? Theme.zone-sidebar-accent-soft
+                        : locate-ta.has-hover ? Theme.bg-hover : transparent;
                     Icon {
                         glyph: "click-locate";
-                        tint: locate-ta.has-hover ? Theme.zone-sidebar-accent : Theme.text-secondary;
+                        tint: locate-ta.pressed ? Theme.zone-sidebar-accent : Theme.text-secondary;
                         size: 14px;
                     }
                     locate-ta := TouchArea {
@@ -1531,13 +1516,18 @@ export component LeftSidebar inherits Rectangle {
                     width: 26px;
                     height: 26px;
                     border-radius: Theme.radius-sm;
-                    background: root.ctx-open-key == "panel" ? Theme.zone-sidebar-active
+                    // (#topbtn-titlebar-match) pressed=bg-active 抢在菜单开态前
+                    // (标题栏按下优先级最高);菜单开(#topbtn-open-accent 2026-11-10
+                    // 用户要求)=与搜索钮开启态同款:accent 淡染底 + 图标转强调色
+                    // (zone-sidebar-active/text-primary 退役);悬停=bg-hover 且
+                    // 图标色不变。
+                    background: more-ta.pressed ? Theme.bg-active
+                        : root.ctx-open-key == "panel" ? Theme.zone-sidebar-accent-soft
                         : more-ta.has-hover ? Theme.bg-hover : transparent;
-                    animate background { duration: 110ms; }
                     Icon {
                         glyph: "more-vert";
-                        tint: root.ctx-open-key == "panel" || more-ta.has-hover
-                            ? Theme.text-primary : Theme.text-secondary;
+                        tint: root.ctx-open-key == "panel"
+                            ? Theme.zone-sidebar-accent : Theme.text-secondary;
                         size: 14px;
                     }
                     more-ta := TouchArea {
@@ -2121,11 +2111,14 @@ export component LeftSidebar inherits Rectangle {
                                     : Theme.zone-sidebar;
                                 animate background { duration: 120ms; }
                                 border-radius: Theme.radius-sm;
-                                border-width: 1px;
-                                border-color: self.menu-pin ? Theme.zone-sidebar-line
-                                    : session.depth <= 0 ? self.band.with-alpha(0.16)
-                                    : session.depth == 1 ? self.band.with-alpha(0.08)
-                                    : transparent;
+                                // (#group-border-drop 2026-11-10 用户反馈"四周
+                                // 边框线删掉更好看") 组头 1px 组色描边退役:
+                                // 组身份色已有淡染带 + 文件夹图标/徽章承担,
+                                // 细描边在深底上是"每行一圈细框"的噪点。菜单
+                                // 开启选中态改由背景 zone-sidebar-active 表达
+                                // (原描边在 menu-pin 时承担的边界感由底色差异
+                                // 兜住)。
+                                border-width: 0px;
                                 // 组色淡染层(d0 10% / d1 4% / d2+ 无;悬停抬到 14%)。
                                 Rectangle {
                                     x: 0px;
@@ -2564,15 +2557,16 @@ export component LeftSidebar inherits Rectangle {
                                     width: 20px;
                                     height: 20px;
                                     border-radius: 3px;
-                                    background: gh-kebab-ta.has-hover
-                                        || root.ctx-open-key == "hdr:" + session.group-id
-                                        ? Theme.bg-hover : transparent;
-                                    animate background { duration: 100ms; }
+                                    // (#kebab-accent-tint 2026-11-10 用户反馈"悬浮
+                                    // 三点亮起是强调色样式,不需要背景色") 悬浮/菜单
+                                    // 开=图标染侧栏强调档,底色恒透明(悬停反馈全在
+                                    // 图标本身;同 new-ta hover 惯例)。
+                                    background: transparent;
                                     Icon {
                                         glyph: "more-vert";
                                         tint: gh-kebab-ta.has-hover
                                             || root.ctx-open-key == "hdr:" + session.group-id
-                                            ? Theme.text-primary : Theme.text-secondary;
+                                            ? Theme.zone-sidebar-accent : Theme.text-secondary;
                                         size: 13px;
                                         x: (parent.width - self.width) / 2;
                                         y: (parent.height - self.height) / 2;

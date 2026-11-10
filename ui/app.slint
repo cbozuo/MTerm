@@ -4644,15 +4644,18 @@ export component AppWindow inherits Window {
                 // 右击空白后指针多半不在(可能上翻的)菜单上,又没有 ctx-row-* 可
                 // 依托,150ms 就被误判"离开安全区"自动关闭——菜单一闪而过(实测)。
                 // blank 全是全局动作、也无"一步换菜单"需求,改为纯点击/Esc 关闭,
-                // 不参与 hover 自动关闭;组头/成员行菜单维持原机制。
-                // (#grp-menu-sticky 2026-09-15) **组头菜单也改为移出不消失**
-                // (用户定稿,与 blank 同款):组头菜单全是组级动作,没有"一步
-                // 换菜单"的必要;移出就关让取色面板(贴菜单弹出)很难用。关闭
-                // 路径保持:点空白/点菜单项/Esc/右击别处。成员行菜单(kind=row)
-                // 维持原 hover 自动关闭。
+                // 不参与 hover 自动关闭。
+                // (#grp-menu-sticky 2026-09-15) 组头菜单同款「移出不消失」。
+                // (#row-menu-sticky 2026-11-10 用户反馈"成员菜单与其它菜单
+                // 同款,移出不消失") 成员行菜单并入 —— 全库四类 ctx 菜单
+                // (blank/group/row/panel)行为归一;ptr-outside-row 采样链对
+                // row 档不再参与判定(行矩形外 150ms 即关的旧口径退役)。
+                // (#panel-menu-ctx 2026-11-09) 面板菜单同款。
                 if (root.ctx-menu-kind == "blank" || root.ctx-menu-kind == "group"
                     // (#panel-menu-ctx 2026-11-09) 面板菜单同款「移出不消失」。
-                    || root.ctx-menu-kind == "panel") {
+                    || root.ctx-menu-kind == "panel"
+                    // (#row-menu-sticky 2026-11-10) 成员行菜单并入「移出不消失」。
+                    || root.ctx-menu-kind == "row") {
                     bd.unsafe-ticks = 0;
                 } else if (!bd.has-hover) {
                     bd.unsafe-ticks = 0;
@@ -5304,11 +5307,12 @@ export component AppWindow inherits Window {
     // 右侧") 标题行 ⋯ 面板菜单 = ctx 浮层第四态(kind="panel"):自
     // left_sidebar 面板内自绘(backdrop+菜单卡)整块迁入。锚定 = 钮中心 x /
     // 钮底+4(超窗钳制同组菜单),材质与行规格完全复用 grp-menu-rect:
-    // popup-bg 底 / radius-sm / 1px border-strong / padding 5 / 行高 30 /
-    // padding-left 10 + spacing 9(图标 fs-sm 左缘起、文字 fs-md
-    // text-primary 撑满,图标与文字垂直居中由行布局保证) —— 旧面板菜单的
-    // 28px 行/8px 间距/首行 padding-left 8px(图标比其余行偏左 4px)退役。
-    // 8 项直排无分隔线(组菜单同款);Ctrl+N 快捷键列 muted 右贴。
+    // popup-bg 底 / radius-sm / 1px border-strong / 行高 30 /
+    // (#panel-menu-tighten 2026-11-10) 外层左右内距 4px(上下 5 不动)+ 行内距
+    // 8px + 图标 12px(与 fs-md 文字协调)+ 行尾无快捷键列(Ctrl+N 已撤销,
+    // 标签删除) —— 旧面板菜单的 28px 行/8px 间距/首行 padding-left 8px
+    // (图标比其余行偏左 4px)退役。
+    // 8 项直排无分隔线(组菜单同款)。
     // 关闭链 = ctx 体系通用:backdrop 点击/Esc/点项即关;同 blank/group
     // 「移出不消失」(见 backdrop 4604 处条件)。收起面板按停靠语义写
     // (欢迎页 tab 下原组件回调无 handler,点它静默无操作——现在收起的是
@@ -5320,7 +5324,10 @@ export component AppWindow inherits Window {
                 ? max(8px, root.ctx-menu-y - self.height)
                 : root.ctx-menu-y,
             parent.height - self.height - 8px);
-        width: min(240px, max(212px, panel-menu-vl.preferred-width));
+        // (#panel-menu-tighten-r2 2026-11-10 用户反馈"还是宽,右侧空白不协调")
+        // Ctrl+N 列删除后 212px 下限是纯空档来源 —— 改贴内容自适应
+        // (组菜单 #ctx-menu-fit 同口径):下限 164px、上限 240px。
+        width: min(240px, max(164px, panel-menu-vl.preferred-width));
         height: panel-menu-vl.preferred-height;
         background: Theme.popup-bg;
         border-radius: Theme.radius-sm;
@@ -5331,7 +5338,13 @@ export component AppWindow inherits Window {
         // 垫底探测:同组菜单,挡住 backdrop hover(「移出不消失」判定用)。
         TouchArea { width: 100%; height: 100%; }
         panel-menu-vl := VerticalLayout {
-            padding: 5px;
+            // (#panel-menu-tighten 2026-11-10 用户三点反馈) 左右内距收拢:
+            // 上下 5px 不动、左右 5→4px(配合行内距 10→8,图标距左缘 15→12px,
+            // 悬浮带距边 4px 两端对称)。
+            padding-top: 5px;
+            padding-bottom: 5px;
+            padding-left: 4px;
+            padding-right: 4px;
             spacing: 0px;
             Rectangle {
                 height: 30px;
@@ -5346,10 +5359,11 @@ export component AppWindow inherits Window {
                     }
                 }
                 HorizontalLayout {
-                    padding-left: 10px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "new-session"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    // (#panel-menu-tighten) 行内距 10→8;Ctrl+N 快捷键标签删除
+                    // (快捷键已撤销,纯摆设,#panel-menu-ctx 遗留)。
+                    padding-left: 8px; padding-right: 8px; spacing: 9px;
+                    Icon { glyph: "new-session"; tint: Theme.text-primary; size: 14px; }
                     Text { text: @tr("New session"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                    Text { text: "Ctrl+N"; color: Theme.text-muted; font-size: Theme.fs-xs; vertical-alignment: center; }
                 }
             }
             Rectangle {
@@ -5370,8 +5384,10 @@ export component AppWindow inherits Window {
                     }
                 }
                 HorizontalLayout {
-                    padding-left: 10px; spacing: 9px;
-                    Icon { glyph: "create-new-folder"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    // (#panel-menu-tighten) 行内距 10→8、图标 13→12px(与 13px
+                    // 文字更协调,线框图标同字号时墨迹偏大)。
+                    padding-left: 8px; padding-right: 8px; spacing: 9px;
+                    Icon { glyph: "create-new-folder"; tint: Theme.text-primary; size: 14px; }
                     Text { text: @tr("New group"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                 }
             }
@@ -5388,8 +5404,8 @@ export component AppWindow inherits Window {
                     }
                 }
                 HorizontalLayout {
-                    padding-left: 10px; spacing: 9px;
-                    Icon { glyph: "move-in"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    padding-left: 8px; padding-right: 8px; spacing: 9px;
+                    Icon { glyph: "move-in"; tint: Theme.text-primary; size: 14px; }
                     Text { text: @tr("Import ~/.ssh/config"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                 }
             }
@@ -5406,8 +5422,8 @@ export component AppWindow inherits Window {
                     }
                 }
                 HorizontalLayout {
-                    padding-left: 10px; spacing: 9px;
-                    Icon { glyph: "unfold-more"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    padding-left: 8px; padding-right: 8px; spacing: 9px;
+                    Icon { glyph: "unfold-more"; tint: Theme.text-primary; size: 14px; }
                     Text { text: @tr("Expand all"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                 }
             }
@@ -5424,8 +5440,8 @@ export component AppWindow inherits Window {
                     }
                 }
                 HorizontalLayout {
-                    padding-left: 10px; spacing: 9px;
-                    Icon { glyph: "unfold-less"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    padding-left: 8px; padding-right: 8px; spacing: 9px;
+                    Icon { glyph: "unfold-less"; tint: Theme.text-primary; size: 14px; }
                     Text { text: @tr("Collapse all"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                 }
             }
@@ -5443,8 +5459,8 @@ export component AppWindow inherits Window {
                     }
                 }
                 HorizontalLayout {
-                    padding-left: 10px; spacing: 9px;
-                    Icon { glyph: "sidebar-left-collapse"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    padding-left: 8px; padding-right: 8px; spacing: 9px;
+                    Icon { glyph: "sidebar-left-collapse"; tint: Theme.text-primary; size: 14px; }
                     Text { text: @tr("Collapse panel"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                 }
             }
@@ -5462,8 +5478,8 @@ export component AppWindow inherits Window {
                     }
                 }
                 HorizontalLayout {
-                    padding-left: 10px; spacing: 9px;
-                    Icon { glyph: "settings"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    padding-left: 8px; padding-right: 8px; spacing: 9px;
+                    Icon { glyph: "settings"; tint: Theme.text-primary; size: 14px; }
                     Text { text: @tr("Panel settings"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                 }
             }

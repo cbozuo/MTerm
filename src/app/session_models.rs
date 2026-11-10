@@ -150,9 +150,18 @@ pub(super) fn session_groups_model(store: &ConfigStore) -> ModelRc<GroupEntry> {
                 record: &crate::config::GroupRecord,
                 depth: usize| {
         let hex = record.color.clone().unwrap_or_default();
+        // (#group-default-zh 2026-11-10) 默认组的存储名是保留字 "default",
+        // 下拉直出英文(用户截图)。下发展示名「默认组」/"Default",与左栏
+        // 树、移动到菜单同一口径;选中后 value 即展示名,补全/色点/✓ 都按
+        // 它匹配;提交链 upsert 会把保留名变体归一到 grp-default,不新建组。
+        let name = if record.id == crate::config::GROUP_ID_DEFAULT {
+            crate::i18n::t("默认组", "Default group")
+        } else {
+            record.name.as_str()
+        };
         entries.push(GroupEntry {
             id: record.id.as_str().into(),
-            name: record.name.as_str().into(),
+            name: name.into(),
             hex: hex.clone().into(),
             color: parse_hex_color(&hex).unwrap_or_default(),
             count: count_of(&record.id),
