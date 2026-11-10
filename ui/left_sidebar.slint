@@ -391,14 +391,16 @@ component SessionRow inherits Rectangle {
         // hover 仍保持 default(行是命令项,不是链接 —— 规格 §4.1)。
         mouse-cursor: default;
         // (#session-hover-card) 悬停离开时清掉信息卡片(写入在 info-delay)。
-        // (#hover-card-kebab-keep 2026-11-10 用户反馈"鼠标在图标上时提示框
-        // 不显示了") 进 ⋮ 属抢占非离行(行体 touch 被顶者独占抢走塌 false)，
-        // 卡片保持 —— kebab-hot 桥管显隐同源;真离行(kebab-hot 也 false)
-        // 才清。菜单开着不隐的口径在 app.slint 渲染层(点 ⋮ 显式清)。
+        // (#hover-card-kebab-keep 2026-11-10) 进 ⋮ 属抢占非离行(行体 touch
+        // 被顶者独占抢走塌 false)，卡片保持。
+        // (#hover-card-anticipate 2026-11-10 用户反馈"移动时移到菜单钮上,
+        // 悬浮框一闪") 一闪根因 = touch 塌 false 与 kebab-ta 写 kebab-hot
+        // 是**两个元素的 changed**,同帧内先后不定 —— 行体这里读到旧
+        // kebab-hot=false 就把卡清了,150ms 后 Timer 又写回,一显一隐成"闪"。
+        // 改:行体**不再清卡**,显隐裁决统一收到 s-kebab-ta 的 changed(那里
+        // self.has-hover 与 touch.has-hover 同帧齐备,无跨元素竞态;builtin
+        // 行无 ⋮,恒无卡片,无此路径)。
         changed has-hover => {
-            if (!self.has-hover && !root.kebab-hot && root.card-out-name != "") {
-                root.card-out-name = "";
-            }
             // (#tree-line-hover) 上报/撤销"鼠标悬停所属组"。
             if (self.has-hover) {
                 root.hover-key = root.session.id + "|" + root.session.group;
@@ -423,6 +425,9 @@ component SessionRow inherits Rectangle {
             if (!root.system-row && !root.list-dragging
                 && e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
                 // (#ctx-menu-backdrop) 上报点击点,菜单由 AppWindow 根浮层渲染。
+                // (#hover-card-menu-kill) 右键开菜单 = 显式清卡(菜单卡互斥,
+                // 同 ⋮ 打开路径)。
+                root.card-out-name = "";
                 root.ctx-opening(self.mouse-x, self.mouse-y);
             } else if (e.button == PointerEventButton.left) {
                 if (e.kind == PointerEventKind.down) {
@@ -777,6 +782,26 @@ component SessionRow inherits Rectangle {
                 mouse-cursor: default;
                 changed has-hover => {
                     root.kebab-hot = self.has-hover;
+                    // (#hover-card-anticipate 2026-11-10) 信息卡显隐统一裁决
+                    // (行体 changed 已不再清卡,见 touch 处注释):这里
+                    // self.has-hover(⋮)与 touch.has-hover(行体)同帧齐备 ——
+                    // 都 false = 真离行 → 清卡;任一 true = 仍在行/钮上 → 不清
+                    // (进 ⋮ 卡片保持,#kebab-keep 不变)。
+                    if (!self.has-hover && !touch.has-hover
+                        && root.card-out-name != "") {
+                        root.card-out-name = "";
+                    }
+                    // (#topbtn-reveal-r3 2026-11-10 用户截图"鼠标在成员 ⋮ 上,
+                    // 标题栏四钮不见了") 进 ⋮ 抢占期:行体 touch 塌 false 时
+                    // 行体 changed 里的 hover-key 清除与 kebab-hot 写回同帧
+                    // 竞态(kebab-hot 还是旧值 false → hover-key 被清空),
+                    // panel-hot 读的三路源全塌 → 四钮隐。这里进 ⋮ 时**补写
+                    // hover-key**(面板级汇总键,与 #tree-line-hover 同源),
+                    // 离 ⋮ 的清除仍按下方 key 匹配守卫,不互扰。
+                    if (self.has-hover) {
+                        root.hover-key = root.session.id + "|" + root.session.group;
+                        root.hover-group = root.session.group;
+                    }
                     // 从 ⋮ 直接离行(不经行体):touch 已在进钮时被守卫,这里
                     // 兜底清脊线,防卡亮。
                     if (!self.has-hover && !touch.has-hover
@@ -789,6 +814,15 @@ component SessionRow inherits Rectangle {
                     if (root.ctx-open-key == session.id) {
                         root.ctx-open-key = "";   // 再点同钮 = 关菜单
                     } else {
+                        // (#hover-card-menu-kill 2026-11-10 用户反馈"出菜单的
+                        // 时候,悬浮提示框应该消失,而不是一直都存在着") r1 在
+                        // Rust open_ctx_menu_at 清过一次卡,但**先进 ⋮ 再点**的
+                        // 路径下 touch/kebab 的 hover 都不再变化,没有任何
+                        // changed 触发去清 —— 卡一直挂着(用户截图)。菜单卡
+                        // 互斥的裁决点就在打开处:点 ⋮ 开菜单 = 显式清卡;
+                        // 关菜单后 info-delay 的 running(挂 kebab-hot)恢复
+                        // 重写,卡回归。
+                        root.card-out-name = "";
                         // 锚**行内**坐标(px/py 由实例 handler 加行绝对位):
                         // (#kebab-anchor-fix) scope-ov = 20px 覆盖层,其 x/y
                         // 相对行 —— 钮中心 x / 覆盖层底+4(原 parent 引用自
@@ -803,6 +837,8 @@ component SessionRow inherits Rectangle {
                     if (!session.builtin && !root.list-dragging
                         && e.kind == PointerEventKind.down
                         && e.button == PointerEventButton.right) {
+                        // (#hover-card-menu-kill) 右键开菜单同左键:显式清卡。
+                        root.card-out-name = "";
                         root.ctx-opening(scope-ov.x + scope-ov.width / 2,
                             scope-ov.y + scope-ov.height + 4px);
                     }
@@ -2665,6 +2701,17 @@ export component LeftSidebar inherits Rectangle {
                                         mouse-cursor: default;
                                         changed has-hover => {
                                             gh-card.kebab-hot = self.has-hover;
+                                            // (#topbtn-reveal-r3) 同成员 ⋮:进 ⋮
+                                            // 抢占期 grp-ta 塌 false 时 hover-key
+                                            // 被同帧竞态清空 → panel-hot 塌 →
+                                            // 四钮隐。这里补写 hover-key 保源。
+                                            // (#hover-card-anticipate) 信息卡统一
+                                            // 裁决同成员行(组头无信息卡,只清
+                                            // 不写 —— 空守卫恒 false,无副作用)。
+                                            if (self.has-hover) {
+                                                root.hover-key = "hdr:" + session.group;
+                                                root.hover-group = session.group;
+                                            }
                                             // 从 ⋮ 直接离行(不经行体):grp-ta 已在进 ⋮ 时
                                             // 被清过守卫,这里兜底清脊线,防卡亮。
                                             if (!self.has-hover && !grp-ta.has-hover
