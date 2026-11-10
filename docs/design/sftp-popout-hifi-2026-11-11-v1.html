@@ -4,15 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" dark light>
-<title>MTerm · SFTP 弹出独立窗口 · 高保真 v1（2026-11-11）</title>
+<title>MTerm · SFTP 弹出独立窗口 · 高保真 v2（2026-11-11）</title>
 <style>
 /* ============================================================
-   MTerm · SFTP 面板弹出独立窗口 · 高保真 v1
+   MTerm · SFTP 面板弹出独立窗口 · 高保真 v2
    令牌取自 src/theme/palettes.rs（mterm-dark / mterm-light）
    派生规则对齐 ui/theme.slint（fs/radius/gap/accent 三态/zone）
    面板规格对齐 ui/sftp_panel.slint（34px 工具栏 / 28px 行 / 26px 菜单）
-   弹窗规格对齐 window_frame.slint 自绘标题栏惯例（40px / radius-win 8）
-   单文件、零外链、零图片、零 CDN —— 图标全部内联 SVG symbol
+   ★ 图标全部来自 assets/icons/*.svg（内联 symbol，路径原样搬运，
+     落地 = 补注册进 ui/icons.slint 分段即可）；仅 pause/play/window-min
+     三枚项目暂缺，稿内补绘并标注 —— 落地时需新增 svg。
+   v2 新增：右键六场景（行/空白/树/列头/路径框/队列/标题栏）+
+   复制粘贴剪贴板 · 隐藏文件开关 · 搜索过滤条 · 批量操作行 ·
+   导航加载条 · 自绘 tooltip · 拖拽行→树移动 · 键盘 Del/F2/Ctrl+A/C+F ·
+   文件类型着色 · 排序列头高亮 · 最大化图标切换
    ============================================================ */
 
 :root{
@@ -40,7 +45,6 @@ html[data-theme="dark"]{
   --popup-bg:rgba(24,26,29,.985); --popup-bg-elev:rgba(30,32,36,.99);
   --zone-sidebar:var(--slot-panel);
   --hover-row:rgba(255,255,255,.045);
-  --tree-line:rgba(255,255,255,.06);
   --win-shadow:0 34px 90px -22px rgba(0,0,0,.78),0 12px 34px -16px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.035) inset;
   --pop-shadow:0 24px 70px -18px rgba(0,0,0,.72),0 8px 24px -12px rgba(0,0,0,.55),0 0 0 1px rgba(255,255,255,.05) inset;
   --stage-grid:rgba(255,255,255,.028); --stage-glow:rgba(31,200,180,.055);
@@ -65,7 +69,6 @@ html[data-theme="light"]{
   --popup-bg:rgba(250,248,244,.985); --popup-bg-elev:rgba(255,255,255,.995);
   --zone-sidebar:var(--slot-panel);
   --hover-row:rgba(31,35,40,.05);
-  --tree-line:rgba(31,35,40,.07);
   --win-shadow:0 32px 80px -26px rgba(31,35,40,.38),0 10px 28px -18px rgba(31,35,40,.22),0 0 0 1px rgba(255,255,255,.8) inset;
   --pop-shadow:0 24px 64px -20px rgba(31,35,40,.42),0 8px 22px -12px rgba(31,35,40,.28),0 0 0 1px rgba(255,255,255,.9) inset;
   --stage-grid:rgba(31,35,40,.035); --stage-glow:rgba(31,118,107,.06);
@@ -107,7 +110,6 @@ svg.ico{width:16px;height:16px;flex:none;display:block}
 .theme-toggle:hover{border-color:var(--accent-line)}
 .tag{display:inline-block;font-size:11px;color:var(--accent);border:1px solid var(--accent-line);
   border-radius:999px;padding:1px 10px;background:var(--accent-tonal);vertical-align:3px;margin-left:10px}
-
 .section{margin-top:36px}
 .section h2{font-size:15px;font-weight:700;margin:0 0 4px;color:var(--doc-t1)}
 .section .desc{font-size:13px;color:var(--doc-t2);margin:0 0 16px;max-width:860px}
@@ -116,13 +118,15 @@ svg.ico{width:16px;height:16px;flex:none;display:block}
   padding:14px 18px;font-size:13px;color:var(--doc-t2);
 }
 .note-card b{color:var(--doc-t1)}
-
-/* 参照主流对照表 */
 .ref-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
 .ref-card{border:1px solid var(--doc-line);border-radius:var(--r-lg);background:var(--doc-panel);padding:14px 16px}
 .ref-card h3{margin:0 0 6px;font-size:13px;color:var(--doc-t1)}
 .ref-card h3 .src{color:var(--doc-t3);font-weight:400;font-size:12px;margin-left:6px}
 .ref-card p{margin:0;font-size:12.5px;color:var(--doc-t2)}
+.ref-card ul{margin:6px 0 0;padding-left:18px;font-size:12.5px;color:var(--doc-t2)}
+.ref-card li{margin:3px 0}
+.contract code{font-family:var(--ff-mono);font-size:11px;background:var(--doc-elev);border:1px solid var(--doc-line);
+  border-radius:3px;padding:0 4px;color:var(--doc-t1)}
 
 /* ───────────────────────── 主舞台 ───────────────────────── */
 .stage{
@@ -136,7 +140,7 @@ svg.ico{width:16px;height:16px;flex:none;display:block}
 }
 .stage .stage-cap b{color:var(--doc-t2)}
 
-/* dock 态预览（主窗一角） */
+/* dock 态预览 */
 .dock-demo{
   position:absolute;left:28px;top:44px;width:400px;bottom:44px;z-index:2;
   border-radius:var(--r-lg);border:1px solid var(--doc-line2);background:var(--slot-root);
@@ -151,7 +155,9 @@ svg.ico{width:16px;height:16px;flex:none;display:block}
 .dd-tab{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--slot-t2);padding:3px 10px;border-radius:var(--r-sm)}
 .dd-tab.active{background:var(--slot-act);color:var(--slot-t1)}
 .dd-term{position:absolute;left:0;right:0;top:66px;bottom:0;background:var(--slot-root);
-  padding:10px 12px;font-family:var(--ff-mono);font-size:11px;line-height:1.7;color:var(--slot-tfg);overflow:hidden}
+  padding:10px 12px;font-family:var(--ff-mono);font-size:11px;line-height:1.7;color:var(--slot-tfg,#BCBEC4);overflow:hidden}
+html[data-theme="dark"] .dd-term{color:#BCBEC4}
+html[data-theme="light"] .dd-term{color:#2B3036}
 .dd-term .dim{color:var(--slot-t3)}
 .dd-term .gr{color:var(--slot-ok)}
 .dd-sftp-dock{
@@ -163,7 +169,7 @@ svg.ico{width:16px;height:16px;flex:none;display:block}
 .dd-sftp-bar{height:34px;display:flex;align-items:center;gap:8px;padding:0 10px;flex:none}
 .dd-sftp-bar .seg{display:flex;background:var(--slot-elev);border:1px solid var(--slot-line);border-radius:var(--r-sm);padding:2px}
 .dd-sftp-bar .seg span{font-size:11px;padding:2px 10px;border-radius:3px;color:var(--slot-t2)}
-.dd-sftp-bar .seg span.on{background:var(--accent-solid,var(--slot-ac));color:#fff}
+.dd-sftp-bar .seg span.on{background:var(--slot-ac);color:#fff}
 .dd-sftp-path{flex:1;height:22px;border:1px solid var(--border-control);border-radius:var(--r-sm);background:var(--field);
   font-family:var(--ff-mono);font-size:11px;color:var(--slot-t2);display:flex;align-items:center;padding:0 8px;overflow:hidden;white-space:nowrap}
 .dd-sftp-mini{flex:1;display:flex;color:var(--slot-t3);font-size:11px}
@@ -195,7 +201,7 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 .sftp-win.dragging{transition:none;cursor:grabbing}
 .sftp-win .resize-grip{position:absolute;right:2px;bottom:2px;width:14px;height:14px;cursor:se-resize;z-index:30;color:var(--slot-lstr)}
 
-/* 标题栏 40px，对齐 window_frame 自绘惯例 */
+/* 标题栏 */
 .win-titlebar{
   height:40px;flex:none;display:flex;align-items:center;gap:10px;padding-left:14px;
   background:var(--slot-panel);border-bottom:1px solid var(--slot-line);cursor:grab;user-select:none;
@@ -214,13 +220,9 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 .win-btn:hover{background:var(--hover-row);color:var(--slot-t1)}
 .win-btn.close:hover{background:#e81123;color:#fff}
 .win-btn.pinned{color:var(--slot-ac)}
-.win-btn .badge{
-  position:absolute;top:6px;right:4px;min-width:14px;height:14px;border-radius:7px;background:var(--slot-ac);
-  color:#fff;font-size:9px;line-height:14px;text-align:center;padding:0 3px;font-weight:700;
-}
 .win-btn{position:relative}
 
-/* 工具栏 34px 对齐实机 */
+/* 工具栏 */
 .sftp-toolbar{
   height:34px;flex:none;display:flex;align-items:center;gap:8px;padding:0 10px;
   background:var(--zone-sidebar);border-bottom:1px solid var(--slot-line);
@@ -229,6 +231,7 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 .tb-seg button{
   border:none;background:none;font:inherit;font-size:12px;padding:0 10px;border-radius:3px;
   color:var(--slot-t2);cursor:pointer;display:flex;align-items:center;gap:5px;transition:background .12s;
+  white-space:nowrap;flex:none;
 }
 .tb-seg button svg.ico{width:13px;height:13px}
 .tb-seg button.on{background:var(--slot-ac);color:#fff}
@@ -241,14 +244,19 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 .tb-btn:hover{background:var(--slot-hov);color:var(--slot-t1)}
 .tb-btn:disabled{opacity:.35;cursor:default}
 .tb-btn:disabled:hover{background:none;color:var(--slot-t2)}
-.tb-btn.wide{width:auto;padding:0 8px;gap:5px;font-size:12px}
-.tb-btn .badge{
-  position:absolute;top:-3px;right:-3px;min-width:14px;height:14px;border-radius:7px;background:var(--slot-ac);
-  color:#fff;font-size:9px;line-height:14px;text-align:center;padding:0 3px;font-weight:700;
+.tb-btn.active{color:var(--slot-ac)}
+.tb-btn.active:hover{background:var(--accent-tonal)}
+/* 自绘 tooltip（对齐实机 SftpTooltip：负 y 悬浮在按钮上方） */
+.tb-btn[data-tip]:hover::after,.win-btn[data-tip]:hover::after{
+  content:attr(data-tip);
+  position:absolute;top:-30px;left:50%;transform:translateX(-50%);
+  background:var(--popup-bg-elev);color:var(--slot-t1);border:1px solid var(--accent-line);
+  font-size:11px;line-height:1;padding:5px 9px;border-radius:var(--r-sm);white-space:nowrap;
+  box-shadow:var(--menu-shadow);z-index:60;pointer-events:none;
 }
 .tb-path{
   flex:1;height:22px;min-width:80px;border:1px solid var(--border-control);border-radius:var(--r-sm);
-  background:var(--field);display:flex;align-items:center;padding:0 4px 0 8px;gap:4px;
+  background:var(--field);display:flex;align-items:center;padding:0 4px 0 8px;gap:4px;cursor:text;
 }
 .tb-path:focus-within{border-color:var(--accent-line);box-shadow:0 0 0 2px var(--accent-tonal)}
 .tb-path input{
@@ -256,11 +264,32 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
   font-family:var(--ff-mono);font-size:12px;min-width:0;
 }
 .tb-path input::placeholder{color:var(--slot-t3)}
-.tb-path .err-tip{
-  font-size:10.5px;color:var(--danger-ink);white-space:nowrap;display:none;padding:0 4px;
-}
+.tb-path .err-tip{font-size:10.5px;color:var(--danger-ink);white-space:nowrap;display:none;padding:0 4px}
 .tb-path.error{border-color:var(--danger-line)}
 .tb-path.error .err-tip{display:block}
+/* 批量操作行（选中 > 0 时浮出工具栏右段 —— 实机 selected-count 契约；
+   绝对定位 + 底色遮挡，不挤压分段/路径框） */
+.sftp-toolbar{position:relative}
+.tb-batch{
+  position:absolute;right:8px;top:5px;z-index:8;display:none;align-items:center;gap:4px;
+  background:var(--zone-sidebar);padding:0 2px 0 12px;height:24px;box-shadow:-14px 0 12px -6px var(--zone-sidebar);
+}
+.tb-batch.show{display:flex}
+.tb-batch .bb{white-space:nowrap}
+.tb-batch .n{font-size:11px;color:var(--accent);font-weight:700;margin-right:2px;white-space:nowrap}
+.tb-batch .bb{
+  height:22px;display:flex;align-items:center;gap:5px;padding:0 8px;border:none;border-radius:var(--r-sm);
+  background:var(--accent-tonal);color:var(--accent);font:inherit;font-size:11.5px;font-weight:700;cursor:pointer;
+}
+.tb-batch .bb:hover{background:var(--accent-soft)}
+.tb-batch .bb.danger{background:var(--danger-soft);color:var(--danger-ink)}
+.tb-batch .bb.danger:hover{filter:brightness(1.1)}
+.tb-batch .bb svg.ico{width:12px;height:12px}
+.tb-batch .bx{
+  width:22px;height:22px;display:flex;align-items:center;justify-content:center;border:none;background:none;
+  border-radius:var(--r-sm);color:var(--slot-t3);cursor:pointer;
+}
+.tb-batch .bx:hover{background:var(--slot-hov);color:var(--slot-t1)}
 
 /* 主体双栏 */
 .sftp-body{flex:1;display:flex;min-height:0;position:relative}
@@ -275,20 +304,28 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 }
 .tree-row:hover{background:var(--hover-row)}
 .tree-row.current{background:var(--accent-soft);color:var(--slot-t1)}
+.tree-row.drag-over{background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent-line)}
 .tree-row .tw{width:14px;flex:none;display:flex;align-items:center;justify-content:center;color:var(--slot-t3)}
 .tree-row .tw svg.ico{width:10px;height:10px}
 .tree-row .ico{width:14px;height:14px;color:var(--slot-t3)}
 .tree-row.current .ico{color:var(--slot-ac)}
 .tree-row .label{overflow:hidden;text-overflow:ellipsis}
 .tree-row .n{position:relative;display:flex}
-.tree-indent{display:flex;flex:none}
-.tree-empty{padding:20px 14px;font-size:11.5px;color:var(--slot-t3)}
 .tree-divider{width:5px;flex:none;cursor:col-resize;position:absolute;top:0;bottom:0;right:-3px;z-index:4}
 .tree-divider::after{content:"";position:absolute;left:2px;top:0;bottom:0;width:1px;background:transparent;transition:background .15s}
 .tree-divider:hover::after,.tree-divider.dragging::after{background:var(--slot-ac)}
+.tree-pane-hidden .sftp-tree{display:none}
 
 /* 文件列表 */
 .sftp-list{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
+/* 导航加载条 */
+.load-bar{
+  position:absolute;top:0;left:0;height:2px;width:0;background:var(--slot-ac);
+  z-index:10;opacity:0;transition:width .28s var(--ease),opacity .2s;
+  border-radius:0 2px 2px 0;
+}
+.load-bar.run{opacity:1;width:82%}
+.load-bar.done{opacity:0;width:100%}
 .list-head{
   height:26px;flex:none;display:flex;align-items:center;border-bottom:1px solid var(--slot-line);
   background:var(--zone-sidebar);font-size:11.5px;color:var(--slot-t3);user-select:none;
@@ -296,6 +333,7 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 .lh-cell{display:flex;align-items:center;gap:4px;height:100%;padding:0 8px;cursor:pointer;position:relative;white-space:nowrap}
 .lh-cell:hover{background:var(--hover-row);color:var(--slot-t2)}
 .lh-cell .dir{display:none;color:var(--slot-ac)}
+.lh-cell.sorted{background:var(--accent-tonal);color:var(--slot-t1)}
 .lh-cell.sorted .dir{display:flex}
 .lh-cell.fixed{cursor:default}
 .lh-cell.fixed:hover{background:none;color:var(--slot-t3)}
@@ -303,6 +341,19 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 .lh-gear{width:30px;flex:none;display:flex;align-items:center;justify-content:center;height:100%;cursor:pointer;color:var(--slot-t3)}
 .lh-gear:hover{color:var(--slot-t1);background:var(--hover-row)}
 .lh-gear .ico{width:13px;height:13px}
+/* 过滤条 */
+.filter-bar{
+  height:0;flex:none;overflow:hidden;display:flex;align-items:center;gap:6px;padding:0 10px;
+  background:var(--zone-sidebar);border-bottom:1px solid transparent;transition:height .2s var(--ease);
+}
+.filter-bar.open{height:30px;border-bottom-color:var(--slot-line)}
+.filter-bar svg.ico{width:13px;height:13px;color:var(--slot-t3)}
+.filter-bar input{
+  flex:1;height:22px;border:1px solid var(--border-control);border-radius:var(--r-sm);background:var(--field);
+  color:var(--slot-t1);font:inherit;font-size:12px;padding:0 8px;outline:none;
+}
+.filter-bar input:focus{border-color:var(--accent-line)}
+.filter-bar .cnt{font-size:11px;color:var(--slot-t3);white-space:nowrap}
 .list-scroll{flex:1;overflow-y:auto;overflow-x:hidden;position:relative}
 .f-row{
   display:flex;align-items:center;height:28px;font-size:12.5px;color:var(--slot-t2);
@@ -312,11 +363,17 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 .f-row.selected{background:var(--accent-soft);color:var(--slot-t1)}
 .f-row.checked{background:var(--accent-tonal)}
 .f-row.hidden-file .fname{color:var(--slot-t3)}
+.f-row.dragging{opacity:.45}
 .f-cell{display:flex;align-items:center;gap:6px;padding:0 8px;overflow:hidden}
 .f-cell .label{overflow:hidden;text-overflow:ellipsis}
 .f-check{width:32px;flex:none;display:flex;align-items:center;justify-content:center}
 .f-ico{width:16px;flex:none;display:flex;align-items:center;justify-content:center;color:var(--slot-t3)}
 .f-ico svg.ico{width:14px;height:14px}
+/* 文件类型着色（MTerm 语义色四档，克制） */
+.f-ico.t-script{color:var(--slot-wr)}
+.f-ico.t-config{color:var(--slot-ac)}
+.f-ico.t-doc{color:var(--slot-t2)}
+.f-ico.t-hidden{color:var(--slot-t3);opacity:.6}
 .f-name{flex:1;min-width:140px}
 .f-name .label{color:inherit}
 .f-row.selected .f-ico{color:var(--slot-ac)}
@@ -336,18 +393,18 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 .list-empty .ico{width:28px;height:28px;opacity:.5}
 .list-empty.show{display:flex}
 
-/* 自绘 checkbox（对齐 checkbox.svg 双态 + indeterminate） */
+/* 自绘 checkbox（双态用 checkbox.svg，半选用 checkbox-indeterminate.svg） */
 .ck{
   width:15px;height:15px;border-radius:3px;border:1px solid var(--slot-lstr);
   display:flex;align-items:center;justify-content:center;flex:none;background:transparent;
   transition:background .12s,border-color .12s;color:transparent;
 }
-.ck svg{width:10px;height:10px}
+.ck svg{width:11px;height:11px}
 .ck:hover{border-color:var(--slot-t2)}
 .ck.on{background:var(--slot-ac);border-color:var(--slot-ac);color:#fff}
 .ck.ind{border-color:var(--slot-ac);color:var(--slot-ac);background:var(--accent-tonal)}
 
-/* 状态栏 26px */
+/* 状态栏 */
 .sftp-status{
   height:26px;flex:none;display:flex;align-items:center;gap:14px;padding:0 12px;
   border-top:1px solid var(--slot-line);background:var(--zone-sidebar);
@@ -358,7 +415,7 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 .sftp-status .up i{color:var(--slot-ok);font-style:normal}
 .sftp-status .down i{color:var(--slot-ac);font-style:normal}
 
-/* 传输队列抽屉 */
+/* 传输队列 */
 .queue{
   height:0;flex:none;overflow:hidden;border-top:1px solid transparent;background:var(--slot-panel);
   display:flex;flex-direction:column;transition:height .28s var(--ease);
@@ -387,6 +444,7 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 .q-bar i{display:block;height:100%;background:var(--slot-ac);border-radius:2px;transition:width .3s linear}
 .q-row.done .q-bar i{background:var(--slot-ok)}
 .q-row.paused .q-bar i{background:var(--slot-wr)}
+.q-row.canceled .q-bar i{background:var(--slot-lstr)}
 .q-row .pct{font-family:var(--ff-mono);font-size:11px;color:var(--slot-t2);width:38px;text-align:right;flex:none}
 .q-row .spd{font-family:var(--ff-mono);font-size:10.5px;color:var(--slot-t3);width:74px;text-align:right;flex:none}
 .q-act{display:flex;gap:2px;flex:none}
@@ -397,10 +455,10 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 .q-act button:hover{background:var(--slot-hov);color:var(--slot-t1)}
 .q-act button svg{width:12px;height:12px}
 
-/* ───────────────────────── 浮层：菜单/模态 ───────────────────────── */
+/* ───────────────────────── 浮层 ───────────────────────── */
 .ctx-menu{
-  position:fixed;z-index:200;width:186px;background:var(--popup-bg-elev);border-radius:var(--r-md);
-  box-shadow:var(--menu-shadow);padding:5px;display:none;
+  position:fixed;z-index:200;background:var(--popup-bg-elev);border-radius:var(--r-md);
+  box-shadow:var(--menu-shadow);padding:5px;display:none;min-width:150px;
 }
 .ctx-menu.open{display:block}
 .ctx-item{
@@ -412,16 +470,14 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 .ctx-item.danger:hover{background:var(--danger-soft)}
 .ctx-item.disabled{color:var(--slot-t3);cursor:default;pointer-events:none;opacity:.75}
 .ctx-item .ico{width:14px;height:14px;color:inherit;opacity:.85}
-.ctx-item .ks{margin-left:auto;font-size:10.5px;color:var(--slot-t3);font-family:var(--ff-mono)}
+.ctx-item .ks{margin-left:auto;font-size:10.5px;color:var(--slot-t3);font-family:var(--ff-mono);padding-left:14px}
 .ctx-sep{height:1px;background:var(--slot-line);margin:4px 6px}
 .ctx-sub-arrow{margin-left:auto;color:var(--slot-t3)}
-
-/* 列显示菜单 */
+.ctx-title{font-size:10.5px;color:var(--slot-t3);padding:2px 8px 4px}
 .col-menu{width:172px}
-.col-menu .ctx-item{height:26px}
 .col-menu .ck{margin-right:1px}
 
-/* 模态卡（新建文件夹 / 删除确认） */
+/* 模态卡 */
 .modal-scrim{position:fixed;inset:0;background:var(--scrim);z-index:150;display:none;align-items:center;justify-content:center}
 .modal-scrim.open{display:flex}
 .modal-card{
@@ -453,13 +509,11 @@ html[data-theme="dark"] .btn.primary{color:#fff}
 .btn.danger{background:var(--slot-dg);color:#fff;font-weight:700}
 .btn.danger:hover{filter:brightness(1.08)}
 
-/* 重命名行内编辑 */
 .rename-input{
   flex:1;min-width:60px;height:20px;border:1px solid var(--accent-line);border-radius:3px;background:var(--field);
   color:var(--slot-t1);font-family:inherit;font-size:12.5px;padding:0 5px;outline:none;
 }
 
-/* toast */
 .toast{
   position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(20px);z-index:300;
   background:var(--popup-bg-elev);color:var(--slot-t1);border-radius:var(--r-md);box-shadow:var(--menu-shadow);
@@ -474,7 +528,6 @@ html[data-theme="dark"] .btn.primary{color:#fff}
 .tunnel-page.show{display:flex}
 .tn-head{display:flex;align-items:center;gap:8px;padding:10px 12px 8px}
 .tn-head .t{font-size:13px;font-weight:700;color:var(--slot-t1)}
-.tn-head .grow{flex:1}
 .tn-list{flex:1;overflow-y:auto;padding:0 12px}
 .tn-row{
   display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--slot-line);
@@ -496,65 +549,66 @@ html[data-theme="dark"] .btn.primary{color:#fff}
 .tn-add{margin:2px 12px 12px;border:1px dashed var(--slot-lstr);border-radius:var(--r-md);padding:10px 12px;
   display:flex;align-items:center;gap:10px;color:var(--slot-t3);font-size:12px;cursor:pointer;transition:border-color .15s,color .15s}
 .tn-add:hover{border-color:var(--accent-line);color:var(--slot-t2)}
-
-/* ───────────────────────── 说明节 ───────────────────────── */
-.contract{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
-.contract .ref-card ul{margin:6px 0 0;padding-left:18px;font-size:12.5px;color:var(--doc-t2)}
-.contract .ref-card li{margin:3px 0}
-.contract code{font-family:var(--ff-mono);font-size:11px;background:var(--doc-elev);border:1px solid var(--doc-line);
-  border-radius:3px;padding:0 4px;color:var(--doc-t1)}
 </style>
 </head>
 <body>
 
-<!-- 内联图标库（stroke 线性风格，对齐 assets/icons 24×24） -->
+<!-- ═══════ 图标库：全部来自 assets/icons/*.svg（path 原样搬运，转 symbol） ═══════ -->
+<!-- 项目暂缺的三枚（pause/play/window-min）稿内补绘 —— 落地需新增 svg + 注册 icons.slint -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
-    <g id="i-folder"><path d="M3.5 6.5c0-1.1.9-2 2-2h4l2 2h7c1.1 0 2 .9 2 2v8c0 1.1-.9 2-2 2h-13c-1.1 0-2-.9-2-2v-10z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></g>
-    <g id="i-folder-open"><path d="M3.5 6.5c0-1.1.9-2 2-2h4l2 2h7c1.1 0 2 .9 2 2v1h-16.5m1 9c-.6 0-1-.5-.9-1.1l1.5-6.4c.1-.6.6-1 1.2-1h13.4c.7 0 1.2.6 1 1.3l-1.4 6c-.2.7-.8 1.2-1.5 1.2h-14.8z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></g>
-    <g id="i-file"><path d="M6.5 3.5h7l4 4v13h-11v-17z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M13.5 3.5v4h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></g>
-    <g id="i-chev-r"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></g>
-    <g id="i-chev-d"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></g>
-    <g id="i-arrow-l"><path d="M19 12H5m6-7l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></g>
-    <g id="i-arrow-r"><path d="M5 12h14m-6-7l7 7-7 7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></g>
-    <g id="i-arrow-up"><path d="M12 19V5m-7 7l7-7 7 7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></g>
-    <g id="i-home"><path d="M4 11l8-7 8 7m-14-1v9h12v-9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
-    <g id="i-refresh"><path d="M20 12a8 8 0 1 1-2.3-5.6m0-3.4v4h-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></g>
-    <g id="i-new-folder"><path d="M3.5 6.5c0-1.1.9-2 2-2h4l2 2h7c1.1 0 2 .9 2 2v8c0 1.1-.9 2-2 2h-13c-1.1 0-2-.9-2-2v-10z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M12 9.5v5m-2.5-2.5h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></g>
-    <g id="i-new-file"><path d="M6.5 3.5h7l4 4v13h-11v-17z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M12 9v6m-3-3h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></g>
-    <g id="i-download"><path d="M12 4v10m-5-4l5 5 5-5M4.5 19.5h15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></g>
-    <g id="i-upload"><path d="M12 15V5m-5 4l5-5 5 5M4.5 19.5h15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></g>
-    <g id="i-trash"><path d="M5 7h14m-9-2.5h4M7 7l1 13h8l1-13m-6 4v6m3-6v6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
-    <g id="i-edit"><path d="M4 20l1-4L16.5 4.5a2.1 2.1 0 0 1 3 3L8 19l-4 1z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M14.5 6.5l3 3" stroke="currentColor" stroke-width="1.5"/></g>
-    <g id="i-copy"><rect x="8.5" y="8.5" width="11" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M15.5 5.5v-1h-11v11h1" fill="none" stroke="currentColor" stroke-width="1.5"/></g>
-    <g id="i-search"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M15.5 15.5l4.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></g>
-    <g id="i-close"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></g>
-    <g id="i-minus"><path d="M6 12h12" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></g>
-    <g id="i-max"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/></g>
-    <g id="i-popout"><path d="M9 5H5.5c-.6 0-1 .4-1 1v12c0 .6.4 1 1 1h12c.6 0 1-.4 1-1V14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M14 4h6v6m0-6L11 13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
-    <g id="i-popin"><path d="M9 5H5.5c-.6 0-1 .4-1 1v12c0 .6.4 1 1 1h12c.6 0 1-.4 1-1V14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M17 10V4m0 6h-6m6 0L11 3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" transform="rotate(180 14 6)"/></g>
-    <g id="i-terminal"><rect x="3.5" y="5" width="17" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M7 9.5l3 2.5-3 2.5m5 1h5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
-    <g id="i-tunnel"><circle cx="5.5" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="18.5" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 12h8" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2.5 2.5"/></g>
-    <g id="i-transfer"><path d="M8 5l-4 4 4 4m-4-4h9m3 10l4-4-4-4m4 4h-9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
-    <g id="i-swap"><path d="M8 4l-4 4h14M16 20l4-4h-14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" transform="rotate(90 12 12)"/></g>
-    <g id="i-check"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>
-    <g id="i-dash"><path d="M6 12h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></g>
-    <g id="i-pause"><path d="M9 6v12m6-12v12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></g>
-    <g id="i-play"><path d="M8 5.5l10 6.5-10 6.5v-13z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></g>
-    <g id="i-pin"><path d="M12 13.5v7m-4.5-7h9l-1.2-3 .9-4.5h-8.4l.9 4.5-1.2 3z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
-    <g id="i-gear"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M12 3.5l1 2.6a6.2 6.2 0 0 1 2.3 1l2.6-.6 1.6 2.8-1.9 1.9a6.2 6.2 0 0 1 0 2.5l1.9 1.9-1.6 2.8-2.6-.6a6.2 6.2 0 0 1-2.3 1L12 20.5l-1-2.6a6.2 6.2 0 0 1-2.3-1l-2.6.6-1.6-2.8 1.9-1.9a6.2 6.2 0 0 1 0-2.5L4.5 8.7l1.6-2.8 2.6.6a6.2 6.2 0 0 1 2.3-1l1-2.6z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></g>
-    <g id="i-more"><circle cx="12" cy="6" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="18" r="1.4"/></g>
-    <g id="i-warning"><path d="M12 4L2.5 20h19L12 4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M12 10v4.5m0 2.6v.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></g>
-    <g id="i-grip"><path d="M8 6h.01M12 6h.01M16 6h.01M8 12h.01M12 12h.01M16 12h.01M8 18h.01M12 18h.01M16 18h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></g>
-    <g id="i-plus"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></g>
+    <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></symbol>
+    <symbol id="i-folder-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></symbol>
+    <symbol id="i-new-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><path d="M12 9.5v7M8.5 13h7"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6"/><path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L13 14l-4 1 1-4 8.4-8.4z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="m6 7 1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22v-8h6v8"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-checkbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="i-checkbox-ind" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 12h8"/></symbol>
+    <symbol id="i-expand-more" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-expand-less" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></symbol>
+    <symbol id="i-chevron-r" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="i-arrow-l" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12H3m0 0 8-8m-8 8 8 8"/></symbol>
+    <symbol id="i-arrow-r" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18m0 0-8-8m8 8-8 8"/></symbol>
+    <symbol id="i-arrow-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V3m0 0-8 8m8-8 8 8"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v14m0 0-5-5m5 5 5-5M5 21h14"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17V3m0 0-5 5m5-5 5 5M5 21h14" transform="rotate(180 12 12)"/></symbol>
+    <symbol id="i-transfer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v11m-3.5-7L8 3l3.5 4M16 21V10m-3.5 7 3.5 4 3.5-4"/></symbol>
+    <symbol id="i-swap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 3 4 4-4 4M12 7H4m12 14-4-4 4-4M12 17h8"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="3.5" width="19" height="17" rx="3"/><path d="m7 9 3 3-3 3M13 15h4"/></symbol>
+    <symbol id="i-tunnel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h18M3 20h18"/><path d="M7 12h10m0 0-3-3m3 3-3 3"/></symbol>
+    <symbol id="i-popout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6"/><path d="M9 3v18"/><path d="M12 12 21 3M15 3h6v6"/></symbol>
+    <symbol id="i-popin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6"/><path d="M9 3v18"/><path d="M21 3 14 10M14 3v7h7"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 3h5v2.5L17 11v2H7v-2L9.5 5.5V3Z"/><path d="M12 13v8"/><path d="M4 4l5.5 5.5M15 15l5 5"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.73 5.08A10.74 10.74 0 0 1 21.94 11.65a1 1 0 0 1 0 .7 10.75 10.75 0 0 1-1.44 2.49M14.08 14.16a3 3 0 0 1-4.24-4.24M17.48 17.5a10.75 10.75 0 0 1-15.42-5.15 1 1 0 0 1 0-.7 10.75 10.75 0 0 1 4.45-5.14M2 2l20 20"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-collapse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></symbol>
+    <symbol id="i-select-all" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="4 3"/><rect x="8" y="8" width="8" height="8" rx="1" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-retry" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 2.6-6.4"/><path d="M3 4v5h5"/></symbol>
+    <symbol id="i-grip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="1.4" fill="currentColor" stroke="none"/><circle cx="16" cy="6" r="1.4" fill="currentColor" stroke="none"/><circle cx="8" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="16" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="8" cy="18" r="1.4" fill="currentColor" stroke="none"/><circle cx="16" cy="18" r="1.4" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-max" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H6a3 3 0 0 0-3 3v2M16 3h2a3 3 0 0 1 3 3v2M8 21H6a3 3 0 0 1-3-3v-2M16 21h2a3 3 0 0 0 3-3v-2"/></symbol>
+    <symbol id="i-restore" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v2a3 3 0 0 1-3 3H3M16 3v2a3 3 0 0 0 3 3h2M8 21v-2a3 3 0 0 0-3-3H3M16 21v-2a3 3 0 0 1 3-3h2"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 17v-5"/><circle cx="12" cy="8" r="1.2" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-warning" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 4.5 3 18a2 2 0 0 0 1.73 3h14.54A2 2 0 0 0 21 18l-7.5-13.5a2 2 0 0 0-3 0z"/><path d="M12 9.5v4"/><circle cx="12" cy="16.5" r="1.2" fill="currentColor" stroke="none"/></symbol>
+    <!-- ↓ 项目暂缺，稿内补绘（落地需新增 pause.svg / play.svg / window-min.svg） -->
+    <symbol id="i-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5v14M15 5v14"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4.5 19 12 7 19.5v-15z"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></symbol>
   </defs>
 </svg>
 
 <div class="page">
   <div class="page-head">
     <div class="grow">
-      <h1>SFTP 面板 · 弹出独立窗口 <span class="tag">高保真 v1 · 可交互</span></h1>
-      <div class="sub">双栏浏览 / 历史导航 / 多选批量 / 右键菜单 / 传输队列 / 弹出⇄停靠往返 —— 点得动，全部可试</div>
+      <h1>SFTP 面板 · 弹出独立窗口 <span class="tag">高保真 v2 · 可交互</span></h1>
+      <div class="sub">图标全取自 assets/icons · 右键六场景 · 复制粘贴 · 隐藏文件开关 · 过滤条 · 批量操作 · 拖拽移动 · 键盘操作 —— 全部可试</div>
     </div>
     <button class="theme-toggle" id="themeToggle">
       <svg class="ico" viewBox="0 0 24 24"><use href="#i-swap"/></svg>
@@ -565,11 +619,10 @@ html[data-theme="dark"] .btn.primary{color:#fff}
   <!-- ═══════════ 主舞台 ═══════════ -->
   <div class="section">
     <h2>主舞台 · 弹出窗 ⇄ 主窗 dock 往返</h2>
-    <p class="desc">左边是主窗的一角（底部 dock 着 SFTP 面板），点「弹出为独立窗口」演示离坞：dock 区淡出、弹窗飞入；点弹窗标题栏的「停靠回面板」（<svg class="ico" style="width:12px;height:12px;display:inline-block;vertical-align:-2px" viewBox="0 0 24 24"><use href="#i-popin"/></svg>）演示回坞。弹窗本体：拖标题栏移动、右下角 grip 缩放、三键/置顶全部可点。</p>
+    <p class="desc">点「弹出为独立窗口」演示离坞；点弹窗标题栏的「停靠回面板」演示回坞。试试：树右键 / 列头右键 / 路径框右键 / 队列右键 / 标题栏右键；勾选多行出现批量操作行；拖文件行到树目录=移动；Del 删除、F2 重命名、Ctrl+F 过滤、Ctrl+C/V 复制粘贴。</p>
     <div class="stage" id="stage">
       <div class="stage-cap"><b>MTerm 主窗</b>（示意一角） + <b>SFTP 独立窗口</b>（交互实演）</div>
 
-      <!-- 主窗 dock 预览 -->
       <div class="dock-demo" id="dockDemo">
         <div class="dd-titlebar">
           <span class="logo"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-terminal"/></svg></span>
@@ -583,7 +636,7 @@ html[data-theme="dark"] .btn.primary{color:#fff}
           <div><span class="dim">deploy@web-01:~</span>$ ./deploy.sh staging</div>
           <div><span class="gr">✓</span> build 42s · 312 modules</div>
           <div><span class="gr">✓</span> uploaded 18 files → app/releases/v2.4.1</div>
-          <div><span class="dim">deploy@web-01:~</span>$ <span style="color:var(--slot-t1)">▊</span></div>
+          <div><span class="dim">deploy@web-01:~</span>$ <span style="opacity:.9">▊</span></div>
         </div>
         <button class="dd-popout-btn" id="popOutBtn">
           <svg class="ico" style="width:13px;height:13px" viewBox="0 0 24 24"><use href="#i-popout"/></svg>
@@ -597,7 +650,7 @@ html[data-theme="dark"] .btn.primary{color:#fff}
           <div class="dd-sftp-mini">
             <span class="row"><svg class="ico" style="width:13px;height:13px" viewBox="0 0 24 24"><use href="#i-folder"/></svg>src</span>
             <span class="row"><svg class="ico" style="width:13px;height:13px" viewBox="0 0 24 24"><use href="#i-file"/></svg>app.py</span>
-            <span class="row" style="color:var(--slot-t3)">…</span>
+            <span class="row" style="opacity:.7">…</span>
           </div>
         </div>
       </div>
@@ -605,7 +658,6 @@ html[data-theme="dark"] .btn.primary{color:#fff}
 
       <!-- SFTP 弹出窗 -->
       <div class="sftp-win popped-in" id="sftpWin">
-        <!-- 标题栏 -->
         <div class="win-titlebar" id="winDrag">
           <span class="host-badge">
             <svg class="ico" viewBox="0 0 24 24"><use href="#i-folder"/></svg>
@@ -614,93 +666,105 @@ html[data-theme="dark"] .btn.primary{color:#fff}
           <span class="proto">SFTP</span>
           <span class="conn"><span class="dot"></span>已连接 · 22 端口</span>
           <span class="grow"></span>
-          <button class="win-btn" id="pinBtn" title="窗口置顶">
+          <button class="win-btn" id="pinBtn" data-tip="窗口置顶">
             <svg class="ico" viewBox="0 0 24 24"><use href="#i-pin"/></svg>
           </button>
-          <button class="win-btn" id="dockBackBtn" title="停靠回主窗面板">
+          <button class="win-btn" id="dockBackBtn" data-tip="停靠回主窗面板">
             <svg class="ico" viewBox="0 0 24 24"><use href="#i-popin"/></svg>
           </button>
-          <button class="win-btn" id="minBtn" title="最小化">
+          <button class="win-btn" id="minBtn" data-tip="最小化">
             <svg class="ico" viewBox="0 0 24 24"><use href="#i-minus"/></svg>
           </button>
-          <button class="win-btn" id="maxBtn" title="最大化">
-            <svg class="ico" viewBox="0 0 24 24"><use href="#i-max"/></svg>
+          <button class="win-btn" id="maxBtn" data-tip="最大化">
+            <svg class="ico" viewBox="0 0 24 24"><use href="#i-max" id="maxUse"/></svg>
+            <svg class="ico" viewBox="0 0 24 24" style="display:none"><use href="#i-restore" id="restoreUse"/></svg>
           </button>
-          <button class="win-btn close" id="closeBtn" title="关闭（回停靠靠）">
+          <button class="win-btn close" id="closeBtn" data-tip="关闭（回停靠靠）">
             <svg class="ico" viewBox="0 0 24 24"><use href="#i-close"/></svg>
           </button>
         </div>
 
-        <!-- 工具栏 -->
         <div class="sftp-toolbar">
           <span class="tb-seg" role="tablist">
             <button id="tabFiles" class="on"><svg class="ico" viewBox="0 0 24 24"><use href="#i-folder"/></svg>文件</button>
             <button id="tabTunnels"><svg class="ico" viewBox="0 0 24 24"><use href="#i-tunnel"/></svg>隧道</button>
           </span>
           <span class="tb-sep"></span>
-          <button class="tb-btn" id="navBack" title="后退"><svg class="ico" viewBox="0 0 24 24"><use href="#i-arrow-l"/></svg></button>
-          <button class="tb-btn" id="navFwd" title="前进"><svg class="ico" viewBox="0 0 24 24"><use href="#i-arrow-r"/></svg></button>
-          <button class="tb-btn" id="navUp" title="上级目录"><svg class="ico" viewBox="0 0 24 24"><use href="#i-arrow-up"/></svg></button>
-          <button class="tb-btn" id="navHome" title="主目录"><svg class="ico" viewBox="0 0 24 24"><use href="#i-home"/></svg></button>
+          <button class="tb-btn" id="navBack" data-tip="后退"><svg class="ico" viewBox="0 0 24 24"><use href="#i-arrow-l"/></svg></button>
+          <button class="tb-btn" id="navFwd" data-tip="前进"><svg class="ico" viewBox="0 0 24 24"><use href="#i-arrow-r"/></svg></button>
+          <button class="tb-btn" id="navUp" data-tip="上级目录"><svg class="ico" viewBox="0 0 24 24"><use href="#i-arrow-up"/></svg></button>
+          <button class="tb-btn" id="navHome" data-tip="主目录"><svg class="ico" viewBox="0 0 24 24"><use href="#i-home"/></svg></button>
           <div class="tb-path" id="pathBox">
             <input id="pathInput" spellcheck="false" value="/home/deploy/app" placeholder="输入远程路径，回车前往">
             <span class="err-tip">路径不存在</span>
           </div>
-          <button class="tb-btn" id="refreshBtn" title="刷新"><svg class="ico" viewBox="0 0 24 24"><use href="#i-refresh"/></svg></button>
+          <button class="tb-btn" id="refreshBtn" data-tip="刷新"><svg class="ico" viewBox="0 0 24 24"><use href="#i-refresh"/></svg></button>
           <span class="tb-sep"></span>
-          <button class="tb-btn" id="newMenuBtn" title="新建"><svg class="ico" viewBox="0 0 24 24"><use href="#i-plus"/></svg></button>
-          <button class="tb-btn" id="uploadBtn" title="上传文件或文件夹"><svg class="ico" viewBox="0 0 24 24"><use href="#i-upload"/></svg></button>
-          <button class="tb-btn" id="queueBtn" title="传输队列">
+          <button class="tb-btn" id="newMenuBtn" data-tip="新建"><svg class="ico" viewBox="0 0 24 24"><use href="#i-new-folder"/></svg></button>
+          <button class="tb-btn" id="uploadBtn" data-tip="上传文件或文件夹"><svg class="ico" viewBox="0 0 24 24"><use href="#i-upload"/></svg></button>
+          <button class="tb-btn" id="filterBtn" data-tip="过滤 (Ctrl+F)"><svg class="ico" viewBox="0 0 24 24"><use href="#i-search"/></svg></button>
+          <button class="tb-btn" id="hiddenBtn" data-tip="显示隐藏文件"><svg class="ico" viewBox="0 0 24 24" id="hiddenIco"><use href="#i-eye-off"/></svg></button>
+          <button class="tb-btn" id="treeBtn" data-tip="收起/展开目录树"><svg class="ico" viewBox="0 0 24 24"><use href="#i-collapse"/></svg></button>
+          <button class="tb-btn" id="queueBtn" data-tip="传输队列">
             <svg class="ico" viewBox="0 0 24 24"><use href="#i-transfer"/></svg>
             <span class="badge" id="queueBadge" style="display:none">0</span>
           </button>
+          <!-- 批量操作行（选中 > 0 时出现；实机 selected-count 契约） -->
+          <span class="tb-batch" id="tbBatch">
+            <span class="n" id="batchN"></span>
+            <button class="bb" id="batchDl"><svg class="ico" viewBox="0 0 24 24"><use href="#i-download"/></svg>下载选中</button>
+            <button class="bb" id="batchCopy"><svg class="ico" viewBox="0 0 24 24"><use href="#i-copy"/></svg>复制到标签页</button>
+            <button class="bb danger" id="batchDel"><svg class="ico" viewBox="0 0 24 24"><use href="#i-trash"/></svg>删除</button>
+            <button class="bx" id="batchClear" data-tip="取消选择"><svg class="ico" style="width:12px;height:12px" viewBox="0 0 24 24"><use href="#i-close"/></svg></button>
+          </span>
         </div>
 
-        <!-- 双栏主体 -->
         <div class="sftp-body">
-          <!-- 目录树 -->
           <div class="sftp-tree" id="treePane">
             <div class="tree-scroll" id="treeScroll"></div>
             <div class="tree-divider" id="treeDivider"></div>
           </div>
 
-          <!-- 文件列表 -->
           <div class="sftp-list">
+            <div class="load-bar" id="loadBar"></div>
             <div class="list-head" id="listHead">
-              <span class="lh-check" id="checkAll" title="全选/反选"><span class="ck" id="ckAll"><svg viewBox="0 0 24 24"><use href="#i-check"/></svg><svg viewBox="0 0 24 24" style="display:none"><use href="#i-dash"/></svg></span></span>
-              <span class="lh-cell f-name" data-sort="name">名称 <span class="dir"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-chev-d"/></svg></span></span>
-              <span class="lh-cell f-type" data-sort="type">类型 <span class="dir"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-chev-d"/></svg></span></span>
-              <span class="lh-cell f-size" data-sort="size">大小 <span class="dir"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-chev-d"/></svg></span></span>
-              <span class="lh-cell f-time" data-sort="time">修改时间 <span class="dir"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-chev-d"/></svg></span></span>
+              <span class="lh-check" id="checkAll" data-tip="全选/反选"><span class="ck" id="ckAll">
+                <svg viewBox="0 0 24 24"><use href="#i-check" id="ckAllUse"/></svg>
+                <svg viewBox="0 0 24 24" style="display:none"><use href="#i-checkbox-ind"/></svg>
+              </span></span>
+              <span class="lh-cell f-name" data-sort="name">名称 <span class="dir"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-expand-more"/></svg></span></span>
+              <span class="lh-cell f-type" data-sort="type">类型 <span class="dir"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-expand-more"/></svg></span></span>
+              <span class="lh-cell f-size" data-sort="size">大小 <span class="dir"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-expand-more"/></svg></span></span>
+              <span class="lh-cell f-time" data-sort="time">修改时间 <span class="dir"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-expand-more"/></svg></span></span>
               <span class="lh-cell f-perm fixed">权限</span>
               <span class="lh-cell f-owner fixed">所有者</span>
               <span class="lh-cell f-group fixed" style="width:66px">组</span>
-              <span class="lh-gear" id="colGear" title="列显示"><svg class="ico" viewBox="0 0 24 24"><use href="#i-gear"/></svg></span>
+              <span class="lh-gear" id="colGear" data-tip="列显示"><svg class="ico" viewBox="0 0 24 24"><use href="#i-gear"/></svg></span>
+            </div>
+            <div class="filter-bar" id="filterBar">
+              <svg class="ico" viewBox="0 0 24 24"><use href="#i-search"/></svg>
+              <input id="filterInput" placeholder="过滤当前目录…（Esc 关闭）" spellcheck="false">
+              <span class="cnt" id="filterCnt"></span>
             </div>
             <div class="list-scroll" id="listScroll">
               <div id="fileRows"></div>
               <div class="list-empty" id="listEmpty">
                 <svg class="ico" viewBox="0 0 24 24"><use href="#i-folder-open"/></svg>
-                <span>此目录为空</span>
+                <span id="emptyText">此目录为空</span>
               </div>
             </div>
 
-            <!-- 隧道页 -->
             <div class="tunnel-page" id="tunnelPage">
-              <div class="tn-head">
-                <span class="t">端口转发隧道</span>
-                <span class="grow"></span>
-              </div>
+              <div class="tn-head"><span class="t">端口转发隧道</span></div>
               <div class="tn-list" id="tnList"></div>
               <div class="tn-add" id="tnAdd">
-                <svg class="ico" viewBox="0 0 24 24"><use href="#i-plus"/></svg>
+                <svg class="ico" viewBox="0 0 24 24"><use href="#i-new-folder"/></svg>
                 添加隧道（本地转发 / 动态 SOCKS / 远程转发）
               </div>
             </div>
           </div>
         </div>
 
-        <!-- 传输队列 -->
         <div class="queue" id="queuePane">
           <div class="queue-head">
             传输队列 <span class="cnt" id="queueCnt">(0)</span>
@@ -710,10 +774,10 @@ html[data-theme="dark"] .btn.primary{color:#fff}
           <div class="queue-list" id="queueList"></div>
         </div>
 
-        <!-- 状态栏 -->
         <div class="sftp-status">
-          <span id="stCount">12 项</span>
+          <span id="stCount">—</span>
           <span id="stSel"></span>
+          <span id="stHidden"></span>
           <span class="grow"></span>
           <span class="down">↓ <i id="stDown">0 B/s</i></span>
           <span class="up">↑ <i id="stUp">0 B/s</i></span>
@@ -728,93 +792,63 @@ html[data-theme="dark"] .btn.primary{color:#fff}
 
   <!-- ═══════════ 参照主流 ═══════════ -->
   <div class="section">
-    <h2>主流参照 · 取什么、舍什么</h2>
-    <p class="desc">弹窗形态不是 dock 面板放大，而是按独立文件管理器的标准重排工具栏与导航；视觉语言仍全部走 MTerm 主题槽位。</p>
+    <h2>v2 优化清单 · 参照主流取什么</h2>
+    <p class="desc">参照 WinSCP（右键/权限/队列契约）、Transmit / Cyberduck（简洁浏览器 + 拖拽移动）、Termius（现代过滤与隐藏文件开关）、Windows Explorer（右键菜单惯例与快捷键）。</p>
     <div class="ref-grid">
       <div class="ref-card">
-        <h3>工具栏补导航组<span class="src">← WinSCP / ForkLift</span></h3>
-        <p>dock 态只有路径框+刷新；独立窗补齐「后退 / 前进 / 上级 / 主目录」历史导航与可编辑路径框（回车前往、错误红边提示）。这是弹窗最大收益：脱离终端后仍要能独立漫游。</p>
+        <h3>右键六场景<span class="src">← WinSCP / Explorer</span></h3>
+        <p>行与空白之外补齐：树节点（新建/刷新/复制路径/在终端打开）、列头（列显示）、路径框（复制/粘贴前往）、队列任务（暂停/取消/重试）、标题栏（置顶/停靠/最小化）。菜单样式 26px 行沿用实机 SftpMenuItem。</p>
       </div>
       <div class="ref-card">
-        <h3>传输队列常驻入口<span class="src">← WinSCP / FileZilla</span></h3>
-        <p>下载/上传立即生成队列任务（进度 / 速度 / 暂停 / 取消），工具栏「队列」钮带计数徽章，有新任务自动展开抽屉。dock 态高度太挤放不下，弹窗是它正确的家。</p>
+        <h3>文件管理标准操作<span class="src">← Explorer / ForkLift</span></h3>
+        <p>复制（Ctrl+C）→ 粘贴（Ctrl+V）生成副本；Del 删除、F2 重命名、Ctrl+A 全选、Ctrl+F 过滤；拖文件行到树目录 = 移动（落点高亮）。</p>
       </div>
       <div class="ref-card">
-        <h3>标题栏主机身份<span class="src">← Transmit / Termius</span></h3>
-        <p>标题写「SFTP · deploy@web-01」+ 协议徽章 + 连接状态点。多标签页开多台主机时，弹窗任务栏项一眼可辨；置顶钮配合「边看文件边跑命令」。</p>
+        <h3>可见性三件套<span class="src">← Termius / Cyberduck</span></h3>
+        <p>隐藏文件开关（工具栏 eye，状态栏计数）；搜索过滤条（Ctrl+F 展开实时过滤 + 命中计数）；批量操作行（勾选 &gt; 0 时工具栏出现下载/复制到标签页/删除）——实机 selected-count 契约。</p>
       </div>
       <div class="ref-card">
-        <h3>保留实机既有契约<span class="src">= ui/sftp_panel.slint</span></h3>
-        <p>文件/隧道分段、28px 行、26px 右键菜单、多选批量行、列显示开关、复制到标签页（transfer-targets）全部原样继承——弹窗只是换宿主，不发明新交互。</p>
+        <h3>质感细节<span class="src">← Transmit</span></h3>
+        <p>导航加载条（列表顶 2px accent 流条）；排序列头 accent-tonal 高亮 + 常显方向箭头；文件类型四档着色（脚本琥珀/配置 accent/文档次级/隐藏弱化）；自绘 tooltip 悬浮钮上方（对齐实机 SftpTooltip 负 y）。</p>
       </div>
     </div>
   </div>
 
-  <!-- ═══════════ 交互契约 ═══════════ -->
+  <!-- ═══════════ 图标与落地 ═══════════ -->
   <div class="section">
-    <h2>交互契约 · 稿内可点验清单</h2>
-    <p class="desc">全部可点；「落地映射」列为抽 SftpPanel 成顶层组件时的 Rust/Slint 接线点。</p>
-    <div class="contract">
+    <h2>图标来源与落地映射</h2>
+    <div class="contract ref-grid">
       <div class="ref-card">
-        <h3>窗口壳（新增）</h3>
+        <h3>图标 100% 来自项目资产</h3>
         <ul>
-          <li>拖标题栏移动 / 右下 grip 缩放 / 最大化还原</li>
-          <li>置顶切换（高亮态）—— 落地映射 <code>always_on_top</code></li>
-          <li>✕ / 停靠钮 / 最小化 → 都回停靠靠（dock 面板恢复）</li>
-          <li>弹出⇄停靠往返动效 320ms</li>
+          <li>folder / folder-open / file / new-folder(create-new-folder) / edit / trash / copy / search / refresh / home / arrow-* / close / transfer / tunnel / swap-vert / gear(settings) / eye(visibility) / eye-off(visibility-off) / collapse(sidebar-left-collapse) / select-all / retry / grip(drag-grip) / max(fullscreen-enter) / restore(fullscreen-exit) / popout(window-popout) / popin(window-popin) / pin(unpin) / checkbox / checkbox-ind(checkbox-indeterminate) / info / warning / expand-more/less / chevron-r(chevron-right) / terminal</li>
+          <li>全部 <code>viewBox 24 · stroke=currentColor · 宽 2</code>，内联 symbol 落地直转 <code>ui/icons.slint</code> 分段</li>
+          <li><b>项目暂缺 3 枚（稿内补绘标红）</b>：<code>pause / play</code>（队列）与 <code>window-min</code>（最小化钮）——落地时新增 svg + 注册</li>
         </ul>
       </div>
       <div class="ref-card">
-        <h3>导航（继承 + 补齐）</h3>
+        <h3>落地映射（同 v1 结论）</h3>
         <ul>
-          <li>树展开收起 / 点节点前往；拖分隔条调树宽</li>
-          <li>后退/前进/上级/主目录 + 路径框回车跳转</li>
-          <li>双击目录进入、刷新当前目录</li>
-          <li>不存在路径 → 输入框红边「路径不存在」</li>
+          <li>新增 <code>sftp_window.slint</code> 顶层壳：标题栏 + 扩展工具栏 + 内嵌 SftpPanel 转发</li>
+          <li>entries/tree-nodes 同一 ModelRc clone 喂弹窗；回调转发 sftp_callbacks</li>
+          <li>主题照 <code>sync_editor_theme + copy_theme_slots!</code> 同步；弹出期间 dock 态 compact，关窗回停靠靠</li>
+          <li>弹窗绑定单 tab，切走自动收回</li>
         </ul>
       </div>
-      <div class="ref-card">
-        <h3>列表（继承实机）</h3>
-        <ul>
-          <li>列头点名称/类型/大小/时间三态排序</li>
-          <li>勾选多选 + 全选（半选态）；批量行出现</li>
-          <li>右键行/空白两套菜单（禁用项置灰）</li>
-          <li>重命名行内编辑（Enter 提交 / Esc 取消 / 重名校验）</li>
-        </ul>
-      </div>
-      <div class="ref-card">
-        <h3>传输与隧道</h3>
-        <ul>
-          <li>下载 → 队列任务跑进度/速度，完成转绿</li>
-          <li>任务暂停/取消；「清除已完成」</li>
-          <li>新建文件夹卡（重名校验）、删除确认卡（danger）</li>
-          <li>隧道页：添加表单卡 + 启动/停止状态切换</li>
-        </ul>
-      </div>
-    </div>
-  </div>
-
-  <div class="section">
-    <div class="note-card">
-      <b>落地摘要</b>：SftpPanel 已是自包含组件（约 25 个 in 属性 + 30 个回调，不依赖宿主作用域），本稿对应改动 = ① 新增 <b>sftp_window.slint</b> 顶层壳（标题栏 + 本稿工具栏扩展 + 内嵌 SftpPanel 转发）② terminal_view 的 dock 态保留、面板工具栏加「弹出」出口 ③ Rust 侧 entries/tree-nodes 用同一 ModelRc clone 喂弹窗，回调转发 sftp_callbacks 既有处理函数 ④ 主题照 sync_editor_theme + copy_theme_slots! 同步 ⑤ 弹出期间 dock 态置 compact，关窗自动回停靠靠。弹窗绑定单 tab：切走该 tab 自动收回。
     </div>
   </div>
 </div>
 
-<!-- 右键菜单 -->
+<!-- 浮层 -->
 <div class="ctx-menu" id="ctxMenu"></div>
-<!-- 新建菜单 -->
 <div class="ctx-menu" id="newMenu" style="width:150px"></div>
-<!-- 列显示菜单 -->
 <div class="ctx-menu col-menu" id="colMenu"></div>
-<!-- 复制到标签页子菜单 -->
 <div class="ctx-menu" id="subMenu" style="width:170px"></div>
+<div class="ctx-menu" id="pathMenu" style="width:170px"></div>
+<div class="ctx-menu" id="queueMenu" style="width:160px"></div>
+<div class="ctx-menu" id="winMenu" style="width:160px"></div>
 
-<!-- 模态卡 -->
-<div class="modal-scrim" id="modalScrim">
-  <div class="modal-card" id="modalCard"></div>
-</div>
-
+<div class="modal-scrim" id="modalScrim"><div class="modal-card" id="modalCard"></div></div>
 <div class="toast" id="toast">
   <svg class="ico" viewBox="0 0 24 24"><use href="#i-check"/></svg>
   <span id="toastText"></span>
@@ -822,7 +856,7 @@ html[data-theme="dark"] .btn.primary{color:#fff}
 
 <script>
 /* ============================================================
-   数据：一棵远程文件树（演示用）
+   数据（演示用远程树）
    ============================================================ */
 const NOW = new Date('2026-11-11T10:24:00');
 function ts(d,h,m){ return new Date(2026,10,d,h,m); }
@@ -873,18 +907,30 @@ const TREE = {
 };
 const HOME = '/home/deploy';
 const TYPE_LABEL = n => /\.(py|sh|yml|md|txt|env)$/.test(n) ? n.split('.').pop().toUpperCase() : (n.includes('.') && !n.startsWith('.') ? 'FILE' : '');
+/* 文件类型四档着色（MTerm 语义色，克制） */
+function typeClass(e){
+  if (e.hidden) return 't-hidden';
+  if (e.isDir) return '';
+  if (/\.(sh|py)$/.test(e.name)) return 't-script';
+  if (/\.(yml|env)$/.test(e.name)) return 't-config';
+  if (/\.(md|txt)$/.test(e.name)) return 't-doc';
+  return '';
+}
 
 /* ── 状态 ── */
 const S = {
   cwd: '/home/deploy/app',
   hist: [], histIdx: -1,
   expanded: new Set(['/home/deploy','/home/deploy/app']),
-  checked: new Set(),           // full paths
-  selectedRow: null,            // full path of clicked row
-  sortKey: null, sortDir: 1,    // 1 asc / -1 desc
+  checked: new Set(),
+  selectedRow: null,
+  sortKey: null, sortDir: 1,
   showCols: { type:true, size:true, time:true, perm:true, owner:true, group:true },
+  showHidden: false,
+  filterText: '',
   panelMode: 'files',
   queue: [], queueId: 0,
+  clip: [],                    // 复制暂存（路径）
   winPinned: false, winMaxed: false,
 };
 const $ = id => document.getElementById(id);
@@ -901,7 +947,6 @@ function fmtTime(t){
   return `${t.getFullYear()}-${p(t.getMonth()+1)}-${p(t.getDate())} ${p(t.getHours())}:${p(t.getMinutes())}`;
 }
 function nodeAt(path){
-  // shim：TREE 以 '/home/deploy' 为根键，路径逐级下钻时补 home→deploy 两层
   const parts = path.split('/').filter(Boolean);
   if (parts[0] !== 'home' || parts[1] !== 'deploy') return null;
   let p = { children: { deploy: TREE['/home/deploy'] } };
@@ -911,6 +956,10 @@ function nodeAt(path){
   }
   return p;
 }
+function parentAt(path){
+  const segs = path.split('/'); segs.pop();
+  return nodeAt(segs.join('/'));
+}
 function dirEntries(path){
   const n = nodeAt(path);
   if (!n || n.type !== 'dir') return null;
@@ -919,38 +968,46 @@ function dirEntries(path){
     path: (path === '/' ? '' : path) + '/' + name,
     isDir: v.type === 'dir',
     size: v.size || 0,
-    time: v.time || NOW,   // 目录条目没有显式 time，兜底当前时间（列表要渲染 mtime 列）
+    time: v.time || NOW,
     perm: v.perm || '---------',
     owner: v.owner || '-', group: v.group || '-',
-    hidden: !!v.hidden,
+    hidden: !!v.hidden || name.startsWith('.'),
     type: v.type === 'dir' ? '文件夹' : TYPE_LABEL(name) || '文件',
     fileKind: v.type === 'dir' ? 'dir' : 'file',
   }));
 }
+const visEntries = path => (dirEntries(path) || []).filter(e => S.showHidden || !e.hidden);
 
-/* ═══════════ 树渲染 ═══════════ */
+/* ═══════════ 加载条 ═══════════ */
+function flashLoad(){
+  const b = $('loadBar');
+  b.classList.remove('run','done'); void b.offsetWidth;
+  b.classList.add('run');
+  setTimeout(() => { b.classList.add('done'); setTimeout(() => b.classList.remove('run','done'), 250); }, 320);
+}
+
+/* ═══════════ 树 ═══════════ */
 function renderTree(){
-  const host = $('treeScroll');
   const rows = [];
   const walk = (path, depth) => {
     const node = nodeAt(path);
     if (!node || node.type !== 'dir') return;
-    const hasKids = Object.keys(node.children || {}).some(k => node.children[k].type === 'dir');
+    const kids = visEntries(path).filter(e => e.isDir);
+    const hasKids = kids.length > 0;
     const open = S.expanded.has(path);
     const isCur = S.cwd === path || S.cwd.startsWith(path + '/');
     rows.push(`<div class="tree-row ${isCur?'current':''}" data-path="${esc(path)}" style="padding-left:${8 + depth*14}px">
-      <span class="n tw" data-act="toggle" style="${hasKids?'':'visibility:hidden'}">${ico(open?'chev-d':'chev-r')}</span>
+      <span class="n tw" data-act="toggle" style="${hasKids?'':'visibility:hidden'}">${ico(open?'expand-more':'chevron-r')}</span>
       ${ico(open ? 'folder-open' : 'folder')}
       <span class="label">${esc(path.split('/').pop() || '/')}</span>
     </div>`);
     if (open){
-      const entries = dirEntries(path) || [];
-      for (const e of entries.filter(e => e.isDir)) walk(e.path, depth+1);
-      if (!entries.some(e => e.isDir) && depth < 1) rows.push(`<div class="tree-row" style="padding-left:${8+(depth+1)*14}px;color:var(--slot-t3);cursor:default"><span class="tw" style="visibility:hidden">${ico('chev-r')}</span>${ico('folder')}<span class="label" style="color:var(--slot-t3)">（无子目录）</span></div>`);
+      for (const e of kids) walk(e.path, depth+1);
+      if (!kids.length && depth < 1) rows.push(`<div class="tree-row" style="padding-left:${8+(depth+1)*14}px;cursor:default"><span class="tw" style="visibility:hidden">${ico('chevron-r')}</span>${ico('folder')}<span class="label" style="color:var(--slot-t3)">（无子目录）</span></div>`);
     }
   };
   walk('/home/deploy', 0);
-  host.innerHTML = rows.join('');
+  $('treeScroll').innerHTML = rows.join('');
 }
 $('treeScroll').addEventListener('click', e => {
   const row = e.target.closest('.tree-row');
@@ -958,7 +1015,7 @@ $('treeScroll').addEventListener('click', e => {
   const path = row.dataset.path;
   const tw = e.target.closest('[data-act="toggle"]');
   const node = nodeAt(path);
-  const hasKids = node && Object.keys(node.children||{}).some(k => node.children[k].type==='dir');
+  const hasKids = node && visEntries(path).some(e => e.isDir);
   if (tw && hasKids){
     S.expanded.has(path) ? S.expanded.delete(path) : S.expanded.add(path);
     renderTree();
@@ -966,13 +1023,59 @@ $('treeScroll').addEventListener('click', e => {
   }
   navigate(path);
 });
+/* 树右键菜单 */
+$('treeScroll').addEventListener('contextmenu', e => {
+  e.preventDefault();
+  const row = e.target.closest('.tree-row');
+  const path = row ? row.dataset.path : S.cwd;
+  const m = $('ctxMenu');
+  m.innerHTML = `
+    <div class="ctx-item" data-act="t-open" data-p="${esc(path)}">${ico('folder-open')}打开此目录</div>
+    <div class="ctx-item" data-act="t-term" data-p="${esc(path)}">${ico('terminal')}在终端打开</div>
+    <div class="ctx-sep"></div>
+    <div class="ctx-item" data-act="new-folder" data-p="${esc(path)}">${ico('new-folder')}在此新建文件夹</div>
+    <div class="ctx-item" data-act="refresh-m">${ico('refresh')}刷新</div>
+    <div class="ctx-sep"></div>
+    <div class="ctx-item" data-act="copy-path" data-p="${esc(path)}">${ico('copy')}复制路径</div>
+  `;
+  openMenuAt(m, e.clientX, e.clientY);
+});
+/* 拖拽行 → 树目录 = 移动 */
+let dragPath = null;
+$('treeScroll').addEventListener('dragover', e => {
+  const row = e.target.closest('.tree-row');
+  document.querySelectorAll('.tree-row.drag-over').forEach(x => x.classList.remove('drag-over'));
+  if (row && dragPath){ e.preventDefault(); row.classList.add('drag-over'); }
+});
+$('treeScroll').addEventListener('drop', e => {
+  const row = e.target.closest('.tree-row');
+  document.querySelectorAll('.tree-row.drag-over').forEach(x => x.classList.remove('drag-over'));
+  if (!row || !dragPath) return;
+  e.preventDefault();
+  const dst = row.dataset.path;
+  moveEntry(dragPath, dst);
+  dragPath = null;
+});
+function moveEntry(src, dstDir){
+  if (dstDir === src || src.startsWith(dstDir + '/')) { toast('不能移动到自身内部'); return; }
+  const name = src.split('/').pop();
+  const srcParent = parentAt(src), dstNode = nodeAt(dstDir);
+  if (!srcParent || !dstNode || dstNode.type !== 'dir'){ toast('目标不存在'); return; }
+  if (dstNode.children[name]){ toast('目标已有同名条目'); return; }
+  dstNode.children[name] = srcParent.children[name];
+  delete srcParent.children[name];
+  S.checked.delete(src);
+  if (S.selectedRow === src) S.selectedRow = null;
+  renderTree(); renderList();
+  toast(`已移动 ${name} → ${dstDir}`);
+}
 
 /* 树宽拖拽 */
 (() => {
   const div = $('treeDivider'), pane = $('treePane');
-  let sx = 0, sw = 0;
   div.addEventListener('mousedown', e => {
-    sx = e.clientX; sw = pane.offsetWidth; div.classList.add('dragging'); e.preventDefault();
+    const sx = e.clientX, sw = pane.offsetWidth;
+    div.classList.add('dragging'); e.preventDefault();
     const mv = ev => { pane.style.width = Math.max(120, Math.min(420, sw + ev.clientX - sx)) + 'px'; };
     const up = () => { div.classList.remove('dragging'); window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); };
     window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up);
@@ -980,8 +1083,12 @@ $('treeScroll').addEventListener('click', e => {
 })();
 
 /* ═══════════ 文件列表 ═══════════ */
-function sortedEntries(){
-  let list = dirEntries(S.cwd) || [];
+function filteredEntries(){
+  let list = visEntries(S.cwd);
+  if (S.filterText.trim()){
+    const q = S.filterText.trim().toLowerCase();
+    list = list.filter(e => e.name.toLowerCase().includes(q));
+  }
   if (S.sortKey){
     const k = S.sortKey, d = S.sortDir;
     list = [...list].sort((a,b) => {
@@ -998,15 +1105,15 @@ function sortedEntries(){
   return list;
 }
 function renderList(){
-  const list = sortedEntries();
+  const list = filteredEntries();
   const host = $('fileRows');
   const colCls = S.showCols;
   host.innerHTML = list.map(e => {
     const checked = S.checked.has(e.path);
     const sel = S.selectedRow === e.path;
-    return `<div class="f-row ${sel?'selected':''} ${checked?'checked':''} ${e.hidden?'hidden-file':''}" data-path="${esc(e.path)}" data-dir="${e.isDir?1:0}">
+    return `<div class="f-row ${sel?'selected':''} ${checked?'checked':''}" data-path="${esc(e.path)}" data-dir="${e.isDir?1:0}" draggable="true">
       <span class="f-check"><span class="ck ${checked?'on':''}" data-act="check">${ico('check')}</span></span>
-      <span class="f-cell f-ico">${ico(e.isDir ? 'folder' : 'file')}</span>
+      <span class="f-cell f-ico ${typeClass(e)}">${ico(e.isDir ? 'folder' : 'file')}</span>
       <span class="f-cell f-name"><span class="label">${esc(e.name)}</span></span>
       ${colCls.type ? `<span class="f-cell f-type"><span class="label">${esc(e.type)}</span></span>` : ''}
       ${colCls.size ? `<span class="f-cell f-size"><span class="label">${e.isDir ? '—' : fmtSize(e.size)}</span></span>` : ''}
@@ -1017,34 +1124,39 @@ function renderList(){
       <span class="f-gear"></span>
     </div>`;
   }).join('');
-  $('listEmpty').classList.toggle('show', list.length === 0);
-  // 全选框三态（on = 全选实勾 / ind = 半选横线）
+  const empty = $('listEmpty');
+  empty.querySelector('#emptyText').textContent =
+    S.filterText.trim() ? '没有匹配的条目' : '此目录为空';
+  empty.classList.toggle('show', list.length === 0);
+  // 全选框三态
   const dirs = list.length;
-  const n = [...S.checked].filter(p => p.startsWith(S.cwd === '/' ? '/' : S.cwd + '/')).length;
+  const n = [...S.checked].filter(p => p.startsWith(S.cwd + '/')).length;
   const ck = $('ckAll');
   const isOn = dirs > 0 && n === dirs, isInd = n > 0 && n < dirs;
-  ck.classList.toggle('on', isOn);
-  ck.classList.toggle('ind', isInd);
+  ck.classList.toggle('on', isOn); ck.classList.toggle('ind', isInd);
   ck.children[0].style.display = isInd ? 'none' : '';
   ck.children[1].style.display = isInd ? '' : 'none';
   // 列头排序指示
   document.querySelectorAll('#listHead .lh-cell[data-sort]').forEach(c => {
     const on = c.dataset.sort === S.sortKey;
     c.classList.toggle('sorted', on);
-    c.querySelector('use').setAttribute('href', on && S.sortDir === -1 ? '#i-chev-d' : '#i-chev-d');
-    c.querySelector('.dir').style.transform = (on && S.sortDir === -1) ? 'none' : 'rotate(180deg)';
-    if (!on) c.querySelector('.dir').style.display = 'none', c.classList.remove('sorted');
-    else c.querySelector('.dir').style.display = '';
+    c.querySelector('.dir').style.transform = (on && S.sortDir === -1) ? 'rotate(180deg)' : 'none';
   });
-  // 状态栏
+  // 批量操作行 + 状态栏
+  const cnt = S.checked.size;
+  $('tbBatch').classList.toggle('show', cnt > 0 && S.panelMode === 'files');
+  $('batchN').textContent = cnt ? `已选 ${cnt}` : '';
+  const selIn = [...S.checked].filter(p => p.startsWith(S.cwd + '/'));
+  $('stSel').textContent = selIn.length ? `已选 ${selIn.length}` : '';
+  const hiddenN = (dirEntries(S.cwd) || []).filter(e => e.hidden && (S.showHidden || !e.hidden)).length;
+  const totalHidden = (dirEntries(S.cwd) || []).filter(e => e.hidden).length;
+  $('stHidden').textContent = S.showHidden && totalHidden ? `${totalHidden} 个隐藏` : (totalHidden ? `${totalHidden} 个隐藏已折叠` : '');
   $('stCount').textContent = `${list.length} 项`;
-  const selPaths = [...S.checked].filter(p => (p + '/').startsWith(S.cwd + '/') || p.startsWith(S.cwd + '/'));
-  $('stSel').textContent = selPaths.length ? `已选 ${selPaths.length}` : '';
 }
 $('listScroll').addEventListener('click', e => {
   const row = e.target.closest('.f-row');
   if (!row) return;
-  const path = row.dataset.path, isDir = row.dataset.dir === '1';
+  const path = row.dataset.path;
   const ck = e.target.closest('[data-act="check"]');
   if (ck){
     S.checked.has(path) ? S.checked.delete(path) : S.checked.add(path);
@@ -1059,10 +1171,22 @@ $('listScroll').addEventListener('dblclick', e => {
   else toast(`预览 ${row.querySelector('.f-name .label').textContent}（演示）`);
 });
 $('checkAll').addEventListener('click', () => {
-  const list = sortedEntries();
+  const list = filteredEntries();
   const allIn = list.every(e => S.checked.has(e.path));
   for (const e of list) allIn ? S.checked.delete(e.path) : S.checked.add(e.path);
   renderList();
+});
+/* 拖拽源 */
+$('listScroll').addEventListener('dragstart', e => {
+  const row = e.target.closest('.f-row');
+  if (!row) return;
+  dragPath = S.checked.has(row.dataset.path) && S.checked.size > 1 ? null : row.dataset.path;
+  row.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  try { e.dataTransfer.setData('text/plain', dragPath || ''); } catch(_){}
+});
+$('listScroll').addEventListener('dragend', e => {
+  document.querySelectorAll('.f-row.dragging').forEach(x => x.classList.remove('dragging'));
 });
 /* 列头排序 */
 document.querySelectorAll('#listHead .lh-cell[data-sort]').forEach(c => {
@@ -1073,6 +1197,24 @@ document.querySelectorAll('#listHead .lh-cell[data-sort]').forEach(c => {
     else { S.sortKey = null; S.sortDir = 1; }
     renderList();
   });
+  /* 列头右键 = 列显示 */
+  c.addEventListener('contextmenu', e => { e.preventDefault(); openColMenu(e.clientX, e.clientY); });
+});
+$('colGear').addEventListener('click', e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); openColMenu(r.left - 140, r.bottom + 4); });
+function openColMenu(x, y){
+  const m = $('colMenu');
+  m.innerHTML = `<div class="ctx-title">列显示</div>` + [['type','类型'],['size','大小'],['time','修改时间'],['perm','权限'],['owner','所有者'],['group','组']].map(([k,l]) =>
+    `<div class="ctx-item" data-col="${k}"><span class="ck ${S.showCols[k]?'on':''}">${ico('check')}</span>${l}</div>`).join('');
+  m.classList.add('open');
+  m.style.left = Math.max(8, Math.min(x, window.innerWidth - 180)) + 'px';
+  m.style.top = Math.min(y, window.innerHeight - 220) + 'px';
+}
+$('colMenu').addEventListener('click', e => {
+  const it = e.target.closest('[data-col]'); if (!it) return;
+  const k = it.dataset.col;
+  S.showCols[k] = !S.showCols[k];
+  it.querySelector('.ck').classList.toggle('on', S.showCols[k]);
+  renderList();
 });
 
 /* ═══════════ 导航 ═══════════ */
@@ -1080,7 +1222,6 @@ function navigate(path, push = true){
   path = path.replace(/\/+$/,'') || '/';
   if (!nodeAt(path) || nodeAt(path).type !== 'dir'){
     $('pathBox').classList.add('error');
-    $('pathInput').classList.add('err');
     setTimeout(() => $('pathBox').classList.remove('error'), 1600);
     return false;
   }
@@ -1089,12 +1230,13 @@ function navigate(path, push = true){
   S.selectedRow = null;
   S.checked = new Set([...S.checked].filter(p => !p.startsWith(path + '/')));
   S.expanded.add(path);
-  // 展开父链
   const parts = path.split('/').filter(Boolean);
   let acc = '';
   for (const seg of parts){ acc += '/' + seg; S.expanded.add(acc); }
   $('pathInput').value = path;
-  renderTree(); renderList();
+  flashLoad();
+  renderTree(); renderList(); refreshNavBtns();
+  return true;
 }
 function refreshNavBtns(){
   $('navBack').disabled = S.histIdx <= 0;
@@ -1106,57 +1248,57 @@ $('navBack').onclick = () => { if (S.histIdx > 0){ S.histIdx--; navigate(S.hist[
 $('navFwd').onclick  = () => { if (S.histIdx < S.hist.length - 1){ S.histIdx++; navigate(S.hist[S.histIdx], false); } };
 $('navUp').onclick   = () => { const p = S.cwd.split('/').slice(0,-1).join('/') || '/'; if (nodeAt(p)) navigate(p); };
 $('navHome').onclick = () => navigate(HOME);
-$('refreshBtn').onclick = () => { renderTree(); renderList(); toast('已刷新（演示）'); };
+$('refreshBtn').onclick = () => { flashLoad(); renderTree(); renderList(); toast('已刷新'); };
 $('pathInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') navigate($('pathInput').value.trim());
   if (e.key === 'Escape') $('pathInput').value = S.cwd;
+  e.stopPropagation();
+});
+/* 路径框右键 */
+$('pathBox').addEventListener('contextmenu', e => {
+  e.preventDefault();
+  const m = $('pathMenu');
+  m.innerHTML = `
+    <div class="ctx-item" data-act="p-go">${ico('arrow-r')}前往</div>
+    <div class="ctx-item" data-act="p-copy">${ico('copy')}复制路径</div>
+    <div class="ctx-item ${S.clip.length ? '' : 'disabled'}" data-act="p-paste-go">${ico('file')}粘贴到此处（${S.clip.length} 项）</div>
+  `;
+  openMenuAt(m, e.clientX, e.clientY);
+});
+$('pathMenu').addEventListener('click', e => {
+  const it = e.target.closest('.ctx-item');
+  if (!it || it.classList.contains('disabled')) return;
+  closeMenus();
+  if (it.dataset.act === 'p-go') navigate($('pathInput').value.trim());
+  if (it.dataset.act === 'p-copy'){ navigator.clipboard?.writeText(S.cwd); toast('路径已复制'); }
+  if (it.dataset.act === 'p-paste-go') pasteClip(S.cwd);
 });
 
-/* ═══════════ 右键菜单 ═══════════ */
-const menuEl = $('ctxMenu');
-function openMenu(el, x, y){
+/* ═══════════ 菜单基建 ═══════════ */
+function openMenuAt(el, x, y){
   el.classList.add('open');
   const w = el.offsetWidth, h = el.offsetHeight;
-  el.style.left = Math.min(x, window.innerWidth - w - 8) + 'px';
-  el.style.top  = Math.min(y, window.innerHeight - h - 8) + 'px';
+  el.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + 'px';
+  el.style.top  = Math.max(8, Math.min(y, window.innerHeight - h - 8)) + 'px';
 }
-function closeMenus(){ [menuEl, $('newMenu'), $('colMenu'), $('subMenu')].forEach(m => m.classList.remove('open')); }
+function closeMenus(){ document.querySelectorAll('.ctx-menu').forEach(m => m.classList.remove('open')); }
 window.addEventListener('mousedown', e => {
   if (!e.target.closest('.ctx-menu')) closeMenus();
 }, true);
-/* 注意：不挂 scroll 关闭 —— 自动滚动（如 scrollIntoView）的 scroll 事件异步
-   派发，会晚于同步打开的菜单到达，把刚开的菜单误杀（实测复现）。 */
-window.addEventListener('resize', closeMenus);
+/* 不挂 scroll 关闭：自动滚动的 scroll 事件异步派发会误杀刚开的菜单（v1 实测）。
+   resize 关闭加尺寸守卫：浏览器面板重挂 tab 会派发 size 未变的 resize（实测），
+   只有真实尺寸变化才关菜单。 */
+(() => {
+  let lw = window.innerWidth, lh = window.innerHeight;
+  window.addEventListener('resize', () => {
+    if (window.innerWidth === lw && window.innerHeight === lh) return;
+    lw = window.innerWidth; lh = window.innerHeight;
+    closeMenus();
+  });
+})();
+window.addEventListener('keydown', e => { if (e.key === 'Escape'){ closeModal(); closeMenus(); if (S.filterText){ S.filterText=''; $('filterInput').value=''; $('filterBar').classList.remove('open'); renderList(); } } });
 
-function rowMenu(target, x, y){
-  const isDir = target ? target.dataset.dir === '1' : false;
-  const p = target ? target.dataset.path : '';
-  const name = target ? target.querySelector('.f-name .label').textContent : '';
-  const one = S.checked.size === 1 ? [...S.checked][0] : null;
-  const multi = S.checked.size > 1;
-  const base = multi ? [...S.checked] : (target ? [p] : []);
-  const has = base.length > 0;
-  menuEl.innerHTML = `
-    ${has ? `<div class="ctx-item" data-act="download" data-t="${esc(target?.dataset.dir==='1'?p:S.checked.size?'' : '')}">${ico('download')}下载<span class="ks">…</span></div>` : `<div class="ctx-item disabled">${ico('download')}下载</div>`}
-    ${has ? `<div class="ctx-item" data-act="dl-seq">${ico('transfer')}逐台下载（不打包）</div>` : `<div class="ctx-item disabled">${ico('transfer')}逐台下载（不打包）</div>`}
-    ${has ? `<div class="ctx-item" data-act="copy-to">${ico('copy')}复制到标签页…<svg class="ico ctx-sub-arrow" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-chev-r"/></svg></div>` : `<div class="ctx-item disabled">${ico('copy')}复制到标签页…</div>`}
-    <div class="ctx-sep"></div>
-    ${target && !multi ? `<div class="ctx-item" data-act="rename">${ico('edit')}重命名<span class="ks">F2</span></div>` : `<div class="ctx-item disabled">${ico('edit')}重命名</div>`}
-    ${target && !multi ? `<div class="ctx-item" data-act="chmod">${ico('gear')}权限…<span class="ks">${target.querySelector('.f-perm .label').textContent}</span></div>` : `<div class="ctx-item disabled">${ico('gear')}权限…</div>`}
-    ${target && !multi ? `<div class="ctx-item" data-act="copy-path">${ico('copy')}复制路径</div>` : `<div class="ctx-item disabled">${ico('copy')}复制路径</div>`}
-    ${target && !multi && !isDir ? `<div class="ctx-item" data-act="view">${ico('file')}查看</div>
-    <div class="ctx-item" data-act="edit">${ico('edit')}编辑</div>
-    <div class="ctx-item" data-act="ext-open">${ico('popout')}外部程序打开</div>` : `<div class="ctx-item disabled">${ico('file')}查看</div>`}
-    <div class="ctx-sep"></div>
-    <div class="ctx-item" data-act="new-folder">${ico('new-folder')}新建文件夹</div>
-    <div class="ctx-item" data-act="new-file">${ico('new-file')}新建文件</div>
-    <div class="ctx-item" data-act="refresh-m">${ico('refresh')}刷新</div>
-    <div class="ctx-sep"></div>
-    ${has ? `<div class="ctx-item danger" data-act="delete">${ico('trash')}${multi ? `删除 ${S.checked.size} 项` : '删除'}<span class="ks">Del</span></div>` : `<div class="ctx-item disabled">${ico('trash')}删除</div>`}
-  `;
-  menuEl.dataset.target = p || '';
-  openMenu(menuEl, x, y);
-}
+/* ═══════════ 列表右键（行 / 空白） ═══════════ */
 $('listScroll').addEventListener('contextmenu', e => {
   e.preventDefault();
   const row = e.target.closest('.f-row');
@@ -1165,20 +1307,61 @@ $('listScroll').addEventListener('contextmenu', e => {
 });
 $('listScroll').addEventListener('mousedown', e => { if (e.button === 0 && !e.target.closest('.f-row')){ S.selectedRow = null; renderList(); } });
 
+function rowMenu(target, x, y){
+  const has = target || S.checked.size > 0;
+  const multi = S.checked.size > 1;
+  const isDir = target ? target.dataset.dir === '1' : false;
+  const p = target ? target.dataset.path : '';
+  const oneName = target ? target.querySelector('.f-name .label').textContent : '';
+  const clipN = S.clip.length;
+  const m = $('ctxMenu');
+  m.innerHTML = `
+    ${has ? `<div class="ctx-item" data-act="download">${ico('download')}下载…<span class="ks">⏎</span></div>
+    <div class="ctx-item" data-act="dl-seq">${ico('transfer')}逐台下载（不打包）</div>
+    <div class="ctx-item" data-act="copy-to">${ico('popout')}复制到标签页…<svg class="ico ctx-sub-arrow" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-chevron-r"/></svg></div>
+    <div class="ctx-item" data-act="clip-copy">${ico('copy')}复制<span class="ks">Ctrl+C</span></div>` : `
+    <div class="ctx-item disabled">${ico('download')}下载…</div>
+    <div class="ctx-item disabled">${ico('transfer')}逐台下载（不打包）</div>
+    <div class="ctx-item disabled">${ico('popout')}复制到标签页…</div>
+    <div class="ctx-item disabled">${ico('copy')}复制</div>`}
+    <div class="ctx-item ${clipN ? '' : 'disabled'}" data-act="clip-paste">${ico('new-folder')}粘贴<span class="ks">Ctrl+V</span></div>
+    <div class="ctx-sep"></div>
+    ${target && !multi ? `<div class="ctx-item" data-act="rename">${ico('edit')}重命名<span class="ks">F2</span></div>
+    <div class="ctx-item" data-act="chmod">${ico('gear')}权限…<span class="ks">${target.querySelector('.f-perm .label').textContent}</span></div>
+    <div class="ctx-item" data-act="copy-path">${ico('copy')}复制路径</div>
+    ${!isDir ? `<div class="ctx-item" data-act="view">${ico('file')}查看</div>
+    <div class="ctx-item" data-act="edit">${ico('edit')}编辑</div>
+    <div class="ctx-item" data-act="ext-open">${ico('popout')}外部程序打开</div>` : ''}` : `
+    <div class="ctx-item disabled">${ico('edit')}重命名</div>
+    <div class="ctx-item disabled">${ico('gear')}权限…</div>
+    <div class="ctx-item disabled">${ico('copy')}复制路径</div>`}
+    <div class="ctx-sep"></div>
+    <div class="ctx-item" data-act="new-folder">${ico('new-folder')}新建文件夹</div>
+    <div class="ctx-item" data-act="new-file">${ico('file')}新建文件</div>
+    <div class="ctx-item ${S.checked.size || target ? '' : 'disabled'}" data-act="select-all">${ico('select-all')}全选<span class="ks">Ctrl+A</span></div>
+    <div class="ctx-item" data-act="refresh-m">${ico('refresh')}刷新</div>
+    <div class="ctx-sep"></div>
+    ${has ? `<div class="ctx-item danger" data-act="delete">${ico('trash')}${multi ? `删除 ${S.checked.size} 项` : '删除'}<span class="ks">Del</span></div>` : `<div class="ctx-item disabled">${ico('trash')}删除</div>`}
+  `;
+  m.dataset.target = p || '';
+  openMenuAt(m, x, y);
+}
+
 /* 菜单动作分发 */
-menuEl.addEventListener('click', e => {
+$('ctxMenu').addEventListener('click', e => {
   const it = e.target.closest('.ctx-item');
   if (!it || it.classList.contains('disabled')) return;
   const act = it.dataset.act;
-  const targetPath = menuEl.dataset.target;
+  const targetPath = $('ctxMenu').dataset.target;
   closeMenus();
-  const target = targetPath ? nodeAt(targetPath) : null;
   const multi = S.checked.size > 1;
   const batch = multi ? [...S.checked] : (targetPath ? [targetPath] : []);
   switch (act){
     case 'download': startDownload(batch); break;
     case 'dl-seq':   startDownload(batch, true); break;
     case 'copy-to':  openCopyToMenu(e.clientX, e.clientY, batch); break;
+    case 'clip-copy': S.clip = batch.slice(); toast(`已复制 ${batch.length} 项到剪贴板`); break;
+    case 'clip-paste': pasteClip(S.cwd); break;
     case 'rename':   beginRename(targetPath); break;
     case 'chmod':    openChmod(targetPath); break;
     case 'copy-path': navigator.clipboard?.writeText(targetPath); toast('路径已复制'); break;
@@ -1187,35 +1370,67 @@ menuEl.addEventListener('click', e => {
     case 'ext-open': toast('外部程序打开（演示）'); break;
     case 'new-folder': openNewFolder(S.cwd); break;
     case 'new-file':   openNewFile(S.cwd); break;
-    case 'refresh-m':  renderTree(); renderList(); break;
+    case 'select-all': { const l = filteredEntries(); for (const en of l) S.checked.add(en.path); renderList(); break; }
+    case 'refresh-m':  flashLoad(); renderTree(); renderList(); break;
     case 'delete':     openDeleteConfirm(batch); break;
+    /* 树右键 */
+    case 't-open': navigate(it.dataset.p); break;
+    case 't-term': toast(`已切到终端并 cd ${it.dataset.p}（演示）`); break;
   }
 });
-
-/* 复制到标签页子菜单 */
+/* 深拷贝节点（JSON.stringify 会把 Date 变字符串 → fmtTime 崩，专用递归） */
+function deepCloneNode(n){
+  const c = { type: n.type, size: n.size, time: new Date(n.time), perm: n.perm, owner: n.owner, group: n.group, hidden: n.hidden };
+  if (n.children){
+    c.children = {};
+    for (const k of Object.keys(n.children)) c.children[k] = deepCloneNode(n.children[k]);
+  }
+  return c;
+}
+function pasteClip(dstDir){
+  if (!S.clip.length) return;
+  let n = 0;
+  const dstNode = nodeAt(dstDir);
+  if (!dstNode || dstNode.type !== 'dir'){ toast('目标目录不存在'); return; }
+  for (const src of S.clip){
+    const name = src.split('/').pop();
+    const node = nodeAt(src);
+    if (!node){ continue; }
+    /* 同目录粘贴 = 生成副本：命中下方重名分支自动改名（标准文件管理器语义） */
+    let newName = name;
+    if (dstNode.children[newName]) newName = name.replace(/(\.[^.]+)?$/, m => ` 副本${m||''}`);
+    if (dstNode.children[newName]) newName = name.replace(/(\.[^.]+)?$/, m => ` 副本 2${m||''}`);
+    dstNode.children[newName] = deepCloneNode(node);
+    n++;
+  }
+  renderTree(); renderList();
+  toast(`已粘贴 ${n} 项到 ${dstDir}`);
+}
 function openCopyToMenu(x, y, batch){
   const m = $('subMenu');
   m.innerHTML = `
+    <div class="ctx-title">复制到标签页</div>
     <div class="ctx-item" data-t="db-master">${ico('terminal')}db-master</div>
     <div class="ctx-item" data-t="cache-01">${ico('terminal')}cache-01</div>
     <div class="ctx-item" data-t="jump-gw">${ico('terminal')}jump-gw</div>
   `;
   m.classList.add('open');
   m.style.left = Math.min(x + 8, window.innerWidth - 180) + 'px';
-  m.style.top = y + 'px';
+  m.style.top = Math.min(y, window.innerHeight - 140) + 'px';
   m.onclick = ev => {
     const it = ev.target.closest('.ctx-item');
-    if (!it) return;
+    if (!it || !it.dataset.t) return;
     closeMenus();
-    startDownload(batch); // 演示：复制到标签页同样进队列（方向=跨会话）
+    startDownload(batch);
     toast(`已复制到 ${it.dataset.t}（演示）`);
   };
 }
 
-/* ═══════════ 重命名（行内） ═══════════ */
+/* ═══════════ 重命名 / 模态卡 ═══════════ */
 function beginRename(path){
+  if (!path) return;
   const row = document.querySelector(`.f-row[data-path="${CSS.escape(path)}"]`);
-  if (!row) return;
+  if (!row){ toast('仅支持当前列表内重命名'); return; }
   const nameEl = row.querySelector('.f-name .label');
   const oldName = nameEl.textContent;
   const input = document.createElement('input');
@@ -1227,11 +1442,9 @@ function beginRename(path){
       const nv = input.value.trim();
       if (!nv) { renderList(); return; }
       if (nv !== oldName && nodeAt(S.cwd + '/' + nv)){ input.classList.add('err'); input.focus(); return; }
-      const node = nodeAt(path);
       const parent = nodeAt(S.cwd);
-      const keys = Object.keys(parent.children);
       const rebuilt = {};
-      for (const k of keys){ rebuilt[k === oldName ? nv : k] = parent.children[k]; }
+      for (const k of Object.keys(parent.children)){ rebuilt[k === oldName ? nv : k] = parent.children[k]; }
       parent.children = rebuilt;
       S.checked.delete(path); S.selectedRow = null;
       toast('已重命名');
@@ -1245,19 +1458,15 @@ function beginRename(path){
   });
   input.addEventListener('blur', () => commit(false));
 }
-
-/* ═══════════ 模态卡 ═══════════ */
 const scrim = $('modalScrim'), card = $('modalCard');
 function openModal(html){ card.innerHTML = html; scrim.classList.add('open'); }
 function closeModal(){ scrim.classList.remove('open'); }
 scrim.addEventListener('mousedown', e => { if (e.target === scrim) closeModal(); });
-window.addEventListener('keydown', e => { if (e.key === 'Escape'){ closeModal(); closeMenus(); } });
-
-function openNewFolder(dir){
+function nameModal(title, dir, isFile){
   openModal(`
-    <h3>新建文件夹</h3>
+    <h3>${title}</h3>
     <p class="hint">位置 <span class="mono" style="color:var(--slot-t2)">${esc(dir)}</span></p>
-    <input class="modal-input" id="mfName" placeholder="文件夹名称" spellcheck="false">
+    <input class="modal-input" id="mfName" placeholder="${isFile?'文件名，如 notes.md':'文件夹名称'}" spellcheck="false">
     <div class="modal-err" id="mfErr">名称不能为空，且不能与现有条目重复</div>
     <div class="modal-actions">
       <button class="btn ghost" data-x="cancel">取消</button>
@@ -1267,34 +1476,17 @@ function openNewFolder(dir){
   const submit = () => {
     const nv = inp.value.trim();
     if (!nv || nodeAt(dir + '/' + nv)){ inp.classList.add('err'); $('mfErr').classList.add('show'); return; }
-    nodeAt(dir).children[nv] = { type:'dir', children:{} };
+    nodeAt(dir).children[nv] = isFile
+      ? { type:'file', size: 0, time: NOW, perm:'rw-r--r--', owner:'deploy', group:'deploy' }
+      : { type:'dir', children:{} };
     closeModal(); renderTree(); renderList(); toast(`已创建 ${nv}`);
   };
-  $('mfName').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  $('mfName').addEventListener('keydown', ev => { if (ev.key === 'Enter') submit(); ev.stopPropagation(); });
   card.querySelector('[data-x="ok"]').onclick = submit;
   card.querySelector('[data-x="cancel"]').onclick = closeModal;
 }
-function openNewFile(dir){
-  openModal(`
-    <h3>新建文件</h3>
-    <p class="hint">位置 <span class="mono" style="color:var(--slot-t2)">${esc(dir)}</span></p>
-    <input class="modal-input" id="mfName" placeholder="文件名，如 notes.md" spellcheck="false">
-    <div class="modal-err" id="mfErr">名称不能为空，且不能与现有条目重复</div>
-    <div class="modal-actions">
-      <button class="btn ghost" data-x="cancel">取消</button>
-      <button class="btn primary" data-x="ok">创建</button>
-    </div>`);
-  const inp = $('mfName'); inp.focus();
-  const submit = () => {
-    const nv = inp.value.trim();
-    if (!nv || nodeAt(dir + '/' + nv)){ inp.classList.add('err'); $('mfErr').classList.add('show'); return; }
-    nodeAt(dir).children[nv] = { type:'file', size: 0, time: NOW, perm:'rw-r--r--', owner:'deploy', group:'deploy' };
-    closeModal(); renderList(); toast(`已创建 ${nv}`);
-  };
-  $('mfName').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
-  card.querySelector('[data-x="ok"]').onclick = submit;
-  card.querySelector('[data-x="cancel"]').onclick = closeModal;
-}
+const openNewFolder = dir => nameModal('新建文件夹', dir, false);
+const openNewFile = dir => nameModal('新建文件', dir, true);
 function openDeleteConfirm(batch){
   const one = batch.length === 1 ? batch[0].split('/').pop() : '';
   openModal(`
@@ -1306,8 +1498,8 @@ function openDeleteConfirm(batch){
     </div>`);
   card.querySelector('[data-x="ok"]').onclick = () => {
     for (const p of batch){
-      const segs = p.split('/'); const name = segs.pop(); const parent = nodeAt(segs.join('/'));
-      if (parent && parent.children) delete parent.children[name];
+      const parent = parentAt(p);
+      if (parent && parent.children) delete parent.children[p.split('/').pop()];
       S.checked.delete(p);
     }
     S.selectedRow = null; closeModal(); renderTree(); renderList(); toast('已删除');
@@ -1335,87 +1527,102 @@ function openChmod(path){
   card.querySelectorAll('[data-b]').forEach(ck => ck.onclick = () => ck.classList.toggle('on'));
   card.querySelector('[data-x="ok"]').onclick = () => {
     const on = i => card.querySelector(`[data-b="${i}"]`).classList.contains('on');
-    const seg = (a,b) => (on(a)?'r':'-') + (on(a+1)?'w':'-') + (on(a+2)?'x':'-');
-    node.perm = seg(0,0) + seg(3,0) + seg(6,0);
+    const seg = a => (on(a)?'r':'-') + (on(a+1)?'w':'-') + (on(a+2)?'x':'-');
+    node.perm = seg(0) + seg(3) + seg(6);
     closeModal(); renderList(); toast('权限已应用');
   };
   card.querySelector('[data-x="cancel"]').onclick = closeModal;
 }
 
-/* 新建 / 上传 / 列显示 / 排序工具钮 */
+/* ═══════════ 工具栏钮 ═══════════ */
 $('newMenu').innerHTML = `
   <div class="ctx-item" data-act="folder">${ico('new-folder')}新建文件夹</div>
-  <div class="ctx-item" data-act="file">${ico('new-file')}新建文件</div>
+  <div class="ctx-item" data-act="file">${ico('file')}新建文件</div>
 `;
 $('newMenuBtn').addEventListener('click', e => {
   e.stopPropagation();
-  const m = $('newMenu'); m.classList.add('open');
-  const r = e.currentTarget.getBoundingClientRect();
-  openMenu(m, r.left, r.bottom + 4);
+  const m = $('newMenu'); const r = e.currentTarget.getBoundingClientRect();
+  openMenuAt(m, r.left, r.bottom + 4);
 });
 $('newMenu').addEventListener('click', e => {
   const it = e.target.closest('.ctx-item'); if (!it) return;
   closeMenus();
   it.dataset.act === 'folder' ? openNewFolder(S.cwd) : openNewFile(S.cwd);
 });
-$('uploadBtn').onclick = () => {
-  // 模拟选了两个文件上传
-  startDownload(['/home/deploy/app/README.md', '/home/deploy/app/requirements.txt'], false, 'ul');
+$('uploadBtn').onclick = () => startDownload(['/home/deploy/app/README.md', '/home/deploy/app/requirements.txt'], false, 'ul');
+/* 过滤条 */
+$('filterBtn').onclick = () => {
+  const fb = $('filterBar');
+  fb.classList.toggle('open');
+  if (fb.classList.contains('open')) $('filterInput').focus();
+  else { S.filterText = ''; $('filterInput').value = ''; renderList(); }
 };
-$('colMenu').innerHTML = `
-  <div style="font-size:10.5px;color:var(--slot-t3);padding:2px 8px 4px">列显示</div>
-  ${[['type','类型'],['size','大小'],['time','修改时间'],['perm','权限'],['owner','所有者'],['group','组']].map(([k,l]) =>
-    `<div class="ctx-item" data-col="${k}"><span class="ck ${S.showCols[k]?'on':''}">${ico('check')}</span>${l}</div>`).join('')}
-`;
-$('colGear').addEventListener('click', e => {
-  e.stopPropagation();
-  const m = $('colMenu'); m.classList.add('open');
-  const r = e.currentTarget.getBoundingClientRect();
-  openMenu(m, r.left - 140, r.bottom + 4);
-});
-$('colMenu').addEventListener('click', e => {
-  const it = e.target.closest('[data-col]'); if (!it) return;
-  const k = it.dataset.col;
-  S.showCols[k] = !S.showCols[k];
-  it.querySelector('.ck').classList.toggle('on', S.showCols[k]);
+$('filterInput').addEventListener('input', () => {
+  S.filterText = $('filterInput').value;
   renderList();
+  const n = filteredEntries().length;
+  $('filterCnt').textContent = S.filterText.trim() ? `${n} 项匹配` : '';
 });
+$('filterInput').addEventListener('keydown', e => {
+  e.stopPropagation();
+  if (e.key === 'Escape'){ S.filterText=''; $('filterInput').value=''; $('filterBar').classList.remove('open'); renderList(); }
+});
+/* 隐藏文件开关 */
+$('hiddenBtn').onclick = () => {
+  S.showHidden = !S.showHidden;
+  $('hiddenBtn').classList.toggle('active', S.showHidden);
+  $('hiddenIco').querySelector('use').setAttribute('href', S.showHidden ? '#i-eye' : '#i-eye-off');
+  $('hiddenBtn').dataset.tip = S.showHidden ? '隐藏隐藏文件' : '显示隐藏文件';
+  renderTree(); renderList();
+};
+/* 树收起 */
+$('treeBtn').onclick = () => {
+  const hidden = $('treePane').style.display === 'none';
+  $('treePane').style.display = hidden ? '' : 'none';
+  $('treeBtn').classList.toggle('active', !hidden);
+};
+/* 批量操作行 */
+$('batchDl').onclick = () => startDownload([...S.checked]);
+$('batchCopy').onclick = e => {
+  const r = e.currentTarget.getBoundingClientRect();
+  openCopyToMenu(r.left, r.bottom + 6, [...S.checked]);
+};
+$('batchDel').onclick = () => openDeleteConfirm([...S.checked]);
+$('batchClear').onclick = () => { S.checked.clear(); renderList(); };
 
 /* ═══════════ 传输队列 ═══════════ */
-const SPEED = 2.4 * 1048576; // 2.4 MB/s
+const SPEED = 2.4 * 1048576;
 function startDownload(paths, sequential = false, dirKind = 'dl'){
   const names = { dl:'下载', ul:'上传' };
   for (const p of paths){
     const node = nodeAt(p);
     const size = node?.size || (node?.type === 'dir' ? 128 * 1048576 : 640 * 1024);
-    S.queue.push({
-      id: ++S.queueId, path: p, name: p.split('/').pop(), size,
-      done: 0, dir: dirKind, paused: false, finished: false, seq: sequential,
-    });
+    S.queue.push({ id: ++S.queueId, path: p, name: p.split('/').pop(), size,
+      done: 0, dir: dirKind, paused: false, finished: false, canceled: false, seq: sequential });
   }
   updateQueueUI();
   $('queuePane').classList.add('open');
   toast(`${names[dirKind]}任务已加入队列（${paths.length} 项${sequential ? ' · 逐台' : ''}）`);
 }
 function updateQueueUI(){
-  const host = $('queueList');
-  const active = S.queue.filter(q => !q.finished);
+  const active = S.queue.filter(q => !q.finished && !q.canceled);
   $('queueCnt').textContent = `(${active.length})`;
   const badge = $('queueBadge');
   badge.style.display = active.length ? '' : 'none';
   badge.textContent = active.length;
-  host.innerHTML = S.queue.map(q => `
-    <div class="q-row ${q.finished?'done':''} ${q.paused?'paused':''}" data-id="${q.id}">
+  $('queueList').innerHTML = S.queue.map(q => `
+    <div class="q-row ${q.finished?'done':''} ${q.paused?'paused':''} ${q.canceled?'canceled':''}" data-id="${q.id}">
       <span class="dir ${q.dir}">${ico(q.dir === 'dl' ? 'download' : 'upload')}</span>
       <div class="meta">
         <div class="t"><span class="nm">${esc(q.name)}${q.seq ? ' <span style="font-size:10px;color:var(--slot-t3)">· 逐台</span>' : ''}</span><span class="sz">${fmtSize(q.size)}</span></div>
         <div class="q-bar"><i style="width:${(q.done/q.size*100).toFixed(1)}%"></i></div>
       </div>
-      <span class="pct">${q.finished ? '100%' : ((q.done/q.size*100)|0) + '%'}</span>
-      <span class="spd">${q.finished ? '完成' : q.paused ? '已暂停' : fmtSize(SPEED) + '/s'}</span>
+      <span class="pct">${q.canceled ? '已取消' : q.finished ? '100%' : ((q.done/q.size*100)|0) + '%'}</span>
+      <span class="spd">${q.canceled ? '—' : q.finished ? '完成' : q.paused ? '已暂停' : fmtSize(SPEED) + '/s'}</span>
       <span class="q-act">
-        ${q.finished ? '' : `<button data-act="pause" title="暂停/继续">${ico(q.paused ? 'play' : 'pause')}</button>`}
-        <button data-act="cancel" title="${q.finished ? '移除' : '取消'}">${ico('close')}</button>
+        ${(!q.finished && !q.canceled) ? `<button data-act="pause" data-tip="暂停/继续">${ico(q.paused ? 'play' : 'pause')}</button>` : ''}
+        ${q.canceled ? `<button data-act="retry" data-tip="重试">${ico('retry')}</button>` : ''}
+        <button data-act="${q.finished ? 'remove' : 'cancel'}" data-tip="${q.finished ? '移除' : '取消'}">${ico('close')}</button>
       </span>
     </div>`).join('');
   const down = active.filter(q => !q.paused && q.dir === 'dl').length ? SPEED : 0;
@@ -1426,7 +1633,7 @@ function updateQueueUI(){
 setInterval(() => {
   let changed = false;
   for (const q of S.queue){
-    if (q.finished || q.paused) continue;
+    if (q.finished || q.paused || q.canceled) continue;
     q.done = Math.min(q.size, q.done + SPEED * 0.25);
     if (q.done >= q.size){ q.finished = true; changed = true; }
   }
@@ -1439,12 +1646,45 @@ $('queueList').addEventListener('click', e => {
   const q = S.queue.find(x => x.id == row.dataset.id);
   if (!q) return;
   if (btn){
-    if (btn.dataset.act === 'pause') q.paused = !q.paused;
-    if (btn.dataset.act === 'cancel') S.queue = S.queue.filter(x => x !== q);
+    const a = btn.dataset.act;
+    if (a === 'pause') q.paused = !q.paused;
+    if (a === 'cancel'){ q.canceled = true; q.paused = false; }
+    if (a === 'retry'){ q.canceled = false; q.finished = false; q.paused = false; q.done = 0; }
+    if (a === 'remove') S.queue = S.queue.filter(x => x !== q);
     updateQueueUI();
   }
 });
-$('queueClear').onclick = () => { S.queue = S.queue.filter(q => !q.finished); updateQueueUI(); };
+/* 队列右键 */
+$('queueList').addEventListener('contextmenu', e => {
+  e.preventDefault();
+  const row = e.target.closest('.q-row');
+  if (!row) return;
+  const q = S.queue.find(x => x.id == row.dataset.id);
+  if (!q) return;
+  const m = $('queueMenu');
+  m.innerHTML = `
+    ${(!q.finished && !q.canceled) ? `<div class="ctx-item" data-act="pause">${ico(q.paused?'play':'pause')}${q.paused?'继续':'暂停'}</div>` : ''}
+    ${q.canceled ? `<div class="ctx-item" data-act="retry">${ico('retry')}重试</div>` : ''}
+    ${q.finished ? `<div class="ctx-item" data-act="reveal">${ico('folder-open')}打开下载目录</div>` : ''}
+    <div class="ctx-item ${q.finished ? '' : 'danger'}" data-act="${q.finished ? 'remove' : 'cancel'}">${ico('close')}${q.finished ? '移除记录' : '取消传输'}</div>
+  `;
+  m.dataset.id = q.id;
+  openMenuAt(m, e.clientX, e.clientY);
+});
+$('queueMenu').addEventListener('click', e => {
+  const it = e.target.closest('.ctx-item');
+  if (!it) return;
+  const q = S.queue.find(x => x.id == $('queueMenu').dataset.id);
+  closeMenus();
+  if (!q) return;
+  if (it.dataset.act === 'pause') q.paused = !q.paused;
+  if (it.dataset.act === 'cancel'){ q.canceled = true; }
+  if (it.dataset.act === 'retry'){ q.canceled = false; q.finished = false; q.paused = false; q.done = 0; }
+  if (it.dataset.act === 'remove') S.queue = S.queue.filter(x => x !== q);
+  if (it.dataset.act === 'reveal') toast('打开本地下载目录（演示）');
+  updateQueueUI();
+});
+$('queueClear').onclick = () => { S.queue = S.queue.filter(q => !q.finished && !q.canceled); updateQueueUI(); };
 $('queueBtn').onclick = () => {
   const q = $('queuePane');
   q.classList.toggle('open');
@@ -1475,8 +1715,7 @@ function renderTunnels(){
 $('tnList').addEventListener('click', e => {
   const btn = e.target.closest('[data-x="toggle"]');
   if (!btn) return;
-  const row = e.target.closest('.tn-row');
-  const t = TUNNELS.find(x => x.id == row.dataset.id);
+  const t = TUNNELS.find(x => x.id == e.target.closest('.tn-row').dataset.id);
   t.live = !t.live;
   renderTunnels();
   toast(`${t.name} ${t.live ? '已启动' : '已停止'}（演示）`);
@@ -1521,56 +1760,83 @@ function setPanelMode(m){
   S.panelMode = m;
   $('tabFiles').classList.toggle('on', m === 'files');
   $('tabTunnels').classList.toggle('on', m === 'tunnels');
-  $('treePane').style.display = m === 'files' ? '' : 'none';
+  $('treePane').style.display = m === 'files' && $('treeBtn').classList.contains('active') === false ? '' : (m === 'files' ? '' : 'none');
   $('listHead').style.display = m === 'files' ? '' : 'none';
-  $('fileRows').style.display = m === 'files' ? '' : 'none';
-  $('listEmpty').style.display = m === 'files' ? '' : 'none';
-  $('listEmpty').classList.toggle('show', false);
+  $('listScroll').style.display = m === 'files' ? '' : 'none';
+  $('filterBar').style.display = m === 'files' ? '' : 'none';
   $('tunnelPage').classList.toggle('show', m === 'tunnels');
+  $('tbBatch').classList.toggle('show', m === 'files' && S.checked.size > 0);
   if (m === 'tunnels') renderTunnels();
 }
 
-/* ═══════════ 窗口壳：拖动/缩放/三键/弹出停靠 ═══════════ */
+/* ═══════════ 键盘 ═══════════ */
+window.addEventListener('keydown', e => {
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  if (S.panelMode !== 'files') return;
+  const inWin = !$('sftpWin').classList.contains('popped-in');
+  if (!inWin) return;
+  if (e.key === 'Delete'){
+    const batch = S.checked.size ? [...S.checked] : (S.selectedRow ? [S.selectedRow] : []);
+    if (batch.length){ e.preventDefault(); openDeleteConfirm(batch); }
+  }
+  if (e.key === 'F2' && S.selectedRow){ e.preventDefault(); beginRename(S.selectedRow); }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a'){
+    e.preventDefault();
+    for (const en of filteredEntries()) S.checked.add(en.path);
+    renderList();
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c'){
+    const batch = S.checked.size ? [...S.checked] : (S.selectedRow ? [S.selectedRow] : []);
+    if (batch.length){ S.clip = batch.slice(); toast(`已复制 ${batch.length} 项`); }
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v'){
+    if (S.clip.length){ e.preventDefault(); pasteClip(S.cwd); }
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f'){
+    e.preventDefault();
+    $('filterBar').classList.add('open'); $('filterInput').focus();
+  }
+});
+
+/* ═══════════ 窗口壳 ═══════════ */
 (() => {
   const win = $('sftpWin'), stage = $('stage'), bar = $('winDrag');
-  let sx=0, sy=0, ox=0, oy=0;
   bar.addEventListener('mousedown', e => {
     if (e.target.closest('.win-btn')) return;
     if (S.winMaxed) return;
     win.classList.add('dragging');
-    sx = e.clientX; sy = e.clientY; ox = win.offsetLeft; oy = win.offsetTop;
+    const sx = e.clientX, sy = e.clientY, ox = win.offsetLeft, oy = win.offsetTop;
     const mv = ev => {
-      const stR = stage.getBoundingClientRect();
       win.style.left = Math.max(0, Math.min(stage.offsetWidth - 120, ox + ev.clientX - sx)) + 'px';
       win.style.top  = Math.max(24, Math.min(stage.offsetHeight - 60, oy + ev.clientY - sy)) + 'px';
     };
     const up = () => { win.classList.remove('dragging'); window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); };
     window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up);
   });
-  const grip = $('resizeGrip');
-  grip.addEventListener('mousedown', e => {
+  $('resizeGrip').addEventListener('mousedown', e => {
     e.preventDefault();
     if (S.winMaxed) return;
-    sx = e.clientX; sy = e.clientY;
-    const w0 = win.offsetWidth, h0 = win.offsetHeight;
+    const sx = e.clientX, sy = e.clientY, w0 = win.offsetWidth, h0 = win.offsetHeight;
     const mv = ev => {
       win.style.width  = Math.max(620, Math.min(stage.offsetWidth - 40, w0 + ev.clientX - sx)) + 'px';
       win.style.height = Math.max(420, Math.min(stage.offsetHeight - 40, h0 + ev.clientY - sy)) + 'px';
-      win.style.maxWidth = ''; win.style.maxHeight = '';
     };
     const up = () => { window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); };
     window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up);
   });
   $('maxBtn').onclick = () => {
     S.winMaxed = !S.winMaxed;
+    const uses = $('maxBtn').querySelectorAll('svg');
+    uses[0].style.display = S.winMaxed ? 'none' : '';
+    uses[1].style.display = S.winMaxed ? '' : 'none';
+    $('maxBtn').dataset.tip = S.winMaxed ? '还原' : '最大化';
     if (S.winMaxed){
       win.dataset.geom = JSON.stringify({ l: win.offsetLeft, t: win.offsetTop, w: win.offsetWidth, h: win.offsetHeight });
       Object.assign(win.style, { left:'24px', top:'24px', width:(stage.offsetWidth-48)+'px', height:(stage.offsetHeight-48)+'px' });
-      $('maxBtn').title = '还原';
     } else {
       const g = JSON.parse(win.dataset.geom || '{}');
       if (g.w){ Object.assign(win.style, { left:g.l+'px', top:g.t+'px', width:g.w+'px', height:g.h+'px' }); }
-      $('maxBtn').title = '最大化';
     }
   };
   $('minBtn').onclick = () => dockBack('已最小化到 dock');
@@ -1579,7 +1845,33 @@ function setPanelMode(m){
     $('pinBtn').classList.toggle('pinned', S.winPinned);
     toast(S.winPinned ? '已置顶（演示）' : '已取消置顶');
   };
+  /* 标题栏右键 = 窗口菜单 */
+  bar.addEventListener('contextmenu', e => {
+    if (e.target.closest('.win-btn')) return;
+    e.preventDefault();
+    const m = $('winMenu');
+    m.innerHTML = `
+      <div class="ctx-item" data-act="pin">${ico('pin')}${S.winPinned ? '取消置顶' : '窗口置顶'}</div>
+      <div class="ctx-item" data-act="dock">${ico('popin')}停靠回主窗面板</div>
+      <div class="ctx-sep"></div>
+      <div class="ctx-item" data-act="min">${ico('minus')}最小化</div>
+      <div class="ctx-item" data-act="max">${ico(S.winMaxed ? 'restore' : 'max')}${S.winMaxed ? '还原' : '最大化'}</div>
+      <div class="ctx-sep"></div>
+      <div class="ctx-item danger" data-act="close">${ico('close')}关闭（回停靠靠）</div>
+    `;
+    openMenuAt(m, e.clientX, e.clientY);
+  });
 })();
+$('winMenu').addEventListener('click', e => {
+  const it = e.target.closest('.ctx-item');
+  if (!it) return;
+  closeMenus();
+  const act = it.dataset.act;
+  if (act === 'pin') $('pinBtn').click();
+  if (act === 'dock' || act === 'close') dockBack(act === 'close' ? '窗口已关闭 · 面板停靠回主窗' : '已停靠回主窗面板');
+  if (act === 'min') dockBack('已最小化到 dock');
+  if (act === 'max') $('maxBtn').click();
+});
 
 function dockBack(msg = '已停靠回主窗面板'){
   $('dockPanel').classList.remove('undocked');
@@ -1591,13 +1883,14 @@ function dockBack(msg = '已停靠回主窗面板'){
 function popOut(){
   $('dockPanel').classList.add('undocked');
   const win = $('sftpWin');
-  // 从 dock 位置飞出
   const st = $('stage').getBoundingClientRect();
   const dp = $('dockDemo').getBoundingClientRect();
   win.style.transition = 'none';
-  win.style.left = Math.min(st.width - win.offsetWidth - 16, dp.right - st.left - win.offsetWidth) + 'px';
-  win.style.top  = Math.max(24, dp.bottom - st.top - win.offsetHeight) + 'px';
-  win.offsetWidth; // reflow
+  const L = Math.max(16, Math.min(460, st.width - win.offsetWidth - 16));
+  const T = Math.max(24, Math.min(dp.bottom - st.top - win.offsetHeight + 60, st.height - win.offsetHeight - 16));
+  win.style.left = L + 'px';
+  win.style.top  = T + 'px';
+  win.offsetWidth;
   win.style.transition = '';
   win.classList.remove('popped-in');
   $('dockHint').style.visibility = 'hidden';
@@ -1606,7 +1899,6 @@ $('popOutBtn').onclick = popOut;
 $('dockBackBtn').onclick = () => dockBack();
 $('closeBtn').onclick = () => dockBack('窗口已关闭 · 面板停靠回主窗');
 
-/* toast */
 let toastTimer = 0;
 function toast(msg){
   $('toastText').textContent = msg;
@@ -1615,7 +1907,6 @@ function toast(msg){
   toastTimer = setTimeout(() => $('toast').classList.remove('show'), 2200);
 }
 
-/* 主题切换 */
 $('themeToggle').onclick = () => {
   const el = document.documentElement;
   el.dataset.theme = el.dataset.theme === 'dark' ? 'light' : 'dark';
@@ -1627,7 +1918,6 @@ S.hist = ['/home/deploy/app']; S.histIdx = 0;
 refreshNavBtns();
 renderTree(); renderList();
 setPanelMode('files');
-/* 弹窗默认以弹出态呈现（dock 面板保持可见以展示对照）；窄舞台时钳制初始位置 */
 setTimeout(() => {
   const stage = $('stage'), win = $('sftpWin');
   const maxL = Math.max(16, Math.min(460, stage.offsetWidth - win.offsetWidth - 16));
