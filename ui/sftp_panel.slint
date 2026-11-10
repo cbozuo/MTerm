@@ -147,19 +147,22 @@ export component SftpPanel inherits Rectangle {
     in property <bool> collapsed: false;   // when true only the toolbar shows
     in property <bool> show-tree: true;    // hide the directory tree when narrow (#dock)
     in property <bool> compact: false;     // side-docked + collapsed → render nothing but a clean strip (#dock)
-    // Responsive columns: only when docked left/right (narrow, width-adjustable).
-    // Docked top/bottom the panel is wide and can only be resized vertically, so
-    // always show every column there (show-tree is true exactly in that case).
-    // When narrow, drop Size then Modified the moment keeping them would squeeze
-    // the Name column below `name-min` (names start eliding to "…"). Reserved
-    // widths: checkbox+padding+spacing 36px, Size col 76px, Modified 120px.
+    // Responsive columns: drop columns the moment keeping them would squeeze
+    // the Name column below `name-min` (names start eliding to "…").
+    // (#sftp-name-elide 2026-11-10 用户截图"名称都不见了") 旧口径把底部停靠
+    // (show-tree=true)短路成"全列恒显" —— 但底部停靠的列表区一样会被
+    // 目录树拖宽/左右侧栏挤压(125% DPI 下 ~1000px 面板 - 306 树 = 列表
+    // ~693px,7 固定列合计 656px → 名称列只剩 37px,全部 elide 成"…")。
+    // 统一走 name-min 预算。预算口径 = **除本列外其余固定列之和**:显示一列
+    // 的前提是"去掉它之后,剩余固定列 + 名称保底"还装得下 —— 这样被保留的
+    // 列每多一列,预算按它的宽度同步收紧,名称列恒 ≥ name-min。
+    // 固定列宽:checkbox+padding+spacing 36、Size 72(+8 gap)、Modified 116、
+    // Type 100、Permissions 104、Owner/Group 84×2。
     in-out property <length> tree-width: 160px;
     callback persist-tree-width(length);
     property <bool> tree-resizing: false;
     property <length> list-w: root.show-tree ? root.width - root.tree-width - 5px : root.width;
     property <length> name-min: 180px;     // narrower than this → start dropping columns
-    property <bool> show-size-col: root.show-size-col-user && (root.show-tree || (root.list-w - 36px - 76px - 120px > root.name-min));
-    property <bool> show-modified-col: root.show-modified-col-user && (root.show-tree || (root.list-w - 36px - 120px > root.name-min));
     property <int> selected-row: -1;       // clicked/highlighted file-list row (#70)
     in property <int> selected-count;      // number of checked entries (#100)
     in property <string> single-selected-path; // full path of the single checked entry, else "" (#W4)
@@ -183,12 +186,33 @@ export component SftpPanel inherits Rectangle {
     // Below that, switch deliberately to a two-row compact layout instead of
     // allowing fixed-size controls to squeeze the path and each other (#285).
     property <bool> narrow-toolbar: !root.show-tree && root.width < 480px;
-    property <bool> show-type-col: root.show-type;
+    // (#sftp-name-elide 2026-11-10) 列宽级联预算:显示列 k 的条件 = **k 及其
+    // 右侧全部列**的宽度和 + 行基准 + 名称保底能同时装下 —— 逐档裁列,
+    // 保证名称列恒 ≥ name-min(与 #name-min 注释同一契约,只是改由级联兑现)。
+    // 行基准 = padding-l 8 + checkbox 16 + padding-r 8;列间距 8px/列。
+    // 裁剪顺序 = 列显示顺序的逆序:Owner → Group → Permissions → Type →
+    // Modified → Size(信息价值递增,最贵的先裁);每列仍受用户开关门槛。
+    property <length> col-base: 8px + 16px + 8px;
+    property <bool> show-owner-col: root.show-owner
+        && root.list-w - root.col-base > (84px + 8px) + (84px + 8px) + (104px + 8px) + (100px + 8px) + (116px + 8px) + (72px + 8px)
+            + root.name-min;
+    property <bool> show-group-col: root.show-group
+        && root.list-w - root.col-base > (84px + 8px) + (104px + 8px) + (100px + 8px) + (116px + 8px) + (72px + 8px)
+            + root.name-min;
+    property <bool> show-permissions-col: root.show-permissions
+        && root.list-w - root.col-base > (104px + 8px) + (100px + 8px) + (116px + 8px) + (72px + 8px)
+            + root.name-min;
+    property <bool> show-type-col: root.show-type
+        && root.list-w - root.col-base > (100px + 8px) + (116px + 8px) + (72px + 8px)
+            + root.name-min;
+    property <bool> show-modified-col: root.show-modified
+        && root.list-w - root.col-base > (116px + 8px) + (72px + 8px)
+            + root.name-min;
+    property <bool> show-size-col: root.show-size
+        && root.list-w - root.col-base > (72px + 8px)
+            + root.name-min;
     property <bool> show-size-col-user: root.show-size;
     property <bool> show-modified-col-user: root.show-modified;
-    property <bool> show-permissions-col: root.show-permissions;
-    property <bool> show-owner-col: root.show-owner;
-    property <bool> show-group-col: root.show-group;
     property <length> column-menu-x: 8px;
     property <length> column-menu-y: 22px;
 

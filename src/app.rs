@@ -10707,6 +10707,14 @@ fn wire_session_callbacks(
         let remote_panes = remote_panes.clone();
         window.on_connect_session(move |id: SharedString| {
             let id = id.to_string();
+            // (#hover-card-connect-kill 2026-11-10 用户反馈"点击打开会话,
+            // 组内成员的悬浮提示信息框不会取消") 双击连接后指针仍在列表行
+            // 上,info-delay 的 running(touch.has-hover)还挂着 —— 不清的话
+            // 卡跟着新会话 tab 一起常驻。开连接 = 显式清卡;若指针仍悬在
+            // 某行,150ms 后 Timer 会按那行重写(行为与其它清卡路径一致)。
+            if let Some(w) = weak.upgrade() {
+                w.set_session_card_name("".into());
+            }
             let session = if id.starts_with("system:") {
                 match builtin_local_sessions(store.borrow().wsl_profiles())
                     .into_iter()

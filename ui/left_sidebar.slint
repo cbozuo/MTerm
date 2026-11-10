@@ -1041,6 +1041,13 @@ export component LeftSidebar inherits Rectangle {
     // 线画在哪个组头之前,松手就移到那个组之前 —— 提交与视觉同源。
     callback reorder-group(string /* group */, string /* before-group */);
     callback new-session();
+    // (#sidebar-tip 2026-11-10 用户要求"四个图标加悬浮提示,参考高保真,
+    // 不带快捷键") 每钮自持 300ms 延迟,经根回调 tip-show/hide 上抛
+    // (AppWindow 实例桥接到 topbar-tip-* 渲染槽,标题栏 IconBtn 同款
+    // 管道;按钮中心 x / 按钮底+5 定位)。
+    callback tip-show(string /* text */, length /* center x */, length /* top y */);
+    callback tip-hide(string /* text */);
+    in property <bool> lang-en: false;   // (#sidebar-tip) 文案双语
     callback move-session-to(string /* session-id */, string /* target-id */, bool /* after */);   // (#drag-ghost-pointer) 几何落位转发 AppWindow
     callback import-ssh-config();
     callback connect-session(string);
@@ -1445,6 +1452,12 @@ export component LeftSidebar inherits Rectangle {
             //   ④ 四钮自身 hover(进钮抢占兜底,#kebab-steal-fix 口径)
             //   ⑤ 激活态恒显:搜索行开/有查询/面板菜单开/会话对话框开(IDEA
             //      同款 —— 弹窗开着工具钮不藏)。
+            // (#topbtn-reveal-r4 2026-11-10 用户四图反馈"点菜单和右击都使这
+            // 几个图标消失掉") 右键/点 ⋮ 打开任意 ctx 菜单(组头/成员/blank/
+            // panel)时四钮随菜单隐 —— r2 只挡了 panel 一种,组头/成员/blank
+            // 菜单开着 panel-hot 仍为 true(指针悬在触发行上),四钮亮着与
+            // 菜单抢视线。改判 ctx-open-key 非空 = 有菜单在挂,一律隐;菜单
+            // 关闭(点空白/项/Esc)后回到既有显隐规则。
             // (#topbtn-titlebar-match 2026-11-11) 搜索钮开启态口径:搜索行展开
             // 或有查询词(mockup searchToggle.search-on 同名),tools-on/钮底/
             // 图标染三处共用,不再表达式三抄。
@@ -1456,6 +1469,11 @@ export component LeftSidebar inherits Rectangle {
                 || search-on
                 || root.ctx-open-key == "panel"
                 || root.dialog-open;
+            property <bool> tools-hidden-by-menu: root.ctx-open-key != ""
+                && root.ctx-open-key != "panel";
+            // tools-on 最终值:菜单挂着(非面板菜单)时压掉全部显形源。
+            property <bool> tools-visible:
+                tools-on && !tools-hidden-by-menu;
             // (#topbar-line 2026-11-06 用户反馈"没有标题行的底线"):mockup
             // .panel-top border-bottom 1px --line —— 标题行与树画布的分界。
             Rectangle {
@@ -1527,7 +1545,7 @@ export component LeftSidebar inherits Rectangle {
                     // (#topbtn-reveal 2026-11-10) 常态隐藏(opacity 0),面板卡
                     // hover / 自身 hover / 激活态才显形;opacity 不参与布局,
                     // 显隐几何零变化(组头 ⋮ 同款手法)。
-                    opacity: tools-on ? 1.0 : 0.0;
+                    opacity: tools-visible ? 1.0 : 0.0;
                     animate opacity { duration: 120ms; }
                     background: header-tool-ta.pressed ? Theme.bg-active
                         : search-on ? Theme.zone-sidebar-accent-soft
@@ -1543,6 +1561,25 @@ export component LeftSidebar inherits Rectangle {
                     }
                     header-tool-ta := TouchArea {
                         mouse-cursor: default;
+                        // (#sidebar-tip) 悬浮提示:300ms 延迟上抛(不带快捷键,
+                        // 定位=钮中心 x / 钮底+5,标题栏 IconBtn 同管道)。
+                        property <bool> tip-hover: self.has-hover;
+                        search-tip-delay := Timer {
+                            interval: 300ms;
+                            triggered => {
+                                root.tip-show(root.lang-en ? "Search" : "搜索",
+                                    header-tool-ta.absolute-position.x + header-tool-ta.width / 2,
+                                    header-tool-ta.absolute-position.y + header-tool-ta.height + 5px);
+                            }
+                        }
+                        changed tip-hover => {
+                            if (self.tip-hover) {
+                                search-tip-delay.restart();
+                            } else {
+                                search-tip-delay.running = false;
+                                root.tip-hide(root.lang-en ? "Search" : "搜索");
+                            }
+                        }
                         clicked => {
                         root.search-open = !root.search-open;
                         // 收起即清空:旧查询残留会让列表停在过滤态且无输入框可见。
@@ -1571,7 +1608,7 @@ export component LeftSidebar inherits Rectangle {
                     height: 26px;
                     border-radius: Theme.radius-sm;
                     // (#topbtn-reveal) 常态隐藏,显隐条件见标题行 tools-on。
-                    opacity: tools-on ? 1.0 : 0.0;
+                    opacity: tools-visible ? 1.0 : 0.0;
                     animate opacity { duration: 120ms; }
                     // (#new-btn-dialog-active 2026-11-10 用户要求"点新建会话后
                     // 图标高亮") 会话对话框(新建/编辑)开着 = 选中态:accent 淡染
@@ -1589,6 +1626,24 @@ export component LeftSidebar inherits Rectangle {
                     }
                     new-ta := TouchArea {
                         mouse-cursor: default;
+                        // (#sidebar-tip) 悬浮提示同搜索钮。
+                        property <bool> tip-hover: self.has-hover;
+                        new-tip-delay := Timer {
+                            interval: 300ms;
+                            triggered => {
+                                root.tip-show(root.lang-en ? "New session" : "新建会话",
+                                    new-ta.absolute-position.x + new-ta.width / 2,
+                                    new-ta.absolute-position.y + new-ta.height + 5px);
+                            }
+                        }
+                        changed tip-hover => {
+                            if (self.tip-hover) {
+                                new-tip-delay.restart();
+                            } else {
+                                new-tip-delay.running = false;
+                                root.tip-hide(root.lang-en ? "New session" : "新建会话");
+                            }
+                        }
                         clicked => { root.new-session(); }
                     }
                 }
@@ -1602,7 +1657,7 @@ export component LeftSidebar inherits Rectangle {
                     height: 26px;
                     border-radius: Theme.radius-sm;
                     // (#topbtn-reveal) 常态隐藏,显隐条件见标题行 tools-on。
-                    opacity: tools-on ? 1.0 : 0.0;
+                    opacity: tools-visible ? 1.0 : 0.0;
                     animate opacity { duration: 120ms; }
                     background: locate-ta.pressed ? Theme.zone-sidebar-accent-soft
                         : locate-ta.has-hover ? Theme.bg-hover : transparent;
@@ -1614,6 +1669,24 @@ export component LeftSidebar inherits Rectangle {
                     }
                     locate-ta := TouchArea {
                         mouse-cursor: default;
+                        // (#sidebar-tip) 悬浮提示同搜索钮。
+                        property <bool> tip-hover: self.has-hover;
+                        locate-tip-delay := Timer {
+                            interval: 300ms;
+                            triggered => {
+                                root.tip-show(root.lang-en ? "Locate active session" : "定位当前会话",
+                                    locate-ta.absolute-position.x + locate-ta.width / 2,
+                                    locate-ta.absolute-position.y + locate-ta.height + 5px);
+                            }
+                        }
+                        changed tip-hover => {
+                            if (self.tip-hover) {
+                                locate-tip-delay.restart();
+                            } else {
+                                locate-tip-delay.running = false;
+                                root.tip-hide(root.lang-en ? "Locate active session" : "定位当前会话");
+                            }
+                        }
                         clicked => { root.locate-current-session(); }
                     }
                 }
@@ -1629,7 +1702,7 @@ export component LeftSidebar inherits Rectangle {
                     border-radius: Theme.radius-sm;
                     // (#topbtn-reveal) 常态隐藏,显隐条件见标题行 tools-on
                     // (菜单开着已在条件里,不灭)。
-                    opacity: tools-on ? 1.0 : 0.0;
+                    opacity: tools-visible ? 1.0 : 0.0;
                     animate opacity { duration: 120ms; }
                     // (#topbtn-titlebar-match) pressed=bg-active 抢在菜单开态前
                     // (标题栏按下优先级最高);菜单开(#topbtn-open-accent 2026-11-10
@@ -1648,6 +1721,24 @@ export component LeftSidebar inherits Rectangle {
                     }
                     more-ta := TouchArea {
                         mouse-cursor: default;
+                        // (#sidebar-tip) 悬浮提示同搜索钮。
+                        property <bool> tip-hover: self.has-hover;
+                        more-tip-delay := Timer {
+                            interval: 300ms;
+                            triggered => {
+                                root.tip-show(root.lang-en ? "More" : "更多",
+                                    more-ta.absolute-position.x + more-ta.width / 2,
+                                    more-ta.absolute-position.y + more-ta.height + 5px);
+                            }
+                        }
+                        changed tip-hover => {
+                            if (self.tip-hover) {
+                                more-tip-delay.restart();
+                            } else {
+                                more-tip-delay.running = false;
+                                root.tip-hide(root.lang-en ? "More" : "更多");
+                            }
+                        }
                         clicked => {
                             if (root.ctx-open-key == "panel") {
                                 root.ctx-open-key = "";   // 再点同钮 = 关菜单
