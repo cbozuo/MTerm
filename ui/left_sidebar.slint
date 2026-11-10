@@ -405,12 +405,34 @@ component SessionRow inherits Rectangle {
             if (self.has-hover) {
                 root.hover-key = root.session.id + "|" + root.session.group;
                 root.hover-group = root.session.group;
-            } else if (root.hover-key == root.session.id + "|" + root.session.group
-                // (#kebab-steal-fix) 移进 ⋮ 属抢占非离行,不清脊线;从 ⋮ 直接
-                // 离行由 kebab-ta 的 changed 兜底清。
-                && !root.kebab-hot) {
-                root.hover-key = "";
-                root.hover-group = "";
+            } else {
+                // (#hover-card-debounce 2026-11-10 用户二图反馈"信息卡还是
+                // 存在不会消失") r-anticipate 把清卡全收到 ⋮ changed —— 但
+                // 「成员行 → 组头/其它元素」不经过任何 ⋮,没人清 → 卡挂着。
+                // 恢复行体清卡,但**延迟一拍**:塌 hover 先 arm 0ms Timer,
+                // kebab-ta 同帧的 kebab-hot 写回在触发前已完成 → 触发时
+                // 三态齐备,进 ⋮ 抢占(kebab-hot=true)不清,真离行才清。
+                if (root.card-out-name != "") {
+                    card-clear-debounce.restart();
+                }
+                if (root.hover-key == root.session.id + "|" + root.session.group
+                    // (#kebab-steal-fix) 移进 ⋮ 属抢占非离行,不清脊线;从 ⋮ 直接
+                    // 离行由 kebab-ta 的 changed 兜底清。
+                    && !root.kebab-hot) {
+                    root.hover-key = "";
+                    root.hover-group = "";
+                }
+            }
+        }
+        // (#hover-card-debounce) 行体离行的一拍延迟清卡:触发时 kebab-hot
+        // 已是终值 —— 进 ⋮ 抢占不清,真离行才清(闪/挂两 bug 同根同修)。
+        card-clear-debounce := Timer {
+            interval: 0ms;
+            triggered => {
+                if (!touch.has-hover && !root.kebab-hot
+                    && root.card-out-name != "") {
+                    root.card-out-name = "";
+                }
             }
         }
         // Connect is handled in pointer-event below so a finished drag never
@@ -1567,9 +1589,11 @@ export component LeftSidebar inherits Rectangle {
                         search-tip-delay := Timer {
                             interval: 300ms;
                             triggered => {
+                            if (tools-visible) {
                                 root.tip-show(root.lang-en ? "Search" : "搜索",
                                     header-tool-ta.absolute-position.x + header-tool-ta.width / 2,
                                     header-tool-ta.absolute-position.y + header-tool-ta.height + 5px);
+                            }
                             }
                         }
                         changed tip-hover => {
@@ -1631,9 +1655,11 @@ export component LeftSidebar inherits Rectangle {
                         new-tip-delay := Timer {
                             interval: 300ms;
                             triggered => {
+                            if (tools-visible) {
                                 root.tip-show(root.lang-en ? "New session" : "新建会话",
                                     new-ta.absolute-position.x + new-ta.width / 2,
                                     new-ta.absolute-position.y + new-ta.height + 5px);
+                            }
                             }
                         }
                         changed tip-hover => {
@@ -1674,9 +1700,11 @@ export component LeftSidebar inherits Rectangle {
                         locate-tip-delay := Timer {
                             interval: 300ms;
                             triggered => {
+                            if (tools-visible) {
                                 root.tip-show(root.lang-en ? "Locate active session" : "定位当前会话",
                                     locate-ta.absolute-position.x + locate-ta.width / 2,
                                     locate-ta.absolute-position.y + locate-ta.height + 5px);
+                            }
                             }
                         }
                         changed tip-hover => {
@@ -1726,9 +1754,11 @@ export component LeftSidebar inherits Rectangle {
                         more-tip-delay := Timer {
                             interval: 300ms;
                             triggered => {
+                            if (tools-visible) {
                                 root.tip-show(root.lang-en ? "More" : "更多",
                                     more-ta.absolute-position.x + more-ta.width / 2,
                                     more-ta.absolute-position.y + more-ta.height + 5px);
+                            }
                             }
                         }
                         changed tip-hover => {
