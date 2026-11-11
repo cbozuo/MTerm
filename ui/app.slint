@@ -2291,6 +2291,8 @@ export component AppWindow inherits Window {
     in property <[QsRow]> qs-rows;
     in property <[string]> qs-recent-searches;
     in property <[string]> qs-empty-hints;
+    // 空结果推荐 chips（高保真 §04 pe-chips）。
+    in property <[string]> qs-empty-chips;
     in property <QsPreview> qs-preview;
     in property <int> qs-content-px: 0;
     in property <int> qs-row-count: 0;
@@ -2303,6 +2305,8 @@ export component AppWindow inherits Window {
     in property <int> qs-count-action: 0;
     // 执行反馈轻提示（面板关闭后仍显示；Timer 自动回落）
     in-out property <string> quick-search-toast;
+    // 首屏引导条可见性（9 秒后自动淡出；每次启动露一次）
+    in-out property <bool> quick-search-hint-visible: true;
     // 全局动作 → TerminalView 内部面板的桥（历史面板 / 查找栏无根层回调，
     // 走序列号：TerminalView changed 时按 root.active 打开）。
     in-out property <int> qs-term-history-seq: 0;
@@ -8613,6 +8617,7 @@ export component AppWindow inherits Window {
         qs-rows: root.qs-rows;
         qs-recent-searches: root.qs-recent-searches;
         qs-empty-hints: root.qs-empty-hints;
+        qs-empty-chips: root.qs-empty-chips;
         qs-preview: root.qs-preview;
         qs-content-px: root.qs-content-px;
         qs-row-count: root.qs-row-count;
@@ -8649,7 +8654,7 @@ export component AppWindow inherits Window {
         background: Theme.popup-bg-elevated;
         visible: root.quick-search-toast != "";
         opacity: root.quick-search-toast != "" ? 1.0 : 0.0;
-        animate opacity { duration: 160ms; }
+        animate opacity { duration: PanelAnim.reduced ? 0ms : 160ms; }
         drop-shadow-blur: 20px;
         drop-shadow-color: transparent;
         clip: true;
@@ -8675,6 +8680,58 @@ export component AppWindow inherits Window {
             interval: 2200ms;
             running: root.quick-search-toast != "";
             triggered => { root.quick-search-toast = ""; }
+        }
+    }
+
+    // ── (#double-shift-v1) 首屏引导条（高保真 §04 hint-pill）────────
+    // 「⇧⇧ 双击 Shift 搜索 · 任何位置 | Esc 关闭」—— 底部居中浮条，
+    // 9 秒后自动淡出（不进任何持久化：每次启动露一次，与原型一致）。
+    // pointer-events 关闭：它是纯提示，不吃点击。
+    //
+    // ★ 宽度用**独立测量 Text**：直接给 Rectangle 绑
+    //   `width: hint-tx.preferred-width + …` 会与父宽成环（气泡在根层，
+    //   宽度受限 → 内部 Text 的 preferred-width 被裁 → 文字溢出/被拉满）。
+    //   测量用的 Text 是根层的独立元素（不受父宽约束），它的
+    //   preferred-width 就是文案自然宽。
+    hint-measure := Text {
+        text: @tr("Double-tap Shift to search · anywhere") + "  |  " + @tr("Esc to close");
+        font-size: 9px;
+        font-family: Theme.font-mono;
+        visible: false;
+    }
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - 38px - 28px;
+        // +52 = ⇧⇧(2×9) + 两段 spacing(6×2) + 左右 padding(11×2)
+        width: hint-measure.preferred-width + 52px;
+        height: 28px;
+        border-width: 1px; border-color: Theme.border-strong;
+        border-radius: 14px;
+        background: Theme.popup-bg-elevated;
+        drop-shadow-blur: 20px; drop-shadow-color: transparent;
+        visible: root.quick-search-hint-visible;
+        opacity: root.quick-search-hint-visible ? 1.0 : 0.0;
+        animate opacity { duration: PanelAnim.reduced ? 0ms : 180ms; }
+        HorizontalLayout {
+            padding-left: 11px; padding-right: 11px;
+            spacing: 6px;
+            alignment: center;
+            Text { text: "⇧"; font-size: 9px; font-family: Theme.font-mono; color: Theme.text-primary; vertical-alignment: center; }
+            Text { text: "⇧"; font-size: 9px; font-family: Theme.font-mono; color: Theme.text-primary; vertical-alignment: center; }
+            Text {
+                text: @tr("Double-tap Shift to search · anywhere") + "  |  " + @tr("Esc to close");
+                font-size: 9px;
+                font-family: Theme.font-mono;
+                color: Theme.text-secondary;
+                vertical-alignment: center;
+                horizontal-stretch: 0;
+            }
+        }
+        // 9 秒后淡出（原型 init 里的 setTimeout）。
+        Timer {
+            interval: 9000ms;
+            running: root.quick-search-hint-visible;
+            triggered => { root.quick-search-hint-visible = false; }
         }
     }
 

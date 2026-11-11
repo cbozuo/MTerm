@@ -171,17 +171,43 @@ fn classify_maps_the_three_real_shapes() {
 #[test]
 fn real_shift_double_click_opens_even_with_ime_markers_around() {
     // 真实场景：百度拼音开着，用户按两下左 Shift。
-    // 序列：真实 Shift(\u{0010}, shift=true) → IME 标记(\u{0015}, shift=false)
-    //      → 真实 Shift(\u{0010}, shift=true)
+    // Slint 侧裸 Shift 的码位（U+0010/U+0015）与 IME 注入的标记**同码位**，
+    // 无法区分 —— 标记必须「透明 + 重新武装」，而不是清零（清零会让装了
+    // 百度拼音的用户永远命中不了双击）。
+    let mut tr = DoubleShiftTracker::new();
+    let t0 = Instant::now();
+    // 第一击：真实左 Shift（U+0010）。
+    assert!(!tr.on_key(classify("\u{0010}", false, false, true), t0, false));
+    // 紧随其后的 IME 标记（同一消息批次，间隔几 ms）：重新武装到标记时刻。
+    assert!(!tr.on_key(classify("\u{0015}", false, false, true), t0 + Duration::from_millis(3), false));
+    // 第二击：真实左 Shift，距标记约 180ms → 命中。
+    assert!(tr.on_key(classify("\u{0010}", false, false, true), t0 + Duration::from_millis(183), false));
+}
+
+#[test]
+fn ime_marker_arriving_late_still_allows_the_second_press() {
+    // 标记晚到（IME 注入排在真实 keydown 之后）：标记把起点推后几 ms，
+    // 第二击仍在 80–360ms 窗口内 → 命中。
     let mut tr = DoubleShiftTracker::new();
     let t0 = Instant::now();
     assert!(!tr.on_key(classify("\u{0010}", false, false, true), t0, false));
-    assert!(!tr.idle(), "real Shift must arm the tracker");
-    // IME 标记透明：不清零、不参与判定。
-    assert!(!tr.on_key(classify("\u{0015}", false, false, false), t0 + Duration::from_millis(40), false));
-    assert!(!tr.idle(), "IME marker must not clear the armed state");
-    // 第二击真实 Shift → 命中。
-    assert!(tr.on_key(classify("\u{0010}", false, false, true), t0 + Duration::from_millis(180), false));
+    assert!(!tr.on_key(classify("\u{0015}", false, false, true), t0 + Duration::from_millis(40), false));
+    assert!(tr.on_key(classify("\u{0010}", false, false, true), t0 + Duration::from_millis(220), false));
+}
+
+#[test]
+fn reset_paths_clear_the_armed_state() {
+    // 设计稿 §03 reset-paths：鼠标按下 / 窗口失焦 → 清零。
+    let mut tr = DoubleShiftTracker::new();
+    let t0 = Instant::now();
+    tr.on_key(KeyEvent::Shift, t0, false);
+    assert!(!tr.idle());
+    tr.reset();
+    assert!(tr.idle(), "explicit reset must clear the armed state");
+    // 复位后再按两下 → 第一击重新武装，第二击命中（复位不破坏后续双击）。
+    let t1 = t0 + Duration::from_millis(500);
+    assert!(!tr.on_key(KeyEvent::Shift, t1, false));
+    assert!(tr.on_key(KeyEvent::Shift, t1 + Duration::from_millis(150), false));
 }
 
 // ── query：分词 / AND / 分层评分 ─────────────────────────────────────

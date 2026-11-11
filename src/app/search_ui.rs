@@ -478,13 +478,18 @@ fn execute_item(
 
 /// 安装全部回调；返回共享的双击 Shift 状态机（`on_send_key` 与
 /// `search-shift-press` 两个宿主共用同一个实例）。
+/// 安装全部回调。
+///
+/// `tracker` 由调用方（`open_window`）创建并持有：**窗口级 winit 钩子**
+/// （鼠标按下 / 窗口失焦 → 触发器重置）也要用同一份状态机，所以它必须
+/// 在窗口作用域里诞生，而不是在这里私有创建。
 pub(crate) fn install(
     window: &AppWindow,
     store: &Rc<RefCell<ConfigStore>>,
-) -> Arc<Mutex<DoubleShiftTracker>> {
+    tracker: Arc<Mutex<DoubleShiftTracker>>,
+) {
     let state: Rc<RefCell<QsState>> = Rc::new(RefCell::new(QsState::default()));
     let recent: Rc<RefCell<QsRecent>> = Rc::new(RefCell::new(QsRecent::default()));
-    let tracker = Arc::new(Mutex::new(DoubleShiftTracker::new()));
     let weak = window.as_weak();
     let weak_shift = window.as_weak();
 
@@ -529,6 +534,17 @@ pub(crate) fn install(
             crate::i18n::t("3  按 Tab 切到具体分类再搜", "3  Press Tab to narrow by category").into(),
         ];
         window.set_qs_empty_hints(ModelRc::from(Rc::new(VecModel::from(hints))));
+    }
+
+    // ── 空结果推荐 chips（高保真 §04 pe-chips）：点一下即填入搜索框 ──
+    {
+        let chips: Vec<SharedString> = vec![
+            "web".into(),
+            "docker".into(),
+            crate::i18n::t("主题", "Theme").into(),
+            crate::i18n::t("日志", "Logs").into(),
+        ];
+        window.set_qs_empty_chips(ModelRc::from(Rc::new(VecModel::from(chips))));
     }
 
     // ── 打开编排：重建索引 + 推计数 + 最近搜索 + 空查询视图 ─────────
@@ -758,8 +774,6 @@ pub(crate) fn install(
             }
         });
     }
-
-    tracker
 }
 
 thread_local! {

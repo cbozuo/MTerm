@@ -186,7 +186,7 @@ fn main() {
     std::thread::sleep(std::time::Duration::from_millis(300));
 
     // 纯回调必须注册(未注册被调用即 panic;签名与 quick_search.slint 一致)。
-    ui.on_empty_title(|| SharedString::from("没有找到 “prod”"));
+    ui.on_empty_title(|| SharedString::from("没有找到 「prod」"));
     ui.on_index_count_text(|| SharedString::from("索引 18 项"));
     ui.on_timing_text(|| SharedString::from("查询 0.6 ms · 打开 8.4 ms"));
 
@@ -257,7 +257,7 @@ fn main() {
     ui.set_quick_search_open(false);
     std::thread::sleep(std::time::Duration::from_millis(150));
 
-    // ── 图 3:空结果态(无命中 + 建议)─────────────────────────────
+    // ── 图 3:空结果态(无命中 + 建议 + 推荐 chips)──────────────
     ui.set_qs_search_text("zzzz-not-found".into());
     ui.set_qs_rows(ModelRc::from(Rc::new(VecModel::from(Vec::<QsRow>::new()))));
     ui.set_qs_hi(0);
@@ -269,11 +269,24 @@ fn main() {
         SharedString::from("2  试试更短的关键词，例如「doc」"),
         SharedString::from("3  按 Tab 切换到具体分类再搜"),
     ]))));
+    ui.set_qs_empty_chips(ModelRc::from(Rc::new(VecModel::from(vec![
+        SharedString::from("web"),
+        SharedString::from("docker"),
+        SharedString::from("主题"),
+        SharedString::from("日志"),
+    ]))));
     ui.set_qs_preview(QsPreview::default());
-    ui.on_empty_title(|| SharedString::from("没有找到 “zzzz-not-found”"));
+    ui.on_empty_title(|| SharedString::from("没有找到 「zzzz-not-found」"));
     ui.set_quick_search_open(true);
     std::thread::sleep(std::time::Duration::from_millis(300));
     grab(&ui, "output/quick-search/empty.png");
+    ui.set_quick_search_open(false);
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    // ── 图 4:首屏引导条(hint-pill,9 秒后淡出)────────────────────
+    ui.set_quick_search_hint_visible(true);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    grab(&ui, "output/quick-search/hint-pill.png");
 
     println!("done.");
 }
