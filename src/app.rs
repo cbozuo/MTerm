@@ -18,6 +18,8 @@ mod command_hint_ui;
 mod command_manager;
 mod ping;
 mod quick_commands;
+// (#double-shift-v1 2026-11-11) 全局搜索宿主桥：索引/查询/执行语义/触发器接线。
+mod search_ui;
 mod resource_ui;
 mod session_event;
 mod session_models;
@@ -6438,6 +6440,15 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
     );
     // (#storage-location) Settings › storage location card.
     storage_callbacks::wire_storage_callbacks(&window, store.clone());
+    // (#double-shift-v1) 双击 Shift 全局搜索的触发器状态机 —— **窗口级**，
+    // 三处宿主共享同一份：
+    //   ① on_send_key（终端聚焦时的裸 Shift）；
+    //   ② search-shift-press（shortcut-scope，非终端焦点）；
+    //   ③ 窗口级 winit 钩子（鼠标按下 / 窗口失焦 → 重置，设计稿 §03
+    //      reset-paths 的另外两条）。
+    let qs_tracker: Arc<Mutex<crate::search::DoubleShiftTracker>> =
+        Arc::new(Mutex::new(crate::search::DoubleShiftTracker::new()));
+
     wire_key_input(
         &window,
         handles.clone(),
@@ -6446,6 +6457,7 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
         store.clone(),
         hint_observers.clone(),
         term_hint_was_empty.clone(),
+        qs_tracker.clone(),
         ConnectCtx {
             weak: window.as_weak(),
             editor: editor_win.as_weak(),
@@ -6565,6 +6577,9 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
         let ev_registry = registry.clone();
         let ev_core = core.clone();
         let ev_window_size_tracking_ready = window_size_tracking_ready.clone();
+        // (#double-shift-v1) 双击 Shift 触发器：窗口级重置（鼠标按下 / 失焦）
+        // 用同一份状态机 —— 闭包捕获一份 clone。
+        let ev_qs_tracker = qs_tracker.clone();
         // (#remote-close-leftover 2026-10-27) 内置远程桌面的层：关窗时它们的
         // 句柄/路由/行也必须跟着走，否则 RDP/VNC 驱动线程会一直活着。
         let ev_remote_handles = ev_core
@@ -6643,12 +6658,27 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
                 // 尺寸/重绘的到达时序。RedrawRequested 可能高频(终端逐帧重绘),
                 // 只打 debug;Focused/Occluded/Resized 低频且是诊断关键,打 info。
                 match event {
-                    WEvent::Focused(f) => tracing::info!(focused = f, "main: winit focused"),
+                    WEvent::Focused(f) => {
+                        tracing::info!(focused = f, "main: winit focused");
+                        // (#double-shift-v1) 全局搜索触发器重置（设计稿 §03
+                        // reset-paths 的「窗口失去焦点」）：失焦后若用户很快切
+                        // 回来按第二下 Shift，不该被判成双击。
+                        if !f {
+                            ev_qs_tracker.lock().unwrap().reset();
+                        }
+                    }
                     WEvent::Occluded(o) => tracing::info!(occluded = o, "main: winit occluded"),
                     WEvent::Resized(s) => {
                         tracing::info!(w = s.width, h = s.height, "main: winit resized")
                     }
                     WEvent::RedrawRequested => tracing::debug!("main: winit redraw requested"),
+                    // (#double-shift-v1) 触发器重置的另一条：鼠标按下。
+                    WEvent::MouseInput { state, .. }
+                        if *state
+                            == i_slint_backend_winit::winit::event::ElementState::Pressed =>
+                    {
+                        ev_qs_tracker.lock().unwrap().reset();
+                    }
                     _ => {}
                 }
                 // Recompute window activity, push it to the shared cell, and update
@@ -11415,6 +11445,9 @@ fn wire_key_input(
     // 同一份（定义在调用方 open_window 的函数体层）。
     hint_observers: Arc<Mutex<HashMap<String, crate::terminal::HintObserver>>>,
     term_hint_was_empty: Arc<std::sync::atomic::AtomicBool>,
+    // (#double-shift-v1) 双击 Shift 全局搜索的触发器状态机：终端焦点路径
+    // （on_send_key）用它判定双击。
+    qs_tracker: Arc<Mutex<crate::search::DoubleShiftTracker>>,
     ctx: ConnectCtx,
     // (#rdp-vnc-embedded) The remote-desktop input handlers live here because
     // this is where the pointer and key plumbing already is; both tables are
@@ -11780,6 +11813,10 @@ fn wire_key_input(
     // 标题栏 Ping 弹框（#titlebar-ping 高保真 2026-11-03 V13）：探测引擎 + 回调。
     // runtime 供远端探测源（SSH tab）执行 ss/netstat/ping（execute_command 异步）
     ping::install(&window, &store, ctx.runtime.clone());
+    // 双击 Shift 全局搜索（#double-shift-v1 2026-11-11）：索引/查询/执行语义。
+    // 触发器状态机由三个宿主共享：on_send_key（终端焦点）、search-shift-press
+    // （非终端焦点，shortcut-scope）、窗口级 winit 钩子（鼠标按下 / 失焦重置）。
+    search_ui::install(&window, &store, qs_tracker.clone());
     {
         let store_rc = store.clone();
         let weak = window.as_weak();
@@ -12006,6 +12043,9 @@ fn wire_key_input(
         // (#cmd-hint-p1) 行缓冲观测器定义在函数体层（上面），这里取共享副本。
         let hint_observers = hint_observers.clone();
         let term_hint_was_empty = term_hint_was_empty.clone();
+        // (#double-shift-v1) 双击 Shift 状态机：窗口级共享（与 open_window 的
+        // winit 钩子共用同一份），这里取一份进闭包。
+        let qs_tracker = qs_tracker.clone();
         {
             // Shared timestamp: the last time the Shift key alone was pressed
             // (key="", shift=true).  Used by the time-based Backspace filter below.
@@ -12016,6 +12056,28 @@ fn wire_key_input(
             window.on_send_key(move |tab_id: SharedString, key: SharedString, ctrl: bool, alt: bool, shift: bool| {
             let hint_observers = hint_observers_sk.clone();
             let term_hint_was_empty = term_hint_was_empty.clone();
+            // ── (#double-shift-v1) 全局搜索触发器 ──────────────────────────
+            // 把本键事件归一后喂给共享状态机。裸 Shift（key="" + shift，本项目
+            // 实测形态，见下方 lone-Shift 打点注释）判定 80–360ms 双击；IME C0
+            // 标记（U+0015/U+0010）对状态机透明 —— 它们与真实 Shift 成对注入、
+            // 顺序不定，清零反而会抹掉第一击的时间戳；其余任何键清零。
+            // 命中即打开面板并 return（裸 Shift 本就不该进 PTY）。
+            let qs_already_open = ctx
+                .weak
+                .upgrade()
+                .map(|w| w.get_quick_search_open())
+                .unwrap_or(false);
+            let qs_opened = qs_tracker.lock().unwrap().on_key(
+                crate::search::classify(key.as_str(), ctrl, alt, shift),
+                std::time::Instant::now(),
+                qs_already_open,
+            );
+            if qs_opened {
+                if let Some(w) = ctx.weak.upgrade() {
+                    w.set_quick_search_open(true);
+                }
+                return;
+            }
             // ── Enter on a disconnected tab → reconnect in place (#79) ──────
             // FinalShell-style: the tab shows "连接已断开,按 Enter 重新连接";
             // pressing Enter re-spawns the shell + SFTP workers in the SAME tab

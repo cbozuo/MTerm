@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" dark light>
-<title>MTerm · SFTP 弹出独立窗口 · 高保真 v2（2026-11-11）</title>
+<title>MTerm · SFTP 弹出独立窗口 · 高保真 v3（2026-11-12）</title>
 <style>
 /* ============================================================
    MTerm · SFTP 面板弹出独立窗口 · 高保真 v2
@@ -267,29 +267,36 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 .tb-path .err-tip{font-size:10.5px;color:var(--danger-ink);white-space:nowrap;display:none;padding:0 4px}
 .tb-path.error{border-color:var(--danger-line)}
 .tb-path.error .err-tip{display:block}
-/* 批量操作行（选中 > 0 时浮出工具栏右段 —— 实机 selected-count 契约；
-   绝对定位 + 底色遮挡，不挤压分段/路径框） */
-.sftp-toolbar{position:relative}
-.tb-batch{
-  position:absolute;right:8px;top:5px;z-index:8;display:none;align-items:center;gap:4px;
-  background:var(--zone-sidebar);padding:0 2px 0 12px;height:24px;box-shadow:-14px 0 12px -6px var(--zone-sidebar);
+/* 路径框内嵌微钮：历史 ▼ / 书签 ★（v3） */
+.pb-mini{
+  width:18px;height:18px;flex:none;border:none;background:none;color:var(--slot-t3);cursor:pointer;
+  display:flex;align-items:center;justify-content:center;border-radius:3px;transition:color .12s,background .12s;
 }
-.tb-batch.show{display:flex}
-.tb-batch .bb{white-space:nowrap}
-.tb-batch .n{font-size:11px;color:var(--accent);font-weight:700;margin-right:2px;white-space:nowrap}
-.tb-batch .bb{
+.pb-mini:hover{color:var(--slot-t1);background:var(--slot-hov)}
+.pb-mini.active{color:var(--slot-ac)}
+.pb-mini svg.ico{width:11px;height:11px}
+/* 批量操作条（选中 > 0 时在工具栏下方展开 —— 实机 selected-count 契约；
+   独立细条不挤压不遮挡，GitHub/VS Code 批量条风格，v3 改版） */
+.batch-bar{
+  height:0;flex:none;overflow:hidden;display:flex;align-items:center;gap:6px;padding:0 10px;
+  background:var(--accent-tonal);border-bottom:1px solid transparent;
+  transition:height .2s var(--ease);
+}
+.batch-bar.show{height:30px;border-bottom-color:var(--slot-line)}
+.batch-bar .n{font-size:11px;color:var(--accent);font-weight:700;margin-right:2px;white-space:nowrap}
+.batch-bar .bb{
   height:22px;display:flex;align-items:center;gap:5px;padding:0 8px;border:none;border-radius:var(--r-sm);
-  background:var(--accent-tonal);color:var(--accent);font:inherit;font-size:11.5px;font-weight:700;cursor:pointer;
+  background:none;color:var(--accent);font:inherit;font-size:11.5px;font-weight:700;cursor:pointer;
 }
-.tb-batch .bb:hover{background:var(--accent-soft)}
-.tb-batch .bb.danger{background:var(--danger-soft);color:var(--danger-ink)}
-.tb-batch .bb.danger:hover{filter:brightness(1.1)}
-.tb-batch .bb svg.ico{width:12px;height:12px}
-.tb-batch .bx{
+.batch-bar .bb:hover{background:var(--accent-soft)}
+.batch-bar .bb.danger{color:var(--danger-ink)}
+.batch-bar .bb.danger:hover{background:var(--danger-soft)}
+.batch-bar .bb svg.ico{width:12px;height:12px}
+.batch-bar .bx{
   width:22px;height:22px;display:flex;align-items:center;justify-content:center;border:none;background:none;
-  border-radius:var(--r-sm);color:var(--slot-t3);cursor:pointer;
+  border-radius:var(--r-sm);color:var(--slot-t3);cursor:pointer;margin-left:auto;
 }
-.tb-batch .bx:hover{background:var(--slot-hov);color:var(--slot-t1)}
+.batch-bar .bx:hover{background:var(--slot-hov);color:var(--slot-t1)}
 
 /* 主体双栏 */
 .sftp-body{flex:1;display:flex;min-height:0;position:relative}
@@ -332,6 +339,18 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 }
 .lh-cell{display:flex;align-items:center;gap:4px;height:100%;padding:0 8px;cursor:pointer;position:relative;white-space:nowrap}
 .lh-cell:hover{background:var(--hover-row);color:var(--slot-t2)}
+.lh-cell.drop-l{box-shadow:inset 2px 0 0 var(--slot-ac)}
+.lh-cell.drop-r{box-shadow:inset -2px 0 0 var(--slot-ac)}
+.lh-cell[draggable="true"]{cursor:grab}
+.lh-cell[draggable="true"]:active{cursor:grabbing}
+/* 列宽拖拽手柄（列头右缘 6px 热区，v3） */
+.lh-resizer{
+  position:absolute;right:-3px;top:0;bottom:0;width:6px;cursor:col-resize;z-index:2;
+}
+.lh-resizer::after{
+  content:"";position:absolute;right:2.5px;top:4px;bottom:4px;width:1px;background:transparent;transition:background .15s;
+}
+.lh-resizer:hover::after,.lh-resizer.dragging::after{background:var(--slot-ac)}
 .lh-cell .dir{display:none;color:var(--slot-ac)}
 .lh-cell.sorted{background:var(--accent-tonal);color:var(--slot-t1)}
 .lh-cell.sorted .dir{display:flex}
@@ -392,6 +411,20 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 }
 .list-empty .ico{width:28px;height:28px;opacity:.5}
 .list-empty.show{display:flex}
+.list-empty .em-btns{display:flex;gap:8px;margin-top:6px;pointer-events:auto}
+/* 骨架行（导航加载 shimmer，v3） */
+.sk-row{height:28px;display:flex;align-items:center;gap:10px;padding:0 12px}
+.sk-bar{
+  height:10px;border-radius:3px;
+  background:linear-gradient(90deg,var(--slot-line) 25%,var(--slot-hov) 50%,var(--slot-line) 75%);
+  background-size:200% 100%;animation:shimmer 1.1s linear infinite;
+}
+@keyframes shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
+/* 状态栏「跟随 cd」小标（sftp-follow-cd 已在实机，v3 补标注） */
+.chip-follow{
+  font-size:10px;color:var(--accent);background:var(--accent-tonal);border-radius:999px;
+  padding:1px 8px;line-height:16px;white-space:nowrap;
+}
 
 /* 自绘 checkbox（双态用 checkbox.svg，半选用 checkbox-indeterminate.svg） */
 .ck{
@@ -597,6 +630,7 @@ html[data-theme="dark"] .btn.primary{color:#fff}
     <symbol id="i-restore" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v2a3 3 0 0 1-3 3H3M16 3v2a3 3 0 0 0 3 3h2M8 21v-2a3 3 0 0 0-3-3H3M16 21v-2a3 3 0 0 1 3-3h2"/></symbol>
     <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 17v-5"/><circle cx="12" cy="8" r="1.2" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-warning" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 4.5 3 18a2 2 0 0 0 1.73 3h14.54A2 2 0 0 0 21 18l-7.5-13.5a2 2 0 0 0-3 0z"/><path d="M12 9.5v4"/><circle cx="12" cy="16.5" r="1.2" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.4l2.85 5.85 6.45.9-4.65 4.5 1.05 6.45L12 17.1l-5.7 3 1.05-6.45-4.65-4.5 6.45-.9z" fill="currentColor" stroke="none"/></symbol>
     <!-- ↓ 项目暂缺，稿内补绘（落地需新增 pause.svg / play.svg / window-min.svg） -->
     <symbol id="i-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5v14M15 5v14"/></symbol>
     <symbol id="i-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4.5 19 12 7 19.5v-15z"/></symbol>
@@ -607,8 +641,8 @@ html[data-theme="dark"] .btn.primary{color:#fff}
 <div class="page">
   <div class="page-head">
     <div class="grow">
-      <h1>SFTP 面板 · 弹出独立窗口 <span class="tag">高保真 v2 · 可交互</span></h1>
-      <div class="sub">图标全取自 assets/icons · 右键六场景 · 复制粘贴 · 隐藏文件开关 · 过滤条 · 批量操作 · 拖拽移动 · 键盘操作 —— 全部可试</div>
+      <h1>SFTP 面板 · 弹出独立窗口 <span class="tag">高保真 v3 · 可交互</span></h1>
+      <div class="sub">v3 新增：压缩 zip · 上传下拉 · 外部编辑监视 · 键盘导航(↑↓/Enter/Backspace) · 路径历史下拉 · 目录书签 · 拖到主窗=下载 · 空态按钮 · 骨架屏 —— 全部可试</div>
     </div>
     <button class="theme-toggle" id="themeToggle">
       <svg class="ico" viewBox="0 0 24 24"><use href="#i-swap"/></svg>
@@ -654,7 +688,7 @@ html[data-theme="dark"] .btn.primary{color:#fff}
           </div>
         </div>
       </div>
-      <div class="dock-hint" id="dockHint"><span class="dot"></span>dock 态：面板停在主窗下沿，右上有「弹出」出口</div>
+      <div class="dock-hint" id="dockHint"><span class="dot"></span>拖出<b>窗口外任意位置</b>（桌面/资源管理器）= 下载到放下位置；拖到主窗卡 = 站内演示（http 页面下真拖出有效，落地走 DoDragDrop）</div>
 
       <!-- SFTP 弹出窗 -->
       <div class="sftp-win popped-in" id="sftpWin">
@@ -697,6 +731,8 @@ html[data-theme="dark"] .btn.primary{color:#fff}
           <div class="tb-path" id="pathBox">
             <input id="pathInput" spellcheck="false" value="/home/deploy/app" placeholder="输入远程路径，回车前往">
             <span class="err-tip">路径不存在</span>
+            <button class="pb-mini" id="histBtn" data-tip="最近访问"><svg class="ico" viewBox="0 0 24 24"><use href="#i-expand-more"/></svg></button>
+            <button class="pb-mini" id="bmBtn" data-tip="目录书签"><svg class="ico" viewBox="0 0 24 24"><use href="#i-star"/></svg></button>
           </div>
           <button class="tb-btn" id="refreshBtn" data-tip="刷新"><svg class="ico" viewBox="0 0 24 24"><use href="#i-refresh"/></svg></button>
           <span class="tb-sep"></span>
@@ -709,14 +745,15 @@ html[data-theme="dark"] .btn.primary{color:#fff}
             <svg class="ico" viewBox="0 0 24 24"><use href="#i-transfer"/></svg>
             <span class="badge" id="queueBadge" style="display:none">0</span>
           </button>
-          <!-- 批量操作行（选中 > 0 时出现；实机 selected-count 契约） -->
-          <span class="tb-batch" id="tbBatch">
-            <span class="n" id="batchN"></span>
-            <button class="bb" id="batchDl"><svg class="ico" viewBox="0 0 24 24"><use href="#i-download"/></svg>下载选中</button>
-            <button class="bb" id="batchCopy"><svg class="ico" viewBox="0 0 24 24"><use href="#i-copy"/></svg>复制到标签页</button>
-            <button class="bb danger" id="batchDel"><svg class="ico" viewBox="0 0 24 24"><use href="#i-trash"/></svg>删除</button>
-            <button class="bx" id="batchClear" data-tip="取消选择"><svg class="ico" style="width:12px;height:12px" viewBox="0 0 24 24"><use href="#i-close"/></svg></button>
-          </span>
+        </div>
+
+        <!-- 批量操作条：选中 > 0 时在工具栏下方展开（实机 selected-count 契约，v3 改独立细条） -->
+        <div class="batch-bar" id="tbBatch">
+          <span class="n" id="batchN"></span>
+          <button class="bb" id="batchDl"><svg class="ico" viewBox="0 0 24 24"><use href="#i-download"/></svg>下载选中</button>
+          <button class="bb" id="batchCopy"><svg class="ico" viewBox="0 0 24 24"><use href="#i-copy"/></svg>复制到标签页</button>
+          <button class="bb danger" id="batchDel"><svg class="ico" viewBox="0 0 24 24"><use href="#i-trash"/></svg>删除</button>
+          <button class="bx" id="batchClear" data-tip="取消选择"><svg class="ico" style="width:12px;height:12px" viewBox="0 0 24 24"><use href="#i-close"/></svg></button>
         </div>
 
         <div class="sftp-body">
@@ -727,20 +764,7 @@ html[data-theme="dark"] .btn.primary{color:#fff}
 
           <div class="sftp-list">
             <div class="load-bar" id="loadBar"></div>
-            <div class="list-head" id="listHead">
-              <span class="lh-check" id="checkAll" data-tip="全选/反选"><span class="ck" id="ckAll">
-                <svg viewBox="0 0 24 24"><use href="#i-check" id="ckAllUse"/></svg>
-                <svg viewBox="0 0 24 24" style="display:none"><use href="#i-checkbox-ind"/></svg>
-              </span></span>
-              <span class="lh-cell f-name" data-sort="name">名称 <span class="dir"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-expand-more"/></svg></span></span>
-              <span class="lh-cell f-type" data-sort="type">类型 <span class="dir"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-expand-more"/></svg></span></span>
-              <span class="lh-cell f-size" data-sort="size">大小 <span class="dir"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-expand-more"/></svg></span></span>
-              <span class="lh-cell f-time" data-sort="time">修改时间 <span class="dir"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-expand-more"/></svg></span></span>
-              <span class="lh-cell f-perm fixed">权限</span>
-              <span class="lh-cell f-owner fixed">所有者</span>
-              <span class="lh-cell f-group fixed" style="width:66px">组</span>
-              <span class="lh-gear" id="colGear" data-tip="列显示"><svg class="ico" viewBox="0 0 24 24"><use href="#i-gear"/></svg></span>
-            </div>
+            <div class="list-head" id="listHead"><!-- 列头由 renderListHead() 动态渲染：colOrder 顺序 × showCols 显隐 × colW 宽度 --></div>
             <div class="filter-bar" id="filterBar">
               <svg class="ico" viewBox="0 0 24 24"><use href="#i-search"/></svg>
               <input id="filterInput" placeholder="过滤当前目录…（Esc 关闭）" spellcheck="false">
@@ -751,6 +775,10 @@ html[data-theme="dark"] .btn.primary{color:#fff}
               <div class="list-empty" id="listEmpty">
                 <svg class="ico" viewBox="0 0 24 24"><use href="#i-folder-open"/></svg>
                 <span id="emptyText">此目录为空</span>
+                <span class="em-btns">
+                  <button class="btn ghost" id="emUpload">上传文件</button>
+                  <button class="btn ghost" id="emRefresh">刷新</button>
+                </span>
               </div>
             </div>
 
@@ -778,6 +806,7 @@ html[data-theme="dark"] .btn.primary{color:#fff}
           <span id="stCount">—</span>
           <span id="stSel"></span>
           <span id="stHidden"></span>
+          <span class="chip-follow" data-tip="终端 cd 时面板跟随目录（设置可关）">跟随 cd</span>
           <span class="grow"></span>
           <span class="down">↓ <i id="stDown">0 B/s</i></span>
           <span class="up">↑ <i id="stUp">0 B/s</i></span>
@@ -816,6 +845,33 @@ html[data-theme="dark"] .btn.primary{color:#fff}
 
   <!-- ═══════════ 图标与落地 ═══════════ -->
   <div class="section">
+    <h2>v3 新增 · 全部可点验</h2>
+    <p class="desc">A 档契约补齐与键盘链（对齐实机 download-archive / upload-clicked(dir,folder) / edit-external 契约），B 档拖拽与书签（系统级拖拽落地需评估 Slint OS 拖放支持，可能要 vendored patch），质感件空态/骨架。</p>
+    <div class="ref-grid">
+      <div class="ref-card">
+        <h3>实机契约补齐三件<span class="src">= ui/sftp_panel.slint</span></h3>
+        <p>右键「压缩为 zip 并下载」（download-archive 契约，任务名追加 .zip）；上传钮改「上传文件/上传文件夹」下拉（upload-clicked(dir, folder) 契约）；「外部编辑（监视回传）」单列（edit-external 契约：外部打开+watch 保存回传）。</p>
+      </div>
+      <div class="ref-card">
+        <h3>键盘导航三件套<span class="src">← Explorer / ForkLift</span></h3>
+        <p>↑↓ 移动选中（scrollIntoView 跟随）、Enter 目录进入/文件预览（有勾选时=批量下载）、Backspace 上级目录——与 Ctrl+F/Del/F2/Ctrl+A/C/V 拼成完整键盘链。</p>
+      </div>
+      <div class="ref-card">
+        <h3>历史下拉 + 目录书签<span class="src">← WinSCP Bookmarks / 浏览器地址栏</span></h3>
+        <p>路径框内嵌 ▼（最近访问 8 条去重）与 ★ 两枚微钮；书签支持收藏当前目录/跳转/单删；落地书签需 per-host 存储。</p>
+      </div>
+      <div class="ref-card">
+        <h3>拖到主窗=下载 + 质感件<span class="src">← Transmit 拖出下载 / 骨架屏</span></h3>
+        <p><b>拖拽语义定稿</b>：拖文件行出窗口到桌面/资源管理器<b>任意位置 = 下载到放下位置</b>；反向拖入窗口 = 上传。稿内 Chrome DownloadURL 演示真拖出（http 打开时拖到桌面真落文件；file:// 自动降级站内 drop）。落地路径：拖出 = <code>drag</code> crate + DoDragDrop（模态循环，拖动中源窗渲染暂停可接受），拖起先落 <code>%TEMP%</code> 临时目录再交系统，大文件转队列提示；拖入 = vendored backend patch 转发 winit <code>DroppedFile</code> → Rust 闭包进上传流程。空态加「上传/刷新」按钮；导航先铺 4 行 shimmer 骨架 320ms。状态栏新增「跟随 cd」小标（sftp-follow-cd 实机已有，补标注）。</p>
+      </div>
+      <div class="ref-card">
+        <h3>列宽拖拽 + 列序拖动<span class="src">← Explorer / ForkLift 列模型</span></h3>
+        <p>列头右缘 6px 手柄拖宽（accent 线反馈，40–280px 钳制，名称列 flex 吸收剩余空间）；列头拖动换位（左/右半边插入指示线，drop 重排 <code>colOrder</code>；名称恒第一、⚙ 恒最后）；列显示开关与顺序解耦（隐藏的列保序，重开回原位）。落地 = <code>S.colW / S.colOrder</code> 对应 per-session persist（同 sftp-tree-width 契约）。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
     <h2>图标来源与落地映射</h2>
     <div class="contract ref-grid">
       <div class="ref-card">
@@ -847,6 +903,9 @@ html[data-theme="dark"] .btn.primary{color:#fff}
 <div class="ctx-menu" id="pathMenu" style="width:170px"></div>
 <div class="ctx-menu" id="queueMenu" style="width:160px"></div>
 <div class="ctx-menu" id="winMenu" style="width:160px"></div>
+<div class="ctx-menu" id="uploadMenu" style="width:150px"></div>
+<div class="ctx-menu" id="histMenu" style="width:220px"></div>
+<div class="ctx-menu" id="bmMenu" style="width:230px"></div>
 
 <div class="modal-scrim" id="modalScrim"><div class="modal-card" id="modalCard"></div></div>
 <div class="toast" id="toast">
@@ -921,6 +980,12 @@ function typeClass(e){
 const S = {
   cwd: '/home/deploy/app',
   hist: [], histIdx: -1,
+  recents: [],                  // 最近访问（去重、cap 8，历史下拉用）
+  bookmarks: ['/home/deploy', '/home/deploy/app/releases'],  // 目录书签（演示内存态；落地=per-host 存储）
+  /* 列模型（v3）：colOrder 管顺序（拖列头换位）、colW 管宽度（列头右缘拖拽）。
+     名称恒第一、⚙ 恒最后，不进 order。落地=per-session persist（同 tree-width 契约）。 */
+  colOrder: ['type', 'size', 'time', 'perm', 'owner', 'group'],
+  colW: { type: 72, size: 76, time: 120, perm: 104, owner: 84, group: 66 },
   expanded: new Set(['/home/deploy','/home/deploy/app']),
   checked: new Set(),
   selectedRow: null,
@@ -1083,6 +1148,121 @@ function moveEntry(src, dstDir){
 })();
 
 /* ═══════════ 文件列表 ═══════════ */
+/* 列定义：cls=布局类、label=列头名、cell=行单元格渲染、sortable=可点排序 */
+const COLS = {
+  type:  { cls: 'f-type',  label: '类型',     sortable: true,  cell: e => esc(e.type) },
+  size:  { cls: 'f-size',  label: '大小',     sortable: true,  cell: e => e.isDir ? '—' : fmtSize(e.size) },
+  time:  { cls: 'f-time',  label: '修改时间', sortable: true,  cell: e => fmtTime(e.time) },
+  perm:  { cls: 'f-perm',  label: '权限',     sortable: false, cell: e => esc(e.perm) },
+  owner: { cls: 'f-owner', label: '所有者',   sortable: false, cell: e => esc(e.owner) },
+  group: { cls: 'f-group', label: '组',       sortable: false, cell: e => esc(e.group) },
+};
+const visibleCols = () => S.colOrder.filter(c => S.showCols[c]);
+const dirSvg = `<span class="dir"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-expand-more"/></svg></span>`;
+let dragCol = null;   // 拖动换位中的列 key
+
+/* 列头动态渲染（colOrder × showCols；名称恒第一、⚙ 恒最后） */
+function renderListHead(){
+  const sortCls = k => (S.sortKey === k ? 'sorted' : '');
+  let html = `<span class="lh-check" id="checkAll" data-tip="全选/反选"><span class="ck" id="ckAll">
+    <svg viewBox="0 0 24 24"><use href="#i-check"/></svg>
+    <svg viewBox="0 0 24 24" style="display:none"><use href="#i-checkbox-ind"/></svg>
+  </span></span>
+  <span class="lh-cell f-name ${sortCls('name')}" data-sort="name">名称 ${dirSvg}</span>`;
+  for (const c of visibleCols()){
+    const def = COLS[c];
+    const dragAttr = ` draggable="true"`;
+    html += `<span class="lh-cell ${def.cls} ${def.sortable ? sortCls(c) : 'fixed'}" data-col="${c}"${def.sortable ? ` data-sort="${c}"` : ''}${dragAttr}>${def.label}${def.sortable ? dirSvg : ''}<span class="lh-resizer" data-rz="${c}"></span></span>`;
+  }
+  html += `<span class="lh-gear" id="colGear" data-tip="列显示 / 拖列头换位 / 拖右缘调宽"><svg class="ico" viewBox="0 0 24 24"><use href="#i-gear"/></svg></span>`;
+  $('listHead').innerHTML = html;
+  bindListHead();
+}
+
+/* 列头监听（renderListHead 每次重建后重绑；用 onclick/委托避免叠加） */
+function bindListHead(){
+  const head = $('listHead');
+  /* 全选 */
+  $('checkAll').onclick = () => {
+    const list = filteredEntries();
+    const allIn = list.length && list.every(e => S.checked.has(e.path));
+    for (const e of list) allIn ? S.checked.delete(e.path) : S.checked.add(e.path);
+    renderList();
+  };
+  /* 列显示 ⚙ */
+  $('colGear').onclick = e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); openColMenu(r.left - 140, r.bottom + 4); };
+  /* 排序点击 + 列右键（每列头委托在 head 上） */
+  head.querySelectorAll('.lh-cell').forEach(cell => {
+    cell.onclick = () => {
+      const k = cell.dataset.sort;
+      if (!k) return;
+      if (S.sortKey !== k){ S.sortKey = k; S.sortDir = 1; }
+      else if (S.sortDir === 1) S.sortDir = -1;
+      else { S.sortKey = null; S.sortDir = 1; }
+      renderList();
+    };
+    cell.oncontextmenu = e => { e.preventDefault(); openColMenu(e.clientX, e.clientY); };
+    /* 拖列换位 */
+    if (cell.dataset.col){
+      cell.addEventListener('dragstart', e => {
+        dragCol = cell.dataset.col;
+        cell.style.opacity = '.4';
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', dragCol); } catch(_){}
+      });
+      cell.addEventListener('dragend', () => { cell.style.opacity = ''; document.querySelectorAll('.lh-cell.drop-l,.lh-cell.drop-r').forEach(x => x.classList.remove('drop-l','drop-r')); dragCol = null; });
+      cell.addEventListener('dragover', e => {
+        if (!dragCol || cell.dataset.col === dragCol) return;
+        e.preventDefault();
+        const rect = cell.getBoundingClientRect();
+        const l = e.clientX < rect.left + rect.width / 2;
+        cell.classList.toggle('drop-l', l);
+        cell.classList.toggle('drop-r', !l);
+      });
+      cell.addEventListener('dragleave', () => cell.classList.remove('drop-l', 'drop-r'));
+      cell.addEventListener('drop', e => {
+        e.preventDefault();
+        cell.classList.remove('drop-l', 'drop-r');
+        const target = cell.dataset.col;
+        if (!dragCol || target === dragCol) return;
+        const rect = cell.getBoundingClientRect();
+        const leftHalf = e.clientX < rect.left + rect.width / 2;
+        const from = S.colOrder.indexOf(dragCol);
+        S.colOrder.splice(from, 1);
+        let idx = S.colOrder.indexOf(target);
+        if (!leftHalf) idx += 1;
+        S.colOrder.splice(idx, 0, dragCol);
+        dragCol = null;
+        renderListHead(); renderList();
+      });
+    }
+  });
+  /* 列宽拖拽（手柄 mousedown；pointer 捕获到 window，重渲染不打断） */
+  head.querySelectorAll('.lh-resizer').forEach(rz => {
+    rz.addEventListener('mousedown', e => {
+      e.preventDefault(); e.stopPropagation();
+      const col = rz.dataset.rz;
+      const startX = e.clientX, w0 = S.colW[col];
+      rz.classList.add('dragging');
+      const mv = ev => {
+        S.colW[col] = Math.max(40, Math.min(280, w0 + ev.clientX - startX));
+        applyColW(col);
+      };
+      const up = () => {
+        rz.classList.remove('dragging');
+        window.removeEventListener('mousemove', mv);
+        window.removeEventListener('mouseup', up);
+      };
+      window.addEventListener('mousemove', mv);
+      window.addEventListener('mouseup', up);
+    });
+  });
+}
+/* 即时应用某列宽度（列头 + 数据行同 data-col 一起改，免整表重渲染） */
+function applyColW(col){
+  const w = S.colW[col] + 'px';
+  document.querySelectorAll(`[data-col="${col}"]`).forEach(el => { el.style.width = w; });
+}
 function filteredEntries(){
   let list = visEntries(S.cwd);
   if (S.filterText.trim()){
@@ -1107,20 +1287,18 @@ function filteredEntries(){
 function renderList(){
   const list = filteredEntries();
   const host = $('fileRows');
-  const colCls = S.showCols;
+  renderListHead();   // 列头随数据同步（顺序/宽度/排序态一致）
   host.innerHTML = list.map(e => {
     const checked = S.checked.has(e.path);
     const sel = S.selectedRow === e.path;
+    const cells = visibleCols().map(c =>
+      `<span class="f-cell ${COLS[c].cls}" data-col="${c}" style="width:${S.colW[c]}px"><span class="label">${COLS[c].cell(e)}</span></span>`
+    ).join('');
     return `<div class="f-row ${sel?'selected':''} ${checked?'checked':''}" data-path="${esc(e.path)}" data-dir="${e.isDir?1:0}" draggable="true">
       <span class="f-check"><span class="ck ${checked?'on':''}" data-act="check">${ico('check')}</span></span>
       <span class="f-cell f-ico ${typeClass(e)}">${ico(e.isDir ? 'folder' : 'file')}</span>
       <span class="f-cell f-name"><span class="label">${esc(e.name)}</span></span>
-      ${colCls.type ? `<span class="f-cell f-type"><span class="label">${esc(e.type)}</span></span>` : ''}
-      ${colCls.size ? `<span class="f-cell f-size"><span class="label">${e.isDir ? '—' : fmtSize(e.size)}</span></span>` : ''}
-      ${colCls.time ? `<span class="f-cell f-time"><span class="label">${fmtTime(e.time)}</span></span>` : ''}
-      ${colCls.perm ? `<span class="f-cell f-perm"><span class="label">${e.perm}</span></span>` : ''}
-      ${colCls.owner ? `<span class="f-cell f-owner"><span class="label">${esc(e.owner)}</span></span>` : ''}
-      ${colCls.group ? `<span class="f-cell f-group"><span class="label">${esc(e.group)}</span></span>` : ''}
+      ${cells}
       <span class="f-gear"></span>
     </div>`;
   }).join('');
@@ -1170,37 +1348,32 @@ $('listScroll').addEventListener('dblclick', e => {
   if (row.dataset.dir === '1') navigate(row.dataset.path);
   else toast(`预览 ${row.querySelector('.f-name .label').textContent}（演示）`);
 });
-$('checkAll').addEventListener('click', () => {
-  const list = filteredEntries();
-  const allIn = list.every(e => S.checked.has(e.path));
-  for (const e of list) allIn ? S.checked.delete(e.path) : S.checked.add(e.path);
-  renderList();
-});
 /* 拖拽源 */
 $('listScroll').addEventListener('dragstart', e => {
   const row = e.target.closest('.f-row');
   if (!row) return;
   dragPath = S.checked.has(row.dataset.path) && S.checked.size > 1 ? null : row.dataset.path;
   row.classList.add('dragging');
-  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.effectAllowed = 'copyMove';
   try { e.dataTransfer.setData('text/plain', dragPath || ''); } catch(_){}
+  /* ★ 拖出到本地任意位置 = 下载到放下位置（产品语义定稿 v3）。
+     Chrome/Edge 的 DownloadURL：http 页面下拖出浏览器窗口，拖到桌面/
+     资源管理器的位置会真的落一个文件（文件名=拖的文件，内容为演示占位）。
+     file:// 打开时浏览器忽略该项，自动降级为站内 drop 演示。
+     落地版对应能力在 Rust 侧：drag crate + DoDragDrop，拖起先落 %TEMP%
+     临时目录再交系统（见说明区「拖拽语义」）。 */
+  try {
+    if (dragPath && location.origin.startsWith('http')){
+      const nm = dragPath.split('/').pop();
+      e.dataTransfer.setData('DownloadURL',
+        `text/plain:${nm}:${location.origin}/assets/icons/logo-m.svg`);
+    }
+  } catch(_){}
 });
 $('listScroll').addEventListener('dragend', e => {
   document.querySelectorAll('.f-row.dragging').forEach(x => x.classList.remove('dragging'));
 });
-/* 列头排序 */
-document.querySelectorAll('#listHead .lh-cell[data-sort]').forEach(c => {
-  c.addEventListener('click', () => {
-    const k = c.dataset.sort;
-    if (S.sortKey !== k){ S.sortKey = k; S.sortDir = 1; }
-    else if (S.sortDir === 1) S.sortDir = -1;
-    else { S.sortKey = null; S.sortDir = 1; }
-    renderList();
-  });
-  /* 列头右键 = 列显示 */
-  c.addEventListener('contextmenu', e => { e.preventDefault(); openColMenu(e.clientX, e.clientY); });
-});
-$('colGear').addEventListener('click', e => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); openColMenu(r.left - 140, r.bottom + 4); });
+/* 列显示菜单（列头右键 / ⚙ 点击都入此；菜单勾选只改 showCols，顺序保留在 colOrder） */
 function openColMenu(x, y){
   const m = $('colMenu');
   m.innerHTML = `<div class="ctx-title">列显示</div>` + [['type','类型'],['size','大小'],['time','修改时间'],['perm','权限'],['owner','所有者'],['group','组']].map(([k,l]) =>
@@ -1227,6 +1400,8 @@ function navigate(path, push = true){
   }
   if (push){ S.hist = S.hist.slice(0, S.histIdx + 1); S.hist.push(path); S.histIdx++; }
   S.cwd = path;
+  // 最近访问：去重置顶、cap 8（历史下拉数据源）
+  S.recents = [path, ...S.recents.filter(p => p !== path)].slice(0, 8);
   S.selectedRow = null;
   S.checked = new Set([...S.checked].filter(p => !p.startsWith(path + '/')));
   S.expanded.add(path);
@@ -1235,8 +1410,17 @@ function navigate(path, push = true){
   for (const seg of parts){ acc += '/' + seg; S.expanded.add(acc); }
   $('pathInput').value = path;
   flashLoad();
-  renderTree(); renderList(); refreshNavBtns();
+  renderSkeleton();
+  renderTree(); refreshNavBtns();
   return true;
+}
+/* 骨架行：导航后先铺 4 行 shimmer，320ms 后真数据（大目录加载感的演示） */
+let skTimer = 0;
+function renderSkeleton(){
+  clearTimeout(skTimer);
+  $('fileRows').innerHTML =
+    [90, 130, 70, 110].map(w => `<div class="sk-row"><span class="sk-bar" style="width:${w}px"></span><span class="sk-bar" style="width:52px"></span><span class="sk-bar" style="width:64px;margin-left:auto"></span></div>`).join('');
+  skTimer = setTimeout(renderList, 320);
 }
 function refreshNavBtns(){
   $('navBack').disabled = S.histIdx <= 0;
@@ -1248,7 +1432,7 @@ $('navBack').onclick = () => { if (S.histIdx > 0){ S.histIdx--; navigate(S.hist[
 $('navFwd').onclick  = () => { if (S.histIdx < S.hist.length - 1){ S.histIdx++; navigate(S.hist[S.histIdx], false); } };
 $('navUp').onclick   = () => { const p = S.cwd.split('/').slice(0,-1).join('/') || '/'; if (nodeAt(p)) navigate(p); };
 $('navHome').onclick = () => navigate(HOME);
-$('refreshBtn').onclick = () => { flashLoad(); renderTree(); renderList(); toast('已刷新'); };
+$('refreshBtn').onclick = () => { flashLoad(); renderSkeleton(); renderTree(); toast('已刷新'); };
 $('pathInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') navigate($('pathInput').value.trim());
   if (e.key === 'Escape') $('pathInput').value = S.cwd;
@@ -1317,6 +1501,7 @@ function rowMenu(target, x, y){
   const m = $('ctxMenu');
   m.innerHTML = `
     ${has ? `<div class="ctx-item" data-act="download">${ico('download')}下载…<span class="ks">⏎</span></div>
+    ${target && !multi ? `<div class="ctx-item" data-act="archive">${ico('file')}压缩为 zip 并下载</div>` : ''}
     <div class="ctx-item" data-act="dl-seq">${ico('transfer')}逐台下载（不打包）</div>
     <div class="ctx-item" data-act="copy-to">${ico('popout')}复制到标签页…<svg class="ico ctx-sub-arrow" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-chevron-r"/></svg></div>
     <div class="ctx-item" data-act="clip-copy">${ico('copy')}复制<span class="ks">Ctrl+C</span></div>` : `
@@ -1331,7 +1516,8 @@ function rowMenu(target, x, y){
     <div class="ctx-item" data-act="copy-path">${ico('copy')}复制路径</div>
     ${!isDir ? `<div class="ctx-item" data-act="view">${ico('file')}查看</div>
     <div class="ctx-item" data-act="edit">${ico('edit')}编辑</div>
-    <div class="ctx-item" data-act="ext-open">${ico('popout')}外部程序打开</div>` : ''}` : `
+    <div class="ctx-item" data-act="ext-open">${ico('popout')}外部程序打开</div>
+    <div class="ctx-item" data-act="ext-edit">${ico('edit')}外部编辑（监视回传）</div>` : ''}` : `
     <div class="ctx-item disabled">${ico('edit')}重命名</div>
     <div class="ctx-item disabled">${ico('gear')}权限…</div>
     <div class="ctx-item disabled">${ico('copy')}复制路径</div>`}
@@ -1358,6 +1544,7 @@ $('ctxMenu').addEventListener('click', e => {
   const batch = multi ? [...S.checked] : (targetPath ? [targetPath] : []);
   switch (act){
     case 'download': startDownload(batch); break;
+    case 'archive':  startDownload([targetPath], false, 'dl', true); break;
     case 'dl-seq':   startDownload(batch, true); break;
     case 'copy-to':  openCopyToMenu(e.clientX, e.clientY, batch); break;
     case 'clip-copy': S.clip = batch.slice(); toast(`已复制 ${batch.length} 项到剪贴板`); break;
@@ -1368,10 +1555,11 @@ $('ctxMenu').addEventListener('click', e => {
     case 'view':     toast(`查看 ${targetPath.split('/').pop()}（演示）`); break;
     case 'edit':     toast(`编辑 ${targetPath.split('/').pop()}（演示）`); break;
     case 'ext-open': toast('外部程序打开（演示）'); break;
+    case 'ext-edit': toast('外部编辑已启动，保存后自动回传上传（演示）'); break;
     case 'new-folder': openNewFolder(S.cwd); break;
     case 'new-file':   openNewFile(S.cwd); break;
     case 'select-all': { const l = filteredEntries(); for (const en of l) S.checked.add(en.path); renderList(); break; }
-    case 'refresh-m':  flashLoad(); renderTree(); renderList(); break;
+    case 'refresh-m':  flashLoad(); renderSkeleton(); renderTree(); break;
     case 'delete':     openDeleteConfirm(batch); break;
     /* 树右键 */
     case 't-open': navigate(it.dataset.p); break;
@@ -1549,7 +1737,24 @@ $('newMenu').addEventListener('click', e => {
   closeMenus();
   it.dataset.act === 'folder' ? openNewFolder(S.cwd) : openNewFile(S.cwd);
 });
-$('uploadBtn').onclick = () => startDownload(['/home/deploy/app/README.md', '/home/deploy/app/requirements.txt'], false, 'ul');
+/* 上传钮 = 文件/文件夹下拉（实机 upload-clicked(dir, folder) 契约，v3 补齐） */
+$('uploadMenu').innerHTML = `
+  <div class="ctx-item" data-act="file">${ico('file')}上传文件…</div>
+  <div class="ctx-item" data-act="folder">${ico('folder')}上传文件夹…</div>
+`;
+$('uploadBtn').addEventListener('click', e => {
+  e.stopPropagation();
+  const r = e.currentTarget.getBoundingClientRect();
+  openMenuAt($('uploadMenu'), r.left, r.bottom + 4);
+});
+$('uploadMenu').addEventListener('click', e => {
+  const it = e.target.closest('.ctx-item');
+  if (!it) return;
+  closeMenus();
+  it.dataset.act === 'folder'
+    ? startDownload(['/home/deploy/app'], false, 'ul')   // 演示：整文件夹上传
+    : startDownload(['/home/deploy/app/README.md', '/home/deploy/app/requirements.txt'], false, 'ul');
+});
 /* 过滤条 */
 $('filterBtn').onclick = () => {
   const fb = $('filterBar');
@@ -1589,20 +1794,98 @@ $('batchCopy').onclick = e => {
 };
 $('batchDel').onclick = () => openDeleteConfirm([...S.checked]);
 $('batchClear').onclick = () => { S.checked.clear(); renderList(); };
+/* 空态按钮（v3） */
+$('emUpload').onclick = () => $('uploadBtn').click();
+$('emRefresh').onclick = () => $('refreshBtn').click();
+
+/* ═══════════ 历史下拉 + 目录书签（路径框内嵌微钮，v3） ═══════════ */
+$('histBtn').addEventListener('click', e => {
+  e.stopPropagation();
+  const m = $('histMenu');
+  m.innerHTML = `<div class="ctx-title">最近访问</div>` + (S.recents.length
+    ? S.recents.map(p => `<div class="ctx-item" data-p="${esc(p)}">${ico('folder-open')}<span style="overflow:hidden;text-overflow:ellipsis">${esc(p)}</span></div>`).join('')
+    : `<div class="ctx-item disabled">${ico('folder-open')}暂无记录</div>`);
+  openMenuAt(m, e.currentTarget.getBoundingClientRect().left - 130, e.currentTarget.getBoundingClientRect().bottom + 4);
+});
+$('histMenu').addEventListener('click', e => {
+  const it = e.target.closest('.ctx-item[data-p]');
+  if (!it) return;
+  closeMenus();
+  navigate(it.dataset.p);
+});
+$('bmBtn').addEventListener('click', e => {
+  e.stopPropagation();
+  const m = $('bmMenu');
+  const cur = S.cwd;
+  const starred = S.bookmarks.includes(cur);
+  m.innerHTML = `
+    <div class="ctx-item" data-act="toggle-star">${ico('star')}${starred ? '取消收藏当前目录' : '收藏当前目录'}</div>
+    <div class="ctx-sep"></div>
+    ${S.bookmarks.length ? S.bookmarks.map(p => `
+      <div class="ctx-item" data-p="${esc(p)}">${ico('star')}<span style="overflow:hidden;text-overflow:ellipsis;flex:1">${esc(p)}</span></div>
+      <div class="ctx-item" data-del="${esc(p)}" style="height:20px;color:var(--slot-t3)">${ico('trash')}<span style="font-size:10.5px">删除此书签</span></div>
+    `).join('') : `<div class="ctx-item disabled">${ico('star')}暂无书签</div>`}
+  `;
+  m.dataset.cur = cur;
+  const r = e.currentTarget.getBoundingClientRect();
+  openMenuAt(m, r.left - 160, r.bottom + 4);
+});
+$('bmMenu').addEventListener('click', e => {
+  const m = $('bmMenu');
+  const del = e.target.closest('[data-del]');
+  if (del){
+    S.bookmarks = S.bookmarks.filter(p => p !== del.dataset.del);
+    toast('书签已删除');
+    $('bmBtn').click();   // 重开刷新
+    return;
+  }
+  const go = e.target.closest('.ctx-item[data-p]');
+  if (go){ closeMenus(); navigate(go.dataset.p); return; }
+  const act = e.target.closest('[data-act="toggle-star"]');
+  if (act){
+    const cur = m.dataset.cur;
+    if (S.bookmarks.includes(cur)) S.bookmarks = S.bookmarks.filter(p => p !== cur);
+    else S.bookmarks = [cur, ...S.bookmarks];
+    closeMenus();
+    toast(S.bookmarks.includes(cur) ? `已收藏 ${cur}` : '已取消收藏');
+  }
+});
+
+/* 拖文件行到主窗 dock 卡 = 下载到本机（系统拖出下载的站内演示，v3） */
+(() => {
+  const dd = $('dockDemo');
+  dd.addEventListener('dragover', e => {
+    if (!dragPath) return;
+    e.preventDefault();
+    dd.style.outline = '2px dashed var(--slot-ac)';
+    dd.style.outlineOffset = '-4px';
+  });
+  dd.addEventListener('dragleave', () => { dd.style.outline = ''; });
+  dd.addEventListener('drop', e => {
+    dd.style.outline = '';
+    if (!dragPath) return;
+    e.preventDefault();
+    const name = dragPath.split('/').pop();
+    startDownload([dragPath]);
+    toast(`已下载 ${name} 到本机下载目录（拖出即下载）`);
+    dragPath = null;
+  });
+})();
 
 /* ═══════════ 传输队列 ═══════════ */
 const SPEED = 2.4 * 1048576;
-function startDownload(paths, sequential = false, dirKind = 'dl'){
+function startDownload(paths, sequential = false, dirKind = 'dl', archive = false){
   const names = { dl:'下载', ul:'上传' };
   for (const p of paths){
     const node = nodeAt(p);
     const size = node?.size || (node?.type === 'dir' ? 128 * 1048576 : 640 * 1024);
-    S.queue.push({ id: ++S.queueId, path: p, name: p.split('/').pop(), size,
+    const base = p.split('/').pop();
+    S.queue.push({ id: ++S.queueId, path: p, name: archive ? base + '.zip' : base, size,
       done: 0, dir: dirKind, paused: false, finished: false, canceled: false, seq: sequential });
   }
   updateQueueUI();
   $('queuePane').classList.add('open');
-  toast(`${names[dirKind]}任务已加入队列（${paths.length} 项${sequential ? ' · 逐台' : ''}）`);
+  toast(`${names[dirKind]}任务已加入队列（${paths.length} 项${sequential ? ' · 逐台' : ''}${archive ? ' · 打包 zip' : ''}）`);
 }
 function updateQueueUI(){
   const active = S.queue.filter(q => !q.finished && !q.canceled);
@@ -1776,6 +2059,34 @@ window.addEventListener('keydown', e => {
   if (S.panelMode !== 'files') return;
   const inWin = !$('sftpWin').classList.contains('popped-in');
   if (!inWin) return;
+  /* ↑↓ 移动选中（滚动到可见） */
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+    e.preventDefault();
+    const list = filteredEntries();
+    if (!list.length) return;
+    let i = list.findIndex(en => en.path === S.selectedRow);
+    i = i === -1 ? 0 : Math.max(0, Math.min(list.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)));
+    S.selectedRow = list[i].path;
+    renderList();
+    document.querySelector(`.f-row[data-path="${CSS.escape(S.selectedRow)}"]`)?.scrollIntoView({ block: 'nearest' });
+    return;
+  }
+  /* Enter：目录进入 / 文件预览（勾选优先批量下载） */
+  if (e.key === 'Enter'){
+    e.preventDefault();
+    if (S.checked.size){ startDownload([...S.checked]); return; }
+    if (!S.selectedRow) return;
+    const n = nodeAt(S.selectedRow);
+    if (n?.type === 'dir') navigate(S.selectedRow);
+    else toast(`预览 ${S.selectedRow.split('/').pop()}（演示）`);
+    return;
+  }
+  /* Backspace：上级目录 */
+  if (e.key === 'Backspace'){
+    e.preventDefault();
+    $('navUp').click();
+    return;
+  }
   if (e.key === 'Delete'){
     const batch = S.checked.size ? [...S.checked] : (S.selectedRow ? [S.selectedRow] : []);
     if (batch.length){ e.preventDefault(); openDeleteConfirm(batch); }

@@ -25,6 +25,8 @@ pub mod rdp;
 pub mod remote;
 pub mod resource;
 pub mod session;
+// (#double-shift-v1 2026-11-11) 双击 Shift 全局搜索领域层（索引/查询/评分/触发器）。
+pub mod search;
 // (#left-panel-v3-r2 2026-11-06) 左侧会话面板引擎:树形拍平/定位/行几何
 // (struct 零 Slint;Slint 桥在 crate::app::session_models)。
 pub mod session_tree;
