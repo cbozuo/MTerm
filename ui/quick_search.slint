@@ -1,0 +1,882 @@
+// (#double-shift-v1 2026-11-11) 双击 Shift 全局搜索浮层。
+//
+// 高保真稿：docs/design/double-shift-hifi-2026-11-06-v1.html §04。
+// 规格：面板 920×568、顶部偏移 76px、输入区 52 / 分类条 38 / 结果行 48 /
+// 分组头 24 / 脚注 34；主体左列表 56% / 右预览 44%。
+//
+// 架构约定（对齐 ping_dialog / send_cmd lib 面板）：
+//   - 状态与数据全部挂在 AppWindow 根（`qs-*` 属性族 + 回调族），本组件只画；
+//   - Rust 侧（src/app/search_ui.rs）重建索引 / 查询 / 跳组头选中 / 预览 / 执行；
+//   - 恒实例 + visible（进场动画挂常驻元素——`if` 元素首帧不播的坑，
+//     见 left_sidebar.slint #slot-box-persist 注释）；
+//   - Esc 关闭后经 root.terminal-focus-sequence += 1 把焦点还给活动终端。
+
+import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+import { Scrim } from "widgets.slint";
+import { ScrollView } from "std-widgets.slint";
+
+// 一行结果（kind 0 = 组头 / 1 = 结果行）。`qi` 是 Rust 侧扁平结果的索引，
+// 组头为 -1 —— 执行与预览都按它回查，Slint 不持有业务对象。
+// `cat`：0 会话 / 1 命令 / 2 设置 / 3 动作（图标着色与副标题等宽判定用）。
+export struct QsRow {
+    kind: int,
+    cat: int,
+    title: string,
+    sub: string,
+    icon: string,
+    badge: string,
+    open: bool,
+    shortcut: string,
+    qi: int,
+}
+
+// 预览区的一行 meta（标签 + 值）。
+export struct QsMeta {
+    label: string,
+    value: string,
+    mono: bool,
+}
+
+// 预览区整块数据（选中行变化时 Rust 重灌）。
+export struct QsPreview {
+    has-item: bool,
+    icon: string,
+    title: string,
+    cat: string,
+    desc: string,
+    metas: [QsMeta],
+    code: string,
+    primary: string,
+    secondary: string,
+}
+
+// 分类条的一个页签（文件内私有组件，实例 5 次）。
+// 依赖全部走 in 属性 / 回调参数——组件内 root 指自身，够不到宿主。
+component QsTab inherits Rectangle {
+    in property <int> idx;
+    in property <string> label;
+    in property <int> count;
+    in property <bool> on;
+    callback picked(int);
+    height: 100%;
+    horizontal-stretch: 0;
+
+    VerticalLayout {
+        HorizontalLayout {
+            padding-left: 11px; padding-right: 11px;
+            padding-top: 4px; padding-bottom: 2px;
+            spacing: 5px;
+            alignment: center;
+            Text {
+                text: label;
+                font-size: Theme.fs-xs;
+                font-weight: on ? 700 : 400;
+                color: on ? Theme.accent : Theme.text-secondary;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                width: tab-count.preferred-width + 10px;
+                height: 15px;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: on ? Theme.accent.with-alpha(0.35) : Theme.border-subtle;
+                background: on ? Theme.accent-soft : Theme.popup-bg-inset;
+                tab-count := Text {
+                    text: count;
+                    font-size: 8px;
+                    font-family: Theme.font-mono;
+                    color: on ? Theme.accent : Theme.text-muted;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        Rectangle { height: 4px; }
+    }
+    if on : Rectangle {
+        x: 11px; y: parent.height - 2px;
+        width: parent.width - 22px; height: 2px;
+        border-radius: 1px;
+        background: Theme.accent;
+    }
+    TouchArea {
+        clicked => {
+            if (!on) {
+                picked(idx);
+            }
+        }
+    }
+}
+
+export component QuickSearchDialog inherits Rectangle {
+    // 组件自有状态（实例处与 AppWindow 根属性绑定——Slint 组件内 root
+    // 指自身，双向绑定外部属性必须在宿主实例处写）。
+    in-out property <bool> is-open;
+    // 窗口尺寸由实例处传入（PingDialog 同款——组件内拿不到窗口 bounds）。
+    in property <length> bounds-w;
+    in property <length> bounds-h;
+    in-out property <string> qs-search-text;
+    in-out property <int> qs-cat;
+    in-out property <int> qs-hi;
+    in property <[QsRow]> qs-rows;
+    in property <[string]> qs-recent-searches;
+    in property <[string]> qs-empty-hints;
+    in property <QsPreview> qs-preview;
+    in property <int> qs-content-px;
+    in property <int> qs-row-count;
+    in property <string> qs-query-ms;
+    in property <string> qs-open-ms;
+    in property <int> qs-count-all;
+    in property <int> qs-count-session;
+    in property <int> qs-count-command;
+    in property <int> qs-count-setting;
+    in property <int> qs-count-action;
+
+    background: transparent;
+
+    callback close-requested();
+    callback qs-open();                 // 打开编排：Rust 重建索引 + 推计数 + 空查询视图
+    callback qs-refresh();              // 按 qs-search-text + qs-cat 重查询
+    callback qs-move(int);              // ↑↓ / PageUp/Down：跳组头移动选中
+    callback qs-sel(int);               // 鼠标点行 / Home / End：绝对选中（Rust clamp）
+    callback qs-execute(int, bool);     // 执行（qi, secondary）
+    // 纯回调（文案拼装在 Rust：Slint 无 format / 千分位）。
+    pure callback empty-title() -> string;
+    pure callback index-count-text() -> string;
+    pure callback timing-text() -> string;
+
+    property <bool> recent-mode: root.qs-search-text == "";
+
+    // 列表列宽(行/组头显式宽——ScrollView 默认 content-width 会与子项
+    // min-width 成环,显式常量断环)。
+    property <length> list-w: card-w * 0.56;
+
+    // 打开编排：复位输入/分类/选中 → 请求 Rust 重建索引 → 0ms Timer 延迟
+    // 聚焦输入框（#343：init/事件内同步 focus 会崩，find_bar 同款延迟）。
+    property <bool> focus-pending: false;
+    changed is-open => {
+        if (root.is-open) {
+            root.qs-search-text = "";
+            root.qs-cat = 0;
+            root.qs-hi = 0;
+            root.qs-open();
+            root.focus-pending = true;
+        }
+    }
+    Timer {
+        interval: 0ms;
+        running: root.focus-pending;
+        triggered => {
+            root.focus-pending = false;
+            qs-input.focus();
+        }
+    }
+
+    // 面板尺寸：设计稿 920×568 固定，小窗口按 40px 边距收缩（高度留 100px）。
+    property <length> card-w: min(920px, root.bounds-w - 40px);
+    property <length> card-h: min(568px, root.bounds-h - 100px);
+    property <length> card-x: Theme.snap-to-device((root.bounds-w - card-w) / 2);
+    // 顶部偏移 76px（设计稿 padding-top），窗口过矮时钳回 20px。
+    property <length> card-y: Theme.snap-to-device(min(76px, max(root.bounds-h - card-h - 20px, 20px)));
+
+    // 进场动画（常驻元素：opacity / y 随 is-open 过渡）
+    opacity: root.is-open ? 1.0 : 0.0;
+    animate opacity { duration: 120ms; easing: ease-out; }
+
+    Scrim { visible: root.is-open; }
+
+    // 点外关闭（滚动吞层：遮罩上滚轮不透传）
+    TouchArea {
+        visible: root.is-open;
+        clicked => { root.close-requested(); }
+        scroll-event(e) => { accept }
+    }
+
+    esc-scope := FocusScope {
+        x: 0; y: 0; width: 1px; height: 1px;
+        key-pressed(k) => {
+            if (k.text == Key.Escape) { root.close-requested(); return accept; }
+            return reject;
+        }
+    }
+
+    // ── 卡片 ─────────────────────────────────────────────────────────
+    card := Rectangle {
+        x: card-x;
+        y: root.is-open ? card-y : card-y - 6px;
+        width: card-w;
+        height: card-h;
+        border-width: Theme.hairline();
+        border-color: Theme.border-strong;
+        border-radius: Theme.radius-lg;
+        background: Theme.popup-bg;
+        drop-shadow-blur: 26px;
+        drop-shadow-color: transparent;
+        clip: true;
+        visible: root.is-open;
+        animate y { duration: 140ms; easing: ease-out; }
+
+        // 卡片空白吞层
+        TouchArea { }
+
+        // ── 输入区 52px（底边线独立画：Slint 无分段 border-width）─────
+        Rectangle {
+            y: 0; width: 100%; height: 52px;
+            HorizontalLayout {
+                padding-left: 17px; padding-right: 12px;
+                spacing: 10px;
+                Icon {
+                    glyph: "search";
+                    tint: Theme.accent;
+                    size: 18px;
+                    horizontal-stretch: 0;
+                }
+                // 输入框（占位符手工模拟；中文输入走 ui-font-family）
+                input-box := Rectangle {
+                    vertical-stretch: 1;
+                    horizontal-stretch: 1;
+                    qs-input := TextInput {
+                        width: 100%;
+                        vertical-alignment: center;
+                        font-size: Theme.fs-lg;
+                        font-family: Theme.ui-font-family;
+                        color: Theme.text-primary;
+                        single-line: true;
+                        text <=> root.qs-search-text;
+                        enabled: root.is-open;
+                        changed text => {
+                            root.qs-hi = 0;
+                            root.qs-refresh();
+                        }
+                        key-pressed(e) => {
+                            if (e.text == Key.Escape) {
+                                root.close-requested();
+                                return accept;
+                            } else if (e.text == Key.DownArrow
+                                    || (e.modifiers.control && (e.text == "n" || e.text == "N" || e.text == "\u{000e}"))) {
+                                root.qs-move(1);
+                                return accept;
+                            } else if (e.text == Key.UpArrow
+                                    || (e.modifiers.control && (e.text == "p" || e.text == "P" || e.text == "\u{0010}"))) {
+                                root.qs-move(-1);
+                                return accept;
+                            } else if (e.text == Key.Return || e.text == "\n") {
+                                root.qs-execute(root.qs-hi, e.modifiers.control);
+                                return accept;
+                            } else if (e.text == Key.Tab) {
+                                // Tab / Shift+Tab 循环切分类（焦点留在输入框）
+                                root.qs-cat = Math.mod(root.qs-cat + (e.modifiers.shift ? 4 : 1), 5);
+                                root.qs-hi = 0;
+                                root.qs-refresh();
+                                return accept;
+                            } else if (e.modifiers.alt && e.text == "1") {
+                                root.qs-cat = 0;
+                                root.qs-hi = 0;
+                                root.qs-refresh();
+                                return accept;
+                            } else if (e.modifiers.alt && e.text == "2") {
+                                root.qs-cat = 1;
+                                root.qs-hi = 0;
+                                root.qs-refresh();
+                                return accept;
+                            } else if (e.modifiers.alt && e.text == "3") {
+                                root.qs-cat = 2;
+                                root.qs-hi = 0;
+                                root.qs-refresh();
+                                return accept;
+                            } else if (e.modifiers.alt && e.text == "4") {
+                                root.qs-cat = 3;
+                                root.qs-hi = 0;
+                                root.qs-refresh();
+                                return accept;
+                            } else if (e.modifiers.alt && e.text == "5") {
+                                root.qs-cat = 4;
+                                root.qs-hi = 0;
+                                root.qs-refresh();
+                                return accept;
+                            } else if (e.text == Key.PageDown) {
+                                root.qs-move(8);
+                                return accept;
+                            } else if (e.text == Key.PageUp) {
+                                root.qs-move(-8);
+                                return accept;
+                            } else if (e.text == Key.Home) {
+                                root.qs-sel(0);
+                                return accept;
+                            } else if (e.text == Key.End) {
+                                root.qs-sel(100000);
+                                return accept;
+                            }
+                            return reject;
+                        }
+                    }
+                    if root.qs-search-text == "" : Text {
+                        x: 0; y: (parent.height - self.preferred-height) / 2;
+                        text: @tr("Search sessions, commands, settings or actions…");
+                        font-size: Theme.fs-lg;
+                        font-family: Theme.ui-font-family;
+                        color: Theme.text-muted;
+                        TouchArea { enabled: false; }
+                    }
+                }
+                // Esc 键帽钮
+                Rectangle {
+                    width: 34px; height: 21px;
+                    border-width: 1px;
+                    border-radius: 4px;
+                    background: Theme.popup-bg-inset;
+                    vertical-stretch: 0;
+                    horizontal-stretch: 0;
+                    Text {
+                        text: "Esc";
+                        font-size: Theme.fs-2xs;
+                        font-family: Theme.font-mono;
+                        color: Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    // 键帽底边加重（keycap 语义）
+                    Rectangle {
+                        y: parent.height - 1px; width: 100%; height: 1px;
+                        background: Theme.border-strong;
+                    }
+                    TouchArea {
+                        clicked => { root.close-requested(); }
+                    }
+                }
+            }
+            Rectangle {
+                y: parent.height - 1px; width: 100%; height: 1px;
+                background: Theme.border-subtle;
+            }
+        }
+
+        // ── 分类条 38px ──────────────────────────────────────────────
+        Rectangle {
+            y: 52px; width: 100%; height: 38px;
+            HorizontalLayout {
+                padding-left: 12px; padding-right: 12px;
+                spacing: 2px;
+                QsTab {
+                    idx: 0; label: @tr("All");
+                    count: root.qs-count-all;
+                    on: root.qs-cat == 0;
+                    picked(i) => { root.qs-cat = i; root.qs-hi = 0; root.qs-refresh(); }
+                }
+                QsTab {
+                    idx: 1; label: @tr("Sessions");
+                    count: root.qs-count-session;
+                    on: root.qs-cat == 1;
+                    picked(i) => { root.qs-cat = i; root.qs-hi = 0; root.qs-refresh(); }
+                }
+                QsTab {
+                    idx: 2; label: @tr("Commands");
+                    count: root.qs-count-command;
+                    on: root.qs-cat == 2;
+                    picked(i) => { root.qs-cat = i; root.qs-hi = 0; root.qs-refresh(); }
+                }
+                QsTab {
+                    idx: 3; label: @tr("Settings");
+                    count: root.qs-count-setting;
+                    on: root.qs-cat == 3;
+                    picked(i) => { root.qs-cat = i; root.qs-hi = 0; root.qs-refresh(); }
+                }
+                QsTab {
+                    idx: 4; label: @tr("Actions");
+                    count: root.qs-count-action;
+                    on: root.qs-cat == 4;
+                    picked(i) => { root.qs-cat = i; root.qs-hi = 0; root.qs-refresh(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Text {
+                    text: @tr("Tab switch");
+                    font-size: Theme.fs-2xs;
+                    font-family: Theme.font-mono;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                    horizontal-stretch: 0;
+                }
+            }
+            Rectangle {
+                y: parent.height - 1px; width: 100%; height: 1px;
+                background: Theme.border-subtle;
+            }
+        }
+
+        // ── 主体：左列表 56% / 右预览 44%（y=90 起，脚注 34px 收尾）──
+        list-col := Rectangle {
+            x: 0; // ★ Slint 未指定 x 的元素默认居中——必须显式钉左
+            y: 90px; width: parent.width * 0.56; height: parent.height - 124px;
+            clip: true;
+
+            // 空查询视图顶部：最近搜索 chips（高保真 §04 recent-chips）。
+            // 无历史时不占位；Rust 维护 qs-recent-searches（进程内存态）。
+            if root.recent-mode && root.qs-recent-searches.length > 0 : Rectangle {
+                x: 0; y: 0; width: 100%; height: 44px;
+                HorizontalLayout {
+                    padding-left: 14px; padding-right: 14px;
+                    padding-top: 8px; padding-bottom: 6px;
+                    spacing: 5px;
+                    alignment: start;
+                    Text {
+                        text: @tr("Recent searches");
+                        font-size: 8.5px;
+                        font-family: Theme.font-mono;
+                        letter-spacing: 1px;
+                        color: Theme.text-muted;
+                        vertical-alignment: center;
+                        horizontal-stretch: 0;
+                    }
+                    for term in root.qs-recent-searches : Rectangle {
+                        height: 22px;
+                        width: chip-tx.preferred-width + 20px;
+                        border-width: 1px; border-color: Theme.border-subtle;
+                        border-radius: 11px;
+                        background: Theme.popup-bg-inset;
+                        HorizontalLayout {
+                            padding-left: 8px; padding-right: 8px;
+                            spacing: 4px;
+                            Icon {
+                                glyph: "clock";
+                                tint: Theme.text-muted;
+                                size: 9px;
+                                horizontal-stretch: 0;
+                            }
+                            chip-tx := Text {
+                                text: term;
+                                font-size: Theme.fs-2xs;
+                                color: Theme.text-secondary;
+                                vertical-alignment: center;
+                                horizontal-stretch: 0;
+                            }
+                        }
+                        TouchArea {
+                            clicked => {
+                                root.qs-search-text = term;
+                                root.qs-hi = 0;
+                                root.qs-refresh();
+                            }
+                        }
+                    }
+                }
+            }
+
+            ScrollView {
+                x: 0;
+                y: root.recent-mode && root.qs-recent-searches.length > 0 ? 44px : 0px;
+                width: 100%;
+                height: parent.height - (root.recent-mode && root.qs-recent-searches.length > 0 ? 44px : 0px);
+                content-width: self.visible-width;
+                content-height: max(self.visible-height, root.qs-content-px * 1px);
+                VerticalLayout {
+                    alignment: start;
+                    for r[i] in root.qs-rows : VerticalLayout {
+                        if r.kind == 0 : Rectangle {
+                            width: root.list-w;
+                            height: 24px;
+                            HorizontalLayout {
+                                padding-left: 14px; padding-right: 14px;
+                                spacing: 6px;
+                                Text {
+                                    text: r.title;
+                                    font-size: 8.5px;
+                                    font-family: Theme.font-mono;
+                                    letter-spacing: 1.2px;
+                                    color: Theme.text-muted;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 0;
+                                }
+                                Rectangle { height: 1px; background: Theme.border-subtle; opacity: 0.6; horizontal-stretch: 1; }
+                            }
+                        }
+                        if r.kind == 1 : Rectangle {
+                            width: root.list-w;
+                            height: 49px;
+                            property <bool> sel: i == root.qs-hi;
+                            property <bool> hov: row-ta.has-hover;
+                            background: self.sel ? Theme.accent-soft
+                                : self.hov ? Theme.bg-hover : transparent;
+                            animate background { duration: 90ms; }
+                            // 左缘选中竖条（2px accent；选中不位移——高保真 §07）
+                            if i == root.qs-hi : Rectangle {
+                                x: 0; y: 8px;
+                                width: 2px; height: parent.height - 16px;
+                                border-radius: 1px;
+                                background: Theme.accent;
+                            }
+                            HorizontalLayout {
+                                padding-left: 14px; padding-right: 12px;
+                                spacing: 9px;
+                                // 行图标 28×28（选中时 accent 化）
+                                Rectangle {
+                                    width: 28px; height: 28px;
+                                    horizontal-stretch: 0;
+                                    border-radius: 6px;
+                                    background: i == root.qs-hi ? Theme.popup-bg-elevated : Theme.popup-bg-inset;
+                                    border-width: 1px;
+                                    border-color: i == root.qs-hi ? Theme.accent.with-alpha(0.40) : Theme.border-subtle;
+                                    Icon {
+                                        glyph: r.icon;
+                                        tint: r.cat == 1 ? Theme.warning
+                                            : r.cat == 3 ? Theme.accent : Theme.text-secondary;
+                                        size: 14px;
+                                    }
+                                }
+                                // 主列：标题 + 副标题
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 1px;
+                                        Text {
+                                            text: r.title;
+                                            font-size: Theme.fs-sm;
+                                            color: r.kind == 1 && i == root.qs-hi ? Theme.text-primary : Theme.text-secondary;
+                                            overflow: elide;
+                                        }
+                                        Text {
+                                            text: r.sub;
+                                            font-size: Theme.fs-xs;
+                                            color: Theme.text-muted;
+                                            overflow: elide;
+                                            // 命令与会话行的副标题等宽（高保真 .mono）
+                                            font-family: r.cat <= 1 ? Theme.font-mono : Theme.ui-font-family;
+                                        }
+                                    }
+                                }
+                                // 右列：快捷键 / 已打开 / 分类徽章 / ↵
+                                Rectangle {
+                                    horizontal-stretch: 0;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        HorizontalLayout {
+                                            alignment: end;
+                                            spacing: 6px;
+                                            if r.shortcut != "" : Rectangle {
+                                                height: 16px;
+                                                border-width: 1px;
+                                                border-radius: 3px;
+                                                background: Theme.popup-bg-inset;
+                                                HorizontalLayout {
+                                                    padding-left: 4px; padding-right: 4px;
+                                                    Text {
+                                                        text: r.shortcut;
+                                                        font-size: 8px;
+                                                        font-family: Theme.font-mono;
+                                                        color: Theme.text-secondary;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                                Rectangle {
+                                                    y: parent.height - 1px; width: 100%; height: 1px;
+                                                    background: Theme.border-subtle;
+                                                }
+                                            }
+                                            if r.open : Rectangle {
+                                                height: 16px;
+                                                border-radius: 3px;
+                                                background: Theme.success.with-alpha(0.14);
+                                                HorizontalLayout {
+                                                    padding-left: 4px; padding-right: 4px;
+                                                    Text {
+                                                        text: @tr("Open");
+                                                        font-size: 8px;
+                                                        color: Theme.success;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+                                            if r.badge != "" && !r.open : Rectangle {
+                                                height: 16px;
+                                                border-width: 1px; border-color: Theme.border-subtle;
+                                                border-radius: 3px;
+                                                background: Theme.popup-bg-inset;
+                                                HorizontalLayout {
+                                                    padding-left: 4px; padding-right: 4px;
+                                                    Text {
+                                                        text: r.badge;
+                                                        font-size: 8px;
+                                                        color: i == root.qs-hi ? Theme.accent : Theme.text-muted;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+                                            if i == root.qs-hi && r.badge == "" && r.shortcut == "" : Text {
+                                                text: "↵";
+                                                font-size: Theme.fs-sm;
+                                                font-family: Theme.font-mono;
+                                                color: Theme.accent;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            row-ta := TouchArea {
+                                clicked => {
+                                    root.qs-sel(i);
+                                }
+                                double-clicked => {
+                                    // 设计稿「行单击/双击：选中/执行」
+                                    root.qs-sel(i);
+                                    root.qs-execute(i, false);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── 空结果态（列表区覆盖层；空查询=最近视图，不进这里）────
+            if root.qs-row-count == 0 && !root.recent-mode : Rectangle {
+                x: 0; y: 0; width: 100%; height: 100%;
+                background: Theme.popup-bg;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 8px;
+                    padding-left: 30px; padding-right: 30px; padding-bottom: 18px;
+                    // 图标（HL 包裹才居中——VL 交叉轴默认左对齐）
+                    HorizontalLayout {
+                        width: 100%;
+                        alignment: center;
+                        Rectangle {
+                            width: 44px; height: 44px;
+                            horizontal-stretch: 0;
+                            border-radius: Theme.radius-lg;
+                            background: Theme.popup-bg-inset;
+                            border-width: 1px; border-color: Theme.border-subtle;
+                            Icon {
+                                glyph: "search";
+                                tint: Theme.text-muted;
+                                size: 20px;
+                            }
+                        }
+                    }
+                    Text {
+                        text: root.empty-title();
+                        font-size: Theme.fs-sm;
+                        color: Theme.text-primary;
+                        horizontal-alignment: center;
+                        width: 100%;
+                    }
+                    Text {
+                        text: @tr("Check spelling, try a shorter keyword, or switch to a specific category with Tab.");
+                        font-size: Theme.fs-2xs;
+                        color: Theme.text-muted;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                        width: 100%;
+                    }
+                    for h in root.qs-empty-hints : Text {
+                        text: h;
+                        font-size: Theme.fs-2xs;
+                        color: Theme.text-secondary;
+                        horizontal-alignment: center;
+                        width: 100%;
+                    }
+                }
+            }
+        }
+
+        // ── 预览区 44% ────────────────────────────────────────────────
+        Rectangle {
+            x: parent.width * 0.56;
+            y: 90px;
+            width: parent.width * 0.44;
+            height: parent.height - 124px;
+            clip: true;
+
+            if root.qs-preview.has-item : VerticalLayout {
+                padding-top: 14px; padding-bottom: 12px;
+                padding-left: 16px; padding-right: 16px;
+                spacing: 10px;
+                // 头部：图标 + 标题 + 分类 chip
+                HorizontalLayout {
+                    spacing: 9px;
+                    Rectangle {
+                        width: 32px; height: 32px;
+                        horizontal-stretch: 0;
+                        border-radius: 7px;
+                        background: Theme.popup-bg-inset;
+                        border-width: 1px; border-color: Theme.border-subtle;
+                        Icon {
+                            glyph: root.qs-preview.icon;
+                            tint: Theme.accent;
+                            size: 16px;
+                        }
+                    }
+                    Text {
+                        text: root.qs-preview.title;
+                        font-size: Theme.fs-lg;
+                        font-weight: 700;
+                        color: Theme.text-primary;
+                        overflow: elide;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Rectangle {
+                        width: pv-chip.preferred-width + 12px;
+                        height: 18px;
+                        border-radius: 3px;
+                        background: Theme.accent-soft;
+                        border-width: 1px; border-color: Theme.accent.with-alpha(0.35);
+                        pv-chip := Text {
+                            text: root.qs-preview.cat;
+                            font-size: 8px;
+                            color: Theme.accent;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                // 描述（空 = 不占位）
+                if root.qs-preview.desc != "" : Text {
+                    text: root.qs-preview.desc;
+                    font-size: Theme.fs-2xs;
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
+                }
+                // meta 表（66px 标签列 + 值列）
+                for m in root.qs-preview.metas : HorizontalLayout {
+                    spacing: 10px;
+                    Text {
+                        text: m.label;
+                        font-size: Theme.fs-2xs;
+                        color: Theme.text-muted;
+                        width: 66px;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: m.value;
+                        font-size: Theme.fs-xs;
+                        color: Theme.text-primary;
+                        font-family: m.mono ? Theme.font-mono : Theme.ui-font-family;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                }
+                // 命令代码块（命令类专属）
+                if root.qs-preview.code != "" : Rectangle {
+                    border-width: 1px; border-color: Theme.border-subtle;
+                    border-radius: 5px;
+                    background: Theme.popup-field;
+                    clip: true;
+                    HorizontalLayout {
+                        padding-left: 9px; padding-right: 9px;
+                        padding-top: 7px; padding-bottom: 7px;
+                        Text {
+                            text: root.qs-preview.code;
+                            font-size: Theme.fs-xs;
+                            font-family: Theme.font-mono;
+                            color: Theme.text-primary;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                Rectangle { vertical-stretch: 1; }
+                // 底部按钮（primary / secondary）
+                HorizontalLayout {
+                    spacing: 7px;
+                    Rectangle {
+                        height: 29px;
+                        width: pv-primary.preferred-width + 22px;
+                        border-radius: 4px;
+                        background: Theme.accent;
+                        pv-primary := Text {
+                            text: root.qs-preview.primary;
+                            font-size: Theme.fs-2xs;
+                            font-weight: 700;
+                            // accent 上的反色字（= Theme.slot-tbg 在两主题下自动反相）
+                            color: Theme.slot-tbg;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            clicked => { root.qs-execute(root.qs-hi, false); }
+                        }
+                    }
+                    Rectangle {
+                        height: 29px;
+                        width: pv-secondary.preferred-width + 22px;
+                        border-radius: 4px;
+                        background: Theme.popup-bg-inset;
+                        border-width: 1px; border-color: Theme.border-subtle;
+                        pv-secondary := Text {
+                            text: root.qs-preview.secondary;
+                            font-size: Theme.fs-2xs;
+                            color: Theme.text-primary;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            clicked => { root.qs-execute(root.qs-hi, true); }
+                        }
+                    }
+                }
+            }
+            if !root.qs-preview.has-item : Text {
+                text: root.recent-mode ? @tr("Type to search; results appear instantly.")
+                    : @tr("Nothing to preview");
+                font-size: Theme.fs-2xs;
+                color: Theme.text-muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%; height: 100%;
+            }
+        }
+
+        // ── 脚注 34px ─────────────────────────────────────────────────
+        Rectangle {
+            y: parent.height - 34px; width: 100%; height: 34px;
+            background: Theme.popup-bg-inset;
+            HorizontalLayout {
+                padding-left: 12px; padding-right: 12px;
+                spacing: 10px;
+                HorizontalLayout {
+                    spacing: 3px;
+                    alignment: center;
+                    Text { text: "↑↓"; font-size: 8px; font-family: Theme.font-mono; color: Theme.text-secondary; vertical-alignment: center; }
+                    Text { text: @tr("Select"); font-size: 8.5px; color: Theme.text-muted; vertical-alignment: center; }
+                }
+                Text { text: "·"; font-size: 8.5px; color: Theme.border-subtle; vertical-alignment: center; }
+                HorizontalLayout {
+                    spacing: 3px;
+                    alignment: center;
+                    Text { text: "Enter"; font-size: 8px; font-family: Theme.font-mono; color: Theme.text-secondary; vertical-alignment: center; }
+                    Text { text: @tr("Run"); font-size: 8.5px; color: Theme.text-muted; vertical-alignment: center; }
+                }
+                Text { text: "·"; font-size: 8.5px; color: Theme.border-subtle; vertical-alignment: center; }
+                HorizontalLayout {
+                    spacing: 3px;
+                    alignment: center;
+                    Text { text: "Ctrl+Enter"; font-size: 8px; font-family: Theme.font-mono; color: Theme.text-secondary; vertical-alignment: center; }
+                    Text { text: @tr("Secondary"); font-size: 8.5px; color: Theme.text-muted; vertical-alignment: center; }
+                }
+                Text { text: "·"; font-size: 8.5px; color: Theme.border-subtle; vertical-alignment: center; }
+                HorizontalLayout {
+                    spacing: 3px;
+                    alignment: center;
+                    Text { text: "Tab"; font-size: 8px; font-family: Theme.font-mono; color: Theme.text-secondary; vertical-alignment: center; }
+                    Text { text: @tr("Category"); font-size: 8.5px; color: Theme.text-muted; vertical-alignment: center; }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Rectangle { width: 5px; height: 5px; border-radius: 3px; background: Theme.success; }
+                Text {
+                    text: root.index-count-text();
+                    font-size: 8.5px;
+                    font-family: Theme.font-mono;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.timing-text();
+                    font-size: 8.5px;
+                    font-family: Theme.font-mono;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

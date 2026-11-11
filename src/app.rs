@@ -18,6 +18,8 @@ mod command_hint_ui;
 mod command_manager;
 mod ping;
 mod quick_commands;
+// (#double-shift-v1 2026-11-11) 全局搜索宿主桥：索引/查询/执行语义/触发器接线。
+mod search_ui;
 mod resource_ui;
 mod session_event;
 mod session_models;
@@ -11772,6 +11774,10 @@ fn wire_key_input(
     // 标题栏 Ping 弹框（#titlebar-ping 高保真 2026-11-03 V13）：探测引擎 + 回调。
     // runtime 供远端探测源（SSH tab）执行 ss/netstat/ping（execute_command 异步）
     ping::install(&window, &store, ctx.runtime.clone());
+    // 双击 Shift 全局搜索（#double-shift-v1 2026-11-11）：索引/查询/执行语义。
+    // 返回的触发器状态机由 on_send_key（终端焦点）与 search-shift-press
+    // （非终端焦点，shortcut-scope）两个宿主共享。
+    let qs_tracker = search_ui::install(&window, &store);
     {
         let store_rc = store.clone();
         let weak = window.as_weak();
@@ -12008,6 +12014,28 @@ fn wire_key_input(
             window.on_send_key(move |tab_id: SharedString, key: SharedString, ctrl: bool, alt: bool, shift: bool| {
             let hint_observers = hint_observers_sk.clone();
             let term_hint_was_empty = term_hint_was_empty.clone();
+            // ── (#double-shift-v1) 全局搜索触发器 ──────────────────────────
+            // 把本键事件归一后喂给共享状态机。裸 Shift（key="" + shift，本项目
+            // 实测形态，见下方 lone-Shift 打点注释）判定 80–360ms 双击；IME C0
+            // 标记（U+0015/U+0010）对状态机透明 —— 它们与真实 Shift 成对注入、
+            // 顺序不定，清零反而会抹掉第一击的时间戳；其余任何键清零。
+            // 命中即打开面板并 return（裸 Shift 本就不该进 PTY）。
+            let qs_already_open = ctx
+                .weak
+                .upgrade()
+                .map(|w| w.get_quick_search_open())
+                .unwrap_or(false);
+            let qs_opened = qs_tracker.lock().unwrap().on_key(
+                crate::search::classify(key.as_str(), ctrl, alt, shift),
+                std::time::Instant::now(),
+                qs_already_open,
+            );
+            if qs_opened {
+                if let Some(w) = ctx.weak.upgrade() {
+                    w.set_quick_search_open(true);
+                }
+                return;
+            }
             // ── Enter on a disconnected tab → reconnect in place (#79) ──────
             // FinalShell-style: the tab shows "连接已断开,按 Enter 重新连接";
             // pressing Enter re-spawns the shell + SFTP workers in the SAME tab

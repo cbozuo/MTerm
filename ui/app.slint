@@ -48,6 +48,7 @@ import { SessionDialog, SessionDraft, PortFwd, TriggerDraft, GroupEntry, JumpEnt
 import { ConfirmDialog } from "confirm_dialog.slint";
 // (#multiline-paste-hifi 2026-11-10) 多行粘贴专用评审面（三档+预览+危险行标记）。
 import { PasteConfirmDialog, PastePreviewRow } from "paste_confirm_dialog.slint";
+import { QuickSearchDialog, QsRow, QsMeta, QsPreview } from "quick_search.slint";
 export { PastePreviewRow }
 import { LabeledInput, PrimaryButton, GhostButton, DockExpandButton, IconButton, ToolStrip, Scrim, DialogClose } from "widgets.slint";
 import { TerminalView, TermSpan, TermMatch, QuickCmd, QuickDockPanel, SendScope } from "terminal_view.slint";
@@ -1256,9 +1257,10 @@ export component AppWindow inherits Window {
     in-out property <length> quick-panel-width: 260px;
     in-out property <length> quick-panel-height: 220px;
     in-out property <string> quick-panel-dock: "right";
-    property <string> quick-external-command;
-    property <bool> quick-external-send-enter;
-    property <int> quick-external-sequence;
+    // (#double-shift-v1) 全局搜索「填入命令栏」复用本桥：改 in-out 让 Rust 可写。
+    in-out property <string> quick-external-command;
+    in-out property <bool> quick-external-send-enter;
+    in-out property <int> quick-external-sequence;
     in property <[string]> command-history;          // oldest first (newest last, #113)
     // (#cmd-history-panel 2026-10-27) 历史面板的数据（已过滤/已排序/文案已算好）。
     in property <[HistoryRow]> history-rows;
@@ -2279,6 +2281,41 @@ export component AppWindow inherits Window {
     // 标量与文案全部由 Rust paste_review::analyze_paste 组合后下发；
     // 行模型经 paste-refresh-rows(expanded) 按需重建（展开全部）。
     in-out property <bool> paste-confirm-open: false;
+    // ── (#double-shift-v1 2026-11-11) 双击 Shift 全局搜索：状态族挂根，
+    // QuickSearchDialog 组件只画；Rust 侧（src/app/search_ui.rs）重建索引、
+    // 查询、跳组头选中、预览与执行。分类：0 全部 / 1 会话 / 2 命令 / 3 设置 / 4 动作。
+    in-out property <bool> quick-search-open: false;
+    in-out property <string> qs-search-text;
+    in-out property <int> qs-cat: 0;
+    in-out property <int> qs-hi: 0;
+    in property <[QsRow]> qs-rows;
+    in property <[string]> qs-recent-searches;
+    in property <[string]> qs-empty-hints;
+    in property <QsPreview> qs-preview;
+    in property <int> qs-content-px: 0;
+    in property <int> qs-row-count: 0;
+    in property <string> qs-query-ms: "0.0 ms";
+    in property <string> qs-open-ms: "0.0 ms";
+    in property <int> qs-count-all: 0;
+    in property <int> qs-count-session: 0;
+    in property <int> qs-count-command: 0;
+    in property <int> qs-count-setting: 0;
+    in property <int> qs-count-action: 0;
+    // 执行反馈轻提示（面板关闭后仍显示；Timer 自动回落）
+    in-out property <string> quick-search-toast;
+    // 全局动作 → TerminalView 内部面板的桥（历史面板 / 查找栏无根层回调，
+    // 走序列号：TerminalView changed 时按 root.active 打开）。
+    in-out property <int> qs-term-history-seq: 0;
+    in-out property <int> qs-term-find-seq: 0;
+    callback qs-open();
+    callback qs-refresh();
+    callback qs-move(int);
+    callback qs-sel(int);
+    callback qs-execute(int, bool);
+    callback search-shift-press();
+    pure callback empty-title() -> string;
+    pure callback index-count-text() -> string;
+    pure callback timing-text() -> string;
     in-out property <string> paste-confirm-tab;
     in-out property <string> paste-confirm-text;
     in-out property <string> paste-confirm-tab-name;
@@ -2642,6 +2679,19 @@ export component AppWindow inherits Window {
             } else if (e.modifiers.control && e.modifiers.alt
                     && (e.text == "z" || e.text == "Z" || e.text == "\u{001a}")) {
                 root.toggle-zen-key();
+                accept
+            // (#double-shift-v1) 双击 Shift 全局搜索：非终端焦点兜底（终端聚焦
+            // 时 terminal_view 自己消费并走 on_send_key，两路共用 Rust 侧同一
+            // 状态机）。裸 Shift 的到达形态两种都接：text==""（app.rs 历史
+            // 注释记的形态）与 \u{0010}/\u{0015}（i-slint 键码表真实形态：
+            // Shift/ShiftR，winit 后端 for_each_keys! 映射，text 非空不会
+            // 被丢弃）。★ 靠 e.modifiers.shift 排除百度 IME 注入的同码位
+            // 标记（IME 钩子不改键盘 state → shift=false）；修饰组合排除。
+            } else if (!root.quick-search-open
+                    && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.meta
+                    && e.modifiers.shift
+                    && (e.text == "" || e.text == "\u{0010}" || e.text == "\u{0015}")) {
+                root.search-shift-press();
                 accept
             } else {
                 reject
@@ -4072,6 +4122,8 @@ export component AppWindow inherits Window {
                         quick-external-command: root.quick-external-command;
                         quick-external-send-enter: root.quick-external-send-enter;
                         quick-external-sequence: root.quick-external-sequence;
+                        qs-term-history-seq: root.qs-term-history-seq;
+                        qs-term-find-seq: root.qs-term-find-seq;
                         focus-sequence: root.terminal-focus-sequence;
                         command-history: root.command-history;
                         history-rows: root.history-rows;
@@ -8547,6 +8599,83 @@ export component AppWindow inherits Window {
             root.terminal-focus-sequence += 1;
         }
         expand-toggled(v) => { root.paste-refresh-rows(v); }
+    }
+
+    // ── (#double-shift-v1) 双击 Shift 全局搜索浮层（恒实例：进场动画挂在
+    // 常驻元素上；Esc/点外/执行都汇到 close-requested，关后焦点还给终端）。
+    quick-search := QuickSearchDialog {
+        is-open <=> root.quick-search-open;
+        bounds-w: root.width;
+        bounds-h: root.height;
+        qs-search-text <=> root.qs-search-text;
+        qs-cat <=> root.qs-cat;
+        qs-hi <=> root.qs-hi;
+        qs-rows: root.qs-rows;
+        qs-recent-searches: root.qs-recent-searches;
+        qs-empty-hints: root.qs-empty-hints;
+        qs-preview: root.qs-preview;
+        qs-content-px: root.qs-content-px;
+        qs-row-count: root.qs-row-count;
+        qs-query-ms: root.qs-query-ms;
+        qs-open-ms: root.qs-open-ms;
+        qs-count-all: root.qs-count-all;
+        qs-count-session: root.qs-count-session;
+        qs-count-command: root.qs-count-command;
+        qs-count-setting: root.qs-count-setting;
+        qs-count-action: root.qs-count-action;
+        close-requested => {
+            root.quick-search-open = false;
+            root.terminal-focus-sequence += 1;
+        }
+        qs-open => { root.qs-open(); }
+        qs-refresh => { root.qs-refresh(); }
+        qs-move(i) => { root.qs-move(i); }
+        qs-sel(i) => { root.qs-sel(i); }
+        qs-execute(i, s) => { root.qs-execute(i, s); }
+        empty-title => { return root.empty-title(); }
+        index-count-text => { return root.index-count-text(); }
+        timing-text => { return root.timing-text(); }
+    }
+
+    // (#double-shift-v1) 执行反馈轻提示：面板关闭后仍显示，2.2s 自动回落
+    // （command_manager 的 toast 属性 + Timer 同款；常驻根层不受面板显隐影响）。
+    Rectangle {
+        x: parent.width - self.width - 14px;
+        y: parent.height - 66px;
+        width: min(430px, parent.width - 28px);
+        height: toast-text.preferred-height + 12px;
+        border-width: 1px; border-color: Theme.border-strong;
+        border-radius: 5px;
+        background: Theme.popup-bg-elevated;
+        visible: root.quick-search-toast != "";
+        opacity: root.quick-search-toast != "" ? 1.0 : 0.0;
+        animate opacity { duration: 160ms; }
+        drop-shadow-blur: 20px;
+        drop-shadow-color: transparent;
+        clip: true;
+        HorizontalLayout {
+            padding-left: 10px; padding-right: 10px;
+            padding-top: 5px; padding-bottom: 5px;
+            spacing: 7px;
+            Rectangle {
+                width: 13px; height: 13px;
+                border-radius: 7px;
+                background: Theme.success.with-alpha(0.16);
+                Text { text: "✓"; font-size: 8px; color: Theme.success; horizontal-alignment: center; vertical-alignment: center; }
+            }
+            toast-text := Text {
+                text: root.quick-search-toast;
+                font-size: Theme.fs-2xs;
+                color: Theme.text-primary;
+                wrap: word-wrap;
+                vertical-alignment: center;
+            }
+        }
+        Timer {
+            interval: 2200ms;
+            running: root.quick-search-toast != "";
+            triggered => { root.quick-search-toast = ""; }
+        }
     }
 
     // Host-key confirmation (#109-5). Reuses the confirm-dialog card. The backdrop
