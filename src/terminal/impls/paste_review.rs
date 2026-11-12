@@ -976,14 +976,12 @@ mod tests {
 
     #[test]
     fn button_and_notice_texts() {
+        // (#paste-editable 2026-11-13) 主钮文案收敛单态「粘贴」（说明已在
+        // 页脚 enter-note），三态断言随之退役；notice 优先级不变。
         let a = analyze_paste("ls -la");
         assert_eq!(main_button_label(&a), crate::i18n::t("粘贴", "Paste"));
         let a = analyze_paste("ls -la\n");
-        assert!(main_button_label(&a).contains("不含末尾回车")
-            || main_button_label(&a).contains("without trailing newline"));
-        let a = analyze_paste("rm -rf /data\n");
-        assert!(main_button_label(&a).contains("已去掉末尾回车")
-            || main_button_label(&a).contains("return removed"));
+        assert_eq!(main_button_label(&a), crate::i18n::t("粘贴", "Paste"));
         // notice 优先级：force > bracketed 关 > 控制字符 > 尾回车
         let a = analyze_paste(&"x".repeat(100 * 1024 + 1));
         assert_eq!(notice_kind(&a, true), 1);
