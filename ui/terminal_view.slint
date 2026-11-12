@@ -985,13 +985,48 @@ export component TerminalView inherits Rectangle {
     callback tip-hide(string /* text */);
     // (#cmdbar-tip-r3) 气泡聚合清道夫:三钮都不悬停且弹层全关时统一清 ——
     // 交界抖动不再互相覆盖;后钮 show 直接覆盖前钮。
+    // (#cmdbar-tip-r4 2026-11-12 用户反馈"气泡一直闪跳/漂进终端区") 三处
+    // 根因修复:① r3 清道夫发 tip-hide(""),但桥接层拿文案比对,空串永远
+    // 不等于在显文案 → 清道夫是空操作,气泡弹出后永不消失,后续任何
+    // tip-show 都让僵尸气泡跳位(桥接层已改 "" = 无条件清);② changed 只
+    // 盯悬停单输入,弹层关闭沿不触发 → 点开快捷面板再关,气泡挂死;改
+    // 纯状态聚合属性,任一输入(离钮/弹层关/本视图隐藏)翻平静都清一次;
+    // ③ 所有标签页 TerminalView 常驻(非激活 visible:false + 0×0),300ms
+    // Timer 不查可见性,悬停后 300ms 内切标签会在折叠布局上取垃圾
+    // absolute-position → 气泡漂进终端区中央(!root.visible 即清 + Timer
+    // 触发体加 visible 守卫双保险)。
     property <bool> cmd-tip-hover:
         qin-ta.has-hover || hin-ta.has-hover || exp-ta.has-hover;
-    changed cmd-tip-hover => {
-        if (!self.cmd-tip-hover
-            && !root.quick-open && !root.hist-open
-            && !root.hist-popup-visible && !root.scope-open) {
-            root.tip-hide("");
+    property <bool> cmd-tip-clear: !root.visible
+        || (!cmd-tip-hover && !root.quick-open && !root.hist-open
+            && !root.hist-popup-visible && !root.scope-open);
+    in property <bool> tip-slot-active: false;   // (#cmdbar-tip-r5) 窗口气泡在显态(app.slint 桥接下发)
+    in property <string> tip-slot-text: "";      // (#cmdbar-tip-r5) 在显文案(宽限清的归属判据)
+    property <string> cmd-tip-armed: "";         // arm 时刻本组在显文案(空=本组无泡)
+    in-out property <int> cmdbar-tip-target: 0;  // 切换去抖目标:1=⚡ 2=🕘 3=↗
+    // (#cmdbar-tip-r5 2026-11-12 用户复测"7 处按钮气泡仍乱跳") r4-r2 的
+    // 「在显即改写」把跨钮变成瞬时传送:⚡/🕘 两钮 0px 贴邻,指针停在共享
+    // 边界上手部微抖让 has-hover 逐帧交替,气泡跟着逐帧瞬移 = "乱跳"真身。
+    // 改**切换去抖**(IDE hysteresis):进钮只记录目标 + restart 组级
+    // cmdbar-tip-switch(在显 80ms / 冷启 300ms,interval 绑定按槽态自切),
+    // 抖动期每帧重录重排 → 气泡停在最后**显示**的位置不动,指针稳定后
+    // 一次性切换。触发时校验目标钮此刻确有 hover(防离组幻影);离组清理由
+    // 宽限表承担,arm 时记槽文案、fire 按 tip-hide(文案) 归属清 —— 七处
+    // 文案互异,文案=归属,不会误杀 120ms 内新接管的他组气泡。
+    cmd-tip-clear-delay := Timer {
+        interval: 120ms;
+        triggered => {
+            if (root.cmd-tip-clear && root.cmd-tip-armed != "") {
+                root.tip-hide(root.cmd-tip-armed);
+            }
+        }
+    }
+    changed cmd-tip-clear => {
+        if (self.cmd-tip-clear) {
+            root.cmd-tip-armed = root.tip-slot-text;
+            cmd-tip-clear-delay.restart();
+        } else {
+            cmd-tip-clear-delay.running = false;
         }
     }
     callback open-send-window(string /* draft */);
@@ -2865,32 +2900,22 @@ export component TerminalView inherits Rectangle {
                             animate background { duration: 110ms; }
                             qin-ta := TouchArea {
                                 mouse-cursor: default;
-                                // (#cmdbar-tip) 悬浮提示:300ms 延迟上抛。
+                                // (#cmdbar-tip) 悬浮提示:#cmdbar-tip-r5 改组级
+                                // 切换去抖 —— 进钮只记录目标并 restart
+                                // cmdbar-tip-switch(见根属性块),单钮不再自持
+                                // 延迟表(抖动期由去抖表反复顺延,气泡不瞬移)。
                                 property <bool> tip-hover: self.has-hover;
-                                qin-tip-delay := Timer {
-                                    interval: 300ms;
-                                    triggered => {
-                                        // (#cmdbar-tip-r2 2026-11-10 用户反馈"三个
-                                        // 提示乱跳") 弹层(快捷/历史/范围)开着时
-                                        // backdrop 会翻转按钮 hover —— 气泡在
-                                        // 弹层开合间反复挂卸。弹层开着不上抛。
-                                        if (!root.quick-open && !root.hist-open
-                                            && !root.hist-popup-visible && !root.scope-open) {
-                                        root.tip-show(!root.lang-zh ? "Quick commands" : "快捷命令",
-                                            qin-ta.absolute-position.x + qin-ta.width / 2,
-                                            qin-ta.absolute-position.y + qin-ta.height + 5px);
-                                        }
-                                    }
-                                }
                                 changed tip-hover => {
                                     if (self.tip-hover) {
-                                        qin-tip-delay.restart();
-                                    } else {
-                                            // (#cmdbar-tip-r3) 聚合器统一清,不逐钮 hide。
-                                        qin-tip-delay.running = false;
+                                        root.cmdbar-tip-target = 1;
+                                        cmdbar-tip-switch.restart();
                                     }
                                 }
                                 clicked => {
+                                    // (#cmdbar-tip-r5b) 点击=气泡使命结束,显式清
+                                    // (弹层开着时 hover 未塌、聚合恒不清,气泡会
+                                    // 悬在面板下方;关后再入才重弹,守卫兜底)。
+                                    root.tip-hide("");
                                     root.history-open = false;
                                     root.scope-open = false;
                                     root.quick-open = !root.quick-open;
@@ -2916,33 +2941,19 @@ export component TerminalView inherits Rectangle {
                             animate background { duration: 110ms; }
                             hin-ta := TouchArea {
                                 mouse-cursor: default;
-                                // (#cmdbar-tip) 悬浮提示同 ⚡ 钮。
+                                // (#cmdbar-tip) 悬浮提示:同 ⚡ 钮(#cmdbar-tip-r5
+                                // 组级切换去抖)。
                                 property <bool> tip-hover: self.has-hover;
-                                hin-tip-delay := Timer {
-                                    interval: 300ms;
-                                    triggered => {
-                                        // (#cmdbar-tip-r2 2026-11-10 用户反馈"三个
-                                        // 提示乱跳") 弹层(快捷/历史/范围)开着时
-                                        // backdrop 会翻转按钮 hover —— 气泡在
-                                        // 弹层开合间反复挂卸。弹层开着不上抛。
-                                        if (!root.quick-open && !root.hist-open
-                                            && !root.hist-popup-visible && !root.scope-open) {
-                                        root.tip-show(!root.lang-zh ? "Command history" : "历史命令",
-                                            hin-ta.absolute-position.x + hin-ta.width / 2,
-                                            hin-ta.absolute-position.y + hin-ta.height + 5px);
-                                        }
-                                    }
-                                }
                                 changed tip-hover => {
                                     if (self.tip-hover) {
-                                        hin-tip-delay.restart();
-                                    } else {
-                                            // (#cmdbar-tip-r3) 聚合器统一清,不逐钮 hide。
-                                        hin-tip-delay.running = false;
+                                        root.cmdbar-tip-target = 2;
+                                        cmdbar-tip-switch.restart();
                                     }
                                 }
                                 // 面板已开 → 再点关闭；否则打开（顺带收掉补全框）。
                                 clicked => {
+                                    // (#cmdbar-tip-r5b) 点击即清,同 ⚡ 钮。
+                                    root.tip-hide("");
                                     if (root.hist-open) {
                                         root.hist-open = false;
                                     } else {
@@ -2980,37 +2991,49 @@ export component TerminalView inherits Rectangle {
                             animate background { duration: 110ms; }
                             exp-ta := TouchArea {
                                 mouse-cursor: default;
-                                // (#cmdbar-tip) 悬浮提示同 ⚡ 钮。
+                                // (#cmdbar-tip) 悬浮提示:同 ⚡ 钮(#cmdbar-tip-r5
+                                // 组级切换去抖)。
                                 property <bool> tip-hover: self.has-hover;
-                                exp-tip-delay := Timer {
-                                    interval: 300ms;
-                                    triggered => {
-                                        // (#cmdbar-tip-r2 2026-11-10 用户反馈"三个
-                                        // 提示乱跳") 弹层(快捷/历史/范围)开着时
-                                        // backdrop 会翻转按钮 hover —— 气泡在
-                                        // 弹层开合间反复挂卸。弹层开着不上抛。
-                                        if (!root.quick-open && !root.hist-open
-                                            && !root.hist-popup-visible && !root.scope-open) {
-                                        root.tip-show(!root.lang-zh ? "Open in editor" : "弹出编辑",
-                                            exp-ta.absolute-position.x + exp-ta.width / 2,
-                                            exp-ta.absolute-position.y + exp-ta.height + 5px);
-                                        }
-                                    }
-                                }
                                 changed tip-hover => {
                                     if (self.tip-hover) {
-                                        exp-tip-delay.restart();
-                                    } else {
-                                            // (#cmdbar-tip-r3) 聚合器统一清,不逐钮 hide。
-                                        exp-tip-delay.running = false;
+                                        root.cmdbar-tip-target = 3;
+                                        cmdbar-tip-switch.restart();
                                     }
                                 }
-                                clicked => { root.open-send-window(cmd-input.text); }
+                                clicked => {
+                                    // (#cmdbar-tip-r5b) 点击即清,同 ⚡ 钮。
+                                    root.tip-hide("");
+                                    root.open-send-window(cmd-input.text);
+                                }
                             }
                             Icon {
                                 glyph: "pop-out";
                                 tint: exp-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
                                 size: 14px;
+                            }
+                        }
+                        // (#cmdbar-tip-r5) 组级切换去抖表:三钮悬浮提示唯一的
+                        // show 通道(机制见根属性块注释)。冷启 300ms / 在显切换
+                        // 80ms;触发时复查可见性/弹层/目标钮 hover,防幻影。
+                        cmdbar-tip-switch := Timer {
+                            interval: root.tip-slot-active ? 80ms : 300ms;
+                            triggered => {
+                                if (root.visible && !root.quick-open && !root.hist-open
+                                    && !root.hist-popup-visible && !root.scope-open) {
+                                    if (root.cmdbar-tip-target == 1 && qin-ta.has-hover) {
+                                        root.tip-show(!root.lang-zh ? "Quick commands" : "快捷命令",
+                                            qin-ta.absolute-position.x + qin-ta.width / 2,
+                                            qin-ta.absolute-position.y + qin-ta.height + 5px);
+                                    } else if (root.cmdbar-tip-target == 2 && hin-ta.has-hover) {
+                                        root.tip-show(!root.lang-zh ? "Command history" : "历史命令",
+                                            hin-ta.absolute-position.x + hin-ta.width / 2,
+                                            hin-ta.absolute-position.y + hin-ta.height + 5px);
+                                    } else if (root.cmdbar-tip-target == 3 && exp-ta.has-hover) {
+                                        root.tip-show(!root.lang-zh ? "Open in editor" : "弹出编辑",
+                                            exp-ta.absolute-position.x + exp-ta.width / 2,
+                                            exp-ta.absolute-position.y + exp-ta.height + 5px);
+                                    }
+                                }
                             }
                         }
                         // (#cmdbar-clear 2026-10-23) 清空按钮：只在有内容时出现

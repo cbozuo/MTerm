@@ -430,10 +430,18 @@ component SessionRow inherits Rectangle {
             // (#hover-card-debounce-r2) 0ms 仍与 kebab-hot 写回同帧(部分机器
             // 触发序更早) → 进 ⋮ 被误清"不显示"。16ms = 下一帧裁决,跨帧后
             // kebab-hot 必为终值 —— 不闪(抢占不清)也不挂(真离行即清)。
+            // (#hover-card-debounce-r3 2026-11-12 用户反馈"信息卡闪跳") 跨行
+            // 移动 A→B 时:B 行 hover-in 同帧改写 hover-key,而旧裁决只看
+            // 「本行没悬停」→ 16ms 清卡、B 的 info-delay 150ms 才重写,
+            // 134ms 空窗逐行闪断。补接管判据:hover-key 已被别的行/组头改写
+            // = 指针仍在列表内 → 本行不清,旧卡留屏到 B 行 150ms 覆写,
+            // 行间无缝切换;真离列表(hover-key 已清空或仍指本行)才清。
             interval: 16ms;
             triggered => {
                 if (!touch.has-hover && !root.kebab-hot
-                    && root.card-out-name != "") {
+                    && root.card-out-name != ""
+                    && (root.hover-key == ""
+                        || root.hover-key == root.session.id + "|" + root.session.group)) {
                     root.card-out-name = "";
                 }
             }
@@ -1076,13 +1084,40 @@ export component LeftSidebar inherits Rectangle {
     // (#sidebar-tip-r3) 气泡聚合清道夫:四钮都不悬停(且面板菜单没开)时
     // 统一清气泡 —— 代替逐钮 tip-hide,交界抖动不再互相覆盖(A 的 hide
     // 与 B 的 show 交错 = "一会这个一会那个")。后钮 show 直接覆盖前钮。
+    // (#sidebar-tip-r4 2026-11-12 用户反馈"气泡一直闪跳") r3 发 tip-hide(""),
+    // 桥接层却拿文案比对 → 空串永不等 → 清道夫空操作,气泡弹出后永不
+    // 消失(桥接层已改 "" = 无条件清)。并改纯状态聚合:changed 只盯悬停
+    // 单输入时,面板菜单**关闭沿**(ctx-open-key "panel"→"")无人触发,
+    // 气泡挂死 —— 聚合后任一输入翻平静都清一次。
     callback tools-tip-hover-changed(bool);
     property <bool> tools-tip-hover:
         header-tool-ta.has-hover || new-ta.has-hover
         || locate-ta.has-hover || more-ta.has-hover;
-    changed tools-tip-hover => {
-        if (!self.tools-tip-hover && root.ctx-open-key != "panel") {
-            root.tip-hide("");
+    property <bool> tools-tip-clear:
+        !tools-tip-hover && root.ctx-open-key != "panel";
+    in property <bool> tip-slot-active: false;   // (#sidebar-tip-r5) 窗口气泡在显态(app.slint 桥接下发)
+    in property <string> tip-slot-text: "";      // (#sidebar-tip-r5) 在显文案(宽限清的归属判据)
+    property <string> tools-tip-armed: "";       // arm 时刻本组在显文案(空=本组无泡)
+    in-out property <int> tools-tip-target: 0;   // 切换去抖目标:1=搜索 2=新建 3=定位 4=更多
+    // (#sidebar-tip-r5 2026-11-12 用户复测"7 处按钮气泡仍乱跳") 同
+    // #cmdbar-tip-r5:四钮 2px 间距,边界微抖让 hover 逐帧交替,r4-r2 的
+    // 在显即改写=逐帧瞬移。改组级切换去抖(机制详见 terminal_view 根属性块
+    // 注释)+ 宽限清按文案归属(七处文案互异,fire 只清 arm 时自己那条,
+    // 不误杀 120ms 内新接管的他组气泡)。
+    tools-tip-clear-delay := Timer {
+        interval: 120ms;
+        triggered => {
+            if (root.tools-tip-clear && root.tools-tip-armed != "") {
+                root.tip-hide(root.tools-tip-armed);
+            }
+        }
+    }
+    changed tools-tip-clear => {
+        if (self.tools-tip-clear) {
+            root.tools-tip-armed = root.tip-slot-text;
+            tools-tip-clear-delay.restart();
+        } else {
+            tools-tip-clear-delay.running = false;
         }
     }
     callback move-session-to(string /* session-id */, string /* target-id */, bool /* after */);   // (#drag-ghost-pointer) 几何落位转发 AppWindow
@@ -1601,28 +1636,18 @@ export component LeftSidebar inherits Rectangle {
                         // (#sidebar-tip) 悬浮提示:300ms 延迟上抛(不带快捷键,
                         // 定位=钮中心 x / 钮底+5,标题栏 IconBtn 同管道)。
                         property <bool> tip-hover: self.has-hover;
-                        search-tip-delay := Timer {
-                            interval: 300ms;
-                            triggered => {
-                            if (tools-visible) {
-                                root.tip-show(root.lang-en ? "Search" : "搜索",
-                                    header-tool-ta.absolute-position.x + header-tool-ta.width / 2,
-                                    header-tool-ta.absolute-position.y + header-tool-ta.height + 5px);
-                            }
-                            }
-                        }
                         changed tip-hover => {
     if (self.tip-hover) {
-        search-tip-delay.restart();
-    } else {
-        // (#sidebar-tip-r3) 不再逐钮 tip-hide:相邻钮 26px 间距 2px,
-        // 指针在交界抖动时 A 的 hide 与 B 的 show 交错 = 气泡
-        // "一会这个一会那个"乱跳。改由标题行聚合器统一清
-        // (见 tools-tip-hover / row-tip-clear),后钮 show 覆盖前钮。
-        search-tip-delay.running = false;
+        // (#sidebar-tip-r5) 组级切换去抖:记录目标 + restart 去抖表
+        // (抖动期反复顺延,气泡停在最后显示的位置不瞬移)。
+        root.tools-tip-target = 1;
+        tools-tip-switch.restart();
     }
 }
                         clicked => {
+                        // (#sidebar-tip-r5b) 点击即清:搜索行展开会顶走气泡锚位,
+                        // 悬停未塌聚合不清,显式清掉再切换。
+                        root.tip-hide("");
                         root.search-open = !root.search-open;
                         // 收起即清空:旧查询残留会让列表停在过滤态且无输入框可见。
                         if (!root.search-open && root.search-query != "") {
@@ -1670,28 +1695,19 @@ export component LeftSidebar inherits Rectangle {
                         mouse-cursor: default;
                         // (#sidebar-tip) 悬浮提示同搜索钮。
                         property <bool> tip-hover: self.has-hover;
-                        new-tip-delay := Timer {
-                            interval: 300ms;
-                            triggered => {
-                            if (tools-visible) {
-                                root.tip-show(root.lang-en ? "New session" : "新建会话",
-                                    new-ta.absolute-position.x + new-ta.width / 2,
-                                    new-ta.absolute-position.y + new-ta.height + 5px);
-                            }
-                            }
-                        }
                         changed tip-hover => {
     if (self.tip-hover) {
-        new-tip-delay.restart();
-    } else {
-        // (#sidebar-tip-r3) 不再逐钮 tip-hide:相邻钮 26px 间距 2px,
-        // 指针在交界抖动时 A 的 hide 与 B 的 show 交错 = 气泡
-        // "一会这个一会那个"乱跳。改由标题行聚合器统一清
-        // (见 tools-tip-hover / row-tip-clear),后钮 show 覆盖前钮。
-        new-tip-delay.running = false;
+        // (#sidebar-tip-r5) 组级切换去抖(同搜索钮)。
+        root.tools-tip-target = 2;
+        tools-tip-switch.restart();
     }
 }
-                        clicked => { root.new-session(); }
+                        clicked => {
+                            // (#sidebar-tip-r5b) 点击即清:会话弹框打开后气泡悬
+                            // 在弹框标题上(悬停未塌聚合不清,同 #jumptip-pos-r3 口径)。
+                            root.tip-hide("");
+                            root.new-session();
+                        }
                     }
                 }
                 // 定位当前终端钮:⌖(IDEA Select in Project View);回调走 Rust
@@ -1718,28 +1734,18 @@ export component LeftSidebar inherits Rectangle {
                         mouse-cursor: default;
                         // (#sidebar-tip) 悬浮提示同搜索钮。
                         property <bool> tip-hover: self.has-hover;
-                        locate-tip-delay := Timer {
-                            interval: 300ms;
-                            triggered => {
-                            if (tools-visible) {
-                                root.tip-show(root.lang-en ? "Locate active session" : "定位当前会话",
-                                    locate-ta.absolute-position.x + locate-ta.width / 2,
-                                    locate-ta.absolute-position.y + locate-ta.height + 5px);
-                            }
-                            }
-                        }
                         changed tip-hover => {
     if (self.tip-hover) {
-        locate-tip-delay.restart();
-    } else {
-        // (#sidebar-tip-r3) 不再逐钮 tip-hide:相邻钮 26px 间距 2px,
-        // 指针在交界抖动时 A 的 hide 与 B 的 show 交错 = 气泡
-        // "一会这个一会那个"乱跳。改由标题行聚合器统一清
-        // (见 tools-tip-hover / row-tip-clear),后钮 show 覆盖前钮。
-        locate-tip-delay.running = false;
+        // (#sidebar-tip-r5) 组级切换去抖(同搜索钮)。
+        root.tools-tip-target = 3;
+        tools-tip-switch.restart();
     }
 }
-                        clicked => { root.locate-current-session(); }
+                        clicked => {
+                            // (#sidebar-tip-r5b) 点击即清,同新建钮。
+                            root.tip-hide("");
+                            root.locate-current-session();
+                        }
                     }
                 }
                 // 更多钮:面板菜单(⋯)。(#panel-menu-ctx 2026-11-09) 菜单并入
@@ -1775,34 +1781,51 @@ export component LeftSidebar inherits Rectangle {
                         mouse-cursor: default;
                         // (#sidebar-tip) 悬浮提示同搜索钮。
                         property <bool> tip-hover: self.has-hover;
-                        more-tip-delay := Timer {
-                            interval: 300ms;
-                            triggered => {
-                            if (tools-visible) {
-                                root.tip-show(root.lang-en ? "More" : "更多",
-                                    more-ta.absolute-position.x + more-ta.width / 2,
-                                    more-ta.absolute-position.y + more-ta.height + 5px);
-                            }
-                            }
-                        }
                         changed tip-hover => {
     if (self.tip-hover) {
-        more-tip-delay.restart();
-    } else {
-        // (#sidebar-tip-r3) 不再逐钮 tip-hide:相邻钮 26px 间距 2px,
-        // 指针在交界抖动时 A 的 hide 与 B 的 show 交错 = 气泡
-        // "一会这个一会那个"乱跳。改由标题行聚合器统一清
-        // (见 tools-tip-hover / row-tip-clear),后钮 show 覆盖前钮。
-        more-tip-delay.running = false;
+        // (#sidebar-tip-r5) 组级切换去抖(同搜索钮)。
+        root.tools-tip-target = 4;
+        tools-tip-switch.restart();
     }
 }
                         clicked => {
                             if (root.ctx-open-key == "panel") {
                                 root.ctx-open-key = "";   // 再点同钮 = 关菜单
                             } else {
+                                // (#sidebar-tip-r4-r2) 开面板菜单 = 菜单卡互斥,
+                                // 显式清「更多」气泡:tools-tip-clear 有 panel 守卫
+                                // (菜单开着 hover 塌不清),不清则气泡悬在菜单上方。
+                                root.tip-hide("");
                                 root.panel-menu-opening(
                                     self.absolute-position.x + self.width / 2,
                                     self.absolute-position.y + self.height + 4px);
+                            }
+                        }
+                    }
+                }
+                // (#sidebar-tip-r5) 四钮悬浮提示唯一 show 通道:组级切换去抖表
+                // (机制见根属性块/terminal_view 注释)。冷启 300ms / 在显切换
+                // 80ms;触发时复查工具带在显 + 目标钮确有 hover,防幻影。
+                tools-tip-switch := Timer {
+                    interval: root.tip-slot-active ? 80ms : 300ms;
+                    triggered => {
+                        if (tools-visible) {
+                            if (root.tools-tip-target == 1 && header-tool-ta.has-hover) {
+                                root.tip-show(root.lang-en ? "Search" : "搜索",
+                                    header-tool-ta.absolute-position.x + header-tool-ta.width / 2,
+                                    header-tool-ta.absolute-position.y + header-tool-ta.height + 5px);
+                            } else if (root.tools-tip-target == 2 && new-ta.has-hover) {
+                                root.tip-show(root.lang-en ? "New session" : "新建会话",
+                                    new-ta.absolute-position.x + new-ta.width / 2,
+                                    new-ta.absolute-position.y + new-ta.height + 5px);
+                            } else if (root.tools-tip-target == 3 && locate-ta.has-hover) {
+                                root.tip-show(root.lang-en ? "Locate active session" : "定位当前会话",
+                                    locate-ta.absolute-position.x + locate-ta.width / 2,
+                                    locate-ta.absolute-position.y + locate-ta.height + 5px);
+                            } else if (root.tools-tip-target == 4 && more-ta.has-hover) {
+                                root.tip-show(root.lang-en ? "More" : "更多",
+                                    more-ta.absolute-position.x + more-ta.width / 2,
+                                    more-ta.absolute-position.y + more-ta.height + 5px);
                             }
                         }
                     }
