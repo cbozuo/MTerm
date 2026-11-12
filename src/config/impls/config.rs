@@ -2146,6 +2146,79 @@ impl ConfigStore {
         self.cache.collapse_right_sidebar_default = v;
     }
 
+    // ── 面板设置弹框 8 键(#panel-settings 2026-11-12) ─────────────────
+    /// 行密度:会话行高度(标准 34 / 紧凑 30,#tree-geom)。
+    pub fn panel_row_compact(&self) -> bool {
+        self.cache.panel_row_compact
+    }
+
+    pub fn set_panel_row_compact(&mut self, v: bool) {
+        self.cache.panel_row_compact = v;
+    }
+
+    /// 组色带(分组行的组色淡染底)。
+    pub fn panel_group_bands(&self) -> bool {
+        self.cache.panel_group_bands
+    }
+
+    pub fn set_panel_group_bands(&mut self, v: bool) {
+        self.cache.panel_group_bands = v;
+    }
+
+    /// 子组数(组名后的「N组」)。
+    pub fn panel_sub_count(&self) -> bool {
+        self.cache.panel_sub_count
+    }
+
+    pub fn set_panel_sub_count(&mut self, v: bool) {
+        self.cache.panel_sub_count = v;
+    }
+
+    /// 会话总数(分组行右侧的数字)。
+    pub fn panel_group_total(&self) -> bool {
+        self.cache.panel_group_total
+    }
+
+    pub fn set_panel_group_total(&mut self, v: bool) {
+        self.cache.panel_group_total = v;
+    }
+
+    /// 悬停信息卡(悬停会话行显示主机信息)。
+    pub fn panel_hover_card(&self) -> bool {
+        self.cache.panel_hover_card
+    }
+
+    pub fn set_panel_hover_card(&mut self, v: bool) {
+        self.cache.panel_hover_card = v;
+    }
+
+    /// 点击标签定位树(切换顶部标签时滚动并高亮对应会话)。
+    pub fn panel_locate_follow_tab(&self) -> bool {
+        self.cache.panel_locate_follow_tab
+    }
+
+    pub fn set_panel_locate_follow_tab(&mut self, v: bool) {
+        self.cache.panel_locate_follow_tab = v;
+    }
+
+    /// 自动展开所在组(打开会话时展开它的父分组)。
+    pub fn panel_auto_expand_group(&self) -> bool {
+        self.cache.panel_auto_expand_group
+    }
+
+    pub fn set_panel_auto_expand_group(&mut self, v: bool) {
+        self.cache.panel_auto_expand_group = v;
+    }
+
+    /// 排序方式:0 = 默认(存储序) / 1 = 名称 / 2 = 最近。
+    pub fn panel_sort_mode(&self) -> u8 {
+        self.cache.panel_sort_mode
+    }
+
+    pub fn set_panel_sort_mode(&mut self, v: u8) {
+        self.cache.panel_sort_mode = v;
+    }
+
     /// Persisted sidebar width in logical px. Falls back to the default when the
     /// stored value is unset/zero (e.g. a config created via `Default`).
     pub fn right_sidebar_width(&self) -> f32 {

@@ -100,6 +100,9 @@ pub const ROW_GROUP_D1: f32 = 27.0;
 pub const ROW_GROUP_D2: f32 = 26.0;
 /// 会话行高（单行化：主机/用户只在悬停卡）。
 pub const ROW_HEIGHT_SESSION: f32 = 34.0;
+/// 会话行高·紧凑档（#panel-settings 2026-11-12 面板设置「行密度」；Slint 侧
+/// SessionRow 高度与 drag-pitch 同步读 `panel_row_compact` 配置）。
+pub const ROW_HEIGHT_SESSION_COMPACT: f32 = 30.0;
 /// 空组占位行高。
 pub const ROW_HEIGHT_EMPTY: f32 = 22.0;
 /// 组头行前留白（组间距；首行无）。

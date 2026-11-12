@@ -1,6 +1,7 @@
 import { Icon } from "icons.slint";
 import { Theme } from "theme.slint";
 import { PrimaryButton, GhostButton, ProtocolIcon } from "widgets.slint";
+import { MoveGroupRow } from "group_types.slint";
 
 export struct SessionInfo {
     id: string,
@@ -82,6 +83,13 @@ component SessionRow inherits Rectangle {
     in property <string> active-session-id: "";
     in property <string> locate-flash-id: "";
     in property <bool> compact;
+    // (#panel-settings 2026-11-12) 面板设置 5 项接入(LeftSidebar 转呈):
+    // 组色带 / 子组数「N组」 / 会话总数 / 悬停信息卡 / 行密度(仅会话行)。
+    in property <bool> panel-group-bands: true;
+    in property <bool> panel-sub-count: true;
+    in property <bool> panel-group-total: true;
+    in property <bool> panel-hover-card: true;
+    in property <bool> panel-row-compact: false;
     callback connect();
     callback edit();
     callback duplicate();
@@ -210,7 +218,9 @@ component SessionRow inherits Rectangle {
     // (#drag-pitch-real 2026-09-11) 40px → 真实行距(30/32 行高 + 2px 间隙):
     // 槽位框高度、±pitch 偏移与让位阈值(line-half)全部由此派生,失配
     // 会导致框比行高 8px、错位半行(用户截图),让位手感也迟钝。
-    in-out property <length> drag-pitch: 36px; // (#tree-geom) 34 行高 + 2 间距
+    // (#tree-geom) 34 行高 + 2 间距;(#panel-settings) 行密度=紧凑时会话行
+    // 30 → pitch 32(SessionRow height 同条件;locate 数学在 app.rs 同步)。
+    in-out property <length> drag-pitch: (panel-row-compact ? 32px : 36px);
     // (#drag-step-real 2026-09-12 → #member-gap 2026-09-21) **让位步长 = 行距**。
     // 旧世界:成员行紧贴(sess-list spacing 0),排布步长 = 行高 = pitch - 2px。
     // 现在(#member-gap):成员行之间有 2px 间距,真实排布步长 = 行高 + 2px
@@ -351,7 +361,9 @@ component SessionRow inherits Rectangle {
     // 会话行 34;主机/用户只在悬停卡)。drag-pitch = 34 + MEMBER_GAP(2) = 36,
     // 与 crate::session_tree::row::ROW_HEIGHT_SESSION 同一张表(改任一侧必须
     // 同步另一侧 + locate 滚动坐标)。
-    height: 34px;
+    // (#panel-settings 2026-11-12) 行密度=紧凑时会话行 30(ROW_HEIGHT_SESSION_
+    // COMPACT 同值;组头/空占位行高不变,locate 数学在 app.rs 同步读档)。
+    height: (session.row-kind == "session" && panel-row-compact) ? 30px : 34px;
     // (#slot-shift) 让位位移:配合外包 wrapper 使用(布局子元素不能设 y)。
     y: root.shift-y;
     // 让位动画 = 物理弹簧 spring(0.35) / 90ms。用弹簧而非贝塞尔:animate 由属性变化驱动,
@@ -577,7 +589,9 @@ component SessionRow inherits Rectangle {
         interval: 150ms;
         // (#hover-card-kebab-keep 2026-11-10) 进 ⋮ 抢占期(touch 塌 false)
         // 卡片不灭:running 挂 kebab-hot 同源,只有真离行才停。
-        running: (touch.has-hover || root.kebab-hot) && !root.list-dragging;   // 拖动中不弹信息卡
+        // (#panel-settings) 「悬停信息卡」关 = 整条产出通路停跑。
+        running: panel-hover-card
+            && (touch.has-hover || root.kebab-hot) && !root.list-dragging;   // 拖动中不弹信息卡
         triggered => {
             // (#hover-card-drag) running 翻转与 triggered 的竞态防护:
             // 拖拽已拉起时不再写出信息卡。
@@ -1023,7 +1037,9 @@ export component LeftSidebar inherits Rectangle {
     // (#drag-pitch-real 2026-09-11) 40px → 真实行距(30/32 行高 + 2px 间隙):
     // 槽位框高度、±pitch 偏移与让位阈值(line-half)全部由此派生,失配
     // 会导致框比行高 8px、错位半行(用户截图),让位手感也迟钝。
-    in-out property <length> drag-pitch: 36px; // (#tree-geom) 34 行高 + 2 间距
+    // (#tree-geom) 34 行高 + 2 间距;(#panel-settings) 行密度=紧凑时会话行
+    // 30 → pitch 32(SessionRow height 同条件;locate 数学在 app.rs 同步)。
+    in-out property <length> drag-pitch: (panel-row-compact ? 32px : 36px);
     // (#drag-step-real 2026-09-12 → #member-gap 2026-09-21) 让位步长 = **行距**。
     // 旧行紧贴时步长 = 行高(pitch - 2px);现在成员行之间有 2px 间距
     // (#member-gap),真实排布步长 = 行高 + 2px = drag-pitch(32/34)。
@@ -1231,6 +1247,9 @@ export component LeftSidebar inherits Rectangle {
     in-out property <string> ctx-menu-group-color-hex: "";
     in-out property <bool> group-color-picker-open: false;
     in-out property <bool> ctx-menu-empty: false;   // 组头菜单:空组才有"删除"
+    // (#grp-menu-v2 2026-11-12) 被右击组头的深度:"新建子分组"只在父组
+    // (depth 0)出现(高保真:UI 限深 2,子组不再给新建子分组)。
+    in-out property <int> ctx-menu-depth: 0;
     in-out property <length> ctx-menu-x: 0px;
     in-out property <length> ctx-menu-y: 0px;
     in-out property <length> ctx-menu-space-below: 0px;
@@ -1281,6 +1300,13 @@ export component LeftSidebar inherits Rectangle {
     // Compact mode: drop the big title/tagline header and
     // tighten padding so the session list fits a narrow docked panel (#v0.5).
     in property <bool> compact;
+    // (#panel-settings 2026-11-12) 面板设置 5 项显示(根收、转发 SessionRow;
+    // 弹框/持久化在 AppWindow 根,这里只读)。
+    in property <bool> panel-group-bands: true;
+    in property <bool> panel-sub-count: true;
+    in property <bool> panel-group-total: true;
+    in property <bool> panel-hover-card: true;
+    in property <bool> panel-row-compact: false;
     in property <string> dock-edge: "left";
     property <bool> dock-horizontal: root.dock-edge == "left" || root.dock-edge == "right";
     // Collapse the sidebar to the edge icon strip (compact mode only) (#v0.5 M5).
@@ -2412,13 +2438,17 @@ export component LeftSidebar inherits Rectangle {
                                 // 兜住)。
                                 border-width: 0px;
                                 // 组色淡染层(d0 10% / d1 4% / d2+ 无;悬停抬到 14%)。
+                                // (#panel-settings) 「组色带」开关可隐(菜单钉住
+                                // 的选中态底色不属色带,保持常显)。
                                 Rectangle {
                                     x: 0px;
                                     y: 0px;
                                     width: parent.width;
                                     height: parent.height;
                                     border-radius: parent.border-radius;
-                                    visible: parent.menu-pin || session.depth <= 0 || session.depth == 1;
+                                    visible: parent.menu-pin
+                                        || (panel-group-bands
+                                            && (session.depth <= 0 || session.depth == 1));
                                     background: @linear-gradient(90deg,
                                         parent.band.with-alpha(parent.menu-pin ? 0.14
                                             : session.depth <= 0 ? 0.10 : 0.04) 0%,
@@ -2452,6 +2482,7 @@ export component LeftSidebar inherits Rectangle {
                                 root.ctx-menu-group-color-hex = session.group-color-hex;
                                 root.group-color-picker-open = false;
                                 root.ctx-menu-empty = session.id == "";
+                                root.ctx-menu-depth = session.depth;
                                 root.ctx-menu-x = mx;
                                 root.ctx-menu-y = my;
                                 // (#ctx-menu-flip) 下方面积不足时菜单上翻。
@@ -2822,7 +2853,8 @@ export component LeftSidebar inherits Rectangle {
                                 }
                                 // (#left-panel-v3-r2) 组名后「N组」(mockup .gsub):
                                 // 直接子组数,搜索态不显示(引擎置 0)。
-                                if session.group-subs > 0 : Text {
+                                // (#panel-settings) 「子组数」开关可隐。
+                                if panel-sub-count && session.group-subs > 0 : Text {
                                     text: "\{session.group-subs}组";
                                     color: Theme.text-muted;
                                     font-size: Theme.fs-2xs;
@@ -2836,7 +2868,8 @@ export component LeftSidebar inherits Rectangle {
                                 // —— 悬停 ⋮ 出现在数字右侧,不再互斥让位
                                 // (旧互斥方案在点 ⋮ 瞬间 visible 双翻转,布局
                                 // 瞬时重排 = 跳动)。
-                                Text {
+                                // (#panel-settings) 「会话总数」开关可隐。
+                                if panel-group-total : Text {
                                     text: "\{session.group-total}";
                                     color: Theme.text-secondary;
                                     font-size: Theme.fs-2xs;
@@ -2977,6 +3010,12 @@ export component LeftSidebar inherits Rectangle {
                             active-session-id: root.active-session-id;
                             locate-flash-id: root.locate-flash-id;
                             compact: root.compact;
+                            // (#panel-settings) 面板设置 5 项逐行转发。
+                            panel-group-bands: root.panel-group-bands;
+                            panel-sub-count: root.panel-sub-count;
+                            panel-group-total: root.panel-group-total;
+                            panel-hover-card: root.panel-hover-card;
+                            panel-row-compact: root.panel-row-compact;
                             // (#session-hover-card) 信息卡片坐标/文本中转到
                             // Welcome,再由实例侧绑到 AppWindow 根浮层。
                             card-out-name <=> root.card-out-name;

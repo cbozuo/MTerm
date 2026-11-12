@@ -1,0 +1,328 @@
+// SPDX-License-Identifier: MIT
+// 「移动到分组」弹框(#move-group-dialog 2026-11-12,高保真 docs/design/
+// left-panel-session-hifi-2026-10-28-v3.html §Move to Group)。
+// 骨架 = 全窗遮罩(点外关闭,与面板右键菜单同口径)+ 居中卡片(320px):
+// 标题「移动到分组」/ 副标题「N 个会话」/ 搜索框 / 树形组列表(彩色圆点 +
+// depth 缩进 + 右侧计数 + 「当前」徽章) / 页脚(提示 + 取消 + 移动)。
+// 规格(hifi CSS 覆盖链为准):卡 320px·圆角 11·panel 底 / 头 13·13·8 标题
+// 12px-600 副题 10px / 搜索 30px 高·内衬 8 / 行 31px·左距 7+depth*16·
+// 圆角 5·11px / 圆点 6px / 计数 9px 次色右对齐 / 当前徽章 9px 强调色 /
+// 空态 22px 居中 / 页脚 9·12·顶线·钮 30px 高。
+// 搜索过滤在 **Rust 侧**(Slint string 无 contains:搜索词变化 → callback
+// 请求宿主重建 rows;ping 弹框同款分工)。
+
+import { Theme } from "theme.slint";
+import { Icon } from "icons.slint";
+import { Scrim, DialogClose } from "widgets.slint";
+import { ScrollView } from "std-widgets.slint";
+import { PickerMath } from "color_picker.slint";
+import { MoveGroupRow } from "group_types.slint";
+
+export component MoveGroupDialog inherits Rectangle {
+    width: 100%;
+    height: 100%;
+
+    in property <bool> lang-en: false;
+    in property <int> session-count: 1;
+    in property <[MoveGroupRow]> rows;
+    // 搜索词(Rust 侧过滤后重下发 rows)。
+    in-out property <string> search-query: "";
+    // 选中的目标组名("" = 未选)。
+    in-out property <string> picked: "";
+    callback search-changed(string);
+    callback confirm(string /* group name */);
+    callback close-requested();
+
+    // 点外关闭(与面板右键菜单同口径:遮罩点击 = 取消)。
+    Scrim { width: 100%; height: 100%; }
+    layer-ta := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: default;
+        clicked => { root.close-requested(); }
+    }
+    // Esc 关闭(ping 弹框同款 1×1 FocusScope)。
+    esc-scope := FocusScope {
+        x: 0;
+        y: 0;
+        width: 1px;
+        height: 1px;
+        key-pressed(k) => {
+            if (k.text == Key.Escape) { root.close-requested(); return accept; }
+            return reject;
+        }
+    }
+
+    card := Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 320px;
+        height: min(parent.height - 34px, card-vl.preferred-height);
+        background: Theme.popup-bg;
+        border-radius: 11px;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        clip: true;
+        // 卡身吃掉点击(不穿透到遮罩的"点外关闭")。
+        TouchArea { width: 100%; height: 100%; mouse-cursor: default; }
+        card-vl := VerticalLayout {
+            // 头:标题 + 副标题 + 关闭。
+            Rectangle {
+                height: 51px;
+                HorizontalLayout {
+                    padding-left: 13px;
+                    padding-right: 10px;
+                    padding-top: 13px;
+                    padding-bottom: 8px;
+                    spacing: 6px;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        Text {
+                            text: root.lang-en ? "Move to group" : "移动到分组";
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-xs;
+                            font-weight: Theme.fw-strong;
+                            height: 17px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.lang-en
+                                ? (root.session-count + " session" + (root.session-count == 1 ? "" : "s"))
+                                : (root.session-count + " 个会话");
+                            color: Theme.text-muted;
+                            font-size: Theme.fs-2xs;
+                            height: 14px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    DialogClose {
+                        btn-size: 22px;
+                        glyph-size: 12px;
+                        corner: 4px;
+                        clicked => { root.close-requested(); }
+                    }
+                }
+            }
+            // 搜索框(hifi .move-search:30 高 / 内衬 8 / 聚焦强调描边)。
+            // VL 子项由布局拉伸,显式 x/width 会被布局覆盖 → 外层整宽容器
+            // 内再放左右各 12px 内缩的搜索框(#move-group-dialog 坑)。
+            Rectangle {
+                height: 30px;
+                Rectangle {
+                    x: 12px;
+                    width: parent.width - 24px;
+                    height: 30px;
+                    border-radius: 5px;
+                    border-width: 1px;
+                    border-color: mv-input.has-focus ? Theme.accent-solid
+                        : Theme.border-control;
+                    background: Theme.popup-field;
+                    // 聚焦光晕(无 box-shadow,双层描边模拟)。
+                    if mv-input.has-focus : Rectangle {
+                        x: -2px;
+                        y: -2px;
+                        width: parent.width + 4px;
+                        height: parent.height + 4px;
+                        border-radius: 7px;
+                        border-width: 2px;
+                        border-color: Theme.accent-solid.with-alpha(0.18);
+                    }
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 6px;
+                        Icon {
+                            glyph: "search";
+                            tint: Theme.text-muted;
+                            size: 12px;
+                        }
+                        mv-input := TextInput {
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-xs;
+                            single-line: true;
+                            text <=> root.search-query;
+                            // (#move-group-dialog) edited 0 参(self.text 读值;
+                            // Slint 1.18 TextInput 无 placeholder 属性 → 占位符
+                            // 绝对叠放(ping SearchBox 同款)。
+                            edited() => { root.search-changed(self.text); }
+                        }
+                    }
+                    // 占位符(空且未聚焦时显示)。
+                    if root.search-query == "" && !mv-input.has-focus : Text {
+                        x: 8px + 12px + 6px;
+                        y: 0;
+                        width: parent.width - 26px;
+                        height: parent.height;
+                        text: root.lang-en ? "Search groups…" : "搜索分组…";
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-xs;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            // 组树列表(hifi .move-list:31px 行 / 左距 7+depth*16)。
+            Rectangle {
+                height: 8px;
+            }
+            list-scroll := ScrollView {
+                vertical-stretch: 1;
+                min-height: 62px;
+                list-vl := VerticalLayout {
+                    padding-left: 6px;
+                    padding-right: 6px;
+                    padding-bottom: 8px;
+                    for r in root.rows : Rectangle {
+                        if r.name != "" : Rectangle {
+                            height: 31px;
+                            border-radius: 5px;
+                            background: r.current
+                                ? transparent
+                                : (row-ta.has-hover ? Theme.bg-hover
+                                    : (root.picked == r.name ? Theme.accent-solid.with-alpha(0.14) : transparent));
+                            border-width:
+                                (!r.current && root.picked == r.name) ? 1px : 0px;
+                            border-color: Theme.accent-solid.with-alpha(0.45);
+                            row-ta := TouchArea {
+                                mouse-cursor: default;
+                                enabled: !r.current;
+                                clicked => {
+                                    root.picked = r.name;
+                                }
+                            }
+                            HorizontalLayout {
+                                padding-left: 7px + r.depth * 16px;
+                                padding-right: 7px;
+                                spacing: 6px;
+                                // 组色圆点(6px;无自定义色 → 次级前景)。
+                                Rectangle {
+                                    width: 6px;
+                                    height: 6px;
+                                    border-radius: 3px;
+                                    background: Theme.group-color(r.has-color, r.color);
+                                }
+                                Text {
+                                    text: r.name;
+                                    color: r.current ? Theme.text-secondary
+                                        : (row-ta.has-hover || root.picked == r.name
+                                            ? Theme.text-primary : Theme.text-secondary);
+                                    font-size: Theme.fs-xs;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    horizontal-alignment: left;
+                                    overflow: elide;
+                                }
+                                if r.current : Rectangle {
+                                    height: 15px;
+                                    width: cur-tx.preferred-width + 6px;
+                                    border-radius: 3px;
+                                    border-width: 1px;
+                                    border-color: Theme.accent-solid.with-alpha(0.45);
+                                    cur-tx := Text {
+                                        text: root.lang-en ? "current" : "当前";
+                                        color: Theme.accent-solid;
+                                        font-size: Theme.fs-2xs;
+                                        vertical-alignment: center;
+                                        horizontal-alignment: center;
+                                    }
+                                }
+                                Text {
+                                    text: "" + r.count;
+                                    color: Theme.text-muted;
+                                    font-size: Theme.fs-2xs;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: right;
+                                    min-width: 16px;
+                                }
+                            }
+                        }
+                    }
+                    // 空态:搜索无命中(rows 由 Rust 过滤,空 = 无匹配)。
+                    if root.rows.length == 0 : Rectangle {
+                        height: 22px;
+                        Text {
+                            text: root.lang-en ? "No groups match" : "没有匹配的分组";
+                            color: Theme.text-muted;
+                            font-size: Theme.fs-xs;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+            // 页脚:提示 + 取消 + 移动(primary,未选禁用)。
+            Rectangle {
+                height: 48px;
+                Rectangle {
+                    y: 0;
+                    height: 1px;
+                    width: 100%;
+                    background: Theme.border-subtle;
+                }
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    padding-top: 9px;
+                    padding-bottom: 9px;
+                    spacing: 8px;
+                    Text {
+                        text: root.picked == ""
+                            ? (root.lang-en ? "Pick a target group" : "选择目标分组")
+                            : root.picked;
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-2xs;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    // 取消(ghost 30px)。
+                    Rectangle {
+                        height: 30px;
+                        width: cancel-tx.preferred-width + 18px;
+                        border-radius: 5px;
+                        border-width: 1px;
+                        border-color: Theme.border-strong;
+                        background: cancel-ta.has-hover ? Theme.bg-hover : transparent;
+                        cancel-ta := TouchArea {
+                            mouse-cursor: default;
+                            clicked => { root.close-requested(); }
+                        }
+                        cancel-tx := Text {
+                            text: root.lang-en ? "Cancel" : "取消";
+                            color: cancel-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                            font-size: Theme.fs-xs;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+                    // 移动(实心 primary;未选 = 22% 淡染禁用)。
+                    Rectangle {
+                        height: 30px;
+                        width: move-tx.preferred-width + 18px;
+                        border-radius: 5px;
+                        background: root.picked == ""
+                            ? Theme.accent-solid.with-alpha(0.22)
+                            : (move-ta.has-hover ? Theme.accent-hover : Theme.accent-solid);
+                        move-ta := TouchArea {
+                            mouse-cursor: default;
+                            enabled: root.picked != "";
+                            clicked => { root.confirm(root.picked); }
+                        }
+                        move-tx := Text {
+                            text: root.lang-en ? "Move" : "移动";
+                            color: root.picked == ""
+                                ? Theme.text-muted
+                                : PickerMath.ink-on(Theme.accent-hex);
+                            font-size: Theme.fs-xs;
+                            font-weight: Theme.fw-strong;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

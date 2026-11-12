@@ -1,0 +1,482 @@
+// SPDX-License-Identifier: MIT
+// 面板设置弹框（#panel-settings 2026-11-12，高保真 docs/design/
+// left-panel-session-hifi-2026-10-28-v3.html §V4.3 面板设置弹层）。
+// 左侧会话面板的 8 项设置：布局(行密度) / 显示(组色带·子组数·会话总数·
+// 悬停信息卡) / 交互(点击标签定位树·自动展开所在组) / 排序(排序方式)。
+// 骨架 = ping_dialog 同款的全窗 overlay + Scrim + 居中卡片（模态点外不关，
+// 关闭口径 = 完成/×/Esc）；「修改实时生效」= 开关/分段直写双向绑定的
+// AppWindow 属性（UI 即刻反馈）+ toggled-*/sort-picked 回调（Rust 落盘，
+// 排序档回调另触发模型重建）。
+// 规格（hifi CSS 覆盖链为准）：卡 380px / 圆角 12 / 头 14·16·10 + 底线 /
+// 段落 12 0 + 顶线(首段无) / 段题粗 muted / 行 min 36px 双行文案(fs-xs 主 +
+// fs-2xs 次) / 开关 30×17 thumb 13 / 分段 compact 25px / 页脚 10·16 =
+// 恢复默认(ghost 30px) + spacer + 完成(实心 ink-on)。
+
+import { Theme } from "theme.slint";
+import { Scrim, DialogClose } from "widgets.slint";
+import { SegGroup } from "seg.slint";
+import { ScrollView } from "std-widgets.slint";
+import { PickerMath } from "color_picker.slint";
+
+// ── 子组件(文件级声明:Slint 禁止组件内嵌套 component,#panel-settings 实踩 2026-11-12)──
+    // 开关通用（hifi .set-switch 30×17 thumb 13；thumb 用无量纲进度驱动，
+    // 布尔直绑 x + animate x 发涩 —— ping 弹框同款教训）。
+    // 命名 PSwitch:Switch 与 Slint std-widgets 保留名冲突(编译器只报
+    // "Parse error",无定位提示,2026-11-12 实踩)。
+    component PSwitch inherits Rectangle {
+        in property <bool> on;
+        callback toggled();
+        width: 30px;
+        height: 17px;
+        border-radius: 9px;
+        border-width: 1px;
+        border-color: root.on ? Theme.accent-solid : Theme.border-control;
+        background: root.on ? Theme.accent-solid : Theme.bg-active;
+        animate background { duration: 160ms; easing: ease-in-out; }
+        property <float> thumb-pos: root.on ? 1 : 0;
+        animate thumb-pos { duration: 160ms; easing: ease-in-out; }
+        Rectangle {
+            // 30−2·2−13 = 13px 行程；snap 防分数像素虚边(ghost-line 教训)。
+            x: Theme.snap-to-device(2px + 13px * parent.thumb-pos);
+            y: (parent.height - self.height) / 2;
+            width: 13px;
+            height: 13px;
+            border-radius: 7px;
+            background: root.on ? PickerMath.ink-on(Theme.accent-hex) : Theme.text-muted;
+            animate background { duration: 160ms; easing: ease-in-out; }
+        }
+        ta := TouchArea {
+            mouse-cursor: default;
+            clicked => { root.toggled(); }
+        }
+    }
+    // 设置行通用（hifi .set-row：min 36px、左双行文案、右控件；热区整行，
+    // ping「开关不动」教训 —— TouchArea 必须包住视觉块）。
+    component SetRow inherits Rectangle {
+        in property <string> title;
+        in property <string> sub;
+        width: 100%;
+        height: 36px;
+        background: row-ta.has-hover ? Theme.bg-hover : transparent;
+        animate background { duration: 110ms; }
+        row-ta := TouchArea {
+            width: 100%;
+            height: 100%;
+            mouse-cursor: default;
+        }
+        HorizontalLayout {
+            padding-right: 12px;
+            spacing: 12px;
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                Text {
+                    text: root.title;
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-xs;
+                    vertical-alignment: center;
+                }
+                if root.sub != "" : Text {
+                    text: root.sub;
+                    color: Theme.text-muted;
+                    font-size: Theme.fs-2xs;
+                    vertical-alignment: center;
+                }
+            }
+            @children
+        }
+    }
+    // 段落标题（hifi .set-section-title 9px 粗 muted；zh 无大小写，粗+次色
+    // 承担分区语义）。
+    component SectionTitle inherits Text {
+        height: 16px;
+        vertical-alignment: center;
+        color: Theme.text-muted;
+        font-size: Theme.fs-2xs;
+        font-weight: Theme.fw-strong;
+    }
+
+export component PanelSettingsDialog inherits Rectangle {
+    // 全窗 overlay（宿主以 if 挂载，卸载即全收）。
+    width: 100%;
+    height: 100%;
+
+    in property <bool> lang-en: false;
+    // 8 项设置：宿主与 AppWindow 根双向绑定（改属性 = 全库即时反馈）。
+    in-out property <bool> panel-row-compact;
+    in-out property <bool> panel-group-bands;
+    in-out property <bool> panel-sub-count;
+    in-out property <bool> panel-group-total;
+    in-out property <bool> panel-hover-card;
+    in-out property <bool> panel-locate-follow-tab;
+    in-out property <bool> panel-auto-expand-group;
+    in-out property <int> panel-sort-mode;   // 0 默认 / 1 名称 / 2 最近
+    // 持久化回调（宿主转发 AppWindow 的 set-panel-* → Rust save；sort 另触发模型重建）。
+    callback toggled-row-compact(bool);
+    callback toggled-group-bands(bool);
+    callback toggled-sub-count(bool);
+    callback toggled-group-total(bool);
+    callback toggled-hover-card(bool);
+    callback toggled-locate-follow-tab(bool);
+    callback toggled-auto-expand-group(bool);
+    callback sort-picked(int);
+    callback close-requested();
+
+    // Esc 关闭：ctx 浮层同款（1×1 FocusScope + 0ms Timer 抢焦点；卸载即还）。
+    fs := FocusScope {
+        x: 0;
+        y: 0;
+        width: 1px;
+        height: 1px;
+        property <bool> fs-focus-pending: false;
+        init => { self.fs-focus-pending = true; }
+        Timer {
+            interval: 0ms;
+            running: parent.fs-focus-pending;
+            triggered => {
+                parent.fs-focus-pending = false;
+                parent.focus();
+            }
+        }
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                root.close-requested();
+                accept
+            } else {
+                reject
+            }
+        }
+    }
+
+
+
+
+    Scrim { width: 100%; height: 100%; }
+
+    // 模态点击挡板（点外不关，ping V2 口径 —— 吃掉卡外点击，不透下层）。
+    if true : Rectangle {
+        width: 100%;
+        height: 100%;
+        TouchArea { width: 100%; height: 100%; mouse-cursor: default; }
+    }
+
+    // 居中卡（hifi .set-card 380px；超高贴窗：上限 = 窗高−36，体滚）。
+    set-card := Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 380px;
+        height: min(parent.height - 36px, set-vl.preferred-height);
+        background: Theme.popup-bg;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        clip: true;
+        set-vl := VerticalLayout {
+            // 头（hifi .set-head：14·16·10 + 底线）。
+            Rectangle {
+                height: 54px;
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    width: 100%;
+                    background: Theme.border-subtle;
+                }
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 10px;
+                    padding-top: 14px;
+                    padding-bottom: 10px;
+                    spacing: 8px;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        Text {
+                            text: root.lang-en ? "Panel settings" : "面板设置";
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-sm;
+                            font-weight: Theme.fw-strong;
+                            height: 18px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.lang-en ? "Session panel · changes apply live" : "左侧会话面板 · 修改实时生效";
+                            color: Theme.text-muted;
+                            font-size: Theme.fs-2xs;
+                            height: 14px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    DialogClose {
+                        btn-size: 24px;
+                        glyph-size: 12px;
+                        corner: 4px;
+                        clicked => { root.close-requested(); }
+                    }
+                }
+            }
+            // 体（hifi .set-body：左右 16、超高滚动；stretch 吸收钳制差额）。
+            ps-scroll := ScrollView {
+                vertical-stretch: 1;
+                ps-body := VerticalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    // ── 布局 ──
+                    VerticalLayout {
+                        padding-top: 12px;
+                        padding-bottom: 12px;
+                        spacing: 4px;
+                        SectionTitle { text: root.lang-en ? "LAYOUT" : "布局"; }
+                        SetRow {
+                            title: root.lang-en ? "Row density" : "行密度";
+                            sub: root.lang-en ? "Height of session rows" : "会话行的高度";
+                            Rectangle {
+                                width: seg.content-w;
+                                height: 25px;
+                                seg := SegGroup {
+                                    // 0 = 紧凑 / 1 = 标准（config.panel_row_compact）
+                                    active-index: root.panel-row-compact ? 0 : 1;
+                                    count: 2;
+                                    compact: true;
+                                    height: 25px;
+                                    for i in 2: Rectangle {
+                                        min-width: 0;
+                                        preferred-width: 0;
+                                        horizontal-stretch: 1;
+                                        property <bool> is-on: (root.panel-row-compact ? 0 : 1) == i;
+                                        dens-cell := TouchArea {
+                                            mouse-cursor: default;
+                                            clicked => {
+                                                root.panel-row-compact = i == 0;
+                                                root.toggled-row-compact(i == 0);
+                                            }
+                                        }
+                                        Text {
+                                            text: i == 0
+                                                ? (root.lang-en ? "Compact" : "紧凑")
+                                                : (root.lang-en ? "Standard" : "标准");
+                                            color: parent.is-on
+                                                ? Theme.accent-solid : Theme.text-secondary;
+                                            font-size: Theme.fs-2xs;
+                                            font-weight: parent.is-on
+                                                ? Theme.fw-strong : Theme.fw-regular;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Rectangle { height: 1px; background: Theme.border-subtle; }
+                    // ── 显示 ──
+                    VerticalLayout {
+                        padding-top: 12px;
+                        padding-bottom: 12px;
+                        spacing: 4px;
+                        SectionTitle { text: root.lang-en ? "DISPLAY" : "显示"; }
+                        SetRow {
+                            title: root.lang-en ? "Group color bands" : "组色带";
+                            sub: root.lang-en ? "Tinted band on group rows" : "分组行的底色与边框";
+                            PSwitch {
+                                on: root.panel-group-bands;
+                                toggled() => {
+                                    root.panel-group-bands = !root.panel-group-bands;
+                                    root.toggled-group-bands(root.panel-group-bands);
+                                }
+                            }
+                        }
+                        SetRow {
+                            title: root.lang-en ? "Subgroup count" : "子组数";
+                            sub: root.lang-en ? "「N groups」after the group name" : "组名后的「N组」";
+                            PSwitch {
+                                on: root.panel-sub-count;
+                                toggled() => {
+                                    root.panel-sub-count = !root.panel-sub-count;
+                                    root.toggled-sub-count(root.panel-sub-count);
+                                }
+                            }
+                        }
+                        SetRow {
+                            title: root.lang-en ? "Session total" : "会话总数";
+                            sub: root.lang-en ? "Number at the right of group rows" : "分组行右侧的数字";
+                            PSwitch {
+                                on: root.panel-group-total;
+                                toggled() => {
+                                    root.panel-group-total = !root.panel-group-total;
+                                    root.toggled-group-total(root.panel-group-total);
+                                }
+                            }
+                        }
+                        SetRow {
+                            title: root.lang-en ? "Hover info card" : "悬停信息卡";
+                            sub: root.lang-en ? "Show host info when hovering a session row" : "悬停会话行时显示主机信息";
+                            PSwitch {
+                                on: root.panel-hover-card;
+                                toggled() => {
+                                    root.panel-hover-card = !root.panel-hover-card;
+                                    root.toggled-hover-card(root.panel-hover-card);
+                                }
+                            }
+                        }
+                    }
+                    Rectangle { height: 1px; background: Theme.border-subtle; }
+                    // ── 交互 ──
+                    VerticalLayout {
+                        padding-top: 12px;
+                        padding-bottom: 12px;
+                        spacing: 4px;
+                        SectionTitle { text: root.lang-en ? "INTERACTION" : "交互"; }
+                        SetRow {
+                            title: root.lang-en ? "Locate tree on tab switch" : "点击标签定位树";
+                            sub: root.lang-en ? "Scroll & highlight the session when switching tabs" : "切换顶部标签时滚动并高亮对应会话";
+                            PSwitch {
+                                on: root.panel-locate-follow-tab;
+                                toggled() => {
+                                    root.panel-locate-follow-tab = !root.panel-locate-follow-tab;
+                                    root.toggled-locate-follow-tab(root.panel-locate-follow-tab);
+                                }
+                            }
+                        }
+                        SetRow {
+                            title: root.lang-en ? "Auto-expand its group" : "自动展开所在组";
+                            sub: root.lang-en ? "Expand the parent group when opening a session" : "打开会话时展开它的父分组";
+                            PSwitch {
+                                on: root.panel-auto-expand-group;
+                                toggled() => {
+                                    root.panel-auto-expand-group = !root.panel-auto-expand-group;
+                                    root.toggled-auto-expand-group(root.panel-auto-expand-group);
+                                }
+                            }
+                        }
+                    }
+                    Rectangle { height: 1px; background: Theme.border-subtle; }
+                    // ── 排序 ──
+                    VerticalLayout {
+                        padding-top: 12px;
+                        padding-bottom: 12px;
+                        spacing: 4px;
+                        SectionTitle { text: root.lang-en ? "SORT" : "排序"; }
+                        SetRow {
+                            title: root.lang-en ? "Sort by" : "排序方式";
+                            sub: root.lang-en ? "Shared by groups and sessions" : "分组与组内会话共用";
+                            Rectangle {
+                                width: sort-seg.content-w;
+                                height: 25px;
+                                sort-seg := SegGroup {
+                                    active-index: root.panel-sort-mode;
+                                    count: 3;
+                                    compact: true;
+                                    height: 25px;
+                                    for i in 3: Rectangle {
+                                        min-width: 0;
+                                        preferred-width: 0;
+                                        horizontal-stretch: 1;
+                                        property <bool> is-on: root.panel-sort-mode == i;
+                                        sort-cell := TouchArea {
+                                            mouse-cursor: default;
+                                            clicked => {
+                                                root.panel-sort-mode = i;
+                                                root.sort-picked(i);
+                                            }
+                                        }
+                                        Text {
+                                            text: i == 0
+                                                ? (root.lang-en ? "Default" : "默认")
+                                                : i == 1
+                                                ? (root.lang-en ? "Name" : "名称")
+                                                : (root.lang-en ? "Recent" : "最近");
+                                            color: parent.is-on
+                                                ? Theme.accent-solid : Theme.text-secondary;
+                                            font-size: Theme.fs-2xs;
+                                            font-weight: parent.is-on
+                                                ? Theme.fw-strong : Theme.fw-regular;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // 页脚（hifi .set-foot：10·16 + 顶线，恢复默认 + spacer + 完成）。
+            Rectangle {
+                height: 50px;
+                Rectangle {
+                    y: 0;
+                    height: 1px;
+                    width: 100%;
+                    background: Theme.border-subtle;
+                }
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    padding-top: 10px;
+                    padding-bottom: 10px;
+                    spacing: 8px;
+                    // 恢复默认（ghost 30px）：8 项回出厂并逐项持久化。
+                    Rectangle {
+                        width: reset-tx.preferred-width + 24px;
+                        height: 30px;
+                        border-radius: 5px;
+                        border-width: 1px;
+                        border-color: Theme.border-strong;
+                        background: reset-ta.has-hover ? Theme.bg-hover : transparent;
+                        animate background { duration: 110ms; }
+                        reset-ta := TouchArea {
+                            mouse-cursor: default;
+                            clicked => {
+                                root.panel-row-compact = false;
+                                root.toggled-row-compact(false);
+                                root.panel-group-bands = true;
+                                root.toggled-group-bands(true);
+                                root.panel-sub-count = true;
+                                root.toggled-sub-count(true);
+                                root.panel-group-total = true;
+                                root.toggled-group-total(true);
+                                root.panel-hover-card = true;
+                                root.toggled-hover-card(true);
+                                root.panel-locate-follow-tab = true;
+                                root.toggled-locate-follow-tab(true);
+                                root.panel-auto-expand-group = true;
+                                root.toggled-auto-expand-group(true);
+                                root.panel-sort-mode = 0;
+                                root.sort-picked(0);
+                            }
+                        }
+                        HorizontalLayout {
+                            alignment: center;
+                            reset-tx := Text {
+                                text: root.lang-en ? "Restore defaults" : "恢复默认";
+                                color: reset-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                                font-size: Theme.fs-xs;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    // 完成（实心主钮 ink-on 同源）。
+                    Rectangle {
+                        width: done-tx.preferred-width + 24px;
+                        height: 30px;
+                        border-radius: 5px;
+                        background: done-ta.has-hover ? Theme.accent-hover : Theme.accent-solid;
+                        animate background { duration: 110ms; }
+                        done-ta := TouchArea {
+                            mouse-cursor: default;
+                            clicked => { root.close-requested(); }
+                        }
+                        done-tx := Text {
+                            text: root.lang-en ? "Done" : "完成";
+                            color: PickerMath.ink-on(Theme.accent-hex);
+                            font-size: Theme.fs-xs;
+                            font-weight: Theme.fw-strong;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

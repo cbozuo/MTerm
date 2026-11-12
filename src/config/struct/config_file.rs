@@ -708,6 +708,38 @@ pub struct ConfigFile {
     /// resource panel / wallpaper overlay) to users still sitting on old defaults.
     #[serde(default)]
     pub defaults_rev: u32,
+    // ── 面板设置弹框 8 键(#panel-settings 2026-11-12,hifi
+    // ── left-panel-session-hifi §V4.3)全部「修改实时生效」,app.rs 的
+    // ── on_set_panel_* 落盘。
+    /// 行密度:会话行高度。false = 标准(34px,#tree-geom),true = 紧凑(30px)。
+    #[serde(default)]
+    pub panel_row_compact: bool,
+    /// 组色带:分组行的组色淡染底。默认开。
+    #[serde(default = "default_true")]
+    pub panel_group_bands: bool,
+    /// 子组数:组名后的「N组」。默认开。
+    #[serde(default = "default_true")]
+    pub panel_sub_count: bool,
+    /// 会话总数:分组行右侧的数字。默认开。
+    #[serde(default = "default_true")]
+    pub panel_group_total: bool,
+    /// 悬停信息卡:悬停会话行显示主机信息。默认开。
+    #[serde(default = "default_true")]
+    pub panel_hover_card: bool,
+    /// 点击标签定位树:切换顶部标签时滚动并高亮对应会话。默认开。
+    #[serde(default = "default_true")]
+    pub panel_locate_follow_tab: bool,
+    /// 自动展开所在组:打开会话时展开它的父分组。默认开。
+    #[serde(default = "default_true")]
+    pub panel_auto_expand_group: bool,
+    /// 排序方式(分组与组内会话共用):0 = 默认(存储序) / 1 = 名称 / 2 = 最近。
+    #[serde(default)]
+    pub panel_sort_mode: u8,
+}
+
+/// serde 默认值:开(面板设置里 6 个默认开的开关共用)。
+fn default_true() -> bool {
+    true
 }
 
 /// Portable export file (issue #46): sessions with everything in plaintext

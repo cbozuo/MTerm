@@ -3627,6 +3627,15 @@ fn open_window(
         }
         window.set_collapse_right_sidebar_default(collapse_sidebar);
         window.set_collapse_sftp_default(collapse_sftp);
+        // (#panel-settings 2026-11-12) 面板设置弹框 8 键启动下发(修改实时生效)。
+        window.set_panel_row_compact(s.panel_row_compact());
+        window.set_panel_group_bands(s.panel_group_bands());
+        window.set_panel_sub_count(s.panel_sub_count());
+        window.set_panel_group_total(s.panel_group_total());
+        window.set_panel_hover_card(s.panel_hover_card());
+        window.set_panel_locate_follow_tab(s.panel_locate_follow_tab());
+        window.set_panel_auto_expand_group(s.panel_auto_expand_group());
+        window.set_panel_sort_mode(s.panel_sort_mode() as i32);
         // Restore the persisted panel docking layout (#dock).
         window.set_right_sidebar_width(s.right_sidebar_width());
         window.set_right_sidebar_height(s.right_sidebar_height());
@@ -3775,6 +3784,76 @@ fn open_window(
         window.on_set_quick_commands_as_sidebar(move |v| {
             let mut s = store.borrow_mut();
             s.set_quick_commands_as_sidebar(v);
+            let _ = s.save();
+        });
+    }
+    // (#panel-settings 2026-11-12) 面板设置弹框 8 键落盘(改即存,弹框直写
+    // Slint 属性 + 调这里的回调;排序档变更的模型重建在 Slint 侧顺带触发)。
+    {
+        let store = store.clone();
+        window.on_set_panel_row_compact(move |v| {
+            let mut s = store.borrow_mut();
+            s.set_panel_row_compact(v);
+            let _ = s.save();
+        });
+    }
+    {
+        let store = store.clone();
+        window.on_set_panel_group_bands(move |v| {
+            let mut s = store.borrow_mut();
+            s.set_panel_group_bands(v);
+            let _ = s.save();
+        });
+    }
+    {
+        let store = store.clone();
+        window.on_set_panel_sub_count(move |v| {
+            let mut s = store.borrow_mut();
+            s.set_panel_sub_count(v);
+            let _ = s.save();
+        });
+    }
+    {
+        let store = store.clone();
+        window.on_set_panel_group_total(move |v| {
+            let mut s = store.borrow_mut();
+            s.set_panel_group_total(v);
+            let _ = s.save();
+        });
+    }
+    {
+        let store = store.clone();
+        window.on_set_panel_hover_card(move |v| {
+            let mut s = store.borrow_mut();
+            s.set_panel_hover_card(v);
+            let _ = s.save();
+        });
+    }
+    {
+        let store = store.clone();
+        window.on_set_panel_locate_follow_tab(move |v| {
+            let mut s = store.borrow_mut();
+            s.set_panel_locate_follow_tab(v);
+            let _ = s.save();
+        });
+    }
+    {
+        let store = store.clone();
+        window.on_set_panel_auto_expand_group(move |v| {
+            let mut s = store.borrow_mut();
+            s.set_panel_auto_expand_group(v);
+            let _ = s.save();
+        });
+    }
+    {
+        let store = store.clone();
+        window.on_set_panel_sort_mode(move |v: i32| {
+            // (#panel-settings) 只落盘;模型重建由 Slint 侧 sort-picked →
+            // 本回调后、Slint 侧自行 invoke sync(见 panel-settings 宿主注释:
+            // sessions_model 在本文件 4600+ 行才建,这里拿不到句柄 —— 落盘
+            // 后置 panel-sort-rev,模型重建挂在启动后注册的独立回调)。
+            let mut s = store.borrow_mut();
+            s.set_panel_sort_mode(v.clamp(0, 2) as u8);
             let _ = s.save();
         });
     }
@@ -4524,7 +4603,6 @@ fn open_window(
     // (#move-to-groups 2026-09-14) 「移动到」组清单的**首次填充**:启动路径
     // 直接调 sync_sessions_to_model,不经过 sync_sessions_for_window(那里面
     // 才带这条刷新),这里补一次,否则首轮右键菜单的组清单是空的。
-    window.set_move_target_groups(session_models::move_target_groups_model(&store.borrow()));
     refresh_session_markers_win(&window);
     window.set_wsl_profiles(wsl_profile_model(&store.borrow()));
     // Cross-window propagation: when another window persists sessions / theme /
@@ -4605,6 +4683,22 @@ fn open_window(
                 }
             }
             registry.broadcast_config_changed();
+        });
+    }
+    // (#panel-settings 2026-11-12) 排序方式:落盘(见上方 on_set_panel_sort_mode
+    // 早注册块,sessions_model 尚未创建)之后,这里**覆盖注册**带模型重建的
+    // 完整版 —— Slint 回调后注册覆盖先注册,触发时走本版(实时生效)。
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let sessions_model = sessions_model.clone();
+        window.on_set_panel_sort_mode(move |v: i32| {
+            {
+                let mut s = store.borrow_mut();
+                s.set_panel_sort_mode(v.clamp(0, 2) as u8);
+                let _ = s.save();
+            }
+            sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
         });
     }
     {
@@ -8216,7 +8310,6 @@ fn sync_sessions_for_window(
     // 增删/改名/排序都可能由本次变更引起,而菜单的组序必须与列表显示序一致
     // (否则"移动到 X"与用户看到的组位置对不上)。放在这里 = 所有会话列表
     // 变更点自动覆盖,不必在每个回调里重复填。
-    window.set_move_target_groups(session_models::move_target_groups_model(store));
     // (#session-status-dot) 重建把 connected 重置了,补回在线状态点。
     refresh_session_markers_win(&window);
 }
@@ -8926,7 +9019,63 @@ fn wire_session_callbacks(
         });
     }
 
-    // Drag-to-reorder a host card among its same-group siblings. The stored
+    // (#ctx-menu-row-v2 2026-11-12) 行菜单的三个新动作 ────────────────
+    // 打开会话:已有该会话的标签页 → 聚焦复用;否则走正常连接(新建 tab)。
+    {
+        let win_weak = window.as_weak();
+        let tabs_model = tabs_model.clone();
+        window.on_open_session(move |id: SharedString| {
+            let session_id = id.to_string();
+            let Some(w) = win_weak.upgrade() else { return };
+            // tab 的 id 是 uuid、与 session id 不同;TabInfo.session_id 是
+            // 关联键(同一会话多开时取第一个 / 最近一次打开的)。
+            let existing = tabs_model
+                .iter()
+                .find(|t| t.session_id.as_str() == session_id.as_str())
+                .map(|t| t.id.to_string());
+            if let Some(tab_id) = existing {
+                w.set_active_tab_id(tab_id.into());
+                return;
+            }
+            w.invoke_connect_session(id);
+        });
+    }
+    // 在新标签页打开:无论是否已开,一律新建一枚 tab(tab id 是 uuid,天然多开)。
+    {
+        let win_weak = window.as_weak();
+        window.on_open_session_new_tab(move |id: SharedString| {
+            let Some(w) = win_weak.upgrade() else { return };
+            w.invoke_connect_session(id);
+        });
+    }
+    // 复制主机地址:host(端口非 22 时带 :port)写系统剪贴板。
+    {
+        let store = store.clone();
+        window.on_copy_host_address(move |id: SharedString| {
+            let Some(session) = store.borrow().get(id.as_str()).cloned() else {
+                return;
+            };
+            let text = if session.port > 0 && session.port != 22 {
+                format!("{}:{}", session.host, session.port)
+            } else {
+                session.host.clone()
+            };
+            std::thread::spawn(move || clipboard_set_text(text));
+        });
+    }
+    // 「移动到分组」弹框的树形行模型(搜索过滤在 Rust 侧;Slint string 无 contains)。
+    {
+        let store = store.clone();
+        let win_weak = window.as_weak();
+        window.on_refresh_move_group_rows(move |session_id: SharedString, query: SharedString| {
+            let Some(w) = win_weak.upgrade() else { return };
+            w.set_move_group_rows(session_models::move_group_rows_model(
+                &store.borrow(),
+                session_id.as_str(),
+                query.as_str(),
+            ));
+        });
+    }
     // Vec order is the display order (no alphabetical sort), so a swap plus
     // re-sync is all it takes. Reordering while the list is filtered would map
     // visible hops onto the wrong stored neighbours, so bail out then — the
@@ -9256,12 +9405,18 @@ fn wire_session_callbacks(
             sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
             // 目标行的内容坐标:对拍平后的模型行逐行套引擎行度量(#tree-geom,
             // 与 Slint 行 wrapper 的 padding-top/height 同一张表)。
+            // (#panel-settings) 行密度=紧凑时会话行 30(与 Slint SessionRow /
+            // drag-pitch 同步,见 config.panel_row_compact)。
+            let row_compact = store.borrow().panel_row_compact();
             let mut y = 0.0f32;
             let mut found: Option<f32> = None;
             for i in 0..sessions_model.row_count() {
                 let Some(r) = sessions_model.row_data(i) else { continue };
-                let (pad, h) =
+                let (pad, mut h) =
                     crate::session_tree::row_metrics(r.row_kind.as_str(), r.depth);
+                if row_compact && r.row_kind.as_str() == "session" {
+                    h = crate::session_tree::row::ROW_HEIGHT_SESSION_COMPACT;
+                }
                 let pad = if r.row_kind.as_str() == "group" && i == 0 { 0.0 } else { pad };
                 if r.row_kind.as_str() == "session" && r.id.as_str() == session_id {
                     found = Some(y + pad + h / 2.0);
@@ -9498,6 +9653,44 @@ fn wire_session_callbacks(
             {
                 let mut s = store.borrow_mut();
                 s.remove_group(&name.to_string());
+                if let Err(err) = s.save() {
+                    tracing::warn!("failed to save config: {err:#}");
+                }
+            }
+            sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
+            registry.broadcast_config_changed();
+            if let Some(w) = weak.upgrade() {
+                let _ = w.get_sessions();
+            }
+        });
+    }
+    // (#grp-menu-v2 2026-11-12) 组头菜单「新建子分组」:按父组名找根级非保留
+    // 组 → add_group("新建子分组", parent_id);组名全库唯一,重名自动加序号。
+    {
+        let weak = window.as_weak();
+        let store = store.clone();
+        let sessions_model = sessions_model.clone();
+        let registry = registry.clone();
+        window.on_create_subgroup(move |parent: SharedString| {
+            let parent = parent.to_string();
+            {
+                let mut s = store.borrow_mut();
+                let parent_id = s
+                    .group_records()
+                    .iter()
+                    .find(|r| r.name == parent && r.parent_id.is_empty() && !r.reserved)
+                    .map(|r| r.id.clone());
+                let Some(parent_id) = parent_id else { return };
+                let base = crate::i18n::t("新建子分组", "New subgroup").to_string();
+                let mut name = base.clone();
+                let mut n = 2u32;
+                while s.add_group(name.clone(), &parent_id).is_none() {
+                    if n > 99 {
+                        break;
+                    }
+                    name = format!("{base} {n}");
+                    n += 1;
+                }
                 if let Err(err) = s.save() {
                     tracing::warn!("failed to save config: {err:#}");
                 }
@@ -10759,13 +10952,23 @@ fn wire_session_callbacks(
                     None => return,
                 }
             };
-            // A system-client RDP session is handed to `mstsc` / `xfreerdp`,
-            // which owns its own window, and gets no tab. Do not surface its
-            // launch result as a persistent SSH-import hint.
-            //
-            // ⚠️ Zero regression: this is the pre-existing behaviour, unchanged.
-            // A session file written before the built-in client existed has no
-            // `rdp_mode` and therefore arrives here, exactly as before.
+            // (#panel-settings 2026-11-12) 自动展开所在组:打开会话时展开它
+            // 的父分组(locate 同款 expand_ancestors;有实际展开才落盘+重建)。
+            if store.borrow().panel_auto_expand_group() {
+                let expanded = {
+                    let mut st = store.borrow_mut();
+                    let n = crate::session_tree::expand_ancestors(&mut st, &id);
+                    if n > 0 {
+                        if let Err(err) = st.save() {
+                            tracing::warn!("failed to save expanded group state: {err:#}");
+                        }
+                    }
+                    n
+                };
+                if expanded > 0 {
+                    sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
+                }
+            }
             if session.kind == SessionKind::Rdp && !crate::rdp::is_embedded(&session) {
                 match crate::rdp::launch(&session) {
                     Ok(what) => tracing::info!("RDP client started: {what}"),

@@ -190,23 +190,68 @@ pub(super) fn session_groups_model(store: &ConfigStore) -> ModelRc<GroupEntry> {
 }
 
 /// (#move-to-groups 2026-09-14 / V3) 成员右键菜单「移动到」的组清单:显示名
-/// 列表(默认组恒居首位,用户组树形序;保留组 system 排除)。**临时兼容**:
-/// S4 接「移动到分组」弹窗后回调改走 id,届时本函数退役。
-pub(super) fn move_target_groups_model(store: &ConfigStore) -> ModelRc<SharedString> {
-    let records = store.group_records();
-    let mut names: Vec<SharedString> = records
-        .iter()
-        .find(|r| r.id == crate::config::GROUP_ID_DEFAULT)
-        .map(|r| vec![SharedString::from(r.name.as_str())])
+/// (#move-group-dialog 2026-11-12) 「移动到分组」弹框的树形行模型(高保真
+/// left-panel-session-hifi-2026-10-28-v3 §Move to Group):DFS 序 + depth
+/// 缩进 + 组色圆点 + 组内会话数 + 「当前」徽章。`session_id` 用于标出
+/// 该会话当前所在组(不可选)。保留组 system(本地终端)不出现在目标里。
+pub(super) fn move_group_rows_model(
+    store: &ConfigStore,
+    session_id: &str,
+    query: &str,
+) -> ModelRc<MoveGroupRow> {
+    let records = store.group_records().to_vec();
+    let current_id = store
+        .get(session_id)
+        .map(|s| s.group_id.clone())
         .unwrap_or_default();
-    fn walk<'a>(records: &'a [crate::config::GroupRecord], parent: &str, out: &mut Vec<SharedString>) {
-        for record in records.iter().filter(|r| r.parent_id == parent && !r.reserved) {
-            out.push(SharedString::from(record.name.as_str()));
-            walk(records, &record.id, out);
+    // 组内直接会话数(与侧栏 group_total 的"含子树求和"不同 —— 弹框数字
+    // 表达"这个组里有多少个会话",父子各自独立)。
+    let mut counts: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
+    for s in store.sessions() {
+        *counts.entry(s.group_id.clone()).or_insert(0) += 1;
+    }
+    let mut rows: Vec<MoveGroupRow> = Vec::new();
+    let needle = query.trim().to_lowercase();
+    fn walk(
+        records: &[crate::config::GroupRecord],
+        counts: &std::collections::HashMap<String, i32>,
+        current_id: &str,
+        needle: &str,
+        parent: &str,
+        depth: i32,
+        rows: &mut Vec<MoveGroupRow>,
+    ) {
+        for record in records.iter().filter(|r| r.parent_id == parent) {
+            // system(本地终端)保留组不可移入,不出现在目标列表。
+            if record.id == crate::config::GROUP_ID_SYSTEM {
+                continue;
+            }
+            // (#move-group-dialog) 搜索过滤在 Rust 侧(Slint string 无
+            // contains);命中=组名不区分大小写包含。子组命中不受父组
+            // 是否命中影响(DFS 继续下钻,父组行照常出树形骨架)。
+            let hit = needle.is_empty()
+                || record.name.to_lowercase().contains(needle)
+                || needle.contains(&record.name.to_lowercase());
+            if hit {
+                let hex = record.color.clone().unwrap_or_default();
+                let (color, has_color) = match parse_hex_color(&hex) {
+                    Some(c) => (c, true),
+                    None => (Default::default(), false),
+                };
+                rows.push(MoveGroupRow {
+                    name: record.name.as_str().into(),
+                    depth,
+                    color,
+                    has_color,
+                    count: counts.get(&record.id).copied().unwrap_or(0),
+                    current: record.id == current_id,
+                });
+            }
+            walk(records, counts, current_id, needle, &record.id, depth + 1, rows);
         }
     }
-    walk(records, "", &mut names);
-    ModelRc::from(Rc::new(VecModel::from(names)))
+    walk(&records, &counts, &current_id, &needle, "", 0, &mut rows);
+    ModelRc::from(Rc::new(VecModel::from(rows)))
 }
 
 // ---------------------------------------------------------------------------
@@ -445,7 +490,18 @@ pub(super) fn sync_sessions_to_model_with_filter(
     model: &VecModel<SessionInfo>,
     query: &str,
 ) {
-    sync_sessions_to_model_with_sort(store, model, query, GroupSort::Storage);
+    // (#panel-settings 2026-11-12) 排序档位读配置(0 存储序 / 1 名称 / 2 最近)
+    // —— 面板设置「排序方式」的单一来源,所有模型刷新路径统一走它。
+    sync_sessions_to_model_with_sort(store, model, query, sort_from_store(store));
+}
+
+/// (#panel-settings) 落盘档位 → 引擎排序枚举(越界回落存储序)。
+pub(super) fn sort_from_store(store: &ConfigStore) -> GroupSort {
+    match store.panel_sort_mode() {
+        1 => GroupSort::Name,
+        2 => GroupSort::Recent,
+        _ => GroupSort::Storage,
+    }
 }
 
 /// (V3) 带排序档位的模型刷新(面板设置「排序方式」)。group_records 为空时
@@ -489,7 +545,7 @@ pub(super) fn refresh_session_rows_in_place(
         &builtin_sessions,
         query,
         store.system_group_hidden(),
-        GroupSort::Storage,
+        sort_from_store(store),
     )
     .into_iter()
     .map(to_session_info)
