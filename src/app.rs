@@ -456,10 +456,11 @@ use crate::terminal::{
     terminal_uses_bracketed_paste, CsiState, RenderGates, TabRenderGate, TermBuffer,
     TermBufferHandle, TermBuffers,
 };
-// (#multiline-paste-hifi 2026-11-10) 多行粘贴评审面：分析层单一出处。
+// (#multiline-paste-hifi 2026-11-10 → #paste-editable 2026-11-13) 分析层
+// 单一出处（评审面退役,build_preview_rows/expand_all_label/hint_text/
+// subtitle_text 不再被 UI 链引用）。
 use crate::terminal::paste_review::{
-    analyze_paste, build_preview_rows, enter_note_text, expand_all_label, hint_text,
-    main_button_label, notice_kind, notice_text, subtitle_text,
+    analyze_paste, enter_note_text, main_button_label, notice_kind, notice_text,
 };
 #[cfg(test)]
 use crate::terminal::{
@@ -13231,31 +13232,9 @@ fn wire_key_input(
                                 && (confirm_multiline || force_review || analysis.a_count > 0);
                             if must_prompt {
                                 let kind = notice_kind(&analysis, bracketed);
-                                let model = build_preview_rows(&analysis, false);
-                                let rows: Vec<crate::ui::PastePreviewRow> = model
-                                    .rows
-                                    .into_iter()
-                                    .map(|r| crate::ui::PastePreviewRow {
-                                        kind: r.kind,
-                                        gutter: r.gutter.into(),
-                                        text: r.text.into(),
-                                        level: r.level,
-                                        badge: r.badge.into(),
-                                        badge_icon: r.badge_icon.into(),
-                                    })
-                                    .collect();
-                                let hint_icon = if analysis.tier
-                                    == crate::terminal::paste_review::PasteTier::Compact
-                                {
-                                    "table-rows"
-                                } else {
-                                    "info"
-                                };
-                                let tier_name = match analysis.tier {
-                                    crate::terminal::paste_review::PasteTier::Compact => "compact",
-                                    crate::terminal::paste_review::PasteTier::Standard => "standard",
-                                    crate::terminal::paste_review::PasteTier::Review => "review",
-                                };
+                                // (#paste-editable 2026-11-13) 评审面退役：不再
+                                // 下发行模型/折叠/三档，只下发标量+文案（编辑后
+                                // 由 paste_edited 同步重析刷新）。
                                 let _ = slint::invoke_from_event_loop(move || {
                                     if let Some(w) = weak.upgrade() {
                                         w.set_paste_confirm_tab(tab_id.into());
@@ -13263,18 +13242,12 @@ fn wire_key_input(
                                         w.set_paste_confirm_tab_name(tab_name.into());
                                         w.set_paste_confirm_target(target.into());
                                         w.set_paste_confirm_bracketed(bracketed);
-                                        w.set_paste_confirm_badge(tier_name.into());
-                                        w.set_paste_confirm_subtitle(
-                                            subtitle_text(&analysis).into(),
-                                        );
                                         w.set_paste_confirm_notice_kind(kind);
                                         w.set_paste_confirm_notice_text(
                                             notice_text(&analysis, kind).into(),
                                         );
                                         w.set_paste_confirm_lines(analysis.line_count as i32);
                                         w.set_paste_confirm_chars(analysis.char_count as i32);
-                                        w.set_paste_confirm_risk_a(analysis.a_count as i32);
-                                        w.set_paste_confirm_risk_b(analysis.b_count as i32);
                                         w.set_paste_confirm_trailing(analysis.trailing_newline);
                                         w.set_paste_confirm_main_label(
                                             main_button_label(&analysis).into(),
@@ -13282,22 +13255,6 @@ fn wire_key_input(
                                         w.set_paste_confirm_enter_note(
                                             enter_note_text(&analysis).into(),
                                         );
-                                        w.set_paste_confirm_hint(
-                                            hint_text(&analysis, analysis.virtualized).into(),
-                                        );
-                                        w.set_paste_confirm_hint_icon(hint_icon.into());
-                                        w.set_paste_confirm_virtual(analysis.virtualized);
-                                        w.set_paste_confirm_force(analysis.force_review);
-                                        w.set_paste_confirm_fold_count(model.fold_count as i32);
-                                        w.set_paste_confirm_expand_label(
-                                            expand_all_label(model.fold_count).into(),
-                                        );
-                                        w.set_paste_confirm_rows(slint::ModelRc::from(
-                                            std::rc::Rc::new(slint::VecModel::from(rows)),
-                                        ));
-                                        // 竞态护栏：每次下发递增，refresh 的
-                                        // 迟到结果按序号丢弃。
-                                        w.set_paste_confirm_seq(w.get_paste_confirm_seq() + 1);
                                         w.set_paste_confirm_open(true);
                                     }
                                 });
@@ -13353,44 +13310,22 @@ fn wire_key_input(
         );
     }
 
-    // (#multiline-paste-hifi) 展开全部 / 收起：后台线程重建行模型（重新分析
-    // 代价毫秒级），seq 护栏丢弃迟到结果。
+    // (#paste-editable 2026-11-13) 编辑防抖重析：Slint 侧 400ms 静默后回调
+    // 编辑后全文 —— analyze_paste 毫秒级，UI 线程同步算，刷新提示条/统计/
+    // 主钮文案（编辑危险行时提示跟着变）。
     {
         let weak = window.as_weak();
-        window.on_paste_refresh_rows(move |expanded: bool| {
+        window.on_paste_edited(move |text: SharedString| {
             let Some(w) = weak.upgrade() else { return };
-            let text = w.get_paste_confirm_text().to_string();
-            let seq = w.get_paste_confirm_seq() + 1;
-            w.set_paste_confirm_seq(seq);
-            let weak = weak.clone();
-            std::thread::spawn(move || {
-                let analysis = analyze_paste(&text);
-                let model = build_preview_rows(&analysis, expanded);
-                let rows: Vec<crate::ui::PastePreviewRow> = model
-                    .rows
-                    .into_iter()
-                    .map(|r| crate::ui::PastePreviewRow {
-                        kind: r.kind,
-                        gutter: r.gutter.into(),
-                        text: r.text.into(),
-                        level: r.level,
-                        badge: r.badge.into(),
-                        badge_icon: r.badge_icon.into(),
-                    })
-                    .collect();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(w) = weak.upgrade() {
-                        if w.get_paste_confirm_seq() != seq {
-                            return;
-                        }
-                        w.set_paste_confirm_rows(slint::ModelRc::from(std::rc::Rc::new(
-                            slint::VecModel::from(rows),
-                        )));
-                        w.set_paste_confirm_fold_count(model.fold_count as i32);
-                        w.set_paste_confirm_expand_label(expand_all_label(model.fold_count).into());
-                    }
-                });
-            });
+            let analysis = analyze_paste(&text);
+            let kind = notice_kind(&analysis, w.get_paste_confirm_bracketed());
+            w.set_paste_confirm_notice_kind(kind);
+            w.set_paste_confirm_notice_text(notice_text(&analysis, kind).into());
+            w.set_paste_confirm_lines(analysis.line_count as i32);
+            w.set_paste_confirm_chars(analysis.char_count as i32);
+            w.set_paste_confirm_trailing(analysis.trailing_newline);
+            w.set_paste_confirm_main_label(main_button_label(&analysis).into());
+            w.set_paste_confirm_enter_note(enter_note_text(&analysis).into());
         });
     }
 

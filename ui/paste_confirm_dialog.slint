@@ -1,7 +1,7 @@
 import { Theme } from "theme.slint";
 import { Icon } from "icons.slint";
 import { Scrim, GhostButton, PrimaryButton, DialogClose } from "widgets.slint";
-import { ListView } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 
 // (#multiline-paste-hifi 2026-11-10) 多行粘贴确认弹框 —— 专用评审面。
 // 高保真 docs/design/multiline-paste-hifi-2026-11-06-v1.html + 权威 spec
@@ -60,112 +60,6 @@ component PasteRunButton inherits Rectangle {
 // 预览行。居中铁律：HL 交叉轴对固定高子项顶对齐 —— 行内所有子项不设固定
 // 高、拉伸占满行高后内部居中（Text vertical-alignment:center；固定高胶囊
 // 用 VerticalLayout{alignment:center} 包裹），行高钳 11px × 1.55 ≈ 17px。
-component PasteLineRow inherits Rectangle {
-    in property <int> kind;          // 0/1/2/3
-    in property <string> gutter;
-    in property <string> text;
-    in property <int> level;
-    in property <string> badge;
-    in property <string> badge-icon;
-    in property <bool> wrap-on;
-    in property <bool> show-gutter;  // 紧凑档不画行号列
-
-    min-height: 17px;
-    // 危险/警告行：11% 淡染常驻 + hover 提到 16%（常驻 + opacity 语义，
-    // 不用 if 挂卸）；普通行 hover = 实色 slot-hov（hifi .pv-line:hover）。
-    background: root.level == 1
-        ? Theme.danger.with-alpha(hov.has-hover ? 0.16 : 0.11)
-        : root.level == 2
-            ? Theme.warning.with-alpha(hov.has-hover ? 0.16 : 0.11)
-            : (hov.has-hover ? Theme.slot-hov : transparent);
-
-    // A/B 级左 2px 竖标（危险前置 G2）
-    if root.level > 0 : Rectangle {
-        x: 0;
-        width: 2px;
-        height: 100%;
-        background: root.level == 1 ? Theme.danger : Theme.warning;
-    }
-
-    hov := TouchArea {
-        mouse-cursor: default;
-        // 不吞滚轮/不响应点击：预览行纯展示
-    }
-
-    HorizontalLayout {
-        padding-left: 8px;
-        padding-right: 8px;
-        spacing: 8px;
-
-        // 行号列：44px 固定（右对齐 + 8px 右距），t3 装饰色（spec §4.4 允许）
-        if root.show-gutter : Text {
-            width: 36px;
-            text: root.kind == 1 || root.kind == 2 ? "…" : root.gutter;
-            color: Theme.text-muted;
-            font-family: Theme.font-mono;
-            font-size: Theme.fs-xs;
-            horizontal-alignment: right;
-            vertical-alignment: center;
-            vertical-stretch: 1;
-        }
-
-        // 正文：折叠行/通告行 t1 斜体近似（Slint 无 italic → 90% 透明度 +
-        // "…"/"—" 前缀区分，spec §4.4 第 2 条：折叠提示必须 t1）
-        Text {
-            horizontal-stretch: 1;
-            vertical-stretch: 1;
-            vertical-alignment: center;
-            text: root.text;
-            color: Theme.text-primary;
-            opacity: root.kind >= 1 ? 0.9 : 1.0;
-            font-family: Theme.font-mono;
-            font-size: Theme.fs-xs;
-            wrap: root.wrap-on && root.kind == 0 ? word-wrap : no-wrap;
-            overflow: clip;
-        }
-
-        // 行尾徽标槽（仅风险行）：固定 96px 槽、胶囊右贴 + 垂直居中（hifi
-        // .pv-badge{width:96px;justify-content:flex-end;align-items:center}），
-        // popup-bg 不透明小胶囊 15px 高，图标 + 类别名 —— 颜色不是唯一载体。
-        // 结构注记：槽/胶囊全绝对定位（VL 交叉轴会覆盖子项 x；HL 交叉轴
-        // 固定高子项顶对齐——铁律，y 显式钳中规避）。
-        if root.badge != "" : Rectangle {
-            width: 96px;
-            badge-pill := Rectangle {
-                y: (parent.height - 15px) / 2;
-                x: parent.width - self.width;
-                width: Math.min(96px, pill-row.preferred-width);
-                height: 15px;
-                background: Theme.popup-bg;
-                border-width: 1px;
-                border-radius: 3px;
-                border-color: root.level == 1
-                    ? Theme.danger.with-alpha(0.45) : Theme.warning.with-alpha(0.45);
-                clip: true;
-                pill-row := HorizontalLayout {
-                    padding-left: 5px;
-                    padding-right: 5px;
-                    spacing: 4px;
-                    Icon {
-                        glyph: root.badge-icon;
-                        size: 11px;
-                        tint: root.level == 1 ? Theme.danger : Theme.warning;
-                    }
-                    Text {
-                        text: root.badge;
-                        color: root.level == 1 ? Theme.danger : Theme.warning;
-                        font-size: 10px;
-                        font-weight: Theme.fw-strong;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
-                }
-            }
-        }
-    }
-}
-
-// 上下文 chip（粘贴目标 / bracketed 能力）
 component PasteChip inherits Rectangle {
     in property <string> glyph;
     in property <string> label;    // 前缀（可空）
@@ -382,6 +276,11 @@ component PasteFootOpts inherits Rectangle {
 }
 
 export component PasteConfirmDialog inherits Rectangle {
+    // (#paste-editable 2026-11-13 用户反馈"多行粘贴功能太复杂,直接显示一个
+    // 可编辑的输入框,类似发送命令窗") 评审面三档/A·B 行标记/折叠窗口/折行
+    // 开关/Tab 焦点循环整体退役 —— 中体换成**可编辑多行输入框**(预填剪贴板
+    // 内容,所见即所得,用户可先改再贴)。语义保留:危险/控制字符提示条(编辑
+    // 后 Rust 重析实时更新)/尾回车→「粘贴并执行」/不再提示/安全默认去尾。
     in-out property <bool> is-open: false;
     // 更高优先级提示（如退出确认）临时压住本弹框而不丢状态
     in property <bool> covered: false;
@@ -389,46 +288,21 @@ export component PasteConfirmDialog inherits Rectangle {
     in property <string> tab-name;      // 粘贴到 <tab 名>
     in property <string> target;        // user@host:port（本地 = 会话名）
     in property <bool> bracketed;
-    in property <string> badge;         // compact / standard / review
-    in property <string> subtitle;
     in property <int> notice-kind;      // 0 无 / 1 dg·force / 2 warn·bracketed 关 / 3 warn·控制字符 / 4 dg·尾回车 / 5 dg·尾回车+A
     in property <string> notice-text;
     in property <int> stat-lines;
     in property <int> stat-chars;
-    in property <int> risk-a;
-    in property <int> risk-b;
     in property <bool> has-run;         // 尾换行 → 出现「粘贴并执行」
     in property <string> main-label;
     in property <string> enter-note;
-    in property <string> hint;
-    in property <string> hint-icon;
-    in property <bool> virtualized;
-    in property <bool> force-review;
-    in property <[PastePreviewRow]> rows;
-    in property <int> fold-count;
-    // 组件内交互态；实例化处经 pd.dont-ask / pd.expanded 读回
+    // 编辑双向:Rust 预填(剪贴板原文) ⇄ 用户编辑;提交时 Rust 读同一属性
+    // (编辑后的内容即所贴内容)。
+    in-out property <string> text;
+    // 编辑防抖后回调:Rust 同步重析(analyze_paste 毫秒级)更新提示条/统计/
+    // 主钮文案 —— 编辑危险命令行时提示跟着变。
+    callback paste-edited(string);
+    // 组件内交互态；实例化处经 pd.dont-ask 读回
     in-out property <bool> dont-ask: false;
-    in-out property <bool> expanded: false;
-    in-out property <bool> wrap-on: true;
-    // Tab 焦点循环（§5.4 G6）：0=关闭✕ 1=折行开关 2=预览区 3=取消 4=主按钮
-    // 5=粘贴并执行 6=不再提示；初始 4 = 主按钮（默认动作，环恒显）。
-    in-out property <int> kb-idx: 4;
-
-    public pure function next_tab_idx(cur: int) -> int {
-        if (!root.has-run) {
-            // 无「粘贴并执行」：序列 0,1,2,3,4,6
-            if (cur == 4) { return 6; }
-            if (cur == 6) { return 0; }
-            return cur + 1;
-        }
-        return Math.mod(cur + 1, 7);
-    }
-    public pure function prev_tab_idx(cur: int) -> int {
-        if (root.has-run) { return Math.mod(cur + 6, 7); }
-        if (cur == 0) { return 6; }
-        if (cur == 6) { return 4; }
-        return cur - 1;
-    }
 
     // 拖动偏移：x/y 恒绑定居中 + 偏移。原 confirm_dialog 写法在 changed
     // is-open 里对绑定属性 card.x 赋值 —— 赋值断开绑定，且回调时机读到的
@@ -460,7 +334,8 @@ export component PasteConfirmDialog inherits Rectangle {
         height: 100%;
     }
 
-    // Esc = 取消 / Enter = 主按钮（安全动作，绝不执行）/ Alt+P = 粘贴并执行
+    // Esc = 取消 / Enter = 主按钮（焦点不在编辑框时）/ Alt+P = 粘贴并执行。
+    // 编辑框内 Enter = 换行（TextInput 默认,不经此处）。
     key-scope := FocusScope {
         focus-on-click: false;
         focus-on-tab-navigation: false;
@@ -480,12 +355,6 @@ export component PasteConfirmDialog inherits Rectangle {
             } else if (event.modifiers.alt && (event.text == "p" || event.text == "P")) {
                 root.paste-run();
                 accept
-            } else if (event.text == Key.Tab) {
-                root.kb-idx = root.next_tab_idx(root.kb-idx);
-                accept
-            } else if (event.text == Key.Backtab) {
-                root.kb-idx = root.prev_tab_idx(root.kb-idx);
-                accept
             } else {
                 reject
             }
@@ -498,29 +367,41 @@ export component PasteConfirmDialog inherits Rectangle {
     property <length> drag-oy;
     property <length> drag-cx;
     property <length> drag-cy;
+    // 编辑焦点：打开后把焦点交给输入框（直接可改,key-scope 仅兜 Esc）。
+    property <bool> edit-focus-pending: false;
+    // 编辑防抖（edited 每键触发,analyze 毫秒级但大文本逐键重析仍抖 ——
+    // 400ms 静默后一次性重析）。
+    property <bool> edit-pending: false;
     changed is-open => {
         if (self.is-open) {
             // 回中 = 清零偏移（x/y 恒绑定居中，见 drag-off-* 注释）
             root.drag-off-x = 0px;
             root.drag-off-y = 0px;
-            root.expanded = false;
             root.dont-ask = false;
-            root.wrap-on = true;
-            root.kb-idx = 4;
+            root.edit-focus-pending = true;
+        }
+    }
+    Timer {
+        interval: 0ms;
+        running: root.edit-focus-pending;
+        triggered => {
+            root.edit-focus-pending = false;
+            edit-input.focus();
+        }
+    }
+    Timer {
+        interval: 400ms;
+        running: root.edit-pending;
+        triggered => {
+            root.edit-pending = false;
+            root.paste-edited(root.text);
         }
     }
 
-    // 档位徽标 → 三档尺寸（spec §5.1）
-    property <int> tier: root.badge == "compact" ? 0 : root.badge == "standard" ? 1 : 2;
-
     card := Rectangle {
-        width: Theme.snap-to-device(root.tier == 0 ? 380px
-            : root.tier == 1 ? 640px : min(parent.width - 40px, 1160px));
-        // 三档统一 max 语义（hifi .dlg{max-height:calc(100%-40px)} /
-        // .dlg.review{max-height:min(...,760px)}）：高度 = 内容自然高，
-        // 仅钳窗口；评审档内容少时不再出现 760 恒高的中部空白。
-        height: Theme.snap-to-device(Math.min(col.preferred-height,
-            root.tier == 2 ? min(parent.height - 40px, 760px) : parent.height - 40px));
+        width: Theme.snap-to-device(min(parent.width - 40px, 640px));
+        // 高度 = 内容自然高,仅钳窗口(编辑器体 stretch 吸收钳制差额,超高滚)。
+        height: Theme.snap-to-device(Math.min(col.preferred-height, parent.height - 40px));
         x: Theme.snap-to-device((parent.width - self.width) / 2 + root.drag-off-x);
         y: Theme.snap-to-device((parent.height - self.height) / 2 + root.drag-off-y);
         background: Theme.popup-bg;
@@ -619,41 +500,14 @@ export component PasteConfirmDialog inherits Rectangle {
                             vertical-alignment: center;
                             vertical-stretch: 1;
                         }
-                        // 档位徽标（mono 小写码）
-                        Rectangle {
-                            height: 16px;
-                            width: lvl-txt.preferred-width + 12px;
-                            border-radius: 3px;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-                            lvl-txt := Text {
-                                text: root.badge;
-                                color: Theme.text-primary;
-                                font-family: Theme.font-mono;
-                                font-size: 10px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                        // 剩余宽吃掉，徽标紧跟标题（hifi 标题+徽标一组）
+                        // 剩余宽吃掉（(#paste-editable) 档位徽标退役）
                         Rectangle { horizontal-stretch: 1; }
                     }
-                    Text {
-                        text: root.subtitle;
-                        color: Theme.text-primary;
-                        font-size: Theme.fs-xs;
-                        wrap: word-wrap;
-                        vertical-stretch: 1;
-                    }
                 }
-                // 关闭✕（Tab 站点 0）：焦点环壳（border 透明切换，不用
-                // opacity —— 会把壳内 DialogClose 一起藏掉）
+                // 关闭✕
                 Rectangle {
                     width: 30px;
                     height: 30px;
-                    border-width: 1px;
-                    border-radius: Theme.radius-sm + 2px;
-                    border-color: root.kb-idx == 0 ? Theme.accent-solid : transparent;
                     DialogClose {
                         x: 2px;
                         y: 2px;
@@ -678,33 +532,8 @@ export component PasteConfirmDialog inherits Rectangle {
                 // 上下文 chips（D5）：粘贴到 · user@host:port · bracketed
                 // 紧凑档两行放（380px 一行装不下，高保真为 flex-wrap），
                 // 标准/评审一行。
-                if root.tier == 0 : VerticalLayout {
-                    vertical-stretch: 0;
-                    spacing: 6px;
-                    HorizontalLayout {
-                        spacing: 8px;
-                        PasteChip {
-                            glyph: "terminal";
-                            label: root.lang-en ? "Into" : "粘贴到";
-                            strong: root.tab-name;
-                        }
-                        PasteChip {
-                            glyph: "host-server";
-                            strong: root.target;
-                        }
-                    }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        PasteChip {
-                            glyph: root.bracketed ? "shield" : "shield-alert";
-                            tone: root.bracketed ? 1 : 2;
-                            label: root.bracketed
-                                ? (root.lang-en ? "Bracketed on · block buffered" : "Bracketed 已启用 · 整段进入编辑缓冲")
-                                : (root.lang-en ? "Bracketed off · line by line" : "Bracketed 未启用 · 将逐行执行");
-                        }
-                    }
-                }
-                if root.tier != 0 : HorizontalLayout {
+                // 上下文 chips（D5）：粘贴到 · user@host:port · bracketed（单行）
+                HorizontalLayout {
                     vertical-stretch: 0;
                     spacing: 8px;
                     PasteChip {
@@ -722,17 +551,6 @@ export component PasteConfirmDialog inherits Rectangle {
                         label: root.bracketed
                             ? (root.lang-en ? "Bracketed on · block buffered" : "Bracketed 已启用 · 整段进入编辑缓冲")
                             : (root.lang-en ? "Bracketed off · line by line" : "Bracketed 未启用 · 将逐行执行");
-                    }
-                    // 附加 chip：虚拟化 → 超长；评审档 → 可滚动
-                    if root.virtualized : PasteChip {
-                        glyph: "layers";
-                        tone: 2;
-                        label: root.lang-en ? "Huge · summary only" : "超长 · 仅渲染摘要";
-                    }
-                    if !root.virtualized && root.tier == 2 : PasteChip {
-                        glyph: "info";
-                        tone: 2;
-                        label: root.lang-en ? "Review tier · scrollable" : "评审档 · 可滚动";
                     }
                 }
 
@@ -769,285 +587,68 @@ export component PasteConfirmDialog inherits Rectangle {
                         wrap: word-wrap;
                     }
                 }
-
-                // ── 预览区（spec §5.2）─────────────────────────────
-                pv := Rectangle {
-                    vertical-stretch: 0;
-                    min-height: 64px;
-                    background: Theme.popup-bg;
+                // ── 可编辑输入框（#paste-editable 2026-11-13）──────────
+                // 发送命令窗编辑器简化版：ScrollView + 行号槽 36 + 等宽
+                // TextInput（预填剪贴板原文,直接改；无危险红条/光标反推）。
+                // 打开即聚焦,Enter=换行,Esc 冒泡到 key-scope 取消。
+                Rectangle {
+                    vertical-stretch: 1;
+                    clip: true;
                     border-radius: Theme.radius-md;
                     border-width: 1px;
-                    // Tab 站点 2：焦点态边框转 accent（hifi 全站 focus-visible 环）
-                    border-color: root.kb-idx == 2 ? Theme.accent-solid : Theme.border-subtle;
-                    clip: true;
+                    border-color: edit-input.has-focus ? Theme.accent.with-alpha(0.42) : Theme.border-control;
+                    background: Theme.popup-field;
+                    min-height: 120px;
 
-                    VerticalLayout {
-                        spacing: 0;
+                    pd-scroll := ScrollView {
+                        width: parent.width;
+                        height: parent.height;
+                        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                        content-width: max(self.visible-width, edit-input.preferred-width + 14px);
+                        content-height: max(self.visible-height, edit-input.preferred-height + 24px);
 
-                        // 统计条 26px：行 · 字符 · 风险（数字定宽防跳动）+ 图例 + 折行开关
                         HorizontalLayout {
-                            height: 26px;
-                            padding-left: 12px;
-                            padding-right: 6px;
-                            spacing: 8px;
-                            Text {
-                                text: root.lang-en ? "Lines" : "行";
-                                color: Theme.text-primary;
-                                font-size: Theme.fs-xs;
-                                vertical-alignment: center;
-                                vertical-stretch: 1;
-                            }
-                            Text {
-                                text: root.stat-lines;
-                                width: 34px;
-                                color: Theme.text-primary;
+                            spacing: 0px;
+                            edit-input := TextInput {
+                                horizontal-stretch: 1;
+                                padding-top: 12px;
+                                padding-bottom: 12px;
+                                padding-left: 12px;
+                                padding-right: 10px;
+                                text <=> root.text;
                                 font-family: Theme.font-mono;
-                                font-size: Theme.fs-xs;
-                                font-weight: Theme.fw-strong;
-                                horizontal-alignment: right;
-                                vertical-alignment: center;
-                                vertical-stretch: 1;
-                            }
-                            Text {
-                                text: root.lang-en ? "Chars" : "字符";
+                                font-size: Theme.fs-sm;
                                 color: Theme.text-primary;
-                                font-size: Theme.fs-xs;
-                                vertical-alignment: center;
-                                vertical-stretch: 1;
-                            }
-                            Text {
-                                text: root.stat-chars;
-                                width: 56px;
-                                color: Theme.text-primary;
-                                font-family: Theme.font-mono;
-                                font-size: Theme.fs-xs;
-                                font-weight: Theme.fw-strong;
-                                horizontal-alignment: right;
-                                vertical-alignment: center;
-                                vertical-stretch: 1;
-                            }
-                            Text {
-                                text: root.lang-en ? "Risks" : "风险";
-                                color: Theme.text-primary;
-                                font-size: Theme.fs-xs;
-                                vertical-alignment: center;
-                                vertical-stretch: 1;
-                            }
-                            Text {
-                                text: root.risk-a + root.risk-b;
-                                width: 30px;
-                                color: root.risk-a + root.risk-b > 0 ? Theme.danger : Theme.success;
-                                font-family: Theme.font-mono;
-                                font-size: Theme.fs-xs;
-                                font-weight: Theme.fw-strong;
-                                horizontal-alignment: right;
-                                vertical-alignment: center;
-                                vertical-stretch: 1;
-                            }
-                            // 级别图例（颜色不是唯一载体；只列出现过的级别；
-                            // 色点 8×8 r2 = hifi .legend i.a/.i.b）。
-                            // HL 默认 stretch=1 → 图例必须显式 0，否则剩余宽
-                            // 被 A/B 两组均分、B 级漂到统计条中部。
-                            if root.risk-a > 0 : HorizontalLayout {
-                                horizontal-stretch: 0;
-                                spacing: 4px;
-                                VerticalLayout {
-                                    alignment: center;
-                                    Rectangle {
-                                        width: 8px;
-                                        height: 8px;
-                                        border-radius: 2px;
-                                        background: Theme.danger;
-                                    }
-                                }
-                                Text {
-                                    text: root.lang-en ? "A" : "A 级";
-                                    color: Theme.text-primary;
-                                    font-size: 10px;
-                                    vertical-alignment: center;
-                                    vertical-stretch: 1;
-                                }
-                            }
-                            if root.risk-b > 0 : HorizontalLayout {
-                                horizontal-stretch: 0;
-                                spacing: 4px;
-                                VerticalLayout {
-                                    alignment: center;
-                                    Rectangle {
-                                        width: 8px;
-                                        height: 8px;
-                                        border-radius: 2px;
-                                        background: Theme.warning;
-                                    }
-                                }
-                                Text {
-                                    text: root.lang-en ? "B" : "B 级";
-                                    color: Theme.text-primary;
-                                    font-size: 10px;
-                                    vertical-alignment: center;
-                                    vertical-stretch: 1;
-                                }
-                            }
-                            Rectangle { horizontal-stretch: 1; }
-                            // 软折行开关（21px，默认开；Tab 站点 1 环壳）：
-                            // 壳外再包 VL center（HL 交叉轴固定高顶对齐铁律）。
-                            VerticalLayout {
-                                alignment: center;
-                                Rectangle {
-                                    width: 68px;
-                                    height: 25px;
-                                    border-width: 1px;
-                                    border-radius: Theme.radius-sm + 2px;
-                                    border-color: root.kb-idx == 1 ? Theme.accent-solid : transparent;
-                                    wrap-toggle := Rectangle {
-                                        x: 2px;
-                                        y: 2px;
-                                        width: 64px;
-                                        height: 21px;
-                                        border-radius: Theme.radius-sm;
-                                        border-width: 1px;
-                                        border-color: root.wrap-on
-                                            ? Theme.accent-solid.with-alpha(0.42) : Theme.border-subtle;
-                                        background: root.wrap-on
-                                            ? Theme.accent-solid.with-alpha(0.10) : Theme.popup-bg;
-                                        HorizontalLayout {
-                                            padding-left: 6px;
-                                            padding-right: 6px;
-                                            spacing: 4px;
-                                            alignment: center;
-                                            Icon {
-                                                glyph: root.wrap-on ? "wrap" : "hscroll";
-                                                size: 11px;
-                                                tint: root.wrap-on ? Theme.accent-solid : Theme.text-primary;
-                                            }
-                                            Text {
-                                                text: root.wrap-on
-                                                    ? (root.lang-en ? "Soft wrap" : "软折行")
-                                                    : (root.lang-en ? "H-scroll" : "横向滚动");
-                                                color: root.wrap-on ? Theme.accent-solid : Theme.text-primary;
-                                                font-size: Theme.fs-xs;
-                                                font-weight: Theme.fw-strong;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-                                        wt := TouchArea {
-                                            width: 100%;
-                                            height: 100%;
-                                            mouse-cursor: default;
-                                            clicked => { root.wrap-on = !root.wrap-on; }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        // 统计条底线（hifi .pv-bar{border-bottom:1px solid slot-line}）
-                        Rectangle {
-                            height: 1px;
-                            background: Theme.border-subtle;
-                        }
-
-                        // 行列表双形态：紧凑/标准档行数有限（窗口采样 ≤10 行）
-                        // 用普通 for 全量渲染 —— preferred 自然参与卡片高度；
-                        // 评审档行多（≤200 行，展开后更多）用 ListView 虚拟化，
-                        // 只实例化可见项（万级行也不卡）。
-                        if root.tier != 2 : VerticalLayout {
-                            vertical-stretch: 0;
-                            for row in root.rows : PasteLineRow {
-                                kind: row.kind;
-                                gutter: row.gutter;
-                                text: row.text;
-                                level: row.level;
-                                badge: row.badge;
-                                badge-icon: row.badge-icon;
-                                wrap-on: root.wrap-on;
-                                show-gutter: root.tier != 0;
-                            }
-                        }
-                        if root.tier == 2 : ListView {
-                            vertical-stretch: 0;
-                            // 行区高 = min(行数×17px 估, cap 238)（hifi
-                            // .pv-scroll.cap{max-height:238px}）——preferred
-                            // 参与卡片自然高，超出 cap 内滚。
-                            height: Math.min(root.rows.length * 17px, 238px);
-                            for row in root.rows : PasteLineRow {
-                                kind: row.kind;
-                                gutter: row.gutter;
-                                text: row.text;
-                                level: row.level;
-                                badge: row.badge;
-                                badge-icon: row.badge-icon;
-                                wrap-on: root.wrap-on;
-                                show-gutter: true;
-                            }
-                        }
-
-                        // 展开全部（折叠账：按钮 N = 头折 + 尾折 = 实际隐藏行数）
-                        if root.fold-count > 0 : fold-btn := TouchArea {
-                            height: 26px;
-                            mouse-cursor: default;
-                            clicked => {
-                                root.expanded = !root.expanded;
-                                root.expand-toggled(root.expanded);
-                            }
-                            Rectangle {
-                                background: fold-btn.has-hover
-                                    ? Theme.accent-solid.with-alpha(0.16) : Theme.accent-solid.with-alpha(0.10);
-                                // 上/下 1px accent 虚线近似（实线）
-                                Rectangle { height: 1px; background: Theme.accent-solid.with-alpha(0.42); }
-                                Rectangle { y: parent.height - 1px; height: 1px; background: Theme.accent-solid.with-alpha(0.42); }
-                                HorizontalLayout {
-                                    spacing: 6px;
-                                    alignment: center;
-                                    Icon {
-                                        glyph: root.expanded ? "unfold-less" : "unfold-more";
-                                        size: 12px;
-                                        tint: Theme.accent-solid;
-                                    }
-                                    Text {
-                                        text: root.expanded
-                                            ? (root.lang-en ? "Collapse" : "收起")
-                                            : root.paste-expand-label;
-                                        color: Theme.accent-solid;
-                                        font-size: Theme.fs-xs;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
-
-                        // 底部 hint 条（绝对定位 + 显式宽，同 notice 口径）
-                        Rectangle {
-                            height: 26px;
-                            background: Theme.popup-bg;
-                            Rectangle { height: 1px; background: Theme.border-subtle; }
-                            Icon {
-                                x: 12px;
-                                y: (parent.height - 11px) / 2;
-                                glyph: root.hint-icon == "" ? "info" : root.hint-icon;
-                                width: 11px; height: 11px;
-                                size: 11px;
-                                tint: Theme.text-primary;
-                            }
-                            Text {
-                                x: 31px;
-                                width: parent.width - 43px;
-                                y: (parent.height - self.preferred-height) / 2;
-                                text: root.hint;
-                                color: Theme.text-primary;
-                                // hifi .pv-hint{font-family:mono}
-                                font-family: Theme.font-mono;
-                                font-size: Theme.fs-xs;
-                                overflow: elide;
+                                wrap: no-wrap;
+                                single-line: false;
+                                // (#paste-editable) 编辑防抖重析(400ms 静默,
+                                // Timer 在组件顶层)。
+                                edited => { root.edit-pending = true; }
                             }
                         }
                     }
                 }
+
+                // 统计行（edited 重析后 Rust 更新）。
+                HorizontalLayout {
+                    vertical-stretch: 0;
+                    spacing: 8px;
+                    Text {
+                        text: root.lang-en
+                            ? "\{root.stat-lines} lines · \{root.stat-chars} chars · editable"
+                            : "\{root.stat-lines} 行 · \{root.stat-chars} 字符 · 可直接编辑";
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-2xs;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
             }
 
-            // 撑满剩余：评审档内容高不足钳制值时余量落在这里，页脚贴卡底
-            Rectangle { vertical-stretch: 1; }
-            // ── 页脚（压 slot-root，spec：正文面退回 popup-bg 或 root）──
+            // ── 页脚 ─────────────────────────────────────────────
             foot := Rectangle {
+                vertical-stretch: 0;
                 background: Theme.slot-root;
                 // 顶线（hifi .dlg-foot{border-top:1px solid slot-line}）
                 Rectangle {
@@ -1056,61 +657,36 @@ export component PasteConfirmDialog inherits Rectangle {
                 }
                 VerticalLayout {
                     padding-top: 12px; padding-right: 16px; padding-bottom: 12px; padding-left: 16px;
-                    spacing: 8px;
-
-                    if root.tier == 2 : HorizontalLayout {
-                        spacing: 16px;
-                        // 评审档（宽卡）等效 hifi flex-wrap：Enter 说明与按钮
-                        // 同行（note 左吃剩余、按钮组右贴），opts 次行右贴。
-                        PasteEnterNote {
-                            horizontal-stretch: 1;
-                            note: root.enter-note;
-                        }
+                    spacing: 10px;
+                    // 行1：Enter 说明独立整行（640 宽下与按钮组同行会被压成
+                    // 窄条 —— 按钮组 preferred 330+,出图实证;全宽 wrap 2 行）。
+                    PasteEnterNote {
+                        note: root.enter-note;
+                    }
+                    // 行2：按钮组右贴。
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Rectangle { horizontal-stretch: 1; }
                         PasteFootButtons {
                             cancel-label: root.lang-en ? "Cancel" : "取消";
                             main-label: root.main-label;
                             run-label: root.lang-en ? "Paste and run" : "粘贴并执行";
                             has-run: root.has-run;
                             compact-2row: false;
-                            kb-idx: root.kb-idx;
+                            kb-idx: 0;
                             cancel => { root.paste-cancel(); }
                             paste => { root.paste-paste(); }
                             run => { root.paste-run(); }
                         }
                     }
-                    if root.tier == 2 : HorizontalLayout {
+                    // 行3：「不再提示」右贴。
+                    HorizontalLayout {
                         spacing: 8px;
                         Rectangle { horizontal-stretch: 1; }
                         PasteFootOpts {
                             lang-en: root.lang-en;
                             dont-ask: root.dont-ask;
-                            kb-idx: root.kb-idx;
-                            toggled => { root.dont-ask = !root.dont-ask; }
-                        }
-                    }
-
-                    // 标准/紧凑档：640/380 下 hifi flex-wrap 同样换行 → 堆叠
-                    if root.tier != 2 : PasteEnterNote {
-                        note: root.enter-note;
-                    }
-                    if root.tier != 2 : PasteFootButtons {
-                        cancel-label: root.lang-en ? "Cancel" : "取消";
-                        main-label: root.main-label;
-                        run-label: root.lang-en ? "Paste and run" : "粘贴并执行";
-                        has-run: root.has-run;
-                        compact-2row: root.tier == 0 && root.has-run;
-                        kb-idx: root.kb-idx;
-                        cancel => { root.paste-cancel(); }
-                        paste => { root.paste-paste(); }
-                        run => { root.paste-run(); }
-                    }
-                    if root.tier != 2 : HorizontalLayout {
-                        spacing: 8px;
-                        Rectangle { horizontal-stretch: 1; }
-                        PasteFootOpts {
-                            lang-en: root.lang-en;
-                            dont-ask: root.dont-ask;
-                            kb-idx: root.kb-idx;
+                            kb-idx: 0;
                             toggled => { root.dont-ask = !root.dont-ask; }
                         }
                     }
@@ -1118,7 +694,4 @@ export component PasteConfirmDialog inherits Rectangle {
             }
         }
     }
-
-    // 「展开全部」按钮文案由 Rust 组合（数字随折叠账）。
-    in property <string> paste-expand-label;
 }

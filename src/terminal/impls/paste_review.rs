@@ -727,18 +727,12 @@ pub fn notice_text(a: &PasteAnalysis, kind: i32) -> String {
     }
 }
 
-/// 主按钮文案（D1 三态）。
-pub fn main_button_label(a: &PasteAnalysis) -> String {
-    if !a.trailing_newline {
-        crate::i18n::t("粘贴", "Paste").to_string()
-    } else if a.a_count > 0 {
-        crate::i18n::t("粘贴（已去掉末尾回车）", "Paste (return removed)").to_string()
-    } else {
-        crate::i18n::t("粘贴（不含末尾回车）", "Paste without trailing newline").to_string()
-    }
+/// 主按钮文案（D1 三态 → #paste-editable 2026-11-13 收敛单态）：文案去
+/// 说明后缀，详情已在页脚 enter-note 一行 —— 原样并入按钮会把按钮组撑到
+/// 450px+，Enter 说明被压成窄条（出图实证）。
+pub fn main_button_label(_a: &PasteAnalysis) -> String {
+    crate::i18n::t("粘贴", "Paste").to_string()
 }
-
-/// Enter 说明行（页脚左侧）。
 pub fn enter_note_text(a: &PasteAnalysis) -> String {
     if !a.trailing_newline {
         crate::i18n::t(

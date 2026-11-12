@@ -1,18 +1,17 @@
-//! (#multiline-paste-hifi 2026-11-10) 多行粘贴确认弹框离屏出图 —— 对照
-//! 高保真 docs/design/multiline-paste-hifi-2026-11-06-v1.html 逐项核对
-//! （三档卡片 / 统计条 / 行号列 / 危险行竖标+徽标 / 折叠行 / 页脚三行）。
+//! (#paste-editable 2026-11-13) 多行粘贴确认弹框离屏出图 —— 可编辑输入框
+//! 简化版（评审面退役）：预填文本 / 提示条 / 统计行 / 页脚三钮四态核对。
 //! 亮色仅色板差异（结构共享同一组件树），留给实机验收。
 //!
-//! 运行:`cargo run --profile fast --example paste_confirm_shot`
-//! 输出:output/paste-confirm/{compact,s standard,review,compact-run}.png
+//! 运行:`cargo run --example paste_confirm_shot`
+//! 输出:output/paste-confirm/{compact,standard,review,compact-run}.png
 
-use mterm::terminal::paste_review::{analyze_paste, build_preview_rows};
-use mterm::ui::{AppWindow, PastePreviewRow};
+use mterm::terminal::paste_review::analyze_paste;
+use mterm::ui::AppWindow;
 use slint::platform::software_renderer::{
     MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
 };
 use slint::platform::{Platform, WindowAdapter};
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::ComponentHandle;
 use std::fs;
 use std::rc::Rc;
 
@@ -45,7 +44,7 @@ ssh ops@10.0.0.7 'systemctl status nginx'\n\
 echo done\n\
 pg_isready -h 127.0.0.1 -p 5432\n";
 
-/// 高保真 C 帧 18 行部署脚本（评审档：A×2 + B×2）。
+/// 高保真 C 帧 18 行部署脚本（长内容：编辑器内滚动）。
 const C_FRAME: &str = "#!/usr/bin/env bash\n\
 set -euo pipefail\n\
 cd /srv/app/current\n\
@@ -75,9 +74,7 @@ fn main() {
     ui.show().unwrap();
     std::thread::sleep(std::time::Duration::from_millis(300));
 
-    // 离屏须手动接线（app.rs 5711 PickerMath 接线 + theme apply 同款）：
-    // PrimaryButton 字色 = ink-on(accent-hex)，accent-hex 在 Theme global。
-    // 不接线 = 主按钮文字透明（纯函数回调缺省返回透明色）。
+    // 离屏须手动接线：PrimaryButton 字色 = ink-on(accent-hex)。
     ui.global::<mterm::ui::Theme<'_>>().set_accent_hex("#1FC8B4".into());
     let pm = ui.global::<mterm::ui::PickerMath<'_>>();
     pm.on_hex_color(|hex| match mterm::picker::parse_hex(&hex) {
@@ -98,80 +95,47 @@ fn main() {
         )
     });
 
-    // ── 图 1：暗 · 紧凑档 380px · 3 行无风险无尾换行（A 帧：单主按钮「粘贴」）──
-    let a = analyze_paste("cd /var/log && tail -n 200 syslog | grep -i error\nscp /tmp/err.txt ops@10.0.0.4:/srv/reports/\necho \"collect done\"");
-    fill(&ui, &a, "web-01", "ops@web-01:22", true);
+    // ── 图 1：暗 · 3 行无风险无尾换行（A 帧：单主按钮「粘贴」）──
+    let frame_a = "cd /var/log && tail -n 200 syslog | grep -i error\nscp /tmp/err.txt ops@10.0.0.4:/srv/reports/\necho \"collect done\"";
+    let a = analyze_paste(frame_a);
+    fill(&ui, frame_a, &a, "web-01", "ops@web-01:22", true);
     shot(&ui, "output/paste-confirm/compact.png");
 
-    // ── 图 2：暗 · 标准档 640px · 12 行含风险（B 帧：折叠 2+2 + 三按钮）──
+    // ── 图 2：暗 · 12 行含危险（B 帧：提示条 + 三按钮）──
     let a = analyze_paste(B_FRAME);
-    fill(&ui, &a, "db-02", "root@db-02:2222", true);
+    fill(&ui, B_FRAME, &a, "db-02", "root@db-02:2222", true);
     shot(&ui, "output/paste-confirm/standard.png");
 
-    // ── 图 3：暗 · 评审档 · 18 行（C 帧：内部滚动 + 附加 chip）──
+    // ── 图 3：暗 · 18 行长内容（C 帧：编辑器内滚动）──
     let a = analyze_paste(C_FRAME);
-    fill(&ui, &a, "edge-03", "deploy@edge-03:22", true);
+    fill(&ui, C_FRAME, &a, "edge-03", "deploy@edge-03:22", true);
     shot(&ui, "output/paste-confirm/review.png");
 
-    // ── 图 4：暗 · 紧凑档 · 单行尾回车 + A 级（G 帧：主按钮带后缀）──
+    // ── 图 4：暗 · 单行尾回车 + A 级（G 帧：主按钮带后缀）──
     let a = analyze_paste(G_FRAME);
-    fill(&ui, &a, "web-01", "ops@web-01:22", true);
+    fill(&ui, G_FRAME, &a, "web-01", "ops@web-01:22", true);
     shot(&ui, "output/paste-confirm/compact-run.png");
 
     println!("saved output/paste-confirm/{{compact,standard,review,compact-run}}.png");
 }
 
-/// 把一次分析结果整套写进弹框属性并打开。
-fn fill(ui: &AppWindow, a: &mterm::terminal::paste_review::PasteAnalysis, tab: &str, target: &str, bracketed: bool) {
+/// 把一次分析结果（连同原文）整套写进弹框属性并打开。
+fn fill(ui: &AppWindow, text: &str, a: &mterm::terminal::paste_review::PasteAnalysis, tab: &str, target: &str, bracketed: bool) {
     use mterm::terminal::paste_review::{
-        enter_note_text, expand_all_label, hint_text, main_button_label, notice_kind,
-        notice_text, subtitle_text,
+        enter_note_text, main_button_label, notice_kind, notice_text,
     };
     let kind = notice_kind(a, bracketed);
-    let model = build_preview_rows(a, false);
-    let rows: Vec<PastePreviewRow> = model
-        .rows
-        .into_iter()
-        .map(|r| PastePreviewRow {
-            kind: r.kind,
-            gutter: r.gutter.into(),
-            text: r.text.into(),
-            level: r.level,
-            badge: r.badge.into(),
-            badge_icon: r.badge_icon.into(),
-        })
-        .collect();
-    let tier = match a.tier {
-        mterm::terminal::paste_review::PasteTier::Compact => "compact",
-        mterm::terminal::paste_review::PasteTier::Standard => "standard",
-        mterm::terminal::paste_review::PasteTier::Review => "review",
-    };
-    let hint_icon = if a.tier == mterm::terminal::paste_review::PasteTier::Compact {
-        "table-rows"
-    } else {
-        "info"
-    };
+    ui.set_paste_confirm_text(text.into());
     ui.set_paste_confirm_tab_name(tab.into());
     ui.set_paste_confirm_target(target.into());
     ui.set_paste_confirm_bracketed(bracketed);
-    ui.set_paste_confirm_badge(tier.into());
-    ui.set_paste_confirm_subtitle(subtitle_text(a).into());
     ui.set_paste_confirm_notice_kind(kind);
     ui.set_paste_confirm_notice_text(notice_text(a, kind).into());
     ui.set_paste_confirm_lines(a.line_count as i32);
     ui.set_paste_confirm_chars(a.char_count as i32);
-    ui.set_paste_confirm_risk_a(a.a_count as i32);
-    ui.set_paste_confirm_risk_b(a.b_count as i32);
     ui.set_paste_confirm_trailing(a.trailing_newline);
     ui.set_paste_confirm_main_label(main_button_label(a).into());
     ui.set_paste_confirm_enter_note(enter_note_text(a).into());
-    ui.set_paste_confirm_hint(hint_text(a, a.virtualized).into());
-    ui.set_paste_confirm_hint_icon(hint_icon.into());
-    ui.set_paste_confirm_virtual(a.virtualized);
-    ui.set_paste_confirm_force(a.force_review);
-    ui.set_paste_confirm_fold_count(model.fold_count as i32);
-    ui.set_paste_confirm_expand_label(expand_all_label(model.fold_count).into());
-    ui.set_paste_confirm_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
     ui.set_paste_confirm_open(true);
     std::thread::sleep(std::time::Duration::from_millis(120));
 }

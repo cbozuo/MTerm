@@ -2329,10 +2329,10 @@ export component AppWindow inherits Window {
     in-out property <bool> batch-import-open: false;  // text batch-import dialog (#150)
     in-out property <string> batch-import-text;       // the textarea content
     callback batch-import-confirm(string /* pasted text */);
-    // Multi-line terminal paste safety prompt (#262). (#multiline-paste-hifi)
-    // 专用评审面：三档卡片 + 行级危险标记 + 安全默认「去尾回车」。
-    // 标量与文案全部由 Rust paste_review::analyze_paste 组合后下发；
-    // 行模型经 paste-refresh-rows(expanded) 按需重建（展开全部）。
+    // Multi-line terminal paste safety prompt (#262). (#paste-editable
+    // 2026-11-13 用户反馈"太复杂") 评审面退役 → 可编辑输入框：text 双向
+    // (Rust 预填 ⇄ 用户编辑,提交即所贴),编辑防抖经 paste-edited 重析提示/
+    // 统计;行模型/折叠/三档属性族退役。
     in-out property <bool> paste-confirm-open: false;
     // ── (#double-shift-v1 2026-11-11) 双击 Shift 全局搜索：状态族挂根，
     // QuickSearchDialog 组件只画；Rust 侧（src/app/search_ui.rs）重建索引、
@@ -2378,31 +2378,20 @@ export component AppWindow inherits Window {
     in-out property <string> paste-confirm-tab-name;
     in-out property <string> paste-confirm-target;
     in-out property <bool> paste-confirm-bracketed: false;
-    in-out property <string> paste-confirm-badge;      // compact / standard / review
-    in-out property <string> paste-confirm-subtitle;
     in-out property <int> paste-confirm-notice-kind: 0;
     in-out property <string> paste-confirm-notice-text;
     in-out property <int> paste-confirm-lines: 0;
     in-out property <int> paste-confirm-chars: 0;
-    in-out property <int> paste-confirm-risk-a: 0;
-    in-out property <int> paste-confirm-risk-b: 0;
     in-out property <bool> paste-confirm-trailing: false;   // 末尾回车 → 「粘贴并执行」
     in-out property <string> paste-confirm-main-label;
     in-out property <string> paste-confirm-enter-note;
-    in-out property <string> paste-confirm-hint;
-    in-out property <string> paste-confirm-hint-icon;
-    in-out property <bool> paste-confirm-virtual: false;
-    in-out property <bool> paste-confirm-force: false;
-    in-out property <int> paste-confirm-fold-count: 0;
-    in-out property <string> paste-confirm-expand-label;
-    in-out property <[PastePreviewRow]> paste-confirm-rows;
-    in-out property <int> paste-confirm-seq: 0;         // 后台重建模型竞态护栏
     // (#sync-dialog-esc) in-out：同步输入弹框确定（Rust apply 路径）后由
     // Rust 递增，把键盘焦点还给活动终端（与下方粘贴确认卡的 += 1 同机制）。
     in-out property <int> terminal-focus-sequence;
     callback paste-confirmed(string /* tab-id */, bool /* run: true = 粘贴并执行 */, bool /* don't ask again */);
     callback paste-confirm-cancelled();
-    callback paste-refresh-rows(bool /* expanded */);
+    // (#paste-editable) 编辑防抖重析：Rust 同步 analyze_paste 更新提示/统计/主钮。
+    callback paste-edited(string /* edited text */);
     callback connect-session(string /* session-id */);
     callback edit-session(string /* session-id */);
     callback duplicate-session(string /* session-id */);
@@ -8847,12 +8836,11 @@ export component AppWindow inherits Window {
         cancel => { root.confirm-delete-batch = false; root.confirm-delete-open = false; }
     }
 
-    // Multi-line paste can execute several shell commands at once — the
-    // dedicated review surface (#262, #multiline-paste-hifi): tiered card,
-    // per-line risk badges, safe default "strip the trailing return".
-    // Backdrop click never accepts (#262); Enter hits the PRIMARY (safe)
-    // button and never executes (#392 语义改向); Alt+P is the only keyboard
-    // path to "paste and run".
+    // Multi-line paste can execute several shell commands at once —
+    // (#paste-editable 2026-11-13 用户反馈"太复杂") 评审面退役,改可编辑输入框
+    // (预填剪贴板原文,直接改,提示条随编辑重析);提交读编辑后的 text。
+    // Backdrop click never accepts (#262); Alt+P is the only keyboard path
+    // to "paste and run"; Enter 在编辑框内=换行(不再绑主钮)。
     pd := PasteConfirmDialog {
         width: parent.width;
         height: parent.height;
@@ -8862,24 +8850,15 @@ export component AppWindow inherits Window {
         tab-name: root.paste-confirm-tab-name;
         target: root.paste-confirm-target;
         bracketed: root.paste-confirm-bracketed;
-        badge: root.paste-confirm-badge;
-        subtitle: root.paste-confirm-subtitle;
         notice-kind: root.paste-confirm-notice-kind;
         notice-text: root.paste-confirm-notice-text;
         stat-lines: root.paste-confirm-lines;
         stat-chars: root.paste-confirm-chars;
-        risk-a: root.paste-confirm-risk-a;
-        risk-b: root.paste-confirm-risk-b;
         has-run: root.paste-confirm-trailing;
         main-label: root.paste-confirm-main-label;
         enter-note: root.paste-confirm-enter-note;
-        hint: root.paste-confirm-hint;
-        hint-icon: root.paste-confirm-hint-icon;
-        virtualized: root.paste-confirm-virtual;
-        force-review: root.paste-confirm-force;
-        rows: root.paste-confirm-rows;
-        fold-count: root.paste-confirm-fold-count;
-        paste-expand-label: root.paste-confirm-expand-label;
+        text <=> root.paste-confirm-text;
+        paste-edited(t) => { root.paste-edited(t); }
         paste-paste => {
             root.paste-confirmed(root.paste-confirm-tab, false, pd.dont-ask);
             root.paste-confirm-open = false;
@@ -8895,7 +8874,6 @@ export component AppWindow inherits Window {
             root.paste-confirm-open = false;
             root.terminal-focus-sequence += 1;
         }
-        expand-toggled(v) => { root.paste-refresh-rows(v); }
     }
 
     // ── (#double-shift-v1) 双击 Shift 全局搜索浮层（恒实例：进场动画挂在
