@@ -8188,14 +8188,15 @@ fn refresh_group_manager(
 
     // (#group-manager / V3) 组清单与侧栏同源:group_records 的用户组(平铺
     // DFS,子组跟在父组后)。管理台暂以显示名为键(薄适配,S9 一并 id 化)。
-    let mut named: Vec<String> = Vec::new();
-    fn walk_names(records: &[crate::config::GroupRecord], parent: &str, out: &mut Vec<String>) {
+    // (#gm-subgroup 2026-11-12) DFS 改带深度:组行按 depth 缩进呈现树形。
+    let mut named: Vec<(String, i32)> = Vec::new();
+    fn walk_names(records: &[crate::config::GroupRecord], parent: &str, depth: i32, out: &mut Vec<(String, i32)>) {
         for r in records.iter().filter(|r| r.parent_id == parent && !r.reserved) {
-            out.push(r.name.clone());
-            walk_names(records, &r.id, out);
+            out.push((r.name.clone(), depth));
+            walk_names(records, &r.id, depth + 1, out);
         }
     }
-    walk_names(records, "", &mut named);
+    walk_names(records, "", 0, &mut named);
 
     let mut rows: Vec<crate::ui::GroupRow> = Vec::with_capacity(named.len() + 1);
     // 「默认组」空着就不占一行（用户要求）：它没有成员时唯一作用是「移出分组」的落点，
@@ -8211,9 +8212,10 @@ fn refresh_group_manager(
             count: count_ungrouped,
             hit: if query.is_empty() { count_ungrouped } else { hits_in(true, GM_UNGROUPED) },
             reserved: true,
+            depth: 0,
         });
     }
-    for name in &named {
+    for (name, depth) in &named {
         let hex = color_of(name);
         let gid = gid_of(name);
         let count = sessions.iter().filter(|s| s.group_id == gid).count() as i32;
@@ -8224,6 +8226,7 @@ fn refresh_group_manager(
             count,
             hit: if query.is_empty() { count } else { hits_in(false, name) },
             reserved: false,
+            depth: *depth,
         });
     }
 
@@ -9900,6 +9903,53 @@ fn wire_session_callbacks(
                     refresh_group_manager(&w, &store.borrow(), &picked.borrow());
                 }
                 SharedString::new()
+            }
+        });
+
+        // (#gm-subgroup 2026-11-12) 分组管理台内建子分组：父 = 传入的选中组名
+        // （UI 侧已限根级非保留组）。重名自动加序号（add_group 撞名 → 序号迭代，
+        // on_create_subgroup 同款）；成功后新子组接管选中 + gm/侧栏双刷新。
+        window.on_gm_create_sub({
+            let weak = weak.clone();
+            let store = store.clone();
+            let sessions_model = sessions_model.clone();
+            let registry = registry.clone();
+            let picked = picked.clone();
+            move |parent: SharedString| {
+                let parent = parent.to_string();
+                let new_name = {
+                    let mut st = store.borrow_mut();
+                    let Some(parent_id) = st
+                        .group_records()
+                        .iter()
+                        .find(|r| r.name == parent && !r.reserved)
+                        .map(|r| r.id.clone())
+                    else {
+                        return;
+                    };
+                    let base = crate::i18n::t("新建子分组", "New subgroup").to_string();
+                    let mut name = base.clone();
+                    let mut n = 2u32;
+                    while st.add_group(name.clone(), &parent_id).is_none() {
+                        if n > 99 {
+                            break;
+                        }
+                        name = format!("{base} {n}");
+                        n += 1;
+                    }
+                    if let Err(err) = st.save() {
+                        tracing::warn!("failed to save config: {err:#}");
+                    }
+                    name
+                };
+                if let Some(w) = weak.upgrade() {
+                    w.set_gm_selected(new_name.as_str().into());
+                }
+                sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
+                registry.broadcast_config_changed();
+                if let Some(w) = weak.upgrade() {
+                    refresh_group_manager(&w, &store.borrow(), &picked.borrow());
+                }
             }
         });
 

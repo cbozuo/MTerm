@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // 「移动到分组」弹框(#move-group-dialog 2026-11-12,高保真 docs/design/
 // left-panel-session-hifi-2026-10-28-v3.html §Move to Group)。
-// 骨架 = 全窗遮罩(点外关闭,与面板右键菜单同口径)+ 居中卡片(320px):
-// 标题「移动到分组」/ 副标题「N 个会话」/ 搜索框 / 树形组列表(彩色圆点 +
-// depth 缩进 + 右侧计数 + 「当前」徽章) / 页脚(提示 + 取消 + 移动)。
+// 骨架 = 全窗遮罩(点外关闭,与面板右键菜单同口径)+ 居中卡片(320px,
+// r2 2026-11-12:头部拖动 + hairline 边框 + 卡/行高塌陷修复 + 搜索框点外
+// 失焦):标题「移动到分组」/ 副标题「N 个会话」/ 搜索框 / 树形组列表(彩色
+// 圆点 + depth 缩进 + 右侧计数 + 「当前」徽章) / 页脚(提示 + 取消 + 移动)。
 // 规格(hifi CSS 覆盖链为准):卡 320px·圆角 11·panel 底 / 头 13·13·8 标题
 // 12px-600 副题 10px / 搜索 30px 高·内衬 8 / 行 31px·左距 7+depth*16·
 // 圆角 5·11px / 圆点 6px / 计数 9px 次色右对齐 / 当前徽章 9px 强调色 /
@@ -32,6 +33,16 @@ export component MoveGroupDialog inherits Rectangle {
     callback search-changed(string);
     callback confirm(string /* group name */);
     callback close-requested();
+    // (#move-drag 2026-11-12) 拖动/居中钳制 = 全窗(宿主传 root 尺寸,
+    // highlight_dialog / panel_settings 同名接口)。
+    in property <length> bounds-w;
+    in property <length> bounds-h;
+    // 卡片拖动(头部整条为拖把,pointer-event 法同上两弹框)。
+    property <length> drag-ox;
+    property <length> drag-oy;
+    property <length> drag-cx;
+    property <length> drag-cy;
+    property <bool> dragging: false;
 
     // 点外关闭(与面板右键菜单同口径:遮罩点击 = 取消)。
     Scrim { width: 100%; height: 100%; }
@@ -53,22 +64,77 @@ export component MoveGroupDialog inherits Rectangle {
         }
     }
 
+    // 居中卡(hifi .move-card 320px)。
+    // (#move-h 2026-11-12 用户反馈"太小了,参考高保真") 卡高改显式:列表是
+    // ScrollView(不向上传播 preferred 高,panel_settings 同款坑)+ for 外层
+    // 行壳无显式高 —— card-vl.preferred-height 只剩头+搜索+页脚 ≈199px,
+    // 行再被压扁。改按内容算:51 头 + 30 搜索 + 8 上距 + list-pref + 48 脚,
+    // list-pref = 行数×31 + 列表 padding-bottom 8(空态 22px 也放得下,
+    // min 62 保持);行多超出 → min(窗−34) 钳制走 ScrollView 滚动。
+    // 行高/列表距改动须同步此账。
     card := Rectangle {
+        property <length> list-pref: max(62px, root.rows.length * 31px + 8px);
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         width: 320px;
-        height: min(parent.height - 34px, card-vl.preferred-height);
+        height: min(parent.height - 34px, 51px + 30px + 8px + self.list-pref + 48px);
         background: Theme.popup-bg;
         border-radius: 11px;
-        border-width: 1px;
+        // (#move-hairline 2026-11-12 用户要求对齐高亮设置) 1px 高 DPI 过粗,
+        // 改 hairline 设备像素对齐细线。
+        border-width: Theme.hairline();
         border-color: Theme.border-strong;
         clip: true;
-        // 卡身吃掉点击(不穿透到遮罩的"点外关闭")。
-        TouchArea { width: 100%; height: 100%; mouse-cursor: default; }
+        // 卡身吃掉点击(不穿透到遮罩的"点外关闭")+ (#search-blur 2026-11-12
+        // 用户要求"点击输入框之外聚焦样式去除") 点框外即失焦 —— Slint 点
+        // 空白不会自动清 TextInput 焦点(highlight_dialog blur-token 同口径;
+        // 此处 TextInput 就在本组件,直接 clear-focus 免令牌)。
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            mouse-cursor: default;
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.down) {
+                    if (mv-input.has-focus) { mv-input.clear-focus(); }
+                }
+            }
+        }
         card-vl := VerticalLayout {
             // 头:标题 + 副标题 + 关闭。
             Rectangle {
                 height: 51px;
+                // (#move-drag) 头部整条 = 拖把(hifi .move-head cursor:move;
+                // 垫底在标题之下,✕ 钮在上层照常点)。pointer-event 法同
+                // highlight_dialog / panel_settings:down 记锚、moved 平移并
+                // 钳到窗内(8px 边距 + 设备像素对齐)。
+                TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    mouse-cursor: default;
+                    pointer-event(ev) => {
+                        if (ev.kind == PointerEventKind.down) {
+                            root.dragging = true;
+                            root.drag-ox = card.x;
+                            root.drag-oy = card.y;
+                            root.drag-cx = self.absolute-position.x + self.mouse-x;
+                            root.drag-cy = self.absolute-position.y + self.mouse-y;
+                        } else if (ev.kind == PointerEventKind.up) {
+                            root.dragging = false;
+                        }
+                    }
+                    moved => {
+                        if (root.dragging) {
+                            card.x = clamp(
+                                Theme.snap-to-device(root.drag-ox
+                                    + (self.absolute-position.x + self.mouse-x - root.drag-cx)),
+                                8px, max(8px, root.bounds-w - card.width - 8px));
+                            card.y = clamp(
+                                Theme.snap-to-device(root.drag-oy
+                                    + (self.absolute-position.y + self.mouse-y - root.drag-cy)),
+                                8px, max(8px, root.bounds-h - card.height - 8px));
+                        }
+                    }
+                }
                 HorizontalLayout {
                     padding-left: 13px;
                     padding-right: 10px;
@@ -175,8 +241,12 @@ export component MoveGroupDialog inherits Rectangle {
                     padding-right: 6px;
                     padding-bottom: 8px;
                     for r in root.rows : Rectangle {
+                        // (#move-h) 行高显式在外层壳:if 内层的高不会把无显式
+                        // 高的外层壳在布局里撑起来(实测行距塌半)。内层铺满壳。
+                        height: 31px;
                         if r.name != "" : Rectangle {
-                            height: 31px;
+                            width: 100%;
+                            height: 100%;
                             border-radius: 5px;
                             background: r.current
                                 ? transparent
@@ -197,11 +267,19 @@ export component MoveGroupDialog inherits Rectangle {
                                 padding-right: 7px;
                                 spacing: 6px;
                                 // 组色圆点(6px;无自定义色 → 次级前景)。
+                                // (#move-dot-center 2026-11-12) 固定高子项在
+                                // HorizontalLayout 里贴顶(hifi .move-row 是
+                                // align-items:center)——100% 高外壳包居中。
                                 Rectangle {
                                     width: 6px;
-                                    height: 6px;
-                                    border-radius: 3px;
-                                    background: Theme.group-color(r.has-color, r.color);
+                                    height: 100%;
+                                    Rectangle {
+                                        width: 6px;
+                                        height: 6px;
+                                        y: (parent.height - self.height) / 2;
+                                        border-radius: 3px;
+                                        background: Theme.group-color(r.has-color, r.color);
+                                    }
                                 }
                                 Text {
                                     text: r.name;
@@ -215,17 +293,25 @@ export component MoveGroupDialog inherits Rectangle {
                                     overflow: elide;
                                 }
                                 if r.current : Rectangle {
-                                    height: 15px;
-                                    width: cur-tx.preferred-width + 6px;
-                                    border-radius: 3px;
-                                    border-width: 1px;
-                                    border-color: Theme.accent-solid.with-alpha(0.45);
-                                    cur-tx := Text {
-                                        text: root.lang-en ? "current" : "当前";
-                                        color: Theme.accent-solid;
-                                        font-size: Theme.fs-2xs;
-                                        vertical-alignment: center;
-                                        horizontal-alignment: center;
+                                    // (#move-dot-center) 同圆点:100% 高外壳
+                                    // 垂直居中(hifi .move-current-slot 同款)。
+                                    height: 100%;
+                                    width: 28px;
+                                    Rectangle {
+                                        height: 15px;
+                                        width: cur-tx.preferred-width + 6px;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                        border-radius: 3px;
+                                        border-width: 1px;
+                                        border-color: Theme.accent-solid.with-alpha(0.45);
+                                        cur-tx := Text {
+                                            text: root.lang-en ? "current" : "当前";
+                                            color: Theme.accent-solid;
+                                            font-size: Theme.fs-2xs;
+                                            vertical-alignment: center;
+                                            horizontal-alignment: center;
+                                        }
                                     }
                                 }
                                 Text {

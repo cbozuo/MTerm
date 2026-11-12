@@ -3,8 +3,9 @@
 // left-panel-session-hifi-2026-10-28-v3.html §V4.3 面板设置弹层）。
 // 左侧会话面板的 8 项设置：布局(行密度) / 显示(组色带·子组数·会话总数·
 // 悬停信息卡) / 交互(点击标签定位树·自动展开所在组) / 排序(排序方式)。
-// 骨架 = ping_dialog 同款的全窗 overlay + Scrim + 居中卡片（模态点外不关，
-// 关闭口径 = 完成/×/Esc）；「修改实时生效」= 开关/分段直写双向绑定的
+// 骨架 = highlight_dialog 同款的全窗 overlay + Scrim + 居中卡片（点外关闭
+// + Esc + 头部拖动，r2 2026-11-12 用户要求；原 ping 口径「点外不关」退役）；
+// 关闭口径 = 完成/×/点外/Esc；「修改实时生效」= 开关/分段直写双向绑定的
 // AppWindow 属性（UI 即刻反馈）+ toggled-*/sort-picked 回调（Rust 落盘，
 // 排序档回调另触发模型重建）。
 // 规格（hifi CSS 覆盖链为准）：卡 380px / 圆角 12 / 头 14·16·10 + 底线 /
@@ -121,6 +122,16 @@ export component PanelSettingsDialog inherits Rectangle {
     callback toggled-auto-expand-group(bool);
     callback sort-picked(int);
     callback close-requested();
+    // (#panel-settings-drag 2026-11-12) 拖动/居中钳制 = 全窗(宿主传 root 尺寸,
+    // highlight_dialog 同名接口)。
+    in property <length> bounds-w;
+    in property <length> bounds-h;
+    // 卡片拖动(highlight_dialog 同款 pointer-event 法;头部整条为拖把)。
+    property <length> drag-ox;
+    property <length> drag-oy;
+    property <length> drag-cx;
+    property <length> drag-cy;
+    property <bool> dragging: false;
 
     // Esc 关闭：ctx 浮层同款（1×1 FocusScope + 0ms Timer 抢焦点；卸载即还）。
     fs := FocusScope {
@@ -153,28 +164,83 @@ export component PanelSettingsDialog inherits Rectangle {
 
     Scrim { width: 100%; height: 100%; }
 
-    // 模态点击挡板（点外不关，ping V2 口径 —— 吃掉卡外点击，不透下层）。
+    // (#panel-settings-clickout 2026-11-12 用户要求"支持点击弹框外关闭")
+    // 遮罩点击 = 关框（highlight_dialog / 设置卡同款；吞滚动防背板误滚）。
+    // 拖动不受影响 —— 按下与释放不在同一元素内不构成 clicked。
     if true : Rectangle {
         width: 100%;
         height: 100%;
-        TouchArea { width: 100%; height: 100%; mouse-cursor: default; }
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            mouse-cursor: default;
+            scroll-event(e) => { accept }
+            clicked => { root.close-requested(); }
+        }
     }
 
     // 居中卡（hifi .set-card 380px；超高贴窗：上限 = 窗高−36，体滚）。
+    // (#panel-settings-h 2026-11-12) 卡高改显式：ScrollView 不向上传播
+    // preferred 高（set-vl.preferred-height 只剩头+脚 ≈104px，体被压成
+    // 一屏小视口出滚动条 —— 实机截图弹框只剩「行密度」一行，用户反馈
+    // "太小了，参照高保真"）。高保真口径 = 内容优先全展开（max-height
+    // 才滚）：54 头 + 50 脚 + body-pref，超窗才滚。body-pref 逐段拆账
+    // （段 = 上下 padding 24 + 段题 16 + 36×行 + 4×行距；分隔线 1×3）：
+    //   布局   80 = 24+16+4+36×1
+    //   显示  200 = 24+16+4×4+36×4
+    //   交互  120 = 24+16+4×2+36×2
+    //   排序   80 = 24+16+4+36×1
+    //   线      3
+    // 合计 body = 483。SetRow 行高 / 段距 / 段行数改动须同步此账。
     set-card := Rectangle {
+        property <length> body-pref: 483px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         width: 380px;
-        height: min(parent.height - 36px, set-vl.preferred-height);
+        height: min(parent.height - 36px, 54px + self.body-pref + 50px);
         background: Theme.popup-bg;
         border-radius: 12px;
-        border-width: 1px;
+        // (#panel-settings-hairline 2026-11-12 用户要求"参照高亮设置的边框
+        // 线样式") 1px 在高 DPI 下渲染过粗，改 hairline 设备像素对齐细线
+        // （highlight_dialog / #gm-hairline 同款，第三次同坑）。
+        border-width: Theme.hairline();
         border-color: Theme.border-strong;
         clip: true;
         set-vl := VerticalLayout {
             // 头（hifi .set-head：14·16·10 + 底线）。
             Rectangle {
                 height: 54px;
+                // (#panel-settings-drag) 头部整条 = 拖把（垫底在底线/标题之下，
+                // ✕ 钮在上层照常点）。pointer-event 法同 highlight_dialog：
+                // down 记锚、moved 平移并钳到窗内（8px 边距 + 设备像素对齐）。
+                TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    mouse-cursor: default;
+                    pointer-event(ev) => {
+                        if (ev.kind == PointerEventKind.down) {
+                            root.dragging = true;
+                            root.drag-ox = set-card.x;
+                            root.drag-oy = set-card.y;
+                            root.drag-cx = self.absolute-position.x + self.mouse-x;
+                            root.drag-cy = self.absolute-position.y + self.mouse-y;
+                        } else if (ev.kind == PointerEventKind.up) {
+                            root.dragging = false;
+                        }
+                    }
+                    moved => {
+                        if (root.dragging) {
+                            set-card.x = clamp(
+                                Theme.snap-to-device(root.drag-ox
+                                    + (self.absolute-position.x + self.mouse-x - root.drag-cx)),
+                                8px, max(8px, root.bounds-w - set-card.width - 8px));
+                            set-card.y = clamp(
+                                Theme.snap-to-device(root.drag-oy
+                                    + (self.absolute-position.y + self.mouse-y - root.drag-cy)),
+                                8px, max(8px, root.bounds-h - set-card.height - 8px));
+                        }
+                    }
+                }
                 Rectangle {
                     y: parent.height - 1px;
                     height: 1px;
@@ -239,8 +305,12 @@ export component PanelSettingsDialog inherits Rectangle {
                                     compact: true;
                                     height: 25px;
                                     for i in 2: Rectangle {
+                                        // (#seg-cell-collapse 2026-11-12) 段
+                                        // preferred 归零会把 content-w 塌到内衬
+                                        // 宽（sync_input ScopeCell 同款坑）：固定
+                                        // 段宽两字文案放得下，thumb 等分仍对齐。
                                         min-width: 0;
-                                        preferred-width: 0;
+                                        preferred-width: 48px;
                                         horizontal-stretch: 1;
                                         property <bool> is-on: (root.panel-row-compact ? 0 : 1) == i;
                                         dens-cell := TouchArea {
@@ -368,8 +438,10 @@ export component PanelSettingsDialog inherits Rectangle {
                                     compact: true;
                                     height: 25px;
                                     for i in 3: Rectangle {
+                                        // (#seg-cell-collapse) 同上：固定段宽
+                                        // 防 content-w 塌宽文字叠压。
                                         min-width: 0;
-                                        preferred-width: 0;
+                                        preferred-width: 48px;
                                         horizontal-stretch: 1;
                                         property <bool> is-on: root.panel-sort-mode == i;
                                         sort-cell := TouchArea {

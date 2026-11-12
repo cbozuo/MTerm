@@ -171,6 +171,9 @@ export component GroupManagerDialog inherits Rectangle {
     // 输入时实时预校验：返回 "" = 合法，否则返回错误文案
     callback validate-name(string /* text */, string /* orig */) -> string;
     callback create-group(string /* name */, string /* hex */) -> string;
+    // (#gm-subgroup 2026-11-12) 子分组创建：复用 AppWindow 的既有回调
+    // （按父组名找根级组、重名自动加序号），挂载处转发。
+    callback create-subgroup(string /* parent group name */);
     callback remove-group(string /* name */, string /* target */);
     callback set-group-color(string /* name */, string /* hex */);
     callback reorder-group(string /* group */, string /* before */);
@@ -190,6 +193,12 @@ export component GroupManagerDialog inherits Rectangle {
     in-out property <string> editing-text: "";
     in-out property <string> editing-error: "";
     in-out property <bool> creating: false;
+    // (#gm-subgroup 2026-11-12) 子分组新建模式：creating = true 且 creating-sub
+    // = true 时，提交走 create-subgroup(选中组)（无色板 —— 子组色走继承）。
+    // 占位符/提示随它切换。
+    in-out property <bool> creating-sub: false;
+    // 子分组模式的父组名快照（点入口时取选中组；期间换选中组不改落点）。
+    in-out property <string> creating-parent: "";
     in-out property <string> confirm-del: "";    // 展开删除条的组名
     in-out property <string> del-target: "";     // 成员去向（"" = 未分组）
     in-out property <bool> del-menu: false;      // 删除条的「去向」下拉
@@ -299,6 +308,13 @@ export component GroupManagerDialog inherits Rectangle {
     pure function has-default-row() -> bool {
         return root.groups.length > 0 && root.groups[0].reserved;
     }
+    // (#gm-subgroup 2026-11-12) 「新建子分组」入口可用性：选中的是根级
+    // 非保留组（UI 限深 2，子分组不可再嵌套 —— 高保真 §tree depth）。
+    pure function gm-subgroup-ok() -> bool {
+        return root.cur-index >= 0 && root.cur-index < root.groups.length
+            && !root.groups[root.cur-index].reserved
+            && root.groups[root.cur-index].depth == 0;
+    }
     // 内容内 y（已减列表 8px padding）→ 组行号
     function gi-at(y: length) -> int {
         let cap = root.has-cap() ? root.cap-h : 0px;
@@ -354,6 +370,8 @@ export component GroupManagerDialog inherits Rectangle {
         root.editing-error = "";
         root.color-for = "";
         root.creating = false;
+        root.creating-sub = false;
+        root.creating-parent = "";
     }
 
     // 统一的底栏反馈（bad = 语义红 + 警示图标）
@@ -373,6 +391,23 @@ export component GroupManagerDialog inherits Rectangle {
         if (root.editing-text == "") {
             root.editing = "";
             root.creating = false;
+            root.creating-sub = false;
+            root.creating-parent = "";
+            root.editing-text = "";
+            root.editing-error = "";
+            root.edit-where = "";
+            root.new-color = "";
+            root.new-swatch = transparent;
+            return true;
+        }
+        // (#gm-subgroup) 子分组模式：名字合法性 Rust 侧 add_group 兜底
+        // （重名自动加序号，不会失败）；色不传 —— 子组色走父组继承。
+        if (root.creating && root.creating-sub) {
+            root.create-subgroup(root.creating-parent);
+            // create-subgroup 无返回值（重名自动加「 2」），按成功清态。
+            root.creating = false;
+            root.creating-sub = false;
+            root.creating-parent = "";
             root.editing-text = "";
             root.editing-error = "";
             root.edit-where = "";
@@ -394,6 +429,8 @@ export component GroupManagerDialog inherits Rectangle {
         if (ok) {
             root.editing = "";
             root.creating = false;
+            root.creating-sub = false;
+            root.creating-parent = "";
             root.editing-text = "";
             root.edit-where = "";
             root.new-color = "";
@@ -472,6 +509,8 @@ export component GroupManagerDialog inherits Rectangle {
             root.new-swatch = transparent;
             root.editing = "";
             root.creating = false;
+            root.creating-sub = false;
+            root.creating-parent = "";
             root.editing-error = "";
             root.edit-where = "";
             root.down-row = -1;
@@ -590,6 +629,8 @@ export component GroupManagerDialog inherits Rectangle {
                         } else if (root.editing != "" || root.creating) {
                             root.editing = "";
                             root.creating = false;
+                            root.creating-sub = false;
+                            root.creating-parent = "";
                             root.editing-error = "";
                         } else if (root.keys-open) {
                             root.keys-open = false;
@@ -918,7 +959,8 @@ export component GroupManagerDialog inherits Rectangle {
                                                     }
                                                 }
                                                 moved => {
-                                                    if (root.groups[i].reserved) { return; }
+                                                    // (#gm-subgroup) 子组行不可拖拽排序（同排序键隐藏口径）。
+                                                    if (root.groups[i].reserved || root.groups[i].depth > 0) { return; }
                                                     if (root.editing != "" || root.creating || root.query != "") { return; }
                                                     let ax = self.absolute-position.x + self.mouse-x;
                                                     let ay = self.absolute-position.y + self.mouse-y;
@@ -973,7 +1015,9 @@ export component GroupManagerDialog inherits Rectangle {
 
                                             HorizontalLayout {
                                                 // 左内边距 8 / 右 6 / 间距 8（高保真 §组行）
-                                                padding-left: 8px;
+                                                // (#gm-subgroup 2026-11-12) 子组按 depth 缩进
+                                                // 16px/层（左栏树同款步长），树形层级一眼可辨。
+                                                padding-left: 8px + root.groups[i].depth * 16px;
                                                 padding-right: 6px;
                                                 spacing: 8px;
                                                 cross-axis-alignment: center;
@@ -1078,10 +1122,13 @@ export component GroupManagerDialog inherits Rectangle {
                                                     }
                                                 }
                                                 // 上移 / 下移（未分组没有）：常占位、悬停渐显、边界置灰
+                                                // (#gm-subgroup 2026-11-12) 子组行也没有：同级序 =
+                                                // 父子关系（DFS 序），上下移会把它挪出父组——隐藏，
+                                                // 树形重排留给移动/重建。
                                                 HorizontalLayout {
                                                     // 未分组没有排序键：用 visible 隐藏（Slint 的不可见元素不占位、
                                                     // 不吃事件），这样 id 仍在本作用域，行底色/组名能一起判 hover
-                                                    visible: !root.groups[i].reserved;
+                                                    visible: !root.groups[i].reserved && root.groups[i].depth == 0;
                                                     spacing: 1px;
                                                     opacity: grow-ta.has-hover
                                                         || gu-ta.has-hover || gd-ta.has-hover ? 1.0 : 0.0;
@@ -1189,6 +1236,24 @@ export component GroupManagerDialog inherits Rectangle {
                                     if root.creating : VerticalLayout {
                                         spacing: 0px;
                                         padding-top: 6px;
+                                        // (#gm-subgroup) 子分组模式的落点提示（色板不显示 —— 子组色走继承）。
+                                        if root.creating-sub : Rectangle {
+                                            height: 18px;
+                                            HorizontalLayout {
+                                                padding-left: 8px;
+                                                spacing: 5px;
+                                                Icon { glyph: "create-new-folder"; tint: Theme.text-muted; size: 11px; }
+                                                Text {
+                                                    text: root.lang-en
+                                                        ? "Will be created under \"" + root.creating-parent + "\""
+                                                        : "将创建在「" + root.creating-parent + "」之下";
+                                                    color: Theme.text-muted;
+                                                    font-size: Theme.fs-2xs;
+                                                    vertical-alignment: center;
+                                                    overflow: elide;
+                                                }
+                                            }
+                                        }
                                         Rectangle {
                                             height: 28px;
                                             border-radius: Theme.radius-md;
@@ -1215,6 +1280,9 @@ export component GroupManagerDialog inherits Rectangle {
                                                 Rectangle {
                                                     width: 15px;
                                                     height: 15px;
+                                                    // (#gm-subgroup) 子分组模式色板整体隐去
+                                                    //（子组色走父组继承，见落点提示行）。
+                                                    visible: !root.creating-sub;
                                                     border-radius: 8px;
                                                     background: (root.new-color != ""
                                                         ? root.new-swatch : root.next-color).with-alpha(0.18);
@@ -1261,13 +1329,20 @@ export component GroupManagerDialog inherits Rectangle {
                                                         color: Theme.text-primary;
                                                         vertical-alignment: center;
                                                         single-line: true;
-                                                        edited => { root.editing-error = root.validate-name(root.editing-text, ""); }
+                                                        // (#gm-subgroup) 子分组模式不前置查重
+                                                        //（Rust 侧重名自动加序号）。
+                                                        edited => {
+                                                            root.editing-error = root.creating-sub
+                                                                ? "" : root.validate-name(root.editing-text, "");
+                                                        }
                                                         accepted => { commit_edit(); }
                                                     }
                                                     if root.editing-text == "" : Text {
                                                         width: 100%;
                                                         height: 100%;
-                                                        text: root.lang-en ? "New group name" : "新分组名";
+                                                        text: root.creating-sub
+                                                            ? (root.lang-en ? "Subgroup name" : "子分组名")
+                                                            : (root.lang-en ? "New group name" : "新分组名");
                                                         color: Theme.text-muted;
                                                         font-size: 12.5px;
                                                         horizontal-alignment: left;
@@ -1386,13 +1461,16 @@ export component GroupManagerDialog inherits Rectangle {
                                 }
                             }
 
-                            // 新建按钮（高保真：吸底、32px、hover 转 accent）
+                            // 新建按钮（高保真：吸底、32px、hover 转 accent）。
+                            // (#gm-subgroup 2026-11-12) 并排「新建子分组」：对选中
+                            // 的根级非保留组建子组（选中组/保留组时禁用 + 提示）。
                             HorizontalLayout {
                                 height: root.creating ? 0px : 40px;
                                 visible: !root.creating;
                                 padding: 4px;
                                 padding-left: 8px;
                                 padding-right: 8px;
+                                spacing: 4px;
                                 Rectangle {
                                     horizontal-stretch: 1;
                                     border-radius: Theme.radius-md;
@@ -1405,6 +1483,8 @@ export component GroupManagerDialog inherits Rectangle {
                                         clicked => {
                                             if (!commit_edit()) { return; }
                                             root.creating = true;
+                                            root.creating-sub = false;
+                                            root.creating-parent = "";
                                             root.edit-where = "left";
                                             root.editing = "";
                                             root.editing-text = "";
@@ -1424,6 +1504,69 @@ export component GroupManagerDialog inherits Rectangle {
                                         Text {
                                             text: root.lang-en ? "New group" : "新建分组";
                                             color: new-ta.has-hover ? Theme.accent-solid : Theme.text-secondary;
+                                            font-size: Theme.fs-xs;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                                // 新建子分组：入口可用性 = 选中根级非保留组。
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    border-radius: Theme.radius-md;
+                                    opacity: news-ta.enabled ? 1.0 : 0.45;
+                                    background: news-ta.has-hover
+                                        ? Theme.accent.with-alpha(Theme.dark ? 0.10 : 0.08) : transparent;
+                                    border-width: 1px;
+                                    border-color: news-ta.has-hover && news-ta.enabled
+                                        ? Theme.accent.with-alpha(0.42) : Theme.mgr-line-strong;
+                                    news-ta := TouchArea {
+                                        enabled: root.gm-subgroup-ok();
+                                        mouse-cursor: default;
+                                        changed has-hover => {
+                                            if (self.has-hover) {
+                                                root.tip-on(self.enabled
+                                                    ? (root.lang-en
+                                                        ? "New subgroup under \"" + root.selected + "\""
+                                                        : "在「" + root.selected + "」下新建子分组")
+                                                    : (root.lang-en
+                                                        ? "Pick a top-level group first"
+                                                        : "先选中一个顶级分组（子分组不可再嵌套）"),
+                                                    self.absolute-position.x + self.mouse-x,
+                                                    self.absolute-position.y + self.mouse-y);
+                                            } else { root.tip-off(); }
+                                        }
+                                        pointer-event(__ev) => {
+                                            if (__ev.kind == PointerEventKind.move && self.has-hover) {
+                                                root.tip-at(self.absolute-position.x + self.mouse-x,
+                                                    self.absolute-position.y + self.mouse-y);
+                                            }
+                                        }
+                                        clicked => {
+                                            if (!commit_edit()) { return; }
+                                            root.creating = true;
+                                            root.creating-sub = true;
+                                            root.creating-parent = root.selected;
+                                            root.edit-where = "left";
+                                            root.editing = "";
+                                            root.editing-text = "";
+                                            root.editing-error = "";
+                                            root.new-color = "";
+                                            root.color-for = "";
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        alignment: center;
+                                        spacing: 5px;
+                                        Icon {
+                                            glyph: "create-new-folder";
+                                            tint: news-ta.has-hover && news-ta.enabled
+                                                ? Theme.accent-solid : Theme.text-secondary;
+                                            size: 12px;
+                                        }
+                                        Text {
+                                            text: root.lang-en ? "New subgroup" : "新建子分组";
+                                            color: news-ta.has-hover && news-ta.enabled
+                                                ? Theme.accent-solid : Theme.text-secondary;
                                             font-size: Theme.fs-xs;
                                             vertical-alignment: center;
                                         }

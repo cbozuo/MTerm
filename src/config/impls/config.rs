@@ -2710,22 +2710,33 @@ impl ConfigStore {
 
     /// (#left-panel-v3) 删除分组:子组提升到被删组的父级(层级收拢,不级联
     /// 删);组内会话全部回到未分组(default)。保留组不可删。
+    /// (#delete-by-name-compat 2026-11-12 用户实测"新建子分组后无法删除")
+    /// Slint 两条删除链(组头菜单 delete-group / 分组管理 remove-group)
+    /// 传的都是**显示组名**,V3 按 id 键后 group_by_id 找不到 → 静默 return
+    /// —— id 优先、显示名回退(set_group_color 11-07 同款口径)。
     pub fn remove_group(&mut self, id: &str) {
-        let Some(record) = self.group_by_id(id) else {
-            return;
+        let record = match self.group_by_id(id) {
+            Some(r) => r,
+            None => match self.cache.group_records.iter().find(|g| g.name == id) {
+                Some(r) => r,
+                None => return,
+            },
         };
         if record.reserved {
             return;
         }
+        // (#delete-by-name-compat) 后续提升/移除/迁移一律用**解析出的 id**：
+        // 入口传显示名时按名过滤等于什么都没删（单测曾在此红）。
+        let gid = record.id.clone();
         let parent = record.parent_id.clone();
         self.cache
             .group_records
             .iter_mut()
-            .filter(|g| g.parent_id == id)
+            .filter(|g| g.parent_id == gid)
             .for_each(|child| child.parent_id = parent.clone());
-        self.cache.group_records.retain(|g| g.id != id);
+        self.cache.group_records.retain(|g| g.id != gid);
         for s in &mut self.cache.sessions {
-            if s.group_id == id {
+            if s.group_id == gid {
                 s.group_id = GROUP_ID_DEFAULT.to_string();
             }
         }
@@ -3037,6 +3048,31 @@ mod tests {
             cache: ConfigFile::default(),
             key: [7u8; 32],
         }
+    }
+
+    #[test]
+    fn remove_group_accepts_id_and_display_name() {
+        // (#delete-by-name-compat 2026-11-12 用户实测"新建子分组后无法删除")
+        // Slint 删除链传显示组名,存储按 id 键 —— 名回退必须成立,否则组头
+        // 菜单 / 分组管理的删除全静默失效(修复前子分组删不掉的根因)。
+        let mut store = temp_store();
+        let pid = store.add_group("Test".into(), "").expect("add parent");
+        let cid = store
+            .add_group("新建子分组".into(), &pid)
+            .expect("add child");
+        // 按 id 删子分组(V3 主路径)。
+        store.remove_group(&cid);
+        assert!(store.group_by_id(&cid).is_none());
+        // 按显示组名删父组 —— 修复前这里静默 return,组残留。
+        store.remove_group("Test");
+        assert!(store.group_by_id(&pid).is_none());
+        // 子组上提 + 成员回默认组的语义不受影响。
+        let pid2 = store.add_group("P2".into(), "").expect("add p2");
+        let cid2 = store.add_group("C2".into(), &pid2).expect("add c2");
+        store.remove_group(&pid2);
+        let child = store.group_by_id(&cid2).expect("child lifted");
+        assert_eq!(child.parent_id, "", "子组应上提到根级");
+        store.remove_group("不存在的组");
     }
 
     #[test]
