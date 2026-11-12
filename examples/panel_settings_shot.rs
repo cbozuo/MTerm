@@ -158,8 +158,18 @@ fn main() {
     ui.set_gm_cur_index(1);
     ui.set_gm_open(true);
     shot(&ui, "output/panel-settings/gm-subgroup.png");
+    ui.set_gm_open(false);
 
-    println!("saved output/panel-settings/ dialog + grp-menu + move-dialog + tree-sub + gm-subgroup .png");
+    // ── 图 6:#subgroup-dialog 新建子分组弹框(create 模式带父组)——标题
+    // 三态/颜色行(色块+hex+分组颜色…入口)。
+    ui.set_group_dialog_parent("Test".into());
+    ui.set_group_dialog_name("新建子分组".into());
+    ui.set_group_dialog_color_hex("#c8ff00".into());
+    ui.set_group_dialog_color(slint::Color::from_rgb_u8(0xC8, 0xFF, 0x00));
+    ui.set_group_dialog_open(true);
+    shot(&ui, "output/panel-settings/subgroup-dialog.png");
+
+    println!("saved output/panel-settings/ dialog + grp-menu + move-dialog + tree-sub + gm-subgroup + subgroup-dialog .png");
 }
 
 fn shot(ui: &AppWindow, path: &str) {

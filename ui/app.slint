@@ -1122,7 +1122,11 @@ export component AppWindow inherits Window {
     // 不关闭** —— 改色时左侧列表要实时联动、看得见才有意义。
     // (#gh-ctx-swatch 2026-11-07) 面板本体换成分组管理同款 SwatchPopup(模态
     // 大色板),见根尾实例;旧 GroupColorField 贴菜单小面板退役。
+    // (#subgroup-dialog 2026-11-13) for="" = 右键 ctx 链(应用即落盘);
+    // for="dialog" = 组弹框颜色草稿链(应用只写 group-dialog-color-* 草稿,
+    // 随弹框「确定」一起落盘)。
     in-out property <bool> group-color-picker-open: false;
+    in-out property <string> group-color-picker-for: "";
     // (#gh-ctx-swatch 2026-11-07) 右击链「调色盘」(SwatchPopup 的自定义色入口)
     // 的根级状态:hex 为唯一事实源,轮子位置等其余绑定走 ColorPickerDialog 默认值。
     in-out property <bool> ctx-pick-open: false;
@@ -1982,6 +1986,10 @@ export component AppWindow inherits Window {
     // Group create / rename dialog (#41).
     in-out property <bool> group-dialog-open: false;
     in-out property <string> group-dialog-orig;    // "" = create, else rename
+    // (#subgroup-dialog 2026-11-13 用户要求"新建和重命名用同一套弹框逻辑")
+    // create 模式的父组显示名("" = 根级新建/重命名)：组头菜单「新建子分组」
+    // 打开本弹框时带上，提交链据此 add_group(name, parent_id)。
+    in-out property <string> group-dialog-parent;
     in-out property <string> group-dialog-name;
     in-out property <string> group-dialog-error;
     // (#group-dialog-color 2026-09-14) 对话框里的分组颜色草稿。与右键菜单的
@@ -1992,7 +2000,8 @@ export component AppWindow inherits Window {
     // (#grp-menu-v2 2026-11-12) 组头菜单「新建子分组」:父组名 → Rust 建一个
     // 名为「新建子分组」的一级子组(重名自动加序号;UI 限深 2)。
     callback create-subgroup(string /* parent group name */);
-    callback submit-group(string /* orig */, string /* name */, string /* hex */) -> string;
+    // (#subgroup-dialog) parent = create 模式父组显示名(""=根级/重命名忽略)。
+    callback submit-group(string /* orig */, string /* name */, string /* hex */, string /* parent */) -> string;
     // (#group-dialog-color 2026-09-14) 纯解析、**不落盘**:对话框的颜色草稿要
     // 即时回显(点色格 / 手输 hex 都要让色块跟着变),但此时还不该写配置。
     // hex 非法时返回全透明,由色块的描边兜底(仍是"空"的样子)。
@@ -5418,7 +5427,17 @@ export component AppWindow inherits Window {
                     clicked => {
                         root.ctx-open-key = "";
                         root.ctx-menu-kind = "";
-                        root.create-subgroup(root.ctx-menu-group);
+                        // (#subgroup-dialog 2026-11-13 用户要求"新建和重命名用
+                        // 同一套弹框逻辑") 直建退役 → 打开组弹框 create 模式
+                        // (带父组,可输入名字+分组颜色同款色板,确定才落盘)。
+                        root.group-dialog-parent = root.ctx-menu-group;
+                        root.group-dialog-orig = "";
+                        root.group-dialog-name = "";
+                        root.group-dialog-error = "";
+                        root.group-dialog-color-hex = "";
+                        root.group-dialog-color = #00000000;
+                        root.group-color-picker-for = "dialog";
+                        root.group-dialog-open = true;
                     }
                 }
                 HorizontalLayout {
@@ -5458,6 +5477,7 @@ export component AppWindow inherits Window {
                 g-color-ta := TouchArea {
                     mouse-cursor: default;
                     clicked => {
+                        root.group-color-picker-for = "";   // ctx 落盘链
                         root.group-color-picker-open = !root.group-color-picker-open;
                     }
                 }
@@ -7238,7 +7258,11 @@ export component AppWindow inherits Window {
                     padding-bottom: 12px;
                     spacing: 0px;
                     Text {
-                        text: root.group-dialog-orig == ""
+                        // (#subgroup-dialog) 三态:带父组=新建子分组(落点是
+                        // group-dialog-parent 之下)/orig 空=新建分组/否则编辑。
+                        text: root.group-dialog-parent != ""
+                            ? (root.lang-en ? "New subgroup" : "新建子分组")
+                            : root.group-dialog-orig == ""
                             ? (root.lang-en ? "New group" : "新建分组")
                             : (root.lang-en ? "Edit group" : "编辑分组");
                         color: Theme.text-primary;
@@ -7297,6 +7321,7 @@ export component AppWindow inherits Window {
                                         root.group-dialog-orig,
                                         root.group-dialog-name,
                                         root.group-dialog-color-hex,
+                                        root.group-dialog-parent,
                                     );
                                     if (root.group-dialog-error == "") {
                                         root.group-dialog-open = false;
@@ -7318,17 +7343,59 @@ export component AppWindow inherits Window {
                         font-size: Theme.fs-sm;
                         font-weight: Theme.fw-strong;
                     }
-                    GroupColorField {
-                        show-header: false;
-                        // (#ui-refresh-v3-6) 362px 对话框内容宽 326px,6 列 49px 格
-                        // (6×49 + 5×6 = 324)铺满色板区,对齐设计稿 grid6 满宽。
-                        cell-size: 49px;
-                        hex <=> root.group-dialog-color-hex;
-                        value: root.group-dialog-color;
-                        palette: root.group-palette;
-                        picked(hex) => {
-                            root.group-dialog-color-hex = hex;
-                            root.group-dialog-color = root.resolve-color(hex);
+                    // (#subgroup-dialog 2026-11-13 用户要求"颜色设置用分组颜色
+                    // 同款") 内嵌 24 色退役 → 右键菜单同款入口行:当前色块 +
+                    // hex + 「分组颜色…」打开 48 色板 SwatchPopup(for="dialog"
+                    // 草稿链,应用只写弹框草稿,随「确定」一起落盘)。
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Rectangle {
+                            width: 24px;
+                            height: 24px;
+                            border-radius: 5px;
+                            background: root.group-dialog-color-hex != ""
+                                ? root.group-dialog-color : transparent;
+                            border-width: 1px;
+                            border-color: root.group-dialog-color-hex != ""
+                                ? Theme.border-subtle : Theme.border-strong;
+                        }
+                        Text {
+                            text: root.group-dialog-color-hex != ""
+                                ? root.group-dialog-color-hex
+                                : (root.lang-en ? "No color" : "无颜色");
+                            color: Theme.text-muted;
+                            font-size: Theme.fs-xs;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        Rectangle {
+                            height: 28px;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: gd-swatch-ta.has-hover
+                                ? Theme.accent.with-alpha(0.42) : Theme.border-strong;
+                            background: gd-swatch-ta.has-hover
+                                ? Theme.accent.with-alpha(Theme.dark ? 0.10 : 0.08) : transparent;
+                            gd-swatch-ta := TouchArea {
+                                mouse-cursor: default;
+                                clicked => {
+                                    root.group-color-picker-for = "dialog";
+                                    root.group-color-picker-open = true;
+                                }
+                            }
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 6px;
+                                Icon { glyph: "palette"; size: 12px; tint: Theme.text-secondary; }
+                                Text {
+                                    text: root.lang-en ? "Group color…" : "分组颜色…";
+                                    color: gd-swatch-ta.has-hover
+                                        ? Theme.text-primary : Theme.text-secondary;
+                                    font-size: Theme.fs-xs;
+                                    vertical-alignment: center;
+                                }
+                            }
                         }
                     }
                     Rectangle { height: 8px; }
@@ -7546,6 +7613,7 @@ export component AppWindow inherits Window {
                                 root.group-dialog-orig,
                                 root.group-dialog-name,
                                 root.group-dialog-color-hex,
+                                root.group-dialog-parent,
                             );
                             if (root.group-dialog-error == "") {
                                 root.group-dialog-open = false;
@@ -7659,20 +7727,40 @@ export component AppWindow inherits Window {
     // stage、「应用」落盘;但落盘目标 = ctx-menu-group(右击锚定组),且落盘
     // 后连菜单锚定一并清掉(下次右击重新注入)。`!gm-open` 防两实例同帧。
     if root.group-color-picker-open && !root.gm-open : SwatchPopup {
+        // (#subgroup-dialog 2026-11-13) 双链:for="" = ctx 落盘(应用即写组色);
+        // for="dialog" = 组弹框草稿链(应用/无颜色只写 group-dialog-color-*
+        // 草稿,随弹框「确定」一起落盘,取消/关闭不影响草稿)。initial 等取
+        // 当前链的事实源(ctx=菜单色 / dialog=弹框草稿)。
         swatches: root.group-palette;
-        initial: root.ctx-menu-group-color-hex;
-        baseline: root.ctx-menu-group-color-hex;
-        recent: root.ctx-menu-group-color-hex != "" ? [root.ctx-menu-group-color-hex] : [];
+        initial: root.group-color-picker-for == "dialog"
+            ? root.group-dialog-color-hex : root.ctx-menu-group-color-hex;
+        baseline: root.group-color-picker-for == "dialog"
+            ? root.group-dialog-color-hex : root.ctx-menu-group-color-hex;
+        recent: (root.group-color-picker-for == "dialog"
+            ? root.group-dialog-color-hex : root.ctx-menu-group-color-hex) != ""
+            ? [root.group-color-picker-for == "dialog"
+                ? root.group-dialog-color-hex : root.ctx-menu-group-color-hex]
+            : [];
         en: root.lang-en;
         allow-random: false;      // 分组色没有「随机」(同 gm)
         allow-clear: true;        // 分组可以「无颜色」(同 gm)
         dismissed => { root.group-color-picker-open = false; }
         cleared => {
-            root.set-group-color(root.ctx-menu-group, "");
+            if (root.group-color-picker-for == "dialog") {
+                root.group-dialog-color-hex = "";
+                root.group-dialog-color = #00000000;
+            } else {
+                root.set-group-color(root.ctx-menu-group, "");
+            }
             root.group-color-picker-open = false;
         }
         applied(hex) => {
-            root.set-group-color(root.ctx-menu-group, hex);
+            if (root.group-color-picker-for == "dialog") {
+                root.group-dialog-color-hex = hex;
+                root.group-dialog-color = root.resolve-color(hex);
+            } else {
+                root.set-group-color(root.ctx-menu-group, hex);
+            }
             root.group-color-picker-open = false;
         }
         picker-requested(hex) => {
@@ -7704,7 +7792,13 @@ export component AppWindow inherits Window {
             copy-requested(h) => { root.copy-text(h); }
             cancelled => { root.ctx-pick-open = false; }
             confirmed => {
-                root.set-group-color(root.ctx-menu-group, root.ctx-pick-hex);
+                // (#subgroup-dialog) for 分支:dialog 链只写草稿不落盘。
+                if (root.group-color-picker-for == "dialog") {
+                    root.group-dialog-color-hex = root.ctx-pick-hex;
+                    root.group-dialog-color = root.resolve-color(root.ctx-pick-hex);
+                } else {
+                    root.set-group-color(root.ctx-menu-group, root.ctx-pick-hex);
+                }
                 root.group-color-picker-open = false;
                 root.ctx-pick-open = false;
             }

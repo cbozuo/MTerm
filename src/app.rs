@@ -9596,7 +9596,8 @@ fn wire_session_callbacks(
         window.on_resolve_color(move |hex: SharedString| -> slint::Color {
             parse_hex_color(hex.trim()).unwrap_or_default()
         });
-        window.on_submit_group(move |orig: SharedString, name: SharedString, hex: SharedString| {
+        window.on_submit_group(
+            move |orig: SharedString, name: SharedString, hex: SharedString, parent: SharedString| {
             let trimmed = name.trim();
             let error = {
                 let s = store.borrow();
@@ -9618,7 +9619,21 @@ fn wire_session_callbacks(
             {
                 let mut s = store.borrow_mut();
                 if orig.is_empty() {
-                    s.add_group(trimmed.to_string(), "");
+                    // (#subgroup-dialog 2026-11-13) create 模式带父组:菜单
+                    // 「新建子分组」打开的弹框,按父组显示名解析 id 落位;
+                    // 父组名解析不到(理论不可达,菜单由树下发)兜底根级。
+                    let parent_id = parent
+                        .trim()
+                        .is_empty()
+                        .then(String::new)
+                        .unwrap_or_else(|| {
+                            s.group_records()
+                                .iter()
+                                .find(|r| r.name == parent.trim())
+                                .map(|r| r.id.clone())
+                                .unwrap_or_default()
+                        });
+                    s.add_group(trimmed.to_string(), &parent_id);
                 } else {
                     s.rename_group(orig.as_str(), trimmed.to_string());
                 }
