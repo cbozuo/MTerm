@@ -821,11 +821,48 @@ impl ConfigStore {
     /// 调用方一次 borrow + 一次 save；`ids` 必须是**显示顺序**（调用方按
     /// gm-members 模型过滤 picked 得到），否则目标组内的相对次序会乱。
     /// 返回是否有会话被移动。
+    /// (#move-by-name-compat 2026-11-13 用户实测"移动到分组不生效") 移动链
+    /// 目标名解析单点:Slint 全部移动链传**显示组名**,而 V3 树按 group_id
+    /// 渲染 —— 历史实现只写 session.group(名字字段)、group_id 不动,upsert
+    /// 归一见到旧合法 id 原样保留 → 移动等于没移。名→id 规则:
+    ///   空串 → grp-default(未分组);default/默认/默认组/默认分组/默认值
+    ///   变体 → grp-default;system/本地终端/系统/系统组 → None(该组只收
+    ///   builtin 行,普通会话不可移入);普通名查表,**未知名补建成根级组**
+    ///   (与 upsert 归一「真新名补建 / 输入新名即建组」同语义,隐式目标组
+    ///   历史行为保留)。
+    pub fn resolve_or_create_group_target(&mut self, name: &str) -> Option<String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Some(GROUP_ID_DEFAULT.to_string());
+        }
+        if let Some(rid) = crate::config::reserved_session_group_id(name) {
+            return if rid == GROUP_ID_SYSTEM {
+                None
+            } else {
+                Some(rid.to_string())
+            };
+        }
+        if let Some(r) = self
+            .cache
+            .group_records
+            .iter()
+            .find(|r| r.name == name)
+        {
+            return Some(r.id.clone());
+        }
+        self.add_group(name.to_string(), "")
+    }
+
     pub fn move_sessions_to_group(&mut self, ids: &[String], target: &str) -> bool {
         if ids.is_empty() {
             return false;
         }
         let target = target.trim();
+        // (#move-by-name-compat) 目标名→id,group_id 与显示名双写(见 helper
+        // 注释);default 目标显示名清空(空串 = 未分组语义)。
+        let Some(gid) = self.resolve_or_create_group_target(target) else {
+            return false;
+        };
         let mut moved = Vec::with_capacity(ids.len());
         for id in ids {
             if let Some(pos) = self.cache.sessions.iter().position(|s| &s.id == id) {
@@ -836,7 +873,12 @@ impl ConfigStore {
             return false;
         }
         for session in &mut moved {
-            session.group = target.to_string();
+            session.group_id = gid.clone();
+            session.group = if gid == crate::config::GROUP_ID_DEFAULT {
+                String::new()
+            } else {
+                target.to_string()
+            };
         }
         // 目标组末尾：最后一个同组成员之后；组不存在时落到全局末尾。
         let insert_at = self
@@ -3048,6 +3090,50 @@ mod tests {
             cache: ConfigFile::default(),
             key: [7u8; 32],
         }
+    }
+
+    #[test]
+    fn move_sessions_to_group_resolves_display_name_to_id() {
+        // (#move-by-name-compat 2026-11-13 用户实测"移动到分组不生效")
+        // 移动链传显示组名,树按 group_id 渲染 —— 双写必须成立,否则移动
+        // 等于没移(历史实现只写 group 名字字段)。
+        let mut store = temp_store();
+        let gid = store.add_group("测试".into(), "").expect("add group");
+        let mut sess = Session::new_empty();
+        sess.id = "s1".into();
+        sess.name = "s1".into();
+        store.upsert(sess);
+        // 按显示组名移动(移动弹框既有契约)。
+        assert!(store.move_sessions_to_group(&["s1".into()], "测试"));
+        let s = store.get("s1").expect("session");
+        assert_eq!(s.group_id, gid, "group_id 必须解析成目标组 id");
+        assert_eq!(s.group, "测试");
+        // default 变体(显示名「默认组」)→ grp-default 且显示名清空。
+        assert!(store.move_sessions_to_group(&["s1".into()], "默认组"));
+        let s = store.get("s1").expect("session");
+        assert_eq!(s.group_id, GROUP_ID_DEFAULT);
+        assert_eq!(s.group, "");
+        // system 组不可作为目标。
+        assert!(!store.move_sessions_to_group(&["s1".into()], "system"));
+        // 未知名 = 补建成根级组(upsert「输入新名即建组」既有语义对齐)。
+        assert!(store.move_sessions_to_group(&["s1".into()], "不存在的组"));
+        let rec = store
+            .group_records()
+            .iter()
+            .find(|r| r.name == "不存在的组")
+            .expect("auto-created root group");
+        let s = store.get("s1").expect("session");
+        assert_eq!(s.group_id, rec.id);
+        // resolve_or_create_group_target 单点:default 变体全收、system None。
+        assert_eq!(
+            store.resolve_or_create_group_target("default").as_deref(),
+            Some(GROUP_ID_DEFAULT)
+        );
+        assert_eq!(
+            store.resolve_or_create_group_target(""),
+            Some(GROUP_ID_DEFAULT.into())
+        );
+        assert_eq!(store.resolve_or_create_group_target("system"), None);
     }
 
     #[test]

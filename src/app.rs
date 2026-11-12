@@ -8996,14 +8996,21 @@ fn wire_session_callbacks(
                 let mut s = store.borrow_mut();
                 if let Some(orig) = s.get(&id.to_string()).cloned() {
                     let mut target = orig;
-                    // "default" is the display label for ungrouped → store empty.
-                    target.group = if group.as_str().eq_ignore_ascii_case("default") {
-                        String::new()
-                    } else if is_reserved_session_group(group.as_str().trim()) {
+                    // (#move-by-name-compat 2026-11-13 用户实测"移动到分组不
+                    // 生效") V3 树按 group_id 渲染 —— 历史实现只写 group 名字
+                    // 字段、group_id 不动,upsert 归一见旧合法 id 原样保留 =
+                    // 移动等于没移。目标名经 resolve_group_target 解析成 id
+                    // 双写(default/默认组变体→grp-default 且显示名清空;
+                    // system→None 拒绝;普通名→id)。
+                    let Some(gid) = s.resolve_or_create_group_target(&group) else {
                         // `system` belongs exclusively to built-in local shells.
                         return;
+                    };
+                    target.group_id = gid;
+                    target.group = if target.group_id == crate::config::GROUP_ID_DEFAULT {
+                        String::new()
                     } else {
-                        group.to_string()
+                        group.trim().to_string()
                     };
                     s.upsert(target);
                     if let Err(err) = s.save() {
@@ -9970,20 +9977,25 @@ fn wire_session_callbacks(
                     let mut st = store.borrow_mut();
                     // 先迁成员再删组：一次 borrow_mut、一次 save，
                     // 避免"成员短暂出现在目标组而源组仍在"的中间态。
+                    // (#move-by-name-compat 2026-11-13) 目标名→id 双写(同
+                    // on_move_session:只写 group 名字字段树不认)。
+                    let Some(to_gid) = st.resolve_or_create_group_target(&target) else {
+                        return;
+                    };
                     let ids: Vec<String> = st
                         .sessions()
                         .iter()
                         .filter(|x| x.group == name.as_str())
                         .map(|x| x.id.clone())
                         .collect();
-                    let to_group = if target.is_empty() || target.as_str() == GM_UNGROUPED {
-                        String::new()
-                    } else {
-                        target.to_string()
-                    };
                     for id in ids {
                         if let Some(mut sess) = st.get(&id).cloned() {
-                            sess.group = to_group.clone();
+                            sess.group_id = to_gid.clone();
+                            sess.group = if to_gid == crate::config::GROUP_ID_DEFAULT {
+                                String::new()
+                            } else {
+                                target.trim().to_string()
+                            };
                             st.upsert(sess);
                         }
                     }

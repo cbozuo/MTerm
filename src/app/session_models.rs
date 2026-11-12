@@ -226,12 +226,20 @@ pub(super) fn move_group_rows_model(
             if record.id == crate::config::GROUP_ID_SYSTEM {
                 continue;
             }
+            // (#group-default-zh 2026-11-13) 默认组显示名统一「默认组」(此前
+            // move 弹框漏改,直出存储名 "default";confirm 传回显示名由
+            // resolve_group_target 归一,链路不受影响)。
+            let display = if record.id == crate::config::GROUP_ID_DEFAULT {
+                crate::i18n::t("默认组", "Default group").to_string()
+            } else {
+                record.name.clone()
+            };
             // (#move-group-dialog) 搜索过滤在 Rust 侧(Slint string 无
             // contains);命中=组名不区分大小写包含。子组命中不受父组
             // 是否命中影响(DFS 继续下钻,父组行照常出树形骨架)。
             let hit = needle.is_empty()
-                || record.name.to_lowercase().contains(needle)
-                || needle.contains(&record.name.to_lowercase());
+                || display.to_lowercase().contains(needle)
+                || needle.contains(&display.to_lowercase());
             if hit {
                 let hex = record.color.clone().unwrap_or_default();
                 let (color, has_color) = match parse_hex_color(&hex) {
@@ -239,7 +247,7 @@ pub(super) fn move_group_rows_model(
                     None => (Default::default(), false),
                 };
                 rows.push(MoveGroupRow {
-                    name: record.name.as_str().into(),
+                    name: display.as_str().into(),
                     depth,
                     color,
                     has_color,
