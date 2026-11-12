@@ -235,6 +235,13 @@ fn main() {
     ui.set_quick_search_open(true);
     std::thread::sleep(std::time::Duration::from_millis(300));
     grab(&ui, "output/quick-search/results.png");
+
+    // (#qs-enter-glyph 2026-11-13) 选中「切换主题」行（无徽章无快捷键）——
+    // 行尾 corner-down-left 图标（↵ 字符 mono 缺字形渲染成「丨」的替代）+
+    // 行图标垂直居中复核。
+    ui.set_qs_hi(9);
+    grab(&ui, "output/quick-search/enter-glyph.png");
+    ui.set_qs_hi(1);
     ui.set_quick_search_open(false);
     std::thread::sleep(std::time::Duration::from_millis(120));
 
