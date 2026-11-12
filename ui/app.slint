@@ -2229,6 +2229,15 @@ export component AppWindow inherits Window {
     // (#polish-topbar-r4) 切换标签后,把新活动终端的命令栏状态刷进全局镜像
     // (顶栏按钮的激活态随之联动)。
     in property <[TerminalState]> terminals;
+    // (#double-shift-nograb 2026-11-13) 关掉最后一个 tab：终端 IME 锚随销毁
+    // → 焦点悬空(keys nowhere),与下方 2509 关会话锚定同根因;那个锚定条件带
+    // active-tab-id=="welcome" 可能被 tab 态收窄 —— 这里按 model 重发兜底,
+    // 归零即锚回 shortcut-scope(已锚时 focus() 幂等无害)。
+    changed terminals => {
+        if (root.terminals.length == 0) {
+            shortcut-scope.focus();
+        }
+    }
     // (#rdp-vnc-embedded) Built-in remote-desktop tabs. Parallel to `terminals`:
     // a pane shows whichever of the two models its active tab belongs to.
     in property <[RemotePaneState]> remote-panes;
@@ -2667,7 +2676,16 @@ export component AppWindow inherits Window {
         // from `init` (#323); any real widget that takes focus later (welcome
         // page, terminal IME anchor) simply overrides this.
         property <bool> zen-focus-pending: false;
-        init => { shortcut-scope.zen-focus-pending = root.zen-mode && root.terminals.length == 0; }
+        // (#double-shift-nograb 2026-11-13 用户实测"没有打开 tab 双击 Shift
+        // 不起作用") 锚定条件从「zen 且无终端」扩为「无终端」：停靠左栏实例
+        // compact=true,组件内键盘作用域(!compact 条件)不实例化,主区又无
+        // welcome pane —— 无 tab 时全窗没有任何焦点宿主,引擎把键直接丢弃
+        // (window.rs:焦点项 None → item_list 空,裸 Shift 到不了任何
+        // key-pressed,兜底分支永远饿死)。有 tab 启动不锚(终端 IME anchor
+        // 在 deferred init 后抢走,本 scope 不与之争)。关掉最后一个 tab 的
+        // 重锚在根属性区 changed terminals(本元素无 terminals 属性,changed
+        // 只能挂声明处作用域)。
+        init => { shortcut-scope.zen-focus-pending = root.terminals.length == 0; }
         Timer {
             interval: 0ms;
             running: shortcut-scope.zen-focus-pending;
