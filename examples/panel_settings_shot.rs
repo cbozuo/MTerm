@@ -123,6 +123,16 @@ fn main() {
     // 缩进与导轨线观感(改动前后对照)。注意左栏在弹框关闭后渲染。
     shot(&ui, "output/panel-settings/tree-sub.png");
 
+    // ── 图 4b:#row-name-overlap 长名成员行悬停态 —— ctx-open-key 钉住
+    // act-on=1(⋮ 显+让位 34),验证名称让位是否生效(用户截图长名遮 ⋮)。
+    ui.set_sessions(ModelRc::from(Rc::new(VecModel::from(vec![
+        mk("group", "测试", "", 0, 2),
+        mk("session", "s (copy)但是服务范围服务费长名称测试", "s-long", 1, 0),
+    ]))));
+    ui.set_ctx_open_key("s-long".into());
+    shot(&ui, "output/panel-settings/row-name-overlap.png");
+    ui.set_ctx_open_key("".into());
+
     // ── 图 5:分组管理台子分组支持(#gm-subgroup)—— 组列表 DFS 序 + depth
     // 缩进;选中 Test(根级)→「新建子分组」入口可用。
     use mterm::ui::GroupRow;
