@@ -158,13 +158,17 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # 下面 `tokio-rustls` / `rustls` 这两个**直接依赖**确实与已有 `ureq` 共享同一
 # 份 crate（同为 ring provider），这部分没有重复编译。
 #
-# 没开 `cliprdr`/`client-clipboard`：P0 不做剪贴板重定向，而它会拖入各平台
-# 剪贴板后端。
+# `client-clipboard` + `cliprdr`（#rdp-clipboard 2026-11-13）：剪贴板重定向，
+# 含「远端粘贴文件」（文件内容走 CLIPRDR 通道本身，不需要 RDPDR 设备重定向，
+# 所以不开 `client-rdpdr`——少向服务器宣告一条通道）。
+# ironrdp 自带的 WinClipboard 要求创建它的线程有消息泵，而我们的 RDP 驱动跑在
+# 独立的工作线程上，直接用会锁死系统剪贴板——所以走 vendor 补丁加的注入点，
+# 由我们自己的后端接管本地那一侧（见 src/rdp/embedded/impls/clipboard.rs）。
 # `session` 只是为了拿到 `ironrdp::session::{GracefulDisconnectReason, …}`
 # 的再导出（RDP 会话结束时用它把「服务端断开 / 远端用户断开」翻成人话，
 # #remote-reconnect 2026-10-13）。该 crate 本就是 `client` 的依赖，feature
 # 只开再导出，不会多编一份。
-ironrdp = { version = "0.17.0", default-features = false, features = ["client", "connector", "core", "input", "pdu", "rustls", "session"] }
+ironrdp = { version = "0.17.0", default-features = false, features = ["client", "client-clipboard", "cliprdr", "connector", "core", "input", "pdu", "rustls", "session"] }
 vnc-rs = "0.6"
 # 内置 RDP 的证书信任（P0-12）。ironrdp 0.17 **没有**暴露证书校验器钩子
 # （ironrdp-tls 的 upgrade() 内部硬编码 NoCertificateVerification），所以信任
@@ -303,7 +307,32 @@ i-slint-core = { path = "vendor/i-slint-core" }
 # `ActiveStage`, but no released ironrdp/ironrdp-client version contains the fix
 # (0.17.0 / 0.1.0 are the latest), so upgrade is not an option yet.
 # Re-sync recipe on every ironrdp upgrade: re-extract the pristine crate, then
-# re-apply the two marked hunks in src/rdp.rs (capture `compression_type` before
-# the ActiveStageBuilder; rebuild `BulkCompressor` in the DeactivateAll →
-# Finalized branch) and drop the patch entry once upstream ships the fix.
+# re-apply the marked hunks in src/rdp.rs:
+#   1. #rdp-resize-decompressor — capture `compression_type` before the
+#      ActiveStageBuilder; rebuild `BulkCompressor` in the DeactivateAll →
+#      Finalized branch.
+#   2. #rdp-resize-defer — the resize deferral (PendingResize / try_encode_resize
+#      / the resize_retry branch) and the reconnect retry in the connection loop.
+#   3. #rdp-clipboard — `RdpClient::with_cliprdr_backend_factory` and the
+#      host-factory branch in `run()`: the library's own WinClipboard needs a
+#      message pump on the thread that owns it, which our worker-thread driver
+#      cannot give it.
+# Drop the patch entry once upstream ships the fixes.
+#
+# (#rdp-resize-defer 2026-11-13) Second local patch, same crate: a resize that
+# arrives before the DisplayControl channel is open used to end the session and
+# reconnect at the new size (upstream's `encode_resize` returns None until the
+# channel is up). That reconnect races the server's release of the old session
+# and is refused, so every window resize killed the tab. The patch holds the
+# request until the channel is up (3 s), falls back to a *graceful* shutdown +
+# reconnect, and retries that reconnect a few times. Upstream (newer master,
+# vendored by the reference client) solved the same problem with a resize queue
+# plus a three-state display-control check.
+#
+# (#rdp-clipboard 2026-11-13) Third local patch, same crate: the host supplies
+# the local side of the clipboard channel (see
+# src/rdp/embedded/impls/clipboard.rs). Without it the only local backend is
+# ironrdp's WinClipboard, which registers a format listener on a hidden window
+# and needs a message pump on the thread that owns it — our driver runs on a
+# worker thread, and the clipboard would stay locked for it.
 ironrdp-client = { path = "vendor/ironrdp-client" }

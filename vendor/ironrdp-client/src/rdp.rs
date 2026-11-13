@@ -20,7 +20,7 @@ use ironrdp_pdu::input::mouse::PointerFlags;
 #[cfg(any(feature = "dvc-pipe-proxy", all(windows, feature = "dvc-com-plugin")))]
 use ironrdp_pdu::pdu_other_err;
 use ironrdp_session::image::DecodedImage;
-use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult, fast_path};
+use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult, fast_path};
 use ironrdp_svc::SvcMessage;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
@@ -30,9 +30,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 #[cfg(any(feature = "clipboard", all(windows, feature = "dvc-com-plugin")))]
 use tracing::error;
-#[cfg(feature = "clipboard")]
-use tracing::warn;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 #[cfg(feature = "clipboard")]
 use crate::config::ClipboardType;
@@ -93,6 +91,15 @@ pub struct RdpClient {
     output_event_sender: mpsc::Sender<RdpOutputEvent>,
     input_event_sender: mpsc::UnboundedSender<RdpInputEvent>,
     input_event_receiver: mpsc::UnboundedReceiver<RdpInputEvent>,
+    /// (MTerm patch, #rdp-clipboard 2026-11-13) A clipboard backend supplied by
+    /// the host application.
+    ///
+    /// The library's own `WinClipboard` needs a window with a message pump on
+    /// the thread that owns it, which an embedding application running the
+    /// client on a worker thread cannot provide. A host-supplied factory
+    /// takes over the local side of the CLIPRDR channel.
+    #[cfg(feature = "clipboard")]
+    cliprdr_backend_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
 }
 
 impl RdpClient {
@@ -103,8 +110,26 @@ impl RdpClient {
             output_event_sender,
             input_event_sender,
             input_event_receiver,
+            #[cfg(feature = "clipboard")]
+            cliprdr_backend_factory: None,
         }
     }
+
+    /// (MTerm patch, #rdp-clipboard 2026-11-13) Supplies the local side of the
+    /// clipboard channel.
+    ///
+    /// The backend is created by the host, which owns the local clipboard and
+    /// the thread it lives on.
+    #[cfg(feature = "clipboard")]
+    #[must_use]
+    pub fn with_cliprdr_backend_factory(
+        mut self,
+        factory: Box<dyn CliprdrBackendFactory + Send>,
+    ) -> Self {
+        self.cliprdr_backend_factory = Some(factory);
+        self
+    }
+
 
     /// Return a clone of the input-event sender for injecting keyboard, mouse, and clipboard
     /// events from the GUI thread.
@@ -128,17 +153,30 @@ impl RdpClient {
         #[cfg(feature = "clipboard")]
         let cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>;
 
+
         #[cfg(feature = "clipboard")]
         {
-            match self.config.channels.clipboard {
-                ClipboardType::Disable => {
+            // (MTerm patch, #rdp-clipboard 2026-11-13) A host-supplied backend
+            // wins over the library's own: it is the only way for an
+            // application that runs the client on a worker thread to own the
+            // local clipboard.
+            let host_factory = self.cliprdr_backend_factory.take();
+            match (self.config.channels.clipboard, host_factory) {
+                (ClipboardType::Enable, Some(factory)) => {
+                    cliprdr_factory = Some(factory);
+                    #[cfg(windows)]
+                    {
+                        _win_clipboard = None;
+                    }
+                }
+                (ClipboardType::Disable, _) => {
                     cliprdr_factory = None;
                     #[cfg(windows)]
                     {
                         _win_clipboard = None;
                     }
                 }
-                ClipboardType::Stub => {
+                (ClipboardType::Stub, _) => {
                     use ironrdp_cliprdr_native::StubClipboard;
                     let stub = StubClipboard::new();
                     cliprdr_factory = Some(stub.backend_factory());
@@ -147,7 +185,7 @@ impl RdpClient {
                         _win_clipboard = None;
                     }
                 }
-                ClipboardType::Enable => {
+                (ClipboardType::Enable, None) => {
                     #[cfg(windows)]
                     {
                         use crate::clipboard::ClientClipboardMessageProxy;
@@ -188,48 +226,53 @@ impl RdpClient {
         let cliprdr_factory: CliprdrFactoryRef<'_> = core::marker::PhantomData;
 
         // ── Connection + session loop ─────────────────────────────────────────
+        //
+        // (#rdp-resize-reconnect 2026-11-13) A reconnect that follows a
+        // desktop resize races the server's release of the previous session:
+        // the old connection is only torn down once the transport notices, and
+        // a new connection arriving in that window is refused ("another
+        // session is logged in"). Such a reconnect is therefore retried a few
+        // times before the failure is reported.
+        let mut resize_reconnect = false;
+        let mut resize_reconnect_attempts = 0u32;
+
         loop {
-            let (connection_result, framed) = match &self.config.transport {
+            let connect_result = match &self.config.transport {
                 Transport::Direct => {
-                    match connect_direct(&self.config, &self.input_event_sender, cliprdr_factory).await {
-                        Ok(r) => r,
-                        Err(e) => {
-                            let _ = self
-                                .output_event_sender
-                                .send(RdpOutputEvent::ConnectionFailure(e))
-                                .await;
-                            break;
-                        }
-                    }
+                    connect_direct(&self.config, &self.input_event_sender, cliprdr_factory).await
                 }
 
                 #[cfg(feature = "gateway")]
                 Transport::Gateway(gw) => {
-                    match connect_gateway(&self.config, gw, &self.input_event_sender, cliprdr_factory).await {
-                        Ok(r) => r,
-                        Err(e) => {
-                            let _ = self
-                                .output_event_sender
-                                .send(RdpOutputEvent::ConnectionFailure(e))
-                                .await;
-                            break;
-                        }
-                    }
+                    connect_gateway(&self.config, gw, &self.input_event_sender, cliprdr_factory).await
                 }
 
                 Transport::RDCleanPath(rdcp) => {
-                    match connect_rdcleanpath_transport(&self.config, rdcp, &self.input_event_sender, cliprdr_factory)
-                        .await
-                    {
-                        Ok(r) => r,
-                        Err(e) => {
-                            let _ = self
-                                .output_event_sender
-                                .send(RdpOutputEvent::ConnectionFailure(e))
-                                .await;
-                            break;
-                        }
+                    connect_rdcleanpath_transport(&self.config, rdcp, &self.input_event_sender, cliprdr_factory).await
+                }
+            };
+
+            let (connection_result, framed) = match connect_result {
+                Ok(result) => result,
+                Err(e) => {
+                    if resize_reconnect && resize_reconnect_attempts < RESIZE_RECONNECT_ATTEMPTS {
+                        resize_reconnect_attempts += 1;
+                        let delay = resize_reconnect_delay(resize_reconnect_attempts);
+                        warn!(
+                            error = %e,
+                            attempt = resize_reconnect_attempts,
+                            delay_ms = delay.as_millis(),
+                            "The reconnect after a desktop resize was refused; retrying"
+                        );
+                        tokio::time::sleep(delay).await;
+                        continue;
                     }
+
+                    let _ = self
+                        .output_event_sender
+                        .send(RdpOutputEvent::ConnectionFailure(e))
+                        .await;
+                    break;
                 }
             };
 
@@ -245,6 +288,10 @@ impl RdpClient {
                 Ok(RdpControlFlow::ReconnectWithNewSize { width, height }) => {
                     self.config.connector.desktop_size.width = width;
                     self.config.connector.desktop_size.height = height;
+                    // The next connection attempt is the one that may be
+                    // refused, so it is the one that gets retried.
+                    resize_reconnect = true;
+                    resize_reconnect_attempts = 0;
                 }
                 Ok(RdpControlFlow::TerminatedGracefully(reason)) => {
                     let _ = self
@@ -272,6 +319,7 @@ impl RdpClient {
 type CliprdrFactoryRef<'a> = Option<&'a (dyn CliprdrBackendFactory + Send)>;
 #[cfg(not(feature = "clipboard"))]
 type CliprdrFactoryRef<'a> = core::marker::PhantomData<&'a ()>;
+
 
 /// Build a fully wired [`ironrdp_connector::ClientConnector`] with all feature-gated channels attached.
 ///
@@ -716,6 +764,115 @@ where
     }
 }
 
+// ── Desktop resize ───────────────────────────────────────────────────────────
+//
+// (#rdp-resize-defer 2026-11-13) A desktop resize has two ways to happen.
+//
+// The in-session way asks the server to re-layout the desktop over the
+// Display Control virtual channel, which makes the server run the
+// "Deactivation-Reactivation Sequence" and keep the connection alive. It needs
+// that channel to be *open*, and the server opens it a moment after the
+// session is established.
+//
+// The fallback way ends the session and runs the whole connection again at the
+// new size.
+//
+// The old code took the fallback way whenever the channel was not open yet —
+// which is exactly what a resize arriving right after the connection does. The
+// fallback then raced the server's release of the previous session and was
+// refused, so the tab died on the first resize. Instead the request is held
+// until the channel is up (or the hold times out), and only then does the
+// fallback kick in.
+
+/// How long a resize may wait for the Display Control channel to come up.
+const DISPLAY_CONTROL_READY_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How often a held resize is retried.
+const RESIZE_RETRY_INTERVAL: Duration = Duration::from_millis(200);
+
+/// How long the client waits for the server to release the old session before
+/// reconnecting at the new size.
+const RESIZE_RECONNECT_GRACE: Duration = Duration::from_millis(300);
+
+/// How many times a reconnect that follows a resize is retried.
+const RESIZE_RECONNECT_ATTEMPTS: u32 = 3;
+
+/// A resize request waiting for the Display Control channel.
+struct PendingResize {
+    width: u16,
+    height: u16,
+    scale_factor: u32,
+    physical_size: Option<(u32, u32)>,
+    deadline: tokio::time::Instant,
+}
+
+/// What came out of trying to put a resize request on the wire.
+enum ResizeOutcome {
+    /// The request was encoded and is ready to be sent.
+    Encoded(Vec<u8>),
+    /// The Display Control channel is not usable yet; the request can be
+    /// retried.
+    NotReady,
+    /// The request cannot be encoded. The session is fine — only the resize is
+    /// lost — so this must not end the session.
+    Failed(String),
+}
+
+/// Whether the Display Control channel can carry a resize right now.
+///
+/// * `None` — the server has not opened the channel yet.
+/// * `Some(false)` — the channel is open, but the server's capabilities have
+///   not arrived. A monitor layout sent now is ignored by the server ("silent
+///   failure"), so the request has to wait for them.
+/// * `Some(true)` — the channel is ready.
+///
+/// The three states are what separates a resize that works from one that is
+/// silently dropped: upstream only knows "the channel is open", so it sends
+/// the layout into a channel that is not operational yet.
+fn display_control_ready(active_stage: &mut ActiveStage) -> Option<bool> {
+    let dvc = active_stage.get_dvc::<DisplayControlClient>()?;
+    let processor = dvc.channel_processor_downcast_ref::<DisplayControlClient>()?;
+    Some(processor.ready())
+}
+
+/// Encode a resize request for the Display Control channel.
+fn try_encode_resize(
+    active_stage: &mut ActiveStage,
+    width: u16,
+    height: u16,
+    scale_factor: u32,
+    physical_size: Option<(u32, u32)>,
+) -> ResizeOutcome {
+    // Wait for the channel to be open *and* ready: a monitor layout that
+    // arrives before the server's capabilities is ignored by the server, and
+    // the resize would be lost without a word.
+    match display_control_ready(active_stage) {
+        Some(true) => {}
+        Some(false) | None => return ResizeOutcome::NotReady,
+    }
+
+    let width = u32::from(width);
+    let height = u32::from(height);
+    // Per MS-RDPEDISP the size has to fit the protocol's bounds and the width
+    // has to be even; `adjust_display_size` does both.
+    let (width, height) = MonitorLayoutEntry::adjust_display_size(width, height);
+    match active_stage.encode_resize(width, height, Some(scale_factor), physical_size) {
+        Some(Ok(frame)) => ResizeOutcome::Encoded(frame),
+        Some(Err(err)) => ResizeOutcome::Failed(format!("{err:?}")),
+        // The Display Control channel is not connected (yet).
+        None => ResizeOutcome::NotReady,
+    }
+}
+
+/// Backoff between the attempts of a resize-triggered reconnect.
+fn resize_reconnect_delay(attempt: u32) -> Duration {
+    match attempt {
+        1 => Duration::from_millis(300),
+        2 => Duration::from_millis(900),
+        _ => Duration::from_millis(1800),
+    }
+}
+
 // ── Active session ────────────────────────────────────────────────────────────
 
 enum RdpControlFlow {
@@ -762,6 +919,14 @@ async fn active_session(
     // Timer interval for driving clipboard lock timeouts.
     let mut cleanup_interval = tokio::time::interval(Duration::from_secs(5));
 
+    // (#rdp-resize-defer 2026-11-13) A resize waiting for the Display Control
+    // channel to come up, and the timer that retries it. Only one request is
+    // kept: a window drag produces a whole series of sizes and only the last
+    // one is worth sending.
+    let mut pending_resize: Option<PendingResize> = None;
+    let mut resize_retry = tokio::time::interval(RESIZE_RETRY_INTERVAL);
+    resize_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     // Anti-idle: track the time of the last real input and the last known mouse position so we can
     // synthesize a no-op mouse move when the session has been idle for too long. Default to the
     // middle of the screen so a synthetic move before any real input doesn't snap the pointer to a
@@ -786,21 +951,34 @@ async fn active_session(
                 match input_event {
                     RdpInputEvent::Resize { width, height, scale_factor, physical_size } => {
                         trace!(width, height, "Resize event");
-                        let width = u32::from(width);
-                        let height = u32::from(height);
-                        // TODO: Make adjust_display_size take and return width and height as u16.
-                        // From the function's doc comment, the width and height values must be less than or equal to 8192 pixels.
-                        // Therefore, we can remove unnecessary casts from u16 to u32 and back.
-                        let (width, height) = MonitorLayoutEntry::adjust_display_size(width, height);
-                        debug!(width, height, "Adjusted display size");
-                        if let Some(response_frame) = active_stage.encode_resize(width, height, Some(scale_factor), physical_size) {
-                            vec![ActiveStageOutput::ResponseFrame(response_frame?)]
-                        } else {
-                            // TODO(#271): use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
-                            debug!("Reconnecting with new size");
-                            let width = u16::try_from(width).expect("always in the range");
-                            let height = u16::try_from(height).expect("always in the range");
-                            return Ok(RdpControlFlow::ReconnectWithNewSize { width, height })
+                        match try_encode_resize(&mut active_stage, width, height, scale_factor, physical_size) {
+                            ResizeOutcome::Encoded(frame) => {
+                                pending_resize = None;
+                                vec![ActiveStageOutput::ResponseFrame(frame)]
+                            }
+                            ResizeOutcome::Failed(error) => {
+                                // A resize that cannot be encoded is a lost
+                                // resize, not a lost session: the old code
+                                // propagated the error and killed the tab.
+                                warn!(width, height, %error, "Could not encode the desktop resize");
+                                pending_resize = None;
+                                Vec::new()
+                            }
+                            ResizeOutcome::NotReady => {
+                                // The Display Control channel is not open yet.
+                                // Hold the request instead of ending the session
+                                // and reconnecting; the retry below sends it as
+                                // soon as the channel is up.
+                                debug!(width, height, "Display Control is not ready; holding the resize");
+                                pending_resize = Some(PendingResize {
+                                    width,
+                                    height,
+                                    scale_factor,
+                                    physical_size,
+                                    deadline: tokio::time::Instant::now() + DISPLAY_CONTROL_READY_TIMEOUT,
+                                });
+                                Vec::new()
+                            }
                         }
                     }
                     RdpInputEvent::FastPath(events) => {
@@ -863,6 +1041,57 @@ async fn active_session(
                         let frame = active_stage.encode_dvc_messages(messages)?;
                         vec![ActiveStageOutput::ResponseFrame(frame)]
                     }
+                }
+            }
+            _ = resize_retry.tick(), if pending_resize.is_some() => {
+                // (#rdp-resize-defer 2026-11-13) Retry the held resize. The
+                // channel usually opens within a second or two of the session
+                // being established, so this is where a resize that arrived too
+                // early finally gets sent — with the connection untouched.
+                let (width, height, scale_factor, physical_size, deadline) = match pending_resize.as_ref() {
+                    Some(pending) => (
+                        pending.width,
+                        pending.height,
+                        pending.scale_factor,
+                        pending.physical_size,
+                        pending.deadline,
+                    ),
+                    None => (0, 0, 100, None, tokio::time::Instant::now()),
+                };
+
+                if tokio::time::Instant::now() < deadline {
+                    match try_encode_resize(&mut active_stage, width, height, scale_factor, physical_size) {
+                        ResizeOutcome::Encoded(frame) => {
+                            debug!(width, height, "Display Control is ready; sending the held resize");
+                            pending_resize = None;
+                            vec![ActiveStageOutput::ResponseFrame(frame)]
+                        }
+                        ResizeOutcome::Failed(error) => {
+                            warn!(width, height, %error, "Could not encode the held desktop resize");
+                            pending_resize = None;
+                            Vec::new()
+                        }
+                        ResizeOutcome::NotReady => Vec::new(),
+                    }
+                } else {
+                    // The channel never came up: the server does not do
+                    // mid-session resizes. Fall back to reconnecting at the
+                    // new size — but say goodbye first, so the server releases
+                    // the old session and the new connection is not refused
+                    // because of it.
+                    warn!(width, height, "Display Control did not come up; reconnecting with the new size");
+                    let width = u16::try_from(width).expect("always in the range");
+                    let height = u16::try_from(height).expect("always in the range");
+
+                    if let Ok(outputs) = active_stage.graceful_shutdown() {
+                        for output in outputs {
+                            if let ActiveStageOutput::ResponseFrame(frame) = output {
+                                let _ = writer.write_all(&frame).await;
+                            }
+                        }
+                    }
+                    tokio::time::sleep(RESIZE_RECONNECT_GRACE).await;
+                    return Ok(RdpControlFlow::ReconnectWithNewSize { width, height });
                 }
             }
             _ = cleanup_interval.tick() => {

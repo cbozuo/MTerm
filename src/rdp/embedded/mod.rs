@@ -36,6 +36,9 @@ pub(crate) mod keys;
 pub(crate) mod verifier;
 #[path = "impls/credentials.rs"]
 pub(crate) mod credentials;
+// (#rdp-clipboard 2026-11-13) The local side of the clipboard channel.
+#[path = "impls/clipboard.rs"]
+pub(crate) mod clipboard;
 
 pub(crate) use config::{desktop_size, EmbeddedRdpConfig};
 pub(crate) use status::{RemoteState, RemoteStatus};

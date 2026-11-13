@@ -23,6 +23,7 @@
 //! the `Close` that a closing tab sends — is held while one is in flight. The
 //! note above the main `loop` explains why in full.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -39,6 +40,7 @@ use ironrdp::input::{
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp::session::{GracefulDisconnectReason, SessionResult};
 
+use crate::rdp::embedded::clipboard::ClipboardFactory;
 use crate::rdp::embedded::config::EmbeddedRdpConfig;
 use crate::rdp::embedded::input::{button, RemoteInput};
 use crate::rdp::embedded::status::{closing_state, RemoteState, RemoteStatus};
@@ -66,6 +68,53 @@ const TRUST_TIMEOUT: Duration = Duration::from_secs(180);
 /// whole connection. Anything that takes longer than this is not a slow
 /// server — it is a hung one — and the tab must not stay on "重连中…" forever.
 const RESIZE_WAIT: Duration = Duration::from_secs(45);
+
+/// How many times a session that failed *after* it was established is retried
+/// before the tab gives up (#rdp-resize-reconnect 2026-11-13).
+///
+/// The budget is spent by consecutive failures: a session that lived long
+/// enough gets a fresh one, so a server that accepts a connection and drops
+/// it again still runs out of attempts.
+const MAX_SESSION_RETRY_ATTEMPTS: u32 = 3;
+
+/// How long a session has to live before its failure is treated as a one-off
+/// rather than as part of a flapping series.
+const SESSION_STABLE_AFTER: Duration = Duration::from_secs(20);
+
+/// Backoff before a failed session is re-established.
+fn session_retry_delay(attempt: u32) -> Duration {
+    match attempt {
+        1 => Duration::from_millis(500),
+        2 => Duration::from_millis(1200),
+        _ => Duration::from_millis(2500),
+    }
+}
+
+/// Claim one retry attempt for a session that just failed.
+///
+/// Returns whether the session is worth another try. A session that was never
+/// established is not (a refused handshake is an answer, not a hiccup), and
+/// neither is one that already spent the budget. A session that lived long
+/// enough is not part of a flapping series and gets a fresh budget, so a
+/// server that accepts a connection and drops it again runs out of attempts
+/// while a session that lived for hours may fail again later.
+fn claim_retry_attempt(
+    ever_connected: bool,
+    session_attempts: &mut u32,
+    session_started: tokio::time::Instant,
+) -> bool {
+    if !ever_connected {
+        return false;
+    }
+    if session_started.elapsed() >= SESSION_STABLE_AFTER {
+        *session_attempts = 0;
+    }
+    if *session_attempts >= MAX_SESSION_RETRY_ATTEMPTS {
+        return false;
+    }
+    *session_attempts += 1;
+    true
+}
 
 /// Everything the driver needs that is not in [`EmbeddedRdpConfig`].
 pub struct DriverDeps {
@@ -112,6 +161,20 @@ async fn resize_deadline(in_flight: Option<InFlightResize>) {
 /// above the main loop.
 fn accepts_input(resize_in_flight: Option<InFlightResize>) -> bool {
     resize_in_flight.is_none()
+}
+
+/// Hold an input event until the session can take it again.
+///
+/// A newer resize replaces the one that is waiting: the sizes of a window drag
+/// arrive as a burst and every one of them is a round trip the server has to
+/// run (a reactivation) before the desktop reaches the size the window is
+/// actually at. Only the last one is worth sending
+/// (#rdp-resize-defer 2026-11-13). Everything else keeps its place.
+fn hold_input(queue: &mut VecDeque<RemoteInput>, event: RemoteInput) {
+    if matches!(event, RemoteInput::Resize { .. }) {
+        queue.retain(|queued| !matches!(queued, RemoteInput::Resize { .. }));
+    }
+    queue.push_back(event);
 }
 
 /// Act on one input event, moving the session's size bookkeeping with it.
@@ -206,8 +269,16 @@ pub async fn run_with_input(
             return;
         }
     };
-    let client = RdpClient::new(iron_config, output_tx);
-    let iron_input = client.input_sender();
+    // (#rdp-clipboard 2026-11-13) The local side of the clipboard channel.
+    // The factory outlives the client, because the backend it builds is owned
+    // by the CLIPRDR channel and watches the local clipboard for as long as
+    // the session lasts.
+    let clipboard = ClipboardFactory::new();
+    let client = RdpClient::new(iron_config, output_tx)
+        .with_cliprdr_backend_factory(Box::new(clipboard.clone()));
+    let mut iron_input = client.input_sender();
+    // The backend talks to the client through its input channel.
+    clipboard.set_input(iron_input.clone());
 
     deps.status.set(RemoteState::Connecting, None);
     push_state(&deps, RemoteState::Connecting, None);
@@ -223,6 +294,30 @@ pub async fn run_with_input(
     // break, so the tail below does not replace it with a reasonless
     // "Disconnected".
     let mut failure_reported = false;
+
+    // (#rdp-resize-reconnect 2026-11-13) A session that fails *after* it was
+    // established is not the end of the tab: it is retried a few times before
+    // the tab gives up.
+    //
+    // The case this exists for is the desktop resize. A resize that the server
+    // refuses to perform in-session makes the client reconnect at the new
+    // size, and that reconnect races the server's release of the previous
+    // session — the new connection is then refused ("another session is
+    // logged in"), and the tab used to die on it. Retrying here is the same
+    // safety net the reference client has.
+    //
+    // The counter counts *consecutive* failures: a session that lived long
+    // enough is not part of a flapping series and gets a fresh budget. A
+    // server that accepts a connection and drops it again therefore still
+    // runs out of attempts.
+    let mut session_attempts = 0u32;
+    let mut ever_connected = false;
+    // When the current session was established.
+    let mut session_started = tokio::time::Instant::now();
+    // Set when the session failed and should be re-established.
+    let mut retry_session = false;
+    // Set when the session's output channel closed — the session is over.
+    let mut output_closed = false;
 
     let mut frames = FrameQueue::new();
     let mut input_db = IronRdpInputDatabase::new();
@@ -309,6 +404,75 @@ pub async fn run_with_input(
             break;
         }
 
+        // (#rdp-resize-reconnect 2026-11-13) Re-establish a session that
+        // failed. The desktop size the session was running at is kept, so a
+        // resize that was in flight when it died is not undone by the retry.
+        if retry_session {
+            retry_session = false;
+
+            if deps.closed.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let delay = session_retry_delay(session_attempts);
+            tracing::info!(
+                attempt = session_attempts,
+                delay_ms = delay.as_millis(),
+                "RDP session failed; reconnecting"
+            );
+            tokio::time::sleep(delay).await;
+
+            if deps.closed.load(Ordering::Relaxed) {
+                break;
+            }
+
+            let mut retry_config = config.clone();
+            // The new session comes up at the size the *tab* is at, so the
+            // desktop matches the window again without another resize round
+            // trip. (`size` is the last size the tab asked for; the session
+            // may have been at another one when it died.)
+            let (width, height) = crate::remote::render::clamp_desktop_size(size.0, size.1)
+                .unwrap_or((config.width, config.height));
+            retry_config.width = width;
+            retry_config.height = height;
+
+            let iron_config = match build_config(&retry_config) {
+                Ok(cfg) => cfg,
+                Err(err) => {
+                    push_state(&deps, RemoteState::Failed, Some(err.clone()));
+                    deps.status.set(RemoteState::Failed, Some(err));
+                    failure_reported = true;
+                    break;
+                }
+            };
+
+            // A fresh output channel per attempt: the old one is closed by the
+            // client that owned it, and that closure is what tells the loop
+            // the session is over.
+            let (retry_tx, retry_rx) = mpsc::channel::<RdpOutputEvent>(8);
+            // (#rdp-clipboard 2026-11-13) A fresh clipboard factory: the
+            // backend belongs to the channel, which the old client owned.
+            let clipboard = ClipboardFactory::new();
+            let client = RdpClient::new(iron_config, retry_tx)
+                .with_cliprdr_backend_factory(Box::new(clipboard.clone()));
+            iron_input = client.input_sender();
+            clipboard.set_input(iron_input.clone());
+            session = Box::pin(client.run());
+            output_rx = retry_rx;
+            session_done = false;
+            output_closed = false;
+            session_started = tokio::time::Instant::now();
+
+            deps.status.set(RemoteState::Reconnecting, None);
+            push_state(&deps, RemoteState::Reconnecting, None);
+            continue;
+        }
+
+        // The session is over and nothing is going to replace it.
+        if output_closed {
+            break;
+        }
+
         tokio::select! {
             // When the protocol future ends, its output sender is already gone:
             // the branch below will see the channel close. It is drained first
@@ -383,10 +547,20 @@ pub async fn run_with_input(
             }
 
             maybe_out = output_rx.recv() => {
-                let Some(out) = maybe_out else { break };
+                let Some(out) = maybe_out else {
+                    // The session's output sender is gone: the session is
+                    // over. Whether that is fatal is decided at the top of
+                    // the loop, so a session that may be retried is not cut
+                    // off here.
+                    output_closed = true;
+                    continue;
+                };
                 match out {
                     RdpOutputEvent::Image { buffer, width, height } => {
                         let dimensions = (width.get(), height.get());
+                        // A frame is proof that the session was established
+                        // (#rdp-resize-reconnect 2026-11-13).
+                        ever_connected = true;
                         // A frame is the only proof of which size the session is
                         // actually at, and it ends any resize in flight — either
                         // because it is the frame that resize asked for, or
@@ -408,10 +582,19 @@ pub async fn run_with_input(
                     }
                     RdpOutputEvent::ConnectionFailure(err) => {
                         let reason = describe_failure(&err);
-                        deps.status.set(RemoteState::Failed, Some(reason.clone()));
-                        push_state(&deps, RemoteState::Failed, Some(reason));
-                        failure_reported = true;
-                        break;
+                        tracing::warn!(error = %err, attempt = session_attempts, "RDP connection failed");
+                        if claim_retry_attempt(ever_connected, &mut session_attempts, session_started)
+                            && !deps.closed.load(Ordering::Relaxed)
+                        {
+                            // Worth another try: the tab stays alive and the
+                            // session is re-established at the top of the loop.
+                            retry_session = true;
+                        } else {
+                            deps.status.set(RemoteState::Failed, Some(reason.clone()));
+                            push_state(&deps, RemoteState::Failed, Some(reason));
+                            failure_reported = true;
+                            break;
+                        }
                     }
                     RdpOutputEvent::Terminated(reason) => {
                         tracing::info!("RDP session terminated: {reason:?}");
@@ -421,10 +604,21 @@ pub async fn run_with_input(
                         // `status_for` appends it to the state (#remote-
                         // reconnect 2026-10-13). It used to be logged here and
                         // thrown away, which is why every ending read "已断线".
-                        let note = termination_note(&reason);
-                        deps.status.set(RemoteState::Disconnected, note.clone());
-                        push_state(&deps, RemoteState::Disconnected, note);
-                        break;
+                        //
+                        // A session that ended in an *error* is worth another
+                        // try; one that ended gracefully — the server hung up,
+                        // someone took the session over — is not.
+                        if reason.is_err()
+                            && claim_retry_attempt(ever_connected, &mut session_attempts, session_started)
+                            && !deps.closed.load(Ordering::Relaxed)
+                        {
+                            retry_session = true;
+                        } else {
+                            let note = termination_note(&reason);
+                            deps.status.set(RemoteState::Disconnected, note.clone());
+                            push_state(&deps, RemoteState::Disconnected, note);
+                            break;
+                        }
                     }
                     RdpOutputEvent::PointerDefault
                     | RdpOutputEvent::PointerHidden
@@ -444,7 +638,14 @@ pub async fn run_with_input(
                     // pressed during the reactivation is news the session wants
                     // on the other side of it; a `Resize` is re-evaluated there
                     // because the resize may have completed by then.
-                    deferred_input.push_back(event);
+                    //
+                    // A newer resize replaces the one that is waiting, though:
+                    // the sizes of a window drag arrive as a burst and every
+                    // one of them is a round trip the server has to run (a
+                    // reactivation) before the desktop reaches the size the
+                    // window is actually at. Only the last one is worth
+                    // sending (#rdp-resize-defer 2026-11-13).
+                    hold_input(&mut deferred_input, event);
                     continue;
                 }
                 apply_input(
@@ -961,6 +1162,87 @@ mod tests {
         // nothing to lose.
         let err = ironrdp::connector::ConnectorError::reason("negotiation", "server hung up");
         assert_eq!(describe_failure(&err), "reason: server hung up");
+    }
+
+    /// (#rdp-resize-defer 2026-11-13) The sizes of a window drag arrive as a
+    /// burst. Every one of them is a round trip the server has to run (a
+    /// reactivation), so only the last one is worth sending — otherwise the
+    /// desktop walks through every intermediate size after the mouse is
+    /// already up.
+    #[test]
+    fn a_newer_resize_replaces_the_one_that_is_waiting() {
+        let mut queue = VecDeque::new();
+        hold_input(&mut queue, RemoteInput::Resize { width: 800, height: 600 });
+        hold_input(&mut queue, RemoteInput::Resize { width: 900, height: 700 });
+        hold_input(&mut queue, RemoteInput::Resize { width: 1024, height: 768 });
+
+        assert_eq!(queue.len(), 1, "only the newest size is worth sending");
+        assert!(matches!(
+            queue.front(),
+            Some(RemoteInput::Resize { width: 1024, height: 768 })
+        ));
+    }
+
+    /// A resize must not push the *other* held input out of the queue: a key
+    /// pressed during the reactivation is news the session wants on the far
+    /// side of it.
+    #[test]
+    fn a_resize_leaves_the_other_held_input_alone() {
+        let mut queue = VecDeque::new();
+        hold_input(&mut queue, RemoteInput::Key { code: 30, down: true });
+        hold_input(&mut queue, RemoteInput::Resize { width: 800, height: 600 });
+        hold_input(&mut queue, RemoteInput::Resize { width: 1024, height: 768 });
+
+        assert_eq!(queue.len(), 2);
+        assert!(matches!(queue.front(), Some(RemoteInput::Key { .. })));
+        assert!(matches!(
+            queue.back(),
+            Some(RemoteInput::Resize { width: 1024, height: 768 })
+        ));
+    }
+
+    /// (#rdp-resize-reconnect 2026-11-13) The retry backoff has to grow, or a
+    /// server that keeps refusing the connection is hammered.
+    #[test]
+    fn the_retry_backoff_grows() {
+        assert!(session_retry_delay(1) < session_retry_delay(2));
+        assert!(session_retry_delay(2) < session_retry_delay(3));
+    }
+
+    /// A session that never got established is not retried: a refused
+    /// handshake is an answer, not a hiccup.
+    #[test]
+    fn a_session_that_never_connected_is_not_retried() {
+        let mut attempts = 0;
+        assert!(!claim_retry_attempt(
+            false,
+            &mut attempts,
+            tokio::time::Instant::now()
+        ));
+        assert_eq!(attempts, 0);
+    }
+
+    /// A server that accepts a connection and drops it again runs out of
+    /// attempts instead of looping forever.
+    #[test]
+    fn a_flapping_server_runs_out_of_attempts() {
+        let mut attempts = 0;
+        let started = tokio::time::Instant::now();
+        for _ in 0..MAX_SESSION_RETRY_ATTEMPTS {
+            assert!(claim_retry_attempt(true, &mut attempts, started));
+        }
+        assert!(!claim_retry_attempt(true, &mut attempts, started));
+        assert_eq!(attempts, MAX_SESSION_RETRY_ATTEMPTS);
+    }
+
+    /// A session that lived long enough is not part of a flapping series: its
+    /// failure gets a fresh budget.
+    #[test]
+    fn a_session_that_lived_long_enough_gets_a_fresh_budget() {
+        let mut attempts = MAX_SESSION_RETRY_ATTEMPTS;
+        let started = tokio::time::Instant::now() - SESSION_STABLE_AFTER - Duration::from_secs(1);
+        assert!(claim_retry_attempt(true, &mut attempts, started));
+        assert_eq!(attempts, 1);
     }
 
     /// (#rdp-resize-drop 2026-10-27) A resize asks for a desktop the session is
