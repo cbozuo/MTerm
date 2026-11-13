@@ -25,7 +25,11 @@ pub const FRAME_QUEUE_DEPTH: usize = 2;
 #[derive(Debug)]
 pub enum RemoteEvent {
     /// A new frame, already converted to something Slint can draw.
-    Frame(image::RgbaImage),
+    ///
+    /// Shared: the driver keeps the frame it is currently showing and hands
+    /// the *same* pixels to the queue, so publishing a frame costs a
+    /// reference count instead of a full-frame copy.
+    Frame(Arc<image::RgbaImage>),
     /// The connection state changed (or the session ended). The status object
     /// is shared rather than copied so the UI can read the driver's own view
     /// (state + message) without a second channel carrying the same facts.

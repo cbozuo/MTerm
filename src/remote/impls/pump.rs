@@ -124,7 +124,31 @@ pub fn spawn_pump(
         .name(format!("remote-pump-{tab_id}"))
         .spawn(move || {
             while let Some(event) = rx.blocking_recv() {
-                // The flag is read *after* the event is handled, not before.
+                // (#rdp-frame-copies 2026-11-13) Take whatever else is already
+                // waiting before delivering: a frame that is queued behind
+                // another one is stale by the time the UI reaches it, and the
+                // UI thread cannot apply frames faster than they arrive. Only
+                // the newest frame is worth showing — the older ones would
+                // each cost a full-frame copy and a repaint, and their delay
+                // is exactly what makes the desktop feel behind the mouse.
+                // Control events (state, trust) are never dropped.
+                let mut batch = vec![event];
+                while let Ok(next) = rx.try_recv() {
+                    batch.push(next);
+                }
+                let mut kept: Vec<RemoteEvent> = Vec::with_capacity(batch.len());
+                for event in batch {
+                    match event {
+                        RemoteEvent::Frame(_) => {
+                            // The newer frame replaces the older one.
+                            kept.retain(|kept| !matches!(kept, RemoteEvent::Frame(_)));
+                            kept.push(event);
+                        }
+                        _ => kept.push(event),
+                    }
+                }
+
+                // The flag is read *after* the events are handled, not before.
                 // A driver sets it immediately before publishing its final state
                 // — "disconnected" or "failed" — so checking first dropped
                 // exactly the event the UI most needs, and the tab sat on its
@@ -133,26 +157,28 @@ pub fn spawn_pump(
                 // the tab or its window is gone, while losing the last state is
                 // not.
                 let stopping = shutdown.load(Ordering::Acquire);
-                // Resolve the route per event: a tab moved to another window
-                // mid-stream delivers there from the next frame on.
-                let route = routes
-                    .lock()
-                    .ok()
-                    .and_then(|map| map.get(&tab_id).cloned())
-                    .and_then(|route| route.lock().ok().map(|r| r.clone()));
-                if let Some(route) = route {
-                    // Only the id crosses into the event loop. The lookup happens
-                    // inside the closure, on the UI thread, because `Weak` may not
-                    // be created, cloned or upgraded anywhere else.
-                    let window_id = route.window_id;
-                    let tab = tab_id.clone();
-                    // `invoke_from_event_loop` queues the closure on the event
-                    // loop, so it still runs after this thread has exited.
-                    let _ = slint::invoke_from_event_loop(move || {
-                        // Only the id crosses into the event loop; the thread-local
-                        // pane table is read here, where it is legal to.
-                        crate::remote::registry::apply_to(window_id, &tab, event);
-                    });
+                for event in kept {
+                    // Resolve the route per event: a tab moved to another window
+                    // mid-stream delivers there from the next frame on.
+                    let route = routes
+                        .lock()
+                        .ok()
+                        .and_then(|map| map.get(&tab_id).cloned())
+                        .and_then(|route| route.lock().ok().map(|r| r.clone()));
+                    if let Some(route) = route {
+                        // Only the id crosses into the event loop. The lookup happens
+                        // inside the closure, on the UI thread, because `Weak` may not
+                        // be created, cloned or upgraded anywhere else.
+                        let window_id = route.window_id;
+                        let tab = tab_id.clone();
+                        // `invoke_from_event_loop` queues the closure on the event
+                        // loop, so it still runs after this thread has exited.
+                        let _ = slint::invoke_from_event_loop(move || {
+                            // Only the id crosses into the event loop; the thread-local
+                            // pane table is read here, where it is legal to.
+                            crate::remote::registry::apply_to(window_id, &tab, event);
+                        });
+                    }
                 }
                 // No window wants these events any more (tab closed): nothing
                 // left to deliver, so stop.
@@ -169,7 +195,7 @@ mod tests {
     use image::RgbaImage;
 
     fn frame() -> RemoteEvent {
-        RemoteEvent::Frame(RgbaImage::new(4, 4))
+        RemoteEvent::Frame(std::sync::Arc::new(RgbaImage::new(4, 4)))
     }
 
     #[test]

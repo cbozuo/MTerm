@@ -193,7 +193,7 @@ impl RemotePanes {
         match event {
             RemoteEvent::Frame(image) => {
                 let (w, h) = image.dimensions();
-                let slint_image = render::to_image(image);
+                let slint_image = render::to_image(&image);
                 row.image = slint_image;
                 row.frame_w = i32::from(w.min(u32::from(u16::MAX)) as u16);
                 row.frame_h = i32::from(h.min(u32::from(u16::MAX)) as u16);
@@ -505,7 +505,10 @@ mod tests {
         // the symptom being fixed.
         let panes = RemotePanes::new(Rc::new(VecModel::default()));
         panes.open("tab-1", "host", "rdp", false);
-        panes.apply(RemoteEvent::Frame(image::RgbaImage::new(1280, 720)), "tab-1");
+        panes.apply(
+            RemoteEvent::Frame(std::sync::Arc::new(image::RgbaImage::new(1280, 720))),
+            "tab-1",
+        );
         panes.apply(RemoteEvent::Size { width: 2560, height: 1400 }, "tab-1");
         let row = panes.rows.row_data(0).expect("the pane is there");
         assert_eq!((row.frame_w, row.frame_h), (2560, 1400));
@@ -586,7 +589,7 @@ mod tests {
             "tab-1",
         );
         panes.apply(
-            RemoteEvent::Frame(image::RgbaImage::new(64, 48)),
+            RemoteEvent::Frame(std::sync::Arc::new(image::RgbaImage::new(64, 48))),
             "tab-1",
         );
 

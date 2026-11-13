@@ -319,7 +319,7 @@ async fn run_once(
                 if let Some(rect) = dirty.take() {
                     if last_emit.elapsed() >= UPDATE_REQUEST_INTERVAL {
                         if let Some(fb) = framebuffer.as_ref() {
-                            frames.push_frame(RemoteEvent::Frame(fb.to_rgba()));
+                            frames.push_frame(RemoteEvent::Frame(std::sync::Arc::new(fb.to_rgba())));
                             last_emit = tokio::time::Instant::now();
                         }
                     }

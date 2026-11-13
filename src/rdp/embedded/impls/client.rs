@@ -261,7 +261,13 @@ pub async fn run_with_input(
 
     let (output_tx, mut output_rx) = mpsc::channel::<RdpOutputEvent>(8);
 
-    let iron_config = match build_config(&config) {
+    // The size the tab is at, in the device pixels the frame is drawn in.
+    // A session that follows the tab connects at this size, so the very first
+    // frame is already the right one — no stretched picture, and no resize
+    // round trip right after the handshake.
+    let tab_size = deps.size.lock().map(|slot| *slot).unwrap_or((config.width, config.height));
+
+    let iron_config = match build_config(&config, tab_size) {
         Ok(cfg) => cfg,
         Err(err) => {
             push_state(&deps, RemoteState::Failed, Some(err.clone()));
@@ -321,7 +327,7 @@ pub async fn run_with_input(
 
     let mut frames = FrameQueue::new();
     let mut input_db = IronRdpInputDatabase::new();
-    let mut framebuffer: Option<RgbaImage> = None;
+    let mut framebuffer: Option<Arc<RgbaImage>> = None;
     let mut last_emit = tokio::time::Instant::now() - FRAME_INTERVAL;
     let mut dirty = false;
     let mut size = deps
@@ -436,7 +442,7 @@ pub async fn run_with_input(
             retry_config.width = width;
             retry_config.height = height;
 
-            let iron_config = match build_config(&retry_config) {
+            let iron_config = match build_config(&retry_config, tab_size) {
                 Ok(cfg) => cfg,
                 Err(err) => {
                     push_state(&deps, RemoteState::Failed, Some(err.clone()));
@@ -531,14 +537,16 @@ pub async fn run_with_input(
                 }
             }
 
+            // (#rdp-frame-copies 2026-11-13) A frame that arrived inside the
+            // frame-rate cap waits for the cap instead of being dropped: every
+            // frame is a full picture, so an intermediate one is worth
+            // nothing — but the *last* one of a burst is the one that matters,
+            // and dropping it would leave the desktop showing an old frame.
+            _ = frame_deadline(last_emit, dirty), if dirty => {
+                push_frame(&deps, &mut frames, &framebuffer, &mut dirty, &mut last_emit);
+            }
+
             _ = tick.tick() => {
-                if dirty && last_emit.elapsed() >= FRAME_INTERVAL {
-                    last_emit = tokio::time::Instant::now();
-                    dirty = false;
-                    if let Some(fb) = framebuffer.as_ref() {
-                        frames.push_frame(RemoteEvent::Frame(fb.clone()));
-                    }
-                }
                 for event in frames.drain() {
                     if deps.events.send(event).is_err() {
                         deps.closed.store(true, Ordering::Relaxed);
@@ -574,11 +582,19 @@ pub async fn run_with_input(
                             tracing::info!(?dimensions, "RDP desktop resize completed");
                             resize_in_flight = None;
                         }
-                        framebuffer = Some(to_rgba(&buffer, dimensions.0, dimensions.1));
+                        // (#rdp-frame-copies 2026-11-13) The frame arrives as
+                        // RGBA bytes, which is what the image type wants, so
+                        // it is taken over rather than converted pixel by
+                        // pixel.
+                        framebuffer = frame_from_bytes(buffer, dimensions).map(Arc::new);
                         dirty = true;
                         if !matches!(deps.status.state(), RemoteState::Connected) {
                             push_state(&deps, RemoteState::Connected, None);
                         }
+                        // The frame goes out now, not on the next tick: the
+                        // tick is 20 ms, and every frame that waited for it
+                        // was that much closer to being a stale picture.
+                        push_frame(&deps, &mut frames, &framebuffer, &mut dirty, &mut last_emit);
                     }
                     RdpOutputEvent::ConnectionFailure(err) => {
                         let reason = describe_failure(&err);
@@ -821,21 +837,37 @@ async fn authorize_certificate(
 }
 
 /// Build the ironrdp config for one connection attempt.
-fn build_config(config: &EmbeddedRdpConfig) -> Result<ironrdp::client::config::Config, String> {
+fn build_config(
+    config: &EmbeddedRdpConfig,
+    tab_size: (u16, u16),
+) -> Result<ironrdp::client::config::Config, String> {
     // `Destination::new` parses "host:port"; going through it rather than
     // splitting by hand means an IPv6 literal takes the same code path as a
     // hostname.
     let destination = Destination::new(format!("{}:{}", config.host, config.port))
         .map_err(|err| format!("{err:#}"))?;
     let password = password_for(config);
+    // A session that follows the tab connects at the tab's size; a fixed
+    // resolution keeps the one the session was saved with.
+    let (desktop_width, desktop_height) = if config.follow_tab_size {
+        crate::remote::render::clamp_desktop_size(tab_size.0, tab_size.1)
+            .unwrap_or((config.width, config.height))
+    } else {
+        (config.width, config.height)
+    };
     ConfigBuilder::new()
         .with_destination(destination)
         .with_transport(TransportKind::Direct)
         .with_username(config.username.clone())
         .with_domain(config.domain.clone())
         .with_password(password.clone())
-        .with_desktop_width(config.width)
-        .with_desktop_height(config.height)
+        // (#rdp-follow-size 2026-11-13) A session that follows the tab
+        // connects at the tab's size. The stored display settings are only a
+        // guess for the handshake; the real size arrives with the first
+        // layout, and connecting at the right size from the start avoids a
+        // stretched first frame.
+        .with_desktop_width(desktop_width)
+        .with_desktop_height(desktop_height)
         .with_desktop_scale_factor(100)
         .with_color_depth(u32::from(config.color_depth.clamp(16, 32)))
         // (#rdp-blank-password 2026-10-13) NLA only when there *is* a password —
@@ -916,24 +948,72 @@ fn client_name() -> String {
 ///
 /// The packing is fixed by the decoder, so there is no per-session pixel-format
 /// negotiation on this side.
-fn to_rgba(buffer: &[u32], width: u16, height: u16) -> RgbaImage {
-    let mut img = RgbaImage::new(u32::from(width), u32::from(height));
-    {
-        let dst = img.as_mut();
-        let count = (u32::from(width) * u32::from(height)) as usize;
-        // `RgbaImage::as_mut` yields the pixel bytes in RGBA order, tightly
-        // packed, so one pixel is four bytes: the stride is derived from the
-        // buffer rather than assumed, and the four bytes are written as a slice
-        // instead of through the `Rgba` wrapper.
-        let dst = dst.as_mut();
-        let stride = dst.len() / count.max(1);
-        for (i, src) in buffer.iter().take(count).enumerate() {
-            let [_, r, g, b] = src.to_be_bytes();
-            let px = &mut dst[i * stride..i * stride + 4];
-            px.copy_from_slice(&[r, g, b, 0xff]);
+/// When a pending frame may be shown, or a future that never resolves.
+///
+/// A helper rather than an inline `sleep_until` so that `tokio::select!` polls
+/// the *same* future on every turn: an expression inside `select!` is created
+/// afresh each time, and a freshly created deadline measured from the start
+/// has already expired — it would fire immediately and forever.
+///
+/// The frame rate is capped, so a frame that arrived early waits for the cap
+/// rather than being dropped.
+async fn frame_deadline(last_emit: tokio::time::Instant, pending: bool) {
+    if !pending {
+        return std::future::pending().await;
+    }
+    let wait = FRAME_INTERVAL.saturating_sub(last_emit.elapsed());
+    tokio::time::sleep(wait).await;
+}
+
+/// Hand the current frame to the UI, if the frame rate allows it.
+///
+/// The rate limit exists so a busy desktop cannot flood the UI thread; a
+/// frame that arrives too early stays pending and goes out when the cap
+/// expires (see [`frame_deadline`]).
+fn push_frame(
+    deps: &DriverDeps,
+    frames: &mut FrameQueue,
+    framebuffer: &Option<Arc<RgbaImage>>,
+    dirty: &mut bool,
+    last_emit: &mut tokio::time::Instant,
+) {
+    if !*dirty || last_emit.elapsed() < FRAME_INTERVAL {
+        return;
+    }
+    *last_emit = tokio::time::Instant::now();
+    *dirty = false;
+    if let Some(frame) = framebuffer.as_ref() {
+        frames.push_frame(RemoteEvent::Frame(frame.clone()));
+    }
+    for event in frames.drain() {
+        if deps.events.send(event).is_err() {
+            deps.closed.store(true, Ordering::Relaxed);
         }
     }
-    img
+}
+
+/// Take a decoded frame over as the image the UI draws.
+///
+/// The frame arrives as RGBA bytes — four bytes per pixel, row by row —
+/// which is exactly the layout the image type wants, so the buffer is taken
+/// over instead of being converted pixel by pixel.
+///
+/// A frame that is not exactly the announced size is still drawable: the
+/// missing pixels are black and the surplus is dropped. Panicking here would
+/// take the whole tab down.
+fn frame_from_bytes(buffer: Vec<u8>, dimensions: (u16, u16)) -> Option<RgbaImage> {
+    let (width, height) = (u32::from(dimensions.0), u32::from(dimensions.1));
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let expected = (width as usize) * (height as usize) * 4;
+    let mut buffer = buffer;
+    if buffer.len() < expected {
+        buffer.resize(expected, 0);
+    } else if buffer.len() > expected {
+        buffer.truncate(expected);
+    }
+    RgbaImage::from_raw(width, height, buffer)
 }
 
 /// Apply one input event to the ironrdp input sender.
@@ -1128,6 +1208,20 @@ fn assert_handle_is_send_sync(_: &RemoteHandle) {}
 mod tests {
     use super::*;
     use ironrdp::connector::ConnectorErrorExt;
+
+    /// A frame is handed over as it arrives: the bytes are already in the
+    /// layout the UI draws, so nothing may reorder them.
+    #[test]
+    fn a_frame_is_taken_over_unchanged() {
+        let pixels = vec![
+            0xffu8, 0x00, 0x00, 0xff, // red
+            0x00, 0xff, 0x00, 0xff, // green
+            0x00, 0x00, 0xff, 0xff, // blue
+        ];
+        let img = frame_from_bytes(pixels.clone(), (3, 1)).expect("a drawable frame");
+        assert_eq!(img.dimensions(), (3, 1));
+        assert_eq!(img.as_raw(), pixels.as_slice());
+    }
 
     #[test]
     fn a_failure_keeps_the_servers_reason_and_drops_the_build_location() {
@@ -1355,22 +1449,10 @@ mod tests {
     }
 
     #[test]
-    fn pixels_unpack_to_opaque_rgba_in_channel_order() {
-        let buffer = vec![0x0012_34FFu32, 0x00FF_0000];
-        let img = to_rgba(&buffer, 2, 1);
-        assert_eq!(img.dimensions(), (2, 1));
-        let px = img.as_raw();
-        // ironrdp packs 0x00RRGGBB, and the bytes written are the RGBA order
-        // `image` and Slint's pixel buffer both use, with alpha forced opaque.
-        assert_eq!(&px[0..4], &[0x12, 0x34, 0xff, 0xff]);
-        assert_eq!(&px[4..8], &[0xff, 0x00, 0x00, 0xff]);
-    }
-
-    #[test]
     fn a_short_buffer_leaves_the_remaining_pixels_black_rather_than_panicking() {
         // A frame one pixel short must still produce a drawable image; panicking
         // here would take the whole tab down.
-        let img = to_rgba(&[0x00FF_FFFF], 2, 1);
+        let img = frame_from_bytes(vec![0xff, 0xff, 0xff, 0xff], (2, 1)).expect("a drawable frame");
         assert_eq!(img.dimensions(), (2, 1));
         assert_eq!(&img.as_raw()[4..8], &[0, 0, 0, 0]);
     }
@@ -1410,8 +1492,8 @@ mod tests {
     /// run with, not merely a different flag.
     #[test]
     fn both_password_states_build_a_usable_client_config() {
-        assert!(build_config(&config_with_password("")).is_ok());
-        assert!(build_config(&config_with_password("secret")).is_ok());
+        assert!(build_config(&config_with_password(""), (1280, 720)).is_ok());
+        assert!(build_config(&config_with_password("secret"), (1280, 720)).is_ok());
     }
 
     /// A session that ends says which ending it was; a session that dies of an

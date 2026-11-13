@@ -8709,7 +8709,7 @@ fn wire_session_callbacks(
             // (#rdp-vnc-embedded) 新建会话一律从「系统客户端」起步 —— 零回归的
             // 锚点：默认路径与本次改动前完全相同。
             w.set_dialog_rdp_mode("system".into());
-            w.set_dialog_rdp_follow_tab_size(false);
+            w.set_dialog_rdp_follow_tab_size(true);
             w.set_dialog_vnc_view_only(false);
             w.set_dialog_vnc_security("".into());
             w.set_dialog_vnc_clipboard(true);

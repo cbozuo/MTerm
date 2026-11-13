@@ -593,7 +593,15 @@ pub(super) fn sync_sessions_to_model(store: &ConfigStore, model: &VecModel<Sessi
 pub(super) const RDP_RESOLUTION_FOLLOW: &str = "follow";
 pub(super) const RDP_RESOLUTION_FULLSCREEN: &str = "fullscreen";
 pub(super) const RDP_RESOLUTION_CUSTOM: &str = "custom";
-pub(super) const RDP_RESOLUTION_DEFAULT: &str = "1280x720";
+/// The resolution a new RDP session starts with.
+///
+/// (#rdp-follow-size 2026-11-13) "follow" — the remote desktop takes the
+/// tab's size. A built-in session lives *inside* a tab, so a fixed desktop
+/// there is scaled to fit: it looks soft when the tab is larger, and it
+/// costs a full-frame resample on every repaint. The stored width/height
+/// stay as the placeholder for the system client, which has a window of its
+/// own.
+pub(super) const RDP_RESOLUTION_DEFAULT: &str = "follow";
 pub(super) const RDP_RESOLUTION_PRESETS: [&str; 7] = [
     "1280x720",
     "1366x768",
@@ -890,11 +898,11 @@ mod blank_password_tests {
             parity: "none".into(),
             flow_control: "none".into(),
             rdp_domain: "".into(),
-            rdp_resolution: "1280x720".into(),
+            rdp_resolution: RDP_RESOLUTION_DEFAULT.into(),
             rdp_width: 1280,
             rdp_height: 720,
             rdp_mode: "embedded".into(),
-            rdp_follow_tab_size: false,
+            rdp_follow_tab_size: true,
             vnc_view_only: false,
             vnc_security: "".into(),
             vnc_clipboard: true,
@@ -988,9 +996,14 @@ mod blank_password_tests {
     }
 
     /// ...and neither source claiming "follow" means no follow.
+    ///
+    /// (#rdp-follow-size 2026-11-13) The draft's *default* now follows the
+    /// tab, so the flag is cleared explicitly here — the point of the test is
+    /// that a fixed resolution turns the follow off.
     #[test]
     fn neither_source_means_no_follow() {
         let mut draft = draft();
+        draft.rdp_follow_tab_size = false;
         draft.rdp_resolution = "1920x1080".into();
         assert!(!follows_tab_size(&draft));
         let session = session_from_draft(&draft, None, Vec::new(), Vec::new());

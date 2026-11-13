@@ -20,21 +20,23 @@ pub const MAX_FRAME_EDGE: u32 = 2560;
 ///
 /// The aspect ratio is preserved and the UI letterboxes the result, so a
 /// non-matching buffer size never stretches the picture (P0-6).
-pub fn to_image(img: RgbaImage) -> Image {
+pub fn to_image(img: &RgbaImage) -> Image {
     Image::from_rgba8(to_buffer(img))
 }
 
 /// The buffer half of [`to_image`], exposed separately because the tab view
 /// also needs the pixel size to map pointer coordinates back to remote pixels.
-pub fn to_buffer(img: RgbaImage) -> SharedPixelBuffer<Rgba8Pixel> {
+pub fn to_buffer(img: &RgbaImage) -> SharedPixelBuffer<Rgba8Pixel> {
     let (w, h) = img.dimensions();
+    let scaled;
     let img = if w.max(h) > MAX_FRAME_EDGE && w > 0 && h > 0 {
         let scale = MAX_FRAME_EDGE as f32 / w.max(h) as f32;
         let nw = ((w as f32 * scale) as u32).max(1);
         let nh = ((h as f32 * scale) as u32).max(1);
         // Triangle filter: a box filter would alias badly on text, which is
         // most of a desktop.
-        image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Triangle)
+        scaled = image::imageops::resize(img, nw, nh, image::imageops::FilterType::Triangle);
+        &scaled
     } else {
         img
     };

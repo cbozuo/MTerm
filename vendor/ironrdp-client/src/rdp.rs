@@ -50,7 +50,8 @@ use crate::config::{Config, RDCleanPathConfig, Transport};
 #[derive(Debug)]
 pub enum RdpOutputEvent {
     Image {
-        buffer: Vec<u32>,
+        /// The frame's pixels, RGBA, four bytes per pixel, row by row.
+        buffer: Vec<u8>,
         width: NonZeroU16,
         height: NonZeroU16,
     },
@@ -1147,16 +1148,14 @@ async fn active_session(
                     .await
                     .map_err(|e| ironrdp_session::custom_err!("write response", e))?,
                 ActiveStageOutput::GraphicsUpdate(_region) => {
-                    let buffer: Vec<u32> = image
-                        .data()
-                        .chunks_exact(4)
-                        .map(|pixel| {
-                            let r = pixel[0];
-                            let g = pixel[1];
-                            let b = pixel[2];
-                            u32::from_be_bytes([0, r, g, b])
-                        })
-                        .collect();
+                    // (MTerm patch, #rdp-frame-copies 2026-11-13) The decoded
+                    // image is already RGBA with an opaque alpha (ironrdp
+                    // writes 0xff into the alpha byte), which is exactly the
+                    // layout the UI draws. The old code packed every pixel
+                    // into a `u32` first, which cost a full-image pass and a
+                    // second allocation for *every* graphics update — and the
+                    // receiving side had to unpack it all again.
+                    let buffer: Vec<u8> = image.data().to_vec();
                     output_event_sender
                         .send(RdpOutputEvent::Image {
                             buffer,
