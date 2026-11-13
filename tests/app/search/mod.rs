@@ -424,3 +424,160 @@ fn index_counts_reflect_all_sources() {
     let hit = search(&idx, "gateway", None).unwrap().pop().unwrap();
     assert!(matches!(&hit.item.payload, Payload::Session { ssh_cmd, .. } if ssh_cmd.contains("-p 2222")));
 }
+
+// ── 宿主桥离屏链路：选择 ↔ 预览同步（#qs-sync-preview 2026-11-13）────
+// 用户截图：高亮在「SFTP 跟随 cd」（设置），右侧预览停在 PowerShell（会话）
+// ——链路静态审查（qs-move/qs-sel/refresh 均走 push_preview，rows.qi ↔
+// state.flat 同序）查不出断点，离屏走真实 install() 逐键断言。
+
+use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+use slint::platform::{Platform, WindowAdapter};
+use slint::{ComponentHandle, Model as _};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+thread_local! {
+    static SYNC_WIN: Rc<MinimalSoftwareWindow> =
+        MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+    /// (#qs-execute-row-fix) Session 执行观测:on_connect_session 收到的 id。
+    static EXEC_SESS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+struct SyncPlatform;
+impl Platform for SyncPlatform {
+    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
+        Ok(SYNC_WIN.with(|w| w.clone()))
+    }
+}
+
+/// 高亮行与预览必须是同一条目（组头不可选中；预览必须有条目）。
+fn assert_selection_preview(ui: &crate::ui::AppWindow, tag: &str) {
+    let rows = ui.get_qs_rows();
+    let hi = ui.get_qs_hi();
+    let row = rows
+        .row_data(hi.max(0) as usize)
+        .unwrap_or_else(|| panic!("[{tag}] no row at hi={hi}"));
+    assert!(row.kind != 0, "[{tag}] hi={hi} points at a group head");
+    let pv = ui.get_qs_preview();
+    assert!(
+        pv.has_item && pv.title == row.title,
+        "[{tag}] hi={hi} row='{}' but preview='{}' (has_item={})",
+        row.title,
+        pv.title,
+        pv.has_item,
+    );
+}
+
+#[test]
+fn preview_tracks_selection_through_move_and_sel() {
+    let _ = slint::platform::set_platform(Box::new(SyncPlatform));
+    let ui = crate::ui::AppWindow::new().expect("build app window");
+    ui.window().set_size(slint::LogicalSize::new(1240f32, 800f32));
+    ui.show().unwrap();
+
+    // 多组命中的数据：2 会话 + 2 历史命令；设置目录是静态的（含「SFTP 跟随 cd」）。
+    let mut store = mem_store();
+    store.cache.sessions.push(mk_session("s1", "PowerShell", "127.0.0.1", 22, "root"));
+    store.cache.sessions.push(mk_session("s2", "web-prod", "10.24.8.11", 22, "root"));
+    store.cache.history_entries.push(crate::config::HistoryEntry {
+        cmd: "cd /opt/app".into(),
+        last_used: 0,
+        uses: 1,
+        pinned: false,
+    });
+    store.cache.history_entries.push(crate::config::HistoryEntry {
+        cmd: "free -h".into(),
+        last_used: 0,
+        uses: 2,
+        pinned: false,
+    });
+    let store = Rc::new(RefCell::new(store));
+
+    crate::app::search_ui::install(&ui, &store);
+
+    // 1) 打开面板：hi=首个可选行，预览对齐。（直接 invoke 回调——changed
+    //    is-open/text 只是异步派发的转接器，离屏不驱动事件循环；用户操作
+    //    最终都落在这批回调上，链路同步性正是要断言的东西。）
+    ui.invoke_qs_open();
+    assert_selection_preview(&ui, "open");
+
+    // 2) 键入查询后刷新。
+    ui.set_qs_search_text("cd".into());
+    ui.invoke_qs_refresh();
+    assert_selection_preview(&ui, "query");
+
+    // 3) ↓ 到列表尾再 ↑ 回顶：每一步预览都跟手。
+    let n = ui.get_qs_rows().row_count() as i32;
+    for step in 0..n + 2 {
+        ui.invoke_qs_move(1);
+        assert_selection_preview(&ui, &format!("move+{step}"));
+    }
+    for step in 0..n + 2 {
+        ui.invoke_qs_move(-1);
+        assert_selection_preview(&ui, &format!("move-{step}"));
+    }
+    // 4) 鼠标/Home/End 的绝对选中：每个行位都断言。
+    for i in 0..n {
+        ui.invoke_qs_sel(i);
+        assert_selection_preview(&ui, &format!("sel{i}"));
+    }
+
+    // 5) 执行语义（#qs-execute-row-fix）：执行对象必须=高亮行的条目。
+    //    Setting 观测：execute 后 get_ifd_page 指向被高亮行的设置页
+    //    （sftp-cd → "sftp"，catalog.rs page_of）。
+    let rows = ui.get_qs_rows();
+    let mut sftp_row = -1i32;
+    for i in 0..rows.row_count() as i32 {
+        if rows
+            .row_data(i as usize)
+            .map(|r| r.title.as_str() == "SFTP 跟随 cd")
+            .unwrap_or(false)
+        {
+            sftp_row = i;
+            break;
+        }
+    }
+    assert!(sftp_row >= 0, "query 'cd' must surface the sftp-cd setting row");
+    ui.set_qs_hi(sftp_row);
+    ui.invoke_qs_execute(sftp_row, false);
+    assert_eq!(
+        ui.get_ifd_page().to_string(),
+        "sftp",
+        "executed item must be the highlighted row (sftp-cd → page 'sftp')"
+    );
+    assert!(!ui.get_quick_search_open(), "palette must close after execute");
+
+    // 6) 组头行执行必须被忽略（行 qi=-1 → no-op，面板不关）。
+    //    （invoke_qs_open 只重建数据，is-open 由打开编排置位——先开面板。）
+    ui.set_quick_search_open(true);
+    ui.invoke_qs_open();
+    ui.invoke_qs_execute(0, false);
+    assert!(ui.get_quick_search_open(), "executing a group head must be a no-op");
+
+    // 7) Session 观测：on_connect_session 收到的必须是高亮会话的 id。
+    ui.on_connect_session(move |sid| {
+        EXEC_SESS.with(|c| c.borrow_mut().push(sid.to_string()));
+    });
+    ui.set_qs_search_text("web-prod".into());
+    ui.invoke_qs_refresh();
+    let rows = ui.get_qs_rows();
+    let mut web_row = -1i32;
+    for i in 0..rows.row_count() as i32 {
+        if rows
+            .row_data(i as usize)
+            .map(|r| r.title.as_str() == "web-prod")
+            .unwrap_or(false)
+        {
+            web_row = i;
+            break;
+        }
+    }
+    assert!(web_row >= 0, "query 'web-prod' must surface the session row");
+    ui.set_qs_hi(web_row);
+    ui.invoke_qs_execute(web_row, false);
+    let got = EXEC_SESS.with(|c| c.borrow().last().cloned().unwrap_or_default());
+    assert_eq!(
+        got, "s2",
+        "connect must target the highlighted session, not a group-shifted one"
+    );
+}

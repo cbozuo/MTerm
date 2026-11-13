@@ -276,14 +276,25 @@ fn empty_preview() -> QsPreview {
     QsPreview::default()
 }
 
+/// rows 索引 → flat 索引（行上存的 `qi`；组头/越界 → -1）。
+///
+/// (#qs-execute-row-fix 2026-11-13) 用户截图「高亮在『SFTP 跟随 cd』，
+/// 实际打开的却是别的设置页」：Enter 传 `qs-hi`、双击传行号 `i`——都是
+/// **rows 索引（含组头）**；旧 `on_qs_execute` 直接拿它当 flat 索引取条目，
+/// 每个前置组头让执行错一位（两分组视图 = 错 2 条）。预览链路
+/// （`push_preview`）一直经行 `qi` 解析所以预览是对的——只有执行错位。
+/// 两条链统一走本函数。
+fn flat_qi_from_row(win: &AppWindow, row_idx: i32) -> i32 {
+    win.get_qs_rows()
+        .row_data(row_idx.max(0) as usize)
+        .map(|r| r.qi)
+        .unwrap_or(-1)
+}
+
 /// 按 qs-hi 重灌预览。
 fn push_preview(win: &AppWindow, store: &ConfigStore, state: &QsState) {
     let hi = win.get_qs_hi();
-    let rows = win.get_qs_rows();
-    let qi = rows
-        .row_data(hi.max(0) as usize)
-        .map(|r| r.qi)
-        .unwrap_or(-1);
+    let qi = flat_qi_from_row(win, hi);
     let preview = if qi >= 0 {
         state
             .flat
@@ -732,10 +743,14 @@ pub(crate) fn install(window: &AppWindow, store: &Rc<RefCell<ConfigStore>>) {
         let state_rc = state.clone();
         let recent_exec = recent.clone();
         let weak = weak.clone();
-        window.on_qs_execute(move |qi: i32, secondary: bool| {
+        window.on_qs_execute(move |row_idx: i32, secondary: bool| {
             let Some(win) = weak.upgrade() else { return };
+            // (#qs-execute-row-fix) 入参是 **rows 索引**（Enter=qs-hi /
+            // 双击=行号 i，都含量组头），经行 qi 解析成 flat 索引再取条目
+            // ——组头不再让执行错位；组头行/越界 qi=-1 → 直接忽略。
             let item = {
                 let st = state_rc.borrow();
+                let qi = flat_qi_from_row(&win, row_idx);
                 (qi >= 0)
                     .then(|| st.flat.get(qi as usize))
                     .flatten()

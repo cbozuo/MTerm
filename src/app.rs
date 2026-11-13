@@ -19,7 +19,8 @@ mod command_manager;
 mod ping;
 mod quick_commands;
 // (#double-shift-v1 2026-11-11) 全局搜索宿主桥：索引/查询/执行语义/触发器接线。
-mod search_ui;
+// pub(crate)：search_tests 的离屏链路测试要直接调 install()(#qs-sync-preview)。
+pub(crate) mod search_ui;
 mod resource_ui;
 mod session_event;
 mod session_models;
