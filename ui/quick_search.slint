@@ -152,6 +152,10 @@ export component QuickSearchDialog inherits Rectangle {
     pure callback empty-title() -> string;
     pure callback index-count-text() -> string;
     pure callback timing-text() -> string;
+    // (#qs-scroll-follow 2026-11-14) 行 i 的内容坐标 y / 高(行高拆账与
+    // qs-content-px 同源:组头 24 / 数据行 49+17×(lines-1))——选中跟随滚动用。
+    pure callback qs-row-top(int) -> length;
+    pure callback qs-row-h(int) -> length;
 
     property <bool> recent-mode: root.qs-search-text == "";
 
@@ -185,6 +189,21 @@ export component QuickSearchDialog inherits Rectangle {
             root.focus-pending = false;
             qs-input.focus();
         }
+    }
+
+    // (#qs-scroll-follow 2026-11-14 用户反馈「方向键往下,搜索内容没跟着滚」)
+    // 选中行滚入视口:↑↓ / PageUp/Down / 鼠标点行 / Home/End / refresh 全部
+    // 只改 qs-hi,统一在 changed 里把行拉回可视区(顶/底钳制到内容范围)。
+    changed qs-hi => {
+        if (root.qs-hi < 0 || root.qs-row-count <= 0) { return; }
+        let top = root.qs-row-top(root.qs-hi);
+        let h = root.qs-row-h(root.qs-hi);
+        let vh = list-sv.visible-height;
+        let vy = -list-sv.viewport-y;
+        let target = top < vy ? top
+            : (top + h > vy + vh ? top + h - vh : vy);
+        let maxoff = max(0px, list-sv.content-height - vh);
+        list-sv.viewport-y = -min(target, maxoff);
     }
 
     // 面板尺寸：设计稿 920×568 固定，小窗口按 40px 边距收缩（高度留 100px）。
@@ -508,11 +527,14 @@ export component QuickSearchDialog inherits Rectangle {
                 }
             }
 
-            ScrollView {
+            list-sv := ScrollView {
                 x: 0;
                 y: root.recent-mode && root.qs-recent-searches.length > 0 ? 66px : 0px;
                 width: 100%;
                 height: parent.height - (root.recent-mode && root.qs-recent-searches.length > 0 ? 66px : 0px);
+                // (#qs-scrollbar 2026-11-14 用户反馈原生滚动条不协调:粗条+上下
+                // 箭头键)原生条退役,右侧自绘细圆角 thumb(见 sv 后的叠层)。
+                vertical-scrollbar-policy: ScrollBarPolicy.always-off;
                 content-width: self.visible-width;
                 content-height: max(self.visible-height, root.qs-content-px * 1px);
                 VerticalLayout {
@@ -570,7 +592,13 @@ export component QuickSearchDialog inherits Rectangle {
                                         width: 28px; height: 28px;
                                         y: (parent.height - self.height) / 2;
                                         border-radius: 6px;
-                                        background: i == root.qs-hi ? Theme.popup-bg-elevated : Theme.popup-bg-inset;
+                                        // (#qs-ico-unify 2026-11-14 用户反馈「首列图标
+                                        // 和尾部图标操作样式统一」)块底/边与尾部徽章
+                                        // 同语言:未选中 inset+subtle、选中 bg-active
+                                        // 实底+accent 40% 边 —— 旧选中底 elevated 是
+                                        // alpha 混合色,叠在选中行 accent-soft 底上会
+                                        // 融进行底(图标块视觉「消失」)。
+                                        background: i == root.qs-hi ? Theme.bg-active : Theme.popup-bg-inset;
                                         border-width: 1px;
                                         border-color: i == root.qs-hi ? Theme.accent.with-alpha(0.40) : Theme.border-subtle;
                                         Icon {
@@ -666,7 +694,15 @@ export component QuickSearchDialog inherits Rectangle {
                                                 }
                                             }
                                             if i == root.qs-hi && r.badge == "" && r.shortcut == "" : Rectangle {
-                                                width: 14px; height: 14px;
+                                                // (#qs-ico-unify 2026-11-14) ↵ 也进
+                                                // 键帽块(16×16 与徽章同规格,选中语言
+                                                // bg-active+accent 边)——此前裸图标与
+                                                // 尾部徽章风格不齐。
+                                                width: 16px; height: 16px;
+                                                border-radius: 3px;
+                                                background: Theme.bg-active;
+                                                border-width: 1px;
+                                                border-color: Theme.accent.with-alpha(0.40);
                                                 // (#qs-enter-glyph 2026-11-13 用户
                                                 // 截图"每行后面的丨是什么") ↵ 字符
                                                 // 在 mono 字体缺字形,回退渲染成
@@ -675,7 +711,7 @@ export component QuickSearchDialog inherits Rectangle {
                                                 Icon {
                                                     glyph: "corner-down-left";
                                                     tint: Theme.accent;
-                                                    size: 12px;
+                                                    size: 9px;
                                                     x: (parent.width - self.width) / 2;
                                                     y: (parent.height - self.height) / 2;
                                                 }
@@ -694,6 +730,53 @@ export component QuickSearchDialog inherits Rectangle {
                                     root.qs-execute(i, false);
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            // (#qs-scrollbar 2026-11-14) 自绘滚动条：右缘 4px 细圆角 thumb
+            // (轨道透明,无箭头——原生条粗+箭头键与面板语言不搭)。thumb 高/位
+            // 由 viewport 比例驱动;拖拽 = 指针位移 × (内容高/轨道高) 映射回
+            // viewport-y。位置叠在 sv 之上(x 缩进 9px 避让行尾徽章 12px 空隙)。
+            if list-sv.content-height > list-sv.visible-height : sb-track := Rectangle {
+                x: root.list-w - 9px;
+                y: root.recent-mode && root.qs-recent-searches.length > 0 ? 66px : 0px;
+                width: 4px;
+                height: list-sv.visible-height;
+                property <length> max-off: max(0px, list-sv.content-height - list-sv.visible-height);
+                property <length> thumb-h: max(24px, self.height * (list-sv.visible-height / max(1px, list-sv.content-height)));
+                Rectangle {
+                    width: 4px;
+                    height: sb-track.thumb-h;
+                    // 位置 = 滚动进度比例 × (轨道高 − thumb 高)。
+                    y: (list-sv.content-height > 0px && sb-track.max-off > 0px)
+                        ? ((0px - list-sv.viewport-y) / sb-track.max-off) * (sb-track.height - self.height)
+                        : 0px;
+                    x: 0;
+                    border-radius: 2px;
+                    background: sb-ta.has-hover || sb-ta.pressed ? Theme.border-strong : Theme.border-subtle;
+                    animate background { duration: 90ms; }
+                    sb-ta := TouchArea {
+                        width: parent.width + 4px;   // 抓区放宽到 8px
+                        x: -2px;
+                        height: parent.height;
+                        mouse-cursor: default;
+                        property <length> grab-y;
+                        property <length> grab-vy;
+                        pointer-event(ev) => {
+                            if (ev.kind == PointerEventKind.down) {
+                                self.grab-y = self.absolute-position.y + self.mouse-y;
+                                self.grab-vy = list-sv.viewport-y;
+                            }
+                        }
+                        moved => {
+                            let dy = (self.absolute-position.y + self.mouse-y) - self.grab-y;
+                            // thumb 满程(轨道高−thumb 高) ↔ 内容满程 max-off,
+                            // 精确映射:拖到轨道底 = 内容到底。
+                            let run = max(1px, sb-track.height - sb-track.thumb-h);
+                            let scale = sb-track.max-off / run;
+                            list-sv.viewport-y = max(-(sb-track.max-off), min(0px, self.grab-vy - dy * scale));
                         }
                     }
                 }

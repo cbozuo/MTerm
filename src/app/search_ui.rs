@@ -708,6 +708,40 @@ pub(crate) fn install(window: &AppWindow, store: &Rc<RefCell<ConfigStore>>) {
         });
     }
 
+    // ── (#qs-scroll-follow 2026-11-14) 行几何纯回调 ──────────────────
+    // 选中行滚入视口:Slint 侧 changed qs-hi 里调这两个把行顶/底钳回可视
+    // 区。行高拆账与 rows_from_groups 的 height / Slint 侧行高公式三方同源
+    // (组头 24;数据行 49 + 17×(lines-1)),改动须同步。
+    {
+        let weak1 = weak.clone();
+        window.on_qs_row_top(move |i: i32| -> f32 {
+            let Some(w) = weak1.upgrade() else { return 0.0 };
+            let rows = w.get_qs_rows();
+            let n = (i.max(0) as usize).min(rows.row_count());
+            let mut y = 0.0f32;
+            for k in 0..n {
+                if let Some(r) = rows.row_data(k) {
+                    y += if r.kind == 0 {
+                        24.0
+                    } else {
+                        49.0 + ((r.lines - 1).max(0)) as f32 * 17.0
+                    };
+                }
+            }
+            y
+        });
+        let weak2 = weak.clone();
+        window.on_qs_row_h(move |i: i32| -> f32 {
+            let Some(w) = weak2.upgrade() else { return 0.0 };
+            let rows = w.get_qs_rows();
+            match rows.row_data(i.max(0) as usize) {
+                Some(r) if r.kind == 0 => 24.0,
+                Some(r) => 49.0 + ((r.lines - 1).max(0)) as f32 * 17.0,
+                _ => 0.0,
+            }
+        });
+    }
+
     // ── 鼠标点行 / Home / End：绝对选中 ─────────────────────────────
     {
         let store_rc = store.clone();
