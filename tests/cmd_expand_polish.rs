@@ -399,7 +399,7 @@ fn window_send_reports_command_and_keeps_the_text() {
     let sent = Rc::new(std::cell::RefCell::new(Vec::<(String, String)>::new()));
     {
         let sent = sent.clone();
-        ui.on_send(move |cmd, scope| {
+        ui.on_send(move |cmd, scope, _mode| {
             sent.borrow_mut().push((cmd.to_string(), scope.to_string()));
         });
     }

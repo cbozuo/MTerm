@@ -5,7 +5,7 @@
 //! 执行语义（五类 Enter/Ctrl+Enter）依赖 window 回调，归宿主桥的离屏
 //! 测试（examples/quick_search_shot.rs）与实机验证覆盖，这里不测。
 
-use super::trigger::{classify, DoubleShiftTracker, KeyEvent};
+use super::trigger::{DoubleShiftTracker, KeyEvent};
 use super::{
     build_index, group_and_cap, recent_items, search, tokenize, Category, MatchRow, Payload,
     SearchIndex, SearchItem, SessionView,
@@ -13,6 +13,34 @@ use super::{
 use crate::config::ConfigStore;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+
+
+/// (#qs-trigger-global 2026-11-13) classify 已从生产代码退役（触发判定收敛到
+/// winit 钩子直接分类），本测试文件把归一逻辑原样内联，继续守护状态机语义。
+fn classify(key: &str, ctrl: bool, alt: bool, shift: bool) -> KeyEvent<'_> {
+    let shift_code = key == "\u{0010}" || key == "\u{0015}";
+    if key.is_empty() || shift_code {
+        if ctrl || alt {
+            return KeyEvent::Other;
+        }
+        if shift {
+            return KeyEvent::Shift;
+        }
+        if shift_code {
+            return KeyEvent::ImeMarker(key);
+        }
+        return KeyEvent::Other;
+    }
+    let mut chars = key.chars();
+    if let (Some(c), None) = (chars.next(), chars.next()) {
+        let cp = c as u32;
+        let standalone = matches!(cp, 0x08 | 0x09 | 0x0A | 0x0D | 0x1B);
+        if (0x01..=0x1f).contains(&cp) && !standalone {
+            return KeyEvent::ImeMarker(key);
+        }
+    }
+    KeyEvent::Other
+}
 
 // ── 工具 ─────────────────────────────────────────────────────────────
 

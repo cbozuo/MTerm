@@ -30,6 +30,10 @@ export struct QsRow {
     open: bool,
     shortcut: string,
     qi: int,
+    // (#qs-multiline-row 2026-11-13) 标题的换行数（≥1）。命令历史条目的
+    // title = 命令原文，多行命令含 \n —— 行高按此展开，防内容溢出行盒
+    // 与下一行重叠。
+    lines: int,
 }
 
 // 预览区的一行 meta（标签 + 值）。
@@ -165,11 +169,13 @@ export component QuickSearchDialog inherits Rectangle {
             root.qs-hi = 0;
             root.qs-open();
             root.focus-pending = true;
-            // 教练提示（高保真 §04 pal-coach）：面板打开时露 3 秒。
-            root.coach-visible = true;
-            root.coach-pending = true;
+            // (#qs-prune-2026-11-13) 教练提示退役：呼出方式已在脚注/文档
+            // 说明，弹一次的气泡是长期噪音（用户评审圈掉）。
         } else {
-            root.coach-visible = false;
+            // (#qs-drag) 拖动偏移复位：下次打开回到设计稿位。
+            root.drag-dx = 0;
+            root.drag-dy = 0;
+            root.dragging = false;
         }
     }
     Timer {
@@ -180,17 +186,6 @@ export component QuickSearchDialog inherits Rectangle {
             qs-input.focus();
         }
     }
-    // 教练提示 3 秒后自动收起（高保真 showCoach）。
-    Timer {
-        interval: 3000ms;
-        running: root.coach-pending;
-        triggered => {
-            root.coach-pending = false;
-            root.coach-visible = false;
-        }
-    }
-    property <bool> coach-visible: false;
-    property <bool> coach-pending: false;
 
     // 面板尺寸：设计稿 920×568 固定，小窗口按 40px 边距收缩（高度留 100px）。
     property <length> card-w: min(920px, root.bounds-w - 40px);
@@ -198,6 +193,15 @@ export component QuickSearchDialog inherits Rectangle {
     property <length> card-x: Theme.snap-to-device((root.bounds-w - card-w) / 2);
     // 顶部偏移 76px（设计稿 padding-top），窗口过矮时钳回 20px。
     property <length> card-y: Theme.snap-to-device(min(76px, max(root.bounds-h - card-h - 20px, 20px)));
+    // (#qs-drag 2026-11-13) 卡片空白处拖动（高亮设置弹框同款）：不改写
+    // card-x/card-y 绑定，只累计偏移；关面板复位归零。
+    property <length> drag-dx: 0;
+    property <length> drag-dy: 0;
+    property <bool> dragging: false;
+    property <length> drag-ox;
+    property <length> drag-oy;
+    property <length> drag-cx;
+    property <length> drag-cy;
 
     // 进场动画（常驻元素：opacity / y 随 is-open 过渡）
     opacity: root.is-open ? 1.0 : 0.0;
@@ -222,13 +226,15 @@ export component QuickSearchDialog inherits Rectangle {
 
     // ── 卡片 ─────────────────────────────────────────────────────────
     card := Rectangle {
-        x: card-x;
-        y: root.is-open ? card-y : card-y - 6px;
+        x: card-x + drag-dx;
+        y: (root.is-open ? card-y : card-y - 6px) + drag-dy;
         width: card-w;
         height: card-h;
         border-width: Theme.hairline();
         border-color: Theme.border-strong;
-        border-radius: Theme.radius-lg;
+        // (#qs-border-hifi 2026-11-13) 边框/圆角对齐高亮设置弹框：radius-xl
+        // （16px×缩放；此前 radius-lg 偏小，观感上「边框线和圆角线不协调」）。
+        border-radius: Theme.radius-xl;
         background: Theme.popup-bg;
         drop-shadow-blur: 26px;
         drop-shadow-color: transparent;
@@ -236,8 +242,32 @@ export component QuickSearchDialog inherits Rectangle {
         visible: root.is-open;
         animate y { duration: PanelAnim.reduced ? 0ms : 140ms; easing: ease-out; }
 
-        // 卡片空白吞层
-        TouchArea { }
+        // 卡片空白吞层 + 空白处拖动（高亮设置弹框同款；8px 边距钳全窗）
+        TouchArea {
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.down) {
+                    root.dragging = true;
+                    root.drag-ox = root.drag-dx;
+                    root.drag-oy = root.drag-dy;
+                    root.drag-cx = self.absolute-position.x + self.mouse-x;
+                    root.drag-cy = self.absolute-position.y + self.mouse-y;
+                } else if (ev.kind == PointerEventKind.up) {
+                    root.dragging = false;
+                }
+            }
+            moved => {
+                if (root.dragging) {
+                    root.drag-dx = clamp(
+                        Theme.snap-to-device(root.drag-ox
+                            + (self.absolute-position.x + self.mouse-x - root.drag-cx)),
+                        8px - card-x, max(8px - card-x, root.bounds-w - card-w - card-x - 8px));
+                    root.drag-dy = clamp(
+                        Theme.snap-to-device(root.drag-oy
+                            + (self.absolute-position.y + self.mouse-y - root.drag-cy)),
+                        8px - card-y, max(8px - card-y, root.bounds-h - card-h - card-y - 8px));
+                }
+            }
+        }
 
         // ── 输入区 52px（底边线独立画：Slint 无分段 border-width）─────
         Rectangle {
@@ -339,31 +369,8 @@ export component QuickSearchDialog inherits Rectangle {
                         TouchArea { enabled: false; }
                     }
                 }
-                // Esc 键帽钮
-                Rectangle {
-                    width: 34px; height: 21px;
-                    border-width: 1px;
-                    border-radius: 4px;
-                    background: Theme.popup-bg-inset;
-                    vertical-stretch: 0;
-                    horizontal-stretch: 0;
-                    Text {
-                        text: "Esc";
-                        font-size: Theme.fs-2xs;
-                        font-family: Theme.font-mono;
-                        color: Theme.text-secondary;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                    // 键帽底边加重（keycap 语义）
-                    Rectangle {
-                        y: parent.height - 1px; width: 100%; height: 1px;
-                        background: Theme.border-strong;
-                    }
-                    TouchArea {
-                        clicked => { root.close-requested(); }
-                    }
-                }
+                // (#qs-prune-2026-11-13 r3) 右上角 Esc 键帽钮退役：Esc 语义
+                // 已在脚注快捷键行覆盖（用户评审圈掉）。
             }
             Rectangle {
                 y: parent.height - 1px; width: 100%; height: 1px;
@@ -431,50 +438,68 @@ export component QuickSearchDialog inherits Rectangle {
 
             // 空查询视图顶部：最近搜索 chips（高保真 §04 recent-chips）。
             // 无历史时不占位；Rust 维护 qs-recent-searches（进程内存态）。
+            // (#qs-chips-hifi 2026-11-13) 重排：标签升级为分节头行（与列表
+            // 「最近使用」分节头同款——mono muted + 右延 1px 分隔线拉通），
+            // chips 独立成行不再挤同一带；chip 26px/字 fs-2xs 与行高协调，
+            // 时钟图标 11px，hover 染 bg-hover。
             if root.recent-mode && root.qs-recent-searches.length > 0 : Rectangle {
-                x: 0; y: 0; width: 100%; height: 44px;
-                HorizontalLayout {
-                    padding-left: 14px; padding-right: 14px;
-                    padding-top: 8px; padding-bottom: 6px;
-                    spacing: 5px;
+                x: 0; y: 0; width: 100%; height: 66px;
+                VerticalLayout {
                     alignment: start;
-                    Text {
-                        text: @tr("Recent searches");
-                        font-size: 8.5px;
-                        font-family: Theme.font-mono;
-                        letter-spacing: 1px;
-                        color: Theme.text-muted;
-                        vertical-alignment: center;
-                        horizontal-stretch: 0;
-                    }
-                    for term in root.qs-recent-searches : Rectangle {
-                        height: 22px;
-                        width: chip-tx.preferred-width + 20px;
-                        border-width: 1px; border-color: Theme.border-subtle;
-                        border-radius: 11px;
-                        background: Theme.popup-bg-inset;
+                    // 节头行（分节头同款语言）
+                    Rectangle {
+                        height: 24px;
                         HorizontalLayout {
-                            padding-left: 8px; padding-right: 8px;
-                            spacing: 4px;
-                            Icon {
-                                glyph: "clock";
-                                tint: Theme.text-muted;
-                                size: 9px;
-                                horizontal-stretch: 0;
-                            }
-                            chip-tx := Text {
-                                text: term;
-                                font-size: Theme.fs-2xs;
-                                color: Theme.text-secondary;
+                            padding-left: 14px; padding-right: 14px;
+                            spacing: 6px;
+                            Text {
+                                text: @tr("Recent searches");
+                                font-size: 8.5px;
+                                font-family: Theme.font-mono;
+                                letter-spacing: 1.2px;
+                                color: Theme.text-muted;
                                 vertical-alignment: center;
                                 horizontal-stretch: 0;
                             }
+                            Rectangle { height: 1px; background: Theme.border-subtle; opacity: 0.6; horizontal-stretch: 1; }
                         }
-                        TouchArea {
-                            clicked => {
-                                root.qs-search-text = term;
-                                root.qs-hi = 0;
-                                root.qs-refresh();
+                    }
+                    // chips 行
+                    HorizontalLayout {
+                        padding-left: 14px; padding-right: 14px;
+                        padding-top: 4px; padding-bottom: 4px;
+                        spacing: 6px;
+                        alignment: start;
+                        for term[idx] in root.qs-recent-searches : Rectangle {
+                            height: 26px;
+                            width: chip-tx.preferred-width + 26px;
+                            border-width: 1px; border-color: chip-ta.has-hover ? Theme.border-strong : Theme.border-subtle;
+                            border-radius: 13px;
+                            background: chip-ta.has-hover ? Theme.bg-hover : Theme.popup-bg-inset;
+                            animate background { duration: PanelAnim.reduced ? 0ms : 90ms; }
+                            property <bool> selected: idx == 0;
+                            HorizontalLayout {
+                                padding-left: 10px; padding-right: 10px;
+                                spacing: 5px;
+                                Icon {
+                                    glyph: "clock";
+                                    tint: chip-ta.has-hover ? Theme.text-primary : Theme.text-muted;
+                                    size: 11px;
+                                    horizontal-stretch: 0;
+                                }
+                                chip-tx := Text {
+                                    text: term;
+                                    font-size: Theme.fs-2xs;
+                                    color: chip-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 0;
+                                }
+                            }
+                            chip-ta := TouchArea {
+                                clicked => {
+                                    root.qs-search-text = term;
+                                    root.qs-cat = 0;
+                                }
                             }
                         }
                     }
@@ -483,9 +508,9 @@ export component QuickSearchDialog inherits Rectangle {
 
             ScrollView {
                 x: 0;
-                y: root.recent-mode && root.qs-recent-searches.length > 0 ? 44px : 0px;
+                y: root.recent-mode && root.qs-recent-searches.length > 0 ? 66px : 0px;
                 width: 100%;
-                height: parent.height - (root.recent-mode && root.qs-recent-searches.length > 0 ? 44px : 0px);
+                height: parent.height - (root.recent-mode && root.qs-recent-searches.length > 0 ? 66px : 0px);
                 content-width: self.visible-width;
                 content-height: max(self.visible-height, root.qs-content-px * 1px);
                 VerticalLayout {
@@ -511,7 +536,10 @@ export component QuickSearchDialog inherits Rectangle {
                         }
                         if r.kind == 1 : Rectangle {
                             width: root.list-w;
-                            height: 49px;
+                            // (#qs-multiline-row 2026-11-13) 多行命令行自适应：
+                            // 基准 49px，标题每多一行 +17px（fs-sm 13px 行高
+                            // 约 17px）。title wrap 交给标题 Text。
+                            height: 49px + max(0, r.lines - 1) * 17px;
                             property <bool> sel: i == root.qs-hi;
                             property <bool> hov: row-ta.has-hover;
                             background: self.sel ? Theme.accent-soft
@@ -563,6 +591,9 @@ export component QuickSearchDialog inherits Rectangle {
                                             text: r.title;
                                             font-size: Theme.fs-sm;
                                             color: r.kind == 1 && i == root.qs-hi ? Theme.text-primary : Theme.text-secondary;
+                                            // (#qs-multiline-row) 多行命令原样换行
+                                            // 展示；单行仍 elide 截断。
+                                            wrap: r.lines > 1 ? word-wrap : no-wrap;
                                             overflow: elide;
                                         }
                                         Text {
@@ -842,45 +873,9 @@ export component QuickSearchDialog inherits Rectangle {
                     }
                 }
                 Rectangle { vertical-stretch: 1; }
-                // 底部按钮（primary / secondary）
-                HorizontalLayout {
-                    spacing: 7px;
-                    Rectangle {
-                        height: 29px;
-                        width: pv-primary.preferred-width + 22px;
-                        border-radius: 4px;
-                        background: Theme.accent;
-                        pv-primary := Text {
-                            text: root.qs-preview.primary;
-                            font-size: Theme.fs-2xs;
-                            font-weight: 700;
-                            // accent 上的反色字（= Theme.slot-tbg 在两主题下自动反相）
-                            color: Theme.slot-tbg;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                        TouchArea {
-                            clicked => { root.qs-execute(root.qs-hi, false); }
-                        }
-                    }
-                    Rectangle {
-                        height: 29px;
-                        width: pv-secondary.preferred-width + 22px;
-                        border-radius: 4px;
-                        background: Theme.popup-bg-inset;
-                        border-width: 1px; border-color: Theme.border-subtle;
-                        pv-secondary := Text {
-                            text: root.qs-preview.secondary;
-                            font-size: Theme.fs-2xs;
-                            color: Theme.text-primary;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                        TouchArea {
-                            clicked => { root.qs-execute(root.qs-hi, true); }
-                        }
-                    }
-                }
+                // (#qs-prune-2026-11-13) 预览底部「Enter 连接 / Ctrl+Enter 新标
+                // 签连接」按钮组退役：脚注已有同语义快捷键提示，主/次操作由
+                // 行点击与键盘直接承担（用户评审圈掉）。
             }
             if !root.qs-preview.has-item : Text {
                 text: root.recent-mode ? @tr("Type to search; results appear instantly.")
@@ -894,8 +889,12 @@ export component QuickSearchDialog inherits Rectangle {
         }
 
         // ── 脚注 34px ─────────────────────────────────────────────────
+        // (#qs-footer-radius 2026-11-13) 左下/右下圆角被脚注实色条压没：
+        // 条铺满 100% 宽把卡片 border + radius-xl 的圆角区涂掉了。左右各
+        // 收 1px 露出边线；高度 34px 不变（圆角 16px 只影响底部两角，
+        // 34px 高的条左右缩进后圆角由卡片自身的底边线兜住）。
         Rectangle {
-            y: parent.height - 34px; width: 100%; height: 34px;
+            x: 1px; y: parent.height - 34px; width: parent.width - 2px; height: 34px;
             background: Theme.popup-bg-inset;
             HorizontalLayout {
                 padding-left: 12px; padding-right: 12px;
@@ -928,7 +927,8 @@ export component QuickSearchDialog inherits Rectangle {
                     Text { text: @tr("Category"); font-size: 8.5px; color: Theme.text-muted; vertical-alignment: center; }
                 }
                 Rectangle { horizontal-stretch: 1; }
-                Rectangle { width: 5px; height: 5px; border-radius: 3px; background: Theme.success; }
+                // (#qs-prune-2026-11-13 r4) 孤立绿点退役：语义不明（原为
+                // "索引就绪"状态指示），悬在索引文字上方位置怪（用户评审圈掉）。
                 Text {
                     text: root.index-count-text();
                     font-size: 8.5px;
@@ -942,45 +942,6 @@ export component QuickSearchDialog inherits Rectangle {
                     font-family: Theme.font-mono;
                     color: Theme.text-muted;
                     vertical-alignment: center;
-                }
-            }
-        }
-
-        // ── 教练提示（高保真 §04 pal-coach）：卡片左下角，3 秒后收起 ──
-        // 宽度用**独立测量 Text**（气泡宽度不能由内部 Text 的
-        // preferred-width 反推：气泡在卡片里，宽度受限 → 文本被裁）。
-        coach-measure := Text {
-            text: @tr("Double-tap Shift anytime") + " · " + @tr("Esc to close");
-            font-size: 8.5px;
-            font-family: Theme.font-mono;
-            visible: false;
-        }
-        Rectangle {
-            x: 16px;
-            y: parent.height - 78px - 26px;
-            // +40 = ⇧⇧(2×9) + 一段 spacing(5) + 左右 padding(9×2)
-            width: coach-measure.preferred-width + 40px;
-            height: 26px;
-            border-width: 1px; border-color: Theme.border-strong;
-            border-radius: 13px;
-            background: Theme.popup-bg-elevated;
-            drop-shadow-blur: 18px; drop-shadow-color: transparent;
-            visible: root.coach-visible;
-            opacity: root.coach-visible ? 1.0 : 0.0;
-            animate opacity { duration: PanelAnim.reduced ? 0ms : 200ms; }
-            HorizontalLayout {
-                padding-left: 9px; padding-right: 9px;
-                spacing: 5px;
-                alignment: center;
-                Text { text: "⇧"; font-size: 9px; font-family: Theme.font-mono; color: Theme.text-primary; vertical-alignment: center; }
-                Text { text: "⇧"; font-size: 9px; font-family: Theme.font-mono; color: Theme.text-primary; vertical-alignment: center; }
-                Text {
-                    text: @tr("Double-tap Shift anytime") + " · " + @tr("Esc to close");
-                    font-size: 8.5px;
-                    font-family: Theme.font-mono;
-                    color: Theme.text-secondary;
-                    vertical-alignment: center;
-                    horizontal-stretch: 0;
                 }
             }
         }

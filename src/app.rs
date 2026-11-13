@@ -4095,7 +4095,10 @@ fn open_window(
                     w.set_highlight_rule_status(message.into());
                     return false;
                 }
-                if store.borrow().output_highlight_rules().len() >= 128 {
+                // (#qs-execute-borrow-fix 同款陷阱) 先读出再判：if 条件里的
+                // borrow() guard 存活到整个 if 结束，块内 borrow_mut 必崩。
+                let rule_count = store.borrow().output_highlight_rules().len();
+                if rule_count >= 128 {
                     w.set_highlight_rule_status(
                         t("自定义规则最多 128 条", "Custom rules are limited to 128").into(),
                     );
@@ -6361,7 +6364,10 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
     // Default to the user's Downloads folder so files land somewhere sensible
     // without a prompt; only fall back to "ask every time" if we can't locate it
     // (#85). Persist it on first run so the setting reflects the real path.
-    if store.borrow().download_dir().is_empty() {
+    // (#qs-execute-borrow-fix 同款陷阱) 先读出再判：if 条件里的 borrow()
+    // guard 存活到整个 if 结束，内层 borrow_mut 必崩。
+    let dl_dir_empty = store.borrow().download_dir().is_empty();
+    if dl_dir_empty {
         if let Some(dl) = directories::UserDirs::new()
             .and_then(|u| u.download_dir().map(|p| p.to_string_lossy().to_string()))
         {
@@ -6655,7 +6661,7 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
     // but only when the file is dropped over the file-list area.
     {
         use i_slint_backend_winit::winit::event::{
-            MouseScrollDelta, TouchPhase, WindowEvent as WEvent,
+            ElementState, MouseScrollDelta, TouchPhase, WindowEvent as WEvent,
         };
         use i_slint_backend_winit::EventResult;
         let weak = window.as_weak();
@@ -6713,6 +6719,9 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
                 // Apply the Win11 rounded-corner hint once, on the first event (the HWND
                 // reliably exists by then, unlike a pre-run timer) (#166).
                 let mut chrome_done = false;
+                // (#qs-trigger-global) 本版 winit 的 KeyboardInput::KeyEvent 不带
+                // modifiers 字段，修饰组合判定靠 ModifiersChanged 事件单独维护。
+                let mut qs_mods = (false, false, false); // (ctrl, alt, super)
                 window
                     .window()
                     .on_winit_window_event(move |slint_window, event| {
@@ -6774,6 +6783,74 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
                     {
                         ev_qs_tracker.lock().unwrap().reset();
                     }
+                    // (#qs-trigger-global 2026-11-13) 双击 Shift 触发器宿主收敛
+                    // 到窗口级 winit 事件：原两处 Slint 宿主（on_send_key 终端
+                    // 焦点 / shortcut-scope）都依赖焦点树，实测只有终端 tab 打开
+                    // 才有焦点宿主 —— welcome 页 / 任意弹框打开时双击 Shift 无
+                    // 响应（用户要求主界面任意时刻可触发；弹框只要支持点外关闭
+                    // 即同样触发）。winit 窗口级事件与焦点无关，天然覆盖。
+                    //   - 裸 Shift 按下（Named(Shift) 且无 ctrl/alt/super）→ 喂
+                    //     Shift 判 80–360ms 双击；命中开面板（编排由 quick_search
+                    //     的 changed is-open 驱动，set 属性即可）。
+                    //   - IME 注入的 C0 标记（U+0010/U+0015，百度输入法与真
+                    //     Shift 成对到达、顺序不定）对状态机透明 —— 既不判也不
+                    //     清，否则后到标记抹掉第一击时间戳。
+                    //   - 键自动重复（repeat）忽略，防灌进错误间隔。
+                    //   - 其余任何键按下喂 reset（重置路径「其它按键」）。
+                    WEvent::KeyboardInput { event, .. } => {
+                        use i_slint_backend_winit::winit::keyboard::{Key, NamedKey};
+                        if event.state != ElementState::Pressed || event.repeat {
+                            // 抬起 / 自动重复：不判不清。
+                        } else if let Key::Named(NamedKey::Shift) = event.logical_key {
+                            let (ctl, alt, sup) = qs_mods;
+                            if ctl || alt || sup {
+                                // 修饰组合：重置而非判击。
+                                ev_qs_tracker.lock().unwrap().reset();
+                            } else {
+                                let already = weak
+                                    .upgrade()
+                                    .map(|w| w.get_quick_search_open())
+                                    .unwrap_or(false);
+                                let opened = ev_qs_tracker.lock().unwrap().on_key(
+                                    crate::search::KeyEvent::Shift,
+                                    std::time::Instant::now(),
+                                    already,
+                                );
+                                if opened {
+                                    if let Some(w) = weak.upgrade() {
+                                        w.set_quick_search_open(true);
+                                    }
+                                }
+                            }
+                        } else if matches!(
+                            event.text.as_deref(),
+                            Some("\u{0010}") | Some("\u{0015}")
+                        ) {
+                            // IME C0 标记：透明——既不判也不清（清零会抹掉
+                            // 第一击时间戳，双击永远差一击）。
+                            let marker = event.text.as_deref().unwrap_or("");
+                            let _ = ev_qs_tracker.lock().unwrap().on_key(
+                                crate::search::KeyEvent::ImeMarker(marker),
+                                std::time::Instant::now(),
+                                false,
+                            );
+                        } else {
+                            // 其余任何键按下 → 清零（重置路径「其它按键」）。
+                            let _ = ev_qs_tracker.lock().unwrap().on_key(
+                                crate::search::KeyEvent::Other,
+                                std::time::Instant::now(),
+                                false,
+                            );
+                        }
+                    }
+                    // (#qs-trigger-global) 修饰键状态流：供 KeyboardInput 分支
+                    // 判「裸 Shift vs 修饰组合」。修饰键先按的组合（Ctrl+Shift）
+                    // 到 Shift keydown 时状态已就位。
+                    WEvent::ModifiersChanged(m) => {
+                        let st = m.state();
+                        qs_mods = (st.control_key(), st.alt_key(), st.super_key());
+                    }
+                    _ => {}
                     _ => {}
                 }
                 // Recompute window activity, push it to the shared cell, and update
@@ -11032,7 +11109,13 @@ fn wire_session_callbacks(
             };
             // (#panel-settings 2026-11-12) 自动展开所在组:打开会话时展开它
             // 的父分组(locate 同款 expand_ancestors;有实际展开才落盘+重建)。
-            if store.borrow().panel_auto_expand_group() {
+            // (#qs-execute-borrow-fix 2026-11-13) ★ 先把布尔读出来再进分支:
+            // `if store.borrow().…` 的临时 guard 按规则**存活到整个 if 语句
+            // 结束**,块内 borrow_mut() 必然 panic(RefCell already borrowed)
+            // —— 用户反馈"搜索面板点会话/回车,整个程序关闭"的根因:开了
+            // 「自动展开所在组」后,任何路径的连接(含左侧栏双击)都会走这里。
+            let auto_expand_group = store.borrow().panel_auto_expand_group();
+            if auto_expand_group {
                 let expanded = {
                     let mut st = store.borrow_mut();
                     let n = crate::session_tree::expand_ancestors(&mut st, &id);
@@ -12097,7 +12180,7 @@ fn wire_key_input(
     // 双击 Shift 全局搜索（#double-shift-v1 2026-11-11）：索引/查询/执行语义。
     // 触发器状态机由三个宿主共享：on_send_key（终端焦点）、search-shift-press
     // （非终端焦点，shortcut-scope）、窗口级 winit 钩子（鼠标按下 / 失焦重置）。
-    search_ui::install(&window, &store, qs_tracker.clone());
+    search_ui::install(&window, &store);
     {
         let store_rc = store.clone();
         let weak = window.as_weak();
@@ -12337,28 +12420,10 @@ fn wire_key_input(
             window.on_send_key(move |tab_id: SharedString, key: SharedString, ctrl: bool, alt: bool, shift: bool| {
             let hint_observers = hint_observers_sk.clone();
             let term_hint_was_empty = term_hint_was_empty.clone();
-            // ── (#double-shift-v1) 全局搜索触发器 ──────────────────────────
-            // 把本键事件归一后喂给共享状态机。裸 Shift（key="" + shift，本项目
-            // 实测形态，见下方 lone-Shift 打点注释）判定 80–360ms 双击；IME C0
-            // 标记（U+0015/U+0010）对状态机透明 —— 它们与真实 Shift 成对注入、
-            // 顺序不定，清零反而会抹掉第一击的时间戳；其余任何键清零。
-            // 命中即打开面板并 return（裸 Shift 本就不该进 PTY）。
-            let qs_already_open = ctx
-                .weak
-                .upgrade()
-                .map(|w| w.get_quick_search_open())
-                .unwrap_or(false);
-            let qs_opened = qs_tracker.lock().unwrap().on_key(
-                crate::search::classify(key.as_str(), ctrl, alt, shift),
-                std::time::Instant::now(),
-                qs_already_open,
-            );
-            if qs_opened {
-                if let Some(w) = ctx.weak.upgrade() {
-                    w.set_quick_search_open(true);
-                }
-                return;
-            }
+            // (#double-shift-v1) 全局搜索触发器原宿主之一：已收敛到窗口级
+            // winit 钩子的 KeyboardInput 分支（#qs-trigger-global）——本宿主
+            // 依赖终端 tab 持有焦点才收得到键，welcome/无 tab 时双击 Shift
+            // 失效（用户实测），winit 分支不依赖焦点树，任意时刻可触发。
             // ── Enter on a disconnected tab → reconnect in place (#79) ──────
             // FinalShell-style: the tab shows "连接已断开,按 Enter 重新连接";
             // pressing Enter re-spawns the shell + SFTP workers in the SAME tab

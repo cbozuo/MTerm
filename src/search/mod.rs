@@ -40,7 +40,7 @@ pub(crate) use index::{build_index, SessionView};
 pub(crate) use model::{Category, Counts, GroupedMatches, MatchRow, Payload, SearchIndex, SearchItem};
 pub(crate) use query::{search, tokenize, CatFilter};
 pub(crate) use rank::{group_and_cap, recent_items, CAT_ORDER, MAX_PER_GROUP, MAX_TOTAL, MAX_RECENT};
-pub(crate) use trigger::{classify, DoubleShiftTracker, KeyEvent};
+pub(crate) use trigger::{DoubleShiftTracker, KeyEvent};
 
 #[cfg(test)]
 #[path = "../../tests/app/search/mod.rs"]

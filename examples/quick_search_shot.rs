@@ -147,6 +147,7 @@ fn row(kind: i32, cat: i32, title: &str, sub: &str, icon: &str, badge: &str, ope
         open,
         shortcut: shortcut.into(),
         qi,
+        lines: 1,
     }
 }
 
@@ -261,6 +262,29 @@ fn main() {
     ui.set_quick_search_open(true);
     std::thread::sleep(std::time::Duration::from_millis(300));
     grab(&ui, "output/quick-search/recent.png");
+
+    // ── 图 3:多行命令行高自适应(#qs-multiline-row 2026-11-13)──────
+    // 命令历史 title = 命令原文含换行;行高 = 49 + (lines-1)×17。
+    let ml_cmd = "sudo tee /etc/profile.d/lsd.sh << 'EOF'
+alias ls='lsd'
+alias ll='lsd -la'
+EOF";
+    let ml_rows = vec![
+        row(0, 0, "命令 · 2", "", "", "", false, "", -1),
+        {
+            let mut r = row(1, 2, ml_cmd, "命令历史", "quick-command", "命令", false, "", 0);
+            r.lines = 4;
+            r
+        },
+        row(1, 2, "/usr/local/dm7/dmdba/script/root/dm_service_installer.sh -t dm...", "命令历史", "quick-command", "命令", false, "", 1),
+    ];
+    ui.set_qs_rows(ModelRc::from(Rc::new(VecModel::from(ml_rows))));
+    ui.set_qs_hi(0);
+    ui.set_qs_content_px(24 + (49 + 3 * 17) + 49);
+    ui.set_qs_row_count(2);
+    ui.set_quick_search_open(true);
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    grab(&ui, "output/quick-search/multiline.png");
     ui.set_quick_search_open(false);
     std::thread::sleep(std::time::Duration::from_millis(150));
 

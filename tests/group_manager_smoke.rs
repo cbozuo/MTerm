@@ -35,6 +35,7 @@ fn group(name: &str, count: i32, reserved: bool) -> GroupRow {
         count,
         hit: count,
         reserved,
+        depth: 0,
     }
 }
 

@@ -20,14 +20,13 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 
 use slint::{ComponentHandle as _, Model as _, ModelRc, SharedString, VecModel};
 
 use crate::config::ConfigStore;
 use crate::search::{
-    build_index, group_and_cap, recent_items, search, Category, DoubleShiftTracker,
-    GroupedMatches, SearchIndex, SearchItem, SessionView,
+    build_index, group_and_cap, recent_items, search, Category, GroupedMatches, SearchIndex,
+    SearchItem, SessionView,
 };
 use crate::ui::{AppWindow, QsMeta, QsPreview, QsRow};
 
@@ -125,6 +124,7 @@ fn group_head(rows: &mut Vec<QsRow>, title: String) {
         open: false,
         shortcut: "".into(),
         qi: -1,
+        lines: 1,
     });
 }
 
@@ -137,6 +137,9 @@ fn result_row(item: &SearchItem, qi: usize, badge: Option<&str>) -> QsRow {
         }
         _ => (badge.unwrap_or("").to_string(), "".to_string()),
     };
+    // (#qs-multiline-row 2026-11-13) 命令历史 title = 命令原文，多行命令
+    // 含 \n —— 行高按行数展开（Slint 侧 49 + (lines-1)×17）。
+    let lines = (item.title.matches('\n').count() + 1) as i32;
     QsRow {
         kind: 1,
         cat: category_int(item.cat),
@@ -147,6 +150,7 @@ fn result_row(item: &SearchItem, qi: usize, badge: Option<&str>) -> QsRow {
         open: item.open,
         shortcut: shortcut.into(),
         qi: qi as i32,
+        lines,
     }
 }
 
@@ -164,8 +168,10 @@ fn rows_from_groups(
         height += 24;
         for m in &g.items {
             let badge = if all_view { Some(g.cat.label()) } else { None };
-            rows.push(result_row(m.item, qi, badge));
-            height += 49;
+            let row = result_row(m.item, qi, badge);
+            // (#qs-multiline-row) 行高与 Slint 侧公式同源：49 + (lines-1)×17。
+            height += 49 + (row.lines - 1).max(0) * 17;
+            rows.push(row);
             qi += 1;
         }
     }
@@ -384,12 +390,13 @@ fn run_action(win: &AppWindow, act: &str) -> Option<String> {
 }
 
 /// 五类执行语义（返回 toast 文案；None = 无反馈）。
-fn execute_item(
-    win: &AppWindow,
-    store: &ConfigStore,
-    item: &SearchItem,
-    secondary: bool,
-) -> Option<String> {
+///
+/// (#qs-execute-borrow-fix 2026-11-13) 不再接 `&ConfigStore`：调用点
+/// `store_rc.borrow()` 的 guard 会跨过整个连接链路（invoke_connect_session →
+/// on_connect_session 闭包里 `store.borrow_mut()`）→ "RefCell already
+/// borrowed" panic，表现即「搜索面板点会话/回车，整个程序关闭」。参数本就
+/// 无人使用，删除即根治。
+fn execute_item(win: &AppWindow, item: &SearchItem, secondary: bool) -> Option<String> {
     let t = crate::i18n::t;
     match &item.payload {
         crate::search::Payload::Session { session_id, ssh_cmd } => {
@@ -476,22 +483,14 @@ fn execute_item(
     }
 }
 
-/// 安装全部回调；返回共享的双击 Shift 状态机（`on_send_key` 与
-/// `search-shift-press` 两个宿主共用同一个实例）。
 /// 安装全部回调。
 ///
-/// `tracker` 由调用方（`open_window`）创建并持有：**窗口级 winit 钩子**
-/// （鼠标按下 / 窗口失焦 → 触发器重置）也要用同一份状态机，所以它必须
-/// 在窗口作用域里诞生，而不是在这里私有创建。
-pub(crate) fn install(
-    window: &AppWindow,
-    store: &Rc<RefCell<ConfigStore>>,
-    tracker: Arc<Mutex<DoubleShiftTracker>>,
-) {
+/// 双击 Shift 触发判定（`#qs-trigger-global`）在 `open_window` 的**窗口级
+/// winit 钩子**里，状态机 `tracker` 也在那里持有——本函数不再经手。
+pub(crate) fn install(window: &AppWindow, store: &Rc<RefCell<ConfigStore>>) {
     let state: Rc<RefCell<QsState>> = Rc::new(RefCell::new(QsState::default()));
     let recent: Rc<RefCell<QsRecent>> = Rc::new(RefCell::new(QsRecent::default()));
     let weak = window.as_weak();
-    let weak_shift = window.as_weak();
 
     // ── 纯回调：文案拼装（Slint 无 format）──────────────────────────
     {
@@ -727,7 +726,9 @@ pub(crate) fn install(
 
     // ── 执行（Enter / Ctrl+Enter / 双击 / 预览按钮）─────────────────
     {
-        let store_rc = store.clone();
+        // (#qs-execute-borrow-fix) store_rc 已随 execute_item 的 store 参数
+        // 一起退役——闭包不再持有 ConfigStore 借用，连接链路的 borrow_mut
+        // 不再撞 guard。
         let state_rc = state.clone();
         let recent_exec = recent.clone();
         let weak = weak.clone();
@@ -745,10 +746,10 @@ pub(crate) fn install(
             recent_exec.borrow_mut().remember_item(&item.id);
             let q = win.get_qs_search_text().to_string();
             recent_exec.borrow_mut().remember_search(&q);
-            let toast = execute_item(&win, &store_rc.borrow(), &item, secondary);
-            if let Some(msg) = toast {
-                win.set_quick_search_toast(SharedString::from(msg));
-            }
+            // (#qs-prune-2026-11-13 r2) 右下角执行反馈 toast 退役：连接/动作
+            // 的结果反馈由 tab 打开/界面变化本身给出，浮动条压在发送命令窗
+            // 上观感突兀（用户评审圈掉）。execute_item 的返回值不再消费。
+            let _ = execute_item(&win, &item, secondary);
             // 执行即关面板（高保真语义；复制类同样关闭）。
             win.set_quick_search_open(false);
             // 焦点还给活动终端（粘贴确认卡同款机制）。
@@ -756,24 +757,10 @@ pub(crate) fn install(
         });
     }
 
-    // ── 双击 Shift 触发器（非终端焦点宿主；终端链路见 app.rs on_send_key）
-    {
-        let tracker_shift = tracker.clone();
-        window.on_search_shift_press(move || {
-            let Some(win) = weak_shift.upgrade() else { return };
-            let opened = tracker_shift
-                .lock()
-                .unwrap()
-                .on_key(
-                    crate::search::KeyEvent::Shift,
-                    std::time::Instant::now(),
-                    win.get_quick_search_open(),
-                );
-            if opened {
-                win.set_quick_search_open(true);
-            }
-        });
-    }
+    // (#qs-trigger-global 2026-11-13) 双击 Shift 触发器的 shortcut-scope 宿主
+    // 已退役：触发判定收敛到 app.rs 主窗口 winit 钩子的 KeyboardInput 分支
+    // （不依赖焦点树，welcome/任意弹框打开时都可触发）。`tracker` 仍由本
+    // install 传入，winit 侧用它共享同一份状态机。
 }
 
 thread_local! {

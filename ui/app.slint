@@ -2366,7 +2366,6 @@ export component AppWindow inherits Window {
     in property <int> qs-count-setting: 0;
     in property <int> qs-count-action: 0;
     // 执行反馈轻提示（面板关闭后仍显示；Timer 自动回落）
-    in-out property <string> quick-search-toast;
     // 首屏引导条可见性（9 秒后自动淡出；每次启动露一次）
     in-out property <bool> quick-search-hint-visible: true;
     // 全局动作 → TerminalView 内部面板的桥（历史面板 / 查找栏无根层回调，
@@ -2378,7 +2377,6 @@ export component AppWindow inherits Window {
     callback qs-move(int);
     callback qs-sel(int);
     callback qs-execute(int, bool);
-    callback search-shift-press();
     pure callback empty-title() -> string;
     pure callback index-count-text() -> string;
     pure callback timing-text() -> string;
@@ -2755,19 +2753,10 @@ export component AppWindow inherits Window {
                     && (e.text == "z" || e.text == "Z" || e.text == "\u{001a}")) {
                 root.toggle-zen-key();
                 accept
-            // (#double-shift-v1) 双击 Shift 全局搜索：非终端焦点兜底（终端聚焦
-            // 时 terminal_view 自己消费并走 on_send_key，两路共用 Rust 侧同一
-            // 状态机）。裸 Shift 的到达形态两种都接：text==""（app.rs 历史
-            // 注释记的形态）与 \u{0010}/\u{0015}（i-slint 键码表真实形态：
-            // Shift/ShiftR，winit 后端 for_each_keys! 映射，text 非空不会
-            // 被丢弃）。★ 靠 e.modifiers.shift 排除百度 IME 注入的同码位
-            // 标记（IME 钩子不改键盘 state → shift=false）；修饰组合排除。
-            } else if (!root.quick-search-open
-                    && !e.modifiers.control && !e.modifiers.alt && !e.modifiers.meta
-                    && e.modifiers.shift
-                    && (e.text == "" || e.text == "\u{0010}" || e.text == "\u{0015}")) {
-                root.search-shift-press();
-                accept
+            // (#double-shift-v1 → #qs-trigger-global 2026-11-13) 双击 Shift 全局
+            // 搜索的原 shortcut-scope 宿主已退役：依赖焦点树，welcome/无 tab
+            // 时收不到键。触发判定收敛到 Rust 侧窗口级 winit 钩子（任意时刻
+            // 可触发，弹框打开时同样生效）。
             } else {
                 reject
             }
@@ -5660,7 +5649,7 @@ export component AppWindow inherits Window {
                     // (#panel-menu-tighten) 行内距 10→8;Ctrl+N 快捷键标签删除
                     // (快捷键已撤销,纯摆设,#panel-menu-ctx 遗留)。
                     padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "new-session"; tint: Theme.text-primary; size: 14px; }
+                    Icon { glyph: "new-session"; tint: Theme.text-primary; size: Theme.fs-sm; }
                     Text { text: @tr("New session"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                 }
             }
@@ -5684,7 +5673,7 @@ export component AppWindow inherits Window {
                 HorizontalLayout {
                     // (#panel-menu-tighten) 行内距 10→8(图标统一 14px 见块注释)。
                     padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "create-new-folder"; tint: Theme.text-primary; size: 14px; }
+                    Icon { glyph: "create-new-folder"; tint: Theme.text-primary; size: Theme.fs-sm; }
                     Text { text: @tr("New group"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                 }
             }
@@ -5704,7 +5693,7 @@ export component AppWindow inherits Window {
                     padding-left: 8px; padding-right: 8px; spacing: 9px;
                     // (#panel-menu-import-icon 2026-11-10 用户要求"换成设置里
                     // 同款图标") move-in → input(设置菜单 6790 行同款)。
-                    Icon { glyph: "input"; tint: Theme.text-primary; size: 14px; }
+                    Icon { glyph: "input"; tint: Theme.text-primary; size: Theme.fs-sm; }
                     Text { text: @tr("Import ~/.ssh/config"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                 }
             }
@@ -5726,7 +5715,7 @@ export component AppWindow inherits Window {
                 }
                 HorizontalLayout {
                     padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "arrow-up"; tint: Theme.text-primary; size: 14px; }
+                    Icon { glyph: "arrow-up"; tint: Theme.text-primary; size: Theme.fs-sm; }
                     Text { text: root.lang-en ? "Export connections" : "导出连接"; color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                 }
             }
@@ -5744,7 +5733,7 @@ export component AppWindow inherits Window {
                 }
                 HorizontalLayout {
                     padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "arrow-down"; tint: Theme.text-primary; size: 14px; }
+                    Icon { glyph: "arrow-down"; tint: Theme.text-primary; size: Theme.fs-sm; }
                     Text { text: root.lang-en ? "Import connections" : "导入连接"; color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                 }
             }
@@ -5762,7 +5751,7 @@ export component AppWindow inherits Window {
                 }
                 HorizontalLayout {
                     padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "table-rows"; tint: Theme.text-primary; size: 14px; }
+                    Icon { glyph: "table-rows"; tint: Theme.text-primary; size: Theme.fs-sm; }
                     Text { text: root.lang-en ? "Batch import (text)" : "批量导入(文本)"; color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                 }
             }
@@ -5780,7 +5769,7 @@ export component AppWindow inherits Window {
                 }
                 HorizontalLayout {
                     padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "unfold-more"; tint: Theme.text-primary; size: 14px; }
+                    Icon { glyph: "unfold-more"; tint: Theme.text-primary; size: Theme.fs-sm; }
                     Text { text: @tr("Expand all"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                 }
             }
@@ -5798,7 +5787,7 @@ export component AppWindow inherits Window {
                 }
                 HorizontalLayout {
                     padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "unfold-less"; tint: Theme.text-primary; size: 14px; }
+                    Icon { glyph: "unfold-less"; tint: Theme.text-primary; size: Theme.fs-sm; }
                     Text { text: @tr("Collapse all"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                 }
             }
@@ -5817,7 +5806,7 @@ export component AppWindow inherits Window {
                 }
                 HorizontalLayout {
                     padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "sidebar-left-collapse"; tint: Theme.text-primary; size: 14px; }
+                    Icon { glyph: "sidebar-left-collapse"; tint: Theme.text-primary; size: Theme.fs-sm; }
                     Text { text: @tr("Collapse panel"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                 }
             }
@@ -5836,7 +5825,7 @@ export component AppWindow inherits Window {
                 }
                 HorizontalLayout {
                     padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "settings"; tint: Theme.text-primary; size: 14px; }
+                    Icon { glyph: "settings"; tint: Theme.text-primary; size: Theme.fs-sm; }
                     Text { text: @tr("Panel settings"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                 }
             }
@@ -9005,47 +8994,6 @@ export component AppWindow inherits Window {
         empty-title => { return root.empty-title(); }
         index-count-text => { return root.index-count-text(); }
         timing-text => { return root.timing-text(); }
-    }
-
-    // (#double-shift-v1) 执行反馈轻提示：面板关闭后仍显示，2.2s 自动回落
-    // （command_manager 的 toast 属性 + Timer 同款；常驻根层不受面板显隐影响）。
-    Rectangle {
-        x: parent.width - self.width - 14px;
-        y: parent.height - 66px;
-        width: min(430px, parent.width - 28px);
-        height: toast-text.preferred-height + 12px;
-        border-width: 1px; border-color: Theme.border-strong;
-        border-radius: 5px;
-        background: Theme.popup-bg-elevated;
-        visible: root.quick-search-toast != "";
-        opacity: root.quick-search-toast != "" ? 1.0 : 0.0;
-        animate opacity { duration: PanelAnim.reduced ? 0ms : 160ms; }
-        drop-shadow-blur: 20px;
-        drop-shadow-color: transparent;
-        clip: true;
-        HorizontalLayout {
-            padding-left: 10px; padding-right: 10px;
-            padding-top: 5px; padding-bottom: 5px;
-            spacing: 7px;
-            Rectangle {
-                width: 13px; height: 13px;
-                border-radius: 7px;
-                background: Theme.success.with-alpha(0.16);
-                Text { text: "✓"; font-size: 8px; color: Theme.success; horizontal-alignment: center; vertical-alignment: center; }
-            }
-            toast-text := Text {
-                text: root.quick-search-toast;
-                font-size: Theme.fs-2xs;
-                color: Theme.text-primary;
-                wrap: word-wrap;
-                vertical-alignment: center;
-            }
-        }
-        Timer {
-            interval: 2200ms;
-            running: root.quick-search-toast != "";
-            triggered => { root.quick-search-toast = ""; }
-        }
     }
 
     // ── (#double-shift-v1) 首屏引导条（高保真 §04 hint-pill）────────
