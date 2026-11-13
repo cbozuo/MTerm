@@ -2654,21 +2654,66 @@ impl ConfigStore {
         })
     }
 
-    /// (#left-panel-v3) 组排序:同级内把 `id` 移到 `target_id` 之前。
+    /// (#gm-subtree-reorder 2026-11-14) 排序键解析:UI 两条链(左侧栏/gm 弹框)
+    /// 传**显示名**,V3 后 record 以 id 为身份——先按 id 找,再按显示名唯一
+    /// 命中。找不到 / 命中多条 → None(no-op)。
+    fn resolve_group_key(&self, key: &str) -> Option<String> {
+        if key.is_empty() {
+            return None;
+        }
+        if self.group_by_id(key).is_some() {
+            return Some(key.to_string());
+        }
+        let hits = self
+            .cache
+            .group_records
+            .iter()
+            .filter(|g| g.name == key)
+            .collect::<Vec<_>>();
+        if hits.len() == 1 {
+            Some(hits[0].id.clone())
+        } else {
+            None
+        }
+    }
+
+    /// (#gm-subtree-reorder) DFS 连续子树长度:`from` 行起连续的后代段
+    /// (含 from 自身)。父组排序必须整棵搬移——单条 remove 会让子孙留在
+    /// 原地,树当场散架。深度优先遍历保证后代在数组中连续且祖先先出现,
+    /// 所以「parent_id 已在子树集合」即后代。
+    fn subtree_len(records: &[GroupRecord], from: usize) -> usize {
+        let mut ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        ids.insert(records[from].id.as_str());
+        let mut end = from + 1;
+        while end < records.len() && ids.contains(records[end].parent_id.as_str()) {
+            ids.insert(records[end].id.as_str());
+            end += 1;
+        }
+        end - from
+    }
+
+    /// (#left-panel-v3) 组排序:同级内把组(含其整棵子树)移到 target 之前。
     /// 跨父移动不允许(组拖拽只改同级顺序,设计稿 T4);target 不存在 /
     /// 同组 → false(no-op)。保留组不参与排序。
-    pub fn move_group_before(&mut self, id: &str, target_id: &str) -> bool {
-        if id.is_empty() || target_id.is_empty() || id == target_id {
+    /// (#gm-subtree-reorder) 键接受 id 或显示名;父组带子孙整块搬移。
+    pub fn move_group_before(&mut self, key: &str, target_key: &str) -> bool {
+        let Some(id) = self.resolve_group_key(key) else {
+            return false;
+        };
+        let Some(target_id) = self.resolve_group_key(target_key) else {
+            return false;
+        };
+        if id == target_id {
             return false;
         }
-        let Some(record) = self.group_by_id(id) else {
+        let Some(record) = self.group_by_id(&id) else {
             return false;
         };
         if record.reserved {
             return false;
         }
         let parent = record.parent_id.clone();
-        let Some(target) = self.group_by_id(target_id) else {
+        let Some(target) = self.group_by_id(&target_id) else {
             return false;
         };
         if target.reserved || target.parent_id != parent {
@@ -2682,22 +2727,34 @@ impl ConfigStore {
         else {
             return false;
         };
-        let record = self.cache.group_records.remove(from);
-        // remove 之后 target 的下标可能前移,按 id 重找插入点。
+        let span = Self::subtree_len(&self.cache.group_records, from);
+        let block: Vec<GroupRecord> = self
+            .cache
+            .group_records
+            .drain(from..from + span)
+            .collect();
+        // drain 之后 target 的下标可能前移,按 id 重找插入点。
+        // (target 是同级兄弟,不可能落在刚搬走的子树区间内。)
         let to = self
             .cache
             .group_records
             .iter()
             .position(|g| g.id == target_id)
             .unwrap_or(self.cache.group_records.len());
-        self.cache.group_records.insert(to, record);
+        for (off, rec) in block.into_iter().enumerate() {
+            self.cache.group_records.insert(to + off, rec);
+        }
         true
     }
 
     /// (#left-panel-v3) 组移到**同级末位**(原 "(tail)" 哨兵语义)。已在
-    /// 末位时 no-op。
-    pub fn move_group_to_end(&mut self, id: &str) -> bool {
-        let Some(record) = self.group_by_id(id) else {
+    /// 末位时 no-op。(#gm-subtree-reorder) 键接受 id 或显示名;父组带
+    /// 子孙整块搬移。
+    pub fn move_group_to_end(&mut self, key: &str) -> bool {
+        let Some(id) = self.resolve_group_key(key) else {
+            return false;
+        };
+        let Some(record) = self.group_by_id(&id) else {
             return false;
         };
         if record.reserved {
@@ -2705,27 +2762,38 @@ impl ConfigStore {
         }
         let parent = record.parent_id.clone();
         // 同级最后一个成员的下标(跳过其它层级的 record)。
-        let last_same_parent = self
+        let Some(last_same_parent) = self
             .cache
             .group_records
             .iter()
             .rposition(|g| g.parent_id == parent && !g.reserved)
-            .expect("moving non-reserved group implies a same-parent slot exists");
+        else {
+            return false;
+        };
         let Some(from) = self.cache.group_records.iter().position(|g| g.id == id) else {
             return false;
         };
         if from == last_same_parent {
             return false;
         }
-        let record = self.cache.group_records.remove(from);
+        let span = Self::subtree_len(&self.cache.group_records, from);
+        let block: Vec<GroupRecord> = self
+            .cache
+            .group_records
+            .drain(from..from + span)
+            .collect();
+        // drain 后重找同级末位。插入点 = 末记录的**整棵子树之后**(DFS 序里
+        // 子孙紧跟父记录,插到「末记录+1」会撞进它的子组中间把树插散)。
         let to = self
             .cache
             .group_records
             .iter()
             .rposition(|g| g.parent_id == parent && !g.reserved)
-            .map(|p| p + 1)
+            .map(|p| p + Self::subtree_len(&self.cache.group_records, p))
             .unwrap_or(self.cache.group_records.len());
-        self.cache.group_records.insert(to, record);
+        for (off, rec) in block.into_iter().enumerate() {
+            self.cache.group_records.insert(to + off, rec);
+        }
         true
     }
 
@@ -3159,6 +3227,50 @@ mod tests {
         let child = store.group_by_id(&cid2).expect("child lifted");
         assert_eq!(child.parent_id, "", "子组应上提到根级");
         store.remove_group("不存在的组");
+    }
+
+    #[test]
+    fn move_group_accepts_display_name_and_moves_subtree() {
+        // (#gm-subtree-reorder 2026-11-14 用户反馈「组别怎么不可以排序了」)
+        // ① gm 弹框两条 UI 链传**显示名**,move_group_before/to_end 旧版只按
+        //    id 查 → 静默 no-op——删除链 11-12 修过同款坑(#delete-by-name-compat),
+        //    排序漏了同样的名回退;
+        // ② 父组单条 remove/insert 会把子孙留在原地,树当场散架——整棵子树
+        //    必须跟着走,子组同级序保持。
+        let mut store = temp_store();
+        let a = store.add_group("AA".into(), "").expect("add AA");
+        let ax = store.add_group("AX".into(), &a).expect("add AX");
+        let ay = store.add_group("AY".into(), &a).expect("add AY");
+        let b = store.add_group("BB".into(), "").expect("add BB");
+        let bx = store.add_group("BX".into(), &b).expect("add BX");
+        let seq = |store: &ConfigStore| -> Vec<String> {
+            store
+                .cache
+                .group_records
+                .iter()
+                .map(|g| g.name.clone())
+                .collect()
+        };
+        assert_eq!(seq(&store), vec!["AA", "AX", "AY", "BB", "BX"]);
+
+        // ① 显示名键:BB 整树搬到 AA 之前(BX 跟随)。
+        assert!(store.move_group_before("BB", "AA"));
+        println!("DBG after1: {:?}", seq(&store));
+        assert_eq!(seq(&store), vec!["BB", "BX", "AA", "AX", "AY"]);
+
+        // ② 子组同级排序(显示名):AY 移到 AX 前,BB/AA 区间不受影响。
+        assert!(store.move_group_before("AY", "AX"));
+        println!("DBG after2: {:?}", seq(&store));
+        assert_eq!(seq(&store), vec!["BB", "BX", "AA", "AY", "AX"]);
+
+        // ③ 跨父拒绝:AX(A 的子组)不能排到 BX(B 的子组)之前。
+        assert!(!store.move_group_before(&ax, &bx));
+
+        // ④ to_end 整树:BB(带 BX)移到根级末位。
+        assert!(store.move_group_to_end("BB"));
+        assert_eq!(seq(&store), vec!["AA", "AY", "AX", "BB", "BX"]);
+        // 保留组不参与排序。
+        assert!(!store.move_group_before("默认", "AA"));
     }
 
     #[test]

@@ -10178,6 +10178,59 @@ fn wire_session_callbacks(
             }
         });
 
+        // (#gm-subtree-reorder 2026-11-14 用户反馈「组别怎么不可以排序了」)
+        // 左栏行 i 的**同级兄弟行号**(纯函数,-1=无):DFS 序里向前/向后找
+        // 第一个 depth<=my 的行——== my 即同级兄弟(不同父的兄弟之间必有
+        // 更浅行隔开),更浅 = 区间端点。上下移键的落点推算全走这里:旧
+        // i-1/i+2 是平面假设,树形下会撞到自己的子组(跨父被 Rust 钳成
+        // no-op,表现为「点了没反应」)。保留组兄弟不参与排序,返回 -1。
+        {
+            let weak = weak.clone();
+            window.on_gm_prev_sibling(move |i: i32| -> i32 {
+                let Some(w) = weak.upgrade() else { return -1 };
+                let m = w.get_gm_groups();
+                let Some(my) = m.row_data(i.max(0) as usize) else { return -1 };
+                if my.reserved {
+                    return -1;
+                }
+                let mut res = -1;
+                for k in (0..i.max(0) as usize).rev() {
+                    if let Some(r) = m.row_data(k) {
+                        if r.depth <= my.depth {
+                            if r.depth == my.depth && !r.reserved {
+                                res = k as i32;
+                            }
+                            break;
+                        }
+                    }
+                }
+                res
+            });
+        }
+        {
+            let weak = weak.clone();
+            window.on_gm_next_sibling(move |i: i32| -> i32 {
+                let Some(w) = weak.upgrade() else { return -1 };
+                let m = w.get_gm_groups();
+                let Some(my) = m.row_data(i.max(0) as usize) else { return -1 };
+                if my.reserved {
+                    return -1;
+                }
+                let mut res = -1;
+                for k in (i.max(0) as usize + 1)..m.row_count() {
+                    if let Some(r) = m.row_data(k) {
+                        if r.depth <= my.depth {
+                            if r.depth == my.depth && !r.reserved {
+                                res = k as i32;
+                            }
+                            break;
+                        }
+                    }
+                }
+                res
+            });
+        }
+
         window.on_gm_toggle_pick({
             let weak = weak.clone();
             let store = store.clone();

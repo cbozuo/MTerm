@@ -177,6 +177,11 @@ export component GroupManagerDialog inherits Rectangle {
     callback remove-group(string /* name */, string /* target */);
     callback set-group-color(string /* name */, string /* hex */);
     callback reorder-group(string /* group */, string /* before */);
+    // (#gm-subtree-reorder 2026-11-14) 行 i 的同级兄弟行号(DFS 序,-1=无):
+    // 上下移键/拖拽落点推算(旧 i-1/i+2 是平面假设,树形下会撞子组或跨层)。
+    // pure:enabled/绑定表达式里调用(Slint 纯回调才允许)。
+    pure callback prev-sibling(int /* row */) -> int;
+    pure callback next-sibling(int /* row */) -> int;
     callback toggle-pick(string /* id */);
     callback paint-pick(int /* from */, int /* to */, bool /* on */);
     callback clear-picks();
@@ -959,8 +964,9 @@ export component GroupManagerDialog inherits Rectangle {
                                                     }
                                                 }
                                                 moved => {
-                                                    // (#gm-subgroup) 子组行不可拖拽排序（同排序键隐藏口径）。
-                                                    if (root.groups[i].reserved || root.groups[i].depth > 0) { return; }
+                                                    // (#gm-subtree-reorder 2026-11-14) 子组行也可拖拽排序
+                                                    // （与上下移键同口径）；保留组仍不可拖。
+                                                    if (root.groups[i].reserved) { return; }
                                                     if (root.editing != "" || root.creating || root.query != "") { return; }
                                                     let ax = self.absolute-position.x + self.mouse-x;
                                                     let ay = self.absolute-position.y + self.mouse-y;
@@ -986,8 +992,13 @@ export component GroupManagerDialog inherits Rectangle {
                                                         let off = Math.round(self.mouse-y / root.row-h);
                                                         root.drag-to = Math.max(0, Math.min(
                                                             root.groups.length - 1, i + off));
-                                                        root.drag-insert = root.drag-to > root.drag-index
-                                                            ? root.drag-to + 1 : root.drag-to;
+                                                        // 插入线只在**同级**落点画（跨层拖拽不提交，
+                                                        // Rust 侧同口径钳制；父组拖动整棵子树跟随）。
+                                                        let same = root.groups[root.drag-to].depth
+                                                            == root.groups[root.drag-index].depth;
+                                                        root.drag-insert = (same && root.drag-to != root.drag-index)
+                                                            ? (root.drag-to > root.drag-index
+                                                                ? root.drag-to + 1 : root.drag-to) : -1;
                                                     }
                                                 }
                                                 pointer-event(ev) => {
@@ -997,12 +1008,16 @@ export component GroupManagerDialog inherits Rectangle {
                                                         root.dragging = false;
                                                     } else if (ev.kind == PointerEventKind.up
                                                         && root.dragging && root.drag-kind == "group") {
-                                                        // before = 目标位置当前的组（拖走自己后重取）
-                                                        let to = root.drag-to;
-                                                        let before = to > root.drag-index
-                                                            ? (to + 1 < root.groups.length ? root.groups[to + 1].name : "")
-                                                            : root.groups[to].name;
-                                                        if (to != root.drag-index) {
+                                                        // (#gm-subtree-reorder) 只在同级有效落点提交：
+                                                        // 下拖 = 插到 to 的下一个同级兄弟之前（没有 → 同级
+                                                        // 末位 "(tail)"）；上拖 = 插到 to 之前。
+                                                        if (root.drag-insert >= 0) {
+                                                            let to = root.drag-to;
+                                                            let n2 = to > root.drag-index
+                                                                ? root.next-sibling(to) : -1;
+                                                            let before = to > root.drag-index
+                                                                ? (n2 >= 0 ? root.groups[n2].name : "(tail)")
+                                                                : root.groups[to].name;
                                                             root.reorder-group(root.drag-id, before);
                                                         }
                                                         root.dragging = false;
@@ -1121,14 +1136,15 @@ export component GroupManagerDialog inherits Rectangle {
                                                         }
                                                     }
                                                 }
-                                                // 上移 / 下移（未分组没有）：常占位、悬停渐显、边界置灰
-                                                // (#gm-subgroup 2026-11-12) 子组行也没有：同级序 =
-                                                // 父子关系（DFS 序），上下移会把它挪出父组——隐藏，
-                                                // 树形重排留给移动/重建。
+                                                // 上移 / 下移（保留组没有）：常占位、悬停渐显、边界置灰
+                                                // (#gm-subtree-reorder 2026-11-14) 子组行也有键了：
+                                                // 落点推算走 prev/next-sibling（DFS 同级邻居）——旧 i-1/i+2
+                                                // 是平面假设，树形下 i-1 撞到自己的子组（跨父被 Rust 钳成
+                                                // no-op，表现为「点了没反应」）；子组同级序由此可排。
                                                 HorizontalLayout {
-                                                    // 未分组没有排序键：用 visible 隐藏（Slint 的不可见元素不占位、
+                                                    // 保留组没有排序键：用 visible 隐藏（Slint 的不可见元素不占位、
                                                     // 不吃事件），这样 id 仍在本作用域，行底色/组名能一起判 hover
-                                                    visible: !root.groups[i].reserved && root.groups[i].depth == 0;
+                                                    visible: !root.groups[i].reserved;
                                                     spacing: 1px;
                                                     opacity: grow-ta.has-hover
                                                         || gu-ta.has-hover || gd-ta.has-hover ? 1.0 : 0.0;
@@ -1139,11 +1155,11 @@ export component GroupManagerDialog inherits Rectangle {
                                                         border-radius: Theme.radius-sm;
                                                         background: gu-ta.has-hover ? Theme.bg-hover : transparent;
                                                         gu-ta := TouchArea {
-                                                            enabled: i > 1;
+                                                            enabled: root.prev-sibling(i) >= 0;
                                                             mouse-cursor: default;
                                                             changed has-hover => {
                                                                 if (self.has-hover) {
-                                                                    root.tip-on(i > 1
+                                                                    root.tip-on(self.enabled
                                                                 ? (root.lang-en ? "Move group up" : "上移分组")
                                                                 : (root.lang-en ? "Already at top" : "已在最上"),
                                                                         self.absolute-position.x + self.mouse-x,
@@ -1157,10 +1173,13 @@ export component GroupManagerDialog inherits Rectangle {
                                                                 }
                                                             }
                                                             clicked => {
-                                                                root.reorder-group(root.groups[i].name, root.groups[i - 1].name);
+                                                                let p = root.prev-sibling(i);
+                                                                if (p >= 0) {
+                                                                    root.reorder-group(root.groups[i].name, root.groups[p].name);
+                                                                }
                                                             }
                                                         }
-                                                        Icon { glyph: "arrow-up"; tint: Theme.text-secondary; size: 10px; opacity: i > 1 ? 1.0 : 0.3; }
+                                                        Icon { glyph: "arrow-up"; tint: Theme.text-secondary; size: 10px; opacity: gu-ta.enabled ? 1.0 : 0.3; }
                                                     }
                                                     Rectangle {
                                                         width: 16px;
@@ -1168,11 +1187,11 @@ export component GroupManagerDialog inherits Rectangle {
                                                         border-radius: Theme.radius-sm;
                                                         background: gd-ta.has-hover ? Theme.bg-hover : transparent;
                                                         gd-ta := TouchArea {
-                                                            enabled: i < root.groups.length - 1;
+                                                            enabled: root.next-sibling(i) >= 0;
                                                             mouse-cursor: default;
                                                             changed has-hover => {
                                                                 if (self.has-hover) {
-                                                                    root.tip-on(i < root.groups.length - 1
+                                                                    root.tip-on(self.enabled
                                                                 ? (root.lang-en ? "Move group down" : "下移分组")
                                                                 : (root.lang-en ? "Already at bottom" : "已在最下"),
                                                                         self.absolute-position.x + self.mouse-x,
@@ -1186,12 +1205,20 @@ export component GroupManagerDialog inherits Rectangle {
                                                                 }
                                                             }
                                                             clicked => {
-                                                                let before = i + 2 < root.groups.length
-                                                                    ? root.groups[i + 2].name : "";
-                                                                root.reorder-group(root.groups[i].name, before);
+                                                                let n = root.next-sibling(i);
+                                                                if (n >= 0) {
+                                                                    // 下移一位 = 插到下一个兄弟之后：再下一个
+                                                                    // 兄弟存在 → 它之前；否则同级末位("(tail)")。
+                                                                    let n2 = root.next-sibling(n);
+                                                                    if (n2 >= 0) {
+                                                                        root.reorder-group(root.groups[i].name, root.groups[n2].name);
+                                                                    } else {
+                                                                        root.reorder-group(root.groups[i].name, "(tail)");
+                                                                    }
+                                                                }
                                                             }
                                                         }
-                                                        Icon { glyph: "arrow-down"; tint: Theme.text-secondary; size: 10px; opacity: i < root.groups.length - 1 ? 1.0 : 0.3; }
+                                                        Icon { glyph: "arrow-down"; tint: Theme.text-secondary; size: 10px; opacity: gd-ta.enabled ? 1.0 : 0.3; }
                                                     }
                                                 }
                                             }
