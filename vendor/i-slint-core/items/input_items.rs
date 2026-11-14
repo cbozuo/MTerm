@@ -702,8 +702,18 @@ impl Item for FocusScope {
                 .capture_key_released()
                 .apply_pin(self)
                 .call(&(event.key_event.clone(),)),
-            KeyEventType::UpdateComposition | KeyEventType::CommitComposition => {
+            KeyEventType::UpdateComposition => {
                 EventResult::Reject
+            }
+            // (#editor-hifi 2026-11-15) IME 提交转发到 key-pressed:text=提交串。
+            // FocusScope 原本对 composition 一律 Reject,自绘编辑器(内置编辑器
+            // FocusScope 直插 rope)因此收不到中文输入;终端等其它 FocusScope 的
+            // key-pressed 对普通文本本就 Reject/忽略,行为不变。
+            KeyEventType::CommitComposition => {
+                Self::FIELD_OFFSETS
+                    .key_pressed()
+                    .apply_pin(self)
+                    .call(&(event.key_event.clone(),))
             }
         };
         match r {
@@ -758,8 +768,18 @@ impl Item for FocusScope {
                         .call(&(event.key_event.clone(),))
                 }
             }
-            KeyEventType::UpdateComposition | KeyEventType::CommitComposition => {
+            KeyEventType::UpdateComposition => {
                 EventResult::Reject
+            }
+            // (#editor-hifi 2026-11-15) IME 提交转发到 key-pressed:text=提交串。
+            // FocusScope 原本对 composition 一律 Reject,自绘编辑器(内置编辑器
+            // FocusScope 直插 rope)因此收不到中文输入;终端等其它 FocusScope 的
+            // key-pressed 对普通文本本就 Reject/忽略,行为不变。
+            KeyEventType::CommitComposition => {
+                Self::FIELD_OFFSETS
+                    .key_pressed()
+                    .apply_pin(self)
+                    .call(&(event.key_event.clone(),))
             }
         };
         match r {

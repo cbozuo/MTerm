@@ -1,12 +1,23 @@
 import { Icon } from "icons.slint";
 import { Theme } from "theme.slint";
 import { PickerMath } from "color_picker.slint";
-import { ScrollView } from "std-widgets.slint";
+import { EditorSpanKind, EditorSpan, EditorLineRow, EditorTabInfo } from "editor_types.slint";
 
+// (#editor-hifi 2026-11-15) 内置文本编辑器 —— 按高保真 docs/design/sftp-editor-hifi-2026-11-14.html
+// 100% 还原:rope 行级虚拟化渲染(全文不过 Slint 边界)+ 多文件 tab + 浮层查找替换 +
+// 语法色 = 主题 ANSI16(Theme.ansi16)。旧版「全文 TextInput + 全量行号」退役。
+// 数据流:Rust 持有 scroll-y/窗口模型权威值;Slint 只发 wheel/点击/键入事件。
 export struct EditorFindResult {
     start: int,
     end: int,
     count: int,
+}
+
+// 菜单条目(右键菜单/查找浮层图标钮共用;无快捷键角标——用户定稿)
+export struct MenuItem {
+    label: string,
+    cmd: string,
+    disabled: bool,
 }
 
 export component EditorWindow inherits Window {
@@ -21,50 +32,142 @@ export component EditorWindow inherits Window {
     in-out property <color> wp-tint <=> Theme.wp-tint;
     default-font-family: Theme.ui-font-family;
 
-    in-out property <string> editor-name;
-    in-out property <string> editor-tab-id;
-    in-out property <string> editor-path;
-    in-out property <string> editor-content;
-    in-out property <bool> editor-readonly;
-    in-out property <bool> editor-dirty: false;
-    in-out property <bool> editor-open: false;
-    property <bool> editor-focus-pending: false;
-    in-out property <[string]> editor-lines;
-    in-out property <string> editor-find-query;
-    in-out property <string> editor-replace-text;
-    in-out property <int> editor-match-count: 0;
-    in-out property <int> editor-find-position: -1;
-
-    callback save-file();
-    callback close-editor();
-    callback editor-recount(string);
-    callback editor-count-matches(string, string) -> int;
-    callback editor-find-step(string, string, int, bool) -> EditorFindResult;
-    callback editor-replace-all(string, string);
-    callback win-drag();
-    callback win-resize-se();
-
     no-frame: root.custom-titlebar;
     in property <bool> custom-titlebar: true;
     min-width: 420px;
     min-height: 280px;
-    preferred-width: 760px;
-    preferred-height: 560px;
+    preferred-width: 1040px;
+    preferred-height: 760px;
     background: Theme.window-base;
 
-    if Theme.wallpaper-active : Image {
-        x: 0; y: 0;
-        width: parent.width;
-        height: parent.height;
-        source: Theme.wallpaper;
-        image-fit: Theme.wallpaper-fit-mode(self.width, self.height) == 1 ? contain
-            : Theme.wallpaper-fit-mode(self.width, self.height) == 2 ? fill : cover;
+    // ══ 窗口模型(Rust 下发,只读侧) ════════════════════════════
+    in-out property <[EditorTabInfo]> editor-tabs;
+    in-out property <[EditorLineRow]> editor-lines;      // 可见窗口 ± 缓冲行
+    in-out property <int> editor-first-row: 0;           // 窗口首行(0 基整行)
+    in-out property <int> editor-scroll-frac: 0;         // 垂直滚动像素余数(0..20)
+    in-out property <int> editor-scroll-x: 0;            // 横向滚动像素
+    in-out property <int> editor-content-w: 0;           // 内容总宽 px(最大行宽+边距)
+    in-out property <int> editor-content-h: 0;           // 内容总高 px(行数×20)
+    in-out property <int> editor-scroll-y: 0;             // 垂直滚动权威值 px(Rust)
+    in-out property <int> editor-gutter-w: 56;           // 56;行号 ≥10 万行 → 74
+    in-out property <string> editor-name: "";
+    in-out property <string> editor-path: "";
+    in-out property <string> editor-host: "";            // SFTP 主机名(标题栏路径前缀)
+    in-out property <string> editor-encoding: "UTF-8";
+    in-out property <bool> editor-readonly: false;
+    in-out property <string> editor-lang-display: "纯文本";
+    in-out property <string> editor-badge: "";           // "修改" / "只读" / "回传中" / ""
+    in-out property <string> editor-badge-kind: "none";  // dirty / ro / up / none
+    in-out property <int> editor-cursor-line: 1;         // 1 基(状态栏)
+    in-out property <int> editor-cursor-col: 1;
+    in-out property <int> editor-sel-lines: 0;
+    in-out property <int> editor-sel-chars: 0;
+    in-out property <string> editor-status-msg: "";
+    in-out property <int> editor-upload-percent: -1;     // ≥0 = 回传中(状态栏进度)
+    in-out property <string> editor-upload-text: "";
+    in-out property <bool> editor-banner-visible: false; // 大文件提示条
+    in-out property <string> editor-banner-text: "";
+    in-out property <int> editor-indent-label: 4;        // 状态栏「缩进 N 空格」
+
+    // 查找/替换浮层
+    in-out property <bool> editor-find-open: false;
+    in-out property <string> editor-find-query: "";
+    in-out property <string> editor-replace-text: "";
+    in-out property <int> editor-find-count: 0;
+    in-out property <int> editor-find-cur: 0;            // 1 基;0=无
+    in-out property <[int]> editor-find-hit-lines;
+    in-out property <string> editor-download-name: "";   // 下载弹窗内容
+    in-out property <string> editor-download-info: "";
+    in-out property <string> editor-download-dir: "";
+
+    // IME 输入条(光标处浮动;Enter 提交 Esc 取消;探针确认 FocusScope 直收 IME 后可退役)
+    in-out property <bool> editor-ime-open: false;
+    in-out property <string> editor-ime-text: "";
+    in-out property <length> editor-ime-x: 0;
+    in-out property <length> editor-ime-y: 0;
+
+    // 浮层开关(Rust 触发/Slint 右键触发)
+    in-out property <bool> ctx-open: false;              // 编辑区右键菜单
+    in-out property <length> ctx-x: 0;
+    in-out property <length> ctx-y: 0;
+    in-out property <bool> tabmenu-open: false;          // tab 右键菜单
+    in-out property <length> tabmenu-x: 0;
+    in-out property <int> tabmenu-idx: -1;
+
+    // ══ 回调 ══════════════════════════════════════════════════
+    callback save-file();
+    callback close-editor();
+    callback win-drag();
+    // 四边四角拖拽:方向 = right/bottom/right-bottom/left/top/…(winit ResizeDirection 映射)
+    callback win-resize(string);
+    callback tab-activate(int);
+    callback tab-close(int);
+    // tab 右键菜单命令:close / close-others / close-right / close-all / download / show-panel
+    callback tab-menu(string, int);
+    // 键盘动作(焦点在 FocusScope;Rust 处理 rope 编辑):enter/backspace/delete/left/
+    // right/up/down/home/end/page-up/page-down/tab/undo/redo/copy/paste/select-all/
+    // find-toggle/save/format
+    callback key-action(string);
+    /// 可打印字符插入(单键/IME 提交整串;探针确认 FocusScope 能直收 IME commit 后走这里)
+    callback input-text(string);
+    /// 正文点击定位:model 行索引(0 基)+ 点击像素 x → Rust 换算字符列
+    callback click-at(length, length, bool /*shift 选区*/);
+    /// 双击选词(占位:一期同单击定位)
+    callback wheel(int /*deltaY px*/, bool /*shift=横滚*/);
+    /// 滚动条拖拽:目标首行(0 基)
+    callback scroll-to-frac(float);
+    /// 查找:open/step(next=true)/close/replace-all;query 经属性 two-way
+    callback find-step(bool);
+    callback find-close();
+    callback replace-all();
+    callback format-doc();
+    /// 下载:确认下载当前 tab → 弹窗已选目录在 editor-download-dir
+    callback download-confirm();
+    /// IME 输入条提交/取消
+    callback ime-commit();
+    callback ime-cancel();
+    /// 主题/壁纸等槽位已由主窗下发后的内部刷新占位(与旧版兼容保留)
+    callback editor-recount(string);
+    callback editor-count-matches(string, string) -> int;
+    callback editor-find-step(string, string, int, bool) -> EditorFindResult;
+    callback editor-replace-all(string, string);
+    // IME 输入条 two-way text
+    in-out property <string> ime-box-text: "";
+
+    // ══ 语法色映射:EditorSpanKind 序(0..16)→ 主题 ANSI16 槽 ══
+    // plain=t1,kw=a5 品红,ty=a11 亮黄,fn=a12 亮蓝,str=a10 亮绿,num=a3 黄,com=a8 亮黑,
+    // ann/ts=a14 亮青,thr=a12,lvl-error=a9 亮红,lvl-warn=a11,lvl-info=a10,lvl-debug=a8,
+    // exc=a11,at=a8,cs=a9(色值对照见设计稿「语法色映射表」)。
+    function span-color(k: EditorSpanKind) -> color {
+        if k == EditorSpanKind.plain { return Theme.text-primary; }
+        if k == EditorSpanKind.kw { return Theme.ansi16[5]; }
+        if k == EditorSpanKind.ty { return Theme.ansi16[11]; }
+        if k == EditorSpanKind.fn { return Theme.ansi16[12]; }
+        if k == EditorSpanKind.str { return Theme.ansi16[10]; }
+        if k == EditorSpanKind.num { return Theme.ansi16[3]; }
+        if k == EditorSpanKind.com { return Theme.ansi16[8]; }
+        if k == EditorSpanKind.ann { return Theme.ansi16[14]; }
+        if k == EditorSpanKind.ts { return Theme.ansi16[14]; }
+        if k == EditorSpanKind.thr { return Theme.ansi16[12]; }
+        if k == EditorSpanKind.lvl-error { return Theme.ansi16[9]; }
+        if k == EditorSpanKind.lvl-warn { return Theme.ansi16[11]; }
+        if k == EditorSpanKind.lvl-info { return Theme.ansi16[10]; }
+        if k == EditorSpanKind.lvl-debug { return Theme.ansi16[8]; }
+        if k == EditorSpanKind.exc { return Theme.ansi16[11]; }
+        if k == EditorSpanKind.at { return Theme.ansi16[8]; }
+        if k == EditorSpanKind.cs { return Theme.ansi16[9]; }
+        if k == EditorSpanKind.hl || k == EditorSpanKind.hl-cur { return Theme.text-primary; }
+        return Theme.text-primary;
     }
-    Rectangle {
-        width: parent.width;
-        height: parent.height;
-        background: Theme.bg-panel;
+    function span-bold(k: EditorSpanKind) -> bool {
+        return k == EditorSpanKind.lvl-error
+            || k == EditorSpanKind.lvl-warn || k == EditorSpanKind.exc;
     }
+
+    // 窗口内可见行数(编辑区高度/20;Rust 重建窗口模型时参考,Slint 只上报)
+    out property <int> viewport-rows: 33;
+    out property <length> scroll-frac-px: root.editor-scroll-frac * 1px;
+    out property <length> row-step: 20px;
 
     editor-scope := FocusScope {
         width: parent.width;
@@ -72,19 +175,83 @@ export component EditorWindow inherits Window {
         focus-on-click: false;
         focus-on-tab-navigation: false;
         key-pressed(e) => {
+            // 可打印字符(含 IME commit 直收;探针失败走输入条,这里对多字节串直接透传)
+            if (e.text != "" && e.text != "" && !e.modifiers.control && !e.modifiers.alt) {
+                root.input-text(e.text);
+                return accept;
+            }
             if (e.modifiers.control && (e.text == "s" || e.text == "S" || e.text == "\u{0013}")) {
-                root.save-file();
+                root.key-action("save");
+                return accept;
+            }
+            if (e.modifiers.control && (e.text == "z" || e.text == "Z" || e.text == "\u{001a}")) {
+                root.key-action("undo");
+                return accept;
+            }
+            if (e.modifiers.control && (e.text == "y" || e.text == "Y" || e.text == "\u{0019}")) {
+                root.key-action("redo");
+                return accept;
+            }
+            if (e.modifiers.control && (e.text == "c" || e.text == "C" || e.text == "\u{0003}")) {
+                root.key-action("copy");
+                return accept;
+            }
+            if (e.modifiers.control && (e.text == "v" || e.text == "V" || e.text == "\u{0016}")) {
+                root.key-action("paste");
+                return accept;
+            }
+            if (e.modifiers.control && (e.text == "a" || e.text == "A" || e.text == "\u{0001}")) {
+                root.key-action("select-all");
+                return accept;
+            }
+            if (e.modifiers.control && (e.text == "f" || e.text == "F" || e.text == "\u{0006}")) {
+                root.key-action("find-toggle");
+                return accept;
+            }
+            if (e.modifiers.control && e.modifiers.shift && (e.text == "i" || e.text == "I")) {
+                root.key-action("format");
+                return accept;
+            }
+            if (e.modifiers.control && (e.text == "w" || e.text == "W")) {
+                root.key-action("close");
                 return accept;
             }
             if (e.text == Key.Escape) {
+                if (root.ctx-open || root.tabmenu-open) {
+                    root.ctx-open = false;
+                    root.tabmenu-open = false;
+                    return accept;
+                }
                 root.close-editor();
                 return accept;
             }
+            if (e.text == Key.Return) { root.key-action("enter"); return accept; }
+            if (e.text == Key.Backspace) { root.key-action("backspace"); return accept; }
+            if (e.text == Key.Delete) { root.key-action("delete"); return accept; }
+            if (e.text == Key.Tab) { root.key-action("tab"); return accept; }
+            if (e.text == Key.LeftArrow) { root.key-action("left"); return accept; }
+            if (e.text == Key.RightArrow) { root.key-action("right"); return accept; }
+            if (e.text == Key.UpArrow) { root.key-action("up"); return accept; }
+            if (e.text == Key.DownArrow) { root.key-action("down"); return accept; }
+            if (e.text == Key.Home) { root.key-action("home"); return accept; }
+            if (e.text == Key.End) { root.key-action("end"); return accept; }
+            if (e.text == Key.PageUp) { root.key-action("page-up"); return accept; }
+            if (e.text == Key.PageDown) { root.key-action("page-down"); return accept; }
             reject
         }
-        VerticalLayout {
+    }
+
+    // ══ 窗口本体 ══════════════════════════════════════════════
+    Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.bg-root;
+    }
+
+    VerticalLayout {
         spacing: 0;
 
+        // ── 标题栏 36px(规格沿用旧版:保存钮 76×28 ink-on / 关闭 46×36 #e81123)──
         if root.custom-titlebar : Rectangle {
             height: 36px;
             background: Theme.bg-elevated;
@@ -98,47 +265,103 @@ export component EditorWindow inherits Window {
             HorizontalLayout {
                 padding-left: 12px;
                 spacing: 8px;
-                Image {
-                    source: @image-url("../assets/icon.png");
+                Rectangle {
                     width: 16px;
                     height: 16px;
+                    y: (parent.height - 16px) / 2;
+                    border-radius: 4px;
+                    background: Theme.text-primary;
+                    Text {
+                        text: "M";
+                        color: Theme.bg-elevated;
+                        font-size: 10px;
+                        font-weight: 700;
+                        width: parent.width;
+                        height: parent.height;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
                 }
                 Text {
-                    text: root.editor-name
-                        + (root.editor-readonly
-                            ? "  ·  " + @tr("Read-only")
-                            : (root.editor-dirty ? "  ·  " + @tr("Modified") : ""));
-                    color: Theme.text-secondary;
+                    text: root.editor-name;
+                    color: Theme.text-primary;
                     font-size: Theme.fs-sm;
-                    horizontal-stretch: 1;
+                    font-weight: 600;
                     vertical-alignment: center;
                     overflow: elide;
+                    max-width: 220px;
                 }
-                // (#btn-ink-unify 2026-11-03) 实心主钮统一：ink-on + 白叠。
+                // 状态徽章(修改/只读/回传中)
+                if root.editor-badge != "" : Rectangle {
+                    width: badge-text.preferred-width + 16px;
+                    height: 20px;
+                    y: 8px;
+                    border-radius: 8px;
+                    background: root.editor-badge-kind == "dirty" ? rgba(232,163,62,0.15)
+                        : root.editor-badge-kind == "up" ? rgba(31,200,180,0.14)
+                        : rgba(127,132,139,0.15);
+                    badge-text := Text {
+                        text: root.editor-badge;
+                        font-size: Theme.fs-xs;
+                        color: root.editor-badge-kind == "dirty" ? Theme.warning
+                            : root.editor-badge-kind == "up" ? Theme.accent-solid : Theme.text-secondary;
+                        width: parent.width;
+                        height: parent.height;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                Text {
+                    text: root.editor-host + " · " + root.editor-path;
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-xs;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+                // 保存钮:PrimaryButton 同款(#btn-ink-unify)——accent 底 ink-on 深字+白叠
                 if !root.editor-readonly : Rectangle {
                     width: 76px;
                     height: 28px;
-                    y: (parent.height - self.height) / 2;
+                    y: 4px;
                     border-radius: Theme.radius-sm;
-                    background: Theme.accent;
+                    background: root.editor-upload-percent >= 0 ? Theme.bg-elevated : Theme.accent;
                     clip: true;
                     Rectangle {
                         border-radius: Theme.radius-sm;
                         background: #ffffff;
-                        opacity: save-ta.has-hover ? 0.12 : save-ta.pressed ? 0.22 : 0;
+                        opacity: save-ta.has-hover && root.editor-upload-percent < 0 ? 0.12
+                            : save-ta.pressed && root.editor-upload-percent < 0 ? 0.22 : 0;
                     }
                     save-ta := TouchArea {
                         mouse-cursor: default;
+                        enabled: root.editor-upload-percent < 0;
                         clicked => { root.save-file(); }
                     }
-                    Text { text: @tr("Save"); color: PickerMath.ink-on(Theme.accent-hex); font-size: Theme.fs-sm;
-                           horizontal-alignment: center; vertical-alignment: center; }
+                    if root.editor-upload-percent >= 0 : Text {
+                        text: "回传中…";
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-sm;
+                        width: parent.width;
+                        height: parent.height;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    if root.editor-upload-percent < 0 : Text {
+                        text: @tr("Save");
+                        color: PickerMath.ink-on(Theme.accent-hex);
+                        font-size: Theme.fs-sm;
+                        font-weight: 700;
+                        width: parent.width;
+                        height: parent.height;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
                 }
-                // (#dialog-close-unify 2026-10-20) 与其余窗口/弹框同款：红底取
-                // Theme.close-btn-hot、补 90ms 过渡、悬停图标转纯白（原来恒
-                // text-primary，在红底上显暗，与 #close-hover-white 同一类 bug）。
+                // 关闭钮(DialogClose 口径:常态 muted ×,hover #e81123 红底白 ×,90ms)
                 Rectangle {
-                    width: 46px; height: 36px;
+                    width: 46px;
+                    height: 36px;
                     background: close-ta.has-hover ? Theme.close-btn-hot : transparent;
                     animate background { duration: 90ms; }
                     close-ta := TouchArea {
@@ -146,222 +369,787 @@ export component EditorWindow inherits Window {
                         clicked => { root.close-editor(); }
                     }
                     Icon {
-    glyph: "close";
-    tint: close-ta.has-hover ? white : Theme.text-primary;
-    size: Theme.fs-md;
-}
+                        glyph: "close";
+                        tint: close-ta.has-hover ? white : Theme.text-muted;
+                        size: Theme.fs-md;
+                    }
                 }
             }
         }
-        Rectangle { height: 1px; background: Theme.border-subtle; }
+        if root.custom-titlebar : Rectangle { height: 1px; background: Theme.border-subtle; }
+
+        // ── tab 栏 34px(完整多文件;关闭键 = tabs.slint #tab-close-idea 14px accent 圆)──
         Rectangle {
-            height: 38px;
-            background: Theme.popup-bg;
+            height: 34px;
+            background: Theme.bg-panel;
             HorizontalLayout {
-                padding-left: 8px; padding-right: 8px;
-                padding-top: 5px; padding-bottom: 5px; spacing: 6px;
-                Text { text: @tr("Find"); color: Theme.text-muted; vertical-alignment: center; }
-                TextInput {
-                    horizontal-stretch: 1;
-                    single-line: true;
-                    vertical-alignment: center;
-                    font-family: Theme.ui-font-family;
-                    font-size: Theme.fs-md;
-                    color: Theme.text-primary;
-                    text <=> root.editor-find-query;
-                    edited => {
-                        root.editor-find-position = -1;
-                        root.editor-match-count = root.editor-count-matches(
-                            root.editor-content, root.editor-find-query);
+                spacing: 0;
+                for t[i] in root.editor-tabs : Rectangle {
+                    width: min(200px, max(120px, tab-name.preferred-width + 96px));
+                    height: 34px;
+                    background: t.active ? Theme.bg-root : transparent;
+                    // 右侧 1px 分隔(Rectangle 无单侧 border,用独立矩形)
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 8px;
+                        spacing: 7px;
+                        alignment: start;
+                        // 文件类型图标块(14px 圆角+首字母;色按语言,设计稿 J橙/L灰/N绿/S粉)
+                        Rectangle {
+                            width: 14px;
+                            height: 14px;
+                            y: 10px;
+                            border-radius: 4px;
+                            background: tab-icon-color(t.lang);
+                            Text {
+                                text: t.letter;
+                                color: Theme.bg-root;
+                                font-size: 8px;
+                                font-weight: 700;
+                                width: parent.width;
+                                height: parent.height;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        tab-name := Text {
+                            text: t.name;
+                            color: t.active ? Theme.text-primary : Theme.text-secondary;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        // dirty 点(常态)/ hover 换关闭键(14px accent 圆 + panel 底色 ×)
+                        if t.active && t.dirty && !tab-hover.has-hover : Rectangle {
+                            width: 6px; height: 6px; y: 14px;
+                            border-radius: 3px;
+                            background: Theme.accent;
+                        }
+                        Rectangle {
+                            width: 20px; height: 20px; y: 7px;
+                            opacity: tab-hover.has-hover ? 1.0 : 0.0;
+                            animate opacity { duration: 140ms; }
+                            background: transparent;
+                            tab-close-ta := TouchArea { mouse-cursor: default; }
+                            Rectangle {
+                                width: 14px; height: 14px;
+                                x: (parent.width - 14px) / 2;
+                                y: (parent.height - 14px) / 2;
+                                border-radius: 7px;
+                                background: tab-close-ta.has-hover ? Theme.accent : transparent;
+                                animate background { duration: 100ms; }
+                                Text {
+                                    text: "✕";
+                                    color: tab-close-ta.has-hover ? Theme.panel-solid : Theme.text-secondary;
+                                    font-size: 8px;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                        if !t.active : Rectangle { width: 0px; height: 0px; }
                     }
-                }
-                Text {
-                    width: 42px;
-                    text: root.editor-find-query == "" ? "" : root.editor-match-count;
-                    color: Theme.text-muted;
-                    vertical-alignment: center;
-                    horizontal-alignment: center;
-                }
-                Rectangle {
-                    width: 28px;
-                    border-radius: Theme.radius-sm;
-                    background: find-prev-ta.has-hover ? Theme.bg-hover : Theme.bg-elevated;
-                    find-prev-ta := TouchArea {
-                        enabled: root.editor-match-count > 0;
-                        clicked => {
-                            let found = root.editor-find-step(root.editor-content,
-                                root.editor-find-query, root.editor-find-position, true);
-                            root.editor-find-position = found.start;
-                            root.editor-match-count = found.count;
-                            edit-input.set-selection-offsets(found.start, found.end);
-                            edit-input.focus();
+                    tab-hover := TouchArea {
+                        mouse-cursor: default;
+                        clicked => { root.tab-activate(i); }
+                        pointer-event(e) => {
+                            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                                root.tabmenu-open = true;
+                                root.tabmenu-idx = i;
+                                root.tabmenu-x = self.absolute-position.x - root.absolute-position.x + self.mouse-x;
+                            }
                         }
                     }
-                    Icon { glyph: "arrow-up"; tint: Theme.text-primary; size: Theme.fs-md; }
-                }
-                Rectangle {
-                    width: 28px;
-                    border-radius: Theme.radius-sm;
-                    background: find-next-ta.has-hover ? Theme.bg-hover : Theme.bg-elevated;
-                    find-next-ta := TouchArea {
-                        enabled: root.editor-match-count > 0;
-                        clicked => {
-                            let found = root.editor-find-step(root.editor-content,
-                                root.editor-find-query, root.editor-find-position, false);
-                            root.editor-find-position = found.start;
-                            root.editor-match-count = found.count;
-                            edit-input.set-selection-offsets(found.start, found.end);
-                            edit-input.focus();
-                        }
+                    // 激活 tab 顶部 2px accent 条
+                    if t.active : Rectangle {
+                        x: 0; y: 0;
+                        width: parent.width; height: 2px;
+                        background: Theme.accent;
                     }
-                    Icon { glyph: "arrow-down"; tint: Theme.text-primary; size: Theme.fs-md; }
-                }
-                Text { text: @tr("Replace"); color: Theme.text-muted; vertical-alignment: center; }
-                TextInput {
-                    horizontal-stretch: 1;
-                    single-line: true;
-                    vertical-alignment: center;
-                    font-family: Theme.ui-font-family;
-                    font-size: Theme.fs-md;
-                    color: Theme.text-primary;
-                    text <=> root.editor-replace-text;
-                }
-                Rectangle {
-                    width: 88px;
-                    border-radius: Theme.radius-sm;
-                    background: replace-all-ta.has-hover ? Theme.bg-hover : Theme.bg-elevated;
-                    replace-all-ta := TouchArea {
-                        enabled: !root.editor-readonly && root.editor-find-query != "";
-                        clicked => {
-                            root.editor-replace-all(root.editor-find-query, root.editor-replace-text);
-                        }
+                    Rectangle {
+                        x: parent.width - 1px; y: 0;
+                        width: 1px; height: parent.height;
+                        background: Theme.border-subtle;
                     }
-                    Text { text: @tr("Replace all"); color: replace-all-ta.enabled ? Theme.text-primary : Theme.text-muted;
-                           font-size: Theme.fs-sm; horizontal-alignment: center; vertical-alignment: center; }
                 }
+                Rectangle { horizontal-stretch: 1; }
             }
         }
-        Rectangle { height: 1px; background: Theme.border-subtle; }
+
+        // ── 大文件提示条 30px ──
+        if root.editor-banner-visible : Rectangle {
+            height: 30px;
+            background: rgba(31, 200, 180, 0.08);
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 8px;
+                spacing: 8px;
+                alignment: start;
+                Text { text: "ⓘ"; color: Theme.accent; font-size: 12px; vertical-alignment: center; }
+                Text {
+                    text: root.editor-banner-text;
+                    color: Theme.text-secondary;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+            }
+            Rectangle {
+                x: 0; y: parent.height - 1px;
+                width: parent.width; height: 1px;
+                background: Theme.border-subtle;
+            }
+        }
+
+        // ── 编辑区(FocusScope 铺底收键盘)──
         Rectangle {
             vertical-stretch: 1;
             background: Theme.bg-root;
+            clip: true;
+            
+            
+
             HorizontalLayout {
                 spacing: 0;
+                // gutter(56 / 大文件 74):垂直随 scroll,横向固定
                 Rectangle {
-                    width: 48px;
-                    background: Theme.bg-panel-alt;
+                    width: root.editor-gutter-w * 1px;
+                    background: Theme.bg-panel;
                     clip: true;
-                    VerticalLayout {
-                        y: ed-scroll.content-y + 8px;
+                    for row in root.editor-lines : Rectangle {
+                        y: ((row.line - 1 - root.editor-first-row) * 20px) - root.scroll-frac-px;
+                        height: 20px;
                         width: parent.width;
-                        height: self.preferred-height;
-                        spacing: 0px;
-                        padding: 0px;
-                        for line[index] in root.editor-lines: Rectangle {
-                            height: line-measure.preferred-height;
-                            line-measure := TextInput {
-                                x: parent.width;
-                                width: edit-input.width;
-                                height: self.preferred-height;
-                                text: line;
-                                read-only: true;
-                                single-line: false;
-                                wrap: char-wrap;
-                                font-family: edit-input.font-family;
-                                font-size: edit-input.font-size;
-                            }
-                            Text {
-                                width: parent.width - 6px;
-                                height: line-measure.preferred-height;
-                                text: "\{index + 1}";
-                                horizontal-alignment: right;
-                                vertical-alignment: top;
-                                font-family: edit-input.font-family;
-                                font-size: edit-input.font-size;
-                                color: Theme.text-muted;
-                            }
+                        background: Theme.bg-panel;
+                        if row.is-current : Rectangle {
+                            width: parent.width;
+                            background: rgba(255, 255, 255, 0.045);
+                        }
+                        Text {
+                            x: 14px;
+                            width: root.editor-gutter-w * 1px - 22px;
+                            height: 20px;
+                            text: row.line;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                            font-family: Theme.font-mono;
+                            font-size: Theme.fs-sm;
+                            color: row.is-current ? Theme.text-primary : Theme.text-secondary;
+                        }
+                        if row.mark : Rectangle {
+                            x: parent.width - 3px;
+                            width: 3px;
+                            height: 20px;
+                            background: Theme.warning;
                         }
                     }
+                    Rectangle {
+                        x: parent.width - 1px;
+                        width: 1px;
+                        height: parent.height;
+                        background: Theme.border-subtle;
+                    }
                 }
-                Rectangle { width: 1px; background: Theme.border-subtle; }
-                editor-viewport := Rectangle {
+                // 代码区:横向滚动 = 容器内容宽超出 → x 平移
+                Rectangle {
                     horizontal-stretch: 1;
                     clip: true;
-                    editor-wheel := TouchArea {
-                        scroll-event(event) => {
-                            ed-scroll.content-y = clamp(
-                                ed-scroll.content-y + event.delta-y,
-                                min(0px, ed-scroll.visible-height - ed-scroll.content-height),
-                                0px);
-                            accept
+                    for row in root.editor-lines : Rectangle {
+                        x: -root.editor-scroll-x * 1px;
+                        y: ((row.line - 1 - root.editor-first-row) * 20px) - root.scroll-frac-px;
+                        height: 20px;
+                        width: max(root.width, root.editor-content-w * 1px + 24px);
+                        // 当前行整行淡底(含代码区)
+                        if row.is-current : Rectangle {
+                            width: parent.width;
+                            height: 20px;
+                            background: rgba(255, 255, 255, 0.045);
                         }
-                    }
-                    ed-scroll := ScrollView {
-                        content-width: self.visible-width;
-                        content-height: max(self.visible-height, edit-input.preferred-height + 16px);
-                        edit-input := TextInput {
-                            x: 8px;
-                            y: 8px;
-                            width: max(1px, ed-scroll.visible-width - 16px);
-                            height: max(ed-scroll.visible-height - 16px, self.preferred-height);
-                            text <=> root.editor-content;
-                            read-only: root.editor-readonly;
-                            single-line: false;
-                            wrap: char-wrap;
-                            color: Theme.text-primary;
-                            font-family: Theme.ui-font-family;
-                            font-size: Theme.fs-md;
-                            page-height: ed-scroll.visible-height;
-                            cursor-position-changed(position) => {
-                                let cursor-y = position.y + self.y + ed-scroll.content-y;
-                                if (cursor-y < 12px) {
-                                    ed-scroll.content-y = min(0px,
-                                        ed-scroll.content-y + 12px - cursor-y);
-                                } else if (cursor-y > ed-scroll.visible-height - 12px) {
-                                    ed-scroll.content-y = max(
-                                        min(0px, ed-scroll.visible-height - ed-scroll.content-height),
-                                        ed-scroll.content-y
-                                            - (cursor-y - ed-scroll.visible-height + 12px));
+                        // 选区矩形(Rust 换算像素,含 CJK)
+                        if row.sel-w > 0 : Rectangle {
+                            x: 12px + row.sel-x;
+                            width: row.sel-w;
+                            height: 20px;
+                            background: rgba(31, 200, 180, 0.14);
+                        }
+                        // 光标(仅当前行)
+                        if row.is-current : Rectangle {
+                            x: 12px + row.cursor-x;
+                            y: 2px;
+                            width: 2px;
+                            height: 16px;
+                            background: Theme.accent;
+                        }
+                        // token 片段(绝对像素定位,等宽;Text 覆盖底色 span 时同色系可读)
+                        for sp in row.spans : Rectangle {
+                            x: 12px + sp.start * root.char-px;
+                            y: 2px;
+                            width: sp.width;
+                            height: 16px;
+                            background: sp.kind == EditorSpanKind.hl ? rgba(232,163,62,0.32)
+                                : sp.kind == EditorSpanKind.hl-cur ? rgba(232,163,62,0.62)
+                                : rgba(0,0,0,0);
+                            Text {
+                                text: sp.text;
+                                font-family: Theme.font-mono;
+                                font-size: Theme.fs-sm;
+                                color: root.span-color(sp.kind);
+                                font-weight: root.span-bold(sp.kind) ? 700 : 400;
+                                font-italic: sp.kind == EditorSpanKind.com;
+                                vertical-alignment: center;
+                            }
+                        }
+                        // 行级点击定位(整行透明 TouchArea;右键=编辑区菜单)
+                        row-ta := TouchArea {
+                            width: max(parent.width, 400px);
+                            height: 20px;
+                            mouse-cursor: default;
+                            clicked => {
+                                root.click-at(self.mouse-x, root.char-px, false);
+                            }
+                            pointer-event(e) => {
+                                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                                    root.ctx-open = true;
+                                    root.ctx-x = self.absolute-position.x - root.absolute-position.x + self.mouse-x;
+                                    root.ctx-y = self.absolute-position.y - root.absolute-position.y + self.mouse-y;
                                 }
                             }
-                            edited => {
-                                root.editor-dirty = true;
-                                root.editor-recount(root.editor-content);
-                                root.editor-match-count = root.editor-count-matches(
-                                    root.editor-content, root.editor-find-query);
+                        }
+                    }
+                }
+            }
+
+            // 点外关闭 backdrop(菜单/弹窗打开时覆盖编辑区;浮层在其后声明故仍可点)
+            if (root.ctx-open || root.tabmenu-open || root.dl-open) : TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => {
+                    root.ctx-open = false;
+                    root.tabmenu-open = false;
+                    root.dl-open = false;
+                }
+            }
+
+            // 垂直滚动条(自绘 10px + 命中标记;拖拽/滚轮事件转 Rust)
+            Rectangle {
+                x: parent.width - 10px;
+                y: 0;
+                width: 10px;
+                height: parent.height;
+                background: transparent;
+                for hl in root.editor-find-hit-lines : Rectangle {
+                    x: 1px;
+                    y: hl * 20px / max(1px, root.editor-content-h * 1px) * parent.height;
+                    width: 8px;
+                    height: 3px;
+                    border-radius: 1px;
+                    background: rgba(232, 163, 62, 0.45);
+                }
+                sb-ta := TouchArea {
+                    mouse-cursor: default;
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                            root.scroll-to-frac(self.mouse-y / parent.height);
+                        }
+                    }
+                    scroll-event(event) => {
+                        root.wheel(event.delta-y / 1px, false);
+                        accept
+                    }
+                }
+                Rectangle {
+                    x: 1px;
+                    y: min(parent.height - thumb-h, max(0px, root.editor-scroll-y * 1px / max(1px, root.editor-content-h * 1px) * parent.height));
+                    width: 8px;
+                    height: thumb-h;
+                    border-radius: 4px;
+                    background: sb-ta.has-hover ? Theme.text-secondary : Theme.border-strong;
+                    property <length> thumb-h: max(20px, parent.height * (parent.height / max(1px, root.editor-content-h * 1px)));
+                }
+            }
+
+            // ── 查找/替换浮层(右上;行 1 查找+计数+图标钮,行 2 替换)──
+            if root.editor-find-open : Rectangle {
+                x: parent.width - 482px;
+                y: 8px;
+                width: 468px;
+                height: root.editor-replace-open ? 74px : 40px;
+                border-radius: 6px;
+                background: Theme.bg-elevated;
+                border-width: 1px;
+                border-color: Theme.border-strong;
+                drop-shadow-blur: 12px;
+                drop-shadow-color: rgba(0, 0, 0, 0.45);
+                VerticalLayout {
+                    padding: 6px;
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Rectangle {
+                            height: 28px;
+                            horizontal-stretch: 1;
+                            border-radius: 4px;
+                            background: Theme.field;
+                            border-width: 1px;
+                            border-color: Theme.border-strong;
+                            find-input := TextInput {
+                                x: 8px;
+                                y: 4px;
+                                width: parent.width - 16px;
+                                height: 20px;
+                                single-line: true;
+                                font-family: Theme.font-mono;
+                                font-size: Theme.fs-sm;
+                                color: Theme.text-primary;
+                                text <=> root.editor-find-query;
+                                edited => { root.find-edited(root.find-case-on); }
                             }
+                        }
+                        Text {
+                            width: 48px;
+                            text: root.editor-find-query == "" ? "" : root.editor-find-cur + " / " + root.editor-find-count;
+                            color: Theme.text-secondary;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                        // 图标钮:大小写敏感/全词/正则(一期仅大小写生效,余占位)/↑↓/×
+                        for it[i] in root.find-icons : Rectangle {
+                            width: 28px;
+                            height: 28px;
+                            border-radius: 4px;
+                            background: !it.disabled ? Theme.bg-active : transparent;
+                            Text {
+                                text: it.label;
+                                color: !it.disabled ? Theme.accent-solid : Theme.text-secondary;
+                                font-size: 11px;
+                                width: parent.width;
+                                height: parent.height;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                clicked => {
+                                    if (i == 0) { root.find-case-on = !root.find-case-on; }
+                                    if (i == 1) { root.find-whole-on = !root.find-whole-on; }
+                                    if (i == 2) { root.find-regex-on = !root.find-regex-on; }
+                                    // 开关变化后重新计数(Rust)——复用 find-edited 语义
+                                    root.find-edited(root.find-case-on);
+                                }
+                            }
+                        }
+                        Rectangle {
+                            width: 28px;
+                            height: 28px;
+                            border-radius: 4px;
+                            Text { text: "↑"; color: Theme.text-secondary; font-size: 12px;
+                                   width: parent.width; height: parent.height;
+                                   horizontal-alignment: center; vertical-alignment: center; }
+                            TouchArea { clicked => { root.find-step(false); } }
+                        }
+                        Rectangle {
+                            width: 28px;
+                            height: 28px;
+                            border-radius: 4px;
+                            Text { text: "↓"; color: Theme.text-secondary; font-size: 12px;
+                                   width: parent.width; height: parent.height;
+                                   horizontal-alignment: center; vertical-alignment: center; }
+                            TouchArea { clicked => { root.find-step(true); } }
+                        }
+                        Rectangle {
+                            width: 28px;
+                            height: 28px;
+                            border-radius: 4px;
+                            Text { text: "✕"; color: Theme.text-secondary; font-size: 12px;
+                                   width: parent.width; height: parent.height;
+                                   horizontal-alignment: center; vertical-alignment: center; }
+                            TouchArea { clicked => { root.find-close(); } }
+                        }
+                    }
+                    if root.editor-replace-open : HorizontalLayout {
+                        spacing: 6px;
+                        Rectangle {
+                            height: 28px;
+                            horizontal-stretch: 1;
+                            border-radius: 4px;
+                            background: Theme.field;
+                            border-width: 1px;
+                            border-color: Theme.border-strong;
+                            TextInput {
+                                x: 8px;
+                                y: 4px;
+                                width: parent.width - 16px;
+                                height: 20px;
+                                single-line: true;
+                                font-family: Theme.font-mono;
+                                font-size: Theme.fs-sm;
+                                color: Theme.text-primary;
+                                text <=> root.editor-replace-text;
+                            }
+                        }
+                        Rectangle {
+                            height: 30px;
+                            width: 64px;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: #31353e;
+                            Text { text: @tr("Replace"); color: Theme.text-secondary; font-size: 12px;
+                                   width: parent.width; height: parent.height;
+                                   horizontal-alignment: center; vertical-alignment: center; }
+                            TouchArea { clicked => { root.key-action("replace-one"); } }
+                        }
+                        Rectangle {
+                            height: 30px;
+                            width: 76px;
+                            border-radius: 6px;
+                            background: Theme.accent;
+                            clip: true;
+                            Rectangle {
+                                background: #ffffff;
+                                opacity: ra-ta.has-hover ? 0.12 : ra-ta.pressed ? 0.22 : 0;
+                            }
+                            Text { text: @tr("Replace all"); color: PickerMath.ink-on(Theme.accent-hex);
+                                   font-size: 12px; font-weight: 700;
+                                   width: parent.width; height: parent.height;
+                                   horizontal-alignment: center; vertical-alignment: center; }
+                            ra-ta := TouchArea { mouse-cursor: default; clicked => { root.replace-all(); } }
+                        }
+                    }
+                }
+            }
+
+            // ── 编辑区右键菜单(无快捷键角标——用户定稿)──
+            if root.ctx-open : Rectangle {
+                x: min(root.ctx-x, parent.width - 210px);
+                y: min(root.ctx-y, parent.height - 190px);
+                width: 200px;
+                height: 158px;
+                border-radius: Theme.radius-md;
+                background: Theme.bg-elevated;
+                border-width: 1px;
+                border-color: Theme.border-strong;
+                drop-shadow-blur: 16px;
+                drop-shadow-color: rgba(0, 0, 0, 0.5);
+                VerticalLayout {
+                    padding: 5px;
+                    spacing: 0;
+                    for m in ctx-items : Rectangle {
+                        height: 28px;
+                        border-radius: 4px;
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            Text { text: m.label; color: m.disabled ? Theme.text-muted : Theme.text-primary; font-size: 12px; vertical-alignment: center; }
+                        }
+                        m-ta := TouchArea {
+                            mouse-cursor: default;
+                            clicked => { root.ctx-item-clicked(m.cmd); }
+                        }
+                    }
+                }
+                property <[MenuItem]> ctx-items: [
+                    { label: @tr("Copy"), cmd: "copy", disabled: false },
+                    { label: @tr("Paste"), cmd: "paste", disabled: false },
+                    { label: @tr("Select all"), cmd: "select-all", disabled: false },
+                    { label: "", cmd: "sep", disabled: true },
+                    { label: @tr("Format document"), cmd: "format", disabled: !root.can-format },
+                    { label: "", cmd: "sep", disabled: true },
+                    { label: @tr("Find"), cmd: "find", disabled: false },
+                    { label: @tr("Open with system default app"), cmd: "sysopen", disabled: false },
+                ];
+            }
+
+            // ── 转到行浮层(Ctrl+G;一期 UI 直达,回车回调用 Rust 已接)──
+            if root.goto-open : Rectangle {
+                x: (parent.width - 340px) / 2;
+                y: 56px;
+                width: 340px;
+                height: 92px;
+                border-radius: 6px;
+                background: Theme.bg-elevated;
+                border-width: 1px;
+                border-color: Theme.border-strong;
+                drop-shadow-blur: 16px;
+                drop-shadow-color: rgba(0, 0, 0, 0.5);
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    HorizontalLayout {
+                        Text { text: @tr("Go to line"); color: Theme.text-primary; font-size: 12px; }
+                        Rectangle { horizontal-stretch: 1; }
+                        Text { text: @tr("Enter to jump · Esc to cancel"); color: Theme.text-secondary; font-size: 11px; }
+                    }
+                    Rectangle {
+                        height: 30px;
+                        border-radius: 4px;
+                        background: Theme.field;
+                        border-width: 1px;
+                        border-color: Theme.accent-solid;
+                        goto-input := TextInput {
+                            x: 8px; y: 5px;
+                            width: parent.width - 16px;
+                            height: 20px;
+                            single-line: true;
+                            font-family: Theme.font-mono;
+                            font-size: 13px;
+                            color: Theme.text-primary;
+                            text <=> root.goto-line-text;
+                        }
+                    }
+                }
+            }
+
+            // ── tab 右键菜单(150px;贴近右击点;无快捷键角标)──
+            if root.tabmenu-open : Rectangle {
+                x: min(root.tabmenu-x, parent.width - 160px);
+                y: -70px;  // tabmenu-x/y 以 tab 栏为系;菜单从栏底贴下(见 Rust 侧换算)
+                width: 150px;
+                height: 178px;
+                border-radius: Theme.radius-md;
+                background: Theme.bg-elevated;
+                border-width: 1px;
+                border-color: Theme.border-strong;
+                drop-shadow-blur: 16px;
+                drop-shadow-color: rgba(0, 0, 0, 0.5);
+                VerticalLayout {
+                    padding: 5px;
+                    for m in tabmenu-items : Rectangle {
+                        height: 28px;
+                        border-radius: 4px;
+                        Text { text: m.label; color: m.disabled ? Theme.text-muted : Theme.text-primary;
+                               font-size: 12px; x: 10px; vertical-alignment: center; }
+                        TouchArea { clicked => { root.tab-menu(m.cmd, root.tabmenu-idx); } }
+                    }
+                }
+                property <[MenuItem]> tabmenu-items: [
+                    { label: @tr("Close"), cmd: "close", disabled: false },
+                    { label: @tr("Close others"), cmd: "close-others", disabled: root.editor-tabs.length <= 1 },
+                    { label: @tr("Close right"), cmd: "close-right", disabled: root.tabmenu-idx >= root.editor-tabs.length - 1 },
+                    { label: @tr("Close all"), cmd: "close-all", disabled: false },
+                    { label: "", cmd: "sep", disabled: true },
+                    { label: @tr("Download…"), cmd: "download", disabled: false },
+                    { label: @tr("Show in SFTP panel"), cmd: "show-panel", disabled: false },
+                ];
+            }
+
+            // ── 下载弹窗(文件来源 + 保存到 + 浏览… + 下载/取消)──
+            if root.dl-open : Rectangle {
+                x: (parent.width - 460px) / 2;
+                y: (parent.height - 132px) / 2;
+                width: 460px;
+                height: 132px;
+                border-radius: Theme.radius-lg;
+                background: Theme.bg-elevated;
+                border-width: 1px;
+                border-color: Theme.border-strong;
+                drop-shadow-blur: 24px;
+                drop-shadow-color: rgba(0, 0, 0, 0.55);
+                VerticalLayout {
+                    padding-top: 14px;
+                    padding-bottom: 14px;
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    spacing: 8px;
+                    Text { text: @tr("Download file"); color: Theme.text-primary; font-size: 13px; font-weight: 600; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: @tr("File"); color: Theme.text-secondary; font-size: 12px; width: 44px; vertical-alignment: center; }
+                        Rectangle {
+                            height: 28px;
+                            horizontal-stretch: 1;
+                            border-radius: 4px;
+                            background: Theme.field;
+                            border-width: 1px;
+                            border-color: #31353e;
+                            Text { text: root.editor-download-name + " · " + root.editor-download-info;
+                                   color: Theme.text-secondary; font-size: 12px; x: 8px;
+                                   width: parent.width - 16px; height: parent.height;
+                                   vertical-alignment: center; overflow: elide; }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: @tr("Save to"); color: Theme.text-secondary; font-size: 12px; width: 44px; vertical-alignment: center; }
+                        Rectangle {
+                            height: 28px;
+                            horizontal-stretch: 1;
+                            border-radius: 4px;
+                            background: Theme.field;
+                            border-width: 1px;
+                            border-color: #31353e;
+                            Text { text: root.editor-download-dir; color: Theme.text-primary; font-size: 12px; x: 8px;
+                                   width: parent.width - 16px; height: parent.height;
+                                   vertical-alignment: center; overflow: elide; }
+                        }
+                        Rectangle {
+                            height: 28px;
+                            width: browse-btn.preferred-width + 20px;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: #31353e;
+                            browse-btn := Text { text: @tr("Browse…"); color: Theme.text-secondary; font-size: 12px;
+                                   width: parent.width; height: parent.height;
+                                   horizontal-alignment: center; vertical-alignment: center; }
+                            TouchArea { clicked => { root.download-browse(); } }
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: 8px;
+                        Rectangle {
+                            height: 30px;
+                            width: 64px;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: #31353e;
+                            Text { text: @tr("Cancel"); color: Theme.text-secondary; font-size: 12px;
+                                   width: parent.width; height: parent.height;
+                                   horizontal-alignment: center; vertical-alignment: center; }
+                            TouchArea { clicked => { root.dl-open = false; } }
+                        }
+                        Rectangle {
+                            height: 30px;
+                            width: 76px;
+                            border-radius: 6px;
+                            background: Theme.accent;
+                            clip: true;
+                            Rectangle {
+                                background: #ffffff;
+                                opacity: dl-ta.has-hover ? 0.12 : dl-ta.pressed ? 0.22 : 0;
+                            }
+                            Text { text: @tr("Download"); color: PickerMath.ink-on(Theme.accent-hex);
+                                   font-size: 12px; font-weight: 700;
+                                   width: parent.width; height: parent.height;
+                                   horizontal-alignment: center; vertical-alignment: center; }
+                            dl-ta := TouchArea { mouse-cursor: default; clicked => { root.download-confirm(); } }
                         }
                     }
                 }
             }
         }
-    }
-    Rectangle {
-        x: parent.width - 18px;
-        y: parent.height - 18px;
-        width: 18px;
-        height: 18px;
-        resize-ta := TouchArea {
-            mouse-cursor: nwse-resize;
-            pointer-event(e) => {
-                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
-                    root.win-resize-se();
+
+        // ── 状态栏 26px ──
+        Rectangle {
+            height: 26px;
+            background: Theme.bg-panel;
+            Rectangle { // 状态栏顶线
+                x: 0; y: 0;
+                width: parent.width; height: 1px;
+                background: Theme.border-subtle;
+            }
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 14px;
+                alignment: start;
+                if root.editor-status-msg != "" : Text {
+                    text: root.editor-status-msg;
+                    color: Theme.accent-solid;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+                if root.editor-upload-percent < 0 && root.editor-status-msg == "" : Text {
+                    text: "Ln " + root.editor-cursor-line + ", Col " + root.editor-cursor-col
+                        + (root.editor-sel-lines > 0 ? "  ·  选区 " + root.editor-sel-lines + " 行 (" + root.editor-sel-chars + " 字符)" : "");
+                    color: Theme.text-secondary;
+                    font-size: 11px;
+                    font-family: Theme.font-mono;
+                    vertical-alignment: center;
+                }
+                if root.editor-upload-percent >= 0 : HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: root.editor-upload-text; color: Theme.text-primary; font-size: 11px; font-family: Theme.font-mono; vertical-alignment: center; }
+                    Rectangle {
+                        width: 140px;
+                        height: 4px;
+                        y: 11px;
+                        border-radius: 2px;
+                        background: Theme.bg-active;
+                        Rectangle {
+                            width: parent.width * root.editor-upload-percent / 100;
+                            height: 4px;
+                            border-radius: 2px;
+                            background: Theme.accent;
+                        }
+                    }
+                    Text { text: root.editor-upload-percent + "%"; color: Theme.text-secondary; font-size: 11px; font-family: Theme.font-mono; vertical-alignment: center; }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Text { text: root.editor-encoding; color: Theme.text-secondary; font-size: 11px; font-family: Theme.font-mono; vertical-alignment: center; }
+                Text { text: "LF"; color: Theme.text-secondary; font-size: 11px; font-family: Theme.font-mono; vertical-alignment: center; }
+                Text { text: "缩进 " + root.editor-indent-label + " 空格"; color: Theme.text-secondary; font-size: 11px; vertical-alignment: center; }
+                Text { text: root.editor-lang-display; color: Theme.accent-solid; font-size: 11px; vertical-alignment: center; }
+                if root.editor-readonly : Rectangle {
+                    width: ro-text.preferred-width + 12px;
+                    height: 16px;
+                    y: 5px;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: rgba(232, 163, 62, 0.4);
+                    ro-text := Text { text: "只读"; color: Theme.warning; font-size: 10px;
+                        width: parent.width; height: parent.height;
+                        horizontal-alignment: center; vertical-alignment: center; }
                 }
             }
         }
-        // (#grip-icon-3dots) 原为字体字符 "◢";改用与主窗口 ed-resize 一致的 3 点角柄
-        // （点位按右下角偏移,盒宽 18px 不影响落点）。悬停提亮沿用原绑定。
-        Icon { glyph: "resize-se"; tint: resize-ta.has-hover ? Theme.text-secondary : Theme.text-muted; size: 18px; }   // (#icon-svg-migration) 单一事实源 = assets/icons/resize-se.svg
     }
 
-    init => { root.editor-focus-pending = true; }
-    focus-timer := Timer {
-        interval: 0ms;
-        running: root.editor-focus-pending;
-        triggered => {
-            root.editor-focus-pending = false;
-            edit-input.focus();
-        }
+    // ══ 派生属性/工具 ════════════════════════════════════════
+    in-out property <length> char-px: 7.8px * root.ui-scale;   // mono 13px 单格宽(0xProto;Consolas 近似 7.15)
+    in-out property <bool> editor-replace-open: false;
+    in-out property <bool> dl-open: false;
+    in-out property <bool> goto-open: false;
+    in-out property <string> goto-line-text: "";
+    in-out property <bool> can-format: false;
+    in-out property <string> editor-ime-text-holder: "";
+    // tab 图标块底色(设计稿:J 橙 / L 灰 / N 绿 / S 粉;按语言显示名映射)
+    function tab-icon-color(lang: string) -> color {
+        if lang == "Java" { return #E8A33E; }
+        if lang == "日志" { return #7F848B; }
+        if lang == "nginx.conf" { return #73B00A; }
+        if lang == "SQL" { return #C77DBB; }
+        if lang == "JSON" { return #E8A33E; }
+        if lang == "YAML" { return #73B00A; }
+        if lang == "TOML" { return #E8A33E; }
+        if lang == "Shell" { return #7CACF8; }
+        if lang == "XML" { return #45C8E0; }
+        if lang == "Python" { return #6677F7; }
+        if lang == "Dockerfile" { return #45C8E0; }
+        if lang == "Markdown" { return #7F848B; }
+        if lang == "Properties" || lang == "Env" || lang == "INI" { return #7CACF8; }
+        return #7F848B;
     }
+    // find-icons 模型(大小写/全词/正则;一期仅大小写生效)
+    property <[MenuItem]> find-icons: [
+        { label: "Aa", cmd: "case", disabled: !root.find-case-on },
+        { label: "ab|", cmd: "whole", disabled: !root.find-whole-on },
+        { label: ".*", cmd: "regex", disabled: !root.find-regex-on },
+    ];
+    property <bool> find-case-on: true;
+    property <bool> find-whole-on: false;
+    property <bool> find-regex-on: false;
+    callback find-edited(bool /*大小写敏感*/);
+    callback find-icon-toggled(int);
+    callback download-browse();
+    callback ctx-item-clicked(string);
+    callback scroll-to-bar-frac(length);
+
+    init => {
+        // 主题切换后(槽位已由主窗拷贝)无额外动作;纯回调由 Rust 注册
+        root.focus-editor();
     }
+    callback focus-editor();
+    focus-editor => {
+        editor-scope.focus();
+    }
+
+    // 旧版兼容属性(仅供离屏 example / 过渡期引用;渲染不再使用)
+    in-out property <bool> editor-open: false;
+    in-out property <string> editor-tab-id: "";
+    in-out property <[string]> editor-lines-legacy;
+    in-out property <string> editor-content: "";
 }

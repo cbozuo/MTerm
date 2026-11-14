@@ -123,6 +123,8 @@ pub enum SessionEvent {
         path: String,
         name: String,
         content: String,
+        // (#editor-hifi) 打开时的编码显示名(UTF-8/GBK…;chardetng 检测)
+        encoding: String,
         edit: bool,
         error: String,
     },

@@ -321,22 +321,15 @@ pub(super) fn apply_session_event_to_window(
             path,
             name,
             content,
+            encoding,
             edit,
             error,
         } => {
             if error.is_empty() {
-                // Open the built-in viewer/editor (#70).
-                editor.set_editor_lines(editor_lines_for(&content));
-                editor.set_editor_tab_id(tab_id.into());
-                editor.set_editor_path(path.into());
-                editor.set_editor_name(name.into());
-                editor.set_editor_content(content.into());
-                editor.set_editor_readonly(!edit);
-                editor.set_editor_dirty(false);
-                editor.set_editor_open(true);
-                let _ = editor.show();
-                super::window::arm_window_icon(editor.window());
-                editor.window().with_winit_window(|ww| ww.focus_window());
+                // (#editor-hifi) 打开/激活编辑器 tab(rope 模型;重复打开=激活)
+                super::editor_ui::open_remote_file(
+                    editor, &content, &name, &path, tab_id, &encoding, !edit,
+                );
             } else {
                 // Couldn't open as text. The SFTP status line alone is easy to
                 // miss (looks like "nothing happened"), so also print the reason

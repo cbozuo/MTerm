@@ -27,6 +27,8 @@ mod session_models;
 mod session_runtime;
 mod session_trigger;
 mod sftp_callbacks;
+// (#editor-hifi 2026-11-15) 内置编辑器宿主桥(回调注册/窗口模型刷新/编辑动作)
+mod editor_ui;
 mod sftp_ui;
 mod sidebar;
 mod single_instance;
@@ -5055,18 +5057,6 @@ fn open_window(
             if let Some(w) = weak.upgrade() {
                 w.window().with_winit_window(|ww| {
                     let _ = ww.drag_window();
-                });
-                schedule_slint_pointer_ungrab(weak.clone());
-            }
-        });
-    }
-    {
-        use i_slint_backend_winit::winit::window::ResizeDirection;
-        let weak = editor_win.as_weak();
-        editor_win.on_win_resize_se(move || {
-            if let Some(w) = weak.upgrade() {
-                w.window().with_winit_window(|ww| {
-                    let _ = ww.drag_resize_window(ResizeDirection::SouthEast);
                 });
                 schedule_slint_pointer_ungrab(weak.clone());
             }

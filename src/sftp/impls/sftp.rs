@@ -155,14 +155,18 @@ impl Transport {
         }
     }
 
-    async fn read_text(&self, remote: &str) -> std::result::Result<String, String> {
+    async fn read_text(&self, remote: &str) -> std::result::Result<(String, String), String> {
         match self {
             Transport::Sftp { sftp, .. } => read_text_guarded(sftp, remote).await,
             Transport::Scp { handle } => {
                 let bytes = scp_read_text(handle.as_ref(), remote)
                     .await
                     .map_err(|e| format!("{}: {e}", t("打开失败", "Open failed")))?;
-                validate_editor_text(bytes).map_err(editor_rejection_message)
+                if crate::editor::encode::is_binary(&bytes) {
+                    return Err(editor_rejection_message(EditorTextRejection::Binary));
+                }
+                let (text, enc) = crate::editor::encode::decode(&bytes);
+                Ok((text, enc.into()))
             }
         }
     }
@@ -1650,14 +1654,15 @@ async fn run_sftp(
                     t("打开", "Opening"),
                     name
                 )));
-                let (content, error) = match transport.read_text(&remote).await {
-                    Ok(text) => (text, String::new()),
-                    Err(msg) => (String::new(), msg),
+                let (content, encoding, error) = match transport.read_text(&remote).await {
+                    Ok((text, enc)) => (text, enc, String::new()),
+                    Err(msg) => (String::new(), String::new(), msg),
                 };
                 let _ = events.send(SessionEvent::SftpFileText {
                     path: remote,
                     name,
                     content,
+                    encoding,
                     edit,
                     error,
                 });
@@ -1756,8 +1761,8 @@ pub(crate) fn validate_editor_text(bytes: Vec<u8>) -> std::result::Result<String
 pub(crate) fn editor_rejection_message(rejection: EditorTextRejection) -> String {
     match rejection {
         EditorTextRejection::TooLarge => t(
-            "文件过大,无法在内置编辑器中打开(上限 512 KB),请使用外部打开/编辑或下载",
-            "Too large for the built-in editor (512 KB limit); open/edit externally or download it instead",
+            "文件过大,无法在内置编辑器中打开(上限 100 MB),请使用下载",
+            "Too large for the built-in editor (100 MB limit); download it instead",
         ),
         EditorTextRejection::TooManyLines => t(
             "文件行数过多,无法在内置编辑器中安全打开,请使用外部打开/编辑或下载",
@@ -1784,7 +1789,7 @@ pub(crate) fn editor_rejection_message(rejection: EditorTextRejection) -> String
 async fn read_text_guarded(
     sftp: &SftpSession,
     remote: &str,
-) -> std::result::Result<String, String> {
+) -> std::result::Result<(String, String), String> {
     use tokio::io::AsyncReadExt;
     let size = sftp
         .metadata(remote)
@@ -1806,7 +1811,19 @@ async fn read_text_guarded(
         .read_to_end(&mut bytes)
         .await
         .map_err(|e| format!("{}: {e}", t("读取失败", "Read failed")))?;
-    validate_editor_text(bytes).map_err(editor_rejection_message)
+    if crate::editor::encode::is_binary(&bytes) {
+        return Err(editor_rejection_message(EditorTextRejection::Binary));
+    }
+    // (#editor-hifi) 编码自动检测:UTF-8 优先 → GBK/GB18030 等 chardetng 回退
+    let (text, enc) = crate::editor::encode::decode(&bytes);
+    let lines = text.matches('\n').count() + 1;
+    if lines > MAX_BUILTIN_EDITOR_LINES {
+        return Err(editor_rejection_message(EditorTextRejection::TooManyLines));
+    }
+    if text.lines().any(|l| l.len() > MAX_BUILTIN_EDITOR_LINE_BYTES) {
+        return Err(editor_rejection_message(EditorTextRejection::LineTooLong));
+    }
+    Ok((text, enc.into()))
 }
 
 /// Overwrite a remote file with the given text (CREATE | WRITE | TRUNCATE).

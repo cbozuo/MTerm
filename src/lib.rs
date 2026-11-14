@@ -12,6 +12,9 @@ pub mod cli;
 pub mod command_hint;
 pub mod config;
 pub mod datastore;
+// (#editor-hifi 2026-11-15) 内置文本编辑器领域层:rope 多 tab 文档 + tree-sitter/行级
+// 双引擎高亮 + 查找替换 + 格式化 + 编码检测(高保真 docs/design/sftp-editor-hifi-2026-11-14.html)。
+pub mod editor;
 pub mod i18n;
 pub mod layout;
 pub mod logging;
