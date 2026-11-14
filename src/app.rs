@@ -8369,6 +8369,11 @@ fn refresh_group_manager(
     window.set_gm_cur_index(cur_index);
     window.set_gm_cur_color_hex(cur_hex.as_str().into());
     window.set_gm_cur_color(parse_hex_color(&cur_hex).unwrap_or_default());
+    // (#gm-sibling-gen 2026-11-14 用户实测「Test 下移键置灰」)模型代数 +1:
+    // 兄弟行号回调的绑定依赖这个计数感知模型已换——绑定表达式里的纯回调
+    // 调用,Slint 的依赖追踪只含参数,模型自身不在依赖里,不递增则 enabled
+    // 缓存旧值(-1)置灰,而 tooltip 等事件时机求值却是新值,两处打架。
+    window.set_gm_gen(window.get_gm_gen() + 1);
 }
 
 fn sync_sessions_for_window(
@@ -10186,7 +10191,7 @@ fn wire_session_callbacks(
         // no-op,表现为「点了没反应」)。保留组兄弟不参与排序,返回 -1。
         {
             let weak = weak.clone();
-            window.on_gm_prev_sibling(move |i: i32| -> i32 {
+            window.on_gm_prev_sibling(move |i: i32, _gen: i32| -> i32 {
                 let Some(w) = weak.upgrade() else { return -1 };
                 let m = w.get_gm_groups();
                 let Some(my) = m.row_data(i.max(0) as usize) else { return -1 };
@@ -10209,7 +10214,7 @@ fn wire_session_callbacks(
         }
         {
             let weak = weak.clone();
-            window.on_gm_next_sibling(move |i: i32| -> i32 {
+            window.on_gm_next_sibling(move |i: i32, _gen: i32| -> i32 {
                 let Some(w) = weak.upgrade() else { return -1 };
                 let m = w.get_gm_groups();
                 let Some(my) = m.row_data(i.max(0) as usize) else { return -1 };

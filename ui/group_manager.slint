@@ -180,8 +180,16 @@ export component GroupManagerDialog inherits Rectangle {
     // (#gm-subtree-reorder 2026-11-14) 行 i 的同级兄弟行号(DFS 序,-1=无):
     // 上下移键/拖拽落点推算(旧 i-1/i+2 是平面假设,树形下会撞子组或跨层)。
     // pure:enabled/绑定表达式里调用(Slint 纯回调才允许)。
-    pure callback prev-sibling(int /* row */) -> int;
-    pure callback next-sibling(int /* row */) -> int;
+    // (#gm-sibling-gen 2026-11-14 用户实测「Test 下移键置灰」)第 2 参 gen =
+    // 模型代数——**绑定表达式里的纯回调调用,Slint 的依赖追踪只含参数**,
+    // 回调内部读的模型不在依赖里:模型刷新后 enabled 绑定不重算,缓存着
+    // 旧值(-1 置灰),而 tooltip 等事件时机求值却拿到新值——同一键两处
+    // 状态打架。gen 由 refresh_group_manager 每次刷模型后 +1,绑定显式
+    // 依赖它 → 模型一换整键重算。
+    pure callback prev-sibling(int /* row */, int /* gen */) -> int;
+    pure callback next-sibling(int /* row */, int /* gen */) -> int;
+    // 模型代数(挂载处绑 gm-gen;Rust refresh_group_manager 每次 +1)。
+    in property <int> gen;
     callback toggle-pick(string /* id */);
     callback paint-pick(int /* from */, int /* to */, bool /* on */);
     callback clear-picks();
@@ -1014,7 +1022,7 @@ export component GroupManagerDialog inherits Rectangle {
                                                         if (root.drag-insert >= 0) {
                                                             let to = root.drag-to;
                                                             let n2 = to > root.drag-index
-                                                                ? root.next-sibling(to) : -1;
+                                                                ? root.next-sibling(to, root.gen) : -1;
                                                             let before = to > root.drag-index
                                                                 ? (n2 >= 0 ? root.groups[n2].name : "(tail)")
                                                                 : root.groups[to].name;
@@ -1155,7 +1163,7 @@ export component GroupManagerDialog inherits Rectangle {
                                                         border-radius: Theme.radius-sm;
                                                         background: gu-ta.has-hover ? Theme.bg-hover : transparent;
                                                         gu-ta := TouchArea {
-                                                            enabled: root.prev-sibling(i) >= 0;
+                                                            enabled: root.prev-sibling(i, root.gen) >= 0;
                                                             mouse-cursor: default;
                                                             changed has-hover => {
                                                                 if (self.has-hover) {
@@ -1173,7 +1181,7 @@ export component GroupManagerDialog inherits Rectangle {
                                                                 }
                                                             }
                                                             clicked => {
-                                                                let p = root.prev-sibling(i);
+                                                                let p = root.prev-sibling(i, root.gen);
                                                                 if (p >= 0) {
                                                                     root.reorder-group(root.groups[i].name, root.groups[p].name);
                                                                 }
@@ -1187,7 +1195,7 @@ export component GroupManagerDialog inherits Rectangle {
                                                         border-radius: Theme.radius-sm;
                                                         background: gd-ta.has-hover ? Theme.bg-hover : transparent;
                                                         gd-ta := TouchArea {
-                                                            enabled: root.next-sibling(i) >= 0;
+                                                            enabled: root.next-sibling(i, root.gen) >= 0;
                                                             mouse-cursor: default;
                                                             changed has-hover => {
                                                                 if (self.has-hover) {
@@ -1205,11 +1213,11 @@ export component GroupManagerDialog inherits Rectangle {
                                                                 }
                                                             }
                                                             clicked => {
-                                                                let n = root.next-sibling(i);
+                                                                let n = root.next-sibling(i, root.gen);
                                                                 if (n >= 0) {
                                                                     // 下移一位 = 插到下一个兄弟之后：再下一个
                                                                     // 兄弟存在 → 它之前；否则同级末位("(tail)")。
-                                                                    let n2 = root.next-sibling(n);
+                                                                    let n2 = root.next-sibling(n, root.gen);
                                                                     if (n2 >= 0) {
                                                                         root.reorder-group(root.groups[i].name, root.groups[n2].name);
                                                                     } else {

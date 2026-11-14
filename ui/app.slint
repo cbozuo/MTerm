@@ -2021,6 +2021,10 @@ export component AppWindow inherits Window {
     in-out property <bool> gm-open: false;
     in-out property <string> gm-selected: "";
     in property <[GroupRow]> gm-groups: [];
+    // (#gm-sibling-gen 2026-11-14) 模型代数:refresh_group_manager 每次刷
+    // 模型后 +1,兄弟行号回调的绑定靠它感知模型已换(纯回调调用在绑定
+    // 表达式里的依赖只含参数)。
+    in-out property <int> gm-gen: 0;
     in property <[GmMember]> gm-members: [];
     in property <int> gm-visited: 0;      // 统计口径占位（保留给后续"共 N 个会话"）
     in property <int> gm-custom-count: 0;  // 自定义分组数（不含「未分组」）
@@ -2073,8 +2077,10 @@ export component AppWindow inherits Window {
     callback gm-reorder-group(string /* group */, string /* before */);
     // (#gm-subtree-reorder 2026-11-14) 左栏行 i 的同级兄弟行号(Rust 纯函数):
     // DFS 序向前/向后找第一个 depth<=my 的行,== my 即兄弟;保留组兄弟 → -1。
-    pure callback gm-prev-sibling(int /* row */) -> int;
-    pure callback gm-next-sibling(int /* row */) -> int;
+    // (#gm-sibling-gen) 第 2 参 gen=模型代数,绑定显式依赖模型版本(见
+    // group_manager.slint 回调注释)。
+    pure callback gm-prev-sibling(int /* row */, int /* gen */) -> int;
+    pure callback gm-next-sibling(int /* row */, int /* gen */) -> int;
     callback gm-toggle-pick(string /* id */);
     callback gm-paint-pick(int /* from */, int /* to */, bool /* on */);
     callback gm-clear-picks();
@@ -7638,6 +7644,7 @@ export component AppWindow inherits Window {
         open: root.gm-open;
         selected <=> root.gm-selected;
         groups: root.gm-groups;
+        gen: root.gm-gen;
         members: root.gm-members;
         picked-count: root.gm-picked;
         custom-count: root.gm-custom-count;
@@ -7676,8 +7683,8 @@ export component AppWindow inherits Window {
         remove-group(n, t) => { root.gm-remove(n, t); }
         set-group-color(n, h) => { root.gm-set-color(n, h); }
         reorder-group(g, b) => { root.gm-reorder-group(g, b); }
-        prev-sibling(i) => { return root.gm-prev-sibling(i); }
-        next-sibling(i) => { return root.gm-next-sibling(i); }
+        prev-sibling(i, g) => { return root.gm-prev-sibling(i, g); }
+        next-sibling(i, g) => { return root.gm-next-sibling(i, g); }
         toggle-pick(id) => { root.gm-toggle-pick(id); }
         paint-pick(a, b, on) => { root.gm-paint-pick(a, b, on); }
         clear-picks() => { root.gm-clear-picks(); }
