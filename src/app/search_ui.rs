@@ -742,6 +742,40 @@ pub(crate) fn install(window: &AppWindow, store: &Rc<RefCell<ConfigStore>>) {
         });
     }
 
+    // ── (#qs-chips-del 2026-11-14) 最近搜索维护 ─────────────────────
+    // chip 悬停 × 单条删除 / 节头「清空」——操作 recent.searches 后重推
+    // qs-recent-searches 模型(进程内存态,与 on_open 同款推法)。
+    {
+        let weak1 = weak.clone();
+        let recent_rc = recent.clone();
+        window.on_qs_remove_recent_search(move |idx: i32| {
+            let Some(w) = weak1.upgrade() else { return };
+            if idx < 0 {
+                return;
+            }
+            let mut r = recent_rc.borrow_mut();
+            if (idx as usize) < r.searches.len() {
+                r.searches.remove(idx as usize);
+                let m: Vec<SharedString> = r
+                    .searches
+                    .iter()
+                    .map(|s| SharedString::from(s.as_str()))
+                    .collect();
+                w.set_qs_recent_searches(ModelRc::from(Rc::new(VecModel::from(m))));
+            }
+        });
+        let weak2 = weak.clone();
+        let recent_rc = recent.clone();
+        window.on_qs_clear_recent_searches(move || {
+            let Some(w) = weak2.upgrade() else { return };
+            let mut r = recent_rc.borrow_mut();
+            r.searches.clear();
+            w.set_qs_recent_searches(ModelRc::from(Rc::new(VecModel::from(Vec::<
+                SharedString,
+            >::new()))));
+        });
+    }
+
     // ── 鼠标点行 / Home / End：绝对选中 ─────────────────────────────
     {
         let store_rc = store.clone();

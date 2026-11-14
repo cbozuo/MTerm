@@ -156,6 +156,36 @@ export component QuickSearchDialog inherits Rectangle {
     // qs-content-px 同源:组头 24 / 数据行 49+17×(lines-1))——选中跟随滚动用。
     pure callback qs-row-top(int) -> length;
     pure callback qs-row-h(int) -> length;
+    // (#qs-chips-del 2026-11-14 用户反馈)最近搜索维护:chip 悬停显 × 单条
+    // 删除 / 节头右「清空」一键清——Rust 重推 qs-recent-searches。
+    // (#qs-chips-del) tooltip(gm 同款自绘):150ms 出、贴指针右上角、出界
+    // 翻转、移开即收——**不接 AppWindow 的 topbar-tip-* 槽**,那浮层 z 序在
+    // 模态面板之下会被遮住。
+    in-out property <string> tip-text: "";
+    in-out property <length> tip-ax: 0px;
+    in-out property <length> tip-ay: 0px;
+    in-out property <bool> tip-show: false;
+    qs-tip-timer := Timer {
+        interval: 150ms;
+        running: root.tip-text != "";
+        triggered => { root.tip-show = true; }
+    }
+    function tip-on(text: string, ax: length, ay: length) {
+        root.tip-text = text;
+        root.tip-ax = ax;
+        root.tip-ay = ay;
+        root.tip-show = false;
+    }
+    function tip-at(ax: length, ay: length) {
+        root.tip-ax = ax;
+        root.tip-ay = ay;
+    }
+    function tip-off() {
+        root.tip-text = "";
+        root.tip-show = false;
+    }
+    callback qs-remove-recent-search(int /* idx */);
+    callback qs-clear-recent-searches();
 
     property <bool> recent-mode: root.qs-search-text == "";
 
@@ -477,11 +507,17 @@ export component QuickSearchDialog inherits Rectangle {
             // 重做：26→28px、**去常驻边框**（1px 描边+胶囊+灰底三层叠=笨重，
             // 透明占位防 hover 高度跳动，hover 才显边）、节头与 chips 行距
             // 4→8 拉开呼吸、节头字 8.5→9px；死属性 selected 退役。
+            // (#qs-chips-del 2026-11-14 用户反馈)三处交互补齐：① chip 内
+            // 图标/文字交叉轴居中（固定高子项贴顶，坑⑪同族）；② chip 宽度
+            // +26→+52——旧账只算了左内距+图标+间距，**右侧内距被 stretch
+            // 压没**（文字贴右缘=「右侧很短」）；③ chip 悬停渐显 × 删除钮
+            // （常驻占位不跳宽，点击只删不填入——chip-ta 垫底、删钮在其
+            // 上层）+ 节头右端「清空」钮（tooltip 走 root.tip-on 桥）。
             if root.recent-mode && root.qs-recent-searches.length > 0 : Rectangle {
                 x: 0; y: 0; width: 100%; height: 64px;
                 VerticalLayout {
                     alignment: start;
-                    // 节头行（分节头同款语言）
+                    // 节头行（分节头同款语言）+ 右端清空钮
                     Rectangle {
                         height: 24px;
                         HorizontalLayout {
@@ -497,6 +533,40 @@ export component QuickSearchDialog inherits Rectangle {
                                 horizontal-stretch: 0;
                             }
                             Rectangle { height: 1px; background: Theme.border-subtle; opacity: 0.6; horizontal-stretch: 1; }
+                            Rectangle {
+                                height: 18px;
+                                border-radius: 4px;
+                                background: clr-ta.has-hover ? Theme.bg-hover : transparent;
+                                HorizontalLayout {
+                                    padding-left: 6px; padding-right: 6px;
+                                    Text {
+                                        text: @tr("Clear");
+                                        font-size: 9px;
+                                        font-family: Theme.font-mono;
+                                        letter-spacing: 1px;
+                                        color: clr-ta.has-hover ? Theme.text-primary : Theme.text-muted;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                clr-ta := TouchArea {
+                                    mouse-cursor: default;
+                                    changed has-hover => {
+                                        if (self.has-hover) {
+                                            root.tip-on(@tr("Clear search history"),
+                                                self.absolute-position.x + self.mouse-x,
+                                                self.absolute-position.y + self.mouse-y);
+                                        } else { root.tip-off(); }
+                                    }
+                                    pointer-event(__ev) => {
+                                        if (__ev.kind == PointerEventKind.move && self.has-hover) {
+                                            root.tip-on(@tr("Clear search history"),
+                                                self.absolute-position.x + self.mouse-x,
+                                                self.absolute-position.y + self.mouse-y);
+                                        }
+                                    }
+                                    clicked => { root.qs-clear-recent-searches(); }
+                                }
+                            }
                         }
                     }
                     // chips 行
@@ -505,16 +575,27 @@ export component QuickSearchDialog inherits Rectangle {
                         padding-top: 8px; padding-bottom: 0px;
                         spacing: 6px;
                         alignment: start;
-                        for term in root.qs-recent-searches : Rectangle {
+                        for term[idx] in root.qs-recent-searches : Rectangle {
                             height: 28px;
-                            width: chip-tx.preferred-width + 26px;
+                            width: chip-tx.preferred-width + 52px;
                             border-width: 1px;
                             border-color: chip-ta.has-hover ? Theme.border-strong : transparent;
                             border-radius: 14px;
                             background: chip-ta.has-hover ? Theme.bg-hover : Theme.popup-bg-inset;
                             animate background { duration: PanelAnim.reduced ? 0ms : 90ms; }
+                            // 垫底点击区（先声明=在删除钮下层）：点击 chip 其它
+                            // 区域=填入搜索框；删除钮在后声明=点击只删。
+                            chip-ta := TouchArea {
+                                width: 100%; height: 100%;
+                                mouse-cursor: default;
+                                clicked => {
+                                    root.qs-search-text = term;
+                                    root.qs-cat = 0;
+                                }
+                            }
                             HorizontalLayout {
-                                padding-left: 11px; padding-right: 11px;
+                                cross-axis-alignment: center;
+                                padding-left: 11px; padding-right: 8px;
                                 spacing: 5px;
                                 Icon {
                                     glyph: "clock";
@@ -529,11 +610,39 @@ export component QuickSearchDialog inherits Rectangle {
                                     vertical-alignment: center;
                                     horizontal-stretch: 0;
                                 }
-                            }
-                            chip-ta := TouchArea {
-                                clicked => {
-                                    root.qs-search-text = term;
-                                    root.qs-cat = 0;
+                                // 悬停渐显 ×（常驻占位不跳宽）；点击只删不填。
+                                Rectangle {
+                                    width: 12px; height: 12px;
+                                    horizontal-stretch: 0;
+                                    opacity: chip-ta.has-hover ? 1.0 : 0.0;
+                                    border-radius: 3px;
+                                    background: chip-dl.has-hover ? Theme.bg-active : transparent;
+                                    Icon {
+                                        glyph: "close";
+                                        tint: chip-dl.has-hover ? Theme.text-primary : Theme.text-muted;
+                                        size: 8px;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                    chip-dl := TouchArea {
+                                        width: 100%; height: 100%;
+                                        mouse-cursor: default;
+                                        changed has-hover => {
+                                            if (self.has-hover) {
+                                                root.tip-on(@tr("Remove this search"),
+                                                    self.absolute-position.x + self.mouse-x,
+                                                    self.absolute-position.y + self.mouse-y);
+                                            } else { root.tip-off(); }
+                                        }
+                                        pointer-event(__ev) => {
+                                            if (__ev.kind == PointerEventKind.move && self.has-hover) {
+                                                root.tip-on(@tr("Remove this search"),
+                                                    self.absolute-position.x + self.mouse-x,
+                                                    self.absolute-position.y + self.mouse-y);
+                                            }
+                                        }
+                                        clicked => { root.qs-remove-recent-search(idx); }
+                                    }
                                 }
                             }
                         }
@@ -1041,6 +1150,36 @@ export component QuickSearchDialog inherits Rectangle {
                     font-family: Theme.font-mono;
                     color: Theme.text-muted;
                     vertical-alignment: center;
+                }
+            }
+        }
+
+        // ── 悬浮提示浮层（gm 同款：贴指针右上角，右/顶出界翻转）──
+        if root.tip-show && root.tip-text != "" : Rectangle {
+            property <length> tip-w: qs-tip-label.preferred-width + 16px;
+            x: root.tip-ax - root.absolute-position.x + 14px + tip-w > root.bounds-w - 8px
+                ? root.tip-ax - root.absolute-position.x - tip-w - 14px
+                : root.tip-ax - root.absolute-position.x + 14px;
+            y: root.tip-ay - root.absolute-position.y - 28px < 8px
+                ? root.tip-ay - root.absolute-position.y + 18px
+                : root.tip-ay - root.absolute-position.y - 28px;
+            height: 24px;
+            width: tip-w;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            background: Theme.popup-bg-elevated;
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                alignment: center;
+                qs-tip-label := Text {
+                    text: root.tip-text;
+                    color: Theme.text-primary;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    max-width: 240px;
                 }
             }
         }
