@@ -49,6 +49,15 @@ export component EditorWindow inherits Window {
     in-out property <int> editor-content-w: 0;           // 内容总宽 px(最大行宽+边距)
     in-out property <int> editor-content-h: 0;           // 内容总高 px(行数×20)
     in-out property <int> editor-scroll-y: 0;             // 垂直滚动权威值 px(Rust)
+    in-out property <bool> sb-dragging: false;
+    in-out property <bool> close-confirm-open: false;     // 丢弃未保存确认(tab 销毁路径)
+    in-out property <string> close-confirm-text: "";
+    in-out property <int> close-confirm-idx: -1;
+    in-out property <string> close-confirm-cmd: "";
+    callback close-confirm-discard();
+    callback close-confirm-save();
+    callback goto-go();
+    callback find-icon-toggled(bool);
     in-out property <int> editor-gutter-w: 56;           // 56;行号 ≥10 万行 → 74
     in-out property <string> editor-name: "";
     in-out property <string> editor-path: "";
@@ -204,6 +213,10 @@ export component EditorWindow inherits Window {
                 root.key-action("select-all");
                 return accept;
             }
+            if (e.modifiers.control && (e.text == "g" || e.text == "G")) {
+                root.key-action("goto-toggle");
+                return accept;
+            }
             if (e.modifiers.control && (e.text == "f" || e.text == "F" || e.text == "\u{0006}")) {
                 root.key-action("find-toggle");
                 return accept;
@@ -217,9 +230,10 @@ export component EditorWindow inherits Window {
                 return accept;
             }
             if (e.text == Key.Escape) {
-                if (root.ctx-open || root.tabmenu-open) {
+                if (root.ctx-open || root.tabmenu-open || root.goto-open) {
                     root.ctx-open = false;
                     root.tabmenu-open = false;
+                    root.goto-open = false;
                     return accept;
                 }
                 root.close-editor();
@@ -229,10 +243,22 @@ export component EditorWindow inherits Window {
             if (e.text == Key.Backspace) { root.key-action("backspace"); return accept; }
             if (e.text == Key.Delete) { root.key-action("delete"); return accept; }
             if (e.text == Key.Tab) { root.key-action("tab"); return accept; }
-            if (e.text == Key.LeftArrow) { root.key-action("left"); return accept; }
-            if (e.text == Key.RightArrow) { root.key-action("right"); return accept; }
-            if (e.text == Key.UpArrow) { root.key-action("up"); return accept; }
-            if (e.text == Key.DownArrow) { root.key-action("down"); return accept; }
+            if (e.text == Key.LeftArrow) {
+                root.key-action(e.modifiers.shift ? "sel-left" : "left");
+                return accept;
+            }
+            if (e.text == Key.RightArrow) {
+                root.key-action(e.modifiers.shift ? "sel-right" : "right");
+                return accept;
+            }
+            if (e.text == Key.UpArrow) {
+                root.key-action(e.modifiers.shift ? "sel-up" : "up");
+                return accept;
+            }
+            if (e.text == Key.DownArrow) {
+                root.key-action(e.modifiers.shift ? "sel-down" : "down");
+                return accept;
+            }
             if (e.text == Key.Home) { root.key-action("home"); return accept; }
             if (e.text == Key.End) { root.key-action("end"); return accept; }
             if (e.text == Key.PageUp) { root.key-action("page-up"); return accept; }
@@ -653,6 +679,15 @@ export component EditorWindow inherits Window {
                     mouse-cursor: default;
                     pointer-event(e) => {
                         if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                            root.sb-dragging = true;
+                            root.scroll-to-frac(self.mouse-y / parent.height);
+                        }
+                        if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
+                            root.sb-dragging = false;
+                        }
+                    }
+                    moved => {
+                        if (root.sb-dragging) {
                             root.scroll-to-frac(self.mouse-y / parent.height);
                         }
                     }
@@ -737,7 +772,7 @@ export component EditorWindow inherits Window {
                                     if (i == 0) { root.find-case-on = !root.find-case-on; }
                                     if (i == 1) { root.find-whole-on = !root.find-whole-on; }
                                     if (i == 2) { root.find-regex-on = !root.find-regex-on; }
-                                    // 开关变化后重新计数(Rust)——复用 find-edited 语义
+                                    root.find-icon-toggled(root.find-case-on);
                                     root.find-edited(root.find-case-on);
                                 }
                             }
@@ -898,6 +933,7 @@ export component EditorWindow inherits Window {
                             font-size: 13px;
                             color: Theme.text-primary;
                             text <=> root.goto-line-text;
+                            accepted => { root.goto-go(); }
                         }
                     }
                 }
@@ -1133,7 +1169,6 @@ export component EditorWindow inherits Window {
     property <bool> find-whole-on: false;
     property <bool> find-regex-on: false;
     callback find-edited(bool /*大小写敏感*/);
-    callback find-icon-toggled(int);
     callback download-browse();
     callback ctx-item-clicked(string);
     callback scroll-to-bar-frac(length);

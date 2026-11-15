@@ -648,6 +648,13 @@ pub(super) fn sync_editor_theme(main: &AppWindow, editor: &EditorWindow) {
     editor.set_dark_mode(main.get_dark_mode());
     editor.set_ui_scale(main.get_ui_scale());
     editor.set_ui_font_family(main.get_ui_font_family());
+    // (#editor-hifi) 编辑器代码区等宽字体链 + 语法色 16 槽随主题切换
+    {
+        let s = main.global::<crate::ui::Theme<'_>>();
+        let d = editor.global::<crate::ui::Theme<'_>>();
+        d.set_font_mono(s.get_font_mono());
+        d.set_ansi16(s.get_ansi16());
+    }
     editor.set_wallpaper_img(main.get_wallpaper_img());
     editor.set_wallpaper_active(main.get_wallpaper_active());
     editor.set_wp_accent(main.get_wp_accent());

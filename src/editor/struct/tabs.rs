@@ -5,11 +5,13 @@ use super::EditorDoc;
 pub(crate) struct EditorTabs {
     pub docs: Vec<EditorDoc>,
     pub active: usize,
+    /// 查找大小写敏感开关(find-icon 切换,回传 Rust 存档)
+    pub case_sensitive: bool,
 }
 
 impl EditorTabs {
     pub(crate) fn new() -> Self {
-        Self { docs: Vec::new(), active: 0 }
+        Self { docs: Vec::new(), active: 0, case_sensitive: true }
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -74,6 +76,17 @@ impl EditorTabs {
             }
         }
         self.active = 0.min(self.docs.len().saturating_sub(1));
+        closed
+    }
+
+    /// 关闭全部。返回被关文档(逆序)。
+    pub(crate) fn close_all(&mut self) -> Vec<EditorDoc> {
+        let mut closed = Vec::new();
+        while !self.docs.is_empty() {
+            if let Some(d) = self.close(0) {
+                closed.push(d);
+            }
+        }
         closed
     }
 

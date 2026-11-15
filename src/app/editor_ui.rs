@@ -25,6 +25,23 @@ const CODE_PAD_PX: f64 = 12.0;
 const VIEW_BUFFER: usize = 6;
 
 thread_local! {
+    static LAST_DL_DIR: RefCell<String> = RefCell::new(String::new());
+}
+fn last_dl_dir() -> String {
+    LAST_DL_DIR.with(|c| {
+        if c.borrow().is_empty() {
+            *c.borrow_mut() = directories::UserDirs::new()
+                .and_then(|d| d.download_dir().map(|p| p.to_string_lossy().to_string()))
+                .unwrap_or_else(|| std::env::temp_dir().to_string_lossy().to_string());
+        }
+        c.borrow().clone()
+    })
+}
+fn set_last_dl_dir(v: &str) {
+    LAST_DL_DIR.with(|c| *c.borrow_mut() = v.to_string());
+}
+
+thread_local! {
     static TABS: RefCell<Option<SharedTabs>> = const { RefCell::new(None) };
     static STATUS_TIMER: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
 }
@@ -128,15 +145,7 @@ pub(crate) fn wire(editor: &EditorWindow, sftp_handles: SftpHandles) {
         editor.on_tab_close(move |idx| {
             let Some(editor) = weak.upgrade() else { return };
             let tabs = tabs();
-            let _ = tabs.borrow_mut().close(idx as usize);
-            refresh(&editor);
-            if tabs.borrow().is_empty() {
-                editor.set_editor_find_open(false);
-                editor.set_ctx_open(false);
-                editor.set_tabmenu_open(false);
-                editor.set_dl_open(false);
-                let _ = editor.hide();
-            }
+            request_close_tab(&editor, &tabs, idx.max(0) as usize, "close");
         });
     }
     {
@@ -149,18 +158,16 @@ pub(crate) fn wire(editor: &EditorWindow, sftp_handles: SftpHandles) {
             let tabs = tabs();
             match cmd.as_str() {
                 "close" => {
-                    let _ = tabs.borrow_mut().close(idx);
+                    request_close_tab(&editor, &tabs, idx, "close");
                 }
                 "close-others" => {
-                    let _ = tabs.borrow_mut().close_others(idx);
+                    request_close_tab(&editor, &tabs, idx, "close-others");
                 }
                 "close-right" => {
-                    let _ = tabs.borrow_mut().close_right(idx);
+                    request_close_tab(&editor, &tabs, idx, "close-right");
                 }
                 "close-all" => {
-                    let n = tabs.borrow().docs.len();
-                    let _ = tabs.borrow_mut().close_right(0);
-                    let _ = n;
+                    request_close_tab(&editor, &tabs, 0, "close-all");
                 }
                 "download" => {
                     if let Some(d) = tabs.borrow().docs.get(idx) {
@@ -168,7 +175,7 @@ pub(crate) fn wire(editor: &EditorWindow, sftp_handles: SftpHandles) {
                         editor.set_editor_download_info(
                             format!("来自 {}:{}", d.session_tab_id, d.path).into(),
                         );
-                        editor.set_editor_download_dir(default_download_dir().into());
+                        editor.set_editor_download_dir(last_dl_dir().into());
                         editor.set_dl_open(true);
                     }
                 }
@@ -354,6 +361,7 @@ pub(crate) fn wire(editor: &EditorWindow, sftp_handles: SftpHandles) {
             }
             let tabs = tabs();
             let mut t = tabs.borrow_mut();
+            let case = t.case_sensitive;
             let Some(doc) = t.active_doc_mut() else { return };
             if doc.readonly {
                 return;
@@ -365,7 +373,7 @@ pub(crate) fn wire(editor: &EditorWindow, sftp_handles: SftpHandles) {
             doc.edit_marks.clear();
             doc.edit_version += 1;
             doc.spans_cache.clear();
-            run_find(doc, &q, true);
+            run_find(doc, &q, case);
             drop(t);
             refresh(&editor);
         });
@@ -416,9 +424,9 @@ pub(crate) fn wire(editor: &EditorWindow, sftp_handles: SftpHandles) {
                 };
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(editor) = weak2.upgrade() {
-                        editor.set_editor_download_dir(
-                            dir.to_string_lossy().to_string().into(),
-                        );
+                        let dv = dir.to_string_lossy().to_string();
+                        set_last_dl_dir(&dv);
+                        editor.set_editor_download_dir(dv.into());
                     }
                 });
             });
@@ -437,6 +445,7 @@ pub(crate) fn wire(editor: &EditorWindow, sftp_handles: SftpHandles) {
             if dir.is_empty() {
                 return;
             }
+            set_last_dl_dir(&dir);
             if let Ok(handles) = handles.lock() {
                 if let Some(h) = handles.get(&doc.session_tab_id) {
                     h.download(
@@ -470,6 +479,9 @@ pub(crate) fn wire(editor: &EditorWindow, sftp_handles: SftpHandles) {
             editor.set_editor_ime_open(false);
         });
     }
+    // 丢弃未保存确认(数据安全)
+    wire_close_confirm(editor, sftp_handles.clone());
+
     // ── 旧版兼容回调(离屏 example/过渡期;新渲染不使用)──
     editor.on_editor_recount(|_| {});
     editor.on_editor_count_matches(|_, _| 0);
@@ -483,6 +495,7 @@ pub(crate) fn wire(editor: &EditorWindow, sftp_handles: SftpHandles) {
 fn perform_key_action(editor: &EditorWindow, cmd: &str) {
     let tabs = tabs();
     let mut t = tabs.borrow_mut();
+    let case_sensitive = t.case_sensitive;
     let Some(doc) = t.active_doc_mut() else { return };
     if doc.readonly {
         return;
@@ -554,6 +567,29 @@ fn perform_key_action(editor: &EditorWindow, cmd: &str) {
             let vp = editor.get_viewport_rows().max(1) as usize;
             move_cursor(doc, Pos::new(cur.line + vp, cur.col));
         }
+        "sel-left" | "sel-right" | "sel-up" | "sel-down" => {
+            if doc.sel_anchor.is_none() {
+                doc.sel_anchor = Some(cur);
+            }
+            let target = match cmd {
+                "sel-left" => if cur.col > 0 {
+                    Pos::new(cur.line, cur.col - 1)
+                } else if cur.line > 0 {
+                    Pos::new(cur.line - 1, doc.line_text(cur.line - 1).chars().count())
+                } else { cur },
+                "sel-right" => if cur.col < doc.line_text(cur.line).chars().count() {
+                    Pos::new(cur.line, cur.col + 1)
+                } else if cur.line + 1 < doc.len_lines() {
+                    Pos::new(cur.line + 1, 0)
+                } else { cur },
+                "sel-up" => Pos::new(cur.line.saturating_sub(1), cur.col),
+                _ => Pos::new(cur.line + 1, cur.col),
+            };
+            doc.cursor = doc.clamp_pos(target);
+        }
+        "goto-toggle" => {
+            editor.set_goto_open(!editor.get_goto_open());
+        }
         "undo" => {
             doc.undo();
         }
@@ -594,7 +630,7 @@ fn perform_key_action(editor: &EditorWindow, cmd: &str) {
                 doc.delete_range(a, b);
                 doc.cursor = doc.insert_text(a, &rep);
                 doc.dirty = true;
-                run_find(doc, &q, true);
+                run_find(doc, &q, case_sensitive);
             }
         }
         "close" => {
@@ -701,6 +737,17 @@ pub(crate) fn refresh(editor: &EditorWindow) {
     let content_w = (doc.max_line_pixel_width(CHAR_PX) + CODE_PAD_PX * 2.0 + 20.0) as i32;
     editor.set_editor_content_w(content_w);
     editor.set_editor_content_h((doc.len_lines() as f64 * ROW_PX) as i32);
+    // 横向光标可见性(全 f64)
+    let scale = editor.window().scale_factor() as f64;
+    let win_w = editor.window().size().width as f64 / scale;
+    let vw = (win_w - (gutter_w as f64) - 10.0 - CODE_PAD_PX).max(0.0);
+    let cur_px = CODE_PAD_PX + doc.cursor_x_px(doc.cursor, CHAR_PX);
+    if cur_px > (doc.scroll_x as f64) + vw {
+        doc.scroll_x = (cur_px - vw + 10.0) as usize;
+    }
+    if cur_px < (doc.scroll_x as f64) + CODE_PAD_PX {
+        doc.scroll_x = ((cur_px - CODE_PAD_PX) as usize).max(0);
+    }
     editor.set_editor_scroll_y(doc.scroll_y as i32);
     editor.set_editor_name(doc.name.clone().into());
     editor.set_editor_path(doc.path.clone().into());
@@ -790,6 +837,9 @@ pub(crate) fn refresh(editor: &EditorWindow) {
     }
     editor.set_editor_lines(ModelRc::new(VecModel::from(rows)));
     editor.set_editor_scroll_frac((frac as f64 / ROW_PX) as i32);
+    if editor.get_editor_find_open() {
+        push_find_state(editor, doc);
+    }
 }
 
 fn px_of(text: &str, col: usize) -> f64 {
@@ -842,4 +892,114 @@ fn default_download_dir() -> String {
     directories::UserDirs::new()
         .and_then(|d| d.download_dir().map(|p| p.to_string_lossy().to_string()))
         .unwrap_or_else(|| std::env::temp_dir().to_string_lossy().to_string())
+}
+
+// ═══════════════════════════════════════════════════════════
+// tab 关闭确认链(dirty 销毁路径;窗口 hide 不销毁 tabs 无需确认)
+// ═══════════════════════════════════════════════════════════
+fn request_close_tab(editor: &EditorWindow, tabs: &SharedTabs, idx: usize, cmd: &str) {
+    let t = tabs.borrow();
+    let dirty_hit = match cmd {
+        "close" => t.docs.get(idx).map(|d| d.dirty).unwrap_or(false),
+        "close-others" => t.docs.iter().enumerate().any(|(i, d)| i != idx && d.dirty),
+        "close-right" => t.docs.iter().enumerate().any(|(i, d)| i > idx && d.dirty),
+        _ => t.docs.iter().any(|d| d.dirty),
+    };
+    drop(t);
+    if dirty_hit {
+        editor.set_close_confirm_open(true);
+        editor.set_close_confirm_idx(idx as i32);
+        editor.set_close_confirm_cmd(cmd.into());
+        editor.set_close_confirm_text(match cmd {
+            "close" => "该文件".into(),
+            "close-others" => "其他".into(),
+            "close-right" => "右侧".into(),
+            _ => "".into(),
+        });
+        return;
+    }
+    do_close(editor, tabs, idx, cmd);
+}
+
+fn do_close(editor: &EditorWindow, tabs: &SharedTabs, idx: usize, cmd: &str) {
+    let mut t = tabs.borrow_mut();
+    match cmd {
+        "close" => {
+            let _ = t.close(idx);
+        }
+        "close-others" => {
+            let _ = t.close_others(idx);
+        }
+        "close-right" => {
+            let _ = t.close_right(idx);
+        }
+        _ => {
+            let _ = t.close_all();
+        }
+    }
+    drop(t);
+    refresh(editor);
+    if tabs.borrow().is_empty() {
+        editor.set_editor_find_open(false);
+        editor.set_ctx_open(false);
+        editor.set_tabmenu_open(false);
+        editor.set_dl_open(false);
+        let _ = editor.hide();
+    }
+}
+
+pub(crate) fn wire_close_confirm(editor: &EditorWindow, sftp_handles: SftpHandles) {
+    let weak = editor.as_weak();
+    editor.on_close_confirm_discard(move || {
+        let Some(editor) = weak.upgrade() else { return };
+        let idx = editor.get_close_confirm_idx().max(0) as usize;
+        let cmd = editor.get_close_confirm_cmd().to_string();
+        editor.set_close_confirm_open(false);
+        let tabs = tabs();
+        do_close(&editor, &tabs, idx, &cmd);
+    });
+    let handles = sftp_handles.clone();
+    let weak = editor.as_weak();
+    editor.on_close_confirm_save(move || {
+        let Some(editor) = weak.upgrade() else { return };
+        let idx = editor.get_close_confirm_idx().max(0) as usize;
+        let cmd = editor.get_close_confirm_cmd().to_string();
+        // 保存范围内全部 dirty tab 后关闭(与 save-file 同一 write_text 链)
+        let tabs = tabs();
+        let targets: Vec<(String, String, String, usize)> = {
+            let t = tabs.borrow();
+            let mut v = Vec::new();
+            for (i, d) in t.docs.iter().enumerate() {
+                let hit = match cmd.as_str() {
+                    "close" => i == idx && d.dirty,
+                    "close-others" => i != idx && d.dirty,
+                    "close-right" => i > idx && d.dirty,
+                    _ => d.dirty,
+                };
+                if hit {
+                    v.push((d.path.clone(), d.rope.to_string(), d.session_tab_id.clone(), i));
+                }
+            }
+            v
+        };
+        if let Ok(handles) = handles.lock() {
+            for (path, content, session, _) in &targets {
+                if let Some(h) = handles.get(session) {
+                    h.write_text(path.clone(), content.clone());
+                }
+            }
+        }
+        {
+            let mut t = tabs.borrow_mut();
+            for (_, _, _, i) in &targets {
+                if let Some(d) = t.docs.get_mut(*i) {
+                    d.dirty = false;
+                    d.edit_marks.clear();
+                }
+            }
+        }
+        editor.set_close_confirm_open(false);
+        set_status(&editor, "已保存并关闭");
+        do_close(&editor, &tabs, idx, &cmd);
+    });
 }
