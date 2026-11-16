@@ -3307,6 +3307,10 @@ fn open_window(
     let ui_font_effective: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
     let mono_default = resolve_mono_font_family(&db);
     window.set_font_mono(mono_default.clone());
+    // (#editor-mono-empty) 编辑器窗口在本函数前段(≈2515 行)已 sync 过主题,那时
+    // font-mono 还是 Slint 默认空串——编辑器行号槽与正文回退比例字体(样式全毁的
+    // 根因)。字体链解析完在这里重同步一次(幂等)。
+    sync_editor_theme(&window, &editor_win);
     // (#nerd-icon-probe) 告知用户所选等宽字体带不带 Nerd Font 图标字形 ——
     // 不改选择逻辑（多数机器根本没装 Nerd Font，据此拒绝会把字体链清空），
     // 只报日志：`ls --color` 图标渲染成空白时至少有个说法。
@@ -4239,6 +4243,7 @@ fn open_window(
         let weak = window.as_weak();
         let store = store.clone();
         let chain_default = mono_default.clone();
+        let editor_weak = editor_win.as_weak();
         window.on_set_term_font(move |family: SharedString| {
             {
                 let mut s = store.borrow_mut();
@@ -4262,6 +4267,12 @@ fn open_window(
                 w.set_term_ink_bias_em(bias);
                 // (#nerd-icon-unify) 图标布局表跟着换。
                 load_nerd_icon_layouts(&db2, w.get_term_font_family().as_str());
+                // (#editor-native) 编辑器等宽字体链跟随设置变化:重同步主题槽位
+                // (行号槽字体 / 语法色)并立即刷新(此前编辑器一直停在旧字体名上)。
+                if let Some(ed) = editor_weak.upgrade() {
+                    sync_editor_theme(&w, &ed);
+                    editor_ui::refresh(&ed);
+                }
             }
         });
     }
@@ -4448,6 +4459,9 @@ fn open_window(
             }
             if let Some(editor) = editor_weak.upgrade() {
                 editor.set_ui_scale(clamped as f32 / 100.0);
+                // (#editor-native) 界面缩放变化 → 重编码语法色(色值取自
+                // Theme.ansi16)且行号槽字号随 fs-sm×ui-scale 变。
+                editor_ui::refresh(&editor);
             }
         });
     }
@@ -5045,7 +5059,9 @@ fn open_window(
         let main_weak = window.as_weak();
         editor_win.on_close_editor(move || {
             if let (Some(editor), Some(main)) = (weak.upgrade(), main_weak.upgrade()) {
-                editor.set_editor_open(false);
+                // (#editor-native) 编辑器侧收尾(正文 stash + 收浮层)统一走这里,
+                // 因为 Slint 的 on_close_editor 只保留最后一次注册。
+                editor_ui::on_editor_closed(&editor);
                 let _ = editor.hide();
                 main.set_editor_open(false);
             }

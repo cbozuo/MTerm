@@ -1,64 +1,50 @@
-// (#editor-hifi) tree-sitter 高亮引擎:可编辑代码文件(≤16MB)整树解析 + 可见窗口遍历。
-// 解析惰性:编辑时只 bump edit_version,滚动到该 doc / 空闲刷新时才重 parse(一次 ~100ms/16MB,
-// 不在键入路径上)。着色 = 语法树叶子节点 → kind 表(关键字走匿名 token 文本比对)。
-use super::highlight::{Span, SpanKind};
-use super::{highlight_line, EditorDoc, Lang};
-use tree_sitter::{Parser, Tree};
+// (#editor-native 2026-11-16) 全文高亮:输出交给 Slint TextInput.syntax-spans 的
+// **全文 UTF-8 字节区间**。两条引擎:
+//   · tree-sitter(代码文件,整树解析 → 叶子字节区间;语言无 grammar 时回退行级)
+//   · 行级规则(日志 / 行式配置:regex 逐规则找最早命中,间隙不产出)
+//
+// 旧实现按「可见行窗口」产出「行内字符区间」,再由 Slint 按 `列 × 单格宽` 绝对定位。
+// 那是终端的坐标模型:等宽主字体没有 CJK 字形,中文回退成比例字体、前进量≠2 格,
+// 于是中文之后整行漂移。现在改为:整篇扫描、字节区间、交给原生 shaping 叠色 ——
+// 段落切分/度量/光标/选择/IME 全部与纯文本一致,只有字形颜色变化。
+use super::highlight::{GSpan, SpanKind};
+use super::{highlight_line, Lang};
+use tree_sitter::Parser;
 
-/// 对可见窗口 [first, last] 输出每行 spans(ts 语言走语法树,其余走行级规则)。
-pub(crate) fn highlight_visible(doc: &mut EditorDoc, first: usize, last: usize) -> Vec<Vec<Span>> {
-    let last = last.min(doc.len_lines().saturating_sub(1));
-    let mut rows = Vec::with_capacity(last.saturating_sub(first) + 1);
-    if !doc.lang.uses_tree_sitter() || doc.big {
-        for r in first..=last {
-            let spans = if let Some(cached) = doc.spans_cache.get(&r) {
-                cached.clone()
-            } else {
-                let s = highlight_line::highlight_line(&doc.line_text(r), doc.lang);
-                doc.spans_cache.insert(r, s.clone());
-                s
-            };
-            rows.push(spans);
-        }
-        return rows;
+/// tree-sitter 整树解析上限:再大就用行级规则(解析成本随体积线性上升)。
+const TS_MAX_BYTES: usize = 2 * 1024 * 1024;
+/// 行级规则(regex 逐行)的着色上限。整篇扫描是一次性成本,但 8MB 已近 1s 量级,
+/// 再大就不给色 —— 大文件浏览场景颜色价值低,而滚动/编辑本身照常。
+/// (宿主桥对 256KB 以上的扫描会丢到后台线程,所以这里不是"卡 UI"的阈值。)
+const LINE_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+/// 全文高亮。返回的区间有序、互不重叠(渲染侧会丢弃越界/重叠项)。
+pub(crate) fn highlight_all(text: &str, lang: Lang) -> Vec<GSpan> {
+    if text.is_empty() {
+        return Vec::new();
     }
-    ensure_tree(doc);
-    let Some(tree) = doc.tree_cache.clone() else {
-        // 解析失败兜底:整窗口默认色
-        for _ in first..=last {
-            rows.push(Vec::new());
-        }
-        return rows;
-    };
-    // ts 模式缓存也复用(行号 → spans)
-    for r in first..=last {
-        if let Some(cached) = doc.spans_cache.get(&r) {
-            rows.push(cached.clone());
-        } else {
-            rows.push(Vec::new());
+    if lang.uses_tree_sitter() && text.len() <= TS_MAX_BYTES {
+        if let Some(spans) = ts_spans(text, lang) {
+            return spans;
         }
     }
-    collect_into(&tree, doc, first, last, &mut rows);
-    for (i, r) in (first..=last).enumerate() {
-        doc.spans_cache.insert(r, rows[i].clone());
+    if text.len() > LINE_MAX_BYTES {
+        return Vec::new();
     }
-    rows
+    line_spans(text, lang)
 }
 
-/// 惰性解析(版本不符才重 parse)。
-pub(crate) fn ensure_tree(doc: &mut EditorDoc) {
-    if doc.tree_cache.is_some() && doc.ts_version == doc.edit_version {
-        return;
-    }
-    let Some(lang) = ts_language(doc.lang) else { return };
-    let text = doc.rope.to_string();
+// ── tree-sitter 路径 ──────────────────────────────────────────
+/// 整树解析 → DFS 叶子字节区间。None = 该语言无 grammar 或解析失败(调用方回退行级)。
+fn ts_spans(text: &str, lang: Lang) -> Option<Vec<GSpan>> {
+    let language = ts_language(lang)?;
     let mut parser = Parser::new();
-    if parser.set_language(&lang).is_err() {
-        return;
-    }
-    doc.tree_cache = parser.parse(&text, None);
-    doc.ts_version = doc.edit_version;
-    doc.spans_cache.clear();
+    parser.set_language(&language).ok()?;
+    let tree = parser.parse(text, None)?;
+    let mut out = Vec::new();
+    let mut cursor = tree.walk();
+    walk(&mut cursor, None, lang, &mut out);
+    Some(out)
 }
 
 pub(crate) fn ts_language(lang: Lang) -> Option<tree_sitter::Language> {
@@ -76,29 +62,25 @@ pub(crate) fn ts_language(lang: Lang) -> Option<tree_sitter::Language> {
     })
 }
 
-/// DFS 遍历:只深入与窗口相交的子树;叶子按 kind 表着色,跨行节点逐行拆分。
-fn collect_into(tree: &Tree, doc: &EditorDoc, first: usize, last: usize, out: &mut [Vec<Span>]) {
-    let mut cursor = tree.walk();
-    walk(&mut cursor, None, first, last, doc, out);
-}
-
-fn walk(cursor: &mut tree_sitter::TreeCursor, parent: Option<&str>, first: usize, last: usize, doc: &EditorDoc, out: &mut [Vec<Span>]) {
+/// DFS:叶子按 kind 表着色(仅非 Plain 才产出,缩短下发字符串)。
+fn walk(cursor: &mut tree_sitter::TreeCursor, parent: Option<&str>, lang: Lang, out: &mut Vec<GSpan>) {
     let node = cursor.node();
     let kind = node.kind().to_string();
-    let (sr, er) = (node.start_position().row, node.end_position().row);
-    if er < first || sr > last.min(doc.len_lines().saturating_sub(1)) {
-        return; // 剪枝:整棵子树与窗口不相交
-    }
     if node.child_count() == 0 {
-        if let Some(sp_kind) = kind_for(doc.lang, &kind, parent, node.is_named()) {
-            push_leaf(node, sr, er, sp_kind, doc, first, out);
+        if let Some(sp_kind) = kind_for(lang, &kind, parent, node.is_named()) {
+            if sp_kind != SpanKind::Plain {
+                let (s, e) = (node.start_byte(), node.end_byte());
+                if e > s {
+                    out.push(GSpan { start: s, end: e, kind: sp_kind });
+                }
+            }
         }
         return;
     }
     let pk = kind.as_str();
     if cursor.goto_first_child() {
         loop {
-            walk(cursor, Some(pk), first, last, doc, out);
+            walk(cursor, Some(pk), lang, out);
             if !cursor.goto_next_sibling() {
                 break;
             }
@@ -107,20 +89,41 @@ fn walk(cursor: &mut tree_sitter::TreeCursor, parent: Option<&str>, first: usize
     }
 }
 
-fn push_leaf(node: tree_sitter::Node, sr: usize, er: usize, kind: SpanKind, doc: &EditorDoc, first: usize, out: &mut [Vec<Span>]) {
-    for row in sr..=er.min(doc.len_lines().saturating_sub(1)) {
-        if row < first || row - first >= out.len() {
-            continue;
+// ── 行级规则路径 ──────────────────────────────────────────────
+/// 逐行跑行级规则,把「行内字符列」换算成全文字节偏移。
+fn line_spans(text: &str, lang: Lang) -> Vec<GSpan> {
+    let mut out = Vec::new();
+    let mut line_start = 0usize;
+    for raw in text.split_inclusive('\n') {
+        let body = raw.strip_suffix('\n').unwrap_or(raw);
+        let body = body.strip_suffix('\r').unwrap_or(body);
+        if !body.is_empty() {
+            let offsets = char_byte_offsets(body);
+            for sp in highlight_line::highlight_line(body, lang) {
+                if sp.kind == SpanKind::Plain {
+                    continue;
+                }
+                let s = offsets[sp.start.min(offsets.len() - 1)];
+                let e = offsets[(sp.start + sp.len).min(offsets.len() - 1)];
+                if e > s {
+                    out.push(GSpan {
+                        start: line_start + s,
+                        end: line_start + e,
+                        kind: sp.kind,
+                    });
+                }
+            }
         }
-        let line_chars = doc.line_text(row).chars().count();
-        let s_col = if row == sr { node.start_position().column } else { 0 };
-        let e_col = if row == er { node.end_position().column } else { line_chars };
-        let s = s_col.min(line_chars);
-        let e = e_col.min(line_chars);
-        if e > s {
-            out[row - first].push(Span { start: s, len: e - s, kind });
-        }
+        line_start += raw.len();
     }
+    out
+}
+
+/// 每字符起始字节 + 末尾哨兵(长度 = 字符数 + 1)。
+fn char_byte_offsets(s: &str) -> Vec<usize> {
+    let mut v: Vec<usize> = s.char_indices().map(|(i, _)| i).collect();
+    v.push(s.len());
+    v
 }
 
 /// 着色表:通用规则(注释/字符串/数字)+ 每语言 identifier/关键字特化。
@@ -166,19 +169,13 @@ fn kind_for(lang: Lang, kind: &str, parent: Option<&str>, named: bool) -> Option
         Lang::Json => match kind {
             "true" | "false" | "null" => Some(SpanKind::Kw),
             "number" => Some(SpanKind::Num),
-            "string" => Some(match parent.unwrap_or("") {
-                "document" | "array" | "object" => SpanKind::Str,
-                // pair 的键(第一个 string 子节点)按 key 着色由调用顺序天然保证:
-                // pair 的 key 与 value 都是 string,这里再按父节点区分:pair → 键青/值绿
-                _ => SpanKind::Str,
-            }),
+            "string" => Some(SpanKind::Str),
             _ => Some(SpanKind::Plain),
         },
         Lang::Yaml => match kind {
             "comment" => Some(SpanKind::Com),
             "double_quote_scalar" | "single_quote_scalar" | "block_scalar" => Some(SpanKind::Str),
             "anchor" | "alias" => Some(SpanKind::Ann),
-            "plain_scalar" => Some(SpanKind::Plain),
             _ => Some(SpanKind::Plain),
         },
         Lang::Toml => match kind {
@@ -209,7 +206,6 @@ fn kind_for(lang: Lang, kind: &str, parent: Option<&str>, named: bool) -> Option
         Lang::Xml => match kind {
             "Name" => Some(SpanKind::Fn),
             "AttributeValue" | "AttValue" => Some(SpanKind::Str),
-            "Text" | "CharData" => Some(SpanKind::Plain),
             "Comment" | "CDATA" => Some(SpanKind::Com),
             "Pi" | "Decl" | "SystemLiteral" => Some(SpanKind::Ann),
             _ => Some(SpanKind::Plain),
@@ -259,4 +255,82 @@ fn keyword_or_plain(token_kind: &str) -> SpanKind {
         _ => JAVA_KW.contains(&k) || BASH_KW.contains(&k) || PY_KW.contains(&k),
     };
     if hit { SpanKind::Kw } else { SpanKind::Plain }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 所有区间必须:在界内、落在字符边界、有序、互不重叠 —— 否则渲染侧会丢色,
+    /// 或(越界/半字符)直接丢弃。
+    fn assert_wellformed(text: &str, spans: &[GSpan]) {
+        let mut prev_end = 0usize;
+        for sp in spans {
+            assert!(sp.start < sp.end, "空区间 {:?}", sp);
+            assert!(sp.end <= text.len(), "越界 {:?} (len {})", sp, text.len());
+            assert!(text.is_char_boundary(sp.start), "起点非字符边界 {:?}", sp);
+            assert!(text.is_char_boundary(sp.end), "终点非字符边界 {:?}", sp);
+            assert!(sp.start >= prev_end, "乱序/重叠 {:?} (prev_end {})", sp, prev_end);
+            prev_end = sp.end;
+        }
+    }
+
+    #[test]
+    fn shell_spans_stay_on_char_boundaries_with_cjk_comments() {
+        // CJK 注释 + 中文串:字节区间必须仍落在字符边界(旧网格模型在此漂移)
+        let text = "#!/bin/sh\n# 中文注释:检查依赖\nif [ \"$1\" = \"就绪\" ]; then\n  echo 42\nfi\n";
+        let spans = highlight_all(text, Lang::Bash);
+        assert!(!spans.is_empty(), "shell 应有高亮");
+        assert_wellformed(text, &spans);
+    }
+
+    #[test]
+    fn cjk_only_text_yields_wellformed_spans() {
+        let text = "# 全是中文的注释行\n# 第二行也是中文\nvalue = 1\n";
+        let spans = highlight_all(text, Lang::Toml);
+        assert_wellformed(text, &spans);
+    }
+
+    #[test]
+    fn line_rule_language_reports_keyword_color() {
+        let text = "# comment\nvalue = 123\n";
+        let spans = highlight_all(text, Lang::Toml);
+        // 至少注释一条
+        assert!(spans.iter().any(|s| s.kind == SpanKind::Com), "应有着色的注释");
+    }
+
+    #[test]
+    fn empty_and_huge_text_are_refused() {
+        assert!(highlight_all("", Lang::Bash).is_empty());
+    }
+
+    #[test]
+    fn ts_language_path_is_wellformed_for_json() {
+        let text = "{\n  \"键\": \"中文值\",\n  \"n\": 12\n}\n";
+        let spans = highlight_all(text, Lang::Json);
+        assert_wellformed(text, &spans);
+    }
+
+    #[test]
+    fn java_with_cjk_comments_is_wellformed_and_colored() {
+        // 旧的手搓网格在中文注释处必然漂移;字节区间模型必须逐字对齐
+        let text = concat!(
+            "package com.mterm.transfer.sftp;\n",
+            "\n",
+            "/** SFTP 传输服务:上传 / 下载 / 断点续传。 */\n",
+            "public class SftpTransferService implements TransferService {\n",
+            "    // 同步上传(带断点续传),返回远端字节数\n",
+            "    public long syncUpload(String remotePath) throws IOException {\n",
+            "        log.info(\"上传完成:{} ({} 字节)\", remotePath, bytes);\n",
+            "    }\n",
+            "}\n",
+        );
+        let spans = highlight_all(text, Lang::Java);
+        assert_wellformed(text, &spans);
+        // 中文注释必须整条落在注释类别里(不因 CJK 宽度而截断)
+        let com = spans.iter().find(|s| s.kind == SpanKind::Com).expect("应有注释");
+        let seg = &text[com.start..com.end];
+        assert!(seg.contains("传输服务"), "注释未覆盖中文: {seg:?}");
+        assert!(seg.starts_with("/**"), "注释起点应在 /** : {seg:?}");
+    }
 }

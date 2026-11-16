@@ -1,16 +1,18 @@
 import { Icon } from "icons.slint";
 import { Theme } from "theme.slint";
 import { PickerMath } from "color_picker.slint";
-import { EditorSpanKind, EditorSpan, EditorLineRow, EditorTabInfo } from "editor_types.slint";
+import { EditorTabInfo } from "editor_types.slint";
+import { ScrollView } from "std-widgets.slint";
 
 // (#editor-hifi 2026-11-15) 内置文本编辑器 —— 按高保真 docs/design/sftp-editor-hifi-2026-11-14.html
 // 100% 还原:rope 行级虚拟化渲染(全文不过 Slint 边界)+ 多文件 tab + 浮层查找替换 +
 // 语法色 = 主题 ANSI16(Theme.ansi16)。旧版「全文 TextInput + 全量行号」退役。
 // 数据流:Rust 持有 scroll-y/窗口模型权威值;Slint 只发 wheel/点击/键入事件。
 export struct EditorFindResult {
-    start: int,
-    end: int,
-    count: int,
+    start: int,        // 命中起始字节(含)
+    end: int,          // 命中结束字节(不含)
+    count: int,        // 命中总数
+    index: int,        // 当前命中序号(1 基;0 = 无)
 }
 
 // 菜单条目(右键菜单/查找浮层图标钮共用;无快捷键角标——用户定稿)
@@ -40,24 +42,29 @@ export component EditorWindow inherits Window {
     preferred-height: 760px;
     background: Theme.window-base;
 
-    // ══ 窗口模型(Rust 下发,只读侧) ════════════════════════════
+    // ══ 文档模型(Rust 下发) ══════════════════════════════════
     in-out property <[EditorTabInfo]> editor-tabs;
-    in-out property <[EditorLineRow]> editor-lines;      // 可见窗口 ± 缓冲行
-    in-out property <int> editor-first-row: 0;           // 窗口首行(0 基整行)
-    in-out property <int> editor-scroll-frac: 0;         // 垂直滚动像素余数(0..20)
-    in-out property <int> editor-scroll-x: 0;            // 横向滚动像素
-    in-out property <int> editor-content-w: 0;           // 内容总宽 px(最大行宽+边距)
-    in-out property <int> editor-content-h: 0;           // 内容总高 px(行数×20)
-    in-out property <int> editor-scroll-y: 0;             // 垂直滚动权威值 px(Rust)
-    in-out property <bool> sb-dragging: false;
+    /// 活动文档正文(与 TextInput two-way)。文本权威在 Slint 侧 TextInput:
+    /// shaping / 光标 / 选择 / 剪贴板 / IME / 撤销全部原生,Rust 只在打开、
+    /// 切 tab、格式化、整体替换时下发。
+    in-out property <string> editor-content: "";
+    /// 高亮输入:source 必须与正文逐字节一致(否则渲染侧拒绝着色,防串色);
+    /// spans = 有序、互不重叠的 UTF-8 字节区间 `start:end:AARRGGBB;`。
+    in-out property <string> editor-syntax-source: "";
+    in-out property <string> editor-syntax-spans: "";
+    /// 选区请求:Rust 无法直接调用 TextInput 内建函数,改 token 即触发一次定位
+    /// (查找跳转 / 转到行)。
+    in-out property <int> sel-request-start: 0;
+    in-out property <int> sel-request-end: 0;
+    in-out property <int> sel-request-token: 0;
+    /// 命中行数(滚动条命中标记的分数分母;TextInput 不暴露行数)
+    in-out property <int> editor-total-lines: 1;
     in-out property <bool> close-confirm-open: false;     // 丢弃未保存确认(tab 销毁路径)
     in-out property <string> close-confirm-text: "";
     in-out property <int> close-confirm-idx: -1;
     in-out property <string> close-confirm-cmd: "";
     callback close-confirm-discard();
     callback close-confirm-save();
-    callback goto-go();
-    callback find-icon-toggled(bool);
     in-out property <int> editor-gutter-w: 56;           // 56;行号 ≥10 万行 → 74
     in-out property <string> editor-name: "";
     in-out property <string> editor-path: "";
@@ -89,12 +96,6 @@ export component EditorWindow inherits Window {
     in-out property <string> editor-download-info: "";
     in-out property <string> editor-download-dir: "";
 
-    // IME 输入条(光标处浮动;Enter 提交 Esc 取消;探针确认 FocusScope 直收 IME 后可退役)
-    in-out property <bool> editor-ime-open: false;
-    in-out property <string> editor-ime-text: "";
-    in-out property <length> editor-ime-x: 0;
-    in-out property <length> editor-ime-y: 0;
-
     // 浮层开关(Rust 触发/Slint 右键触发)
     in-out property <bool> ctx-open: false;              // 编辑区右键菜单
     in-out property <length> ctx-x: 0;
@@ -113,159 +114,132 @@ export component EditorWindow inherits Window {
     callback tab-close(int);
     // tab 右键菜单命令:close / close-others / close-right / close-all / download / show-panel
     callback tab-menu(string, int);
-    // 键盘动作(焦点在 FocusScope;Rust 处理 rope 编辑):enter/backspace/delete/left/
-    // right/up/down/home/end/page-up/page-down/tab/undo/redo/copy/paste/select-all/
-    // find-toggle/save/format
-    callback key-action(string);
-    /// 可打印字符插入(单键/IME 提交整串;探针确认 FocusScope 能直收 IME commit 后走这里)
-    callback input-text(string);
-    /// 正文点击定位:model 行索引(0 基)+ 点击像素 x → Rust 换算字符列
-    callback click-at(length, length, bool /*shift 选区*/);
-    /// 双击选词(占位:一期同单击定位)
-    callback wheel(int /*deltaY px*/, bool /*shift=横滚*/);
-    /// 滚动条拖拽:目标首行(0 基)
-    callback scroll-to-frac(float);
-    /// 查找:open/step(next=true)/close/replace-all;query 经属性 two-way
-    callback find-step(bool);
+    /// 正文被用户改动(标脏 + 排定高亮)
+    callback content-changed();
+    /// 防抖后的高亮请求:参数 = 当前正文;Rust 回填 editor-syntax-source / -spans
+    callback editor-highlight(string);
+    /// 光标/选区变化(UTF-8 字节偏移)→ 状态栏 Ln/Col + 选区行数
+    callback cursor-moved(int /*caret 字节偏移*/, int /*anchor 字节偏移*/);
+    /// 命中总数(text 与 query 由调用方给,大小写走 editor-find-case)
+    callback editor-count-matches(string, string) -> int;
+    /// 查找跳转:from = 当前光标字节偏移;返回命中区间 + 总数 + 序号(1 基)
+    callback editor-find-step(string, string, int, bool) -> EditorFindResult;
+    /// 全部替换:Rust 读 editor-replace-text / editor-find-case 后重写正文
+    callback editor-replace-all(string, string);
     callback find-close();
     callback replace-all();
     callback format-doc();
+    /// 编辑区右键菜单里需要宿主参与的命令(format/save/find/goto/download/close/sysopen)
+    callback ctx-action(string);
+    /// 转到行:参数 = 输入的行号文本
+    callback goto-go(string);
     /// 下载:确认下载当前 tab → 弹窗已选目录在 editor-download-dir
     callback download-confirm();
-    /// IME 输入条提交/取消
-    callback ime-commit();
-    callback ime-cancel();
-    /// 主题/壁纸等槽位已由主窗下发后的内部刷新占位(与旧版兼容保留)
-    callback editor-recount(string);
-    callback editor-count-matches(string, string) -> int;
-    callback editor-find-step(string, string, int, bool) -> EditorFindResult;
-    callback editor-replace-all(string, string);
-    // IME 输入条 two-way text
-    in-out property <string> ime-box-text: "";
+    callback download-browse();
 
-    // ══ 语法色映射:EditorSpanKind 序(0..16)→ 主题 ANSI16 槽 ══
-    // plain=t1,kw=a5 品红,ty=a11 亮黄,fn=a12 亮蓝,str=a10 亮绿,num=a3 黄,com=a8 亮黑,
-    // ann/ts=a14 亮青,thr=a12,lvl-error=a9 亮红,lvl-warn=a11,lvl-info=a10,lvl-debug=a8,
-    // exc=a11,at=a8,cs=a9(色值对照见设计稿「语法色映射表」)。
-    function span-color(k: EditorSpanKind) -> color {
-        if k == EditorSpanKind.plain { return Theme.text-primary; }
-        if k == EditorSpanKind.kw { return Theme.ansi16[5]; }
-        if k == EditorSpanKind.ty { return Theme.ansi16[11]; }
-        if k == EditorSpanKind.fn { return Theme.ansi16[12]; }
-        if k == EditorSpanKind.str { return Theme.ansi16[10]; }
-        if k == EditorSpanKind.num { return Theme.ansi16[3]; }
-        if k == EditorSpanKind.com { return Theme.ansi16[8]; }
-        if k == EditorSpanKind.ann { return Theme.ansi16[14]; }
-        if k == EditorSpanKind.ts { return Theme.ansi16[14]; }
-        if k == EditorSpanKind.thr { return Theme.ansi16[12]; }
-        if k == EditorSpanKind.lvl-error { return Theme.ansi16[9]; }
-        if k == EditorSpanKind.lvl-warn { return Theme.ansi16[11]; }
-        if k == EditorSpanKind.lvl-info { return Theme.ansi16[10]; }
-        if k == EditorSpanKind.lvl-debug { return Theme.ansi16[8]; }
-        if k == EditorSpanKind.exc { return Theme.ansi16[11]; }
-        if k == EditorSpanKind.at { return Theme.ansi16[8]; }
-        if k == EditorSpanKind.cs { return Theme.ansi16[9]; }
-        if k == EditorSpanKind.hl || k == EditorSpanKind.hl-cur { return Theme.text-primary; }
-        return Theme.text-primary;
-    }
-    function span-bold(k: EditorSpanKind) -> bool {
-        return k == EditorSpanKind.lvl-error
-            || k == EditorSpanKind.lvl-warn || k == EditorSpanKind.exc;
-    }
+    // ══ 编辑器辅助函数(#editor-native) ═════════════════════════
+    // 语法色由 Rust 端编码进 syntax-spans(AARRGGBB),Slint 侧不再做 kind→color 映射
+    // (色值仍取自主题 ANSI16,由 Rust 读 Theme.ansi16 后写入,28 套主题照旧跟随)。
 
-    // 窗口内可见行数(编辑区高度/20;Rust 重建窗口模型时参考,Slint 只上报)
-    out property <int> viewport-rows: 33;
-    out property <length> scroll-frac-px: root.editor-scroll-frac * 1px;
-    out property <length> row-step: 20px;
-
-    editor-scope := FocusScope {
-        width: parent.width;
-        height: parent.height;
-        focus-on-click: false;
-        focus-on-tab-navigation: false;
-        key-pressed(e) => {
-            // 可打印字符(含 IME commit 直收;探针失败走输入条,这里对多字节串直接透传)
-            if (e.text != "" && e.text != "" && !e.modifiers.control && !e.modifiers.alt) {
-                root.input-text(e.text);
-                return accept;
-            }
-            if (e.modifiers.control && (e.text == "s" || e.text == "S" || e.text == "\u{0013}")) {
-                root.key-action("save");
-                return accept;
-            }
-            if (e.modifiers.control && (e.text == "z" || e.text == "Z" || e.text == "\u{001a}")) {
-                root.key-action("undo");
-                return accept;
-            }
-            if (e.modifiers.control && (e.text == "y" || e.text == "Y" || e.text == "\u{0019}")) {
-                root.key-action("redo");
-                return accept;
-            }
-            if (e.modifiers.control && (e.text == "c" || e.text == "C" || e.text == "\u{0003}")) {
-                root.key-action("copy");
-                return accept;
-            }
-            if (e.modifiers.control && (e.text == "v" || e.text == "V" || e.text == "\u{0016}")) {
-                root.key-action("paste");
-                return accept;
-            }
-            if (e.modifiers.control && (e.text == "a" || e.text == "A" || e.text == "\u{0001}")) {
-                root.key-action("select-all");
-                return accept;
-            }
-            if (e.modifiers.control && (e.text == "g" || e.text == "G")) {
-                root.key-action("goto-toggle");
-                return accept;
-            }
-            if (e.modifiers.control && (e.text == "f" || e.text == "F" || e.text == "\u{0006}")) {
-                root.key-action("find-toggle");
-                return accept;
-            }
-            if (e.modifiers.control && e.modifiers.shift && (e.text == "i" || e.text == "I")) {
-                root.key-action("format");
-                return accept;
-            }
-            if (e.modifiers.control && (e.text == "w" || e.text == "W")) {
-                root.key-action("close");
-                return accept;
-            }
-            if (e.text == Key.Escape) {
-                if (root.ctx-open || root.tabmenu-open || root.goto-open) {
-                    root.ctx-open = false;
-                    root.tabmenu-open = false;
-                    root.goto-open = false;
-                    return accept;
-                }
-                root.close-editor();
-                return accept;
-            }
-            if (e.text == Key.Return) { root.key-action("enter"); return accept; }
-            if (e.text == Key.Backspace) { root.key-action("backspace"); return accept; }
-            if (e.text == Key.Delete) { root.key-action("delete"); return accept; }
-            if (e.text == Key.Tab) { root.key-action("tab"); return accept; }
-            if (e.text == Key.LeftArrow) {
-                root.key-action(e.modifiers.shift ? "sel-left" : "left");
-                return accept;
-            }
-            if (e.text == Key.RightArrow) {
-                root.key-action(e.modifiers.shift ? "sel-right" : "right");
-                return accept;
-            }
-            if (e.text == Key.UpArrow) {
-                root.key-action(e.modifiers.shift ? "sel-up" : "up");
-                return accept;
-            }
-            if (e.text == Key.DownArrow) {
-                root.key-action(e.modifiers.shift ? "sel-down" : "down");
-                return accept;
-            }
-            if (e.text == Key.Home) { root.key-action("home"); return accept; }
-            if (e.text == Key.End) { root.key-action("end"); return accept; }
-            if (e.text == Key.PageUp) { root.key-action("page-up"); return accept; }
-            if (e.text == Key.PageDown) { root.key-action("page-down"); return accept; }
-            reject
+    /// 请求一次选区定位(查找跳转 / 转到行):Rust 改 sel-request-token 触发。
+    changed sel-request-token => {
+        if (root.sel-request-token > 0) {
+            edit-input.set-selection-offsets(root.sel-request-start, root.sel-request-end);
+            edit-input.focus();
         }
     }
+
+    /// 光标滚入可视区。TextInput 不自带滚动,必须由 ScrollView 宿主负责
+    /// (builtin_elements: "The TextInput does not scroll automatically")。
+    function ensure-cursor-visible(y: length) {
+        let top = y + 8px;                                   // 输入放在 (8,8)
+        let line = 20px;
+        let vy = 0px - ed-scroll.content-y;                  // 当前滚到哪
+        let maxvy = max(0px, ed-scroll.content-height - ed-scroll.visible-height);
+        if (top < vy) {
+            ed-scroll.content-y = 0px - min(maxvy, max(0px, top - 8px));
+            return;
+        }
+        if (top + line > vy + ed-scroll.visible-height) {
+            ed-scroll.content-y = 0px - min(maxvy, top + line - ed-scroll.visible-height + 8px);
+        }
+    }
+
+    /// 查找跳转:算命中 → 请求选区 → 记数。forward=false 往上游。
+    function find-nav(forward: bool) {
+        if (root.editor-find-query == "") { return; }
+        let res = root.editor-find-step(
+            root.editor-content, root.editor-find-query,
+            edit-input.cursor-position-byte-offset, forward);
+        root.editor-find-count = res.count;
+        root.editor-find-cur = res.index;
+        if (res.count > 0) {
+            root.sel-request-start = res.start;
+            root.sel-request-end = res.end;
+            root.sel-request-token = root.sel-request-token + 1;
+        }
+    }
+
+    /// 右键菜单:编辑类命令交给 TextInput 原生实现,其余转宿主。
+    function ctx-run(cmd: string) {
+        root.ctx-open = false;
+        if (cmd == "copy") { edit-input.copy(); edit-input.focus(); return; }
+        if (cmd == "cut") { edit-input.cut(); edit-input.focus(); return; }
+        if (cmd == "paste") { edit-input.paste(); edit-input.focus(); return; }
+        if (cmd == "select-all") { edit-input.select-all(); edit-input.focus(); return; }
+        if (cmd == "undo") { edit-input.undo(); edit-input.focus(); return; }
+        if (cmd == "redo") { edit-input.redo(); edit-input.focus(); return; }
+        if (cmd == "goto") { edit-input.focus(); root.goto-open = true; return; }
+        if (cmd == "find") { edit-input.focus(); root.editor-find-open = true; return; }
+        root.ctx-action(cmd);
+    }
+
+    /// 应用级快捷键。挂在正文 TextInput 的 key-pressed 上(它在 TextInput 自己处理
+    /// 之前触发;返回 true 表示已接管)。旧实现用一个 FocusScope 抢焦点自己搬键盘,
+    /// 才会出现 CJK 定位漂移 / 单独的 IME 输入条这类问题。
+    function editor-shortcut(e: KeyEvent) -> bool {
+        if (e.modifiers.control && (e.text == "s" || e.text == "S" || e.text == "\u{0013}")) {
+            root.save-file();
+            return true;
+        }
+        if (e.modifiers.control && (e.text == "f" || e.text == "F" || e.text == "\u{0006}")) {
+            root.editor-find-open = !root.editor-find-open;
+            return true;
+        }
+        if (e.modifiers.control && (e.text == "h" || e.text == "H")) {
+            root.editor-replace-open = !root.editor-replace-open;
+            root.editor-find-open = true;
+            return true;
+        }
+        if (e.modifiers.control && (e.text == "g" || e.text == "G")) {
+            root.goto-open = true;
+            return true;
+        }
+        if (e.modifiers.control && e.modifiers.shift && (e.text == "i" || e.text == "I")) {
+            root.format-doc();
+            return true;
+        }
+        if (e.modifiers.control && (e.text == "w" || e.text == "W")) {
+            root.close-editor();
+            return true;
+        }
+        if (e.text == Key.Escape) {
+            if (root.ctx-open || root.tabmenu-open || root.goto-open
+                || root.editor-find-open || root.dl-open || root.close-confirm-open) {
+                root.ctx-open = false;
+                root.tabmenu-open = false;
+                root.goto-open = false;
+                root.dl-open = false;
+                root.editor-find-open = false;
+                root.close-confirm-open = false;
+                return true;
+            }
+            root.close-editor();
+            return true;
+        }
+        return false;
+    }
+
 
     // ══ 窗口本体 ══════════════════════════════════════════════
     Rectangle {
@@ -532,178 +506,210 @@ export component EditorWindow inherits Window {
         }
 
         // ── 编辑区(FocusScope 铺底收键盘)──
-        Rectangle {
+        // ── 编辑区(#editor-native:行号槽 + 原生 TextInput 正文)──
+        // 文本、光标、选择、剪贴板、IME、撤销全部由 TextInput 原生实现;
+        // 语法色经 syntax-spans(全文字节区间 + AARRGGBB)在 shaping 层叠加,
+        // 因此中英文混排不再有「按格宽定位」造成的漂移。
+        edit-body := Rectangle {
             vertical-stretch: 1;
             background: Theme.bg-root;
             clip: true;
-            
-            
 
             HorizontalLayout {
                 spacing: 0;
-                // gutter(56 / 大文件 74):垂直随 scroll,横向固定
+                // 行号槽:一块只读 TextInput 镜像正文的字体/换行/宽度。
+                // line-number-width > 0 时 Slint 只画逻辑行号(首个视觉基线,右对齐),
+                // 并复用与正文完全相同的行盒,所以行号永远与正文对齐。
                 Rectangle {
                     width: root.editor-gutter-w * 1px;
                     background: Theme.bg-panel;
                     clip: true;
-                    for row in root.editor-lines : Rectangle {
-                        y: ((row.line - 1 - root.editor-first-row) * 20px) - root.scroll-frac-px;
-                        height: 20px;
-                        width: parent.width;
-                        background: Theme.bg-panel;
-                        if row.is-current : Rectangle {
-                            width: parent.width;
-                            background: rgba(255, 255, 255, 0.045);
-                        }
-                        Text {
-                            x: 14px;
-                            width: root.editor-gutter-w * 1px - 22px;
-                            height: 20px;
-                            text: row.line;
-                            horizontal-alignment: right;
-                            vertical-alignment: center;
-                            font-family: Theme.font-mono;
-                            font-size: Theme.fs-sm;
-                            color: row.is-current ? Theme.text-primary : Theme.text-secondary;
-                        }
-                        if row.mark : Rectangle {
-                            x: parent.width - 3px;
-                            width: 3px;
-                            height: 20px;
-                            background: Theme.warning;
-                        }
+                    TextInput {
+                        x: 0px;
+                        // 必须 +8px:与正文输入的 8px 顶部内衬对齐,否则行号整体浮高 8px
+                        y: ed-scroll.content-y + 8px;
+                        width: edit-input.width;
+                        height: edit-input.height;
+                        text: root.editor-content;
+                        syntax-source: root.editor-content;
+                        line-number-width: parent.width - 6px;
+                        read-only: true;
+                        enabled: false;
+                        single-line: false;
+                        wrap: no-wrap;
+                        font-family: Theme.font-mono;
+                        font-size: Theme.fs-sm;
+                        color: Theme.text-muted;
                     }
-                    Rectangle {
-                        x: parent.width - 1px;
-                        width: 1px;
+                    TouchArea {
+                        width: parent.width;
                         height: parent.height;
-                        background: Theme.border-subtle;
+                        mouse-cursor: default;
+                        scroll-event(e) => { root.wheel-scroll(e.delta-x, e.delta-y, e.modifiers.shift); accept }
                     }
                 }
-                // 代码区:横向滚动 = 容器内容宽超出 → x 平移
+                Rectangle { width: 1px; background: Theme.border-subtle; }
+
+                // 正文:ScrollView 提供滚动窗口;TextInput 自己排版(char-wrap)
                 Rectangle {
                     horizontal-stretch: 1;
                     clip: true;
-                    for row in root.editor-lines : Rectangle {
-                        x: -root.editor-scroll-x * 1px;
-                        y: ((row.line - 1 - root.editor-first-row) * 20px) - root.scroll-frac-px;
-                        height: 20px;
-                        width: max(root.width, root.editor-content-w * 1px + 24px);
-                        // 当前行整行淡底(含代码区)
-                        if row.is-current : Rectangle {
-                            width: parent.width;
-                            height: 20px;
-                            background: rgba(255, 255, 255, 0.045);
-                        }
-                        // 选区矩形(Rust 换算像素,含 CJK)
-                        if row.sel-w > 0 : Rectangle {
-                            x: 12px + row.sel-x;
-                            width: row.sel-w;
-                            height: 20px;
-                            background: rgba(31, 200, 180, 0.14);
-                        }
-                        // 光标(仅当前行)
-                        if row.is-current : Rectangle {
-                            x: 12px + row.cursor-x;
-                            y: 2px;
-                            width: 2px;
-                            height: 16px;
-                            background: Theme.accent;
-                        }
-                        // token 片段(绝对像素定位,等宽;Text 覆盖底色 span 时同色系可读)
-                        for sp in row.spans : Rectangle {
-                            x: 12px + sp.start * root.char-px;
-                            y: 2px;
-                            width: sp.width;
-                            height: 16px;
-                            background: sp.kind == EditorSpanKind.hl ? rgba(232,163,62,0.32)
-                                : sp.kind == EditorSpanKind.hl-cur ? rgba(232,163,62,0.62)
-                                : rgba(0,0,0,0);
-                            Text {
-                                text: sp.text;
-                                font-family: Theme.font-mono;
-                                font-size: Theme.fs-sm;
-                                color: root.span-color(sp.kind);
-                                font-weight: root.span-bold(sp.kind) ? 700 : 400;
-                                font-italic: sp.kind == EditorSpanKind.com;
-                                vertical-alignment: center;
+                    // TextInput 划选时抓走指针且自身不处理滚轮:在它后面接住被拒的滚轮
+                    TouchArea {
+                        width: parent.width;
+                        height: parent.height;
+                        mouse-cursor: default;
+                        scroll-event(e) => { root.wheel-scroll(e.delta-x, e.delta-y, e.modifiers.shift); accept }
+                    }
+                    ed-scroll := ScrollView {
+                        // 原生滚动条退役(#qs-scrollbar 2026-11-14 同口径:粗条+上下/左右
+                        // 箭头与面板语言不搭)。不关会与下面的自绘条同时出现 —— 而且原生条
+                        // 走 fluent 调色板,在深色主题下是一条浅色胶囊,明显不协调。
+                        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                        content-width: max(self.visible-width, edit-input.preferred-width + 16px);
+                        content-height: max(self.visible-height, edit-input.preferred-height + 16px);
+                        edit-input := TextInput {
+                            x: 8px;
+                            y: 8px;
+                            width: max(1px, ed-scroll.visible-width - 16px);
+                            height: max(ed-scroll.visible-height - 16px, self.preferred-height);
+                            text <=> root.editor-content;
+                            syntax-source: root.editor-syntax-source;
+                            syntax-spans: root.editor-syntax-spans;
+                            read-only: root.editor-readonly;
+                            single-line: false;
+                            wrap: no-wrap;
+                            color: Theme.text-primary;
+                            selection-background-color: rgba(60, 120, 216, 0.35);
+                            selection-foreground-color: Theme.text-primary;
+                            font-family: Theme.font-mono;
+                            font-size: Theme.fs-sm;
+                            page-height: ed-scroll.visible-height;
+                            // 标脏:仅用户键入触发(撤销也走这里 → 仍是「已改动」)
+                            edited => { root.content-changed(); }
+                            // 任何文本变化(键入/撤销/宿主整体替换)都重排高亮
+                            changed text => { root.highlight-pending = true; }
+                            cursor-position-changed(pos) => { root.ensure-cursor-visible(pos.y); }
+                            changed cursor-position-byte-offset => {
+                                root.cursor-moved(self.cursor-position-byte-offset,
+                                                  self.anchor-position-byte-offset);
                             }
-                        }
-                        // 行级点击定位(整行透明 TouchArea;右键=编辑区菜单)
-                        row-ta := TouchArea {
-                            width: max(parent.width, 400px);
-                            height: 20px;
-                            mouse-cursor: default;
-                            clicked => {
-                                root.click-at(self.mouse-x, root.char-px, false);
+                            changed anchor-position-byte-offset => {
+                                root.cursor-moved(self.cursor-position-byte-offset,
+                                                  self.anchor-position-byte-offset);
                             }
-                            pointer-event(e) => {
-                                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
-                                    root.ctx-open = true;
-                                    root.ctx-x = self.absolute-position.x - root.absolute-position.x + self.mouse-x;
-                                    root.ctx-y = self.absolute-position.y - root.absolute-position.y + self.mouse-y;
-                                }
+                            // 应用级快捷键优先于输入法/编辑处理;其余一律 reject,
+                            // 交还 TextInput(方向键/Home/End/PageUp/Down/Ctrl+C/V/X/A/Z/Y/IME)
+                            key-pressed(e) => {
+                                if (root.editor-shortcut(e)) { accept } else { reject }
                             }
                         }
                     }
                 }
             }
 
-            // 点外关闭 backdrop(菜单/弹窗打开时覆盖编辑区;浮层在其后声明故仍可点)
-            if (root.ctx-open || root.tabmenu-open || root.dl-open) : TouchArea {
-                width: parent.width;
-                height: parent.height;
-                clicked => {
-                    root.ctx-open = false;
-                    root.tabmenu-open = false;
-                    root.dl-open = false;
-                }
-            }
-
-            // 垂直滚动条(自绘 10px + 命中标记;拖拽/滚轮事件转 Rust)
-            Rectangle {
-                x: parent.width - 10px;
+            // 垂直滚动条(#qs-scrollbar 同款:轨道透明 + 4px 细圆角 thumb + 90ms 变色)
+            if ed-scroll.content-height > ed-scroll.visible-height : vbar := Rectangle {
+                x: parent.width - 8px;
                 y: 0;
-                width: 10px;
+                width: 4px;
                 height: parent.height;
                 background: transparent;
+                property <length> max-off: max(0px, ed-scroll.content-height - ed-scroll.visible-height);
+                property <length> thumb-h: root.thumb-size(self.height, ed-scroll.content-height, ed-scroll.visible-height);
+                // 查找命中标记(与查找浮层同源配色)
                 for hl in root.editor-find-hit-lines : Rectangle {
-                    x: 1px;
-                    y: hl * 20px / max(1px, root.editor-content-h * 1px) * parent.height;
-                    width: 8px;
+                    x: 0;
+                    y: hl * parent.height / max(1, root.editor-total-lines);
+                    width: 4px;
                     height: 3px;
                     border-radius: 1px;
                     background: rgba(232, 163, 62, 0.45);
                 }
-                sb-ta := TouchArea {
+                Rectangle {
+                    width: 4px;
+                    height: vbar.thumb-h;
+                    border-radius: 2px;
+                    y: vbar.max-off > 0px
+                        ? ((0px - ed-scroll.content-y) / vbar.max-off) * (vbar.height - self.height)
+                        : 0px;
+                    background: vbar-ta.pressed || vbar-ta.has-hover ? Theme.border-strong : Theme.border-subtle;
+                    animate background { duration: 90ms; }
+                }
+                vbar-ta := TouchArea {
                     mouse-cursor: default;
+                    x: -2px;
+                    width: parent.width + 4px;
+                    height: parent.height;
+                    property <length> grab-dy: 0px;
                     pointer-event(e) => {
                         if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
-                            root.sb-dragging = true;
-                            root.scroll-to-frac(self.mouse-y / parent.height);
-                        }
-                        if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left) {
-                            root.sb-dragging = false;
+                            self.grab-dy = self.mouse-y - (vbar.max-off > 0px
+                                ? ((0px - ed-scroll.content-y) / vbar.max-off) * (vbar.height - vbar.thumb-h)
+                                : 0px);
                         }
                     }
                     moved => {
-                        if (root.sb-dragging) {
-                            root.scroll-to-frac(self.mouse-y / parent.height);
+                        if (self.pressed) {
+                            let run = max(1px, vbar.height - vbar.thumb-h);
+                            let want = clamp(self.mouse-y - self.grab-dy, 0px, run);
+                            ed-scroll.content-y = 0px - (vbar.max-off * (want / run));
                         }
                     }
-                    scroll-event(event) => {
-                        root.wheel(event.delta-y / 1px, false);
-                        accept
+                }
+            }
+
+            // 横向滚动条(no-wrap 下长行不折行,靠它平移;样式同上)
+            if ed-scroll.content-width > ed-scroll.visible-width + 2px : hbar := Rectangle {
+                x: 0;
+                y: parent.height - 6px;
+                width: parent.width - 8px;
+                height: 4px;
+                background: transparent;
+                property <length> max-off: max(0px, ed-scroll.content-width - ed-scroll.visible-width);
+                property <length> thumb-w: root.thumb-size(self.width, ed-scroll.content-width, ed-scroll.visible-width);
+                Rectangle {
+                    width: hbar.thumb-w;
+                    height: 4px;
+                    border-radius: 2px;
+                    x: hbar.max-off > 0px
+                        ? ((0px - ed-scroll.content-x) / hbar.max-off) * (hbar.width - self.width)
+                        : 0px;
+                    background: hbar-ta.pressed || hbar-ta.has-hover ? Theme.border-strong : Theme.border-subtle;
+                    animate background { duration: 90ms; }
+                }
+                hbar-ta := TouchArea {
+                    mouse-cursor: default;
+                    y: -2px;
+                    height: parent.height + 4px;
+                    width: parent.width;
+                    property <length> grab-dx: 0px;
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                            self.grab-dx = self.mouse-x - (hbar.max-off > 0px
+                                ? ((0px - ed-scroll.content-x) / hbar.max-off) * (hbar.width - hbar.thumb-w)
+                                : 0px);
+                        }
+                    }
+                    moved => {
+                        if (self.pressed) {
+                            let run = max(1px, hbar.width - hbar.thumb-w);
+                            let want = clamp(self.mouse-x - self.grab-dx, 0px, run);
+                            ed-scroll.content-x = 0px - (hbar.max-off * (want / run));
+                        }
                     }
                 }
-                Rectangle {
-                    x: 1px;
-                    y: min(parent.height - thumb-h, max(0px, root.editor-scroll-y * 1px / max(1px, root.editor-content-h * 1px) * parent.height));
-                    width: 8px;
-                    height: thumb-h;
-                    border-radius: 4px;
-                    background: sb-ta.has-hover ? Theme.text-secondary : Theme.border-strong;
-                    property <length> thumb-h: max(20px, parent.height * (parent.height / max(1px, root.editor-content-h * 1px)));
+            }
+
+            // 高亮防抖:打字时不为每个字符重解析;撤销与宿主整体替换同样经 `changed text`
+            // 排定,因此着色不会停在旧文本上。
+            Timer {
+                interval: 120ms;
+                running: root.highlight-pending;
+                triggered => {
+                    root.highlight-pending = false;
+                    root.editor-highlight(root.editor-content);
                 }
             }
 
@@ -742,6 +748,11 @@ export component EditorWindow inherits Window {
                                 color: Theme.text-primary;
                                 text <=> root.editor-find-query;
                                 edited => { root.find-edited(root.find-case-on); }
+                                key-pressed(e) => {
+                                    if (e.text == Key.Escape) { root.editor-find-open = false; return accept; }
+                                    if (e.text == Key.Return) { root.find-nav(!e.modifiers.shift); return accept; }
+                                    reject
+                                }
                             }
                         }
                         Text {
@@ -772,7 +783,6 @@ export component EditorWindow inherits Window {
                                     if (i == 0) { root.find-case-on = !root.find-case-on; }
                                     if (i == 1) { root.find-whole-on = !root.find-whole-on; }
                                     if (i == 2) { root.find-regex-on = !root.find-regex-on; }
-                                    root.find-icon-toggled(root.find-case-on);
                                     root.find-edited(root.find-case-on);
                                 }
                             }
@@ -784,7 +794,7 @@ export component EditorWindow inherits Window {
                             Text { text: "↑"; color: Theme.text-secondary; font-size: 12px;
                                    width: parent.width; height: parent.height;
                                    horizontal-alignment: center; vertical-alignment: center; }
-                            TouchArea { clicked => { root.find-step(false); } }
+                            TouchArea { clicked => { root.find-nav(false); } }
                         }
                         Rectangle {
                             width: 28px;
@@ -793,7 +803,7 @@ export component EditorWindow inherits Window {
                             Text { text: "↓"; color: Theme.text-secondary; font-size: 12px;
                                    width: parent.width; height: parent.height;
                                    horizontal-alignment: center; vertical-alignment: center; }
-                            TouchArea { clicked => { root.find-step(true); } }
+                            TouchArea { clicked => { root.find-nav(true); } }
                         }
                         Rectangle {
                             width: 28px;
@@ -835,7 +845,7 @@ export component EditorWindow inherits Window {
                             Text { text: @tr("Replace"); color: Theme.text-secondary; font-size: 12px;
                                    width: parent.width; height: parent.height;
                                    horizontal-alignment: center; vertical-alignment: center; }
-                            TouchArea { clicked => { root.key-action("replace-one"); } }
+                            TouchArea { clicked => { root.replace-one(edit-input.anchor-position-byte-offset, edit-input.cursor-position-byte-offset); } }
                         }
                         Rectangle {
                             height: 30px;
@@ -860,9 +870,11 @@ export component EditorWindow inherits Window {
             // ── 编辑区右键菜单(无快捷键角标——用户定稿)──
             if root.ctx-open : Rectangle {
                 x: min(root.ctx-x, parent.width - 210px);
-                y: min(root.ctx-y, parent.height - 190px);
+                y: min(root.ctx-y, parent.height - menu-h);
                 width: 200px;
-                height: 158px;
+                // 高度随条目数走(28px 行 + 5px 上下内衬),加项不会再溢出卡片
+                height: menu-h;
+                property <length> menu-h: ctx-items.length * 28px + 10px;
                 border-radius: Theme.radius-md;
                 background: Theme.bg-elevated;
                 border-width: 1px;
@@ -882,19 +894,21 @@ export component EditorWindow inherits Window {
                         }
                         m-ta := TouchArea {
                             mouse-cursor: default;
-                            clicked => { root.ctx-item-clicked(m.cmd); }
+                            clicked => { root.ctx-run(m.cmd); }
                         }
                     }
                 }
                 property <[MenuItem]> ctx-items: [
                     { label: @tr("Copy"), cmd: "copy", disabled: false },
+                    { label: @tr("Cut"), cmd: "cut", disabled: false },
                     { label: @tr("Paste"), cmd: "paste", disabled: false },
                     { label: @tr("Select all"), cmd: "select-all", disabled: false },
                     { label: "", cmd: "sep", disabled: true },
-                    { label: @tr("Format document"), cmd: "format", disabled: !root.can-format },
-                    { label: "", cmd: "sep", disabled: true },
+                    { label: @tr("Go to line"), cmd: "goto", disabled: false },
                     { label: @tr("Find"), cmd: "find", disabled: false },
-                    { label: @tr("Open with system default app"), cmd: "sysopen", disabled: false },
+                    { label: "", cmd: "sep", disabled: true },
+                    { label: @tr("Format document"), cmd: "format", disabled: !root.can-format },
+                    { label: @tr("Save"), cmd: "save", disabled: root.editor-readonly },
                 ];
             }
 
@@ -933,7 +947,11 @@ export component EditorWindow inherits Window {
                             font-size: 13px;
                             color: Theme.text-primary;
                             text <=> root.goto-line-text;
-                            accepted => { root.goto-go(); }
+                            accepted => { root.goto-go(root.goto-line-text); }
+                            key-pressed(e) => {
+                                if (e.text == Key.Escape) { root.goto-open = false; return accept; }
+                                reject
+                            }
                         }
                     }
                 }
@@ -1135,13 +1153,36 @@ export component EditorWindow inherits Window {
     }
 
     // ══ 派生属性/工具 ════════════════════════════════════════
-    in-out property <length> char-px: 7.8px * root.ui-scale;   // mono 13px 单格宽(0xProto;Consolas 近似 7.15)
     in-out property <bool> editor-replace-open: false;
     in-out property <bool> dl-open: false;
     in-out property <bool> goto-open: false;
     in-out property <string> goto-line-text: "";
     in-out property <bool> can-format: false;
-    in-out property <string> editor-ime-text-holder: "";
+    /// 高亮防抖标志(120ms Timer 消费)
+    in-out property <bool> highlight-pending: false;
+    /// 下一帧聚焦正文(init/切 tab 时直接 focus 会重入 Windows 无障碍适配层)
+    property <bool> focus-pending: false;
+
+    /// 滚轮入口:纵向为主,shift = 横向(gutter 与正文都转发到这里)
+    function wheel-scroll(dx: length, dy: length, shift: bool) {
+        if (shift) { scroll-x-by(dy); } else { scroll-by(dy); }
+    }
+    function scroll-x-by(dx: length) {
+        ed-scroll.content-x = clamp(
+            ed-scroll.content-x + dx,
+            min(0px, ed-scroll.visible-width - ed-scroll.content-width),
+            0px);
+    }
+    /// 滚动条 thumb 尺寸(轨道长、内容长、可视长)——横竖共用
+    function thumb-size(track: length, content: length, visible: length) -> length {
+        return max(24px, track * (visible / max(1px, content)));
+    }
+    function scroll-by(dy: length) {
+        ed-scroll.content-y = clamp(
+            ed-scroll.content-y + dy,
+            min(0px, ed-scroll.visible-height - ed-scroll.content-height),
+            0px);
+    }
     // tab 图标块底色(设计稿:J 橙 / L 灰 / N 绿 / S 粉;按语言显示名映射)
     function tab-icon-color(lang: string) -> color {
         if lang == "Java" { return #E8A33E; }
@@ -1169,22 +1210,23 @@ export component EditorWindow inherits Window {
     property <bool> find-whole-on: false;
     property <bool> find-regex-on: false;
     callback find-edited(bool /*大小写敏感*/);
-    callback download-browse();
-    callback ctx-item-clicked(string);
-    callback scroll-to-bar-frac(length);
+    /// 替换当前命中(查找浮层的「替换」钮;参数 = 选区字节区间)
+    callback replace-one(int, int);
 
     init => {
-        // 主题切换后(槽位已由主窗拷贝)无额外动作;纯回调由 Rust 注册
-        root.focus-editor();
+        // 主题槽位已由主窗拷贝;这里只把焦点交给正文输入
+        root.focus-pending = true;
+    }
+    Timer {
+        interval: 0ms;
+        running: root.focus-pending;
+        triggered => {
+            root.focus-pending = false;
+            edit-input.focus();
+        }
     }
     callback focus-editor();
     focus-editor => {
-        editor-scope.focus();
+        edit-input.focus();
     }
-
-    // 旧版兼容属性(仅供离屏 example / 过渡期引用;渲染不再使用)
-    in-out property <bool> editor-open: false;
-    in-out property <string> editor-tab-id: "";
-    in-out property <[string]> editor-lines-legacy;
-    in-out property <string> editor-content: "";
 }
