@@ -495,6 +495,12 @@ pub trait RenderString: HasFont {
     fn link_color(self: Pin<&Self>) -> Color {
         Default::default()
     }
+    /// MTerm editor patch: colour-only syntax ranges for plain text, encoded as sorted,
+    /// non-overlapping UTF-8 byte ranges `start:end:AARRGGBB;`. Read while shaping, so the
+    /// shaped-text cache is invalidated when they change. `None` for every stock item.
+    fn syntax_colors(self: Pin<&Self>) -> Option<crate::SharedString> {
+        None
+    }
 }
 
 /// Trait for an item that represents an Text towards the renderer

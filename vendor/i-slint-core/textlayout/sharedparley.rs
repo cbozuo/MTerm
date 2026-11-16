@@ -357,7 +357,23 @@ pub fn draw_text_input(
                 LogicalBorderRadius::zero(),
             );
 
-            if render {
+            if render && text_input.line_number_width().get() > 0. {
+                // MTerm editor patch: a positive `line-number-width` turns this input into
+                // a virtual gutter. It shares the editor's exact source, font, width and
+                // wrapping, so each logical line's number sits on the first visual baseline of
+                // its paragraph. Only numbers inside the clip are shaped and drawn, instead of
+                // one Slint item per logical line.
+                draw_line_numbers(
+                    item_renderer,
+                    text_input,
+                    item_rc,
+                    layout,
+                    scale_factor,
+                    window_adapter.window(),
+                    &platform_fill_brush,
+                    text_color,
+                );
+            } else if render {
                 // When a piece of text is first selected, it gets an empty range like `1..1`. If
                 // the text starts with a multi-byte character then this selection would be within
                 // that character and parley would panic, so empty ranges are filtered out. The
@@ -413,6 +429,65 @@ pub fn draw_text_input(
             item_renderer.restore_state();
         },
     );
+}
+
+/// MTerm editor patch: draws the logical line numbers of `layout` right-aligned in a
+/// `line-number-width` wide column, skipping lines outside the current clip.
+#[allow(clippy::too_many_arguments)]
+fn draw_line_numbers<R: GlyphRenderer>(
+    item_renderer: &mut R,
+    text_input: Pin<&crate::items::TextInput>,
+    item_rc: &crate::item_tree::ItemRc,
+    layout: &Layout,
+    scale_factor: ScaleFactor,
+    window: &crate::api::Window,
+    fill_brush: &<R as GlyphRenderer>::PlatformBrush,
+    text_color: Color,
+) {
+    use alloc::string::ToString;
+    let band = draw::visible_band(item_renderer);
+    let number_builder = shaping_builder(text_input, Some(item_rc), TextWrap::NoWrap, scale_factor);
+    for (index, paragraph) in layout.paragraphs.iter().enumerate() {
+        let y = layout.y_offset + paragraph.y;
+        if y > band.end {
+            break;
+        }
+        let Some(first) = paragraph.layout.lines().next() else {
+            continue;
+        };
+        let first = first.metrics();
+        if y + PhysicalLength::new(first.line_height) < band.start {
+            continue;
+        }
+        let Some(ctx) = crate::window::WindowInner::from_pub(window).try_context() else {
+            return;
+        };
+        let mut font_ctx = ctx.font_context().borrow_mut();
+        let paragraphs = create_text_paragraphs(
+            &number_builder,
+            &mut font_ctx,
+            PlainOrStyledText::Plain((index + 1).to_string().into()),
+            Color::default(),
+        );
+        let mut options = LayoutOptions::new_from_textinput(
+            text_input,
+            Some(text_input.line_number_width()),
+            None,
+        );
+        options.horizontal_align = TextHorizontalAlignment::Right;
+        options.vertical_align = TextVerticalAlignment::Top;
+        let mut number_layout =
+            layout::layout(&number_builder, &mut font_ctx, paragraphs, scale_factor, options, None);
+        // Glyph drawing re-enters the font context.
+        drop(font_ctx);
+        let number_baseline = number_layout
+            .paragraphs
+            .first()
+            .and_then(|p| p.layout.lines().next())
+            .map_or(0., |line| line.metrics().baseline);
+        number_layout.y_offset = y + PhysicalLength::new(first.baseline - number_baseline);
+        number_layout.draw(item_renderer, fill_brush.clone(), None, text_color, None);
+    }
 }
 
 // The public entry points taking a renderer are generic so that RendererSealed's default

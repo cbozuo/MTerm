@@ -276,6 +276,20 @@ pub(super) fn create_text_paragraphs(
     text: PlainOrStyledText,
     link_color: Color,
 ) -> Vec<TextParagraph> {
+    create_text_paragraphs_with_syntax(layout_builder, font_context, text, link_color, None)
+}
+
+/// MTerm editor patch: like [`create_text_paragraphs`], plus optional colour-only syntax
+/// ranges (see [`crate::item_rendering::RenderString::syntax_colors`]) for plain text. The
+/// paragraph split, byte ranges and font metrics are exactly those of plain text, so cursor,
+/// selection, IME and hit-testing are unaffected; only glyph colours change.
+pub(super) fn create_text_paragraphs_with_syntax(
+    layout_builder: &LayoutWithoutLineBreaksBuilder,
+    font_context: &mut parley::FontContext,
+    text: PlainOrStyledText,
+    link_color: Color,
+    syntax: Option<&str>,
+) -> Vec<TextParagraph> {
     let paragraph_from_text =
         |font_context: &mut parley::FontContext,
          text: &str,
@@ -297,12 +311,26 @@ pub(super) fn create_text_paragraphs(
 
     match text {
         PlainOrStyledText::Plain(ref text) => {
+            let spans = syntax.map(|encoded| parse_syntax_spans(text, encoded)).unwrap_or_default();
             for range in paragraph_ranges(text) {
+                let first = spans.partition_point(|(span, _)| span.end <= range.start);
+                let last = spans.partition_point(|(span, _)| span.start < range.end);
+                let formatting = spans[first..last]
+                    .iter()
+                    .filter_map(|(span, color)| {
+                        let start = span.start.max(range.start);
+                        let end = span.end.min(range.end);
+                        (start < end).then(|| i_slint_common::styled_text::FormattedSpan {
+                            range: start - range.start..end - range.start,
+                            style: i_slint_common::styled_text::Style::Color(*color),
+                        })
+                    })
+                    .collect();
                 paragraphs.push(paragraph_from_text(
                     font_context,
                     &text[range.clone()],
                     range,
-                    Default::default(),
+                    formatting,
                     Default::default(),
                 ));
             }
@@ -386,7 +414,45 @@ pub(super) fn shape_paragraphs(
     font_context: &mut parley::FontContext,
 ) -> Vec<TextParagraph> {
     let builder = shaping_builder(text, item_rc, text_wrap, scale_factor);
-    create_text_paragraphs(&builder, font_context, text.text(), text.link_color())
+    let syntax = text.syntax_colors();
+    create_text_paragraphs_with_syntax(
+        &builder,
+        font_context,
+        text.text(),
+        text.link_color(),
+        syntax.as_deref(),
+    )
+}
+
+// MTerm editor patch. Wire format: sorted non-overlapping UTF-8 byte ranges
+// "start:end:AARRGGBB;". Validate at the renderer boundary even though the application is
+// trusted: out-of-order, overlapping, out-of-bounds or mid-character ranges are dropped.
+fn parse_syntax_spans(text: &str, encoded: &str) -> Vec<(Range<usize>, u32)> {
+    let mut result = Vec::new();
+    let mut previous_end = 0;
+    for entry in encoded.split(';').filter(|entry| !entry.is_empty()) {
+        let mut fields = entry.split(':');
+        let parsed = (|| {
+            Some((
+                fields.next()?.parse::<usize>().ok()?,
+                fields.next()?.parse::<usize>().ok()?,
+                u32::from_str_radix(fields.next()?, 16).ok()?,
+            ))
+        })();
+        let Some((start, end, color)) = parsed else {
+            continue;
+        };
+        if start >= previous_end
+            && start < end
+            && end <= text.len()
+            && text.is_char_boundary(start)
+            && text.is_char_boundary(end)
+        {
+            result.push((start..end, color));
+            previous_end = end;
+        }
+    }
+    result
 }
 
 pub(super) struct TextParagraph {

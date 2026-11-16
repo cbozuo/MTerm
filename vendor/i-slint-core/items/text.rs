@@ -761,6 +761,11 @@ struct UndoItem {
 #[derive(FieldOffsets, Default, SlintElement)]
 #[pin]
 pub struct TextInput {
+    // MTerm editor patch (vendor/EDITOR_PATCH.md): opt-in syntax colours
+    // and line-number gutter. Empty/zero by default.
+    pub syntax_source: Property<SharedString>,
+    pub syntax_spans: Property<SharedString>,
+    pub line_number_width: Property<LogicalLength>,
     pub text: Property<SharedString>,
     pub font_family: Property<SharedString>,
     pub font_size: Property<LogicalLength>,
@@ -1345,6 +1350,18 @@ impl RenderString for TextInput {
         // the selection too -- see `text_with_preedit`.
         let text = self.text_with_preedit().0;
         PlainOrStyledText::Plain(if self.is_password() { mask_password(&text) } else { text })
+    }
+
+    // MTerm editor patch: spans only apply to the exact text they were computed for.
+    // A stale result (source mismatch), an active IME composition or a password field
+    // falls back to plain native text, so debounced results never colour the wrong text.
+    fn syntax_colors(self: Pin<&Self>) -> Option<crate::SharedString> {
+        let spans = self.syntax_spans();
+        if spans.is_empty() || self.is_password() {
+            return None;
+        }
+        let (text, preedit) = self.text_with_preedit();
+        (preedit.is_empty() && self.syntax_source() == text).then_some(spans)
     }
 }
 
