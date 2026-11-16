@@ -1848,10 +1848,10 @@ export component SessionDialog inherits Rectangle {
     // RDP-only (the width/height below are the "custom" desktop size).
     in-out property <string> draft-rdp-domain;
     // "fullscreen" | "custom" | "<width>x<height>" (a preset from the dropdown).
-    // (#rdp-follow-size 2026-11-13) The remote desktop follows the tab: a
-    // built-in session lives inside a tab, and a fixed desktop there is only
-    // ever scaled to fit.
-    in-out property <string> draft-rdp-resolution: "follow";
+    // (#rdp-follow-only 2026-11-16) The built-in client's desktop always
+    // follows the tab; the stored value only means anything to the *system*
+    // client, which opens full screen.
+    in-out property <string> draft-rdp-resolution: "fullscreen";
     in-out property <string> draft-rdp-width: "1280";
     in-out property <string> draft-rdp-height: "720";
     // (#rdp-vnc-embedded 2026-10-13) RDP「连接方式」。默认 "system"（系统客户端
@@ -1932,30 +1932,6 @@ export component SessionDialog inherits Rectangle {
     }
     function is-default-port(p: string) -> bool {
         return p == "22" || p == "23" || p == "3389" || p == "5900" || p == "";
-    }
-    // 分辨率下拉的存储值 ↔ 本地化显示文本互转(同串口 Parity 的做法):
-    // "follow"/"fullscreen"/"custom" 之外的值即预设 "WxH" 本身,显示原样。
-    pure function resolution-text(id: string) -> string {
-        if (id == "follow") { return @tr("Follow tab"); }
-        if (id == "fullscreen") { return @tr("Full screen"); }
-        if (id == "custom") { return @tr("Custom"); }
-        return id;
-    }
-    pure function resolution-from-text(text: string) -> string {
-        if (text == @tr("Follow tab")) { return "follow"; }
-        if (text == @tr("Full screen")) { return "fullscreen"; }
-        if (text == @tr("Custom")) { return "custom"; }
-        return text;
-    }
-    // (#rdp-follow-sync 2026-10-13) 分辨率下拉是「跟随标签页」的唯一权威输入，
-    // 但存下来的是两个字段（resolution 字符串 + carry-over 的 follow-tab-size
-    // bool，见 Rust 的 session_models::follows_tab_size）。**每次改动都要把两者
-    // 一起写**，否则「之前选了跟随标签页、现在想改成 1920x1080」会被 OR 判据
-    // 永远判成 follow —— 开关单向卡死。选 follow 时 bool 同步为 true，选任何
-    // 固定值/全屏/自定义时同步为 false。
-    function set-resolution(id: string) {
-        root.draft-rdp-resolution = id;
-        root.draft-rdp-follow-tab-size = (id == "follow");
     }
     function set-kind(id: string) {
         if (root.is-default-port(root.draft-port) && id != "serial") {
@@ -2746,16 +2722,9 @@ HorizontalLayout {
                                     active: root.draft-rdp-mode == "embedded";
                                     clicked => {
                                         root.draft-rdp-mode = "embedded";
-                                        // (#rdp-follow-default 2026-10-13) 新建的
-                                        // 内置 RDP 会话默认就是「跟随标签页」
-                                        // (P0-9)：只有它让远端桌面直接铺满标签
-                                        // 页，用户不必手算像素。只在**新建**且分辨率
-                                        // 还是出厂值 1280x720 时预置 —— 编辑存量
-                                        // 会话时绝不偷偷改用户存下来的选择。
-                                        if (!root.is-editing
-                                                && root.draft-rdp-resolution == "1280x720") {
-                                            root.set-resolution("follow");
-                                        }
+                                        // (#rdp-follow-only 2026-11-16) 内置客户端
+                                        // 的桌面始终跟随标签页，分辨率值不再参与
+                                        // (跟随标记由 Rust 侧 from_session 强制)。
                                     }
                                 }
                                 SegOption {
@@ -2767,13 +2736,15 @@ HorizontalLayout {
                                     active: root.draft-rdp-mode != "embedded";
                                     clicked => {
                                         root.draft-rdp-mode = "system";
-                                        // 系统客户端不认识「跟随标签页」(它只有
-                                        // 全屏/预设/自定义)：新建时从内置切回来，
-                                        // 把上面自动预置的值还原成出厂窗口尺寸，
-                                        // 免得下拉里留一个这个模式用不了的选项。
+                                        // (#rdp-system-fullscreen 2026-11-16)
+                                        // 系统客户端固定全屏：新建会话从内置切
+                                        // 回来时把「跟随标签页」还原成全屏，保
+                                        // 存路径会按模式强制(rdp_display_settings
+                                        // 前的 resolution 归一)。
                                         if (!root.is-editing
                                                 && root.draft-rdp-resolution == "follow") {
-                                            root.set-resolution("1280x720");
+                                            root.draft-rdp-resolution = "fullscreen";
+                                            root.draft-rdp-follow-tab-size = false;
                                         }
                                     }
                                 }
@@ -3374,78 +3345,41 @@ if root.draft-kind == "serial" : HorizontalLayout {
                         }
                         // (#rdp-adv 2026-10-05) RDP 的域/分辨率收进高级区。
                         // (#rdp-no-adv 2026-10-05) 用户要求删掉 RDP 的折叠条:
-                        // 高级区只剩这一块,折叠态无意义 → 常驻显示在账户段
-                        // 下方;行 spacing 10px 与账户行同款(两列 stretch 均分,
-                        // 列边界与用户名/密码严格对齐);分辨率 open-up 保留。
-                        if root.draft-kind == "rdp" : VerticalLayout {
+                        // 高级区常驻显示在账户段下方。
+                        //
+                        // (#rdp-follow-only 2026-11-16) 分辨率下拉整个退役：
+                        // 内置客户端的桌面**始终跟随标签页**（固定分辨率在
+                        // 标签页里只会 letterbox = 上一轮修掉的模糊来源）；
+                        // 系统客户端固定全屏（Ctrl+Alt+Enter 可切回窗口）。
+                        // 存量会话存的分辨率值仍随会话保存/生效（系统客户端
+                        // 的窗口尺寸），只是不再显示、不再可改。
+                        if root.draft-kind == "rdp" && root.draft-rdp-mode == "embedded" : VerticalLayout {
                             spacing: 12px;
-                            HorizontalLayout {
-                                spacing: 10px;
-                                LabeledInput {
-                                    focus-changed(f) => { if (f) { root.drop-clock += 1; } }
-                                    dialog-field: true;
-                                    input-height: 38px;
-                                    label: @tr("Domain (optional)");
-                                    placeholder: "CONTOSO";
-                                    value <=> root.draft-rdp-domain;
-                                    horizontal-stretch: 1;
-                                    min-width: 0;
-                                    clearable: true;
-                                    canceled => { root.cancel(); }
-                                    accepted => { root.try-submit(); }
-                                }
-                                SelectField {
-                                    opening => { dialog-focus.focus(); }
-                                    drop-clock <=> root.drop-clock;
-                                    horizontal-stretch: 1;
-                                    min-width: 0;
-                                    open-up: true;
-                                    label: @tr("Resolution");
-                                    // (#rdp-vnc-embedded) 内置客户端多一个
-                                    // 「跟随标签页」首选项 —— 它是唯一能让远端
-                                    // 分辨率跟着本地布局走的选项(P0-9)。
-                                    // ⚠️ 系统客户端那一支的列表**逐项未变**(仍是
-                                    // 全屏打头),零回归:那一列看不出被改过。
-                                    choices: root.draft-rdp-mode == "embedded"
-                                        ? [@tr("Follow tab"), @tr("Full screen"), "1280x720", "1366x768", "1440x900", "1600x900", "1920x1080", "2560x1440", "3840x2160", @tr("Custom")]
-                                        : [@tr("Full screen"), "1280x720", "1366x768", "1440x900", "1600x900", "1920x1080", "2560x1440", "3840x2160", @tr("Custom")];
-                                    value: root.resolution-text(root.draft-rdp-resolution);
-                                    picked(value) => { root.set-resolution(root.resolution-from-text(value)); }
-                                }
-                            }
-                            if root.draft-rdp-resolution == "custom" : HorizontalLayout {
-                                spacing: 12px;
-                                LabeledInput {
-                                    focus-changed(f) => { if (f) { root.drop-clock += 1; } }
-                                    dialog-field: true;
-                                    input-height: 38px;
-                                    label: @tr("Width");
-                                    placeholder: "1280";
-                                    value <=> root.draft-rdp-width;
-                                    horizontal-stretch: 1;
-                                    clearable: true;
-                                    canceled => { root.cancel(); }
-                                    accepted => { root.try-submit(); }
-                                }
-                                LabeledInput {
-                                    focus-changed(f) => { if (f) { root.drop-clock += 1; } }
-                                    dialog-field: true;
-                                    input-height: 38px;
-                                    label: @tr("Height");
-                                    placeholder: "720";
-                                    value <=> root.draft-rdp-height;
-                                    horizontal-stretch: 1;
-                                    clearable: true;
-                                    canceled => { root.cancel(); }
-                                    accepted => { root.try-submit(); }
-                                }
+                            LabeledInput {
+                                focus-changed(f) => { if (f) { root.drop-clock += 1; } }
+                                dialog-field: true;
+                                input-height: 38px;
+                                label: @tr("Domain (optional)");
+                                placeholder: "CONTOSO";
+                                value <=> root.draft-rdp-domain;
+                                horizontal-stretch: 1;
+                                min-width: 0;
+                                clearable: true;
+                                canceled => { root.cancel(); }
+                                accepted => { root.try-submit(); }
                             }
                             Text {
-                                text: @tr("Remote desktop size. In full screen, Ctrl+Alt+Enter switches back to a window.");
+                                text: @tr("The remote desktop always matches the tab size.");
                                 color: Theme.text-muted;
                                 font-size: Theme.fs-xs;
                                 wrap: word-wrap;
                             }
+                        }
+                        if root.draft-kind == "rdp" && root.draft-rdp-mode != "embedded" : Text {
+                            text: @tr("Opens full screen. Ctrl+Alt+Enter switches back to a window.");
+                            color: Theme.text-muted;
+                            font-size: Theme.fs-xs;
+                            wrap: word-wrap;
                         }
 
                         if root.show-advanced && root.draft-kind == "ssh" : VerticalLayout {

@@ -32,7 +32,10 @@ use image::RgbaImage;
 use tokio::sync::mpsc;
 
 use ironrdp::client::config::{ConfigBuilder, Destination, TransportKind};
-use ironrdp::client::rdp::{RdpClient, RdpInputEvent as IronRdpInput, RdpOutputEvent};
+use ironrdp::client::output_channel::output_channel;
+use ironrdp::client::rdp::{
+    RdpClient, RdpInputEvent as IronRdpInput, RdpInputSender, RdpOutputEvent,
+};
 use ironrdp::input::{
     Database as IronRdpInputDatabase, MouseButton, MousePosition, Operation as IronRdpOperation,
     Scancode, WheelRotations,
@@ -187,7 +190,7 @@ fn hold_input(queue: &mut VecDeque<RemoteInput>, event: RemoteInput) {
 fn apply_input(
     deps: &DriverDeps,
     input_db: &mut IronRdpInputDatabase,
-    iron_input: &mpsc::UnboundedSender<IronRdpInput>,
+    iron_input: &RdpInputSender,
     dirty: &mut bool,
     size: &mut (u16, u16),
     applied_size: &mut (u16, u16),
@@ -226,7 +229,10 @@ fn apply_input(
                 size: (w, h),
                 started: tokio::time::Instant::now(),
             });
-            let _ = iron_input.send(IronRdpInput::Resize {
+            // The client's input queue is bounded and drops on overflow by
+            // design: input is a best-effort firehose, and a full queue means the
+            // session is already behind. `try_send` keeps that contract explicit.
+            let _ = iron_input.try_send(IronRdpInput::Resize {
                 width: w,
                 height: h,
                 scale_factor: 100,
@@ -259,7 +265,11 @@ pub async fn run_with_input(
         return;
     }
 
-    let (output_tx, mut output_rx) = mpsc::channel::<RdpOutputEvent>(8);
+    // (MTerm, #rdp-ironrdp-master 2026-11-16) The client owns the coalescing
+    // now: an `Image` event goes through a `LatestOnly` slot, so a slow UI
+    // simply misses intermediate frames instead of queueing them. That is
+    // exactly what our own FrameQueue used to do by hand.
+    let (output_tx, mut output_rx) = output_channel(8);
 
     // The size the tab is at, in the device pixels the frame is drawn in.
     // A session that follows the tab connects at this size, so the very first
@@ -280,8 +290,13 @@ pub async fn run_with_input(
     // by the CLIPRDR channel and watches the local clipboard for as long as
     // the session lasts.
     let clipboard = ClipboardFactory::new();
+    // Three transport drops are worth surviving inside the session: the client
+    // reconnects with the RDP auto-reconnect cookie, so a transient loss costs no
+    // handshake and no re-authentication. The outer loop below still covers what
+    // this cannot (a refused connection, a session that never came up).
     let client = RdpClient::new(iron_config, output_tx)
-        .with_cliprdr_backend_factory(Box::new(clipboard.clone()));
+        .with_cliprdr_backend_factory(Box::new(clipboard.clone()))
+        .with_auto_reconnect(3);
     let mut iron_input = client.input_sender();
     // The backend talks to the client through its input channel.
     clipboard.set_input(iron_input.clone());
@@ -327,7 +342,7 @@ pub async fn run_with_input(
 
     let mut frames = FrameQueue::new();
     let mut input_db = IronRdpInputDatabase::new();
-    let mut framebuffer: Option<Arc<RgbaImage>> = None;
+    let mut framebuffer: Option<RgbaImage> = None;
     let mut last_emit = tokio::time::Instant::now() - FRAME_INTERVAL;
     let mut dirty = false;
     let mut size = deps
@@ -401,7 +416,9 @@ pub async fn run_with_input(
             // 之后才执行，只会白等 400ms（#rdp-resize-drop 2026-10-27）。这时
             // 直接 drop future：那一步本来就是兜底，会话已经不再发任何东西。
             if !session_done && resize_in_flight.is_none() {
-                let _ = iron_input.send(IronRdpInput::Close);
+                // The close signal has its own channel and cannot be lost to a
+                // full input queue, which is exactly what closing a tab needs.
+                iron_input.request_graceful_close();
                 let deadline = tokio::time::Instant::now() + Duration::from_millis(400);
                 // 结果只看「是否在窗口内收尾」：这之后的 drop 就是兜底，
                 // 所以不用再回写 session_done（马上 break）。
@@ -455,12 +472,13 @@ pub async fn run_with_input(
             // A fresh output channel per attempt: the old one is closed by the
             // client that owned it, and that closure is what tells the loop
             // the session is over.
-            let (retry_tx, retry_rx) = mpsc::channel::<RdpOutputEvent>(8);
+            let (retry_tx, retry_rx) = output_channel(8);
             // (#rdp-clipboard 2026-11-13) A fresh clipboard factory: the
             // backend belongs to the channel, which the old client owned.
             let clipboard = ClipboardFactory::new();
             let client = RdpClient::new(iron_config, retry_tx)
-                .with_cliprdr_backend_factory(Box::new(clipboard.clone()));
+                .with_cliprdr_backend_factory(Box::new(clipboard.clone()))
+                .with_auto_reconnect(3);
             iron_input = client.input_sender();
             clipboard.set_input(iron_input.clone());
             session = Box::pin(client.run());
@@ -564,6 +582,18 @@ pub async fn run_with_input(
                     continue;
                 };
                 match out {
+                    // (#rdp-ironrdp-master 2026-11-16) The protocol says the
+                    // session is up; the first frame may still be a moment away.
+                    // Reporting it here lets the view ask for its own size
+                    // without waiting for pixels — the client's resize queue
+                    // holds the request until Display Control is ready, so
+                    // asking early is safe.
+                    RdpOutputEvent::Connected => {
+                        ever_connected = true;
+                        if !matches!(deps.status.state(), RemoteState::Connected) {
+                            push_state(&deps, RemoteState::Connected, None);
+                        }
+                    }
                     RdpOutputEvent::Image { buffer, width, height } => {
                         let dimensions = (width.get(), height.get());
                         // A frame is proof that the session was established
@@ -586,7 +616,15 @@ pub async fn run_with_input(
                         // RGBA bytes, which is what the image type wants, so
                         // it is taken over rather than converted pixel by
                         // pixel.
-                        framebuffer = frame_from_bytes(buffer, dimensions).map(Arc::new);
+                        let mut new_frame = frame_from_bytes(buffer, dimensions);
+                        // (#rdp-unpainted-composite 2026-11-16) A frame right
+                        // after a (re)activation has unpainted holes; keep the
+                        // previous picture there so the desktop never flashes
+                        // black while the repaint streams in.
+                        if let Some(frame) = new_frame.as_mut() {
+                            composite_over_previous(frame, framebuffer.as_ref());
+                        }
+                        framebuffer = new_frame;
                         dirty = true;
                         if !matches!(deps.status.state(), RemoteState::Connected) {
                             push_state(&deps, RemoteState::Connected, None);
@@ -644,6 +682,24 @@ pub async fn run_with_input(
                         // local cursor visible is the honest behaviour rather
                         // than a cursor drawn at the wrong place.
                     }
+                    // (#rdp-ironrdp-master 2026-11-16) The client reports a lot
+                    // this tab has no surface for yet (RAIL windows, EGFX window
+                    // surfaces, server power/battery requests, the W365/entra
+                    // paths). Two of them are worth keeping: a resize that fell
+                    // back to a reconnect, and the client's own auto-reconnect —
+                    // logged so a stalling session says why.
+                    RdpOutputEvent::DisplayResizeFallback(reason) => {
+                        tracing::info!(?reason, "RDP desktop resize fell back to a reconnect");
+                    }
+                    RdpOutputEvent::AutoReconnecting { .. } => {
+                        tracing::info!("RDP session dropped; the client is reconnecting");
+                        deps.status.set(RemoteState::Reconnecting, None);
+                        push_state(&deps, RemoteState::Reconnecting, None);
+                    }
+                    RdpOutputEvent::AutoReconnected => {
+                        tracing::info!("RDP session reconnected");
+                    }
+                    _ => {}
                 }
             }
 
@@ -973,7 +1029,7 @@ async fn frame_deadline(last_emit: tokio::time::Instant, pending: bool) {
 fn push_frame(
     deps: &DriverDeps,
     frames: &mut FrameQueue,
-    framebuffer: &Option<Arc<RgbaImage>>,
+    framebuffer: &Option<RgbaImage>,
     dirty: &mut bool,
     last_emit: &mut tokio::time::Instant,
 ) {
@@ -983,7 +1039,12 @@ fn push_frame(
     *last_emit = tokio::time::Instant::now();
     *dirty = false;
     if let Some(frame) = framebuffer.as_ref() {
-        frames.push_frame(RemoteEvent::Frame(frame.clone()));
+        // (#rdp-frame-off-ui 2026-11-16) The pixels are packed here, on the
+        // session's own thread: a large desktop is 22 MB a frame, and both the
+        // copy and the allocation (which faults in every fresh page) belong
+        // anywhere but the thread that has to keep the window responsive. The
+        // UI thread only wraps the result in an `Image`.
+        frames.push_frame(RemoteEvent::Frame(crate::remote::render::to_buffer_exact(frame)));
     }
     for event in frames.drain() {
         if deps.events.send(event).is_err() {
@@ -1016,13 +1077,55 @@ fn frame_from_bytes(buffer: Vec<u8>, dimensions: (u16, u16)) -> Option<RgbaImage
     RgbaImage::from_raw(width, height, buffer)
 }
 
+/// Paint over the parts of a frame the server has not sent yet
+/// (#rdp-unpainted-composite 2026-11-16).
+///
+/// A freshly (re)activated framebuffer starts out *empty*, and ironrdp marks
+/// a pixel as painted by writing an opaque alpha into it — so an unpainted
+/// pixel still carries `alpha == 0`, and the view draws it as transparent.
+/// That is the black rectangles a desktop resize flashes: the repaint after
+/// the resize streams in over several updates, and every intermediate frame
+/// has holes where the server has not been yet.
+///
+/// Wherever the new frame is unpainted and the previous one has content, the
+/// previous content is kept: the desktop does not visibly lose pieces while
+/// the repaint catches up, and a pixel the server *does* paint always wins.
+/// The alpha byte doubles as the "was this painted" flag, so the check is a
+/// straight pass over the buffer with no protocol knowledge.
+///
+/// A frame of a different size than the previous one (a resize just handed
+/// back a new desktop) borrows the overlap, top-left aligned — the desktop
+/// content stays anchored there across a resize. Anything the old frame does
+/// not cover is made opaque rather than transparent: the background colour of
+/// the tab showing through a desktop is worse than black.
+fn composite_over_previous(frame: &mut RgbaImage, previous: Option<&RgbaImage>) {
+    // Fast rejection: a fully painted frame needs no work. This is the common
+    // case — only the frames right after a (re)activation have holes.
+    if frame.as_raw().chunks_exact(4).all(|px| px[3] == 0xff) {
+        return;
+    }
+    let (prev_w, prev_h) = previous
+        .map(|previous| previous.dimensions())
+        .unwrap_or((0, 0));
+    for (x, y, pixel) in frame.enumerate_pixels_mut() {
+        if pixel.0[3] != 0 {
+            continue;
+        }
+        if x < prev_w && y < prev_h {
+            *pixel = *previous.expect("checked above").get_pixel(x, y);
+        } else {
+            pixel.0[3] = 0xff;
+        }
+    }
+}
+
 /// Apply one input event to the ironrdp input sender.
 ///
 /// Keys go through the `Database` so ironrdp can derive the fast-path flags,
 /// including the left/right modifier disambiguation the protocol needs.
 fn forward_input(
     db: &mut IronRdpInputDatabase,
-    sender: &mpsc::UnboundedSender<IronRdpInput>,
+    sender: &RdpInputSender,
     event: RemoteInput,
 ) {
     let ops: Vec<IronRdpOperation> = match event {
@@ -1081,8 +1184,13 @@ fn forward_input(
         }
         RemoteInput::ReleaseAll => {
             let fast = db.release_all();
-            if !fast.is_empty() {
-                let _ = sender.send(IronRdpInput::FastPath(fast));
+            if !fast.is_empty() && sender.try_send(IronRdpInput::FastPath(fast)).is_err() {
+                // Dropping a release-all would leave keys held down on the remote
+                // desktop, which is one of the few input losses a user notices.
+                // The queue is 128 events deep and only fills when the session
+                // stopped draining, so this is the trace to look for when a
+                // stuck key is reported.
+                tracing::warn!("RDP input queue is full; a release-all was dropped");
             }
             return;
         }
@@ -1092,8 +1200,8 @@ fn forward_input(
         return;
     }
     let fast = db.apply(ops);
-    if !fast.is_empty() {
-        let _ = sender.send(IronRdpInput::FastPath(fast));
+    if !fast.is_empty() && sender.try_send(IronRdpInput::FastPath(fast)).is_err() {
+        tracing::warn!("RDP input queue is full; an input event was dropped");
     }
 }
 
@@ -1223,6 +1331,66 @@ mod tests {
         assert_eq!(img.as_raw(), pixels.as_slice());
     }
 
+    /// (#rdp-unpainted-composite 2026-11-16) The holes of a frame that is
+    /// still streaming in are filled from the previous picture.
+    #[test]
+    fn unpainted_pixels_are_taken_from_the_previous_frame() {
+        // Previous frame: all red. New frame: blue painted, hole in the middle
+        // (alpha == 0 — how ironrdp leaves a pixel it has not decoded yet).
+        let previous = RgbaImage::from_pixel(2, 2, image::Rgba([10, 20, 30, 0xff]));
+        let mut frame = RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 200, 0xff]));
+        frame.get_pixel_mut(1, 1).0 = [0, 0, 0, 0x00];
+
+        composite_over_previous(&mut frame, Some(&previous));
+        assert_eq!(frame.get_pixel(0, 0).0, [0, 0, 200, 0xff], "painted wins");
+        assert_eq!(
+            frame.get_pixel(1, 1).0,
+            [10, 20, 30, 0xff],
+            "a hole shows the previous content, opaque"
+        );
+    }
+
+    /// A frame with nothing unpainted is left alone — that is the common case,
+    /// and the pass over it must not rewrite anything.
+    #[test]
+    fn a_fully_painted_frame_is_not_touched() {
+        let previous = RgbaImage::from_pixel(2, 2, image::Rgba([10, 20, 30, 0xff]));
+        let mut frame = RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 200, 0xff]));
+        let before = frame.as_raw().clone();
+
+        composite_over_previous(&mut frame, Some(&previous));
+        assert_eq!(frame.as_raw(), before.as_slice());
+    }
+
+    /// A hole outside the previous frame (the desktop just grew) cannot borrow
+    /// old pixels; it is made opaque rather than let the background show
+    /// through a desktop.
+    #[test]
+    fn a_hole_outside_the_previous_frame_is_made_opaque() {
+        let previous = RgbaImage::from_pixel(2, 2, image::Rgba([10, 20, 30, 0xff]));
+        let mut frame = RgbaImage::from_pixel(3, 2, image::Rgba([0, 0, 200, 0xff]));
+        frame.get_pixel_mut(0, 0).0 = [0, 0, 0, 0x00]; // inside the old frame
+        frame.get_pixel_mut(2, 1).0 = [0, 0, 0, 0x00]; // outside the old frame
+
+        composite_over_previous(&mut frame, Some(&previous));
+        assert_eq!(
+            frame.get_pixel(0, 0).0,
+            [10, 20, 30, 0xff],
+            "the overlap borrows the old content"
+        );
+        let px = frame.get_pixel(2, 1).0;
+        assert_eq!(px[3], 0xff, "opaque, not transparent");
+    }
+
+    /// No previous frame (the first one after connecting): holes are made
+    /// opaque, and there is nothing to crash on.
+    #[test]
+    fn the_first_frame_has_no_previous_to_borrow() {
+        let mut frame = RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 200, 0x00]));
+        composite_over_previous(&mut frame, None);
+        assert_eq!(frame.get_pixel(0, 0).0, [0, 0, 200, 0xff]);
+    }
+
     #[test]
     fn a_failure_keeps_the_servers_reason_and_drops_the_build_location() {
         // Mirrors what a rejected NLA logon reports: the readable status lives in
@@ -1348,7 +1516,8 @@ mod tests {
     #[tokio::test]
     async fn a_resize_reports_the_new_size_and_arms_the_hold() {
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
-        let (iron_tx, mut iron_rx) = mpsc::unbounded_channel();
+        // The client's own sender type, built the way upstream documents for tests.
+        let (iron_tx, mut iron_rx) = RdpInputSender::channel(8);
         let status = Arc::new(RemoteStatus::new(RemoteState::Connected));
         let deps = DriverDeps {
             status,
@@ -1399,7 +1568,8 @@ mod tests {
     #[tokio::test]
     async fn asking_for_the_size_already_pending_is_not_a_second_resize() {
         let (events_tx, _events_rx) = mpsc::unbounded_channel();
-        let (iron_tx, mut iron_rx) = mpsc::unbounded_channel();
+        // The client's own sender type, built the way upstream documents for tests.
+        let (iron_tx, mut iron_rx) = RdpInputSender::channel(8);
         let deps = DriverDeps {
             status: Arc::new(RemoteStatus::new(RemoteState::Connected)),
             closed: Arc::new(AtomicBool::new(false)),

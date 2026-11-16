@@ -69,7 +69,14 @@ impl EmbeddedRdpConfig {
             password: session.password.as_str().to_string(),
             width,
             height,
-            follow_tab_size: session.rdp_follow_tab_size,
+            // (#rdp-follow-only 2026-11-16) The built-in client **always**
+            // follows the tab. It lives inside a tab, so a fixed resolution can
+            // only ever letterbox inside it — that is what made the desktop
+            // soft, and it is why the resolution dropdown is gone for this mode
+            // (the system client keeps its own, which is a real window).
+            // "Full screen" folded into this too: a desktop in a tab has no
+            // window of its own to go full screen in.
+            follow_tab_size: true,
             color_depth: 32,
             certificate_policy: "prompt".to_string(),
         })
@@ -79,8 +86,10 @@ impl EmbeddedRdpConfig {
 /// The desktop size to request for `session`.
 ///
 /// `rdp_fullscreen` and the resolution dropdown feed `rdp_width` / `rdp_height`
-/// exactly as they do for the system client, so the same three choices
-/// (full screen / preset / custom) mean the same thing in both modes.
+/// exactly as they do for the system client. For the built-in client this is
+/// only the size the *handshake* goes out at as a guess — the session always
+/// follows the tab, and the driver connects at the tab's size on every
+/// (re)connect.
 pub fn desktop_size(session: &Session) -> (u16, u16) {
     if session.rdp_fullscreen {
         return (1920, 1080);
@@ -126,5 +135,30 @@ mod tests {
     fn a_blank_host_is_rejected_before_any_socket_is_opened() {
         let session = Session::new_empty();
         assert!(EmbeddedRdpConfig::from_session(&session, "t").is_err());
+    }
+
+    /// (#rdp-follow-only 2026-11-16) The built-in client **always** follows
+    /// the tab, whatever the session's stored display settings say: a fixed
+    /// resolution inside a tab can only letterbox, which is the blur this
+    /// replaces. ("Full screen" folded in earlier — #rdp-fullscreen-fills-tab.)
+    #[test]
+    fn the_built_in_client_always_follows_the_tab() {
+        let mut session = Session::new_empty();
+        session.kind = SessionKind::Rdp;
+        session.host = "10.0.0.9".into();
+
+        session.rdp_follow_tab_size = false;
+        session.rdp_fullscreen = false;
+        session.rdp_width = 1920;
+        session.rdp_height = 1080;
+        let cfg = EmbeddedRdpConfig::from_session(&session, "t").unwrap();
+        assert!(
+            cfg.follow_tab_size,
+            "a fixed resolution inside a tab is not a thing any more"
+        );
+
+        session.rdp_fullscreen = true;
+        let cfg = EmbeddedRdpConfig::from_session(&session, "t").unwrap();
+        assert!(cfg.follow_tab_size, "full screen fills the tab");
     }
 }

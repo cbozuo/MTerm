@@ -191,10 +191,12 @@ impl RemotePanes {
             return;
         };
         match event {
-            RemoteEvent::Frame(image) => {
-                let (w, h) = image.dimensions();
-                let slint_image = render::to_image(&image);
-                row.image = slint_image;
+            RemoteEvent::Frame(buffer) => {
+                // (#rdp-frame-off-ui 2026-11-16) The pixels were already packed
+                // on the session's thread; wrapping them is a reference count,
+                // which is all the UI thread should be doing per frame.
+                let (w, h) = (buffer.width(), buffer.height());
+                row.image = slint::Image::from_rgba8(buffer);
                 row.frame_w = i32::from(w.min(u32::from(u16::MAX)) as u16);
                 row.frame_h = i32::from(h.min(u32::from(u16::MAX)) as u16);
             }
@@ -506,7 +508,7 @@ mod tests {
         let panes = RemotePanes::new(Rc::new(VecModel::default()));
         panes.open("tab-1", "host", "rdp", false);
         panes.apply(
-            RemoteEvent::Frame(std::sync::Arc::new(image::RgbaImage::new(1280, 720))),
+            RemoteEvent::Frame(slint::SharedPixelBuffer::new(1280, 720)),
             "tab-1",
         );
         panes.apply(RemoteEvent::Size { width: 2560, height: 1400 }, "tab-1");
@@ -589,7 +591,7 @@ mod tests {
             "tab-1",
         );
         panes.apply(
-            RemoteEvent::Frame(std::sync::Arc::new(image::RgbaImage::new(64, 48))),
+            RemoteEvent::Frame(slint::SharedPixelBuffer::new(64, 48)),
             "tab-1",
         );
 

@@ -6,40 +6,25 @@
 //! drivers stay thin and guarantees the two tabs scale identically.
 
 use image::RgbaImage;
-use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
+use slint::{Rgba8Pixel, SharedPixelBuffer};
 
-/// Longest edge a delivered frame may have.
+/// Pack a frame into a Slint pixel buffer **at its own size**.
 ///
-/// The desktop is rendered into an `Image` and then scaled by the view, so an
-/// oversized buffer only costs memory and upload time. 2560 px on the long edge
-/// matches what the wallpaper pipeline uses, and any real desktop (4K = 3840)
-/// still downscales to something visually indistinguishable at tab size.
-pub const MAX_FRAME_EDGE: u32 = 2560;
-
-/// Pack an RGBA image into a Slint pixel buffer, downscaling if it is oversized.
+/// A remote desktop is the content itself, drawn one screen pixel per remote
+/// pixel, so the buffer keeps the size it arrived with. Any resize here is
+/// undone by the view's own scaling, and a downscale-then-upscale is what
+/// turns a sharp desktop into a soft one (#rdp-pixel-exact 2026-11-16).
 ///
-/// The aspect ratio is preserved and the UI letterboxes the result, so a
-/// non-matching buffer size never stretches the picture (P0-6).
-pub fn to_image(img: &RgbaImage) -> Image {
-    Image::from_rgba8(to_buffer(img))
-}
-
-/// The buffer half of [`to_image`], exposed separately because the tab view
-/// also needs the pixel size to map pointer coordinates back to remote pixels.
-pub fn to_buffer(img: &RgbaImage) -> SharedPixelBuffer<Rgba8Pixel> {
-    let (w, h) = img.dimensions();
-    let scaled;
-    let img = if w.max(h) > MAX_FRAME_EDGE && w > 0 && h > 0 {
-        let scale = MAX_FRAME_EDGE as f32 / w.max(h) as f32;
-        let nw = ((w as f32 * scale) as u32).max(1);
-        let nh = ((h as f32 * scale) as u32).max(1);
-        // Triangle filter: a box filter would alias badly on text, which is
-        // most of a desktop.
-        scaled = image::imageops::resize(img, nw, nh, image::imageops::FilterType::Triangle);
-        &scaled
-    } else {
-        img
-    };
+/// This used to clamp the long edge to 2560 px — a limit taken from the
+/// wallpaper pipeline, which resamples by nature. A desktop is not a wallpaper:
+/// a 3055 px-wide tab was silently served a 2560 px frame that the view then
+/// stretched back to 3055, which is exactly the blur this replaces. (The
+/// wallpaper path never even went through here; it has its own copy.)
+///
+/// Called from the session's thread, not the UI thread, and returns a buffer
+/// rather than an `Image` because `Image` cannot cross threads
+/// (#rdp-frame-off-ui 2026-11-16).
+pub fn to_buffer_exact(img: &RgbaImage) -> SharedPixelBuffer<Rgba8Pixel> {
     let (w, h) = img.dimensions();
     let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(w, h);
     // `image` stores RGBA byte-wise, which is exactly Slint's Rgba8Pixel layout,
@@ -194,5 +179,30 @@ mod tests {
         // Oversized is clamped rather than refused, so a 4K tab still connects.
         // `u16::MAX` is the largest size the protocol could even name.
         assert_eq!(clamp_desktop_size(u16::MAX, u16::MAX), Some((8192, 8192)));
+    }
+
+    /// A desktop frame is delivered at the size it arrived with
+    /// (#rdp-pixel-exact 2026-11-16).
+    ///
+    /// The long edge used to be clamped to 2560 px on the way here, so a tab
+    /// wider than that was served a smaller frame and the view stretched it
+    /// back — the frame was already a resample before it was drawn.
+    #[test]
+    fn a_desktop_frame_keeps_its_own_size() {
+        let img = RgbaImage::new(3055, 1789);
+        let buf = to_buffer_exact(&img);
+        assert_eq!(buf.width(), 3055);
+        assert_eq!(buf.height(), 1789);
+    }
+
+    /// The pixels are copied through untouched: the frame is already in the
+    /// layout the UI draws, so this must stay a copy rather than a conversion.
+    #[test]
+    fn a_desktop_frame_keeps_its_pixels() {
+        let mut img = RgbaImage::new(2, 1);
+        img.put_pixel(0, 0, image::Rgba([1, 2, 3, 4]));
+        img.put_pixel(1, 0, image::Rgba([5, 6, 7, 8]));
+        let buf = to_buffer_exact(&img);
+        assert_eq!(buf.as_bytes(), &[1, 2, 3, 4, 5, 6, 7, 8]);
     }
 }

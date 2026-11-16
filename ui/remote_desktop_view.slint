@@ -83,16 +83,51 @@ export component RemoteDesktopView inherits Rectangle {
     property <float> view-h: self.height / 1px;
     property <float> frame-w-f: root.frame-w;
     property <float> frame-h-f: root.frame-h;
-    // Uniform scale of the `contain` fit; 0 when there is nothing to draw.
+    // The tab itself, in device pixels: the grid the frame is drawn on.
+    property <float> device-w: view-w * root.dpr;
+    property <float> device-h: view-h * root.dpr;
+
+    // Whether the frame is essentially the tab's own device size.
+    //
+    // The request cannot help losing a couple of pixels on the way round: what
+    // the view asks for is rounded, then RDP rounds the width again to an
+    // even value, so the frame lands *near* the tab rather than exactly on it.
+    // Three pixels of tolerance is that slack (#rdp-pixel-exact 2026-11-16).
+    //
+    // Written out rather than taken from `abs()`, which is not on every Slint
+    // version: `remote - device <= 3 && device - remote <= 3` is the same test
+    // for two floats.
+    pure function near-device(remote: float, device: float) -> bool {
+        return remote - device <= 3 && device - remote <= 3;
+    }
+    property <bool> pixel-exact: root.dpr > 0
+        && near-device(frame-w-f, device-w)
+        && near-device(frame-h-f, device-h);
+
+    // Uniform scale of the `contain` fit, in logical px per remote pixel; 0
+    // when there is nothing to draw.
+    //
+    // A frame that is already the tab's size is drawn **one screen pixel per
+    // remote pixel** instead of being scaled to close that 1-2 px gap: pushing
+    // the whole desktop through a resample softens every pixel on screen,
+    // which is far more visible than the sliver of background it saves. A
+    // frame that genuinely differs (a fixed resolution in a bigger tab) still
+    // fits as before.
     property <float> fit-scale: frame-w-f > 0 && frame-h-f > 0
-        && view-w > 0 && view-h > 0
-        ? min(view-w / frame-w-f, view-h / frame-h-f)
+        && view-w > 0 && view-h > 0 && root.dpr > 0
+        ? (pixel-exact
+            ? 1.0 / root.dpr
+            : min(device-w / frame-w-f, device-h / frame-h-f) / root.dpr)
         : 0;
     // Size and offset of the drawn image inside the tab (the letterbox bars).
     property <length> drawn-w: frame-w-f * fit-scale * 1px;
     property <length> drawn-h: frame-h-f * fit-scale * 1px;
-    property <length> origin-x: (self.width - drawn-w) / 2;
-    property <length> origin-y: (self.height - drawn-h) / 2;
+    // Snapped to the device grid: an origin half a device pixel off makes the
+    // renderer blend two rows and two columns of the whole frame, which is the
+    // same softness as scaling it for real. Centring alone puts it there
+    // whenever the frame and the tab differ by an odd number of device pixels.
+    property <length> origin-x: Theme.snap-to-device((self.width - drawn-w) / 2);
+    property <length> origin-y: Theme.snap-to-device((self.height - drawn-h) / 2);
 
     // Scratch slots for `to-remote`'s out-parameters (Slint has no tuples out).
     property <int> pending-x;
@@ -299,7 +334,42 @@ export component RemoteDesktopView inherits Rectangle {
     // cannot name a global's property directly.
     property <float> dpr: Theme.device-pixel-ratio;
     changed dpr => { root.report-size(); }
+    // (#rdp-resize-debounce 2026-11-16) Two gates before a size request goes
+    // out, because every one of them makes the server repaint the *whole*
+    // desktop through a Deactivation-Reactivation:
+    //
+    // 1. A desktop that is already within the pixel-exact tolerance (3 px, the
+    //    same slack `fit-scale` honours) is not requested again — the painted
+    //    result would be indistinguishable from what is on screen now.
+    // 2. While the size is still changing (a maximise/restore runs as an
+    //    animation, so the tab reports a whole series of intermediate sizes)
+    //    the request waits 150 ms for it to settle. One animation then costs
+    //    one resize instead of one per intermediate size.
+    property <int> resize-w;
+    property <int> resize-h;
+    property <bool> resize-pending: false;
+    Timer {
+        interval: 150ms;
+        running: root.resize-pending;
+        triggered => {
+            root.resize-pending = false;
+            root.report-size-now();
+        }
+    }
     function report-size() {
+        if (root.state != 2) { return; }
+        let w = round(root.view-w * root.dpr);
+        let h = round(root.view-h * root.dpr);
+        // The pending slot always holds the *latest* intent, so whatever the
+        // timer eventually sends is what the tab is at now.
+        root.resize-w = w;
+        root.resize-h = h;
+        if (near-device(root.frame-w, w) && near-device(root.frame-h, h)) {
+            return;
+        }
+        root.resize-pending = true;
+    }
+    function report-size-now() {
         if (root.state != 2) { return; }
         // The tab's own content box, in **device** pixels: that is the size the
         // server has to render at. The frame is drawn at a logical size that the
@@ -311,7 +381,7 @@ export component RemoteDesktopView inherits Rectangle {
         // Reporting the *frame* size would ask the server for the size it is
         // already running at, which the driver drops as a no-op — the mode would
         // be silently inert.
-        root.resized(round(root.view-w * root.dpr), round(root.view-h * root.dpr));
+        root.resized(root.resize-w, root.resize-h);
     }
 
     // --- Status overlay -----------------------------------------------------

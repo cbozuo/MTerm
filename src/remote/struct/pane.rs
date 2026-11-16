@@ -24,12 +24,19 @@ pub const FRAME_QUEUE_DEPTH: usize = 2;
 /// What the I/O task produced, handed across to the UI thread.
 #[derive(Debug)]
 pub enum RemoteEvent {
-    /// A new frame, already converted to something Slint can draw.
+    /// A new frame, packed into the pixel buffer Slint draws from.
     ///
-    /// Shared: the driver keeps the frame it is currently showing and hands
-    /// the *same* pixels to the queue, so publishing a frame costs a
-    /// reference count instead of a full-frame copy.
-    Frame(Arc<image::RgbaImage>),
+    /// The buffer is built by the session's own thread, not by the UI thread
+    /// (#rdp-frame-off-ui 2026-11-16): it is a full copy of the frame — 22 MB
+    /// for a large desktop — and doing that here instead of on the UI thread
+    /// keeps the copy (and the allocation that faults in 22 MB of fresh pages)
+    /// off the thread that has to keep the window responsive.
+    ///
+    /// A `SharedPixelBuffer` rather than an `Image` because `Image` is not
+    /// `Send` — its internal cache belongs to the Slint thread — while the
+    /// buffer is; wrapping it in an `Image` is what the UI thread does, and it
+    /// costs a reference count.
+    Frame(slint::SharedPixelBuffer<slint::Rgba8Pixel>),
     /// The connection state changed (or the session ended). The status object
     /// is shared rather than copied so the UI can read the driver's own view
     /// (state + message) without a second channel carrying the same facts.

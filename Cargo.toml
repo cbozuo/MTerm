@@ -168,7 +168,15 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # 的再导出（RDP 会话结束时用它把「服务端断开 / 远端用户断开」翻成人话，
 # #remote-reconnect 2026-10-13）。该 crate 本就是 `client` 的依赖，feature
 # 只开再导出，不会多编一份。
-ironrdp = { version = "0.17.0", default-features = false, features = ["client", "client-clipboard", "cliprdr", "connector", "core", "input", "pdu", "rustls", "session"] }
+# (MTerm, #rdp-ironrdp-master 2026-11-16) Vendored upstream master instead of
+# the released 0.17.0 family: the release predates `ActiveStage::reactivate`,
+# which is what keeps the bulk decompression history alive across the
+# Deactivation-Reactivation a desktop resize triggers (the released session
+# rebuilds the fast-path processor and loses it, while the server keeps
+# streaming against it — that decodes into the corrupt patches a resize flashes).
+# See vendor/ironrdp/Cargo.toml and scripts/vendor-ironrdp.py for the pinned
+# commit and the re-sync recipe.
+ironrdp = { path = "vendor/ironrdp/crates/ironrdp", default-features = false, features = ["client", "client-clipboard", "cliprdr", "connector", "core", "input", "pdu", "rustls", "session"] }
 vnc-rs = "0.6"
 # 内置 RDP 的证书信任（P0-12）。ironrdp 0.17 **没有**暴露证书校验器钩子
 # （ironrdp-tls 的 upgrade() 内部硬编码 NoCertificateVerification），所以信任
@@ -322,42 +330,25 @@ i-slint-backend-winit = { path = "vendor/i-slint-backend-winit" }
 # Slint upgrade.
 i-slint-core = { path = "vendor/i-slint-core" }
 
-# (#rdp-resize-decompressor 2026-10-13) Local patch of ironrdp-client 0.1.0: the
-# upstream Deactivation-Reactivation handler rebuilds the fast-path processor with
-# `bulk_decompressor: None`, so after a DisplayControl-driven resize (server sends
-# Deactivate All) every compressed FastPath update is fed to the decoder as
-# plaintext, decoding fails, and the session dies with a reasonless 已断线.
-# The patch recreates the decompressor from the compression type negotiated at
-# connect time. Upstream fixed this on master by moving the decompressor into
-# `ActiveStage`, but no released ironrdp/ironrdp-client version contains the fix
-# (0.17.0 / 0.1.0 are the latest), so upgrade is not an option yet.
-# Re-sync recipe on every ironrdp upgrade: re-extract the pristine crate, then
-# re-apply the marked hunks in src/rdp.rs:
-#   1. #rdp-resize-decompressor — capture `compression_type` before the
-#      ActiveStageBuilder; rebuild `BulkCompressor` in the DeactivateAll →
-#      Finalized branch.
-#   2. #rdp-resize-defer — the resize deferral (PendingResize / try_encode_resize
-#      / the resize_retry branch) and the reconnect retry in the connection loop.
-#   3. #rdp-clipboard — `RdpClient::with_cliprdr_backend_factory` and the
-#      host-factory branch in `run()`: the library's own WinClipboard needs a
-#      message pump on the thread that owns it, which our worker-thread driver
-#      cannot give it.
-# Drop the patch entry once upstream ships the fixes.
+# (#editor-native 2026-11-16) Local patch of i-slint-compiler 1.18.1: declares the
+# three opt-in TextInput properties the built-in editor needs — `syntax-source`,
+# `syntax-spans` and `line-number-width` — in the `item! { TextInput { … } }`
+# block of builtin_elements.rs (single hunk, see vendor/EDITOR_PATCH.md for the
+# matching i-slint-core hunks). The compiler and i-slint-core patches belong to
+# the same feature and must move together; upstream has none of this.
+# Re-sync recipe: re-extract the pristine crate, re-apply the marked hunk.
+i-slint-compiler = { path = "vendor/i-slint-compiler" }
+
+# (MTerm, #rdp-ironrdp-master 2026-11-16) The four local patches that used to
+# live in a vendored copy of ironrdp-client 0.1.0 are gone: the upstream master
+# snapshot vendored under vendor/ironrdp now provides each of them natively —
+# a host-supplied CLIPRDR backend factory (`with_cliprdr_backend_factory`), a
+# resize queue that coalesces and defers, the decompressor owned by the session
+# rather than by the fast-path processor, and an automatic reconnect knob. The
+# one piece that is still ours is the frame-copy reduction (upstream packs every
+# frame into a `Vec<u32>`; we take the decoded RGBA bytes as they are), which is
+# re-applied in vendor/ironrdp/crates/ironrdp-client/src/rdp.rs.
 #
-# (#rdp-resize-defer 2026-11-13) Second local patch, same crate: a resize that
-# arrives before the DisplayControl channel is open used to end the session and
-# reconnect at the new size (upstream's `encode_resize` returns None until the
-# channel is up). That reconnect races the server's release of the old session
-# and is refused, so every window resize killed the tab. The patch holds the
-# request until the channel is up (3 s), falls back to a *graceful* shutdown +
-# reconnect, and retries that reconnect a few times. Upstream (newer master,
-# vendored by the reference client) solved the same problem with a resize queue
-# plus a three-state display-control check.
-#
-# (#rdp-clipboard 2026-11-13) Third local patch, same crate: the host supplies
-# the local side of the clipboard channel (see
-# src/rdp/embedded/impls/clipboard.rs). Without it the only local backend is
-# ironrdp's WinClipboard, which registers a format listener on a hidden window
-# and needs a message pump on the thread that owns it — our driver runs on a
-# worker thread, and the clipboard would stay locked for it.
-ironrdp-client = { path = "vendor/ironrdp-client" }
+# Re-sync recipe: `python scripts/vendor-ironrdp.py <IronRDP checkout>` and
+# re-apply the marked frame-copy hunk in that file.
+

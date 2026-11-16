@@ -36,7 +36,7 @@ use ironrdp::cliprdr::pdu::{
     FileContentsFlags, FileContentsRequest, FileContentsResponse, FileDescriptor, FormatDataRequest,
     FormatDataResponse, LockDataId, OwnedFormatDataResponse,
 };
-use ironrdp::client::rdp::RdpInputEvent;
+use ironrdp::client::rdp::RdpInputSender;
 use tokio::sync::mpsc;
 
 /// How often the local clipboard is checked for changes.
@@ -68,7 +68,7 @@ const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 #[derive(Debug, Default)]
 struct Shared {
     /// The client's input channel, once the client exists.
-    input: Mutex<Option<mpsc::UnboundedSender<RdpInputEvent>>>,
+    input: Mutex<Option<RdpInputSender>>,
     /// What came *from* the remote and was written into the local clipboard.
     /// A local clipboard that still holds it is our own write coming back,
     /// not a new copy to push.
@@ -171,7 +171,7 @@ impl ClipboardFactory {
     ///
     /// The channel belongs to the client, which is created after the factory,
     /// so the sender is handed over afterwards.
-    pub(crate) fn set_input(&self, sender: mpsc::UnboundedSender<RdpInputEvent>) {
+    pub(crate) fn set_input(&self, sender: RdpInputSender) {
         if let Ok(mut input) = self.shared.input.lock() {
             *input = Some(sender);
         }
@@ -568,7 +568,11 @@ impl Shared {
     fn send(&self, message: ClipboardMessage) {
         let sender = self.input.lock().ok().and_then(|slot| slot.clone());
         if let Some(sender) = sender {
-            let _ = sender.send(RdpInputEvent::Clipboard(message));
+            // (#rdp-ironrdp-master 2026-11-16) CLIPRDR is an ordered
+            // transaction stream — dropping one message desynchronises the
+            // channel — so it has its own unbounded queue in the client that
+            // ordinary input backpressure cannot touch.
+            let _ = sender.send_clipboard(message);
         }
     }
 

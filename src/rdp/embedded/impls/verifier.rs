@@ -246,6 +246,10 @@ async fn negotiate_security_protocol(
         nego_data: None,
         flags: nego::RequestFlags::empty(),
         protocol: tls_protocols(),
+        // No correlation info either: it is what lets a *reconnect* be matched
+        // to the session it replaces, the same "brand-new connection" reason the
+        // cookie is absent. (Field added with the pdu 0.11 family.)
+        correlation_info: None,
     };
     let bytes = encode_vec(&X224(request)).map_err(|err| format!("{err}"))?;
     tcp.write_all(&bytes).await.map_err(|err| format!("{err}"))?;

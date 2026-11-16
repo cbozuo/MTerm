@@ -595,13 +595,13 @@ pub(super) const RDP_RESOLUTION_FULLSCREEN: &str = "fullscreen";
 pub(super) const RDP_RESOLUTION_CUSTOM: &str = "custom";
 /// The resolution a new RDP session starts with.
 ///
-/// (#rdp-follow-size 2026-11-13) "follow" — the remote desktop takes the
-/// tab's size. A built-in session lives *inside* a tab, so a fixed desktop
-/// there is scaled to fit: it looks soft when the tab is larger, and it
-/// costs a full-frame resample on every repaint. The stored width/height
-/// stay as the placeholder for the system client, which has a window of its
-/// own.
-pub(super) const RDP_RESOLUTION_DEFAULT: &str = "follow";
+/// (#rdp-system-fullscreen 2026-11-16) The system client opens **full screen**:
+/// it is a window of its own, and the resolution dropdown was removed from the
+/// dialog — a windowed size was a value nobody could reason about ahead of
+/// time, and Ctrl+Alt+Enter switches back to a window from inside the session.
+/// The built-in client never consults this field any more — its desktop always
+/// follows the tab (see `EmbeddedRdpConfig::from_session`).
+pub(super) const RDP_RESOLUTION_DEFAULT: &str = "fullscreen";
 pub(super) const RDP_RESOLUTION_PRESETS: [&str; 7] = [
     "1280x720",
     "1366x768",
@@ -754,8 +754,17 @@ pub(super) fn session_from_draft(
         SessionKind::Vnc => 5900,
         _ => 22,
     };
+    // (#rdp-system-fullscreen 2026-11-16) The system client's resolution field
+    // is gone from the dialog: it opens full screen. A stored follow/preset
+    // value must not silently win over the mode's one display, and sessions
+    // saved before this change keep round-tripping through here.
+    let resolution = if kind == SessionKind::Rdp && draft.rdp_mode.to_string() != "embedded" {
+        RDP_RESOLUTION_FULLSCREEN.to_string()
+    } else {
+        draft.rdp_resolution.to_string()
+    };
     let (rdp_fullscreen, rdp_width, rdp_height) =
-        rdp_display_settings(&draft.rdp_resolution.to_string(), draft.rdp_width, draft.rdp_height);
+        rdp_display_settings(&resolution, draft.rdp_width, draft.rdp_height);
     // (#rdp-vnc-embedded) 「跟随标签页」是内置客户端独有的选项，它不是一个宽高
     // 对（尺寸在运行时才由标签页决定），所以单独落成一个 bool。判据见
     // `follows_tab_size` —— 保存路径必须共用它，否则分辨率下拉里的选择会丢。

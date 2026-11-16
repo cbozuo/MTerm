@@ -195,7 +195,7 @@ mod tests {
     use image::RgbaImage;
 
     fn frame() -> RemoteEvent {
-        RemoteEvent::Frame(std::sync::Arc::new(RgbaImage::new(4, 4)))
+        RemoteEvent::Frame(slint::SharedPixelBuffer::new(4, 4))
     }
 
     #[test]
