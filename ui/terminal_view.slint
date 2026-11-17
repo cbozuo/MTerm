@@ -1404,6 +1404,22 @@ export component TerminalView inherits Rectangle {
     in-out property <float> term-ink-bias-em: 0.062;
     property <length> ink-bias: root.term-font-size-px * root.term-ink-bias-em * 1px;
     property <length> text-y-shift: (root.cell-h - cell-probe.preferred-height) / 2 + root.ink-bias;
+
+    // (#grid-snap 2026-11-17) 网格填充块(选区/搜索高亮)的左右两缘各自吸附到
+    // 整设备像素。
+    //
+    // 用户反馈「鼠标拖选时左边缺一块、滚动时同样缺一块」。矩形数据本身是对的
+    // (续行 col 0、铺满整行,见 `multi_row_selection_fills_from_column_zero_*`),
+    // 剩下的一类真实原因是**小数落点**:`cell-w` 在 125%/150% 缩放下不是整数
+    // (例 7.234375px),`col * cell-w` 落在半个设备像素上,填充条最左/最右那一条
+    // 会被光栅化吞掉 —— 拖动或滚动触发的局部重绘里尤其明显。
+    //
+    // 修法=两缘各自 `Math.round(x / 1px) * 1px`,宽度取两缘之差:相邻块仍共享边,
+    // 但任何一块都不会短一截。只作用于纯色覆盖层,不改文字 span 的几何(文字仍按
+    // 原格宽排版,PTY 列数不受影响)。
+    function snap-grid-x(col: int) -> length {
+        return Math.round((col * root.cell-w) / 1px) * 1px;
+    }
     // Usable text box = root.width minus the 10px left/right padding of
     // output-text; usable height = key-capture height minus the 8px top pad.
     // The old 16px bottom focus-recovery strip was redundant once body-touch
@@ -1731,18 +1747,20 @@ export component TerminalView inherits Rectangle {
 
                         // Drag-selection highlights (under the text, blue tint).
                         for s in root.selection : Rectangle {
-                            x: s.col * root.cell-w;
+                            x: root.snap-grid-x(s.col);
+                            width: root.snap-grid-x(s.col + s.len)
+                                - root.snap-grid-x(s.col);
                             y: s.row * root.cell-h;
-                            width: s.len * root.cell-w;
                             height: root.cell-h;
                             background: Theme.accent.with-alpha(0.40);
                         }
 
                         // Search-match highlights (behind the text).
                         for m in root.find-matches : Rectangle {
-                            x: m.col * root.cell-w;
+                            x: root.snap-grid-x(m.col);
+                            width: root.snap-grid-x(m.col + m.len)
+                                - root.snap-grid-x(m.col);
                             y: m.row * root.cell-h;
-                            width: m.len * root.cell-w;
                             height: root.cell-h;
                             background: Theme.warning.with-alpha(0.45);
                             border-radius: 2px;
@@ -1751,9 +1769,10 @@ export component TerminalView inherits Rectangle {
                         // (#find-bar v3.6) 当前匹配（§01 ⑥/§02 有结果态）：
                         // 主题色档 + 同色描边，压在琥珀之上。
                         for m in root.find-current : Rectangle {
-                            x: m.col * root.cell-w;
+                            x: root.snap-grid-x(m.col);
+                            width: root.snap-grid-x(m.col + m.len)
+                                - root.snap-grid-x(m.col);
                             y: m.row * root.cell-h;
-                            width: m.len * root.cell-w;
                             height: root.cell-h;
                             background: Theme.accent-solid.with-alpha(0.38);
                             border-width: 1px;

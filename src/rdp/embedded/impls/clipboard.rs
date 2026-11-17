@@ -39,6 +39,8 @@ use ironrdp::cliprdr::pdu::{
 use ironrdp::client::rdp::RdpInputSender;
 use tokio::sync::mpsc;
 
+use crate::remote::pane::{RemoteEvent, TransferProgress};
+
 /// How often the local clipboard is checked for changes.
 ///
 /// The clipboard has no "tell me when it changes" call that works without a
@@ -81,6 +83,9 @@ struct Shared {
     payload: Mutex<LocalPayload>,
     /// Set when the watcher should stop.
     stop: AtomicBool,
+    /// 进度事件的出口(驱动侧的事件通道)。文件传输本身没有 UI 反馈,
+    /// 全靠它把「谁在传/传到哪」送到标签页上的进度条(#rdp-clip-transfer)。
+    events: Mutex<Option<mpsc::UnboundedSender<RemoteEvent>>>,
     /// Set once the CLIPRDR channel is ready.
     ///
     /// Most of the protocol messages need the channel to be in the Ready
@@ -175,6 +180,19 @@ impl ClipboardFactory {
         if let Ok(mut input) = self.shared.input.lock() {
             *input = Some(sender);
         }
+        // (#rdp-clip-diagnose 2026-11-17) 通道可能在拿到发送端之前就 Ready
+        // (backend 先建、sender 后接):那时 `on_ready` 的广告因为没有发送端而
+        // 丢掉了。接上发送端、且通道已经就绪时,补一次广告。
+        if self.shared.is_ready() {
+            self.shared.advertise_local();
+        }
+    }
+
+    /// 把驱动的事件通道交给后端,让它能上报文件传输进度(#rdp-clip-transfer)。
+    pub(crate) fn set_events(&self, sender: mpsc::UnboundedSender<RemoteEvent>) {
+        if let Ok(mut events) = self.shared.events.lock() {
+            *events = Some(sender);
+        }
     }
 }
 
@@ -205,6 +223,13 @@ impl ClipboardBackend {
         backend
     }
 
+    /// 上报一次传输进度(None = 结束 → UI 收起进度条)。
+    fn report(&self, progress: Option<TransferProgress>) {
+        if let Some(events) = self.shared.events.lock().ok().and_then(|e| e.clone()) {
+            let _ = events.send(RemoteEvent::Transfer(progress));
+        }
+    }
+
     /// Watch the local clipboard and advertise what it holds.
     ///
     /// The thread ends when the backend is dropped: the CLIPRDR channel owns
@@ -215,6 +240,8 @@ impl ClipboardBackend {
             .name("mterm-rdp-clipboard".to_string())
             .spawn(move || {
                 let mut last_sequence = platform::sequence_number();
+                // 未就绪时已经记过 warn 的那个序号(见下)。
+                let mut pending_sequence: Option<u32> = None;
                 while !shared.stop.load(Ordering::Relaxed) {
                     std::thread::sleep(WATCH_INTERVAL);
                     let sequence = platform::sequence_number();
@@ -225,9 +252,23 @@ impl ClipboardBackend {
                         // The channel cannot carry the advertisement yet;
                         // the sequence is not advanced, so the change is
                         // picked up as soon as the channel is up.
+                        //
+                        // (#rdp-clip-diagnose 2026-11-17) 但"通道一直不就绪"
+                        // 这条路过去完全静默:本地复制了、什么都没发出去,用户
+                        // 只能看到"复制粘贴不起作用"。同一次变化只记一条 warn,
+                        // 让 error.log 里有判据(通道始终没 Ready = CLIPRDR 没
+                        // 协商成功,而不是我们的数据有问题)。
+                        if pending_sequence != Some(sequence) {
+                            pending_sequence = Some(sequence);
+                            tracing::warn!(
+                                "local clipboard changed while the CLIPRDR channel is not ready; \
+                                 nothing was advertised (the channel never came up?)"
+                            );
+                        }
                         continue;
                     }
                     last_sequence = sequence;
+                    pending_sequence = None;
                     shared.advertise_local();
                 }
             })
@@ -422,6 +463,13 @@ impl ClipboardBackend {
             return FileContentsResponse::new_error(request.stream_id);
         }
         let wanted = request.requested_size as usize;
+        // 发送进度:请求带 position/长度,文件大小已知,天然能算百分比。
+        self.report(Some(TransferProgress {
+            name: file.name.clone(),
+            done: (position as u64 + wanted as u64).min(file.size),
+            total: file.size,
+            outbound: true,
+        }));
         let data = match std::fs::File::open(&file.path) {
             Ok(mut handle) => {
                 use std::io::{Read, Seek, SeekFrom};
@@ -468,6 +516,15 @@ impl ClipboardBackend {
                 data_id: clip_data_id,
             });
         }
+        // 接收起手:文件名已知、大小还不知道(随后每块到货再刷新)
+        if let Some(first) = incoming.first() {
+            self.report(Some(TransferProgress {
+                name: first.name.clone(),
+                done: 0,
+                total: 0,
+                outbound: false,
+            }));
+        }
         if let Ok(mut slot) = self.incoming.lock() {
             *slot = incoming;
         }
@@ -485,6 +542,7 @@ impl ClipboardBackend {
             .iter_mut()
             .find(|file| file.stream_id == response.stream_id())
         else {
+            self.report(None);
             return requests;
         };
 
@@ -501,7 +559,20 @@ impl ClipboardBackend {
                 file.size = Some(size);
                 if size == 0 {
                     file.path = write_incoming_file(file);
+                    // 该文件收完:报一次 100%(UI 会在一小会儿后自动收起)
+                    self.report(Some(TransferProgress {
+                        name: file.name.clone(),
+                        done: size,
+                        total: size,
+                        outbound: false,
+                    }));
                 } else {
+                    self.report(Some(TransferProgress {
+                        name: file.name.clone(),
+                        done: (file.data.len() as u64).min(size),
+                        total: size,
+                        outbound: false,
+                    }));
                     requests.push(range_request(file));
                 }
             }

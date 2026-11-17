@@ -26,6 +26,109 @@ const H: u16 = 48;
 /// 每像素的线序字节:协商格式是 bgra()(red_shift=16 / blue_shift=0),线序 [B,G,R,A]。
 const PIXEL: [u8; 4] = [0x10, 0x20, 0x30, 0xff];
 
+/// 按子编码造 ZRLE 的**未压缩** tile 数据(调色板/游程/裸像素)。
+///
+/// 约定:调色板两个颜色 A/B —— **第 0 行是 A,其余行是 B**,这样断言能同时验证
+/// 「调色板选取」与「索引 packing 顺序」,而不只是"解出来了"。
+fn zrle_payload(mode: ZrleMode) -> Vec<u8> {
+    const A: [u8; 3] = [0x10, 0x20, 0x30]; // 线序 [B,G,R]
+    const B: [u8; 3] = [0x40, 0x50, 0x60];
+    let (w, h) = (usize::from(W), usize::from(H));
+    let mut out = Vec::new();
+    match mode {
+        ZrleMode::Solid => {
+            out.push(1);
+            out.extend_from_slice(&A);
+        }
+        ZrleMode::Raw => {
+            out.push(0);
+            for i in 0..w * h {
+                out.extend_from_slice(if i < w { &A } else { &B });
+            }
+        }
+        ZrleMode::Palette => {
+            // control = 调色板大小(2);随后两个 3 字节颜色;索引 **1 bit/像素**
+            // (调色板 2 色 → bits_per_index=1),MSB 优先,每行补到字节边界。
+            out.push(2);
+            out.extend_from_slice(&A);
+            out.extend_from_slice(&B);
+            for y in 0..h {
+                let idx: u8 = if y == 0 { 0 } else { 1 };
+                let mut byte = 0u8;
+                let mut bit = 0;
+                for _ in 0..w {
+                    byte |= idx << (7 - bit);
+                    bit += 1;
+                    if bit == 8 {
+                        out.push(byte);
+                        byte = 0;
+                        bit = 0;
+                    }
+                }
+                if bit != 0 {
+                    out.push(byte);
+                }
+            }
+        }
+        ZrleMode::Rle => {
+            // control = 0x80 | 调色板大小(游程 + 索引调色板)。每条目 = 一个
+            // control 字节(高位置 1 表示后面跟游程,低 7 位是索引)+ 游程分量
+            // (每字节 255 续、<255 收尾;总和 + 1 = 游程长度)。
+            out.push(0x80 | 2);
+            out.extend_from_slice(&A);
+            out.extend_from_slice(&B);
+            push_indexed_run(&mut out, 0, w); // 第 0 行全 A
+            push_indexed_run(&mut out, 1, (h - 1) * w); // 其余全 B
+        }
+    }
+    out
+}
+
+/// 索引调色板的 RLE 条目:control(0x80|index)+ 游程分量(255 续 / <255 收尾),
+/// 语义 = 1 + Σ分量。
+fn push_indexed_run(out: &mut Vec<u8>, index: u8, run: usize) {
+    assert!(run >= 1);
+    out.push(0x80 | (index & 0x7f));
+    let mut rem = run - 1;
+    while rem >= 255 {
+        out.push(255);
+        rem -= 255;
+    }
+    out.push(rem as u8);
+}
+
+/// 手搓 ZRLE 的 zlib 数据段:0x78 0x01 + 存储块(不压缩)。
+///
+/// `final_block=false` 模拟**真实服务器**:RFC 6143 §7.7.6 说整条连接共用一个
+/// zlib 流(每次 update 只是往里追加),所以块永远不是最后一块、adler32 也不出现。
+/// 发"完整流"(BFINAL=1 + adler32)会让 vnc-rs 的 reader 把 `Status::StreamEnd`
+/// 当错误报 "zlib stream end" —— 那是客户端对**收尾流**的处理,不是服务器会发的形态。
+fn zlib_stored(data: &[u8]) -> Vec<u8> {
+    fn adler32(data: &[u8]) -> u32 {
+        let (mut a, mut b) = (1u32, 0u32);
+        for &x in data {
+            a = (a + x as u32) % 65521;
+            b = (b + a) % 65521;
+        }
+        (b << 16) | a
+    }
+    let mut out = vec![0x78, 0x01];
+    if data.is_empty() {
+        // 空的存储块;仍然不是最后一块(流持续)
+        out.extend_from_slice(&[0, 0, 0, 0xff, 0xff]);
+    } else {
+        for chunk in data.chunks(65535) {
+            out.push(0); // BFINAL=0 / BTYPE=00(stored):流未结束
+            out.extend_from_slice(&(chunk.len() as u16).to_le_bytes());
+            out.extend_from_slice(&(!(chunk.len() as u16)).to_le_bytes());
+            out.extend_from_slice(chunk);
+        }
+    }
+    // 不收尾:不发 adler32(那是整条流结束才有的)
+    let _ = adler32;
+    out
+}
+
 fn pixel_format() -> Vec<u8> {
     let mut pf = Vec::with_capacity(16);
     pf.push(32); // bits-per-pixel
@@ -80,9 +183,25 @@ async fn read_client_msg<S: tokio::io::AsyncRead + Unpin>(s: &mut S) -> Result<u
     }
 }
 
+/// ZRLE 的 tile 子编码(RFC 6143 §7.7.6):服务器可能用其中任一种,
+/// 只测 solid 不足以说明解码器可用。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ZrleMode {
+    /// control=1:整块一个颜色。
+    Solid,
+    /// control=0:每像素一个 3 字节 CPIXEL。
+    Raw,
+    /// control=n:调色板 + 每像素 2bit 索引(见下方 packing)。
+    Palette,
+    /// control=0x80|n:调色板 + 游程(run)编码。
+    Rle,
+}
+
 #[derive(Clone, Copy)]
 enum Security {
     None,
+    /// None 认证 + 用 **ZRLE**(编码 16)发首帧 —— 检验库的 ZRLE 解码器。
+    NoneZrle,
     VncAuth,
     /// 认证响应一律失败,并回原因串(模拟服务器数满失败次数后的封禁语)。
     VncAuthLockout,
@@ -117,12 +236,21 @@ async fn serve_rfb(
     security: Security,
     password: &'static str,
 ) -> ServerOutcome {
+    serve_rfb_with(listener, security, password, ZrleMode::Solid).await
+}
+
+async fn serve_rfb_with(
+    listener: TcpListener,
+    security: Security,
+    password: &'static str,
+    zrle: ZrleMode,
+) -> ServerOutcome {
     let mut total = ServerOutcome::default();
     loop {
         match tokio::time::timeout(Duration::from_secs(3), listener.accept()).await {
             Ok(Ok((stream, _))) => {
                 total.connections += 1;
-                let one = serve_one(stream, security, password).await;
+                let one = serve_one(stream, security, password, zrle).await;
                 total.merge(one);
                 if total.connections >= 3 {
                     break;
@@ -135,7 +263,12 @@ async fn serve_rfb(
 }
 
 /// 单条连接上的 RFB 3.8 服务。
-async fn serve_one(stream: TcpStream, security: Security, password: &'static str) -> ServerOutcome {
+async fn serve_one(
+    stream: TcpStream,
+    security: Security,
+    password: &'static str,
+    zrle: ZrleMode,
+) -> ServerOutcome {
     let mut outcome = ServerOutcome::default();
     let (mut rd, mut wr) = stream.into_split();
 
@@ -146,7 +279,7 @@ async fn serve_one(stream: TcpStream, security: Security, password: &'static str
     }
 
     match security {
-        Security::None => {
+        Security::None | Security::NoneZrle => {
             let _ = wr.write_all(&[1u8, 1]).await; // 1 种:None
             let mut chosen = [0u8; 1];
             if rd.read_exact(&mut chosen).await.is_err() {
@@ -230,9 +363,9 @@ async fn serve_one(stream: TcpStream, security: Security, password: &'static str
         }
     });
 
-    // 收到首个刷新请求后,发一帧 Raw 更新
+    // 收到首个刷新请求后,发一帧更新(Raw 或 ZRLE,按 mode)
     let _ = tokio::time::timeout(Duration::from_secs(3), notify_rx.recv()).await;
-    let mut upd = Vec::with_capacity(16 + usize::from(W) * usize::from(H) * 4);
+    let mut upd = Vec::new();
     upd.push(0u8);
     upd.push(0);
     upd.extend_from_slice(&1u16.to_be_bytes());
@@ -240,9 +373,22 @@ async fn serve_one(stream: TcpStream, security: Security, password: &'static str
     upd.extend_from_slice(&0u16.to_be_bytes());
     upd.extend_from_slice(&W.to_be_bytes());
     upd.extend_from_slice(&H.to_be_bytes());
-    upd.extend_from_slice(&0i32.to_be_bytes()); // Raw
-    for _ in 0..(usize::from(W) * usize::from(H)) {
-        upd.extend_from_slice(&PIXEL);
+    match security {
+        Security::NoneZrle => {
+            // RFC 6143 §7.7.6 ZRLE:矩形以 **4 字节长度** 开头,后接 zlib 流;
+            // 整幅 64×48 落在第一个 64×64 tile 里,control=1 = solid,后跟一个
+            // 3 字节 CPIXEL(bgra() 协商下 depth≤24 → 3 字节,alpha 省略)。
+            upd.extend_from_slice(&16i32.to_be_bytes());
+            let z = zlib_stored(&zrle_payload(zrle));
+            upd.extend_from_slice(&(z.len() as u32).to_be_bytes());
+            upd.extend_from_slice(&z);
+        }
+        _ => {
+            upd.extend_from_slice(&0i32.to_be_bytes()); // Raw
+            for _ in 0..(usize::from(W) * usize::from(H)) {
+                upd.extend_from_slice(&PIXEL);
+            }
+        }
     }
     let _ = wr.write_all(&upd).await;
 
@@ -513,4 +659,122 @@ async fn the_too_many_security_failures_reason_is_explained() {
     // 只尝试一次:重试会把封禁越拖越长
     let attempts = events.iter().filter(|r| r.is_err()).count();
     assert_eq!(attempts, 1, "认证失败不得自动重试,实际 {attempts} 次");
+}
+
+/// 跑一次 ZRLE 会话取首帧像素;失败时返回错误文案。
+async fn zrle_first_frame(mode: ZrleMode) -> Result<Vec<u8>, String> {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(serve_rfb_with(listener, Security::NoneZrle, "", mode));
+
+    let cfg = VncConnectConfig {
+        tab_id: "t".into(),
+        session_id: "t".into(),
+        host: "127.0.0.1".into(),
+        port,
+        password: String::new(),
+        has_password: false,
+        security: String::new(),
+        view_only: false,
+        shared: true,
+        clipboard: false,
+        follow_tab_size: false,
+        width: 200,
+        height: 200,
+    };
+    let status = Arc::new(crate::rdp::embedded::status::RemoteStatus::new(
+        crate::rdp::embedded::status::RemoteState::Connecting,
+    ));
+    let closed = Arc::new(AtomicBool::new(false));
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let (_trust_tx, trust_rx) = mpsc::unbounded_channel();
+    let (_input_tx, input_rx) = mpsc::unbounded_channel();
+    let deps = DriverDeps {
+        status: status.clone(),
+        closed: closed.clone(),
+        events: events_tx,
+        trust: trust_rx,
+    };
+    let driver = tokio::spawn(run_with_input(cfg, deps, input_rx));
+
+    let mut frame = None;
+    let mut failure = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        match tokio::time::timeout_at(deadline, events_rx.recv()).await {
+            Ok(Some(RemoteEvent::Frame(buf))) => {
+                frame = Some(buf.as_bytes().to_vec());
+                break;
+            }
+            Ok(Some(RemoteEvent::State { state, message })) => {
+                if state.state() == RemoteState::Failed {
+                    failure = message.clone();
+                    break;
+                }
+            }
+            Ok(Some(_)) => continue,
+            _ => break,
+        }
+    }
+    closed.store(true, Ordering::Relaxed);
+    let _ = driver.await;
+    let _ = server.await;
+
+    frame.ok_or_else(|| format!("{failure:?}"))
+}
+
+/// 取缓冲里的某像素。注意:驱动交给 UI 的**已经是 RGBA**(VncFramebuffer::to_rgba
+/// 在 blit 时就把线序 [B,G,R,A] 换成了 [R,G,B,A]),所以这里不再换序 —— 之前多换
+/// 一次导致四个 ZRLE 用例全部假失败。
+fn rgba_at(buf: &[u8], x: usize, y: usize) -> [u8; 4] {
+    let off = (y * usize::from(W) + x) * 4;
+    [buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]
+}
+
+/// A = 线序 [0x10,0x20,0x30] → RGBA [0x30,0x20,0x10];B = [0x40,0x50,0x60] →
+/// RGBA [0x60,0x50,0x40]。
+const A_RGBA: [u8; 4] = [0x30, 0x20, 0x10, 0xff];
+const B_RGBA: [u8; 4] = [0x60, 0x50, 0x40, 0xff];
+
+/// (#vnc-encodings 2026-11-17) ZRLE 四种 tile 子编码都必须解对。
+///
+/// 背景:曾断言"ZRLE 解码是坏的"(理由是 RFC 没有长度前缀)——**引用错了章节**
+/// (§7.7.4 是 Hextile,ZRLE 是 §7.7.6,而原文确实规定 4 字节长度),据此把编码
+/// 退成只请求 Raw,白白牺牲带宽。改正后重新请求 ZRLE,并用这组用例把结论钉死:
+/// 只测 solid 不够 —— 服务器还会用调色板、游程、裸像素。
+#[tokio::test]
+async fn zrle_solid_tile_decodes() {
+    let buf = zrle_first_frame(ZrleMode::Solid).await.expect("solid tile");
+    assert_eq!(rgba_at(&buf, 0, 0), A_RGBA);
+    assert_eq!(rgba_at(&buf, usize::from(W) - 1, usize::from(H) - 1), A_RGBA);
+}
+
+#[tokio::test]
+async fn zrle_raw_tile_decodes_pixel_by_pixel() {
+    let buf = zrle_first_frame(ZrleMode::Raw).await.expect("raw tile");
+    assert_eq!(rgba_at(&buf, 0, 0), A_RGBA, "第 0 行应为 A");
+    assert_eq!(rgba_at(&buf, 0, 1), B_RGBA, "第 1 行应为 B");
+    assert_eq!(rgba_at(&buf, usize::from(W) - 1, 0), A_RGBA, "第 0 行末像素也应是 A");
+}
+
+#[tokio::test]
+async fn zrle_palette_tile_decodes_indices_in_the_right_order() {
+    let buf = zrle_first_frame(ZrleMode::Palette).await.expect("palette tile");
+    // packing 顺序错了的话,同一行里会掺 B —— 逐像素验第 0 行
+    for x in 0..usize::from(W) {
+        assert_eq!(rgba_at(&buf, x, 0), A_RGBA, "第 0 行第 {x} 个像素索引错了");
+    }
+    assert_eq!(rgba_at(&buf, 0, 1), B_RGBA);
+    assert_eq!(rgba_at(&buf, usize::from(W) - 1, usize::from(H) - 1), B_RGBA);
+}
+
+#[tokio::test]
+async fn zrle_rle_tile_decodes_runs() {
+    let buf = zrle_first_frame(ZrleMode::Rle).await.expect("rle tile");
+    for x in 0..usize::from(W) {
+        assert_eq!(rgba_at(&buf, x, 0), A_RGBA, "第 0 行第 {x} 个像素(游程)错了");
+    }
+    for x in [0usize, 1, usize::from(W) - 1] {
+        assert_eq!(rgba_at(&buf, x, usize::from(H) - 1), B_RGBA, "末行游程错了");
+    }
 }

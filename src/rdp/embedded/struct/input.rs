@@ -21,7 +21,10 @@ pub enum RemoteInput {
     /// Pointer at remote-desktop coordinates, with the button bitmask in the
     /// RDP sense (bit 0 left, 1 middle, 2 right, 3/4 wheel).
     Pointer { x: u16, y: u16, mask: u8 },
-    /// Wheel / trackpad scroll at a position, in notches (positive = up/right).
+    /// Wheel / trackpad scroll at a position, in **Slint pixels**: one notch is
+    /// 60 (the winit backend multiplies `LineDelta` by 60) and positive means
+    /// up/right. Each driver converts with [`wheel_notches`] — the UI must not
+    /// pre-convert, because the two protocols disagree on the unit.
     Wheel { x: u16, y: u16, dx: f64, dy: f64 },
     /// Drop every key the client currently holds down. Sent when the tab loses
     /// focus, so a key held while alt-tabbing away cannot stay stuck down on
@@ -31,6 +34,27 @@ pub enum RemoteInput {
     /// session is set to follow the tab size; the I/O side clamps the value,
     /// since a degenerate size can also arrive from a window minimise.
     Resize { width: u16, height: u16 },
+}
+
+/// Slint 的滚轮像素增量 → 滚轮格数(1 = 一格)。
+///
+/// winit 把一格滚轮报成 60px(`LineDelta(1.0) × 60`),正值 = 向上/向右;RDP 的
+/// `rotation_units` 一格 = 1、正值同样是向上/向右,VNC 的 4/5 号键也是"正 = 上"。
+/// 所以换算**只做单位,不取反**(#rdp-wheel-sign 2026-11-17:旧代码把像素直接当
+/// 格还给 RDP,一格变成几十格且方向相反,用户实测"滚轮向下画面向上")。
+///
+/// 不到半格的增量(高精度触摸板的 1~20px)仍然算一格:否则触摸板在这个阈值下
+/// 完全不动,比滚太快更糟。
+pub fn wheel_notches(delta_px: f64) -> i16 {
+    if delta_px.is_nan() {
+        return 0;
+    }
+    let mut notches = (delta_px / 60.0).round();
+    if notches == 0.0 && delta_px.abs() > 0.001 {
+        notches = delta_px.signum();
+    }
+    // 一次事件最多 32 格:再大的都是驱动/触摸板抽风,按协议也放不下。
+    notches.clamp(-32.0, 32.0) as i16
 }
 
 /// Where a Slint key event came from, in the form both mappings need.

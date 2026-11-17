@@ -136,6 +136,62 @@ pub fn format_size(bytes: u64) -> String {
 }
 
 #[cfg(test)]
+mod setup_echo_tests {
+    use super::{looks_like_setup_echo, prompt_like_tail, PROMPT_SETUP_PREFIX};
+
+    /// 欢迎信息里的状态行也以 `%` 结尾(`Usage On: 57%`),不能当成提示符 ——
+    /// 否则注入提前、后面的 IP/Users 行又被吞掉(#ssh-login-banner)。
+    #[test]
+    fn status_lines_are_not_mistaken_for_a_prompt() {
+        assert!(!prompt_like_tail("Usage On: \t57%\r\n"));
+        assert!(!prompt_like_tail("Swap used: \t0%\r\n"));
+        assert!(!prompt_like_tail("IP address: \t192.168.100.202\r\n"));
+        assert!(!prompt_like_tail(""));
+        // 真正的提示符(四种常见形态)
+        assert!(prompt_like_tail("[root@localhost ~]# "));
+        assert!(prompt_like_tail("user@host:~/src$ "));
+        assert!(prompt_like_tail("PS C:\\Users\\me>"));
+        assert!(prompt_like_tail("host%"));
+    }
+
+    /// 202 上真实被吃掉的那几行(注入后到达的欢迎信息)。它们必须被判为"不是回声"
+    /// → 照常上屏,否则用户看不到登录欢迎语(#ssh-login-banner)。
+    #[test]
+    fn server_banner_text_is_not_mistaken_for_the_echo() {
+        let banner = "\r\nSwap used: \t0%\r\nUsage On: \t57%\r\n\
+                      IP address: \t192.168.100.202\r\nUsers online: \t3\r\n\r\n";
+        assert!(!looks_like_setup_echo(banner, PROMPT_SETUP_PREFIX));
+        assert!(!looks_like_setup_echo(
+            "[root@localhost ~]# ",
+            PROMPT_SETUP_PREFIX
+        ));
+        assert!(!looks_like_setup_echo(
+            "Last login: Tue Nov 17 15:28:05 2026 from 192.168.100.86\r\n",
+            PROMPT_SETUP_PREFIX
+        ));
+    }
+
+    /// 真正的回声(可能跟在提示符后面)必须仍被识别,否则内部命令会打到屏幕上。
+    #[test]
+    fn the_echo_itself_is_recognised() {
+        let echo = concat!(
+            "[root@localhost ~]# test -z \"$FISH_VERSION\" && eval '__msc(){ ",
+            "__c=\"$(fc -ln -1 2>/dev/null)\"; …'"
+        );
+        assert!(looks_like_setup_echo(echo, PROMPT_SETUP_PREFIX));
+    }
+
+    /// 回声被切成几块时,前几块只是命令前缀 —— 继续缓冲,不要当正文打出来。
+    #[test]
+    fn a_partial_echo_keeps_buffering() {
+        assert!(looks_like_setup_echo("te", PROMPT_SETUP_PREFIX));
+        assert!(looks_like_setup_echo("test -z \"$FI", PROMPT_SETUP_PREFIX));
+        // 前缀走偏了就按正文处理(宁可多显示一行,也不要吞用户的输出)。
+        assert!(!looks_like_setup_echo("teX", PROMPT_SETUP_PREFIX));
+    }
+}
+
+#[cfg(test)]
 mod size_format_tests {
     use super::{format_size, TriggerEngine};
     use crate::config::{Secret, SessionTrigger};
@@ -476,6 +532,47 @@ fn strip_pending_prompt_setup_echo(text: &mut String, pending: &mut bool) -> boo
     }
     *pending = false;
     true
+}
+
+/// 末尾像不像一个 shell 提示符（#ssh-login-banner 2026-11-17）。
+///
+/// 只用来决定"什么时候可以注入 shell 集成"。注入一旦开始，窗口里的输出要被抑制到
+/// 完成标记为止 —— 所以在欢迎信息(MOTD / `profile.d` 的系统信息)**还没流完**时
+/// 注入，等于把用户的登录欢迎语吃掉：实测 202 服务器发来 606 字节欢迎语，应用只
+/// 显示 269 字节，`Swap used / IP address / Users online` 全被吞。
+///
+/// 判据故意放宽(提示符形态太多):长度合理、以 `# $ % >` 结尾、且不是
+/// `key: value` 那种状态行(`Usage On: \t57%` 也以 `%` 结尾，靠这条排除)。
+/// 认不出来也不会卡死 —— 调用点有"攒够 4KB 就注入"的兜底。
+fn prompt_like_tail(chunk: &str) -> bool {
+    let last = chunk.rsplit('\n').next().unwrap_or("").trim_end();
+    if last.is_empty() || last.chars().count() > 48 || last.contains(": ") {
+        return false;
+    }
+    last.ends_with(['#', '$', '%', '>'])
+}
+
+/// 抑制窗口里收到的东西，是不是我们自己那条 setup 命令的回声
+/// （#ssh-login-banner 2026-11-17）。
+///
+/// 判据用命令开头的一小段：回声里必然有它（可能被提示符或换行分隔），服务器的
+/// 欢迎信息不会有。缓冲只是命令前缀时（回声被切成几块）也算回声，继续等 ——
+/// 这条避免把 `pri` 这种半截回声当正文打出来。
+fn looks_like_setup_echo(buffered: &str, command: &str) -> bool {
+    let head: String = command.chars().take(10).collect();
+    if head.chars().count() < 4 {
+        return false;
+    }
+    if buffered.contains(&head) {
+        return true;
+    }
+    let stripped = buffered.trim_start();
+    let taken = stripped.chars().count();
+    if taken == 0 || taken >= command.chars().count() {
+        return false;
+    }
+    let prefix: String = command.chars().take(taken).collect();
+    stripped.starts_with(&prefix)
 }
 
 /// Consume all buffered setup echo through the private completion marker.
@@ -1635,12 +1732,23 @@ async fn run_session(
     // We wait for the first non-empty data chunk (the initial shell prompt)
     // before sending so the command doesn't interleave with banner text.
     let mut prompt_injected = false;
+    // 注入前已经上屏的字节数:提示符形态认不出来时,攒够 4KB 就注入
+    // (#ssh-login-banner 2026-11-17)。
+    let mut banner_bytes = 0usize;
     // True from injecting PROMPT_SETUP until the echoed setup line has been
     // received and stripped; output is buffered (not shown) during that window.
     let mut suppress_echo = false;
     // Buffers output while `suppress_echo` so the (long) echoed setup line can be
     // stripped even when it splits across reads (#98).
     let mut echo_buf = String::new();
+    // (#ssh-echo-latch 2026-11-17) 一旦在缓冲里确认出现了自家命令的开头，后面就
+    // 一律按回声处理到完成标记为止。
+    //
+    // 为什么需要这条锁存：`bound_prompt_setup_echo` 会把缓冲裁到只剩尾部几十字符，
+    // 命令开头随之丢失；若此时再用"缓冲里有没有开头"来判断，回声的**后半截**会被
+    // 当成普通输出打到屏幕上（用户截图里那整行 `test -z "$FISH_VERSION" && eval …`
+    // 就是这么泄漏的）。回声一旦开始就锁存，直到标记到来才解除。
+    let mut echo_started = false;
     // `strip_late_prompt_setup_echo` must only run while an initial setup echo
     // can genuinely still be in flight. Leaving it enabled for the whole SSH
     // session makes recalling an accidentally saved setup command clear normal
@@ -2043,9 +2151,19 @@ async fn run_session(
                         // Inject PROMPT_COMMAND after the first real shell output,
                         // unless shell integration is disabled for this session
                         // (e.g. a Windows pwsh/cmd server) (#140).
+                        //
+                        // (#ssh-login-banner 2026-11-17) 但"第一批输出"不等于
+                        // "shell 已经就绪":登录欢迎语(MOTD / profile.d)常常分成
+                        // 好几批。第一批就注入 = 后面几批被抑制窗口吞掉。所以等
+                        // **提示符形状的尾巴**出现再注入,并留 4KB 兜底(认不出的
+                        // 提示符形态、pwsh/cmd 等);注入前的输出照常上屏。
+                        if !prompt_injected && !chunk.trim().is_empty() {
+                            banner_bytes += chunk.len();
+                        }
                         if !prompt_injected
                             && !chunk.trim().is_empty()
                             && prompt_setup_supported
+                            && (prompt_like_tail(&chunk) || banner_bytes > 4096)
                         {
                             prompt_injected = true;
                             suppress_echo = true;
@@ -2094,12 +2212,27 @@ async fn run_session(
                         if let Some(tail) = take_after_prompt_setup_done(&mut echo_buf) {
                             suppress_echo = false;
                             late_prompt_echo_pending = false;
+                            echo_started = false;
                             if let Some(cwd) = extract_osc7_path(&tail) {
                                 tracing::debug!("OSC7 cwd={:?}", cwd);
                                 let _ = events.send(SessionEvent::CwdChanged(cwd));
                             }
                             tail
-                        } else {
+                        } else if !echo_started && !looks_like_setup_echo(&echo_buf, &prompt_setup) {
+                                // (#ssh-login-banner 2026-11-17) 抑制窗口里的东西
+                                // **不一定是**我们那条命令的回声:注入发生在第一批
+                                // 输出上,而服务器的登录欢迎语(MOTD / profile.d 的
+                                // 系统信息)**常常分成好几批、在注入之后才流完**。
+                                // 旧实现把窗口内的一切都当回声丢弃 —— 实测 202 服务
+                                // 端发来 606 字节欢迎语,应用只显示 269 字节,`Swap
+                                // used / IP address / Users online` 全被吃掉,用户
+                                // 只看到一个 `Last login:` 加提示符。
+                                // 现在:回声**还没开始**时,不是回声的字节照常上屏。
+                                let unrelated = std::mem::take(&mut echo_buf);
+                                unrelated
+                            } else {
+                                // 回声已开始(或就是它):锁存并按回声剥到标记为止。
+                                echo_started = true;
                                 bound_prompt_setup_echo(&mut echo_buf);
                                 continue; // keep buffering; show nothing yet
                             }

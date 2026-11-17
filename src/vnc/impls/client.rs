@@ -14,6 +14,25 @@
 //! * There is no `VncSecurityPolicy` in this version, so `VncConnectConfig::security`
 //!   is accepted and recorded but the library negotiates; keeping the field means
 //!   the UI can offer it without a config migration when support lands.
+//! * (#vnc-encodings 2026-11-17) Incremental updates go through
+//!   `client.input(X11Event::Refresh)` (the library maps it to a
+//!   `FramebufferUpdateRequest` at its own desktop size); the old driver
+//!   hand-wrote those bytes over a *second* `TcpStream` cloned from the same
+//!   socket — two tokio IO-driver registrations on one handle, pure risk for
+//!   zero benefit.
+//! * (#vnc-encodings) Encodings: **ZRLE + CopyRect + Raw**. An earlier round
+//!   claimed vnc-rs's ZRLE decoder was broken "because it reads a 4-byte length
+//!   prefix" — that claim was **wrong**: it cited Hextile (RFC 6143 §7.7.4)
+//!   while ZRLE is §7.7.6, and the RFC does specify the length ("the rectangle
+//!   begins with a 4-byte length field"). A conformant ZRLE stream decodes fine
+//!   (see `rfb_mock_tests::a_zrle_coded_rect_decodes_to_the_expected_colour`),
+//!   so ZRLE is requested again — that is where VNC bandwidth comes from.
+//!   **Tight stays out**: only its zlib path is implemented, so a server that
+//!   picks JPEG for photographic regions would break the whole frame.
+//! * (#vnc-blank-password) A session without a password never sends a made-up
+//!   response: the driver probes the server's security types read-only first
+//!   and fails with an actionable message instead, so a password-requiring
+//!   server (TigerVNC) does not count a failed handshake per attempt.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -278,7 +297,25 @@ async fn preflight_security(config: &VncConnectConfig) -> Result<AuthPreflight, 
             .to_string(),
             true,
         )),
-        Ok(Err(io)) => Err(handshake_failure(&vnc::VncError::IoError(io))),
+        Ok(Err(io)) => {
+            // (#vnc-probe-dropped 2026-11-17) 只读探测(没选类型、没发凭据)都被断开:
+            // 服务端是在"认证方式"这一步之前就拒绝本机,和密码无关。不自动重试 ——
+            // 若原因是防爆破封禁,重试只会延长时间;用户可手动点「重新连接」。
+            let err = vnc::VncError::IoError(io);
+            if is_dropped_handshake(&err) {
+                Err((
+                    "handshake",
+                    crate::i18n::t(
+                        "连只读探测都被断开:服务器还没问认证方式就关闭了连接。通常是服务端已暂时拒绝本机地址(防爆破封禁),或该 VNC 服务不可用 —— 请稍候几分钟或在对端重启 VNC 服务,再手动点「重新连接」",
+                        "even a read-only probe was dropped: the server closed the connection before asking for any authentication. Usually this address is temporarily blocked by the server's anti-bruteforce policy, or the VNC service is unusable — wait a few minutes or restart the VNC server on the remote host, then press Reconnect",
+                    )
+                    .to_string(),
+                    false,
+                ))
+            } else {
+                Err(handshake_failure(&err))
+            }
+        }
         // 服务器明确拒绝(例如 "Too many security failures"):复用同一条原因串映射
         Ok(Ok(Err(reason))) => Err(handshake_failure(&vnc::VncError::General(reason))),
         Ok(Ok(Ok(types))) => Ok(classify_types(&types)),
@@ -371,7 +408,7 @@ async fn run_once(
         .await
     {
         Err(_) => return Err(("transport", "VNC handshake timed out".into(), true)),
-        Ok(Err(err)) => return Err(handshake_failure(&err)),
+        Ok(Err(err)) => return Err(classify_attempt(&err, has_password)),
         Ok(Ok(handshake)) => handshake
             .finish()
             .map_err(|err| ("protocol", format!("{err}"), true))?,
@@ -602,9 +639,11 @@ async fn send_input(
         }
         RemoteInput::Wheel { x, y, dx, dy } => {
             // RFB expresses the wheel as button 4/5 presses (and 6/7 for the
-            // horizontal axis), not a delta.
-            let notches = (dy / 120.0).round() as i32;
-            let h_notches = (dx / 120.0).round() as i32;
+            // horizontal axis), not a delta. 单位/方向统一走 `wheel_notches`
+            // (#rdp-wheel-sign 2026-11-17):Slint 给的是像素(一格 60)、正 = 上,
+            // 旧实现除 120 会让触摸板的半格增量变成 0(完全不动)。
+            let notches = i32::from(crate::rdp::embedded::wheel_notches(dy));
+            let h_notches = i32::from(crate::rdp::embedded::wheel_notches(dx));
             for _ in 0..notches.abs().min(20) {
                 let button = if notches > 0 { 4 } else { 5 };
                 let _ = client
@@ -718,17 +757,16 @@ fn auto_retry_allowed(kind: &str, retryable: bool, attempt: u32) -> bool {
 
 /// 本驱动请求的编码,顺序即优先级。
 ///
-/// **只有 Raw 与 CopyRect**(#vnc-connect-fix 2026-11-17):
-/// * vnc-rs 0.6 的 ZRLE 解码会先读一个 u32 压缩长度前缀,而 RFC 6143 §7.7.4 的
-///   ZRLE 矩形没有这个前缀(zlib 流按需膨胀、跨 update 持续)→ 标准服务器
-///   (TigerVNC/x11vnc/TightVNC…)只要选 ZRLE,每个矩形都会 "Image data cannot be
-///   decoded correctly",会话在握手后立刻死掉。ZRLE 排在首位,所以服务器几乎
-///   必然选它 —— 这是"VNC 连不上"的真实根因。
-/// * Tight 的 JPEG 子编码本驱动也不解。
+/// **ZRLE + CopyRect + Raw**(#vnc-encodings 2026-11-17):ZRLE 是带宽最优的通用
+/// 编码(RFC 6143 §7.7.6:矩形以 4 字节长度开头 + zlib 流),Raw 兜底保证任何
+/// 服务器都能出画。曾一度只请求 Raw —— 当时误判库的 ZRLE 解码坏了(把 §7.7.4
+/// 的 Hextile 当成了 ZRLE),实测合规 ZRLE 流可正常解出,故恢复。
+/// **Tight 仍不请求**:JPEG 子编码库不解,服务器一选照片区域整帧就废。
 ///
-/// 等 vnc-rs 修好 ZRLE 再把它加回来(带宽优化留到那时)。
-pub(crate) fn requested_encodings() -> [VncEncoding; 2] {
-    [VncEncoding::Raw, VncEncoding::CopyRect]
+/// (以下为当时的误判记录,保留以免重犯)
+/// (旧)**只有 Raw 与 CopyRect**(#vnc-connect-fix 2026-11-17):
+pub(crate) fn requested_encodings() -> [VncEncoding; 3] {
+    [VncEncoding::Zrle, VncEncoding::CopyRect, VncEncoding::Raw]
 }
 
 /// 认证失败的**可行动**文案:库给的是英文且只说"是什么",用户需要知道"怎么办"。
@@ -753,6 +791,37 @@ fn unsupported_types_message() -> String {
     crate::i18n::t(
         "服务器的认证方式内置客户端不支持(仅支持 None / VNC 认证)。请在服务端启用 VNC 密码认证,或改用下载 / 外部客户端",
         "the server's authentication types are not supported by the built-in client (None / VNC auth only). Enable VNC password auth on the server, or use download / an external viewer",
+    )
+    .to_string()
+}
+
+/// (#vnc-none-then-drop 2026-11-17) 把一次连接尝试的失败分类,知道会话有没有密码。
+///
+/// 有密码时直接交给 [`handshake_failure`]。**没有密码时**我们能多知道一件事:
+/// 没有密码就必然先跑过 `preflight_security()`,而它会提前返回
+/// (要求密码 / 类型不支持/探测本身失败),**能走到真正的连接就说明预检已经答过
+/// "服务器广告的是 None(免认证)"**。既然如此,握手第一步就 EOF 就不是密码问题、
+/// 也不是客户端问题 —— 是服务端自己把连接掐了。
+///
+/// 实测(2026-11-17,对端 TigerVNC):它广告 `[1]`(None),客户端一旦选定类型就
+/// 立刻 FIN;选它没广告的 VncAuth 同样 FIN;3.3 的 u32 写法也一样。也就是说
+/// **没有任何认证方式能走通**,与密码、协议版本、客户端实现都无关。所以这句
+/// 话必须说成"服务端状态异常",并给出可执行的下一步(重启对端服务)。
+fn classify_attempt(err: &vnc::VncError, has_password: bool) -> AttemptError {
+    if !has_password && is_dropped_handshake(err) {
+        // 不可重试:服务端已经在拒,反复重试只会喂它的防爆破计数器。
+        return ("handshake", none_then_dropped_message(), false);
+    }
+    handshake_failure(err)
+}
+
+fn none_then_dropped_message() -> String {
+    // (#failure-dedupe 2026-11-17) 这句话会**独占**失败画面(没有原始错误可展开,
+    // 见 UI 的去重规则),所以它必须先是结论、再是动作,不能是三条猜测罗列 ——
+    // 用户截图里的三行红字就是旧版太长的证据。
+    crate::i18n::t(
+        "服务端状态异常:它声明「无需认证」,却在握手第一步就断开(重启对端 VNC 服务可清除;若服务端设了密码,把密码填进本会话)",
+        "the server is in a bad state: it advertises no authentication, then hangs up on the first handshake step (restart the VNC server on the remote host; if it has a password, put it in this session)",
     )
     .to_string()
 }
@@ -939,6 +1008,40 @@ mod tests {
         assert!(message.contains("密码"), "应提醒核对密码: {message}");
     }
 
+    /// (#vnc-none-then-drop 2026-11-17) 没有密码 + 服务器广告 None 却在握手第一步
+    /// 断开:必须说成"服务端状态异常 + 怎么办",而不是让用户去猜密码。
+    ///
+    /// 这条路径能成立,是因为没有密码就一定先跑过只读预检,而预检要么提前返回
+    /// (要求密码 / 类型不支持),要么已经证明服务器广告的是 None —— 所以这里的
+    /// EOF 一定发生在选完 None 之后。
+    #[test]
+    fn a_server_that_offers_none_then_hangs_up_is_called_out() {
+        let dropped = vnc::VncError::IoError(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "failed to fill whole buffer",
+        ));
+        let (kind, message, retryable) = classify_attempt(&dropped, false);
+        assert_eq!(kind, "handshake");
+        assert!(
+            !retryable,
+            "服务端已在拒绝,自动重试只会喂它的防爆破计数器"
+        );
+        assert!(
+            message.contains("无需认证") || message.contains("no authentication"),
+            "{message}"
+        );
+        assert!(
+            message.contains("重启"),
+            "必须给出可执行的下一步(重启对端服务): {message}"
+        );
+        assert!(!message.contains("buffer"), "{message}");
+
+        // 有密码时仍走原来那条(更泛化的)文案:此时我们并不知道服务器广告了什么。
+        let (kind2, message2, _) = classify_attempt(&dropped, true);
+        assert_eq!(kind2, "handshake");
+        assert_ne!(message2, message, "没有密码才敢断言是服务端状态异常");
+    }
+
     /// 库的通用句子必须翻成能行动的文案(不可重试,不外泄库的措辞)。
     #[test]
     fn an_unsupported_security_type_gets_an_actionable_message() {
@@ -981,15 +1084,14 @@ mod tests {
         assert!(!auto_retry_allowed("handshake", false, 0));
     }
 
-    /// 请求的编码必须只含可证明正确的两种:加回 ZRLE/Tight 会让会话在握手后
-    /// 立刻失败(见 requested_encodings 的注释),这条护栏挡住这种回归。
+    /// 编码清单契约:ZRLE(带宽)+ Raw(兜底)必须在场;Tight 不得请求
+    /// (JPEG 子编码库不解,服务器一选照片区域整帧就废)。
     #[test]
-    fn only_provably_decodable_encodings_are_requested() {
+    fn the_encoding_list_keeps_its_safe_set() {
         let encs = requested_encodings();
-        assert!(encs.contains(&VncEncoding::Raw), "必须有 Raw(兜底)");
-        for bad in [VncEncoding::Zrle, VncEncoding::Tight] {
-            assert!(!encs.contains(&bad), "{bad:?} 在 vnc-rs 0.6 下不可靠,不得请求");
-        }
+        assert!(encs.contains(&VncEncoding::Zrle), "ZRLE 是带宽主力");
+        assert!(encs.contains(&VncEncoding::Raw), "必须有 Raw 兜底");
+        assert!(!encs.contains(&VncEncoding::Tight), "Tight 的 JPEG 子编码不可解");
     }
 
     /// 安全类型列表 → 结论:有 None 就当无需认证;只有 VncAuth 就是要密码。

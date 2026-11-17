@@ -564,7 +564,9 @@ fn connect_remote_tab(
         // (#tab-card-proto 2026-10-21) 卡片首行：远程 tab 的 kind 就是协议
         // （"rdp"/"vnc"），大写后直出（RDP / VNC 不是可翻译词）。
         proto: kind.to_uppercase().into(),
-        group_name: crate::config::display_group_of(session).into(),
+        // (#card-group-path 2026-11-17) 信息卡给**完整分组路径**(父组 / 子组):
+        // 只显示叶子名时,「1方法 / 单独」下的会话只写「单独」,看不出层级。
+        group_name: crate::config::display_group_path(&store.borrow(), session).into(),
         note: session.note.clone().into(),
         id: tab_id.clone().into(),
         title_len: tab_title_len(&tab_title),
@@ -8382,6 +8384,33 @@ fn refresh_group_manager(
     window.set_gm_gen(window.get_gm_gen() + 1);
 }
 
+/// 组排序的「移到末尾」落点判定（#gm-move-down-tail 2026-11-17）。
+///
+/// UI 侧有两套写法：侧栏拖拽的尾部哨兵是 `"(tail)"`，组管理弹框的拖拽也发同一个
+/// 哨兵，而历史上还有调用点发空串。两个 handler 曾各认一套 —— 组管理器的
+/// `gm-reorder-group` 只认空串，于是 ↓ 按钮在**倒数第二组**上（它的下一个兄弟是
+/// 末位 → UI 发 `"(tail)"`）被当成"不存在的组名"，`move_group_before` 返回 false，
+/// 表现为"点了没反应"。判定收敛到这里，两个 handler 共用。
+fn group_reorder_is_tail(before: &str) -> bool {
+    before.is_empty() || before == "(tail)"
+}
+
+#[cfg(test)]
+mod group_reorder_tail_tests {
+    use super::group_reorder_is_tail;
+
+    /// (#gm-move-down-tail 2026-11-17) 用户实测「分组管理里下移在倒数第二组上
+    /// 没反应」：↓ 按钮下一个兄弟是末位时 UI 发 `"(tail)"`，而组管理器的 handler
+    /// 当时只认空串 —— 于是被当成不存在的组名，`move_group_before` 返回 false。
+    #[test]
+    fn both_tail_spellings_mean_move_to_end() {
+        assert!(group_reorder_is_tail(""));
+        assert!(group_reorder_is_tail("(tail)"));
+        assert!(!group_reorder_is_tail("ddd"), "真实组名不能当末位哨兵");
+        assert!(!group_reorder_is_tail("(tail) x"), "只认完整哨兵");
+    }
+}
+
 fn sync_sessions_for_window(
     window: &slint::Weak<AppWindow>,
     store: &ConfigStore,
@@ -9321,7 +9350,7 @@ fn wire_session_callbacks(
             // 哪个组之前,就移到那个组之前。before 为空 / 不存在 = no-op。
             // (#group-drag-tail 2026-09-11) before == "(tail)" = 尾部哨兵
             // 上报的"移到末尾"落点(修复拖不到最后一组)。
-            let moved = if before.as_str() == "(tail)" {
+            let moved = if group_reorder_is_tail(before.as_str()) {
                 store.borrow_mut().move_group_to_end(group.as_str())
             } else {
                 store
@@ -9404,6 +9433,12 @@ fn wire_session_callbacks(
             {
                 let mut store = store.borrow_mut();
                 store.set_group_collapsed(&target, new_state);
+                // (#group-collapse-descendants 2026-11-17) 用户实测:父组收起后再
+                // 展开,子组仍是展开态(只改了父组自己的 collapsed)。产品要求
+                // 收起父组 ⇒ 后代一并折回,这样再展开看到的是收起的子组。
+                if new_state {
+                    store.collapse_descendants(&target);
+                }
                 if let Err(err) = store.save() {
                     tracing::warn!("failed to save Quick Connect folder state: {err:#}");
                 }
@@ -9416,7 +9451,15 @@ fn wire_session_callbacks(
     }
 
     // (#ctx-blank-menu 2026-09-13) 空白处右键菜单:全部展开 / 全部折叠。
-    // 与单元折叠同一条路径 —— 逐行改 collapsed、逐组落盘、再刷一次会话列表。
+    //
+    // (#expand-collapse-all 2026-11-17) 两个菜单项原来都不管用,原因有两层:
+    //   1. 组 id 是从**拍平后的界面模型**里收集的,而模型只有当前可见的行 ——
+    //      收起的父组不带出子组,所以「全部展开」最多展开一层,孙组永远轮不到;
+    //   2. 收尾的"刷新列表"写成了 `w.get_sessions()`(读属性),是空操作,于是
+    //      连可见行也只是翻了个箭头:折叠的组下面照样挂着子行,展开的组下面
+    //      一行都不冒出来。
+    // 现在:折叠态在 store 里一次设全(任意深度),再走 `sync_sessions_for_window`
+    // 真正重建模型(与组头点击、定位展开同一条路径)。
     {
         let weak = window.as_weak();
         let store = store.clone();
@@ -9429,34 +9472,19 @@ fn wire_session_callbacks(
             {
                 return;
             }
-            use slint::Model as _;
-            let n = sessions_model.row_count();
-            let mut gids: Vec<String> = Vec::new();
-            for i in 0..n {
-                if let Some(row) = sessions_model.row_data(i) {
-                    // (#left-panel-v3) 只对组头行记账:row-kind == "group" 的
-                    // group-id 是组身份;成员行的 group-id 是所属组,会重复。
-                    if row.row_kind == "group" && !gids.iter().any(|g| g.as_str() == row.group_id.as_str()) {
-                        gids.push(row.group_id.to_string());
-                    }
-                    if row.collapsed != collapsed {
-                        let mut r = row;
-                        r.collapsed = collapsed;
-                        sessions_model.set_row_data(i, r);
-                    }
-                }
-            }
-            {
+            let changed = {
                 let mut store = store.borrow_mut();
-                for g in &gids {
-                    store.set_group_collapsed(g, collapsed);
+                let changed = store.set_all_groups_collapsed(collapsed);
+                if changed > 0 {
+                    if let Err(err) = store.save() {
+                        tracing::warn!("failed to save group collapsed state: {err:#}");
+                    }
                 }
-                if let Err(err) = store.save() {
-                    tracing::warn!("failed to save group collapsed state: {err:#}");
-                }
-            }
-            if let Some(w) = weak.upgrade() {
-                let _ = w.get_sessions();
+                changed
+            };
+            // 没有变化就不重建:重建会重建行、丢滚动位置,白刷一次。
+            if changed > 0 {
+                sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
             }
         });
     }
@@ -9478,10 +9506,11 @@ fn wire_session_callbacks(
             let mut session_id = String::new();
             for i in 0..tabs.row_count() {
                 if let Some(t) = tabs.row_data(i) {
-                    if t.id.as_str() == active
-                        && t.kind.as_str() == "terminal"
-                        && !t.session_id.is_empty()
-                    {
+                    // (#locate-remote-tab 2026-11-17) 只认 kind=="terminal" 时
+                    // RDP/VNC 标签页定位不了 —— 它们的 kind 是 "rdp"/"vnc"
+                    // (remote::tab_kind),但同样带 session_id。判据只该是
+                    // "这个标签页对应一个会话"。
+                    if t.id.as_str() == active && !t.session_id.is_empty() {
                         session_id = t.session_id.to_string();
                         break;
                     }
@@ -10170,7 +10199,7 @@ fn wire_session_callbacks(
                 }
                 {
                     let mut st = store.borrow_mut();
-                    let moved = if before.is_empty() {
+                    let moved = if group_reorder_is_tail(before.as_str()) {
                         st.move_group_to_end(group.as_str())
                     } else {
                         st.move_group_before(group.as_str(), before.as_str())

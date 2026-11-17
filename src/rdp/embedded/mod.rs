@@ -42,7 +42,7 @@ pub(crate) mod clipboard;
 
 pub(crate) use config::{desktop_size, EmbeddedRdpConfig};
 pub(crate) use status::{RemoteState, RemoteStatus};
-pub(crate) use input::{button, keysym, latin1_keysym, RemoteInput, SlintKey};
+pub(crate) use input::{button, keysym, latin1_keysym, wheel_notches, RemoteInput, SlintKey};
 
 /// Split `DOMAIN\user` / `user@domain` into its parts; plain names pass through.
 ///

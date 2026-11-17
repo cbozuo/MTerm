@@ -176,6 +176,12 @@ export struct RemotePaneState {
     trust-validity: string,   // "notBefore — notAfter"
     trust-changed: bool,      // true when the fingerprint differs from the
                               // remembered one (a re-imaged host, or worse)
+    // (#rdp-clip-transfer 2026-11-17) 剪贴板文件传输进度(进度条从 CLIPRDR 通道
+    // 经 RemoteEvent::Transfer 上来)。percent < 0 = 无传输(进度条隐藏);
+    // text 是已成形文案("上传 shell.sh · 1.2 MB / 3.4 MB"),UI 不拼词。
+    transfer-percent: int,
+    transfer-text: string,
+    transfer-outbound: bool,
 }
 
 // One leaf pane of the split layout (v0.5). Geometry (x/y/w/h) is computed in Rust
@@ -937,6 +943,111 @@ component ShortcutRow inherits Rectangle {
             vertical-alignment: center;
             horizontal-stretch: 1;
         }
+    }
+}
+
+// (#panel-menu-unify 2026-11-17) 面板级菜单的行/分隔线 —— 声明在组件区（Slint
+// 不允许组件内嵌组件，见 memory「组件内禁嵌套 component」）。
+component PanelMenuItem inherits Rectangle {
+    in property <string> item-id;
+    in property <string> glyph-name;
+    in property <string> label;
+    callback picked(string);
+    height: 30px;
+    border-radius: Theme.radius-sm;
+    background: ta.has-hover ? Theme.bg-hover : transparent;
+    ta := TouchArea {
+        mouse-cursor: default;
+        clicked => { root.picked(root.item-id); }
+    }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 9px;
+        Icon {
+            glyph: root.glyph-name;
+            tint: Theme.text-primary;
+            size: Theme.fs-sm;
+        }
+        Text {
+            text: root.label;
+            color: Theme.text-primary;
+            font-size: Theme.fs-md;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+    }
+}
+
+component PanelMenuDivider inherits Rectangle {
+    height: 9px;
+    Rectangle {
+        y: 4px;
+        width: parent.width;
+        height: 1px;
+        background: Theme.border-subtle;
+    }
+}
+
+// 面板级菜单 —— 面板 ⋯ 钮与「列表空白处右键」**共用同一份**。
+//
+// 用户要求：「右击面板空白处的菜单和这个会话右侧的菜单内容对齐，两个菜单的内容
+// 包括样式应该都是一样的，都属于面板菜单层级」。以前两处各写一遍，项集不同
+// （空白处有「显示/隐藏本地终端」、⋯ 菜单有「收起面板/面板设置」），内距也不同
+// （空白处 10px / 外层 5px，⋯ 菜单 8px / 外层 4px）。抽成一个组件是唯一能保证
+// 不漂移的写法：以后加项只改这里。
+//
+// 只发一个 `action(string)`，动作分发集中在 `AppWindow.run-panel-menu()`；两处
+// 调用点因此不可能出现「同一个菜单项行为不同」。
+//
+// 规格（与全库 ctx 菜单同一套语言）：行高 30 / hover = bg-hover / 图标 Theme.fs-sm /
+// 文本 Theme.fs-md / 外层内距 4px / 行内距 8px / 圆角 radius-sm /
+// popup-bg + border-strong + 投影。
+component PanelMenu inherits Rectangle {
+    in property <bool> system-hidden: false;
+    // 菜单项动作 id，见 AppWindow.run-panel-menu 的分发表。
+    callback action(string);
+
+    width: min(260px, max(190px, pm-vl.preferred-width));
+    height: pm-vl.preferred-height;
+    background: Theme.popup-bg;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border-strong;
+    drop-shadow-blur: 10px;
+    drop-shadow-color: transparent;
+    pm-pad := TouchArea { width: 100%; height: 100%; }
+
+    pm-vl := VerticalLayout {
+        padding-top: 5px;
+        padding-bottom: 5px;
+        padding-left: 4px;
+        padding-right: 4px;
+        spacing: 0px;
+
+        PanelMenuItem { item-id: "new-session"; glyph-name: "new-session"; label: @tr("New session"); picked(a) => { root.action(a); } }
+        PanelMenuItem { item-id: "new-group"; glyph-name: "folder-plus"; label: @tr("New group"); picked(a) => { root.action(a); } }
+        // 新增：与标题栏「管理分组」钮 / Ctrl+Shift+G 同一入口。
+        PanelMenuItem { item-id: "manage-groups"; glyph-name: "group-list"; label: @tr("Manage groups"); picked(a) => { root.action(a); } }
+        PanelMenuItem { item-id: "import-ssh-config"; glyph-name: "download"; label: @tr("Import ~/.ssh/config"); picked(a) => { root.action(a); } }
+        PanelMenuItem { item-id: "export-connections"; glyph-name: "upload"; label: @tr("Export connections"); picked(a) => { root.action(a); } }
+        PanelMenuItem { item-id: "import-connections"; glyph-name: "arrow-down"; label: @tr("Import connections"); picked(a) => { root.action(a); } }
+        PanelMenuItem { item-id: "batch-import"; glyph-name: "table-rows"; label: @tr("Batch import (text)"); picked(a) => { root.action(a); } }
+        PanelMenuDivider { }
+        PanelMenuItem { item-id: "expand-all"; glyph-name: "unfold-more"; label: @tr("Expand all"); picked(a) => { root.action(a); } }
+        PanelMenuItem { item-id: "collapse-all"; glyph-name: "unfold-less"; label: @tr("Collapse all"); picked(a) => { root.action(a); } }
+        PanelMenuDivider { }
+        // 本地终端显隐（原先只在空白菜单里）。
+        PanelMenuItem {
+            item-id: root.system-hidden ? "show-system" : "hide-system";
+            glyph-name: root.system-hidden ? "visibility" : "visibility-off";
+            label: root.system-hidden ? @tr("Show Local Terminals") : @tr("Hide Local Terminals");
+            picked(a) => { root.action(a); }
+        }
+        PanelMenuDivider { }
+        PanelMenuItem { item-id: "collapse-panel"; glyph-name: "sidebar-left-collapse"; label: @tr("Collapse panel"); picked(a) => { root.action(a); } }
+        PanelMenuItem { item-id: "panel-settings"; glyph-name: "settings"; label: @tr("Panel settings"); picked(a) => { root.action(a); } }
     }
 }
 
@@ -4460,6 +4571,9 @@ export component AppWindow inherits Window {
                         trust-issuer: rem.trust-issuer;
                         trust-validity: rem.trust-validity;
                         trust-changed: rem.trust-changed;
+                        transfer-percent: rem.transfer-percent;
+                        transfer-text: rem.transfer-text;
+                        transfer-outbound: rem.transfer-outbound;
                         key-event(text, down, ctrl, shift, alt, meta) => {
                             root.remote-key(rem.id, text, down, ctrl, shift, alt, meta);
                         }
@@ -4775,6 +4889,40 @@ export component AppWindow inherits Window {
         }
     }
 
+    // (#panel-menu-unify 2026-11-17) 面板级菜单的**唯一**动作分发表 ——
+    // 「面板 ⋯」与「列表空白处右键」两个入口共用一份组件、一份分发，
+    // 行为不可能再出现"同一个菜单项两处不同"。
+    function run-panel-menu(a: string) {
+        root.ctx-open-key = "";
+        root.ctx-menu-kind = "";
+        if (a == "new-session") { root.new-session-clicked(); }
+        if (a == "new-group") {
+            root.group-dialog-orig = "";
+            root.group-dialog-name = "";
+            root.group-dialog-error = "";
+            root.group-dialog-color-hex = "";
+            root.group-dialog-color = #00000000;
+            root.group-dialog-open = true;
+        }
+        if (a == "manage-groups") { root.gm-open-request(); }
+        if (a == "import-ssh-config") { root.import-ssh-config(); }
+        if (a == "export-connections") { root.export-sessions(); }
+        if (a == "import-connections") { root.import-sessions(); }
+        if (a == "batch-import") {
+            root.batch-import-text = "";
+            root.batch-import-open = true;
+        }
+        if (a == "expand-all") { root.set-all-groups-collapsed(false); }
+        if (a == "collapse-all") { root.set-all-groups-collapsed(true); }
+        if (a == "show-system") { root.set-system-group-hidden(false); }
+        if (a == "hide-system") { root.set-system-group-hidden(true); }
+        if (a == "collapse-panel") {
+            root.left-sidebar-collapsed = true;
+            root.set-left-sidebar-collapsed(true);
+        }
+        if (a == "panel-settings") { root.panel-settings-open = true; }
+    }
+
     // (#ctx-menu-backdrop 2026-09-08) 会话右键菜单集中浮层(替代 SessionRow/
     // 组头内嵌 PopupWindow):全窗口透明 backdrop 打底,点击即关+清 key——
     // 关闭事件 100% 确定感知,Slint 1.8 popup 无 closed 回调的残留问题根治。
@@ -4900,11 +5048,11 @@ export component AppWindow inherits Window {
     // 快捷键列(fs-2xs · muted,同 mockup .sc)。
     if root.ctx-open-key != "" && root.ctx-menu-kind == "row" : row-menu-rect := Rectangle {
         x: max(8px, min(root.ctx-menu-x, parent.width - self.width - 8px));
-        y: min(
+        y: max(8px, min(
             self.height > root.ctx-menu-space-below
                 ? max(8px, root.ctx-menu-y - self.height)
                 : root.ctx-menu-y,
-            parent.height - self.height - 8px);
+            parent.height - self.height - 8px));
         // 宽度随内容(快捷键列加宽后下限 190 / 上限 260)。
         width: min(260px, max(190px, row-menu-vl.preferred-width));
         height: row-menu-vl.preferred-height;
@@ -5165,697 +5313,30 @@ export component AppWindow inherits Window {
         }
     }
 
-    if root.ctx-open-key == "blank" && root.ctx-menu-kind == "blank" : blank-menu-rect := Rectangle {
+    // (#panel-menu-unify 2026-11-17) 列表空白处右键 = 面板级菜单（与面板 ⋯ 同一份）。
+    if root.ctx-open-key == "blank" && root.ctx-menu-kind == "blank" : PanelMenu {
         x: max(8px, min(root.ctx-menu-x, parent.width - self.width - 8px));
-        y: min(
+        // 上翻时补 4px 间隙：菜单底边不死贴右击点，接近系统右键菜单手感。
+        // 菜单比窗口还高时（14 项 ≈ 457px）不能把 y 算成负数顶出上缘。
+        y: max(8px, min(
             self.height > root.ctx-menu-space-below
                 ? max(8px, root.ctx-menu-y - self.height - 4px)
                 : root.ctx-menu-y,
-            parent.height - self.height - 8px);
-        // (#ctx-blank-menu-fix 2026-09-15) 上翻时补 4px 间隙:菜单底边不死贴
-        // 右击点,更接近系统右键菜单手感。
-        // (#ctx-menu-fit 2026-09-13) 宽度**跟着内容走**:固定宽会让较长的条目
-        // (如英文 "Hide Local Terminals")顶出右缘、和左边距也不对称。取布局
-        // 首选宽 + 10px —— 与条目内部的 padding-left(10px) 相加后,左右两侧
-        // 留下的空白完全一致,任何语言都刚好包住文字。
-        // (#ctx-menu-narrow 2026-09-15) 统一固定 190px(与组头菜单一致)。
-        width: min(260px, max(190px, blank-menu-vl.preferred-width));
-        height: blank-menu-vl.preferred-height;
-        background: Theme.popup-bg;
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: Theme.border-strong;
-        drop-shadow-blur: 10px;
-        drop-shadow-color: transparent;
-        b-pad := TouchArea { width: 100%; height: 100%; }
-        blank-menu-vl := VerticalLayout {
-            // (#ui-refresh-v3-4 2026-09-15) 对齐设计稿 .menu:外边距 5px、行间 0。
-            padding: 5px;
-            spacing: 0px;
-            // (#ctx-blank-menu-fix 2026-09-15) 增补「新建会话 / 新建分组」:
-            // 空白处右键新建是高频直觉操作(设计稿 v3 增补项)。动作与标题栏
-            // "+ 新建会话"、组头菜单「新建分组」完全同源。
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: b-new-sess-ta.has-hover ? Theme.bg-hover : transparent;
-                b-new-sess-ta := TouchArea {
-                    mouse-cursor: default;
-                    clicked => { root.ctx-open-key = ""; root.ctx-menu-kind = ""; root.new-session-clicked(); }
-                }
-                HorizontalLayout {
-                    // (#ui-refresh-v3-4) 图标槽 16px + 间距 9px,同 .mi 规格。
-                    padding-left: 10px; spacing: 9px;
-                    Icon {
-    glyph: "new-session";
-    tint: Theme.text-primary;
-    size: Theme.fs-sm;
-}
-                    Text { text: root.lang-en ? "New session" : "新建会话"; color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
-                }
-            }
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: b-new-grp-ta.has-hover ? Theme.bg-hover : transparent;
-                b-new-grp-ta := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.ctx-open-key = "";
-                        root.ctx-menu-kind = "";
-                        root.group-dialog-orig = "";
-                        root.group-dialog-name = "";
-                        root.group-dialog-error = "";
-                        root.group-dialog-color-hex = "";
-                        root.group-dialog-color = #00000000;
-                        root.group-dialog-open = true;
-                    }
-                }
-                HorizontalLayout {
-                    // (#ui-refresh-v3-4) 图标槽 16px + 间距 9px,同 .mi 规格。
-                    padding-left: 10px; spacing: 9px;
-                    Icon {
-    glyph: "create-new-folder";
-    tint: Theme.text-primary;
-    size: Theme.fs-sm;
-}
-                    Text { text: @tr("New group"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
-                }
-            }
-            // (#blank-menu-io 2026-11-12 用户要求"右击空白菜单补这四项")导入
-            // ~/.ssh/config / 导出连接 / 导入连接 / 批量导入(文本) —— 与面板
-            // ⋯ 菜单同源回调、同源图标(input / arrow-up / arrow-down /
-            // table-rows),点完关菜单。
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: b-io-ta.has-hover ? Theme.bg-hover : transparent;
-                b-io-ta := TouchArea {
-                    mouse-cursor: default;
-                    clicked => { root.ctx-open-key = ""; root.ctx-menu-kind = ""; root.import-ssh-config(); }
-                }
-                HorizontalLayout {
-                    padding-left: 10px; spacing: 9px;
-                    Icon { glyph: "input"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Import ~/.ssh/config"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
-                }
-            }
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: b-exp2-ta.has-hover ? Theme.bg-hover : transparent;
-                b-exp2-ta := TouchArea {
-                    mouse-cursor: default;
-                    clicked => { root.ctx-open-key = ""; root.ctx-menu-kind = ""; root.export-sessions(); }
-                }
-                HorizontalLayout {
-                    padding-left: 10px; spacing: 9px;
-                    Icon { glyph: "arrow-up"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Export connections"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
-                }
-            }
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: b-imp2-ta.has-hover ? Theme.bg-hover : transparent;
-                b-imp2-ta := TouchArea {
-                    mouse-cursor: default;
-                    clicked => { root.ctx-open-key = ""; root.ctx-menu-kind = ""; root.import-sessions(); }
-                }
-                HorizontalLayout {
-                    padding-left: 10px; spacing: 9px;
-                    Icon { glyph: "arrow-down"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Import connections"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
-                }
-            }
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: b-batch-ta.has-hover ? Theme.bg-hover : transparent;
-                b-batch-ta := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.ctx-open-key = "";
-                        root.ctx-menu-kind = "";
-                        root.batch-import-text = "";
-                        root.batch-import-open = true;
-                    }
-                }
-                HorizontalLayout {
-                    padding-left: 10px; spacing: 9px;
-                    Icon { glyph: "table-rows"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Batch import (text)"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
-                }
-            }
-            Rectangle {
-                height: 9px;
-                Rectangle { y: 4px; x: 0px; width: parent.width; height: 1px; background: Theme.border-subtle; }
-            }
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: b-exp-ta.has-hover ? Theme.bg-hover : transparent;
-                b-exp-ta := TouchArea {
-                    mouse-cursor: default;
-                    clicked => { root.ctx-open-key = ""; root.set-all-groups-collapsed(false); }
-                }
-                HorizontalLayout {
-                    // (#ui-refresh-v3-4) 图标槽 16px + 间距 9px,同 .mi 规格。
-                    padding-left: 10px; spacing: 9px;
-                    Icon {
-    glyph: "unfold-more";
-    tint: Theme.text-primary;
-    size: Theme.fs-sm;
-}
-                    Text { text: @tr("Expand all"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
-                }
-            }
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: b-col-ta.has-hover ? Theme.bg-hover : transparent;
-                b-col-ta := TouchArea {
-                    mouse-cursor: default;
-                    clicked => { root.ctx-open-key = ""; root.set-all-groups-collapsed(true); }
-                }
-                HorizontalLayout {
-                    // (#ui-refresh-v3-4) 图标槽 16px + 间距 9px,同 .mi 规格。
-                    padding-left: 10px; spacing: 9px;
-                    Icon {
-    glyph: "unfold-less";
-    tint: Theme.text-primary;
-    size: Theme.fs-sm;
-}
-                    Text { text: @tr("Collapse all"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
-                }
-            }
-            // 分隔线(高保真 v3:新建 ─ 展开/折叠 ─ 隐藏本地终端)。
-            Rectangle {
-                height: 9px;
-                Rectangle { y: 4px; x: 0px; width: parent.width; height: 1px; background: Theme.border-subtle; }
-            }
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: b-sys-ta.has-hover ? Theme.bg-hover : transparent;
-                b-sys-ta := TouchArea {
-                    mouse-cursor: default;
-                    clicked => { root.ctx-open-key = ""; root.set-system-group-hidden(!root.system-hidden); }
-                }
-                HorizontalLayout {
-                    // (#ui-refresh-v3-4) 图标槽 16px + 间距 9px,同 .mi 规格。
-                    padding-left: 10px; spacing: 9px;
-                    Icon {
-    glyph: root.system-hidden ? "visibility" : "visibility-off";
-    tint: Theme.text-primary;
-    size: Theme.fs-sm;
-}
-                    Text { text: root.system-hidden ? @tr("Show Local Terminals") : @tr("Hide Local Terminals"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; }
-                }
-            }
-        }
+            parent.height - self.height - 8px));
+        system-hidden: root.system-hidden;
+        action(a) => { root.run-panel-menu(a); }
     }
 
-    if root.ctx-open-key != "" && root.ctx-menu-kind == "group" : grp-menu-rect := Rectangle {
+    // (#panel-menu-unify 2026-11-17) 面板 ⋯ 钮 = 面板级菜单（与空白右键同一份）。
+    if root.ctx-open-key != "" && root.ctx-menu-kind == "panel" : PanelMenu {
         x: max(8px, min(root.ctx-menu-x, parent.width - self.width - 8px));
         y: min(
             self.height > root.ctx-menu-space-below
                 ? max(8px, root.ctx-menu-y - self.height)
                 : root.ctx-menu-y,
             parent.height - self.height - 8px);
-        // (#ctx-menu-fit 2026-09-13) 宽度跟着内容走,左右留白一致。
-        // (#ui-menu-compact-right 2026-09-15) 内容宽,色块紧贴文字。
-        // (#grp-menu-v2 2026-11-12) 下限 164 / 上限 260:新增「新建子分组 /
-        // 隐藏本地终端」等长条目在英文下不再顶出或被 elide 截断。
-        width: min(260px, max(164px, grp-menu-vl.preferred-width));
-        height: grp-menu-vl.preferred-height;
-        background: Theme.popup-bg;
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: Theme.border-strong;
-        drop-shadow-blur: 10px;
-        drop-shadow-color: transparent;
-        // (#ctx-menu-autoclose) 垫底探测 + 安全区聚合 + 自动关闭,
-        // 同 row 菜单(组头菜单无动态项,全静态聚合)。
-        // (#ctx-menu-autoclose) 垫底探测:同 row 菜单,挡住 backdrop hover。
-        g-pad := TouchArea { width: 100%; height: 100%; }
-        grp-menu-vl := VerticalLayout {
-            // (#grp-menu-v2 2026-11-12 用户要求"参考高保真 left-panel-session-
-            // hifi §.context-menu")组头菜单重做:在此分组新建会话 / 新建子分组
-            // (仅父组) / 重命名分组 / 分组颜色…(右侧显示当前色号) / ─── /
-            // 展开全部 / 折叠全部 / 管理分组(既有入口保留) / ─── /
-            // 隐藏本地终端(用户点名补回) / 删除分组(红)。
-            // 保留组(default/system)只留通用项:新建会话 / 颜色 / 展开折叠 /
-            // 隐藏;重命名/新建子分组/删除对保留组隐藏(Rust 侧同样会拒绝)。
-            padding: 5px;
-            spacing: 0px;
-            // ① 在此分组新建会话(本地终端组隐藏:#grp-menu-local)
-            if !root.grp-menu-local() : Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: g-newsess-ta.has-hover ? Theme.bg-hover : transparent;
-                g-newsess-ta := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.ctx-open-key = "";
-                        root.ctx-menu-kind = "";
-                        root.new-session-clicked();
-                        // 新建弹框打开后预填本组(双向绑定直写 draft-group;
-                        // Rust 的 reset 在回调内同步跑完,这里后写生效)。
-                        root.dialog-group = root.ctx-menu-group;
-                    }
-                }
-                HorizontalLayout {
-                    padding-left: 10px; spacing: 9px;
-                    Icon { glyph: "new-session"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("New session in this group"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
-                }
-            }
-            // ② 新建子分组(仅父组 depth 0、非保留组;高保真 UI 限深 2)
-            if root.ctx-menu-depth == 0 && !root.grp-menu-reserved() : Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: g-subgrp-ta.has-hover ? Theme.bg-hover : transparent;
-                g-subgrp-ta := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.ctx-open-key = "";
-                        root.ctx-menu-kind = "";
-                        // (#subgroup-dialog 2026-11-13 用户要求"新建和重命名用
-                        // 同一套弹框逻辑") 直建退役 → 打开组弹框 create 模式
-                        // (带父组,可输入名字+分组颜色同款色板,确定才落盘)。
-                        root.group-dialog-parent = root.ctx-menu-group;
-                        root.group-dialog-orig = "";
-                        root.group-dialog-name = "";
-                        root.group-dialog-error = "";
-                        root.group-dialog-color-hex = "";
-                        root.group-dialog-color = #00000000;
-                        root.group-color-picker-for = "dialog";
-                        root.group-dialog-open = true;
-                    }
-                }
-                HorizontalLayout {
-                    padding-left: 10px; spacing: 9px;
-                    Icon { glyph: "create-new-folder"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("New subgroup"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
-                }
-            }
-            // ③ 重命名分组
-            if !root.grp-menu-reserved() : Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: g-edit-ta.has-hover ? Theme.bg-hover : transparent;
-                g-edit-ta := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.ctx-open-key = "";
-                        root.group-dialog-orig = root.ctx-menu-group;
-                        root.group-dialog-name = root.ctx-menu-group;
-                        root.group-dialog-error = "";
-                        root.group-dialog-color-hex = root.ctx-menu-group-color-hex;
-                        root.group-dialog-color = root.ctx-menu-group-color;
-                        root.group-dialog-open = true;
-                    }
-                }
-                HorizontalLayout {
-                    padding-left: 10px; spacing: 9px;
-                    Icon { glyph: "edit"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Rename group"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
-                }
-            }
-            // ④ 分组颜色…（右侧显示当前色号；点开取色面板，菜单不消失）
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: g-color-ta.has-hover ? Theme.bg-hover : transparent;
-                g-color-ta := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.group-color-picker-for = "";   // ctx 落盘链
-                        root.group-color-picker-open = !root.group-color-picker-open;
-                    }
-                }
-                HorizontalLayout {
-                    padding-left: 10px;
-                    padding-right: 10px;
-                    spacing: 9px;
-                    Icon { glyph: "palette"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Group color…"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
-                    Text {
-                        text: root.ctx-menu-group-color-hex == ""
-                            ? (root.lang-en ? "Default" : "默认")
-                            : root.ctx-menu-group-color-hex;
-                        color: Theme.text-muted;
-                        font-size: Theme.fs-2xs;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-            // ─── 分区线
-            Rectangle { height: 9px; }
-            Rectangle { height: 1px; background: Theme.border-subtle; }
-            Rectangle { height: 9px; }
-            // ⑤ 展开全部
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: g-exp-ta.has-hover ? Theme.bg-hover : transparent;
-                g-exp-ta := TouchArea {
-                    mouse-cursor: default;
-                    clicked => { root.ctx-open-key = ""; root.ctx-menu-kind = ""; root.set-all-groups-collapsed(false); }
-                }
-                HorizontalLayout {
-                    padding-left: 10px; spacing: 9px;
-                    Icon { glyph: "unfold-more"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Expand all"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; }
-                }
-            }
-            // ⑥ 折叠全部
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: g-col-ta.has-hover ? Theme.bg-hover : transparent;
-                g-col-ta := TouchArea {
-                    mouse-cursor: default;
-                    clicked => { root.ctx-open-key = ""; root.ctx-menu-kind = ""; root.set-all-groups-collapsed(true); }
-                }
-                HorizontalLayout {
-                    padding-left: 10px; spacing: 9px;
-                    Icon { glyph: "unfold-less"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Collapse all"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; }
-                }
-            }
-            // ⑦ 管理分组(既有入口保留 —— 高保真菜单没有它,删掉功能就不可达;
-            // 位置收在展开/折叠之后。本地终端组隐藏:#grp-menu-local —— 全局
-            // 入口仍有 Ctrl+Shift+G / 标题 ⋯ 菜单)
-            if !root.grp-menu-local() : Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: gm-ta.has-hover ? Theme.bg-hover : transparent;
-                gm-ta := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.ctx-open-key = "";
-                        root.gm-open-request();
-                    }
-                }
-                HorizontalLayout {
-                    padding-left: 10px; spacing: 9px;
-                    Icon { glyph: "group-list"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Manage groups"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
-                }
-            }
-            // ─── 分区线
-            Rectangle { height: 9px; }
-            Rectangle { height: 1px; background: Theme.border-subtle; }
-            Rectangle { height: 9px; }
-            // ⑧ 隐藏 / 显示本地终端(用户点名补回;文案随状态切换)
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: g-sys-ta.has-hover ? Theme.bg-hover : transparent;
-                g-sys-ta := TouchArea {
-                    mouse-cursor: default;
-                    clicked => { root.ctx-open-key = ""; root.ctx-menu-kind = ""; root.set-system-group-hidden(!root.system-hidden); }
-                }
-                HorizontalLayout {
-                    padding-left: 10px; spacing: 9px;
-                    Icon {
-        glyph: root.system-hidden ? "visibility" : "visibility-off";
-        tint: Theme.text-primary;
-        size: Theme.fs-sm;
-    }
-                    Text { text: root.system-hidden ? @tr("Show Local Terminals") : @tr("Hide Local Terminals"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
-                }
-            }
-            // ⑨ 删除分组(红;保留组隐藏)。非空组入口恒显但禁用(0.45),
-            // 与高保真同口径("请先把组内会话移出")—— Rust remove_group 会让
-            // 会话回默认组、子组上提,但误点非空组的代价太大,先拦在入口。
-            if !root.grp-menu-reserved() : Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                opacity: root.ctx-menu-empty ? 1.0 : 0.45;
-                background: (root.ctx-menu-empty && g-del-ta.has-hover) ? #cc333320 : transparent;
-                g-del-ta := TouchArea {
-                    mouse-cursor: default;
-                    enabled: root.ctx-menu-empty;
-                    clicked => { root.ctx-open-key = ""; root.ctx-menu-kind = ""; root.delete-group(root.ctx-menu-group); }
-                }
-                HorizontalLayout {
-                    padding-left: 10px; spacing: 9px;
-                    Icon { glyph: "delete"; tint: #cc3333; size: Theme.fs-sm; }
-                    Text { text: @tr("Delete group"); color: #cc3333; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; }
-                }
-            }
-        }
-
-        // (#group-color 2026-09-14) 取色面板:与菜单**并存**(菜单不消失)。
-        // (#gh-ctx-swatch 2026-11-07 用户要求"分组管理同款")旧贴菜单的
-        // GroupColorField 小面板退役——换成分组管理同款 SwatchPopup(48 色
-        // 大色格+选定/调色盘+页脚),实例与右击链取色盘挂**窗口根尾**
-        // (gm 的改色弹层同层,见 7063 注释:模态全屏遮罩,无需贴菜单几何)。
-    }
-
-    // (#panel-menu-ctx 2026-11-09 用户要求"面板 ⋯ 菜单与组别菜单同款、在
-    // 右侧") 标题行 ⋯ 面板菜单 = ctx 浮层第四态(kind="panel"):自
-    // left_sidebar 面板内自绘(backdrop+菜单卡)整块迁入。锚定 = 钮中心 x /
-    // 钮底+4(超窗钳制同组菜单),材质与行规格完全复用 grp-menu-rect:
-    // popup-bg 底 / radius-sm / 1px border-strong / 行高 30 /
-    // (#panel-menu-tighten 2026-11-10) 外层左右内距 4px(上下 5 不动)+ 行内距
-    // 8px + 图标统一 14px(原 fs-sm 13px)+ 行尾无快捷键列(Ctrl+N 已撤销,
-    // 标签删除) —— 旧面板菜单的 28px 行/8px 间距/首行 padding-left 8px
-    // (图标比其余行偏左 4px)退役。
-    // 8 项直排无分隔线(组菜单同款)。
-    // 关闭链 = ctx 体系通用:backdrop 点击/Esc/点项即关;同 blank/group
-    // 「移出不消失」(见 backdrop 4604 处条件)。收起面板按停靠语义写
-    // (欢迎页 tab 下原组件回调无 handler,点它静默无操作——现在收起的是
-    // 停靠面板,行为更明确)。
-    if root.ctx-open-key != "" && root.ctx-menu-kind == "panel" : Rectangle {
-        x: max(8px, min(root.ctx-menu-x, parent.width - self.width - 8px));
-        y: min(
-            self.height > root.ctx-menu-space-below
-                ? max(8px, root.ctx-menu-y - self.height)
-                : root.ctx-menu-y,
-            parent.height - self.height - 8px);
-        // (#panel-menu-tighten-r2 2026-11-10 用户反馈"还是宽,右侧空白不协调")
-        // Ctrl+N 列删除后 212px 下限是纯空档来源 —— 改贴内容自适应
-        // (组菜单 #ctx-menu-fit 同口径):下限 164px、上限 240px。
-        width: min(240px, max(164px, panel-menu-vl.preferred-width));
-        height: panel-menu-vl.preferred-height;
-        background: Theme.popup-bg;
-        border-radius: Theme.radius-sm;
-        border-width: 1px;
-        border-color: Theme.border-strong;
-        drop-shadow-blur: 10px;
-        drop-shadow-color: transparent;
-        // 垫底探测:同组菜单,挡住 backdrop hover(「移出不消失」判定用)。
-        TouchArea { width: 100%; height: 100%; }
-        panel-menu-vl := VerticalLayout {
-            // (#panel-menu-tighten 2026-11-10 用户三点反馈) 左右内距收拢:
-            // 上下 5px 不动、左右 5→4px(配合行内距 10→8,图标距左缘 15→12px,
-            // 悬浮带距边 4px 两端对称)。
-            padding-top: 5px;
-            padding-bottom: 5px;
-            padding-left: 4px;
-            padding-right: 4px;
-            spacing: 0px;
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: pm-1.has-hover ? Theme.bg-hover : transparent;
-                pm-1 := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.ctx-open-key = "";
-                        root.ctx-menu-kind = "";
-                        root.new-session-clicked();
-                    }
-                }
-                HorizontalLayout {
-                    // (#panel-menu-tighten) 行内距 10→8;Ctrl+N 快捷键标签删除
-                    // (快捷键已撤销,纯摆设,#panel-menu-ctx 遗留)。
-                    padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "new-session"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("New session"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                }
-            }
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: pm-2.has-hover ? Theme.bg-hover : transparent;
-                pm-2 := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.ctx-open-key = "";
-                        root.ctx-menu-kind = "";
-                        root.group-dialog-orig = "";
-                        root.group-dialog-name = "";
-                        root.group-dialog-error = "";
-                        root.group-dialog-color-hex = "";
-                        root.group-dialog-color = #00000000;
-                        root.group-dialog-open = true;
-                    }
-                }
-                HorizontalLayout {
-                    // (#panel-menu-tighten) 行内距 10→8(图标统一 14px 见块注释)。
-                    padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "create-new-folder"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("New group"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                }
-            }
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: pm-3.has-hover ? Theme.bg-hover : transparent;
-                pm-3 := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.ctx-open-key = "";
-                        root.ctx-menu-kind = "";
-                        root.import-ssh-config();
-                    }
-                }
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    // (#panel-menu-import-icon 2026-11-10 用户要求"换成设置里
-                    // 同款图标") move-in → input(设置菜单 6790 行同款)。
-                    Icon { glyph: "input"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Import ~/.ssh/config"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                }
-            }
-            // (#panel-menu-session-ops 2026-11-10 用户要求) 设置里的三个会话
-            // 级操作并入面板菜单:导出连接 / 导入连接 / 批量导入(文本) ——
-            // 图标与文案与设置菜单逐值同源(arrow-up / arrow-down /
-            // table-rows,见 6730/6750/6771 三行);回调也同源,点完关菜单。
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: pm-export.has-hover ? Theme.bg-hover : transparent;
-                pm-export := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.ctx-open-key = "";
-                        root.ctx-menu-kind = "";
-                        root.export-sessions();
-                    }
-                }
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "arrow-up"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: root.lang-en ? "Export connections" : "导出连接"; color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                }
-            }
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: pm-import.has-hover ? Theme.bg-hover : transparent;
-                pm-import := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.ctx-open-key = "";
-                        root.ctx-menu-kind = "";
-                        root.import-sessions();
-                    }
-                }
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "arrow-down"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: root.lang-en ? "Import connections" : "导入连接"; color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                }
-            }
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: pm-batch.has-hover ? Theme.bg-hover : transparent;
-                pm-batch := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.ctx-open-key = "";
-                        root.ctx-menu-kind = "";
-                        root.batch-import-open = true;
-                    }
-                }
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "table-rows"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: root.lang-en ? "Batch import (text)" : "批量导入(文本)"; color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                }
-            }
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: pm-4.has-hover ? Theme.bg-hover : transparent;
-                pm-4 := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.ctx-open-key = "";
-                        root.ctx-menu-kind = "";
-                        root.set-all-groups-collapsed(false);
-                    }
-                }
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "unfold-more"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Expand all"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                }
-            }
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: pm-5.has-hover ? Theme.bg-hover : transparent;
-                pm-5 := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.ctx-open-key = "";
-                        root.ctx-menu-kind = "";
-                        root.set-all-groups-collapsed(true);
-                    }
-                }
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "unfold-less"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Collapse all"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                }
-            }
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: pm-6.has-hover ? Theme.bg-hover : transparent;
-                pm-6 := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.ctx-open-key = "";
-                        root.ctx-menu-kind = "";
-                        root.left-sidebar-collapsed = true;
-                        root.set-left-sidebar-collapsed(true);
-                    }
-                }
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "sidebar-left-collapse"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Collapse panel"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                }
-            }
-            Rectangle {
-                height: 30px;
-                border-radius: Theme.radius-sm;
-                background: pm-7.has-hover ? Theme.bg-hover : transparent;
-                pm-7 := TouchArea {
-                    mouse-cursor: default;
-                    clicked => {
-                        root.ctx-open-key = "";
-                        root.ctx-menu-kind = "";
-                        // (#panel-settings) 面板 ⋯ 菜单「面板设置」→ 专属弹框。
-                        root.panel-settings-open = true;
-                    }
-                }
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; spacing: 9px;
-                    Icon { glyph: "settings"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Panel settings"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                }
-            }
-        }
+        system-hidden: root.system-hidden;
+        action(a) => { root.run-panel-menu(a); }
     }
 
     // (#session-hover-card 2026-09-05) 成员行悬停信息卡片的集中浮层:

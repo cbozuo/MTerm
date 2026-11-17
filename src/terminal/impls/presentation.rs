@@ -284,8 +284,12 @@ pub(crate) fn render_term_span(
             "nerd-diag: span 含私用区字符，将按字符拆分"
         );
     }
-    // 没有图标字符就保持一 run 一 span（绝大多数行），不付拆分开销。
-    if !span.text.chars().any(is_scaled_icon_char) {
+    // 没有图标/emoji 字符就保持一 run 一 span（绝大多数行），不付拆分开销。
+    if !span
+        .text
+        .chars()
+        .any(|c| is_scaled_icon_char(c) || is_emoji_char(c))
+    {
         let cjk = contains_cjk(&span.text);
         return vec![TermSpan {
             text: span.text.clone().into(),
@@ -325,6 +329,27 @@ pub(crate) fn render_term_span(
                 nerd_x_em: x_em,
             });
             col += 1;
+        } else if is_emoji_char(ch) {
+            // (#emoji-ink-overflow 2026-11-17) emoji 单独成 span 并 `cjk: true`
+            // （= UI 字体 + 裁到格内），墨迹溢出不再压到格子外的高亮上。
+            push_plain_span(&mut out, &plain, fg, bg, span.bold, row, &mut col);
+            plain.clear();
+            let text = ch.to_string();
+            let cells = text_cell_width(&text).max(1);
+            out.push(TermSpan {
+                text: text.into(),
+                fg,
+                bg,
+                bold: span.bold,
+                row,
+                col,
+                cells,
+                cjk: true,
+                nerd: false,
+                nerd_scale: 1.0,
+                nerd_x_em: 0.0,
+            });
+            col += cells;
         } else {
             plain.push(ch);
         }
@@ -385,6 +410,26 @@ fn contains_cjk(s: &str) -> bool {
             | 0xFF00..=0xFFEF     // fullwidth / halfwidth forms (，！？：；)
             | 0x20000..=0x2FA1F) // CJK ext B–F + compat supplement
     })
+}
+
+/// 彩色 emoji 字形（📁 ☕ ✅ …）回退字体的墨迹比格子宽，会从**左右各溢出**
+/// 几个像素（#emoji-ink-overflow 2026-11-17）。
+///
+/// 溢出的那几像素落在格子**外面**，于是任何"按格子填色"的东西都在图标左侧缺
+/// 一块：ANSI 底色（`ls` 的 `ow=` 世界可写目录，用户截图里的 `temp_dir` 黄底）
+/// 和鼠标拖选高亮都是这样。实测（1417px 截图）：图标墨迹从 x=703 开始，格子/底色
+/// 从 706 开始 —— 左边 3px 压在暗底上，正是用户说的"缺一块"。
+///
+/// 修法：把 emoji 拆成独立 span 并标记 `cjk` —— 这个标记在本项目里同时表示
+/// "用 UI 字体渲染 + 裁到格子内"（视图侧 `clip: span.cjk`）。裁掉溢出后，格子
+/// 填色就完整了；emoji 走 UI 字体的回退链仍然落到系统彩色 emoji 字体，颜色不变。
+fn is_emoji_char(c: char) -> bool {
+    matches!(c as u32,
+        0x1F000..=0x1FAFF   // symbols & pictographs / emoticons / transport / supplemental
+        | 0x2600..=0x27BF   // misc symbols + dingbats（☕ ✅ ✂ ✔）
+        | 0x2B00..=0x2BFF   // 补充箭头 / 星形
+        | 0x1F1E6..=0x1F1FF // 区域指示符（国旗）
+        | 0xFE0F)           // variation selector-16（emoji 呈现）
 }
 
 /// True if this character should be drawn as a scaled-up Nerd Font icon in its
@@ -943,6 +988,56 @@ mod truecolor_guard_tests {
                 "{raw:?} → {out:?} 守卫后仍不达标"
             );
         }
+    }
+}
+
+/// (#emoji-ink-overflow 2026-11-17) emoji 必须单独成 span 且带 `cjk`(视图据此
+/// 裁到格内)。否则回退字体的墨迹左右各溢出几像素，格子填色（ANSI 底色 / 拖选
+/// 高亮）就会在图标左侧缺一块 —— 用户实测 `temp_dir` 的黄底和鼠标拖选都这样。
+#[cfg(test)]
+mod emoji_span_tests {
+    use super::{render_term_span, HistSpan};
+
+    fn hist_span(text: &str, col: i32) -> HistSpan {
+        HistSpan {
+            text: text.to_string(),
+            fg: vt100::Color::Default,
+            bg: vt100::Color::Default,
+            bold: false,
+            inverse: false,
+            col,
+            cells: super::text_cell_width(text),
+        }
+    }
+
+    #[test]
+    fn an_emoji_icon_becomes_its_own_clipped_span() {
+        let pal = crate::theme::palette_or_default("", false);
+        // `ls`/`eza` 的常见形态：图标 + 空格 + 文件名，同一 run 同色。
+        let spans = render_term_span(&hist_span("📁 temp_dir", 5), 0, true, &pal);
+        let icon = spans
+            .iter()
+            .find(|s| s.text.as_str().contains('📁'))
+            .expect("emoji span");
+        assert!(icon.cjk, "emoji span 必须带 cjk(=UI 字体+裁到格内)");
+        assert!(!icon.nerd, "emoji 不走 nerd 图标放大通道");
+        assert!(icon.cells >= 1);
+        assert_eq!(icon.col, 5, "起始列不变");
+
+        // 后面的名字必须接在图标之后，格宽不计错。
+        let name = spans
+            .iter()
+            .find(|s| s.text.as_str().contains("temp_dir"))
+            .expect("name span");
+        assert_eq!(name.col, 5 + icon.cells);
+        assert!(!name.cjk, "纯 ASCII 名字保持等宽字体");
+    }
+
+    #[test]
+    fn plain_ascii_is_not_split() {
+        let pal = crate::theme::palette_or_default("", false);
+        let spans = render_term_span(&hist_span("drwxr-xr-x. root", 0), 0, true, &pal);
+        assert_eq!(spans.len(), 1, "没有 emoji/图标就不该拆分");
     }
 }
 

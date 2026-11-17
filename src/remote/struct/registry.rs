@@ -122,6 +122,9 @@ impl RemotePanes {
             trust_issuer: "".into(),
             trust_validity: "".into(),
             trust_changed: false,
+            transfer_percent: -1,
+            transfer_text: "".into(),
+            transfer_outbound: false,
         });
     }
 
@@ -261,6 +264,46 @@ impl RemotePanes {
                 // to put it; the clipboard bridge lands with P1-1.
                 tracing::debug!("remote clipboard update ({} bytes)", text.len());
             }
+            RemoteEvent::Transfer(progress) => {
+                // (#rdp-clip-transfer 2026-11-17) 剪贴板文件传输的进度条。
+                // 后端只报「谁、多少字节、哪个方向」,文案(上传/下载)在这里成形,
+                // 与状态行同口径(UI 不拼词)。
+                match progress {
+                    Some(p) => {
+                        row.transfer_percent = if p.total > 0 {
+                            ((p.done as f64 / p.total as f64) * 100.0).clamp(0.0, 100.0) as i32
+                        } else {
+                            -1
+                        };
+                        row.transfer_outbound = p.outbound;
+                        row.transfer_text = transfer_line(&p).into();
+                        // 传完就 2 秒后自动收起:进度条不该常驻(与 SFTP 传输提示同思路)
+                        if p.total > 0 && p.done >= p.total {
+                            let rows = self.rows.clone();
+                            let tab = row.id.clone();
+                            slint::Timer::single_shot(
+                                std::time::Duration::from_secs(2),
+                                move || {
+                                    if let Some(i) = rows
+                                        .iter()
+                                        .position(|r| r.id == tab && r.transfer_percent >= 100)
+                                    {
+                                        if let Some(mut r) = rows.row_data(i) {
+                                            r.transfer_percent = -1;
+                                            r.transfer_text = "".into();
+                                            rows.set_row_data(i, r);
+                                        }
+                                    }
+                                },
+                            );
+                        }
+                    }
+                    None => {
+                        row.transfer_percent = -1;
+                        row.transfer_text = "".into();
+                    }
+                }
+            }
         }
         self.rows.set_row_data(index, row);
     }
@@ -312,7 +355,9 @@ impl RemotePanes {
         }
     }
 
-    /// The last desktop size the view asked for, so a reconnected session can be
+
+
+/// The last desktop size the view asked for, so a reconnected session can be
     /// brought to the size the tab is at now.
     ///
     /// The view reports its size on every size/state change, but it de-duplicates
@@ -433,6 +478,39 @@ pub fn status_for(state: RemoteState, message: Option<&str>) -> String {
             .map(crate::remote::failure::explain)
             .unwrap_or_else(|| t("连接失败", "Connection failed").to_string()),
     }
+}
+
+/// 传输进度条的文案(方向 + 文件名 + 已传/总量)。UI 不拼词,i18n 只在这一处。
+fn transfer_line(p: &crate::remote::pane::TransferProgress) -> String {
+let verb = if p.outbound {
+    crate::i18n::t("上传", "Uploading")
+} else {
+    crate::i18n::t("下载", "Downloading")
+};
+if p.total == 0 {
+    return format!("{verb} {}", p.name);
+}
+format!(
+    "{verb} {} · {} / {}",
+    p.name,
+    human_bytes(p.done),
+    human_bytes(p.total)
+)
+}
+
+/// 字节数 → 人读形式(进度条用;与 SFTP 传输提示同一口味)。
+fn human_bytes(bytes: u64) -> String {
+const KB: f64 = 1024.0;
+let b = bytes as f64;
+if b < KB {
+    format!("{bytes} B")
+} else if b < KB * KB {
+    format!("{:.1} KB", b / KB)
+} else if b < KB * KB * KB {
+    format!("{:.1} MB", b / (KB * KB))
+} else {
+    format!("{:.2} GB", b / (KB * KB * KB))
+}
 }
 
 #[cfg(test)]
@@ -616,5 +694,37 @@ mod tests {
         let row = panes.rows.row_data(0).expect("the tab is still there");
         assert_eq!(row.state, i32::from(RemoteState::Failed.as_u8()));
         assert_eq!(row.error, "credssp 0xc000006d");
+    }
+
+    /// (#rdp-clip-transfer) 进度条文案:方向 + 文件名 + 已传/总量;无总量时只给名字。
+    #[test]
+    fn transfer_line_formats_direction_name_and_amounts() {
+        let p = crate::remote::pane::TransferProgress {
+            name: "shell.sh".into(),
+            done: 1024 * 1024,
+            total: 2 * 1024 * 1024,
+            outbound: true,
+        };
+        let line = transfer_line(&p);
+        assert!(line.contains("shell.sh"), "{line}");
+        assert!(line.contains("1.0 MB") && line.contains("2.0 MB"), "{line}");
+
+        let unknown = crate::remote::pane::TransferProgress {
+            name: "big.iso".into(),
+            done: 0,
+            total: 0,
+            outbound: false,
+        };
+        let line = transfer_line(&unknown);
+        assert!(line.contains("big.iso"), "{line}");
+        assert!(!line.contains('/'), "总量未知时不该出现分母: {line}");
+    }
+
+    #[test]
+    fn human_bytes_uses_readable_units() {
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(2048), "2.0 KB");
+        assert_eq!(human_bytes(3 * 1024 * 1024), "3.0 MB");
+        assert_eq!(human_bytes(2 * 1024 * 1024 * 1024), "2.00 GB");
     }
 }

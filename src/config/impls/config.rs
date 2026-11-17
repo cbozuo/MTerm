@@ -356,6 +356,33 @@ pub(crate) fn display_group_of(session: &Session) -> String {
     }
 }
 
+/// (#card-group-path 2026-11-17) 会话的**完整分组路径**（"父组 / 子组"）。
+///
+/// 信息卡上只显示叶子名会丢掉层级上下文：用户实测会话在「1方法 / 单独」下，
+/// 卡片只写「单独」，看不出它属于哪个父组。这里按 `group_id` 走 parent 链拼
+/// 完整路径（名字可能重名，id 唯一）；无分组/保留组沿用 `display_group_of` 的
+/// 口径（"default"），此时由调用方决定怎么显示。
+pub(crate) fn display_group_path(store: &ConfigStore, session: &Session) -> String {
+    let leaf = display_group_of(session);
+    let mut chain: Vec<String> = Vec::new();
+    let mut gid = session.group_id.clone();
+    // 防御环（parent_id 理论上不会有环，但配置是手改得到的）。
+    let mut guard = 0;
+    while !gid.is_empty() && guard < 32 {
+        guard += 1;
+        let Some(record) = store.group_records().iter().find(|g| g.id == gid) else {
+            break;
+        };
+        chain.push(record.name.clone());
+        gid = record.parent_id.clone();
+    }
+    if chain.is_empty() {
+        return leaf;
+    }
+    chain.reverse();
+    chain.join(" / ")
+}
+
 /// Named display groups: explicit folders ∪ the groups sessions are filed
 /// under, with reserved names and ungrouped excluded, de-duplicated and
 /// sorted case-insensitively. The single source of truth for group display
@@ -2642,6 +2669,55 @@ impl ConfigStore {
         true
     }
 
+    /// (#expand-collapse-all 2026-11-17) 把**所有层级**的分组折叠态一次设成
+    /// `collapsed`，返回改动了几个（0 = 状态本来就对，调用方据此跳过落盘/重建）。
+    ///
+    /// 为什么必须在 store 里做：面板的「全部展开/全部折叠」原来是从**拍平后的
+    /// 界面模型**里收集组 id 的，而模型里只有当前可见的行 —— 收起的父组不会
+    /// 带出子组，所以「全部展开」只能展开一层，第二层的组根本不在候选里；
+    /// 再叠上重建那一步写成了空操作，两个菜单项等于只翻了几枚箭头。分组全集
+    /// 只有 store 拿得到，这里就是那份全集。
+    pub fn set_all_groups_collapsed(&mut self, collapsed: bool) -> usize {
+        let mut changed = 0;
+        for record in self.cache.group_records.iter_mut() {
+            if record.collapsed != collapsed {
+                record.collapsed = collapsed;
+                changed += 1;
+            }
+        }
+        changed
+    }
+
+    /// (#group-collapse-descendants 2026-11-17) 折叠某组时把**后代组一并折回收起**。
+    ///
+    /// 用户实测：父组收起后再展开，子组仍是展开态（收起父组只改了父组自己的
+    /// collapsed，子组的状态被记住了）。产品要求：收起父组 ⇒ 后代回到收起态，
+    /// 所以再展开父组时看到的是收起的子组。返回是否有变化（调用方据此落盘）。
+    pub fn collapse_descendants(&mut self, id: &str) -> bool {
+        // 先按 parent 链收集后代 id（组数量很小，广度优先即可）。
+        let mut targets: Vec<String> = Vec::new();
+        let mut frontier = vec![id.to_string()];
+        while let Some(parent) = frontier.pop() {
+            for g in self.cache.group_records.iter() {
+                if g.parent_id == parent && !targets.iter().any(|t| t == &g.id) {
+                    targets.push(g.id.clone());
+                    frontier.push(g.id.clone());
+                }
+            }
+        }
+        if targets.is_empty() {
+            return false;
+        }
+        let mut changed = false;
+        for g in self.cache.group_records.iter_mut() {
+            if !g.collapsed && targets.iter().any(|t| t == &g.id) {
+                g.collapsed = true;
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// (#left-panel-v3) display name 是否已被占用(大小写不敏感;保留组名
     /// 恒占用)。`exclude_id` 供重命名时排除自己。
     pub fn session_group_name_taken(&self, name: &str, exclude_id: &str) -> bool {
@@ -4617,6 +4693,110 @@ mod tests {
         assert!(!store.reorder_session("a", -1));
         assert!(!store.reorder_session("x", 1));
         assert!(!store.reorder_session("nope", 1));
+    }
+
+    /// (#group-collapse-descendants 2026-11-17) 收起父组必须把后代一起折回 ——
+    /// 否则再展开父组时子组还是展开态(用户实测的交互问题)。
+    #[test]
+    fn collapsing_a_parent_also_collapses_its_descendants() {
+        let mut store = temp_store();
+        let parent = store.add_group("父".into(), "").expect("parent");
+        let child = store.add_group("子".into(), &parent).expect("child");
+        let grand = store.add_group("孙".into(), &child).expect("grandchild");
+        for id in [&parent, &child, &grand] {
+            store.set_group_collapsed(id, false);
+        }
+        let collapsed = |st: &ConfigStore, id: &str| {
+            st.group_records()
+                .iter()
+                .find(|g| g.id == id)
+                .map(|g| g.collapsed)
+                .unwrap_or(false)
+        };
+
+        assert!(store.set_group_collapsed(&parent, true), "父组从展开变收起");
+        assert!(store.collapse_descendants(&parent), "后代应有变化");
+        assert!(collapsed(&store, &parent), "父组应折叠");
+        assert!(collapsed(&store, &child), "子组应被带动折叠");
+        assert!(collapsed(&store, &grand), "孙组应被带动折叠");
+        // 已经全折叠 → 无变化(调用方据此跳过落盘)
+        assert!(!store.collapse_descendants(&parent));
+        // 无关组不受影响
+        let other = store.add_group("无关".into(), "").expect("other");
+        store.set_group_collapsed(&other, false);
+        assert!(!store.collapse_descendants(&parent));
+        assert!(!collapsed(&store, &other), "兄弟分支不应被带动");
+    }
+
+    /// (#expand-collapse-all 2026-11-17) 一次收起/展开**所有层级**的组。
+    ///
+    /// 这条测试盯的是"只在可见行里找组"的老 bug:「全部展开」必须把**孙组**
+    /// 也展开 —— 收起的父组下面那两层根本不在界面模型里,只有 store 有全集。
+    #[test]
+    fn all_groups_collapse_and_expand_at_every_depth() {
+        let mut store = temp_store();
+        let root = store.add_group("父".into(), "").expect("root");
+        let child = store.add_group("子".into(), &root).expect("child");
+        let grand = store.add_group("孙".into(), &child).expect("grand");
+        let other = store.add_group("另一个顶层".into(), "").expect("other");
+        let collapsed = |st: &ConfigStore, id: &str| {
+            st.group_records()
+                .iter()
+                .find(|g| g.id == id)
+                .map(|g| g.collapsed)
+                .unwrap_or(false)
+        };
+
+        // 先把所有组(含 store 自带的默认组)归到展开态,计数才可预期。
+        store.set_all_groups_collapsed(false);
+        let total = store.group_records().len();
+        assert!(total >= 4, "至少是我们加的四个组+默认组");
+
+        // 全部收起:每一个组都要变。
+        assert_eq!(store.set_all_groups_collapsed(true), total);
+        for id in [&root, &child, &grand, &other] {
+            assert!(collapsed(&store, id), "全部折叠后 {id} 应为收起");
+        }
+        // 再来一次 = 无变化(调用方据此跳过落盘与重建)。
+        assert_eq!(store.set_all_groups_collapsed(true), 0);
+
+        // 全部展开:连孙组也必须回到展开态,否则只展开了一层。
+        assert_eq!(store.set_all_groups_collapsed(false), total);
+        for id in [&root, &child, &grand, &other] {
+            assert!(!collapsed(&store, id), "全部展开后 {id} 应为展开");
+        }
+    }
+
+    /// (#card-group-path 2026-11-17) 信息卡要显示完整分组路径,而不是叶子名。
+    #[test]
+    fn group_path_shows_the_full_hierarchy() {
+        let mut store = temp_store();
+        let parent = store.add_group("1方法".into(), "").expect("parent");
+        store.add_group("单独".into(), &parent).expect("child");
+
+        let mut nested = Session::new_empty();
+        nested.id = "s-nested".into();
+        nested.name = "内置".into();
+        store.upsert(nested);
+        assert!(store.move_sessions_to_group(&["s-nested".into()], "单独"));
+        let s = store.get("s-nested").expect("session");
+        assert_eq!(display_group_path(&store, &s), "1方法 / 单独");
+
+        // 根级组:只有一层
+        let mut root = Session::new_empty();
+        root.id = "s-root".into();
+        root.name = "root".into();
+        store.upsert(root);
+        assert!(store.move_sessions_to_group(&["s-root".into()], "1方法"));
+        let s = store.get("s-root").expect("session");
+        assert_eq!(display_group_path(&store, &s), "1方法");
+
+        // 未分组:沿用 display_group_of 的口径(default)
+        let mut loose = Session::new_empty();
+        loose.id = "s-loose".into();
+        store.upsert(loose);
+        let s = store.get("s-loose").expect("session");
+        assert_eq!(display_group_path(&store, &s), display_group_of(&s));
     }
 }
 

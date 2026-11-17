@@ -11,5 +11,9 @@ mod ssh;
 #[path = "impls/ssh_config.rs"]
 pub(crate) mod ssh_config;
 
+#[path = "impls/banner_probe.rs"]
+#[cfg(test)]
+mod banner_probe;
+
 pub(crate) use ssh::*;
 pub(crate) use structs::*;

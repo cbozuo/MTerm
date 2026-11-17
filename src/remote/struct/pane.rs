@@ -64,6 +64,22 @@ pub enum RemoteEvent {
     Size { width: u16, height: u16 },
     /// The remote clipboard changed (VNC's server-cut-text).
     Clipboard(String),
+    /// RDP 剪贴板文件传输的进度(None = 结束,UI 收起进度条)。
+    /// `outbound` = 本地 → 远端(上传),否则是接收。
+    Transfer(Option<TransferProgress>),
+}
+
+/// 一次剪贴板文件传输的进度(#rdp-clip-transfer 2026-11-17)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferProgress {
+    /// 当前文件名(远端给的名字,或本地文件名)。
+    pub name: String,
+    /// 已完成字节数。
+    pub done: u64,
+    /// 总字节数;0 = 还不知道(服务器还没报 size)。
+    pub total: u64,
+    /// true = 本地 → 远端。
+    pub outbound: bool,
 }
 
 /// A pending certificate/key trust decision (P0-12).

@@ -20,6 +20,14 @@ NEW_DESC = {
     "clock": "历史/最近记录（搜索面板 chip、发送命令窗）",
     "corner-down-left": "回车执行角标（搜索面板行尾 ↵）",
     "disk": "磁盘/存储（粘贴确认弹框新增注册）",
+    "file-archive": "压缩包（SFTP 列表按扩展名给类型图标）",
+    "file-code": "程序/脚本（SFTP 列表按扩展名给类型图标）",
+    "file-data": "结构化数据/清单（SFTP 列表按扩展名给类型图标）",
+    "file-image": "图片文件（SFTP 列表按扩展名给类型图标）",
+    "file-font": "字体文件（SFTP 列表按扩展名给类型图标）",
+    "file-log": "日志文件（SFTP 列表按扩展名给类型图标）",
+    "file-markdown": "Markdown 文档（SFTP 列表按扩展名给类型图标）",
+    "file-table": "表格文件（SFTP 列表按扩展名给类型图标）",
     "file-x": "文件失效/不可用（预留）",
     "hash": "范围徽标「已选主机数」（发送命令窗）",
     "hscroll": "横向滚动（预留）",
@@ -41,7 +49,9 @@ NEW_DESC = {
 def extract_old_meta(doc: str):
     """Pull (name -> code, desc) out of the existing preview page."""
     meta = {}
-    for card in re.findall(r'<div class="card">(.*?)\n</div>', doc, flags=re.S):
+    # Cards are <a class="card"> … </a> (the page was refactored from <div class="card">;
+    # the old regex silently matched nothing and wiped every hand-written note).
+    for card in re.findall(r'<a class="card"[^>]*>(.*?)\n</a>', doc, flags=re.S):
         m = re.search(r'<div class="name">([^<]+)</div>', card)
         if not m:
             continue

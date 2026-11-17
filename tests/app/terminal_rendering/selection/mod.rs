@@ -135,3 +135,25 @@ fn extract_handles_wide_cjk_columns() {
 // (#find-bar 2026-10-27 v3.6) find_matches_report_grid_columns_past_cjk 已随
 // compute_find_matches 退役，等价覆盖移至 tests/app/terminal_rendering/find/
 // （find_scan_covers_history_and_live_with_grid_columns_past_cjk 等 9 条）。
+
+/// (#sel-left-gap 2026-11-17) 用户反馈「鼠标拖选时左边缺一块」:多行选择里
+/// **续行必须从第 0 列开始铺满**,否则高亮在左边短一截。这条测试把三行的
+/// 起始列钉住(滚动状态下同样成立)。
+#[test]
+fn multi_row_selection_fills_from_column_zero_on_continuation_rows() {
+    let mut buf = make_buf(4, 20, &[], &["aaaa", "bbbb", "cccc", "dddd"], 0);
+    buf.sel_anchor = Some((0, 2));
+    buf.sel_focus = Some((2, 3));
+    let rects = buf.selection_rects_visible(20);
+    let dump: Vec<(i32, i32, i32)> = rects.iter().map(|r| (r.row, r.col, r.len)).collect();
+    println!("forward rects = {dump:?}");
+    assert_eq!(dump, vec![(0, 2, 18), (1, 0, 20), (2, 0, 4)]);
+
+    // 反向(从下往上拖)也必须对称:上边那行从焦点列铺到行尾。
+    buf.sel_anchor = Some((2, 3));
+    buf.sel_focus = Some((0, 2));
+    let rects = buf.selection_rects_visible(20);
+    let dump: Vec<(i32, i32, i32)> = rects.iter().map(|r| (r.row, r.col, r.len)).collect();
+    println!("backward rects = {dump:?}");
+    assert_eq!(dump, vec![(0, 2, 18), (1, 0, 20), (2, 0, 4)]);
+}

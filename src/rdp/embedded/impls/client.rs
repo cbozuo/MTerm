@@ -45,7 +45,7 @@ use ironrdp::session::{GracefulDisconnectReason, SessionResult};
 
 use crate::rdp::embedded::clipboard::ClipboardFactory;
 use crate::rdp::embedded::config::EmbeddedRdpConfig;
-use crate::rdp::embedded::input::{button, RemoteInput};
+use crate::rdp::embedded::input::{button, wheel_notches, RemoteInput};
 use crate::rdp::embedded::status::{closing_state, RemoteState, RemoteStatus};
 use crate::remote::pump::FrameQueue;
 use crate::remote::pane::{RemoteEvent, RemoteHandle, TrustRequest};
@@ -290,6 +290,9 @@ pub async fn run_with_input(
     // by the CLIPRDR channel and watches the local clipboard for as long as
     // the session lasts.
     let clipboard = ClipboardFactory::new();
+    // (#rdp-clip-transfer 2026-11-17) 让剪贴板后端能把**文件传输进度**送回 UI:
+    // 它跑在 CLIPRDR 通道所在的线程上,唯一能到达标签页的就是这条事件通道。
+    clipboard.set_events(deps.events.clone());
     // Three transport drops are worth surviving inside the session: the client
     // reconnects with the RDP auto-reconnect cookie, so a transient loss costs no
     // handshake and no re-authentication. The outer loop below still covers what
@@ -476,6 +479,7 @@ pub async fn run_with_input(
             // (#rdp-clipboard 2026-11-13) A fresh clipboard factory: the
             // backend belongs to the channel, which the old client owned.
             let clipboard = ClipboardFactory::new();
+            clipboard.set_events(deps.events.clone());
             let client = RdpClient::new(iron_config, retry_tx)
                 .with_cliprdr_backend_factory(Box::new(clipboard.clone()))
                 .with_auto_reconnect(3);
@@ -1128,6 +1132,18 @@ fn forward_input(
     sender: &RdpInputSender,
     event: RemoteInput,
 ) {
+    // (#rdp-input-drop-log 2026-11-17) 队列满时的丢弃必须说清是**哪一类**输入:
+    // 旧日志只有"an input event was dropped",没法判断丢的是鼠标移动还是按键
+    // —— 而"键盘不生效 + 鼠标正常"正是两者的区别所在。
+    let label = match &event {
+        RemoteInput::Key { down: true, .. } => "key-down",
+        RemoteInput::Key { .. } => "key-up",
+        RemoteInput::Text { .. } => "text",
+        RemoteInput::Pointer { .. } => "pointer",
+        RemoteInput::Wheel { .. } => "wheel",
+        RemoteInput::ReleaseAll => "release-all",
+        RemoteInput::Resize { .. } => "resize",
+    };
     let ops: Vec<IronRdpOperation> = match event {
         RemoteInput::Key { code, down } => {
             // The shared input path folds the extended (E0) flag into bit 8 so
@@ -1167,17 +1183,20 @@ fn forward_input(
             ops
         }
         RemoteInput::Wheel { x, y, dx, dy } => {
+            // (#rdp-wheel-sign 2026-11-17) 单位与方向都在 `wheel_notches` 里定:
+            // UI 给的是**像素**(一格 60),RDP 要**格**且正 = 向上,旧代码把像素
+            // 直接当格又取了反 → 用户实测"滚轮向下画面向上"。
             let mut ops = vec![IronRdpOperation::MouseMove(MousePosition { x, y })];
             if dx.abs() > 0.001 {
                 ops.push(IronRdpOperation::WheelRotations(WheelRotations {
                     is_vertical: false,
-                    rotation_units: clamp_i16(-dx),
+                    rotation_units: wheel_notches(dx),
                 }));
             }
             if dy.abs() > 0.001 {
                 ops.push(IronRdpOperation::WheelRotations(WheelRotations {
                     is_vertical: true,
-                    rotation_units: clamp_i16(-dy),
+                    rotation_units: wheel_notches(dy),
                 }));
             }
             ops
@@ -1201,15 +1220,47 @@ fn forward_input(
     }
     let fast = db.apply(ops);
     if !fast.is_empty() && sender.try_send(IronRdpInput::FastPath(fast)).is_err() {
-        tracing::warn!("RDP input queue is full; an input event was dropped");
+        tracing::warn!("RDP input queue is full; {label} was dropped");
     }
 }
 
-fn clamp_i16(value: f64) -> i16 {
-    if value.is_nan() {
-        return 0;
+/// 滚轮换算的回归测试(#rdp-wheel-sign 2026-11-17)。
+///
+/// 用户实测"滚轮向下画面向上",根因是两层错误叠在一起:把 Slint 的**像素**增量
+/// 直接当 RDP 的**格**用(一格 60px 被当成 60 格),又取了反。这个测试把单位、
+/// 方向、触摸板小增量三条都钉住。
+#[cfg(test)]
+mod wheel_tests {
+    use super::wheel_notches;
+
+    #[test]
+    fn one_notch_up_is_positive_one() {
+        // winit: 一格 = LineDelta(1.0) → 60px,正值 = 向上/向右
+        assert_eq!(wheel_notches(60.0), 1);
+        assert_eq!(wheel_notches(-60.0), -1, "向下必须是负,不许再翻一次");
     }
-    value.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16
+
+    #[test]
+    fn a_fast_flick_is_counted_in_notches_not_pixels() {
+        assert_eq!(wheel_notches(180.0), 3);
+        assert_eq!(wheel_notches(-120.0), -2);
+        // 旧实现会把 60px 变成 ±60 格:这条断言就是那个 bug 的哨兵。
+        assert!(wheel_notches(60.0) < 2);
+    }
+
+    #[test]
+    fn a_sub_notch_trackpad_delta_still_moves_one_notch() {
+        assert_eq!(wheel_notches(4.0), 1);
+        assert_eq!(wheel_notches(-4.0), -1);
+        assert_eq!(wheel_notches(0.0), 0);
+        assert_eq!(wheel_notches(f64::NAN), 0);
+    }
+
+    #[test]
+    fn absurd_deltas_are_clamped() {
+        assert_eq!(wheel_notches(1e9), 32);
+        assert_eq!(wheel_notches(-1e9), -32);
+    }
 }
 
 /// Publish a state change to the UI.
@@ -1625,14 +1676,6 @@ mod tests {
         let img = frame_from_bytes(vec![0xff, 0xff, 0xff, 0xff], (2, 1)).expect("a drawable frame");
         assert_eq!(img.dimensions(), (2, 1));
         assert_eq!(&img.as_raw()[4..8], &[0, 0, 0, 0]);
-    }
-
-    #[test]
-    fn wheel_deltas_are_clamped_instead_of_wrapping() {
-        assert_eq!(clamp_i16(1e9), i16::MAX);
-        assert_eq!(clamp_i16(-1e9), i16::MIN);
-        assert_eq!(clamp_i16(f64::NAN), 0);
-        assert_eq!(clamp_i16(3.7), 3);
     }
 
     #[test]
