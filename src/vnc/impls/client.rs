@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
@@ -119,7 +119,7 @@ pub async fn run_with_input(
                 if closed.load(Ordering::Relaxed) {
                     break;
                 }
-                if !retryable || attempt >= MAX_RECONNECT_ATTEMPTS {
+                if !auto_retry_allowed(kind, retryable, attempt) {
                     push_state(&status, &events, RemoteState::Failed, Some(reason));
                     failure_reported = true;
                     break;
@@ -178,6 +178,113 @@ fn forward_input_channel(
 /// Why an attempt ended, and whether trying again could help.
 type AttemptError = (&'static str, String, bool);
 
+/// 安全类型预检的结论(只读列表得出,不选类型、不发认证数据)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthPreflight {
+    /// 服务器允许无认证(None)—— 空密码也能连。
+    NoAuthNeeded,
+    /// 服务器要密码(至少提供标准 VNC 认证)。
+    NeedsPassword,
+    /// 服务器只提供我们说不了的类型(VeNCrypt / TLS / Tight…)。
+    Unsupported,
+}
+
+/// 安全类型列表 → 结论。有 `None` 就当作无需认证。
+fn classify_types(types: &[u8]) -> AuthPreflight {
+    if types.contains(&1) {
+        AuthPreflight::NoAuthNeeded
+    } else if types.contains(&2) {
+        AuthPreflight::NeedsPassword
+    } else {
+        AuthPreflight::Unsupported
+    }
+}
+
+/// 只读探测:TCP 连接 → 读服务器版本 → 回自己的版本 → 读安全类型列表 → 断开。
+///
+/// **全程不发安全类型选择、不发认证数据**,所以服务器不会把它计为失败握手 ——
+/// 这正是它存在的理由:库在咨询认证回调**之前**就把选中的安全类型发出去了,
+/// 所以"空密码 → 回调报错"那条路径仍会让服务器看到一次未完成的握手,TigerVNC
+/// 会把它计入失败并封禁地址(用户实测:反复重试之后连类型列表都拿不到)。
+/// 版本差异:RFB 3.3 的 security-type 是 u32(0=拒绝+原因串 / 1=None / 2=VncAuth),
+/// 3.7/3.8 才是 "数量 + 类型字节"。
+async fn preflight_security(config: &VncConnectConfig) -> Result<AuthPreflight, AttemptError> {
+    /// 探测主体:Ok(Ok(types)) = 拿到类型列表;Ok(Err(reason)) = 服务器拒绝并给了原因。
+    async fn probe(s: &mut TcpStream) -> std::io::Result<Result<Vec<u8>, String>> {
+        let mut ver = [0u8; 12];
+        s.read_exact(&mut ver).await?;
+        s.write_all(b"RFB 003.008\n").await?;
+
+        let text = String::from_utf8_lossy(&ver).into_owned();
+        let minor: u32 = text
+            .trim()
+            .rsplit('.')
+            .next()
+            .and_then(|m| m.parse().ok())
+            .unwrap_or(8);
+
+        async fn read_reason(s: &mut TcpStream) -> std::io::Result<String> {
+            let mut raw = [0u8; 4];
+            s.read_exact(&mut raw).await?;
+            let n = (u32::from_be_bytes(raw) as usize).min(512);
+            let mut buf = vec![0u8; n];
+            if n > 0 {
+                s.read_exact(&mut buf).await?;
+            }
+            Ok(String::from_utf8_lossy(&buf).into_owned())
+        }
+
+        if minor <= 3 {
+            let mut raw = [0u8; 4];
+            s.read_exact(&mut raw).await?;
+            let t = u32::from_be_bytes(raw);
+            if t == 0 {
+                return Ok(Err(read_reason(s).await?));
+            }
+            return Ok(Ok(vec![t as u8]));
+        }
+
+        let mut count = [0u8; 1];
+        s.read_exact(&mut count).await?;
+        if count[0] == 0 {
+            return Ok(Err(read_reason(s).await?));
+        }
+        let mut types = vec![0u8; count[0] as usize];
+        s.read_exact(&mut types).await?;
+        Ok(Ok(types))
+    }
+
+    let mut stream = match tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        TcpStream::connect((config.host.as_str(), config.port)),
+    )
+    .await
+    {
+        Err(_) => return Err(("transport", "VNC connect timed out".into(), true)),
+        Ok(Err(err)) => {
+            let retryable = err.kind() != std::io::ErrorKind::ConnectionRefused;
+            return Err(("transport", format!("VNC TCP connect failed: {err}"), retryable));
+        }
+        Ok(Ok(s)) => s,
+    };
+
+    match tokio::time::timeout(HANDSHAKE_TIMEOUT, probe(&mut stream)).await {
+        Err(_) => Err((
+            "handshake",
+            crate::i18n::t(
+                "读取服务器安全类型超时(对端没有回应 RFB 版本协商)",
+                "timed out reading the server's security types (no answer to the RFB version exchange)",
+            )
+            .to_string(),
+            true,
+        )),
+        Ok(Err(io)) => Err(handshake_failure(&vnc::VncError::IoError(io))),
+        // 服务器明确拒绝(例如 "Too many security failures"):复用同一条原因串映射
+        Ok(Ok(Err(reason))) => Err(handshake_failure(&vnc::VncError::General(reason))),
+        Ok(Ok(Ok(types))) => Ok(classify_types(&types)),
+    }
+}
+
 /// One connection attempt, from TCP connect to session end.
 async fn run_once(
     config: &VncConnectConfig,
@@ -189,6 +296,29 @@ async fn run_once(
     trust: &mut mpsc::UnboundedReceiver<(u64, bool, bool)>,
 ) -> Result<(), AttemptError> {
     push_state(status, events, RemoteState::Connecting, None);
+
+    // (#vnc-no-burn 2026-11-17) 没有密码时,先用一条**只读**探测连接问清服务器要
+    // 什么认证,再决定是否值得发起真正的会话 —— 否则"选了 VncAuth 再断开"会被
+    // TigerVNC 这类服务器计为一次失败握手,反复重试就把地址封了。
+    if !config.has_password {
+        match preflight_security(config).await? {
+            AuthPreflight::NoAuthNeeded => {}
+            AuthPreflight::NeedsPassword => {
+                return Err((
+                    "auth",
+                    crate::i18n::t(
+                        "该服务器要求 VNC 密码,但会话里没有填写。请在会话中填入 VNC 密码后重试(未发起握手,服务器不会记失败)",
+                        "this server requires a VNC password but the session has none. Fill in the VNC password and retry (no handshake was started, so the server records no failure)",
+                    )
+                    .to_string(),
+                    false,
+                ));
+            }
+            AuthPreflight::Unsupported => {
+                return Err(("handshake", unsupported_types_message(), false));
+            }
+        }
+    }
 
     let tcp = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect((config.host.as_str(), config.port)))
         .await
@@ -207,35 +337,32 @@ async fn run_once(
         Ok(Ok(stream)) => stream,
     };
     let _ = tcp.set_nodelay(true);
-    // RFB is a single bidirectional stream, but the library owns the read half
-    // while the driver writes FramebufferUpdateRequest by hand. tokio's
-    // `TcpStream` has no `try_clone`, so the socket round-trips through std —
-    // the only way to get two independent handles onto one connection.
-    let std_tcp = tcp
-        .into_std()
-        .map_err(|err| ("transport", format!("into_std failed: {err}"), true))?;
-    let request_stream = TcpStream::from_std(
-        std_tcp
-            .try_clone()
-            .map_err(|err| ("transport", format!("socket clone failed: {err}"), true))?,
-    )
-    .map_err(|err| ("transport", format!("from_std failed: {err}"), true))?;
-    let tcp = TcpStream::from_std(std_tcp)
-        .map_err(|err| ("transport", format!("from_std failed: {err}"), true))?;
+    // RFB 是单条双向流,库独占它(内部自带网络线程 + 解码线程);增量刷新请求
+    // 经 client.input(X11Event::Refresh) 走同一条流。旧实现把同一个 socket
+    // 注册两次进 tokio IO 驱动再手写字节,纯风险无收益(本机实测可用,已废)。
 
     push_state(status, events, RemoteState::Authenticating, None);
 
     let password = config.password.clone();
     let has_password = config.has_password;
     let connector = VncConnector::new(tcp)
-        // The future is only polled when the server actually asks for
-        // authentication, so an empty password is never sent unprompted.
-        .set_auth_method(async move { Ok(password) })
+        // (#vnc-blank-password 2026-11-17) 服务器要认证而我们没有密码时,**直接以
+        // NoPassword 中止**,不发送任何伪造响应。旧写法无论有没有密码都返回
+        // Ok(password),于是空密码会话会发出 8 个零字节的 DES 响应 —— 服务器
+        // 每次都记一次失败,几次之后就用原因串 "Too many security failures" 把
+        // 这个地址暂时封掉(用户实测症状)。
+        // 注:回调在库读 16 字节挑战之前被 poll,但库**已经先发了选中的安全类型**,
+        // 所以这条路径本身仍算一次未完成的握手 —— 因此没有密码时改用
+        // `preflight_security()` 在选类型之前就拦下(见 run_once 开头)。
+        .set_auth_method(async move {
+            if !has_password {
+                return Err(vnc::VncError::NoPassword);
+            }
+            Ok(password)
+        })
         .set_pixel_format(vnc::PixelFormat::bgra())
-        .add_encoding(VncEncoding::Zrle)
-        .add_encoding(VncEncoding::Tight)
-        .add_encoding(VncEncoding::Raw)
-        .add_encoding(VncEncoding::CopyRect)
+        .add_encoding(requested_encodings()[0])
+        .add_encoding(requested_encodings()[1])
         .allow_shared(config.shared)
         .build()
         .map_err(|err| ("protocol", format!("{err}"), false))?;
@@ -258,7 +385,6 @@ async fn run_once(
 
     let mut framebuffer: Option<VncFramebuffer> = None;
     let mut dirty: Option<Rect> = None;
-    let mut request_writer = BufWriter::new(request_stream);
     let mut last_request = tokio::time::Instant::now() - UPDATE_REQUEST_INTERVAL;
     let mut last_emit = tokio::time::Instant::now() - UPDATE_REQUEST_INTERVAL;
     let mut frames = FrameQueue::new();
@@ -300,23 +426,15 @@ async fn run_once(
             // Nothing to read and nothing to send: this is where the periodic
             // update request and the frame hand-over happen.
             _ = ticker.tick() => {
-                if let Some(fb) = framebuffer.as_ref() {
+                if framebuffer.is_some() {
                     if last_request.elapsed() >= UPDATE_REQUEST_INTERVAL {
-                        let mut msg = [0u8; 10];
-                        msg[0] = 3; // FramebufferUpdateRequest
-                        msg[1] = 1; // incremental
-                        msg[8] = (fb.width >> 8) as u8;
-                        msg[9] = fb.width as u8;
-                        msg[6] = (fb.height >> 8) as u8;
-                        msg[7] = fb.height as u8;
-                        if request_writer.write_all(&msg).await.is_err() {
-                            return Err(("transport", "sending FramebufferUpdateRequest failed".into(), true));
-                        }
-                        let _ = request_writer.flush().await;
                         last_request = tokio::time::Instant::now();
+                        // 库把 Refresh 映射为「全桌面 + incremental」的
+                        // FramebufferUpdateRequest(尺寸由库自己跟踪)。
+                        let _ = client.input(vnc::X11Event::Refresh).await;
                     }
                 }
-                if let Some(rect) = dirty.take() {
+                if dirty.take().is_some() {
                     if last_emit.elapsed() >= UPDATE_REQUEST_INTERVAL {
                         if let Some(fb) = framebuffer.as_ref() {
                             frames.push_frame(RemoteEvent::Frame(crate::remote::render::to_buffer_exact(&fb.to_rgba())));
@@ -348,15 +466,12 @@ async fn handle_event(
 ) -> Result<(), AttemptError> {
     match event {
         VncEvent::SetResolution(screen) => {
+            // 只建帧缓冲,**不置 dirty**:库自己已经发了首个全帧请求,像素回来前
+            // 若被 8ms tick 抢先,会把一张全黑帧交给 UI(首帧闪黑)。首帧只应由
+            // 真正的像素更新触发。后续服务端 resize 后也会自带全量更新。
             let fb = VncFramebuffer::new(screen.width, screen.height)
                 .map_err(|err| ("protocol", err, false))?;
             *framebuffer = Some(fb);
-            *dirty = Some(Rect {
-                x: 0,
-                y: 0,
-                width: screen.width,
-                height: screen.height,
-            });
         }
         VncEvent::RawImage(rect, data) => {
             let fb = framebuffer.get_or_insert_with(|| {
@@ -478,7 +593,13 @@ async fn send_input(
         RemoteInput::ReleaseAll => release_keys(client, held_keys).await,
         // VNC servers pick their own resolution; a mid-session resize needs the
         // DesktopSize pseudo-encoding, which this client does not negotiate.
-        RemoteInput::Resize { .. } => {}
+        // vnc-rs 0.6 支持 ExtendedDesktopSize 协商(resize_desktop);仅当会话
+        // 跟随标签页尺寸时请求,服务器不支持时忽略(桌面保持原尺寸)。
+        RemoteInput::Resize { width, height } => {
+            if config.follow_tab_size {
+                let _ = client.resize_desktop(width, height).await;
+            }
+        }
         RemoteInput::Wheel { x, y, dx, dy } => {
             // RFB expresses the wheel as button 4/5 presses (and 6/7 for the
             // horizontal axis), not a delta.
@@ -577,16 +698,116 @@ fn is_io_error(err: &vnc::VncError) -> bool {
 /// anything the user could change. That case gets a message about the stage
 /// instead. It stays retryable: a socket dropped by a proxy or an overloaded
 /// server looks identical from here, and only a repeat tells the two apart.
+/// 是否允许再自动重试一次。
+///
+/// **握手阶段(已经进入 RFB 版本/安全协商)最多重试一次**(#vnc-retry-cap 2026-11-17):
+/// VNC 服务端会把重复的失败握手计入封禁 —— TigerVNC 数够次数后就用
+/// "Too many security failures" 或直接关闭连接拒绝该地址,越试封得越久(用户实测:
+/// 界面一直闪烁正是因为自动重试在反复握手)。判断"代理抖一下"还是"服务器在拒绝"
+/// 的代价不该由用户的封禁状态来付:UI 上就有「重新连接」按钮。
+/// 传输类失败(TCP 连不上/超时/重置)照旧按 `MAX_RECONNECT_ATTEMPTS` 退避重试。
+fn auto_retry_allowed(kind: &str, retryable: bool, attempt: u32) -> bool {
+    if !retryable || attempt >= MAX_RECONNECT_ATTEMPTS {
+        return false;
+    }
+    if kind == "handshake" && attempt >= 1 {
+        return false;
+    }
+    true
+}
+
+/// 本驱动请求的编码,顺序即优先级。
+///
+/// **只有 Raw 与 CopyRect**(#vnc-connect-fix 2026-11-17):
+/// * vnc-rs 0.6 的 ZRLE 解码会先读一个 u32 压缩长度前缀,而 RFC 6143 §7.7.4 的
+///   ZRLE 矩形没有这个前缀(zlib 流按需膨胀、跨 update 持续)→ 标准服务器
+///   (TigerVNC/x11vnc/TightVNC…)只要选 ZRLE,每个矩形都会 "Image data cannot be
+///   decoded correctly",会话在握手后立刻死掉。ZRLE 排在首位,所以服务器几乎
+///   必然选它 —— 这是"VNC 连不上"的真实根因。
+/// * Tight 的 JPEG 子编码本驱动也不解。
+///
+/// 等 vnc-rs 修好 ZRLE 再把它加回来(带宽优化留到那时)。
+pub(crate) fn requested_encodings() -> [VncEncoding; 2] {
+    [VncEncoding::Raw, VncEncoding::CopyRect]
+}
+
+/// 认证失败的**可行动**文案:库给的是英文且只说"是什么",用户需要知道"怎么办"。
+fn auth_failure_message(err: &vnc::VncError) -> String {
+    match err {
+        vnc::VncError::NoPassword => crate::i18n::t(
+            "该服务器要求 VNC 密码,但会话里没有填写。请在会话中填入 VNC 密码后重试",
+            "this server requires a VNC password but the session has none. Fill in the VNC password and retry",
+        )
+        .to_string(),
+        vnc::VncError::WrongPassword => crate::i18n::t(
+            "VNC 密码不正确(服务器拒绝了认证)",
+            "wrong VNC password (the server rejected the authentication)",
+        )
+        .to_string(),
+        other => format!("{other}"),
+    }
+}
+
+/// 认证方式不受支持时的文案(握手失败路径与预检共用一份)。
+fn unsupported_types_message() -> String {
+    crate::i18n::t(
+        "服务器的认证方式内置客户端不支持(仅支持 None / VNC 认证)。请在服务端启用 VNC 密码认证,或改用下载 / 外部客户端",
+        "the server's authentication types are not supported by the built-in client (None / VNC auth only). Enable VNC password auth on the server, or use download / an external viewer",
+    )
+    .to_string()
+}
+
+/// Read a handshake failure: what to call it, what to tell the user, and
+/// whether another attempt could help.
+///
+/// **The sense of the retry flag.** `is_auth_error` answers "was this a
+/// credential problem", so a rejected password must map to *not* retried, not
+/// to retried — three rejected passwords walk an account towards a lockout,
+/// which is exactly what the predicate exists to prevent. `auto_retry_allowed`
+/// then caps handshake-stage retries at one: VNC servers (TigerVNC and friends)
+/// count repeated failed handshakes and block the client, so a client that
+/// retries in a loop is the reason the user sees the address locked out (and a
+/// flickering status line).
+///
+/// **The wording.** A server that has decided not to serve this client closes
+/// the socket part-way through the RFB security handshake. The library reports
+/// that as `IoError(UnexpectedEof)`, whose `Display` is tokio's
+/// "failed to fill whole buffer" — a sentence that names neither the stage nor
+/// anything the user could change. That case gets a message that names the two
+/// realistic causes (a temporary block after failed attempts, or an auth type
+/// we cannot speak) and what to do about them.
 fn handshake_failure(err: &vnc::VncError) -> AttemptError {
+    // 认证类失败一律不可重试:同样的凭据再试一次只会把服务器侧的失败计数推向
+    // 封禁(VNC 的 "Too many security failures")。
     if is_auth_error(err) {
-        return ("auth", format!("{err}"), false);
+        return ("auth", auth_failure_message(err), false);
+    }
+    // 服务器已经把话说白了:原因串告诉我们它数满失败次数并暂时拒绝本地址。
+    // 这不是"连不上",是"先别再试" —— 必须说清楚,否则用户会一直点重新连接
+    // 把封禁时间越拖越长。
+    if let vnc::VncError::General(msg) = err {
+        let lower = msg.to_ascii_lowercase();
+        if lower.contains("too many") || lower.contains("security failures") {
+            return (
+                "auth",
+                crate::i18n::t(
+                    "服务器因多次认证失败已暂时拒绝本地址(VNC 防爆破策略)。请先等待几分钟,核对 VNC 密码后再试 —— 现在反复重试会延长封禁",
+                    "the server has temporarily blocked this address after too many failed authentications. Wait a few minutes, check the VNC password, then retry — retrying now extends the block",
+                )
+                .to_string(),
+                false,
+            );
+        }
+        if msg.contains("Security type") {
+            return ("handshake", unsupported_types_message(), false);
+        }
     }
     if is_dropped_handshake(err) {
         return (
             "handshake",
             crate::i18n::t(
-                "服务端在 RFB 安全握手阶段关闭了连接",
-                "the server closed the connection during the RFB security handshake",
+                "服务端在 RFB 安全握手阶段关闭了连接。常见原因:①本地址因之前多次认证失败被 VNC 服务端暂时拒绝(TigerVNC 等会这样做,重启服务或等待几分钟即清除);②服务端要求的认证方式不受支持。请先确认 VNC 密码已正确填写,必要时重启服务端再试",
+                "the server closed the connection during the RFB security handshake. Usually either this address is temporarily blocked after repeated failed authentications (TigerVNC does this — restart the server or wait a few minutes to clear it), or the server's authentication types are unsupported. Check the VNC password, restart the server if needed, then retry",
             )
             .to_string(),
             true,
@@ -709,5 +930,74 @@ mod tests {
             !message.contains("buffer"),
             "the library's wording leaked through: {message}"
         );
+        // 文案必须给出可行动的两条线索(封禁 / 认证方式),并说明怎么办
+        assert!(message.contains("握手"), "{message}");
+        assert!(
+            message.contains("重启") || message.contains("等待"),
+            "应告诉用户如何清除封禁: {message}"
+        );
+        assert!(message.contains("密码"), "应提醒核对密码: {message}");
+    }
+
+    /// 库的通用句子必须翻成能行动的文案(不可重试,不外泄库的措辞)。
+    #[test]
+    fn an_unsupported_security_type_gets_an_actionable_message() {
+        let err = vnc::VncError::General(
+            "Security type apart from Vnc Auth has not been implemented".into(),
+        );
+        let (kind, message, retryable) = handshake_failure(&err);
+        assert_eq!(kind, "handshake");
+        assert!(!retryable, "安全类型不支持,重试无意义");
+        assert!(
+            message.contains("VNC") || message.contains("认证"),
+            "应包含可行动的指引: {message}"
+        );
+        assert!(!message.contains("has not been implemented"), "{message}");
+    }
+
+    /// 服务器数满失败次数后的原因串必须被翻译成「先等待」的指引,且不可重试。
+    #[test]
+    fn the_too_many_security_failures_reason_is_explained() {
+        let err = vnc::VncError::General("Too many security failures".into());
+        let (kind, message, retryable) = handshake_failure(&err);
+        assert_eq!(kind, "auth");
+        assert!(!retryable, "封禁期间重试只会延长封禁");
+        assert!(
+            message.contains("等待") || message.contains("封"),
+            "应给出「先等待」的指引: {message}"
+        );
+        assert!(!message.contains("Too many"), "不应把英文原话抛给用户: {message}");
+    }
+
+    /// 握手阶段最多自动重试一次:VNC 服务端把重复的失败握手计入封禁(#vnc-retry-cap)。
+    #[test]
+    fn handshake_stage_retries_at_most_once() {
+        assert!(auto_retry_allowed("handshake", true, 0));
+        assert!(!auto_retry_allowed("handshake", true, 1));
+        assert!(auto_retry_allowed("transport", true, 0));
+        assert!(auto_retry_allowed("transport", true, 2));
+        assert!(!auto_retry_allowed("transport", true, MAX_RECONNECT_ATTEMPTS));
+        assert!(!auto_retry_allowed("auth", false, 0));
+        assert!(!auto_retry_allowed("handshake", false, 0));
+    }
+
+    /// 请求的编码必须只含可证明正确的两种:加回 ZRLE/Tight 会让会话在握手后
+    /// 立刻失败(见 requested_encodings 的注释),这条护栏挡住这种回归。
+    #[test]
+    fn only_provably_decodable_encodings_are_requested() {
+        let encs = requested_encodings();
+        assert!(encs.contains(&VncEncoding::Raw), "必须有 Raw(兜底)");
+        for bad in [VncEncoding::Zrle, VncEncoding::Tight] {
+            assert!(!encs.contains(&bad), "{bad:?} 在 vnc-rs 0.6 下不可靠,不得请求");
+        }
+    }
+
+    /// 安全类型列表 → 结论:有 None 就当无需认证;只有 VncAuth 就是要密码。
+    #[test]
+    fn security_types_map_to_the_preflight_verdict() {
+        assert_eq!(classify_types(&[1]), AuthPreflight::NoAuthNeeded);
+        assert_eq!(classify_types(&[19, 2]), AuthPreflight::NeedsPassword);
+        assert_eq!(classify_types(&[2, 1]), AuthPreflight::NoAuthNeeded);
+        assert_eq!(classify_types(&[19, 18]), AuthPreflight::Unsupported);
     }
 }

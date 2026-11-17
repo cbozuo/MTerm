@@ -26,3 +26,7 @@ mod keysym;
 pub(crate) use config::{VncConnectConfig, VNC_DEFAULT_PORT};
 pub(crate) use framebuffer::VncFramebuffer;
 pub(crate) use keysym::keysym_for;
+
+// (#vnc-connect-probe 2026-11-17) 进程内最小 RFB 服务器:握手/认证/首帧的端到端探查。
+#[cfg(test)]
+mod rfb_mock_tests;
