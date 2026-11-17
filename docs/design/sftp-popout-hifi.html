@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" dark light>
-<title>MTerm · SFTP 弹出独立窗口 · 高保真 v8（2026-11-17）</title>
+<title>MTerm · SFTP 弹出独立窗口 · 高保真 v28（2026-11-17）</title>
 <style>
 /* ============================================================
    MTerm · SFTP 面板弹出独立窗口 · 高保真 v2
@@ -16,8 +16,44 @@
      三枚项目暂缺，稿内补绘并标注 —— 落地时需新增 svg。
    v2 新增：右键六场景（行/空白/树/列头/路径框/队列/标题栏）+
    复制粘贴剪贴板 · 隐藏文件开关 · 搜索过滤条 · 批量操作行 ·
-   导航加载条 · 自绘 tooltip · 拖拽行→树移动 · 键盘 Del/F2/Ctrl+A/C+F ·
+   导航加载条 · 自绘 tooltip · 拖拽行→树移动 · 键盘 Del/F2/Ctrl+A/Ctrl+F ·
    文件类型着色 · 排序列头高亮 · 最大化图标切换
+   v9 新增：面板常态 = 主窗底部停靠（.shell 外壳 + .sh-dock 底部槽，
+   #sftpCore 同一份 DOM 在底部停靠 ⇄ 独立窗口之间搬）· 底部状态栏
+   「弹出独立窗口」图标 · 右击不再产生勾选态 · 当前行只留阴影、
+   树上当前目录描边而祖先不再带底色。
+   v10 新增：列宽拖拽手感重做（9px 热区 · 悬停竖线贯穿列头 · 拖动
+   导引线贯穿表头+数据行 + 宽度读数胶囊 · 每列 min + 名称列保底
+   120px 的智能钳制 · Esc 取消 · 双击复位 · 键盘 ←/→ 微调）。
+   v11 新增：书签删除改为行尾内联（删除钮 hover 才现形 → 点击原位变
+   「确认」钮 → 3 秒 / 移出 / Esc 自动回退）；路径掐头留尾。
+   v12 新增：目录树收展钮移到工具栏最左缘（实机面板惯例：收展 affordance
+   占左缘、两态同位；按钮正压在它控制的目录树上方）· 图标与 tooltip
+   随两态换（sidebar-left-collapse ⇄ sidebar-left-expand）。
+   v13 新增：表头与数据行共用 S.colW 一个宽度真源（此前表头按内容自适应
+   + 名称列 flex:1 吸走富余宽度 → 两行错位、手柄抓不到列边界）；滚动条
+   改自绘 4px 细圆角浮层（实机 PanelScroll 同款，隐藏原生滚动条不占
+   布局宽）—— 见文末「v13 表头与数据行对齐」。
+   v14 新增：树上当前目录不再描圈（只图标染强调色 + 文字提亮；实机树本
+   就没有「当前目录描边」这种元素，截图里那圈是悬停/焦点环）。
+   v15 新增：树与文件列表不再整片置灰 —— 名称类文字提到主前景色（与路径
+   框同档）、图标提到次前景色（与工具栏图标同档）；列值色调按实机逐列
+   归位（只有「修改时间」是 muted，其余列值 secondary）。
+   v16 新增：停靠常态对齐实机布局（补树列头「目录树」22px/次级色/下边线）·
+   展开的目录一律「打开样式」（folder-open 图形 + 强调色，父目录链同样）·
+   列表里的目录走实机强调色（图标 + 目录名一起染 accent）。
+   v17 新增：文件按类型给不同图标（表驱动：正则 → 图标 + 颜色档；实机落地
+   无需加模型字段——SftpEntry 已有 file-type）。
+   v18 新增：类型图标按语义重画六枚（file-log 文档+三行 / file-code 文档+<> /
+   file-config 文档+{} / file-markdown M↓ / file-table 文档+网格 /
+   file-archive 包裹盒；已落 assets/icons/file-*.svg 六枚，注册留实现轮）· 判定
+   补可执行位（无扩展名但带 x = 程序）。
+   v19 新增：树的亮起 = 当前路径链（当前目录 + 各级父目录亮，不在链上的
+   兄弟目录不亮）· 展开态跟随当前路径（切目录时旧目录自动收起、图标换回
+   未打开）—— 展开与否只由图形表达。
+   v20 新增：类型规则表改按「族」（一族一枚图形，扩展名清单是数据）；补图片/
+   媒体/密钥/字体四族与 .gz 等单扩展名压缩；语义校对订正三处（txt 不再蹭
+   M↓、二进制改齿轮、压缩补 .gz）；新增 assets/icons/file-font.svg。
    ============================================================ */
 
 :root{
@@ -149,50 +185,38 @@ svg.ico{width:16px;height:16px;flex:none;display:block}
 }
 .stage .stage-cap b{color:var(--doc-t2)}
 
-/* dock 态预览 */
-.dock-demo{
-  position:absolute;left:28px;top:44px;width:400px;bottom:44px;z-index:2;
+/* ── v9：主窗外壳 —— SFTP 面板常态 = 主窗底部停靠 ── */
+.shell{
+  position:absolute;left:28px;right:28px;top:44px;bottom:44px;z-index:2;
   border-radius:var(--r-lg);border:1px solid var(--doc-line2);background:var(--slot-root);
   overflow:hidden;box-shadow:0 18px 50px -18px rgba(0,0,0,.5);
-  transition:opacity .32s var(--ease),transform .32s var(--ease);
+  display:flex;flex-direction:column;
 }
-.dock-demo.hidden{opacity:0;transform:translateY(18px) scale(.97);pointer-events:none}
-.dd-titlebar{height:34px;display:flex;align-items:center;gap:8px;padding:0 12px;background:var(--slot-panel);border-bottom:1px solid var(--hairline-lo)}
-.dd-titlebar .logo{width:16px;height:16px;border-radius:4px;background:var(--slot-act);display:flex;align-items:center;justify-content:center;color:var(--slot-t1)}
-.dd-titlebar .t{font-size:12px;color:var(--slot-t2)}
-.dd-tabs{height:30px;display:flex;align-items:center;gap:6px;padding:0 10px;background:var(--slot-panel);border-bottom:1px solid var(--hairline-lo)}
+.sh-titlebar{height:34px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px;background:var(--slot-panel);border-bottom:1px solid var(--hairline-lo)}
+.sh-titlebar .logo{width:16px;height:16px;border-radius:4px;background:var(--slot-act);display:flex;align-items:center;justify-content:center;color:var(--slot-t1)}
+.sh-titlebar .t{font-size:12px;color:var(--slot-t2)}
+.sh-titlebar .grow{flex:1}
+.sh-wbtn{width:22px;height:22px;border-radius:var(--r-sm);display:flex;align-items:center;justify-content:center;color:var(--slot-t3)}
+.sh-wbtn.close:hover{background:var(--danger-soft);color:var(--danger-ink)}
+.sh-tabs{height:30px;flex:none;display:flex;align-items:center;gap:6px;padding:0 10px;background:var(--slot-panel);border-bottom:1px solid var(--hairline-lo)}
 .dd-tab{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--slot-t2);padding:3px 10px;border-radius:var(--r-sm)}
 .dd-tab.active{background:var(--slot-act);color:var(--slot-t1)}
-.dd-term{position:absolute;left:0;right:0;top:66px;bottom:0;background:var(--slot-root);
-  padding:10px 12px;font-family:var(--ff-mono);font-size:11px;line-height:1.7;color:var(--slot-tfg,#BCBEC4);overflow:hidden}
-html[data-theme="dark"] .dd-term{color:#BCBEC4}
-html[data-theme="light"] .dd-term{color:#2B3036}
-.dd-term .dim{color:var(--slot-t3)}
-.dd-term .gr{color:var(--slot-ok)}
-.dd-sftp-dock{
-  position:absolute;right:0;bottom:0;left:0;height:170px;border-top:1px solid var(--hairline-lo);
-  background:var(--zone-sidebar);display:flex;flex-direction:column;
-  transition:opacity .3s var(--ease),transform .3s var(--ease);
+.sh-term{flex:1;min-height:0;background:var(--slot-root);
+  padding:12px 14px;font-family:var(--ff-mono);font-size:11px;line-height:1.7;color:#BCBEC4;overflow:hidden}
+html[data-theme="light"] .sh-term{color:#2B3036}
+.sh-term .dim{color:var(--slot-t3)}
+.sh-term .gr{color:var(--slot-ok)}
+/* 底部停靠槽：面板常态所在，上沿一条拖拽带调高度 */
+.sh-dock{
+  position:relative;flex:none;height:330px;display:flex;flex-direction:column;
+  border-top:1px solid var(--hairline-lo);background:var(--zone-sidebar);
 }
-.dd-sftp-dock.undocked{opacity:0;transform:translateY(60%);pointer-events:none}
-.dd-sftp-bar{height:34px;display:flex;align-items:center;gap:8px;padding:0 10px;flex:none}
-.dd-sftp-bar .seg{display:flex;background:var(--slot-elev);border:1px solid var(--slot-line);border-radius:var(--r-sm);padding:2px}
-.dd-sftp-bar .seg span{font-size:11px;padding:2px 10px;border-radius:3px;color:var(--slot-t2)}
-.dd-sftp-bar .seg span.on{background:var(--slot-ac);color:#fff}
-.dd-sftp-path{flex:1;height:22px;border:1px solid var(--border-control);border-radius:var(--r-sm);background:var(--field);
-  font-family:var(--ff-mono);font-size:11px;color:var(--slot-t2);display:flex;align-items:center;padding:0 8px;overflow:hidden;white-space:nowrap}
-.dd-sftp-mini{flex:1;display:flex;color:var(--slot-t3);font-size:11px}
-.dd-sftp-mini .row{display:flex;align-items:center;gap:6px;height:24px;padding:0 12px}
-.dd-popout-btn{
-  position:absolute;right:10px;top:42px;z-index:3;display:flex;align-items:center;gap:7px;
-  border:none;border-radius:var(--r-md);background:var(--slot-ac);color:var(--on-solid);
-  padding:6px 12px;font:inherit;font-size:12px;font-weight:700;cursor:pointer;
-  box-shadow:0 4px 14px -4px rgba(0,0,0,.4);
-  transition:background .15s,transform .15s;
-}
-.dd-popout-btn:hover{background:var(--accent-hover)}
-.dd-popout-btn:active{transform:scale(.96)}
-html[data-theme="dark"] .dd-popout-btn{color:#fff}
+.dock-grip{position:absolute;left:0;right:0;top:-3px;height:6px;z-index:5;cursor:ns-resize}
+.dock-grip:hover{background:var(--accent-line);opacity:.35}
+.dock-empty{flex:1;display:none;align-items:center;justify-content:center;gap:10px;color:var(--slot-t3);font-size:12px}
+.dock-empty .ico{width:16px;height:16px;color:var(--slot-t2)}
+.sh-dock.empty .dock-empty{display:flex}
+.sh-dock.empty .sftp-core{display:none}
 .dock-hint{
   position:absolute;left:28px;bottom:16px;z-index:4;font-size:11.5px;color:var(--doc-t3);
   display:flex;align-items:center;gap:6px;
@@ -209,6 +233,8 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 .sftp-win.popped-in{opacity:0;transform:translateY(26px) scale(.96);pointer-events:none}
 .sftp-win.dragging{transition:none;cursor:grabbing}
 .sftp-win .resize-grip{position:absolute;right:2px;bottom:2px;width:14px;height:14px;cursor:se-resize;z-index:30;color:var(--slot-lstr)}
+/* v9：面板本体（同一份 DOM）在「主窗底部停靠」与「独立窗口」之间搬来搬去 */
+.sftp-core{flex:1;display:flex;flex-direction:column;min-height:0;position:relative}
 
 /* 标题栏 */
 .win-titlebar{
@@ -316,17 +342,39 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
   box-shadow:inset -1px 0 0 var(--hairline-hi);
 }
 .tree-scroll{flex:1;overflow-y:auto;overflow-x:hidden;padding:6px 0}
+/* v16：树列头 —— 对齐实机（ui/sftp_panel.slint:842-856）：22px 高、zone-sidebar-root 底、
+   次级色 11px 的「目录树」小标题 + 1px 下边线 */
+.tree-head{
+  height:22px;flex:none;display:flex;align-items:center;padding-left:8px;
+  background:var(--zone-sidebar);color:var(--slot-t2);font-size:11px;
+  border-bottom:1px solid var(--hairline-lo);
+}
+/* v13：滚动条 —— 对齐实机 PanelScroll（ui/widgets.slint:984）：
+   自绘 4px 细圆角、浮在内容上、**不占布局宽**。原生滚动条要占 15px，
+   于是表头比数据行宽 15px → 两行错位、手柄也够不着列边界。 */
+.scroll-thin{scrollbar-width:none}
+.scroll-thin::-webkit-scrollbar{width:0;height:0}
+.sb{position:absolute;right:0;width:14px;z-index:6;pointer-events:none;opacity:0;transition:opacity .16s}
+.sb.show{opacity:1}
+.sb i{position:absolute;right:5px;top:0;width:4px;border-radius:2px;background:var(--slot-lstr);will-change:transform}
+.sb:hover i{background:var(--slot-t2)}
+/* v15：树里的字体与图标不再置灰 —— 文字提到主前景色（与路径框同档），
+   图标提到次前景色（与工具栏图标同档）；置灰只留给「列值」这类次要信息。 */
 .tree-row{
   display:flex;align-items:center;gap:5px;height:26px;padding-right:8px;cursor:pointer;
-  color:var(--slot-t2);font-size:12.5px;white-space:nowrap;position:relative;
+  color:var(--slot-t1);font-size:12.5px;white-space:nowrap;position:relative;
 }
 .tree-row:hover{background:var(--hover-row)}
-.tree-row.current{background:var(--accent-soft);color:var(--slot-t1)}
+/* v14：当前目录不再描圈 —— 只用图标染强调色区分；祖先目录同样不带底色 */
+.tree-row.current{background:none;color:var(--slot-t1)}
 .tree-row.drag-over{background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent-line)}
 .tree-row .tw{width:14px;flex:none;display:flex;align-items:center;justify-content:center;color:var(--slot-t3)}
 .tree-row .tw svg.ico{width:10px;height:10px}
-.tree-row .ico{width:14px;height:14px;color:var(--slot-t3)}
-.tree-row.current .ico{color:var(--slot-ac)}
+/* v18/v19：亮起（强调色）只跟**当前路径链**走 —— 当前目录 + 各级父目录亮，
+   只是展开、但不在链上的兄弟目录不亮（否则切目录后它会一直亮着）；
+   展开与否只由图形（folder ⇄ folder-open）表达。 */
+.tree-row .ico{width:14px;height:14px;color:var(--slot-t2)}
+.tree-row.on-path .ico{color:var(--slot-ac)}
 .tree-row .label{overflow:hidden;text-overflow:ellipsis}
 .tree-row .n{position:relative;display:flex}
 .tree-divider{width:5px;flex:none;cursor:col-resize;position:absolute;top:0;bottom:0;right:-3px;z-index:4}
@@ -349,20 +397,48 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
   background:var(--slot-palt);box-shadow:var(--elev-2);
   font-size:11.5px;color:var(--slot-t3);user-select:none;
 }
-.lh-cell{display:flex;align-items:center;gap:4px;height:100%;padding:0 8px;cursor:pointer;position:relative;white-space:nowrap}
+/* v13：列宽的唯一真源 = S.colW —— 标题行与数据行同宽同起点。
+   （此前标题行按内容自适应、名称列又 flex:1 吸走富余宽度 → 两行错位，
+   手柄也停在「内容边缘」而非看得见的列边界上 → 抓不到、拖不动。） */
+.lh-cell{display:flex;align-items:center;gap:4px;height:100%;padding:0 8px;cursor:pointer;position:relative;white-space:nowrap;flex:none}
 .lh-cell:hover{background:var(--hover-row);color:var(--slot-t2)}
 .lh-cell.drop-l{box-shadow:inset 2px 0 0 var(--slot-ac)}
 .lh-cell.drop-r{box-shadow:inset -2px 0 0 var(--slot-ac)}
 .lh-cell[draggable="true"]{cursor:grab}
 .lh-cell[draggable="true"]:active{cursor:grabbing}
-/* 列宽拖拽手柄（列头右缘 6px 热区，v3） */
+/* ── v10：列宽拖拽手感 ──
+   热区 9px 压在列边界上；hover 出一条贯穿列头整高的 accent 竖线；
+   拖动中额外出一条贯穿「表头 + 全部数据行」的导引线 + 宽度读数气泡。 */
 .lh-resizer{
-  position:absolute;right:-3px;top:0;bottom:0;width:6px;cursor:col-resize;z-index:2;
+  position:absolute;right:-4px;top:0;bottom:0;width:9px;cursor:col-resize;z-index:3;
+  touch-action:none;outline:none;
 }
 .lh-resizer::after{
-  content:"";position:absolute;right:2.5px;top:4px;bottom:4px;width:1px;background:transparent;transition:background .15s;
+  content:"";position:absolute;right:4px;top:0;bottom:0;width:1px;background:transparent;
+  transition:background .12s;
 }
-.lh-resizer:hover::after,.lh-resizer.dragging::after{background:var(--slot-ac)}
+.lh-resizer:hover::after{background:var(--accent-line)}
+.lh-resizer.dragging::after{background:var(--slot-ac)}
+.lh-resizer:focus-visible::after{background:var(--slot-ac)}
+/* 拖动中的导引线（独立 overlay，不随列头重渲染消失） */
+.col-guide{
+  position:absolute;top:0;width:1px;background:var(--slot-ac);z-index:8;
+  pointer-events:none;opacity:0;transition:opacity .12s;
+}
+.col-guide.on{opacity:1}
+.col-guide .rd{
+  position:absolute;top:3px;left:7px;padding:1px 6px;border-radius:var(--r-sm);
+  background:var(--slot-elev);border:1px solid var(--slot-line);color:var(--slot-t1);
+  font:11px/16px var(--ff-mono);white-space:nowrap;box-shadow:0 6px 16px -8px rgba(0,0,0,.7);
+}
+.col-guide.flip .rd{left:auto;right:7px}
+/* 拖动中：全窗口 col-resize 光标 + 禁选 */
+body.col-resizing,body.col-resizing *{cursor:col-resize !important;user-select:none !important}
+/* 名称列保底宽度：拉宽别的列时不能把名称挤没 */
+.lh-cell.f-name{flex:1 1 0;min-width:120px}
+.f-cell.f-name{flex:1 1 0;min-width:120px}
+/* 列内对齐与数据行一致（大小列右对齐） */
+.lh-cell.f-size{justify-content:flex-end}
 .lh-cell .dir{display:none;color:var(--slot-ac)}
 .lh-cell.sorted{background:var(--accent-tonal);color:var(--slot-t1)}
 .lh-cell.sorted .dir{display:flex}
@@ -388,36 +464,56 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 .filter-bar .cnt{font-size:11px;color:var(--slot-t3);white-space:nowrap}
 .list-scroll{flex:1;overflow-y:auto;overflow-x:hidden;position:relative}
 .f-row{
-  display:flex;align-items:center;height:28px;font-size:12.5px;color:var(--slot-t2);
+  display:flex;align-items:center;height:28px;font-size:12.5px;color:var(--slot-t1);
   cursor:pointer;position:relative;white-space:nowrap;
 }
 .f-row:hover{background:var(--hover-row)}
 .f-row.checked{background:var(--accent-tonal)}
-/* v5：当前行（selected）与已勾选（checked）视觉分离——勾选用复选框图标，当前行用底色 + 左指示条 */
-.f-row.selected{background:var(--accent-soft);color:var(--slot-t1);box-shadow:inset 2px 0 0 var(--slot-ac)}
+/* v9：当前行只留阴影（左侧强调条），不再叠一层底色 —— 底色留给「勾选」语义 */
+.f-row.selected{background:none;color:var(--slot-t1);box-shadow:inset 2px 0 0 var(--slot-ac)}
 .f-row.hidden-file .fname{color:var(--slot-t3)}
 .f-row.dragging{opacity:.45}
 .f-cell{display:flex;align-items:center;gap:6px;padding:0 8px;overflow:hidden}
 .f-cell .label{overflow:hidden;text-overflow:ellipsis}
 .f-check{width:32px;flex:none;display:flex;align-items:center;justify-content:center}
-.f-ico{width:16px;flex:none;display:flex;align-items:center;justify-content:center;color:var(--slot-t3)}
+/* v15：文件行的字体与图标也不再置灰 —— 名称提到主前景色（与路径框同档），
+   图标提到次前景色（与工具栏图标同档）；列值（大小/时间/权限…）保持次要灰。 */
+.f-ico{width:16px;flex:none;display:flex;align-items:center;justify-content:center;color:var(--slot-t2)}
 .f-ico svg.ico{width:14px;height:14px}
 /* 文件类型着色（MTerm 语义色四档，克制） */
 .f-ico.t-script{color:var(--slot-wr)}
 .f-ico.t-config{color:var(--slot-ac)}
 .f-ico.t-doc{color:var(--slot-t2)}
 .f-ico.t-hidden{color:var(--slot-t3);opacity:.6}
+/* v16：目录 = 实机同款强调色（图标 + 名称一起染色） */
+.f-ico.t-dir{color:var(--slot-ac)}
+.f-cell.f-name.t-dir .label{color:var(--slot-ac)}
+/* v17：按类型的图标配色（克制：语义四档 + 通用文件档） */
+.f-ico.t-log{color:var(--slot-ok)}
+.f-ico.t-table{color:var(--slot-t2)}
+.f-ico.t-archive{color:var(--slot-t2)}
+.f-ico.t-link{color:var(--slot-t2)}
+/* v20：图片 / 媒体 / 密钥三族 */
+.f-ico.t-image{color:var(--slot-t2)}
+.f-ico.t-media{color:var(--slot-t2)}
+.f-ico.t-key{color:var(--slot-t2)}
+.f-ico.t-data{color:var(--slot-t2)}
+/* v21：二进制（齿轮）/ 字体（A 字形）—— 形状已能区分，颜色保持次级 */
+.f-ico.t-binary{color:var(--slot-t2)}
+.f-ico.t-font{color:var(--slot-t2)}
 .f-name{flex:1;min-width:140px}
 .f-name .label{color:inherit}
 .f-row.selected .f-ico{color:var(--slot-ac)}
-.f-type{width:72px;flex:none;color:var(--slot-t3);font-size:11.5px}
+/* v15：列值色调对齐实机（ui/sftp_panel.slint:1256-1278）——
+   只有「修改时间」是 muted，其余列值（类型/大小/权限/属主/组）都是 secondary */
+.f-type{width:72px;flex:none;color:var(--slot-t2);font-size:11.5px}
 .f-size{width:76px;flex:none;justify-content:flex-end;font-family:var(--ff-mono);font-size:11.5px}
-.f-size .label{color:var(--slot-t3)}
-.f-row.selected .f-size .label{color:var(--slot-t2)}
+.f-size .label{color:var(--slot-t2)}
+.f-row.selected .f-size .label{color:var(--slot-t1)}
 .f-time{width:120px;flex:none;font-family:var(--ff-mono);font-size:11.5px;color:var(--slot-t3)}
-.f-perm{width:104px;flex:none;font-family:var(--ff-mono);font-size:11.5px;color:var(--slot-t3)}
-.f-owner{width:84px;flex:none;color:var(--slot-t3)}
-.f-group{width:66px;flex:none;color:var(--slot-t3)}
+.f-perm{width:104px;flex:none;font-family:var(--ff-mono);font-size:11.5px;color:var(--slot-t2)}
+.f-owner{width:84px;flex:none;color:var(--slot-t2)}
+.f-group{width:66px;flex:none;color:var(--slot-t2)}
 .f-more{width:30px;flex:none;display:flex;align-items:center;justify-content:center;color:var(--slot-t3);opacity:0;transition:opacity .12s;cursor:pointer}
 .f-row:hover .f-more,.f-more:focus-visible{opacity:1}
 .f-more:hover{color:var(--slot-t1);background:var(--hover-row)}
@@ -464,7 +560,40 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 .sftp-status .mono{font-size:11px}
 .sftp-status .grow{flex:1}
 .sftp-status .up i{color:var(--slot-ok);font-style:normal}
-.sftp-status .down i{color:var(--slot-ac);font-style:normal}
+/* v21：状态栏右下角 = 传输状态区（一块聚合：项数 + 双向聚合速率）
+   —— 多传输时不摆两条裸速度（谁在传、传几个都看不出来），而是：
+   ⇅ 3 项 · ↑ 1.2 MB/s · ↓ 480 KB/s；点击开队列抽屉，悬浮逐条列明细。 */
+.sftp-status .st-xfer{
+  position:relative;flex:none;display:flex;align-items:center;gap:7px;height:20px;padding:0 8px;
+  border-radius:var(--r-sm);cursor:pointer;color:var(--slot-t3);transition:background .12s,color .12s;
+}
+.sftp-status .st-xfer:hover{background:var(--hover-row);color:var(--slot-t1)}
+.sftp-status .st-xfer .ico{width:13px;height:13px}
+.sftp-status .st-xfer.idle{opacity:.55}
+.sftp-status .st-xfer .cnt{font-size:11px;color:var(--slot-t2)}
+.sftp-status .st-xfer .spd{font-family:var(--ff-mono);font-size:11px}
+.sftp-status .st-xfer .spd.up{color:var(--slot-ok)}
+.sftp-status .st-xfer .spd.down{color:var(--slot-ac)}
+/* 悬浮逐条明细（多传输时不开抽屉也知道在传什么） */
+.xfer-pop{
+  position:absolute;right:0;bottom:24px;min-width:250px;max-width:320px;z-index:60;display:none;
+  padding:6px;border-radius:var(--r-md);background:var(--popup-bg-elev);border:1px solid var(--slot-line);
+  box-shadow:var(--menu-shadow);
+}
+.st-xfer:hover .xfer-pop{display:block}
+.xfer-pop .xp-title{font-size:10.5px;color:var(--slot-t3);padding:2px 6px 5px}
+.xfer-pop .xp-row{display:flex;align-items:center;gap:7px;padding:4px 6px;border-radius:var(--r-sm);font-size:11px;color:var(--slot-t1)}
+.xfer-pop .xp-row:hover{background:var(--hover-row)}
+.xfer-pop .xp-row .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.xfer-pop .xp-row .pct{font-family:var(--ff-mono);font-size:10.5px;color:var(--slot-t2)}
+.xfer-pop .xp-row .ico{width:12px;height:12px;flex:none}
+.xfer-pop .xp-row.up .ico{color:var(--slot-ok)}
+.xfer-pop .xp-row.dl .ico{color:var(--slot-ac)}
+.xfer-pop .xp-empty{padding:8px 10px;font-size:11px;color:var(--slot-t3)}
+.xfer-pop .xp-more{padding:4px 6px;font-size:10.5px;color:var(--slot-t3)}
+
+/* v21：独立窗口形态下，工具栏的「弹出为独立窗口」隐藏（标题栏已有「停靠回主窗面板」） */
+.sftp-core.in-window #popOutBtn{display:none}
 
 /* 传输队列 */
 .queue{
@@ -523,6 +652,29 @@ html[data-theme="dark"] .dd-popout-btn{color:#fff}
 .ctx-item.disabled{color:var(--slot-t3);cursor:default;pointer-events:none;opacity:.75}
 .ctx-item .ico{width:14px;height:14px;color:inherit;opacity:.85}
 .ctx-item .ks{margin-left:auto;font-size:10.5px;color:var(--slot-t3);font-family:var(--ff-mono);padding-left:14px}
+/* ── v11：书签行 —— 删除钮停在行尾（hover 才现形），点击后原位变「确认」钮 ──
+   删除钮用 opacity 而非 display:none：占位恒在 → hover 时路径不跳位。 */
+.bm-row{gap:7px}
+/* 路径省略改成「掐头留尾」：头部一段可省略，末段目录名永远完整 */
+.bm-path{flex:1;min-width:0;display:flex;overflow:hidden;white-space:nowrap;
+  font-family:var(--ff-mono);font-size:11px}
+.bm-head{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.bm-tail{flex:none}
+.bm-del{
+  flex:none;width:20px;height:20px;display:flex;align-items:center;justify-content:center;
+  border-radius:var(--r-sm);color:var(--slot-t3);cursor:pointer;
+  opacity:0;transition:opacity .12s,background .12s,color .12s;
+}
+.bm-row:hover .bm-del{opacity:1}
+.bm-del:hover{background:var(--danger-soft);color:var(--danger-ink)}
+.bm-del .ico{width:13px;height:13px}
+.bm-row.confirming{color:var(--danger-ink)}
+.bm-row.confirming .bm-path{color:var(--danger-ink)}
+.bm-del.confirm{
+  opacity:1;width:auto;padding:0 8px;gap:3px;font-size:11px;font-weight:600;
+  background:var(--slot-dg);color:#fff;box-shadow:0 2px 8px -3px rgba(0,0,0,.6);
+}
+.bm-del.confirm:hover{background:var(--slot-dg);color:#fff;filter:brightness(1.08)}
 .ctx-sep{height:1px;background:var(--slot-line);margin:4px 6px}
 .ctx-sub-arrow{margin-left:auto;color:var(--slot-t3)}
 .ctx-title{font-size:10.5px;color:var(--slot-t3);padding:2px 8px 4px}
@@ -690,8 +842,9 @@ html[data-theme="dark"] .btn.primary{color:#fff}
 /* v4：列表行可聚焦（键盘 / 读屏可达；role=option + aria-selected） */
 .f-row[role="option"]{outline:none}
 .f-row:focus-visible{outline:2px solid var(--accent-line);outline-offset:-2px;background:var(--accent-tonal)}
-.f-row[aria-selected="true"]{background:var(--accent-soft);color:var(--slot-t1)}
-.f-row[aria-selected="true"]:focus-visible{background:var(--accent-soft)}
+/* v9：当前行（aria-selected）同样只留阴影，不叠底色 —— 底色只归「勾选」语义 */
+.f-row[aria-selected="true"]{background:none;color:var(--slot-t1)}
+.f-row[aria-selected="true"]:focus-visible{background:none}
 
 /* v4：减少动效 —— 对齐实机 ui/panel_anim.slint PanelAnim.reduced（dur() 返回 0ms） */
 @media (prefers-reduced-motion: reduce){
@@ -716,6 +869,15 @@ html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-mo
     <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></symbol>
     <symbol id="i-folder-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></symbol>
     <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></symbol>
+    <symbol id="i-file-log" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h6"/><path d="M8 16.5h4"/><path d="M8 20h5"/></symbol>
+    <symbol id="i-file-code" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M10 12l-2 3 2 3"/><path d="M14 12l2 3-2 3"/></symbol>
+    <symbol id="i-file-data" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+    <symbol id="i-file-markdown" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 15V9l3 3 3-3v6"/><path d="M16 9v6"/><path d="M14 13l2 2 2-2"/></symbol>
+    <symbol id="i-file-table" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 12h8"/><path d="M8 16h8"/><path d="M12 11v9"/></symbol>
+    <symbol id="i-file-archive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 4.3 9 5.1"/><path d="M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></symbol>
+    <symbol id="i-file-image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-4.5-4.5a2 2 0 0 0-2.83 0L6 21"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+    <symbol id="i-file-font" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 21 12 3l8.8 18"/><path d="M7 15h10"/></symbol>
     <symbol id="i-new-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><path d="M12 9.5v7M8.5 13h7"/></symbol>
     <symbol id="i-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6"/><path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L13 14l-4 1 1-4 8.4-8.4z"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="m6 7 1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></symbol>
@@ -730,8 +892,8 @@ html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-mo
     <symbol id="i-arrow-l" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12H3m0 0 8-8m-8 8 8 8"/></symbol>
     <symbol id="i-arrow-r" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18m0 0-8-8m8 8-8 8"/></symbol>
     <symbol id="i-arrow-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V3m0 0-8 8m8-8 8 8"/></symbol>
-    <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v14m0 0-5-5m5 5 5-5M5 21h14"/></symbol>
-    <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V7m0 0-5 5m5-5 5 5M5 3h14"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v14m0 0-5-5m5 5 5-5M3 21h18"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V7m0 0-5 5m5-5 5 5M3 3h18"/></symbol>
     <symbol id="i-transfer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v11m-3.5-7L8 3l3.5 4M16 21V10m-3.5 7 3.5 4 3.5-4"/></symbol>
     <symbol id="i-swap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 3 4 4-4 4M12 7H4m12 14-4-4 4-4M12 17h8"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
@@ -747,6 +909,7 @@ html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-mo
     <symbol id="i-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.73 5.08A10.74 10.74 0 0 1 21.94 11.65a1 1 0 0 1 0 .7 10.75 10.75 0 0 1-1.44 2.49M14.08 14.16a3 3 0 0 1-4.24-4.24M17.48 17.5a10.75 10.75 0 0 1-15.42-5.15 1 1 0 0 1 0-.7 10.75 10.75 0 0 1 4.45-5.14M2 2l20 20"/></symbol>
     <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
     <symbol id="i-collapse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m14 15 3-3-3-3"/></symbol>
     <symbol id="i-select-all" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="4 3"/><rect x="8" y="8" width="8" height="8" rx="1" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-retry" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 2.6-6.4"/><path d="M3 4v5h5"/></symbol>
     <symbol id="i-grip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="1.4" fill="currentColor" stroke="none"/><circle cx="16" cy="6" r="1.4" fill="currentColor" stroke="none"/><circle cx="8" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="16" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="8" cy="18" r="1.4" fill="currentColor" stroke="none"/><circle cx="16" cy="18" r="1.4" fill="currentColor" stroke="none"/></symbol>
@@ -758,10 +921,9 @@ html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-mo
     <!-- ↓ 项目暂缺，稿内补绘（落地需新增 pause.svg / play.svg / window-min.svg） -->
     <symbol id="i-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5v14M15 5v14"/></symbol>
     <symbol id="i-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m9.5 8.5 6 3.5-6 3.5z" fill="currentColor" stroke="none"/></symbol>
-    <symbol id="i-minus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></symbol>
     <!-- ▼ v5：以下为项目 assets/icons/*.svg 原件（落地只需在 ui/icons.slint 注册） -->
-    <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6z"/><path d="m9 12 2 2 4-4"/></symbol>
-    <symbol id="i-shield-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4.5-3 7.6-7 9-4-1.4-7-4.5-7-9V6z"/><path d="M12 8v4"/><circle cx="12" cy="15.5" r="1.2" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 3v6c0 4.5-3 7.6-9 9-9-1.4-9-4.5-9-9V6z"/><path d="m8.5 12 2.5 2.5 4.5-4.5"/></symbol>
+    <symbol id="i-shield-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 3v6c0 4.5-3 7.6-9 9-9-1.4-9-4.5-9-9V6z"/><path d="M12 7.5v4.5"/><circle cx="12" cy="15.5" r="1.25" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-more-vert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.7" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-paste" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></symbol>
     <symbol id="i-tune" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M2 14h5M9 8h6M17 16h5"/></symbol>
@@ -774,12 +936,30 @@ html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-mo
 <div class="page">
   <div class="page-head">
     <div class="grow">
-      <h1>SFTP 面板 · 弹出独立窗口 <span class="tag">高保真 v8 · 可交互</span></h1>
+      <h1>SFTP 面板 · 弹出独立窗口 <span class="tag">高保真 v28 · 可交互</span></h1>
       <div class="sub">v3 新增：压缩 zip · 上传下拉 · 外部编辑监视 · 键盘导航(↑↓/Enter/Backspace) · 路径历史下拉 · 目录书签 · 拖到主窗=下载 · 空态按钮 · 骨架屏 —— 全部可试</div>
       <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v5 新增（本轮）：</b>图标语义归位到项目 assets/icons（权限=shield · 更多=more-vert · 粘贴=paste · 删除=delete · 复选框三态=checkbox/blank/indeterminate）· 列头与行项对齐（补 16px 图标占位）· 右击=选中 · Shift 范围勾选 · 菜单 ↑↓/Enter 键盘导航 · 行尾 more-vert 按钮 —— 见文末「v5 图标与选择语义」</div>
       <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v6 新增（本轮）：</b>上传同名冲突弹框（预检 → 冲突清单 → 批量默认「跳过/覆盖」+ 逐项覆盖 → 确认后上传）· 上传不再静默覆盖 —— 见文末「v6 上传同名冲突」</div>
       <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v7 新增（本轮）：</b>拖到弹框外松手 = 直接下载（站内拖出演示 + 落地 DoDragDrop）· 下载目录可选可设（预设目录 / 自定义路径 / 每次询问）· 本地同名文件三选一（替换 / 保留两份 / 取消）—— 见文末「v7 拖出下载与下载目录」</div>
       <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v8 新增（本轮）：</b>全部弹框换成项目 ConfirmDialog 同款视觉与骨架（标题行 / 正文 / 详情块 / 右对齐页脚，<b>无 X 关闭键</b>，关闭走取消键或遮罩）· 上传图标按 upload.svg 原文纠正（箭头朝上）· 补 unpin 并修正 maximize / restore —— 见文末「v8 弹框同款化」</div>
+      <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v28 新增（本轮）：</b><b>配置族拆成「设置」与「数据」两族</b>（齿轮留给 conf/ini/properties/service… 这些真·设置文件；yml/json/toml/xml/env 改用<b>清单记号</b> file-data —— 键值清单而不是设置，齿轮张冠李戴）—— 见文末「v28 配置族拆分」</div>
+      <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v27 新增（本轮）：</b><b>新图标族按「同族基准」校尺寸</b>（浏览器 getBBox 实测：文档族贴 <code>file.svg</code> 16×20、独立形贴齿轮/文A 那一档 18–20；库内平均 21×20.5 会被撑满盒的图标拉高，按平均值校会把文档类画胖；唯一实测偏小的字体「A」已放大到 17.6×18）—— 见文末「v22 / v26 配置图标定稿」</div>
+      <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v26 新增（本轮）：</b><b>配置图标定稿为齿轮</b>（连试「文档+花括号 / 方框+滑杆 / 独立大括号」三版后落到齿轮：闭合轮廓、纯几何、14px 也锐利，与家族同量级；项目现成 assets/settings.svg，零新增资产；无扩展名的可执行文件落回通用文件图标）—— 见文末「v22 / v26 配置图标定稿」</div>
+      <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v23 新增（本轮）：</b><b>目录树收展钮不再染强调色</b>（树在不在场上一目了然，按钮只管切换：图形 collapse⇄expand + tooltip 跟随；顺带修掉原代码「树藏起来才上色」的反向逻辑）—— 见文末「v23 树收展钮不再上色」</div>
+      <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v22 新增（本轮）：</b><b>配置图标 file-config 重做</b>（原「文档 + 花括号」在 24px 网格里糊成两团 → 改为<b>方框 + 两根滑杆</b>：纯几何、14px 也立得住，且与日志（文档+横线）区分得开）—— 见文末「v22 配置图标重做」</div>
+      <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v21 新增（本轮）：</b><b>传输队列与弹出独立窗口两枚对调</b>（队列下沉到状态栏右下角、弹出钮回工具栏右端）· <b>右下角升级为一块传输状态</b>（⇅ N 项 · 双向各自聚合速率；空闲淡出不摆 0 B/s；悬浮逐条清单；点它开队列抽屉）—— 见文末「v21 两个图标归位 + 多传输怎么显示」</div>
+      <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v20 新增（本轮）：</b><b>类型规则表改按「族」</b>（一族一枚图形，扩展名清单只是数据；程序族含 java/php/go/rs…，配置族含 conf/.gitignore/.service…，另补图片/媒体/密钥/字体四族）· <b>语义校对订正三处</b>（.txt 不再蹭 M↓ · 二进制改用齿轮 · 补 .gz 等单扩展名压缩）· 新增 file-font（A 字形）—— 见文末「v20 类型覆盖与语义校对」</div>
+      <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v19 新增（本轮）：</b><b>树的亮起 = 当前路径链</b>（当前目录 + 各级父目录一起亮，才看得出当前在链的哪一截；不在链上的兄弟目录不亮）· <b>展开态跟随当前路径</b>（切目录时上一次留在别处的兄弟目录自动收起、图标换回未打开；展开与否只由图形表达）—— 见文末「v19 树的亮起 = 当前路径链」</div>
+      <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v18 新增（本轮）：</b><b>类型图标按语义重画六枚</b>（file-log 文档+三行 · file-code 文档+&lt;&gt; · file-config 文档+{} · file-markdown M↓ · file-table 文档+网格 · file-archive 包裹盒；v17 那批是拿现成资产凑的，对不上）· 判定补可执行位 · <b>树的亮起只跟当前目录</b>（展开只换图形不换色）—— 见文末「v18 类型图标重画」</div>
+      <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v17 新增（本轮）：</b><b>文件按类型给不同图标</b>（表驱动：扩展名正则 → 图标 + 颜色档；日志=log-file 绿 · 脚本=terminal 黄 · 配置=tune teal · 文档=notebook · 表格=table-rows · 压缩包=layers · 链接=link · 其余=file；图标全取项目 assets 原件，实机落地用 SftpEntry 已有的 file-type 即可，不必加模型字段）—— 见文末「v17 文件按类型给不同图标」</div>
+      <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v16 新增（本轮）：</b><b>停靠常态对齐实机</b>（补树列头「目录树」· 面板仍是主窗底部整条停靠，弹出独立窗口是它的另一种形态）· <b>展开的目录一律「打开样式」</b>（folder-open 图形 + 强调色，父目录链同样）· <b>列表里的目录走实机强调色</b>（图标 + 目录名一起染 accent）—— 见文末「v16 停靠态对齐实机」</div>
+      <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v15 新增（本轮）：</b><b>树与文件列表不再整片置灰</b>（名称类文字 → 主前景色，与路径框同档 · 图标 → 次前景色，与工具栏图标同档 · 列值色调按实机逐列归位：只有「修改时间」是 muted，其余列值 secondary）—— 见文末「v15 树与列表不再置灰」</div>
+      <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v14 新增（本轮）：</b><b>树上当前目录不再描圈</b>（只图标染强调色 + 文字提亮一档；祖先目录照旧不带底色，实机树本就没有「当前目录描边」这种元素）—— 见文末「v14 树上当前目录不再描圈」</div>
+      <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v13 新增（本轮）：</b><b>表头与数据行对齐 + 列宽真的拖得动</b>（列宽共用 S.colW 一个真源 —— 此前表头按内容自适应、名称列又 flex:1，两行错位且手柄抓不到看得见的列边界；差的那 15px 是原生滚动条占的布局宽，改成实机 PanelScroll 同款自绘 4px 细条浮层）—— 见文末「v13 表头与数据行对齐」</div>
+      <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v12 新增（本轮）：</b><b>目录树收展钮移到工具栏最左缘</b>（实机面板惯例：收展 affordance 占左缘、两态同位；按钮正压在左侧目录树上方，右端腾出来后只剩动作/显示开关）· 图标与 tooltip 随两态换（collapse ⇄ expand）—— 见文末「v12 目录树收展钮归位」</div>
+      <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v11 新增（本轮）：</b><b>书签删除改为行尾内联</b>（删除钮停行尾 · hover 才现形且不跳位 · 点击原位变红色「确认」钮 · 3 秒 / 移出 / Esc 自动回退 · 路径掐头留尾）—— 见文末「v11 书签行尾删除」</div>
+      <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v10 新增（本轮）：</b><b>列宽拖拽手感重做</b>（9px 热区 · 悬停竖线 · 拖动导引线贯穿表头+数据行 + 宽度读数胶囊 · 每列最小宽 + 名称列保底 120px 的智能钳制 · Esc 取消 · 双击复位 · ←/→ 键盘微调）—— 见文末「v10 列宽拖拽手感」</div>
+      <div class="sub" style="margin-top:4px;color:var(--slot-t2)"><b style="color:var(--slot-ac)">v9 新增（本轮）：</b><b>面板常态 = 主窗底部停靠</b>（主舞台改为完整外壳 + 底部面板槽，面板本体同一份 DOM 在底部停靠 ⇄ 独立窗口之间搬）· 底部状态栏右端新增「弹出独立窗口」图标 · 右击不再产生勾选态 · 当前行只留阴影、树上祖先目录不再带底色 —— 见文末「v9 底部停靠为常态」</div>
     </div>
     <button class="theme-toggle" id="themeToggle">
       <svg class="ico" viewBox="0 0 24 24"><use href="#i-swap"/></svg>
@@ -793,43 +973,42 @@ html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-mo
 
   <!-- ═══════════ 主舞台 ═══════════ -->
   <div class="section">
-    <h2>主舞台 · 弹出窗 ⇄ 主窗 dock 往返</h2>
-    <p class="desc">点「弹出为独立窗口」演示离坞；点弹窗标题栏的「停靠回面板」演示回坞。试试：树右键 / 列头右键 / 路径框右键 / 队列右键 / 标题栏右键；勾选多行出现批量操作行；拖文件行到树目录=移动；Del 删除、F2 重命名、Ctrl+F 过滤、Ctrl+C/V 复制粘贴。</p>
+    <h2>主舞台 · 主窗底部停靠 ⇄ 独立窗口</h2>
+    <p class="desc"><b>SFTP 面板的常态是停靠在主窗底部</b>（下宽上窄的横条面板，终端在上）。点底部状态栏右端的<b>「弹出为独立窗口」图标</b>，面板脱壳成独立窗口；点独立窗口标题栏的<b>「停靠回主窗面板」</b>，面板回到主窗底部。试试：树右键 / 列头右键 / 路径框右键 / 队列右键 / 标题栏右键；勾选多行出现批量操作行；拖文件行到树目录=移动；Del 删除、F2 重命名、Ctrl+F 过滤、Ctrl+C/V 复制粘贴。</p>
     <div class="stage" id="stage">
-      <div class="stage-cap"><b>MTerm 主窗</b>（示意一角） + <b>SFTP 独立窗口</b>（交互实演）</div>
+      <div class="stage-cap"><b>MTerm 主窗</b>（面板常态 = 底部停靠） + <b>SFTP 独立窗口</b>（点底部图标弹出）</div>
 
-      <div class="dock-demo" id="dockDemo">
-        <div class="dd-titlebar">
+      <!-- v9：主窗外壳 —— SFTP 面板常态 = 主窗底部停靠（弹出只是另一种形态） -->
+      <div class="shell" id="shell">
+        <div class="sh-titlebar">
           <span class="logo"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-terminal"/></svg></span>
           <span class="t">MTerm</span>
+          <span class="grow"></span>
+          <span class="sh-wbtn"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-minimize-to-tray"/></svg></span>
+          <span class="sh-wbtn"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-max"/></svg></span>
+          <span class="sh-wbtn close"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-close"/></svg></span>
         </div>
-        <div class="dd-tabs">
+        <div class="sh-tabs">
           <span class="dd-tab active"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-terminal"/></svg>deploy@web-01</span>
           <span class="dd-tab"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-terminal"/></svg>db-master</span>
         </div>
-        <div class="dd-term">
+        <div class="sh-term">
           <div><span class="dim">deploy@web-01:~</span>$ ./deploy.sh staging</div>
           <div><span class="gr">✓</span> build 42s · 312 modules</div>
           <div><span class="gr">✓</span> uploaded 18 files → app/releases/v2.4.1</div>
           <div><span class="dim">deploy@web-01:~</span>$ <span style="opacity:.9">▊</span></div>
         </div>
-        <button class="dd-popout-btn" id="popOutBtn">
-          <svg class="ico" style="width:13px;height:13px" viewBox="0 0 24 24"><use href="#i-popout"/></svg>
-          弹出为独立窗口
-        </button>
-        <div class="dd-sftp-dock" id="dockPanel">
-          <div class="dd-sftp-bar">
-            <span class="seg"><span class="on">文件</span><span>隧道</span></span>
-            <span class="dd-sftp-path">/home/deploy/app</span>
+        <div class="sh-dock" id="dockSlot">
+          <div class="dock-grip" data-tip="拖上沿调整面板高度"></div>
+          <div class="dock-empty" id="dockEmpty">
+            <svg class="ico" viewBox="0 0 24 24"><use href="#i-popout"/></svg>
+            <span>SFTP 面板已弹出为独立窗口</span>
+            <button class="btn ghost" id="dockBackBtn2">停靠回底部</button>
           </div>
-          <div class="dd-sftp-mini">
-            <span class="row"><svg class="ico" style="width:13px;height:13px" viewBox="0 0 24 24"><use href="#i-folder"/></svg>src</span>
-            <span class="row"><svg class="ico" style="width:13px;height:13px" viewBox="0 0 24 24"><use href="#i-file"/></svg>app.py</span>
-            <span class="row" style="opacity:.7">…</span>
-          </div>
+          <!-- 面板本体 #sftpCore 停靠时挂在这里（初始形态） -->
         </div>
       </div>
-      <div class="dock-hint" id="dockHint"><span class="dot"></span>拖出<b>窗口外任意位置</b>（桌面/资源管理器）= 下载到放下位置；拖到主窗卡 = 站内演示（http 页面下真拖出有效，落地走 DoDragDrop）</div>
+      <div class="dock-hint" id="dockHint"><span class="dot"></span>拖出<b>窗口外任意位置</b>（桌面/资源管理器）= 下载到放下位置；拖到<b>主窗</b> = 站内演示（http 页面下真拖出有效，落地走 DoDragDrop）</div>
 
       <!-- SFTP 弹出窗 -->
       <div class="sftp-win popped-in" id="sftpWin">
@@ -859,7 +1038,12 @@ html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-mo
           </button>
         </div>
 
+        <!-- v9：面板本体 —— 与「主窗底部停靠」共用同一份 DOM，靠 JS 搬位置 -->
+        <div class="sftp-core" id="sftpCore">
         <div class="sftp-toolbar">
+          <!-- v12：目录树收展钮移到工具栏最左缘（实机面板惯例：收展 affordance 占左缘，两态同位），
+               正好压在它控制的左侧目录树上方；右端那组腾出来后只剩动作/显示开关。 -->
+          <button class="tb-btn" id="treeBtn" data-tip="收起目录树"><svg class="ico" viewBox="0 0 24 24"><use href="#i-collapse" id="treeUse"/></svg></button>
           <span class="tb-seg" role="tablist">
             <button id="tabFiles" class="on"><svg class="ico" viewBox="0 0 24 24"><use href="#i-folder"/></svg>文件</button>
             <button id="tabTunnels"><svg class="ico" viewBox="0 0 24 24"><use href="#i-tunnel"/></svg>隧道</button>
@@ -881,11 +1065,9 @@ html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-mo
           <button class="tb-btn" id="uploadBtn" data-tip="上传文件或文件夹"><svg class="ico" viewBox="0 0 24 24"><use href="#i-upload"/></svg></button>
           <button class="tb-btn" id="filterBtn" data-tip="过滤 (Ctrl+F)"><svg class="ico" viewBox="0 0 24 24"><use href="#i-search"/></svg></button>
           <button class="tb-btn" id="hiddenBtn" data-tip="显示隐藏文件"><svg class="ico" viewBox="0 0 24 24" id="hiddenIco"><use href="#i-eye-off"/></svg></button>
-          <button class="tb-btn" id="treeBtn" data-tip="收起/展开目录树"><svg class="ico" viewBox="0 0 24 24"><use href="#i-collapse"/></svg></button>
-          <button class="tb-btn" id="queueBtn" data-tip="传输队列">
-            <svg class="ico" viewBox="0 0 24 24"><use href="#i-transfer"/></svg>
-            <span class="badge" id="queueBadge" style="display:none">0</span>
-          </button>
+          <!-- v21：传输队列入口下沉到状态栏右下角（与传输状态同区）；
+               工具栏右端腾给「弹出为独立窗口」这一面板级动作 -->
+          <button class="tb-btn" id="popOutBtn" data-tip="弹出为独立窗口"><svg class="ico" viewBox="0 0 24 24"><use href="#i-popout"/></svg></button>
         </div>
 
         <!-- 批量操作条：选中 > 0 时在工具栏下方展开（实机 selected-count 契约，v3 改独立细条） -->
@@ -899,19 +1081,23 @@ html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-mo
 
         <div class="sftp-body">
           <div class="sftp-tree" id="treePane">
-            <div class="tree-scroll" id="treeScroll"></div>
+            <div class="tree-head">目录树</div>
+            <div class="tree-scroll scroll-thin" id="treeScroll"></div>
+            <div class="sb" id="treeSb"><i></i></div>
             <div class="tree-divider" id="treeDivider"></div>
           </div>
 
           <div class="sftp-list">
             <div class="load-bar" id="loadBar"></div>
+            <!-- v10：列宽拖拽导引线（贯穿表头 + 数据行） -->
+            <div class="col-guide" id="colGuide" aria-hidden="true"><span class="rd"></span></div>
             <div class="list-head" id="listHead"><!-- 列头由 renderListHead() 动态渲染：colOrder 顺序 × showCols 显隐 × colW 宽度 --></div>
             <div class="filter-bar" id="filterBar">
               <svg class="ico" viewBox="0 0 24 24"><use href="#i-search"/></svg>
               <input id="filterInput" placeholder="过滤当前目录…（Esc 关闭）" spellcheck="false">
               <span class="cnt" id="filterCnt"></span>
             </div>
-            <div class="list-scroll" id="listScroll">
+            <div class="list-scroll scroll-thin" id="listScroll">
               <div id="fileRows" role="listbox" aria-label="SFTP 文件列表" aria-multiselectable="true"></div>
               <div class="list-empty" id="listEmpty">
                 <svg class="ico" viewBox="0 0 24 24"><use href="#i-folder-open"/></svg>
@@ -922,6 +1108,7 @@ html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-mo
                 </span>
               </div>
             </div>
+            <div class="sb" id="listSb"><i></i></div>
 
             <div class="tunnel-page" id="tunnelPage">
               <div class="tn-head"><span class="t">端口转发隧道</span></div>
@@ -951,9 +1138,17 @@ html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-mo
           <span class="chip-follow" data-tip="终端 cd 时面板跟随目录（设置可关）">跟随 cd</span>
           <span class="chip-dl" id="dlChip" role="button" tabindex="0" data-tip="下载目录（点击设置：目录 / 每次询问 / 同名处理）"><svg class="ico" viewBox="0 0 24 24"><use href="#i-folder-open"/></svg><span class="path" id="dlChipPath">Downloads</span></span>
           <span class="grow"></span>
-          <span class="down">↓ <i id="stDown">0 B/s</i></span>
-          <span class="up">↑ <i id="stUp">0 B/s</i></span>
+          <!-- v21：传输状态区 = 一块聚合（进行中项数 + 双向各自聚合速率），
+               点击开队列抽屉，悬浮列出逐条明细（多传输时不必开抽屉就知道在传什么） -->
+          <span class="st-xfer idle" id="stXfer" role="button" tabindex="0" aria-label="传输队列（点击查看逐条进度）">
+            <svg class="ico" viewBox="0 0 24 24"><use href="#i-transfer"/></svg>
+            <span class="cnt" id="stXferCnt"></span>
+            <span class="spd up" id="stUp"></span>
+            <span class="spd down" id="stDown"></span>
+            <div class="xfer-pop" id="stXferPop"></div>
+          </span>
         </div>
+        </div><!-- /sftp-core -->
 
         <div class="resize-grip" id="resizeGrip">
           <svg class="ico" style="width:12px;height:12px" viewBox="0 0 24 24"><use href="#i-grip"/></svg>
@@ -1009,7 +1204,7 @@ html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-mo
       </div>
       <div class="ref-card">
         <h3>列宽拖拽 + 列序拖动<span class="src">← Explorer / ForkLift 列模型</span></h3>
-        <p>列头右缘 6px 手柄拖宽（accent 线反馈，40–280px 钳制，名称列 flex 吸收剩余空间）；列头拖动换位（左/右半边插入指示线，drop 重排 <code>colOrder</code>；名称恒第一、⚙ 恒最后）；列显示开关与顺序解耦（隐藏的列保序，重开回原位）。落地 = <code>S.colW / S.colOrder</code> 对应 per-session persist（同 sftp-tree-width 契约）。</p>
+        <p>列头右缘手柄拖宽（<b>v10 已重做手感，见文末「v10 列宽拖拽手感」</b>：9px 热区 + 悬停竖线 + 拖动导引线与宽度读数 + 智能钳制 + Esc 取消 + 双击复位 + 键盘微调；v3 原稿为 6px 热区、accent 线反馈、40–280px 钳制、名称列 flex 吸收剩余空间）；列头拖动换位（左/右半边插入指示线，drop 重排 <code>colOrder</code>；名称恒第一、⚙ 恒最后）；列显示开关与顺序解耦（隐藏的列保序，重开回原位）。落地 = <code>S.colW / S.colOrder</code> 对应 per-session persist（同 sftp-tree-width 契约）。</p>
       </div>
     </div>
   </div>
@@ -1050,8 +1245,8 @@ html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-mo
         <p>行首是「复选框 + 图标 + 文件名」三段，列头只有「复选框 + 名称」两段，列头「名称」比行内文件名左移一整个图标列（16px）。按实机的做法（<code>ui/sftp_panel.slint:970-1000</code> 列头首项是一个 16px 的 Spacer，注释明写「与行的复选框对齐，让表头与下方取值对齐」）给列头补一个 <b>16px 空占位</b>，两侧用同一盒模型，列头与行内文件名左右边界一致。实机落地：列头 HorizontalLayout 里补一个 <code>Rectangle { width: 16px; }</code> 即可。</p>
       </div>
       <div class="ref-card">
-        <h3>③ 右击 = 选中<span class="src">= 列表 / 状态语义</span></h3>
-        <p>原先右击只在「该行未勾选」时才设当前行，已勾选的行右击看着没反应，还会顺手清掉别处的勾选。改成 Windows 语义：<b>右击总是把该行设为当前行</b>（左侧 2px accent 指示条 + 背景高亮），若它不在多选集合里则集合替换为它，若已在集合里则保留整组多选——右键菜单的作用对象与所见一致。「当前行」与「已勾选」也拆成两套视觉：勾选用复选框图标表达，当前行用背景 + 左指示条表达，不再混用同一个高亮。</p>
+        <h3>③ 右击 = 选中<span class="src">= 列表 / 状态语义 · v9 已改，见下</span></h3>
+        <p>原先右击只在「该行未勾选」时才设当前行，已勾选的行右击看着没反应，还会顺手清掉别处的勾选。改成 Windows 语义：<b>右击总是把该行设为当前行</b>（左侧 2px accent 指示条 + 背景高亮），若它不在多选集合里则集合替换为它，若已在集合里则保留整组多选——右键菜单的作用对象与所见一致。「当前行」与「已勾选」也拆成两套视觉：勾选用复选框图标表达，当前行用背景 + 左指示条表达，不再混用同一个高亮。<br><b>（v9 更正）</b>右击<b>不再</b>并入多选集合，只把该行设为当前行（见文末「v9 底部停靠为常态」③）；当前行的背景也去掉了，只留左指示条。</p>
       </div>
       <div class="ref-card">
         <h3>④ 选择与菜单的键盘链<span class="src">= 列表 / 菜单</span></h3>
@@ -1089,7 +1284,7 @@ html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-mo
   <div class="ref-grid">
     <div class="ref-card">
       <h3>拖到弹框外松手 = 下载 <span class="src">docs/design/sftp-popout-hifi.html · listScroll dragstart</span></h3>
-      <p>拖动文件行离开弹框时，页面出现遮罩「拖到此处 = 下载到本机」，遮罩上会显示当前下载目录（若开启「每次询问」，显示「松开后选择保存目录」）。松手后直接进入下载队列，落点即下载目录。窗口内松手仍是树内移动，拖到主窗卡仍是站内演示。落地实现走系统拖出：<code>drag crate + DoDragDrop</code>，拖起先落 <code>%TEMP%</code> 临时目录再交系统。</p>
+      <p>拖动文件行离开弹框时，页面出现遮罩「拖到此处 = 下载到本机」，遮罩上会显示当前下载目录（若开启「每次询问」，显示「松开后选择保存目录」）。松手后直接进入下载队列，落点即下载目录。窗口内松手仍是树内移动，<b>拖到主窗</b>仍是站内演示（v9：主窗外壳成形后，站内演示的落点 = 主窗窗口本身）。落地实现走系统拖出：<code>drag crate + DoDragDrop</code>，拖起先落 <code>%TEMP%</code> 临时目录再交系统。</p>
     </div>
     <div class="ref-card">
       <h3>下载目录：预设 / 自定义 / 每次询问 <span class="src">实机：src/app.rs:6376-6403 · ui/app.slint:6780-6825</span></h3>
@@ -1129,12 +1324,300 @@ html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-mo
     </div>
   </div>
   <div class="section">
+    <h2>v9 底部停靠为常态 · 本轮改了什么</h2>
+    <p class="desc">本轮把<b>「面板常态 = 主窗底部停靠」</b>这件事补回稿里：之前只画了弹出窗，底部长什么样是空的，于是主舞台的「主窗」只是一张示意卡片。现在主舞台是一台<b>完整外壳</b>（标题栏 + 标签栏 + 终端区 + 底部面板槽），面板本体是<b>同一份 DOM</b>，在「底部停靠」与「独立窗口」两种形态之间搬位置。</p>
+    <div class="ref-grid">
+      <div class="ref-card">
+        <h3>① 面板常态 = 主窗底部停靠 <span class="src">本文件 .shell / .sh-dock / #sftpCore</span></h3>
+        <p>主舞台左侧是 MTerm 外壳（标题栏 + 标签页 + 终端区），<b>底部整条</b>是 SFTP 面板槽：上沿一条 <code>.dock-grip</code> 拖拽带调高度，面板本体（工具栏 / 批量条 / 树 + 列表 / 队列 / 状态栏）就在槽里 —— 这就是面板平时的样子。弹出不是「复制一份」，而是把 <code>#sftpCore</code> 搬进独立窗口的 <code>.win-body</code>；窗口标题栏的「停靠回主窗面板」再把它搬回底部槽，槽里此时显示占位（面板已弹出 + 一个「停靠回底部」按钮）。</p>
+      </div>
+      <div class="ref-card">
+        <h3>② 底部状态栏的「弹出独立窗口」图标 <span class="src">本文件 .st-popout / #popOutBtn</span></h3>
+        <p>入口就放在<b>面板底部状态栏最右端</b>（一枚 icon-only 按钮，图标 <code>window-popout.svg</code>，hover 提亮 + tooltip「弹出为独立窗口」）—— 面板在底部，入口也在底部，不用去工具栏找。点它：面板脱壳成独立窗口，状态槽回一句「SFTP 面板已弹出为独立窗口」；点窗口标题栏的 <code>window-popin.svg</code>（停靠回主窗面板）反向回来。落地 = 主窗底部面板加一枚 icon 钮 + 面板宿主在「主窗 dock」与「独立窗口」之间迁移（同一份 <code>ModelRc</code>，不重建数据）。</p>
+      </div>
+      <div class="ref-card">
+        <h3>③ 右击不再产生勾选态 <span class="src">本文件 listScroll contextmenu / 行尾「更多」</span></h3>
+        <p>v5 稿把右击做成了 Windows 语义（右击 = 选中 + 并入多选集合），于是右击一行就跳出一个勾、底部批量条跟着冒出来。现在<b>右击只定位当前行</b>（阴影），<b>不动勾选集合</b>；行尾「更多」按钮同样只定位。勾选只由<b>复选框点击 / Ctrl+A / Shift 连选</b>产生 —— 右键菜单里针对多选的动作（删除 N 项等）因此只在真勾选过时才出现。</p>
+      </div>
+      <div class="ref-card">
+        <h3>④ 当前行只留阴影，祖先目录不再带底色 <span class="src">本文件 .f-row.selected / .tree-row.current</span></h3>
+        <p>列表当前行：去掉背景色，只留左侧 2px 强调阴影（<code>inset 2px 0 0 accent</code>）—— 底色一律留给「勾选」语义，一眼能分清「我在看它」和「我选了它」。左侧目录树：<b>祖先目录不再染底色</b>（此前 <code>cwd.startsWith(path)</code> 会把整条路径都染一遍），路径上下文改由路径框承担；<b>当前目录只把图标染成强调色</b>，不再画框（v14 改，见下）。</p>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <h2>v10 列宽拖拽手感 · 本轮改了什么</h2>
+    <p class="desc">v3 稿的列宽手柄只有一根 6px 热区 + 一小段 accent 线，没有「我在拖哪儿、现在多宽、拖到头了没」的反馈。本轮把拖拽整条链重做：<b>悬停看得见、拖动看得见、边界摸得着、松手可回退</b>。</p>
+    <div class="ref-grid">
+      <div class="ref-card">
+        <h3>① 悬停 / 拖动两段式反馈 <span class="src">本文件 .lh-resizer / .col-guide</span></h3>
+        <p><b>悬停</b>：列边界上浮出一条 1px accent 竖线，<b>贯穿列头整高</b>（与实机一致：实机在列边界显示一条竖线 + col-resize 光标）。<b>拖动中</b>：换成一条<b>贯穿「表头 + 全部数据行」</b>的导引线（独立 overlay，不随列头重渲染消失），旁边挂一个 <b>宽度读数胶囊</b>（<code>160px</code>），贴右缘时自动翻到线的左侧不出界；同时全窗口 <code>col-resize</code> 光标 + 禁选文字。</p>
+      </div>
+      <div class="ref-card">
+        <h3>② 热区与钳制 <span class="src">本文件 .lh-resizer / colRange()</span></h3>
+        <p>热区 6px → <b>9px</b>（仍然精确压在列边界上，好点不误触）。钳制不再只有一刀 40–280：<b>每列有自己的最小宽度</b>（类型 56 / 大小 64 / 修改时间 96 / 权限 88 / 所有者 72 / 组 56），并且上限会再被<b>可用宽</b>收一道 —— 名称列保底 120px，拉宽别的列时<b>不会把名称挤没</b>。宽度取整到整像素。</p>
+      </div>
+      <div class="ref-card">
+        <h3>③ 可回退：Esc 取消 / 双击复位 <span class="src">本文件 mousedown / dblclick</span></h3>
+        <p>拖动中按 <b>Esc</b> = 放弃本次拖动、宽度回到按下那一刻的值（不算变更）；<b>双击手柄</b> = 该列宽度复位到默认值（类型 72 / 大小 76 / 修改时间 120 / 权限 104 / 所有者 84 / 组 66），状态槽回一句「权限列宽已复位为 104px」。</p>
+      </div>
+      <div class="ref-card">
+        <h3>④ 键盘可达 <span class="src">本文件 .lh-resizer[role=separator]</span></h3>
+        <p>手柄可聚焦（<code>tabindex=0</code>、<code>role="separator"</code>、<code>aria-orientation="vertical"</code>、<code>aria-valuenow/min/max</code>、<code>aria-label="调整权限列宽"</code>）：<b>←/→</b> 微调 8px、<b>Shift + ←/→</b> 32px、<b>Home/End</b> 到最小/最大。落地 = Slint 侧给列头加一个可聚焦的分隔元素 + <code>key-pressed</code>，宽度值走 Rust 侧 <code>S.colW</code> 回写。</p>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <h2>v11 书签行尾删除 · 本轮改了什么</h2>
+    <p class="desc">书签菜单原来是「书签一条 + 独立的『删除此书签』一条」交替排布，菜单高度翻倍，删除项和它作用的对象在视觉上分离（容易删错行）。本轮改成<b>删除钮停在书签行的行尾</b>：悬停才现形，点一下<b>原位变成「确认」钮</b>，再点一次才真删。</p>
+    <div class="ref-grid">
+      <div class="ref-card">
+        <h3>① 删除钮停在行尾，hover 才现形 <span class="src">本文件 .bm-row / .bm-del</span></h3>
+        <p>每个书签占<b>一行</b>：<code>★ 路径</code> + 行尾一枚删除钮。删除钮平时 <code>opacity:0</code>（<b>不是 display:none</b> —— 占位恒在，所以悬停时路径不跳位），悬停该行才显形；悬停删除钮本身时染危险色。菜单因此从「2N 行」缩回「N 行」。</p>
+      </div>
+      <div class="ref-card">
+        <h3>② 点一下变「确认」钮，内联二次确认 <span class="src">本文件 bmStartConfirm()</span></h3>
+        <p>第一次点击删除钮不删，只是<b>原地</b>把它换成一枚红色实心的 <b>✓ 确认</b> 胶囊，同时整行染危险色（<code>--slot-dg</code>）—— 明确告诉用户「现在点下去就真删了」。第二次点击才执行删除并关闭菜单。这是弹框与「直接删」之间的中间档：比弹框轻，不打断上下文；比直接删安全。</p>
+      </div>
+      <div class="ref-card">
+        <h3>③ 确认态会自动回退 <span class="src">本文件 bmResetConfirm()</span></h3>
+        <p>待确认状态<b>不会粘住</b>：<b>3 秒</b>无操作自动回退成删除钮；鼠标移出该行、点别处、Esc 也都回退。行尾删除钮的错误成本（删错书签）低，所以二次确认只做「原位一行」的轻量级，不占用一个模态弹框。</p>
+      </div>
+      <div class="ref-card">
+        <h3>④ 路径掐头留尾 <span class="src">本文件 bmPathHtml()</span></h3>
+        <p>路径太长时不再从尾部截（尾部正是最能定位的那个目录名）：在中间的分隔符处切成两段，<b>头段按像素省略、末段完整</b>，拼起来仍是一条可读的路径（<code>/home/deploy…/app/releases</code>），完整路径挂在 tooltip 上。</p>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <h2>v12 目录树收展钮归位 · 本轮改了什么</h2>
+    <p class="desc">目录树的收展钮原先挤在工具栏<b>右端</b>那堆动作里（刷新 / 新建 / 上传 / 搜索 / 隐藏文件 / 队列），一个<b>视图开关</b>混在一堆<b>数据动作</b>中间，既难找又把右端塞满。本轮把它挪到工具栏<b>左缘</b>—— 位置直接对着它控制的目录树那一列，也和实机面板的排法一致。</p>
+    <div class="ref-grid">
+      <div class="ref-card">
+        <h3>① 收展钮移到工具栏最左缘 <span class="src">实机 ui/sftp_panel.slint:318-372</span></h3>
+        <p>实机面板的工具栏是 <code>[drag grip][6px 间隔][文件/隧道 tabs][导航][路径]…</code>，注释明写收展钮「<b>always present so both states share a consistent left-edge affordance</b>」—— <b>面板收展 affordance 占左缘、两态同位</b>，其余控件在它右边。本轮照此把目录树收展钮放到最左缘：<b>按钮正好压在它控制的左侧目录树上方</b>，右端腾出来后只剩动作与显示开关（隐藏文件 / 列设置 / 队列）。</p>
+      </div>
+      <div class="ref-card">
+        <h3>② 图标与提示随两态换 <span class="src">本文件 #treeBtn / i-collapse / i-expand</span></h3>
+        <p>目录树展开时按钮显示 <code>sidebar-left-collapse.svg</code>（箭头朝左 = 点它收起），折叠时显示 <code>sidebar-left-expand.svg</code>（箭头朝右 = 点它展开），tooltip 同步为「收起目录树 / 展开目录树」，图标在收起时染强调色表明「左栏当前开着」。稿内原先只有一个图标不变，两个资产项目里都已注册（<code>ui/icons.slint:253-256</code>）。</p>
+      </div>
+      <div class="ref-card">
+        <h3>③ 落地 <span class="src">实机对照</span></h3>
+        <p>落地 = 目录树可见性一个 bool（<code>tree-visible</code>，随面板尺寸自动隐藏的逻辑照旧）；按钮 glyph 按可见性取 <code>sidebar-left-collapse</code> / <code>sidebar-left-expand</code>；tooltip 文案跟着换。与实机左侧面板收展钮（<code>ui/app.slint:766</code>，左上角 LOGO 位悬浮换成 collapse 图标）是同一套语言。</p>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <h2>v13 表头与数据行对齐 · 列宽真的拖得动</h2>
+    <p class="desc">本轮修两个连着的毛病：<b>标题行和下面的列没对齐</b>，<b>列宽拖不动</b>。它们其实是<b>同一个根因的两副面孔</b>——表头与数据行用了两套宽度来源，差值又恰好被原生滚动条吃掉一部分。</p>
+    <div class="ref-grid">
+      <div class="ref-card">
+        <h3>① 根因：列宽有两个来源 <span class="src">本文件 renderListHead() / renderList()</span></h3>
+        <p>数据行的列宽来自 <code>S.colW</code>（固定宽，inline style）；<b>表头的列此前根本没有宽度</b>（按内容自适应），而表头的「名称」列又继承 <code>flex:1</code> → 把富余宽度全吸走 → 后面所有表头被推到右边。<b>后果一</b>：两行错位；<b>后果二</b>：拖拽手柄停在「内容边缘」而不是<b>看得见的列边界</b>上 —— 想拖却抓不到东西。修法：<b>表头与行共用 <code>S.colW</code> 一个真源</b>（表头格子同样写 inline width + <code>flex:none</code>），名称列两处同为 <code>flex:1 1 0 / min-width:120px</code>，大小列表头与数据行同为右对齐。</p>
+      </div>
+      <div class="ref-card">
+        <h3>② 差的那 15px = 原生滚动条 <span class="src">实机 ui/widgets.slint:984 PanelScroll</span></h3>
+        <p>修完宽度来源后仍差 <b>15px</b>：表头容器 926px、数据行容器 911px —— 差的是<b>原生滚动条占掉的布局宽</b>。实机用 <code>PanelScroll</code>：<b>自绘 4px 细圆角条、浮在内容上、不占布局宽</b>（14px 命中区 / 拇指 24px 下限 / hover 淡入），所以实机表头与行天然同宽。稿内照此改：<b>隐藏原生滚动条</b>（<code>scrollbar-width:none</code>）+ 自绘同款细条，树与列表各一根。</p>
+      </div>
+      <div class="ref-card">
+        <h3>③ 落地 <span class="src">实机对照</span></h3>
+        <p>列宽：<b>一份真源</b>（表头与行都从它取，拖动即改它，其余列依次让位）；滚动条：直接复用实机 <code>PanelScroll</code>（<code>ui/widgets.slint</code> 已有，稿内这版是照它复刻的视觉与行为），不再出现「表头比行宽一圈」的错位。</p>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <h2>v14 树上当前目录不再描圈 · 本轮改了什么</h2>
+    <p class="desc">v9 给树的当前目录加了一圈描边（<code>inset 0 0 0 1px accent-line</code>），这轮去掉。<b>框框去掉后树干净得多</b>，「当前在哪」交给<b>路径框</b> + <b>图标染色</b>两处承担。</p>
+    <div class="ref-grid">
+      <div class="ref-card">
+        <h3>① 当前目录 = 图标染强调色，不要框 <span class="src">本文件 .tree-row.current</span></h3>
+        <p>当前目录的文件夹图标染强调色、文字提亮一档（<code>slot-t1</code> vs 普通行 <code>slot-t2</code>），<b>不再画描边</b>。祖先目录照旧不带任何底色/描边。落地：树节点的「当前」= 图标 tint + 文字色，<b>不引入任何边框</b>。</p>
+      </div>
+      <div class="ref-card">
+        <h3>② 为什么不画框 <span class="src">实机对照</span></h3>
+        <p>实机树里<b>本来就没有</b>「当前目录描边」这种东西 —— 用户提供的实机截图里那圈框是<b>悬停/焦点环</b>，不是状态标识；把它当成状态画进稿里，等于凭空加了一个实机没有的视觉元素。状态该由「路径框 + 图标色」说清，焦点环则只在键盘/悬停时出现。</p>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <h2>v15 树与列表不再置灰 · 本轮改了什么</h2>
+    <p class="desc">上一轮去掉框框后，目录树和文件列表的<b>文字与图标仍整片发灰</b>，和路径框那种主前景色一比就显得「没精神」。本轮把这两处的色调提到正常档位：<b>名称类文字 = 主前景色，图标 = 次前景色</b>，置灰只留给真正次要的信息。</p>
+    <div class="ref-grid">
+      <div class="ref-card">
+        <h3>① 名称提到主前景色，图标提到次前景色 <span class="src">本文件 .tree-row / .f-row / .f-ico</span></h3>
+        <p>目录树与文件列表的<b>名称文字</b>：<code>slot-t2</code> → <code>slot-t1</code>（与路径框、工具栏文字同档，主前景色）；<b>图标</b>：<code>slot-t3</code>（muted，几乎看不见）→ <code>slot-t2</code>（次前景色，与工具栏图标同档）。当前目录的图标照旧染强调色 —— 那是唯一的彩色标记，别的都收敛。</p>
+      </div>
+      <div class="ref-card">
+        <h3>② 列值色调对齐实机 <span class="src">实机 ui/sftp_panel.slint:1256-1278</span></h3>
+        <p>实机的列值不是一片 muted：<b>只有「修改时间」是 muted</b>，类型 / 大小 / 权限 / 属主 / 组都是 <b>secondary</b>。稿内此前全按 muted 画（偏灰），本轮按实机逐列归位：类型·大小·权限·属主·组 = secondary，修改时间 = muted；列头仍保持 muted（实机列头就是 muted）。</p>
+      </div>
+      <div class="ref-card">
+        <h3>③ 一条分界线 <span class="src">落地口径</span></h3>
+        <p><b>置灰（muted）只留给「装饰性/可忽略」的信息</b>：修改时间、列头、折叠箭头、行尾「⋯」；<b>secondary 留给「可读但次要」</b>：列值、图标；<b>primary 留给「主角」</b>：路径、目录名、文件名。这样整棵树的层级一眼可分，又不会灰成一片。</p>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <h2>v16 停靠态对齐实机 + 展开目录的打开样式 · 本轮改了什么</h2>
+    <p class="desc">本轮按<b>实机截图</b>把「正常态」逐处对齐，并补了树的一个语义缺口：<b>目录一旦展开（含各级父目录），图标就该是打开样式</b>。</p>
+    <div class="ref-grid">
+      <div class="ref-card">
+        <h3>① 停靠常态 = 主窗底部面板 <span class="src">实机 ui/sftp_panel.slint:820-918</span></h3>
+        <p>面板常态仍是<b>主窗底部的整条停靠面板</b>（终端在上、面板在下），左树右列；「弹出独立窗口」是它的<b>另一种形态</b>而非替代形态（v9 的口径不变）。本轮补上实机有、稿里没有的一处：<b>树列头「目录树」</b> —— 22px 高、<code>zone-sidebar</code> 底、次级色 11px 小标题 + 1px 下边线（实机 <code>ui/sftp_panel.slint:842-856</code>）。</p>
+      </div>
+      <div class="ref-card">
+        <h3>② 展开的目录 = 打开样式，父目录同样 <span class="src">本文件 renderTree() / .tree-row.open</span></h3>
+        <p>目录一旦展开，图标换成 <code>folder-open</code> 图形并染<b>强调色</b>；<b>当前目录的各级父目录因为也是展开的，一并走打开样式</b> —— 整条链一眼可辨「是开着的」，不再只靠一个小图标。落地 = 树节点渲染时按 <code>expanded</code> 取图形与 tint，展开态与「当前目录」解耦（当前目录也可能没展开）。</p>
+      </div>
+      <div class="ref-card">
+        <h3>③ 列表里的目录走实机强调色 <span class="src">实机 ui/sftp_panel.slint:1236-1245</span></h3>
+        <p>实机列表里<b>目录的图标与目录名都是强调色</b>（<code>entry.is-dir ? Theme.accent : Theme.text-primary</code>），文件则是次级图标 + 主前景名。稿内此前目录与文件同色，现在按实机分档：<b>目录 = 强调色（图标 + 名称一起）</b>，文件 = 次级图标 + 主前景名。顺带说明：稿内独有的<b>文件类型着色</b>（脚本/配置/文档三档）保持不变，它只作用于文件。</p>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <h2>v17 文件按类型给不同图标 · 怎么实现的</h2>
+    <p class="desc">参照 iShellPro 的做法（不同类型不同图形、不同颜色），本轮给列表里的文件按<b>扩展名</b>派生了图标。实现是<b>表驱动</b>的：一张「正则 → 图标 + 颜色档」的表，逐条命中即用；没命中就落到通用文件图标。<b>（v18 换了图标集：v17 那批是拿现成资产凑的，语义对不上，已按类型重画，见下。）</b></p>
+    <div class="ref-grid">
+      <div class="ref-card">
+        <h3>① 机制：一张扩展名表 <span class="src">本文件 TYPE_RULES / typeMeta()</span></h3>
+        <p>一张表驱动，<b>一行一个类型</b>：<code>{ re: /\.(log|out|trace)$/i, icon: 'log-file', cls: 't-log' }</code> —— 正则命中扩展名就用这枚图标 + 这档颜色。表自上而下匹配，<b>第一个命中即停</b>；全表不命中 → 通用 <code>file</code> 图标。<code>typeMeta(e)</code> 返回 <code>{ icon, cls }</code>，渲染时图标与颜色都从它出，<b>不散落在各处判断</b>。加一种新类型 = 加一行规则（+ 一枚已注册的图标），不碰渲染代码。</p>
+      </div>
+      <div class="ref-card">
+        <h3>② 图标全部来自项目资产 <span class="src">assets/icons/*.svg</span></h3>
+        <p>没有自画图形，全是项目现成资产（路径原样搬运）：<code>log-file.svg</code>（日志：带横线的文档）· <code>terminal.svg</code>（脚本：终端窗口）· <code>tune.svg</code>（配置：滑杆）· <code>notebook-pen.svg</code>（文档：带笔的笔记本）· <code>table-rows.svg</code>（表格）· <code>layers.svg</code>（压缩包：叠层）· <code>link.svg</code>（链接）· <code>folder.svg</code> / <code>file.svg</code>。落地时把这几枚补注册进 <code>ui/icons.slint</code> 分段即可（项目 <code>icons.slint</code> 已有 <code>log-file</code>/<code>terminal</code>/<code>tune</code> 等）。</p>
+      </div>
+      <div class="ref-card">
+        <h3>③ 颜色纪律：图形说「是什么」，颜色只说语义 <span class="src">v16 + v17 合并口径</span></h3>
+        <p>类型多了，<b>颜色不能跟着铺满</b>——那样等于把列表变成调色盘。稿内的分档是：<b>目录 / 配置 = 强调色</b>（teal，与实机目录口径一致）· <b>脚本 = 警告色</b>（黄）· <b>日志 = 成功色</b>（绿）· <b>文档 / 表格 / 压缩包 / 其它 = 次级色</b>。形状负责区分，色彩只保留语义，列表才不会花。</p>
+      </div>
+      <div class="ref-card">
+        <h3>④ 实机落地路径 <span class="src">实机 ui/sftp_panel.slint:13-27</span></h3>
+        <p>实机 <code>SftpEntry</code> <b>已经带 <code>file-type</code> 字段</b>（就是「类型」列显示的那串：文件夹 / PY / FILE…），所以<b>不需要给模型加字段</b>：图标与类型列<b>共用同一份类型串</b>即可 —— 类型串来自 SFTP 服务端的 <code>file_type</code>；服务端不给时按扩展名兜底推导（与本轮这张表同口径）。UI 侧把 <code>glyph: entry.is-dir ? "folder" : "file"</code> 换成按类型查表即可，<b>一行 Icon 组件的事</b>。</p>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <h2>v18 类型图标重画 + 树的亮起只跟当前目录 · 本轮改了什么</h2>
+    <p class="desc">两处修正：<b>类型图标按文件类型重画</b>（v17 那套是拿现成资产凑的，语义对不上）；<b>树的亮起只跟当前目录走</b>（展开过的目录不该一直亮着）。</p>
+    <div class="ref-grid">
+      <div class="ref-card">
+        <h3>① 六枚类型图标按语义重画 <span class="src">本文件 i-file-* 六枚 symbol</span></h3>
+        <p>v17 拿现成资产凑，<b>图形和类型对不上</b>：<code>log-file.svg</code> 其实是「文档 + 笔」（编辑）、<code>terminal.svg</code> 是终端窗口（不是代码）、<code>tune.svg</code> 是滑杆（不是配置）、<code>layers.svg</code> 是叠层（不是压缩包）。本轮按类型重画一套（24×24 / stroke 2 / 圆角端点，与项目图标同风格）：<b>file-log</b> 文档 + 三行（日志）· <b>file-code</b> 文档 + <code>&lt;&gt;</code>（程序）· <b>file-config</b> 文档 + <code>{}</code>（配置）· <b>file-markdown</b> 经典 <b>M↓</b> 标记（文档）· <b>file-table</b> 文档 + 网格（表格）· <b>file-archive</b> 立体包裹盒（压缩包）。目录 / 通用文件 / 链接沿用项目现成资产（<code>folder</code>·<code>file</code>·<code>link</code>）。落地 = <b>新增 <code>assets/icons/file-*.svg</code> 六枚</b>（<b>已落</b>，与稿内 symbol 逐字一致）+ 注册进 <code>ui/icons.slint</code> 的<b>两处</b>清单（known-glyph 列表 + <code>@image-url</code> 开关，漏一处不显示）—— 注册留待实现轮。</p>
+      </div>
+      <div class="ref-card">
+        <h3>② 判定多一条：看可执行位 <span class="src">本文件 typeMeta()</span></h3>
+        <p>类型判定不只看扩展名：<b>无扩展名但带 <code>x</code> 权限位</b>的（<code>appctl</code> / <code>migrate</code> 这类二进制程序）也用程序图标。判据 = 扩展名 → 可执行位 → 兜底通用文件。</p>
+      </div>
+      <div class="ref-card">
+        <h3>③ 树的亮起只跟当前目录 <span class="src">本文件 .tree-row.current / .tree-row.open</span></h3>
+        <p>此前把「展开」也做成了强调色，于是<b>在同一目录里切到别处时，先前展开过的目录会一直亮着</b>，看着像「还选着它」。现在：<b>展开只换图形</b>（<code>folder</code> → <code>folder-open</code>），<b>颜色只给当前目录</b>（强调色）。展开与否看图形 + 箭头，选中与否看颜色，两件事彻底分开。</p>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <h2>v19 树的亮起 = 当前路径链 · 展开跟随路径 · 本轮改了什么</h2>
+    <p class="desc">v18 把亮起收窄到「当前目录」一个，矫枉过正：<b>父目录不亮就看不出当前在路径链的哪一截</b>。本轮把语义定准：<b>亮起 = 当前目录 + 各级父目录</b>；同时<b>树的展开态跟随当前路径</b>，切目录时上一次留在别处的兄弟目录自动收起。</p>
+    <div class="ref-grid">
+      <div class="ref-card">
+        <h3>① 亮起 = 在路径链上 <span class="src">本文件 .tree-row.on-path</span></h3>
+        <p>判定改成「<code>cwd === path || cwd.startsWith(path + '/')</code>」—— <b>当前目录和它的各级父目录一起亮</b>（强调色图标），一眼能看出当前在链的哪一截；<b>不在链上的目录一律不亮</b>（哪怕它是展开的）。这与 v18 的差别：v18 把「展开」当成亮的条件，于是切目录后旧目录一直亮；现在亮的条件是「在路径上」，展开与否<b>只由图形</b>（<code>folder</code> ⇄ <code>folder-open</code>）表达 —— 两件事彻底分开。</p>
+      </div>
+      <div class="ref-card">
+        <h3>② 展开态跟随当前路径 <span class="src">本文件 navigate() · S.expanded</span></h3>
+        <p>切目录时，展开集合<b>重算为「当前目录 + 各级父目录」</b>，上一次留在别处的兄弟目录自动收起、图标换回<b>未打开</b>那枚。落地 = 展开集合不再是一份独立的手动状态，而是<b>由 <code>current-path</code> 推导</b>（Slint 侧同样：树节点展开态 = 是否在当前路径链上）；手动点箭头展开的目录会在下一次导航时被收掉，这正是「树跟随路径」的预期。</p>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <h2>v20 类型覆盖与语义校对 · 本轮改了什么</h2>
+    <p class="desc">用户指出「类型还缺（如 <code>nginx.conf</code>、<code>.java</code>、<code>.php</code>）」，并要求<b>按主流设计再核一遍图标是否名副其实</b>。本轮把规则表改成<b>按族</b>（一族一枚图形，扩展名清单只是数据），同时逐族对照主流图标订正了<b>三处语义错配</b>。</p>
+    <div class="ref-grid">
+      <div class="ref-card">
+        <h3>① 覆盖：按「族」给图标 <span class="src">本文件 TYPE_RULES</span></h3>
+        <p>不按扩展名单枚画图标，<b>一族一枚图形</b>，扩展名清单是纯数据 —— 加一个扩展名只加一条正则，不用画图。当前族与命中：<b>日志</b>（log/out/trace/err/pid）· <b>程序</b>（含 sh/py/js/ts/java/php/go/rs/cs/swift/kt/scala/vue/svelte…约 60 个）· <b>配置</b>（conf/cfg/ini/toml/yml/json/env/xml/properties/.gitignore/.service…）· <b>文档</b>（md/markdown/mdx）· <b>表格数据</b>（csv/tsv/xls/xlsx/ods/db/sqlite/sql…）· <b>压缩安装包</b>（zip/tar/gz/7z/rar/deb/rpm/dmg/exe/jar/whl…）· <b>图片</b>（png/jpg/gif/webp/svg/ico/psd/avif…）· <b>媒体</b>（mp3/wav/flac/mp4/mkv/mov/webm…）· <b>密钥证书</b>（pem/key/crt/p12/gpg/keystore…）· <b>字体</b>（ttf/otf/woff…）· <b>链接</b>（lnk/url/desktop）。</p>
+      </div>
+      <div class="ref-card">
+        <h3>② 三处语义错配已订正 <span class="src">对照 VS Code / iShellPro</span></h3>
+        <p>① <b><code>.txt</code> 不该是 M↓</b> —— M↓ 是 Markdown 专属记号，txt/readme/license/rst/adoc 原来都蹭了它，现已移出（落通用文档）；② <b>编译产物不该是 <code>&lt;&gt;</code></b> —— <code>&lt;&gt;</code> 是源码记号，无扩展名 + <code>x</code> 权限的二进制改用<b>齿轮</b>（VS Code 用 cog 表示二进制）；③ <b><code>.gz</code> 等单扩展名压缩漏了</b>，已补齐（<code>backup.tar.gz</code> 之前落通用图标）。</p>
+      </div>
+      <div class="ref-card">
+        <h3>③ 逐族对照主流 <span class="src">主流图标记号</span></h3>
+        <p>日志 = 文档+三行（iShellPro 同款，绿）· 源码 = 文档+<code>&lt;&gt;</code>（iShellPro 同款）· 配置 = <b>齿轮</b>（v26 定稿：闭合轮廓、纯几何，与家族同量级；项目现成 settings.svg）· Markdown = <b>M↓</b>（VS Code 一模一样）· 表格 = 网格（VS Code 的 csv/xlsx）· 压缩包 = 立体盒 · 图片 = 相框（VS Code 的 image）· 字体 = <b>A</b> 字形（VS Code 同款）· 密钥 = 钥匙（<code>permission.svg</code>）· 二进制 = 齿轮（VS Code 的 cog）。<b>仍缺的族</b>（现在落通用文档，想要专属图标就补一枚资产 + 一条正则）：<b>PDF / Office</b>（主流是带字样的文档）、<b>音频 / 视频</b>（主流拆成音符与胶片，我们合用播放标）、<b>Git</b>（主流用 git logo）、<b>锁文件</b>（挂锁）、<b>备份 / 临时</b>（.bak/.tmp/.swp，主流用扳手）。</p>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <h2>v21 两个图标归位 + 多传输怎么显示 · 本轮改了什么</h2>
+    <p class="desc">用户圈出<b>传输队列</b>（工具栏右端）与<b>弹出独立窗口</b>（状态栏右下角）两枚，问位置与交互是否更贴切，并追问「<b>存在多个文件传输时，右下角的上传下载怎么显示</b>」。本轮把这两枚对调，并把右下角从「两条裸速度」升级为<b>一块传输状态</b>。</p>
+    <div class="ref-grid">
+      <div class="ref-card">
+        <h3>① 两枚对调 <span class="src">本文件 .sftp-toolbar / .st-xfer</span></h3>
+        <p><b>传输队列 → 状态栏右下角</b>：它本来就是传输状态的入口，跟速率/计数放一起才对；工具栏右端此前混着「刷新·新建·上传·搜索·隐藏文件·队列」六件不同性质的事，队列下沉后只剩动作。<b>弹出为独立窗口 → 工具栏右端</b>：这是<b>面板级动作</b>，跟隐藏文件 / 列设置 / 树收展同列；独立窗口形态下这枚自动隐藏（窗口标题栏已有「停靠回主窗面板」）。</p>
+      </div>
+      <div class="ref-card">
+        <h3>② 多传输：右下角显示「一块聚合」 <span class="src">本文件 updateQueueUI() / .st-xfer</span></h3>
+        <p>原来的「↑ 0 B/s  ↓ 0 B/s」在多传输时既说不清<b>在传谁、几个</b>，空闲时又只剩两条噪音。改成 <code>⇅ 3 项 · ↑ 2.4 MB/s · ↓ 4.8 MB/s</code>：<b>项数</b> = 进行中任务数（含暂停的，另在悬浮注明）；<b>速率按方向各自聚合</b>（多个同向任务合并成一条总吞吐，不是每任务一条）；<b>空闲整块淡出</b>，只留一枚淡的 ⇅（仍可点开队列），不摆 0 B/s。</p>
+      </div>
+      <div class="ref-card">
+        <h3>③ 明细怎么给 <span class="src">队列抽屉 + 悬浮气泡</span></h3>
+        <p><b>逐条明细</b>在队列抽屉（已有：方向图标 · 名称 · 大小 · 进度条 · % · 速度 · 暂停/取消/重试）；<b>悬浮状态块</b>先给一份清单（进行中最多 4 条 + 「还有 N 项…」）—— 多个传输时<b>不用开抽屉就知道在传什么</b>；<b>点状态块</b>即开/关队列抽屉（取代原工具栏那枚队列钮）。参照 WinSCP（队列逐条 + 状态栏计数）、VS Code（状态栏一条可展开）；<b>列表行内进度条</b>（Explorer 做法）属可选增强，落地时另议。</p>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <h2>v22 / v26 配置图标定稿 · 三次尝试</h2>
+    <p class="desc"><code>file-config.svg</code> 连着三轮没定下来：<b>文档 + 花括号</b> → <b>方框 + 滑杆</b> → <b>独立大括号</b> → 最终落到 <b>齿轮</b>。关键教训不是"画得细不细"，而是<b>图形语言要跟家族一致</b>。</p>
+    <div class="ref-grid">
+      <div class="ref-card">
+        <h3>① 试过什么，为什么不行 <span class="src">本文件 TYPE_RULES 的配置族</span></h3>
+        <p><b>文档 + 花括号</b>：花括号在 24px 网格里只剩 2–3px 宽，描边后糊成两团（列表里还要缩到 14px）。<b>方框 + 双滑杆</b>：干净但泛，不像「配置文件」，且和工具栏「列设置」钮同族语义。<b>独立大括号</b>：是主流的 JSON 记号，但它<b>是开口图形</b> —— 家族其余全是<b>闭合轮廓</b>（文档 / 方框 / 相框 / 盒子），怎么调大小都显得轻：放大腰口消失读成 <code>( )</code>，收小又比邻居小一圈。</p>
+      </div>
+      <div class="ref-card">
+        <h3>③ 尺寸按「同族基准」校，不按平均值校 <span class="src">浏览器 getBBox 实测</span></h3>
+        <p>把每个资产的<b>实际几何包围盒</b>量出来对比（库内基准：文档类 <code>file.svg</code> = 16×20、<code>log-file.svg</code> = 16×18；独立形 <code>settings.svg</code> = 18×20、<code>language.svg</code> = 20×20、<code>layers.svg</code> = 20×20），新图标族**各自贴自己的参照**：文档族（log / code / table）16×20 = 与 <code>file.svg</code> 完全一致；独立形（markdown 20×16 / archive 18×20 / image 18×18 / font）落在 18–20 那一档。库内<b>平均</b> 21×20.5 是被齿轮/滑杆这类「撑满盒」的图标拉高的，文档类天然就窄 —— 所以按平均值校会把文档类画胖。按同族基准校才协调（唯一被实测点名偏小的是字体「A」：原 14×16 → 已放大到 17.6×18）。</p>
+      </div>
+      <div class="ref-card">
+        <h3>② 定稿：齿轮 <span class="src">项目现成 assets/icons/settings.svg</span></h3>
+        <p>齿轮是<b>闭合轮廓</b>（与家族同量级）、<b>纯几何</b>（14px 也锐利）、且在主流里就是「配置/设置」的记号（VS Code 的 settings、GitHub 的设置都是齿轮）—— 而且<b>项目现成就有</b>，零新增资产。代价：齿轮从「二进制」那档手里挪给了配置，<b>无扩展名的可执行文件</b>（appctl / migrate）落回通用文件图标（它们在 <code>bin/</code> 目录下，类型信息本来就不足）。</p>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <h2>v23 树收展钮不再上色 · 本轮改了什么</h2>
+    <p class="desc">用户指出工具栏最左的<b>目录树收展钮</b>被染成强调色没必要 —— 树在不在场上一目了然，按钮再上色是冗余，还跟旁边 accent 色的「文件」页签抢注意力。</p>
+    <div class="ref-grid">
+      <div class="ref-card">
+        <h3>① 收展钮只管切换，不做状态色 <span class="src">本文件 #treeBtn</span></h3>
+        <p>去掉 <code>active</code> 类：常态与切换后都是普通图标色（次级色，hover 提亮）。状态由<b>图形</b>表达 —— 展开时 <code>sidebar-left-collapse</code>（箭头朝左 = 点它收起）、收起时 <code>sidebar-left-expand</code>（箭头朝右 = 点它展开），tooltip 同步「收起目录树 / 展开目录树」。<b>与「显示隐藏文件」那枚的区别</b>：后者是<b>模式开关</b>（开着=正在显示隐藏文件），染强调色有意义；前者是<b>布局开关</b>，状态就摆在眼前。</p>
+      </div>
+      <div class="ref-card">
+        <h3>② 顺带修掉一处逻辑反转 <span class="src">本文件 treeBtn onclick / setPanelMode</span></h3>
+        <p>原代码 <code>classList.toggle('active', hidden)</code> 是<b>反着</b>的：树<b>藏</b>起来才上强调色（与直觉相反），而初始标记又是「树展开着 + active」—— 同一状态两种颜色。移除该类后，切换「文件/隧道」页签时树的显隐也不再依赖这个类（改成直白的 <code>m === 'files' ? '' : 'none'</code>），逻辑反转随之消失。</p>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <h2>v28 配置族拆分：设置 vs 数据 · 本轮改了什么</h2>
+    <p class="desc">用户指出「<code>.yml</code> 用设置齿轮不贴切」。根因是配置族把两类语义混在一起：<b>设置类</b>（conf / ini / properties / service…）读作「设置」，用齿轮对；<b>结构化数据类</b>（yml / json / toml / xml / env…）是「键值清单」，用齿轮就是张冠李戴。</p>
+    <div class="ref-grid">
+      <div class="ref-card">
+        <h3>① 拆成两族 <span class="src">本文件 TYPE_RULES</span></h3>
+        <p><b>设置 / 配置类 → 齿轮</b>（项目现成 <code>assets/settings.svg</code>）：<code>conf</code> <code>cfg</code> <code>config</code> <code>ini</code> <code>properties</code> <code>plist</code> <code>editorconfig</code> <code>desktop</code> <code>service</code> <code>socket</code> <code>timer</code> <code>target</code> <code>mount</code> —— 这类文件读作「设置」，齿轮贴切 ✓。<b>结构化数据类 → 清单记号</b>（新画 <code>file-data.svg</code>，3 点 + 3 行，VS Code 的 YAML 记号）：<code>yml</code> <code>yaml</code> <code>json</code> <code>toml</code> <code>xml</code> <code>env</code> <code>.gitignore</code> <code>.dockerignore</code> —— 这些是「键值清单」，清单记号才贴切。</p>
+      </div>
+      <div class="ref-card">
+        <h3>② 花括号为什么还是没选 <span class="src">对比记录</span></h3>
+        <p>「花括号」是 VS Code 的 JSON 记号，语义上也贴切，但试了三档宽度后在 16px 下<b>全读成 <code>( )</code></b> —— 腰口太浅、两条内缘平行，就是圆括号。与其画一个会被误读成圆括号的记号，不如用清单（真正的「键值列表」语义）。</p>
+      </div>
+    </div>
+  </div>
+  <div class="section">
     <h2>图标来源与落地映射</h2>
     <div class="contract ref-grid">
       <div class="ref-card">
         <h3>图标 100% 来自项目资产</h3>
         <ul>
-          <li>folder / folder-open / file / new-folder(create-new-folder) / edit / trash / copy / search / refresh / home / arrow-* / close / transfer / tunnel / swap-vert / shield / shield-alert / tune / more-vert / paste / delete / minimize-to-tray / play / eye(visibility) / eye-off(visibility-off) / collapse(sidebar-left-collapse) / select-all / retry / grip(drag-grip) / maximize / restore / popout(window-popout) / popin(window-popin) / pin / unpin / checkbox / checkbox-blank / checkbox-ind(checkbox-indeterminate) / info / warning / expand-more/less / chevron-r(chevron-right) / terminal</li>
+          <li>folder / folder-open / file / new-folder(create-new-folder) / edit / trash / copy / search / refresh / home / arrow-* / close / transfer / tunnel / swap-vert / shield / shield-alert / tune / more-vert / paste / delete / minimize-to-tray / play / eye(visibility) / eye-off(visibility-off) / collapse(sidebar-left-collapse) / select-all / retry / grip(drag-grip) / maximize / restore / popout(window-popout) / popin(window-popin) / pin / unpin / checkbox / checkbox-blank / checkbox-ind(checkbox-indeterminate) / info / warning / expand-more/less / chevron-r(chevron-right) / terminal / file-log / file-code / file-config / file-markdown / file-table / file-archive / file-image / file-font / link</li>
           <li>全部 <code>viewBox 24 · stroke=currentColor · 宽 2</code>，内联 symbol 落地直转 <code>ui/icons.slint</code> 分段</li>
           <li><b>项目暂缺 1 枚（稿内补绘标红）</b>：<code>pause</code>（队列暂停）——落地时新增 svg + 注册；<code>play</code> 已按项目 <code>play.svg</code> 几何替换，<code>window-min</code> 改用项目 <code>minimize-to-tray.svg</code></li>
         </ul>
@@ -1146,6 +1629,10 @@ html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-mo
           <li>entries/tree-nodes 同一 ModelRc clone 喂弹窗；回调转发 sftp_callbacks</li>
           <li>主题照 <code>sync_editor_theme + copy_theme_slots!</code> 同步；弹出期间 dock 态 compact，关窗回停靠靠</li>
           <li>弹窗绑定单 tab，切走自动收回</li>
+          <li><b>v9</b>：面板本体（<code>SftpPanel</code>）在「主窗底部 dock」与「独立窗口」之间搬宿主，<b>同一份 ModelRc 不重建</b>；底部状态栏加一枚 icon 钮（<code>window-popout.svg</code>）触发弹出，窗口标题栏用 <code>window-popin.svg</code> 停靠回去；主窗底部 dock 的上沿拖拽带调面板高度</li>
+          <li><b>v9</b>：列表「当前行」与「已勾选」彻底分开 —— 当前行只有左强调条（<code>box-shadow: inset 2px 0 0</code>，不占行高）、树上当前目录只有一圈描边（<code>inset 0 0 0 1px</code>），祖先目录不染色；勾选只由复选框 / Ctrl+A / Shift 产生，<b>右键不写勾选态</b></li>
+          <li><b>v10</b>：列宽拖拽 = 列头右缘一个可聚焦的 separator（9px 热区），拖动时画一条贯穿表头 + 数据行的导引线 + 宽度读数；宽度按列设 min，并给名称列保底 120px（<code>S.colW</code> 落 Rust 侧 per-session persist，同 sftp-tree-width 契约）</li>
+          <li><b>v16</b>：树列头「目录树」（22px / <code>zone-sidebar-root</code> / 次级色 11px + 1px 下边线，同实机 <code>ui/sftp_panel.slint:842-856</code>）；树节点按 <code>expanded</code> 取 <code>folder-open</code> 图形 + 强调色 tint（父目录链同样）；列表里目录的图标与名称取 <code>Theme.accent</code>（同 <code>ui/sftp_panel.slint:1236-1245</code>）</li>
         </ul>
       </div>
     </div>
@@ -1192,8 +1679,10 @@ const TREE = {
       }},
       'config': { type:'dir', children:{
         'app.yml':      { type:'file', size: 2048,  time: ts(10,18,33), perm:'rw-r--r--', owner:'deploy', group:'deploy' },
+        'nginx.conf':   { type:'file', size: 3072,  time: ts(10,19,2),  perm:'rw-r--r--', owner:'deploy', group:'deploy' },
         'logging.yml':  { type:'file', size: 1024,  time: ts(6,11,9),   perm:'rw-r--r--', owner:'deploy', group:'deploy' },
         'secrets.env':  { type:'file', size: 512,   time: ts(10,18,33), perm:'rw-------', owner:'deploy', group:'deploy', hidden:true },
+        'id_rsa':       { type:'file', size: 1675,  time: ts(9,8,5),    perm:'rw-------', owner:'deploy', group:'deploy', hidden:true },
       }},
       'logs': { type:'dir', children:{
         'app.log':      { type:'file', size: 5242880, time: ts(11,10,21), perm:'rw-r--r--', owner:'deploy', group:'deploy' },
@@ -1207,6 +1696,8 @@ const TREE = {
         'v2.3.9': { type:'dir', children:{} },
       }},
       'src': { type:'dir', children:{
+        'Main.java':    { type:'file', size: 24576, time: ts(10,9,12), perm:'rw-r--r--', owner:'deploy', group:'deploy' },
+        'index.php':    { type:'file', size: 8192,  time: ts(10,9,28), perm:'rw-r--r--', owner:'deploy', group:'deploy' },
         'main.py':      { type:'file', size: 12288, time: ts(10,9,40), perm:'rw-r--r--', owner:'deploy', group:'deploy' },
         'tasks.py':     { type:'file', size: 8704,  time: ts(9,55,12), perm:'rw-r--r--', owner:'deploy', group:'deploy' },
         'models.py':    { type:'file', size: 15360, time: ts(8,44,0),  perm:'rw-r--r--', owner:'deploy', group:'deploy' },
@@ -1229,16 +1720,63 @@ const TREE = {
   }},
 };
 const HOME = '/home/deploy';
-const TYPE_LABEL = n => /\.(py|sh|yml|md|txt|env)$/.test(n) ? n.split('.').pop().toUpperCase() : (n.includes('.') && !n.startsWith('.') ? 'FILE' : '');
+const TYPE_LABEL = n => /\.[a-z0-9]{1,6}$/i.test(n) ? n.split('.').pop().toUpperCase() : (n.includes('.') && !n.startsWith('.') ? 'FILE' : '');
 /* 文件类型四档着色（MTerm 语义色，克制） */
-function typeClass(e){
-  if (e.hidden) return 't-hidden';
-  if (e.isDir) return '';
-  if (/\.(sh|py)$/.test(e.name)) return 't-script';
-  if (/\.(yml|env)$/.test(e.name)) return 't-config';
-  if (/\.(md|txt)$/.test(e.name)) return 't-doc';
-  return '';
+/* v20：文件类型图标 —— **按「族」给图标**（思路同 iShellPro：不按扩展名单枚画图，
+   一族一枚图形；扩展名清单是纯数据，加一个扩展名只加一条正则）。
+   族 → 图标：日志 file-log / 程序 file-code / 配置 file-config / 文档 file-markdown /
+   表格 file-table / 压缩安装包 file-archive / 图片 file-image / 媒体 play /
+   密钥证书 permission / 链接 link；其余落通用 file。
+   已落 assets/icons/file-*.svg（与稿内 symbol 逐字一致）；注册进
+   ui/icons.slint 两处清单留待实现轮。 */
+const TYPE_RULES = [
+  /* 日志 */
+  { re: /\.(log|logs|out|trace|err|pid)$/i,          icon: 'file-log',      cls: 't-log' },
+  /* 程序 · 脚本 · 前端 */
+  { re: /\.(sh|bash|zsh|fish|bat|cmd|ps1|py|pyc|pyi|ipynb|js|mjs|cjs|ts|tsx|jsx|vue|svelte|astro|java|kt|kts|scala|groovy|rb|erb|php|phtml|pl|pm|lua|go|rs|c|h|cc|cpp|cxx|hpp|m|mm|swift|dart|ex|exs|erl|hrl|hs|clj|cljs|jl|zig|nim|raku|pas|f90|vb|cs|fs|fsx|elm|sol|wasm)$/i,
+                                                         icon: 'file-code',     cls: 't-script' },
+  /* 设置 / 配置类 —— 齿轮（项目现成 assets/settings.svg；conf/ini/properties/service… 读作「设置」） */
+  { re: /\.(conf|cfg|config|ini|properties|prop|plist|editorconfig|desktop|service|socket|timer|target|mount)$/i,
+                                                         icon: 'gear',         cls: 't-config' },
+  /* 结构化数据类 —— 清单记号（VS Code 的 YAML 记号：yml/json/toml/xml/env… 是「键值清单」，不是「设置」） */
+  { re: /\.(ya?ml|json5?|jsonc|toml|xml|env|gitignore|gitattributes|dockerignore)$/i,
+                                                         icon: 'file-data',    cls: 't-data' },
+  /* 文档（M↓ 是 Markdown 专属标记 —— txt/rst/adoc 不是 Markdown，落通用 file） */
+  { re: /\.(md|markdown|mdx)$/i,                    icon: 'file-markdown', cls: 't-doc' },
+  /* 表格 · 数据 */
+  { re: /\.(csv|tsv|xls|xlsx|xlsm|ods|numbers|db|sqlite|sqlite3|mdb|accdb|sql|dump)$/i,
+                                                         icon: 'file-table',    cls: 't-table' },
+  /* 压缩包 · 安装包 */
+  { re: /\.(zip|tar|tgz|tb|tbz|tbz2|txz|gz|bz2|xz|zst|lz|lzma|7z|rar|iso|img|dmg|pkg|deb|rpm|apk|msi|exe|appimage|jar|war|ear|whl|egg|nupkg|gem|crate)$/i,
+                                                         icon: 'file-archive',  cls: 't-archive' },
+  /* 图片 */
+  { re: /\.(png|jpg|jpeg|gif|bmp|webp|svg|ico|tiff|tif|avif|heic|psd|ai|eps)$/i,
+                                                         icon: 'file-image',    cls: 't-image' },
+  /* 音视频（复用项目 play.svg） */
+  { re: /\.(mp3|wav|flac|ogg|oga|m4a|aac|mp4|mkv|mov|avi|webm|wmv|flv|mpeg|mpg|vob)$/i,
+                                                         icon: 'play',          cls: 't-media' },
+  /* 密钥 · 证书（复用项目 permission.svg） */
+  { re: /\.(pem|key|crt|cer|der|p12|pfx|gpg|pgp|asc|pub|ppk|keystore|jks|kdbx)$/i,
+                                                         icon: 'permission',    cls: 't-key' },
+  /* 字体 */
+  { re: /\.(ttf|otf|woff2?|eot|ttc|fnt)$/i,           icon: 'file-font',     cls: 't-font' },
+  /* 链接 · 快捷方式 */
+  { re: /\.(lnk|url|webloc|shortcut)$/i,             icon: 'link',          cls: 't-link' },
+];
+
+function typeMeta(e){
+  if (e.hidden) return { icon: 'file', cls: 't-hidden' };
+  if (e.isDir)  return { icon: 'folder', cls: 't-dir' };
+  /* SSH 私钥没有扩展名 —— 按文件名认（id_rsa / id_ed25519 / authorized_keys…） */
+  if (/^(id_(rsa|dsa|ecdsa|ed25519)|authorized_keys|known_hosts|.*\.(pub|ppk))$/i.test(e.name))
+    return { icon: 'permission', cls: 't-key' };
+  for (const t of TYPE_RULES) if (t.re.test(e.name)) return { icon: t.icon, cls: t.cls };
+  /* 无扩展名但带可执行位 = 编译产物（二进制）：无扩展名就没有类型信息，
+     齿轮已给「配置」用，这里落通用文件图标（不与源码的 <> 混） */
+  if (!/\./.test(e.name) && /x/.test(e.perm || '')) return { icon: 'file', cls: '' };
+  return { icon: 'file', cls: '' };
 }
+function typeClass(e){ return typeMeta(e).cls; }
 
 /* ── 状态 ── */
 const S = {
@@ -1331,8 +1869,14 @@ function renderTree(){
     const kids = visEntries(path).filter(e => e.isDir);
     const hasKids = kids.length > 0;
     const open = S.expanded.has(path);
-    const isCur = S.cwd === path || S.cwd.startsWith(path + '/');
-    rows.push(`<div class="tree-row ${isCur?'current':''}" data-path="${esc(path)}" style="padding-left:${8 + depth*14}px">
+    /* v9：只有「当前目录」自己挂描边阴影，祖先目录不再带底色 */
+    const isCur = S.cwd === path;
+    /* v19：亮起 = **在当前路径链上**（当前目录 + 各级父目录）——
+       父目录亮着才看得出「当前在这条链的哪一截」；
+       只是展开、但不在链上的兄弟目录不亮（否则切目录后它会一直亮着）。 */
+    const onPath = isCur || S.cwd.startsWith(path + '/');
+    /* v16：展开的目录用「打开样式」（folder-open 图形） */
+    rows.push(`<div class="tree-row ${isCur?'current':''} ${onPath?'on-path':''}" data-path="${esc(path)}" style="padding-left:${8 + depth*14}px">
       <span class="n tw" data-act="toggle" style="${hasKids?'':'visibility:hidden'}">${ico(open?'expand-more':'chevron-r')}</span>
       ${ico(open ? 'folder-open' : 'folder')}
       <span class="label">${esc(path.split('/').pop() || '/')}</span>
@@ -1344,6 +1888,7 @@ function renderTree(){
   };
   walk('/home/deploy', 0);
   $('treeScroll').innerHTML = rows.join('');
+  updateThinScrolls();          /* v13：树内容高度变了，细滚动条跟着算 */
 }
 $('treeScroll').addEventListener('click', e => {
   const row = e.target.closest('.tree-row');
@@ -1418,16 +1963,50 @@ function moveEntry(src, dstDir){
   });
 })();
 
+/* ═══════════ v13：自绘细滚动条（实机 PanelScroll 同款：浮层、不占宽） ═══════════ */
+function thinScroll(scrollerSel, barSel){
+  const sc = $(scrollerSel), bar = $(barSel);
+  const thumb = bar.firstElementChild;
+  const upd = () => {
+    const need = sc.scrollHeight > sc.clientHeight + 1;
+    bar.classList.toggle('show', need);
+    if (!need){ thumb.style.height = '0px'; thumb.style.transform = ''; return; }
+    const host = bar.parentElement.getBoundingClientRect();
+    const r = sc.getBoundingClientRect();
+    bar.style.top = Math.round(r.top - host.top) + 'px';
+    bar.style.height = Math.round(r.height) + 'px';
+    const ratio = sc.clientHeight / sc.scrollHeight;
+    const th = Math.max(24, Math.round(r.height * ratio));
+    const span = sc.scrollHeight - sc.clientHeight;
+    const top = span > 0 ? Math.round((sc.scrollTop / span) * (r.height - th)) : 0;
+    thumb.style.height = th + 'px';
+    thumb.style.transform = `translateY(${top}px)`;
+  };
+  sc.addEventListener('scroll', upd, { passive: true });
+  window.addEventListener('resize', upd);
+  return upd;
+}
+let updateThinScrolls = () => {};
+try {
+  const updTree = thinScroll('treeScroll', 'treeSb');
+  const updList = thinScroll('listScroll', 'listSb');
+  updateThinScrolls = () => { updTree(); updList(); };
+  updateThinScrolls();
+} catch (_) {}
+
 /* ═══════════ 文件列表 ═══════════ */
-/* 列定义：cls=布局类、label=列头名、cell=行单元格渲染、sortable=可点排序 */
+
+/* 列定义：cls=布局类、label=列头名、cell=行单元格渲染、sortable=可点排序
+   v10：补 min（该列最小宽度）与 defW（双击手柄复位的默认宽度） */
 const COLS = {
-  type:  { cls: 'f-type',  label: '类型',     sortable: true,  cell: e => esc(e.type) },
-  size:  { cls: 'f-size',  label: '大小',     sortable: true,  cell: e => e.isDir ? '—' : fmtSize(e.size) },
-  time:  { cls: 'f-time',  label: '修改时间', sortable: true,  cell: e => fmtTime(e.time) },
-  perm:  { cls: 'f-perm',  label: '权限',     sortable: false, cell: e => esc(e.perm) },
-  owner: { cls: 'f-owner', label: '所有者',   sortable: false, cell: e => esc(e.owner) },
-  group: { cls: 'f-group', label: '组',       sortable: false, cell: e => esc(e.group) },
+  type:  { cls: 'f-type',  label: '类型',     sortable: true,  min: 56,  defW: 72,  cell: e => esc(e.type) },
+  size:  { cls: 'f-size',  label: '大小',     sortable: true,  min: 64,  defW: 76,  cell: e => e.isDir ? '—' : fmtSize(e.size) },
+  time:  { cls: 'f-time',  label: '修改时间', sortable: true,  min: 96,  defW: 120, cell: e => fmtTime(e.time) },
+  perm:  { cls: 'f-perm',  label: '权限',     sortable: false, min: 88,  defW: 104, cell: e => esc(e.perm) },
+  owner: { cls: 'f-owner', label: '所有者',   sortable: false, min: 72,  defW: 84,  cell: e => esc(e.owner) },
+  group: { cls: 'f-group', label: '组',       sortable: false, min: 56,  defW: 66,  cell: e => esc(e.group) },
 };
+const COL_MAX = 280;   /* v10：任一列的绝对上限（实际上限还会被可用宽再收一道） */
 const visibleCols = () => S.colOrder.filter(c => S.showCols[c]);
 const dirSvg = `<span class="dir"><svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24"><use href="#i-arrow-up"/></svg></span>`;
 let dragCol = null;   // 拖动换位中的列 key
@@ -1441,7 +2020,7 @@ function renderListHead(){
   for (const c of visibleCols()){
     const def = COLS[c];
     const dragAttr = ` draggable="true"`;
-    html += `<span class="lh-cell ${def.cls} ${def.sortable ? sortCls(c) : 'fixed'}" data-col="${c}"${def.sortable ? ` data-sort="${c}"` : ''}${dragAttr}>${def.label}${def.sortable ? dirSvg : ''}<span class="lh-resizer" data-rz="${c}"></span></span>`;
+    html += `<span class="lh-cell ${def.cls} ${def.sortable ? sortCls(c) : 'fixed'}" data-col="${c}" style="width:${S.colW[c]}px"${def.sortable ? ` data-sort="${c}"` : ''}${dragAttr}>${def.label}${def.sortable ? dirSvg : ''}<span class="lh-resizer" data-rz="${c}" tabindex="0" role="separator" aria-orientation="vertical" aria-label="调整${def.label}列宽" aria-valuemin="${def.min}" aria-valuemax="${COL_MAX}" aria-valuenow="${S.colW[c]}" title="拖动调宽 · 双击复位 · ←/→ 微调"></span></span>`;
   }
   html += `<span class="lh-gear" id="colGear" data-tip="列显示 / 拖列头换位 / 拖右缘调宽"><svg class="ico" viewBox="0 0 24 24"><use href="#i-tune"/></svg></span>`;
   $('listHead').innerHTML = html;
@@ -1506,27 +2085,96 @@ function bindListHead(){
       });
     }
   });
-  /* 列宽拖拽（手柄 mousedown；pointer 捕获到 window，重渲染不打断） */
+  /* 列宽拖拽（v10：导引线 + 读数 + 智能钳制 + Esc 取消 + 双击复位 + 键盘微调） */
   head.querySelectorAll('.lh-resizer').forEach(rz => {
+    const col = rz.dataset.rz;
+    const cell = rz.closest('.lh-cell');
+    let startX = 0, w0 = 0;
+    const mv = e => {
+      const r = colRange(col);
+      const w = Math.round(Math.max(r.min, Math.min(r.max, w0 + (e.clientX - startX))));
+      if (w !== S.colW[col]){ S.colW[col] = w; applyColW(col); }
+      updateColGuide(col, cell, rz);
+    };
+    const onKey = e => {
+      if (e.key !== 'Escape') return;
+      S.colW[col] = w0; applyColW(col);   /* 取消：回到按下时的宽度 */
+      up();
+      e.preventDefault();
+    };
+    const up = () => {
+      rz.classList.remove('dragging');
+      document.body.classList.remove('col-resizing');
+      hideColGuide();
+      window.removeEventListener('mousemove', mv);
+      window.removeEventListener('mouseup', up);
+      window.removeEventListener('keydown', onKey, true);
+    };
     rz.addEventListener('mousedown', e => {
-      e.preventDefault(); e.stopPropagation();
-      const col = rz.dataset.rz;
-      const startX = e.clientX, w0 = S.colW[col];
+      if (e.button !== 0) return;
+      e.preventDefault(); e.stopPropagation();   /* 不与列头换位拖动打架 */
+      startX = e.clientX; w0 = S.colW[col];
       rz.classList.add('dragging');
-      const mv = ev => {
-        S.colW[col] = Math.max(40, Math.min(280, w0 + ev.clientX - startX));
-        applyColW(col);
-      };
-      const up = () => {
-        rz.classList.remove('dragging');
-        window.removeEventListener('mousemove', mv);
-        window.removeEventListener('mouseup', up);
-      };
+      document.body.classList.add('col-resizing');
+      showColGuide(col, cell, rz);
       window.addEventListener('mousemove', mv);
       window.addEventListener('mouseup', up);
+      window.addEventListener('keydown', onKey, true);
+    });
+    /* 双击手柄 = 复位到该列默认宽度 */
+    rz.addEventListener('dblclick', e => {
+      e.preventDefault(); e.stopPropagation();
+      S.colW[col] = COLS[col].defW;
+      applyColW(col);
+      setStatus(`${COLS[col].label}列宽已复位为 ${COLS[col].defW}px`, 'info');
+    });
+    /* 键盘微调：←/→ 8px，Shift 32px，Home/End 到最小/最大 */
+    rz.addEventListener('keydown', e => {
+      const step = e.shiftKey ? 32 : 8;
+      const r = colRange(col);
+      let w = S.colW[col];
+      if (e.key === 'ArrowLeft') w -= step;
+      else if (e.key === 'ArrowRight') w += step;
+      else if (e.key === 'Home') w = r.min;
+      else if (e.key === 'End') w = r.max;
+      else return;
+      e.preventDefault();
+      S.colW[col] = Math.max(r.min, Math.min(r.max, w));
+      applyColW(col);
+      rz.setAttribute('aria-valuenow', S.colW[col]);
+      setStatus(`${COLS[col].label}列宽 ${S.colW[col]}px`, 'info', 1200);
     });
   });
 }
+/* v10：某一列的可调区间 —— 除了该列自身的 min，还要给「名称列」留保底宽度，
+   避免拖宽别的列把名称挤没（可用宽不够时自动收窄上限）。 */
+function colRange(col){
+  const def = COLS[col] || { min: 40 };
+  const others = visibleCols().filter(c => c !== col).reduce((a, c) => a + (S.colW[c] || 0), 0);
+  const list = $('listScroll');
+  const avail = (list.clientWidth || 900) - 48 /*勾选+图标*/ - 120 /*名称保底*/ - others;
+  return { min: def.min ?? 40, max: Math.max(def.min ?? 40, Math.min(COL_MAX, Math.floor(avail))) };
+}
+/* v10：导引线 —— 贯穿表头 + 全部数据行，旁挂宽度读数 */
+function showColGuide(col, cell, rz){
+  const g = $('colGuide');
+  g.classList.add('on');
+  updateColGuide(col, cell, rz);
+}
+function updateColGuide(col, cell, rz){
+  const g = $('colGuide');
+  const host = g.parentElement;                 /* .sftp-list */
+  const hr = host.getBoundingClientRect();
+  const cr = cell.getBoundingClientRect();
+  const x = Math.round(cr.right - hr.left);
+  g.style.left = x + 'px';
+  g.style.top = $('listHead').offsetTop + 'px';
+  g.style.height = ($('listHead').offsetHeight + $('listScroll').clientHeight) + 'px';
+  g.querySelector('.rd').textContent = S.colW[col] + 'px';
+  g.classList.toggle('flip', x > hr.width - 72);   /* 贴右缘时读数翻到左侧 */
+  rz && rz.setAttribute('aria-valuenow', S.colW[col]);
+}
+function hideColGuide(){ $('colGuide').classList.remove('on'); }
 /* 即时应用某列宽度（列头 + 数据行同 data-col 一起改，免整表重渲染） */
 function applyColW(col){
   const w = S.colW[col] + 'px';
@@ -1565,8 +2213,8 @@ function renderList(){
     ).join('');
     return `<div class="f-row ${sel?'selected':''} ${checked?'checked':''}" data-path="${esc(e.path)}" data-dir="${e.isDir?1:0}" draggable="true" role="option" aria-selected="${sel}" tabindex="-1" aria-label="${esc(e.name)}">
       <span class="f-check"><span class="ck ${checked?'on':''}" data-act="check" role="checkbox" aria-checked="${checked}">${ico(checked ? 'checkbox' : 'checkbox-blank')}</span></span>
-      <span class="f-ico ${typeClass(e)}" aria-hidden="true">${ico(e.isDir ? 'folder' : 'file')}</span>
-      <span class="f-cell f-name"><span class="label">${esc(e.name)}</span></span>
+      <span class="f-ico ${typeClass(e)}" aria-hidden="true">${ico(typeMeta(e).icon)}</span>
+      <span class="f-cell f-name ${e.isDir?'t-dir':''}"><span class="label">${esc(e.name)}</span></span>
       ${cells}
       <span class="f-more" data-act="more" title="更多操作" aria-label="更多操作" tabindex="-1"><svg class="ico" viewBox="0 0 24 24"><use href="#i-more-vert"/></svg></span>
     </div>`;
@@ -1575,6 +2223,7 @@ function renderList(){
   empty.querySelector('#emptyText').textContent =
     S.filterText.trim() ? '没有匹配的条目' : '此目录为空';
   empty.classList.toggle('show', list.length === 0);
+  updateThinScrolls();          /* v13：内容高度变了，细滚动条跟着算 */
   // 全选框三态
   const dirs = list.length;
   const n = [...S.checked].filter(p => p.startsWith(S.cwd + '/')).length;
@@ -1625,8 +2274,7 @@ $('listScroll').addEventListener('click', e => {
   }
   const more = e.target.closest('[data-act="more"]');
   if (more){
-    /* v5：行尾「更多」= 该行的右键菜单，作用对象与右击一致 */
-    if (!S.checked.has(path)){ S.checked.clear(); S.checked.add(path); }
+    /* v9：行尾「更多」= 该行的右键菜单，作用对象与右击一致；同样不碰勾选集合 */
     S.selectedRow = path; S.anchor = path;
     const r = more.getBoundingClientRect();
     renderList();
@@ -1707,6 +2355,9 @@ function navigate(path, push = true){
   S.recents = [path, ...S.recents.filter(p => p !== path)].slice(0, 8);
   S.selectedRow = null;
   S.checked = new Set([...S.checked].filter(p => !p.startsWith(path + '/')));
+  /* v19：树的展开态跟随当前路径 —— 只保留「当前目录 + 各级父目录」，
+     上一次留在别处的兄弟目录自动收起（图标换回未打开）。 */
+  S.expanded = new Set();
   S.expanded.add(path);
   const parts = path.split('/').filter(Boolean);
   let acc = '';
@@ -1803,12 +2454,11 @@ window.addEventListener('keydown', e => { if (e.key === 'Escape'){ const hadMenu
 $('listScroll').addEventListener('contextmenu', e => {
   e.preventDefault();
   const row = e.target.closest('.f-row');
-  /* v5：右击 = 选中该行（Windows 语义）——总是设为当前行；
-     若它不在多选集合里，集合替换为它；若已在集合里，保留整组多选。 */
+  /* v9：右击只把该行设为当前行（阴影），**不动勾选集合** ——
+     勾选只由复选框 / Ctrl+A / Shift 连选产生，右击不产生勾选态。 */
   if (row){
-    const p = row.dataset.path;
-    if (!S.checked.has(p)){ S.checked.clear(); S.checked.add(p); }
-    S.selectedRow = p;
+    S.selectedRow = row.dataset.path;
+    S.anchor = row.dataset.path;
     renderList();
   }
   rowMenu(row, e.clientX, e.clientY);
@@ -2240,7 +2890,11 @@ $('hiddenBtn').onclick = () => {
 $('treeBtn').onclick = () => {
   const hidden = $('treePane').style.display === 'none';
   $('treePane').style.display = hidden ? '' : 'none';
-  $('treeBtn').classList.toggle('active', !hidden);
+  /* v12：图标随两态换（收起 → 展开），tooltip 同步；项目两个资产都已注册 */
+  $('treeUse').setAttribute('href', hidden ? '#i-collapse' : '#i-expand');
+  $('treeBtn').dataset.tip = hidden ? '收起目录树' : '展开目录树';
+  /* v23：这枚不再染强调色 —— 树在不在场上一目了然，按钮只管切换
+     （原逻辑还把 active 反着设：树藏起来才上色）。 */
 };
 /* 批量操作行 */
 $('batchDl').onclick = () => requestDownload([...S.checked]);
@@ -2269,20 +2923,60 @@ $('histMenu').addEventListener('click', e => {
   closeMenus();
   navigate(it.dataset.p);
 });
-$('bmBtn').addEventListener('click', e => {
-  e.stopPropagation();
-  const m = $('bmMenu');
+/* v11：书签行尾删除 —— hover 出删除钮 → 点击原位变「确认」钮（内联二次确认）
+   确认态 3 秒无操作自动回退，避免「待确认」状态粘住；鼠标移出该行 / Esc / 点别处也回退。 */
+let bmTimer = 0, bmPending = null;
+function bmResetConfirm(){
+  clearTimeout(bmTimer); bmTimer = 0;
+  if (bmPending){
+    bmPending.classList.remove('confirming');
+    const b = bmPending.querySelector('.bm-del');
+    b.classList.remove('confirm');
+    b.innerHTML = ico('delete');
+    b.dataset.tip = '删除此书签';
+    bmPending = null;
+  }
+}
+function bmStartConfirm(row){
+  bmResetConfirm();
+  bmPending = row;
+  row.classList.add('confirming');
+  const b = row.querySelector('.bm-del');
+  b.classList.add('confirm');
+  b.innerHTML = `${ico('check')}<span>确认</span>`;
+  b.dataset.tip = '确认删除（3 秒内有效）';
+  bmTimer = setTimeout(bmResetConfirm, 3000);
+}
+function bmMenuHtml(){
   const cur = S.cwd;
   const starred = S.bookmarks.includes(cur);
-  m.innerHTML = `
+  return `
     <div class="ctx-item" data-act="toggle-star">${ico('star')}${starred ? '取消收藏当前目录' : '收藏当前目录'}</div>
     <div class="ctx-sep"></div>
     ${S.bookmarks.length ? S.bookmarks.map(p => `
-      <div class="ctx-item" data-p="${esc(p)}">${ico('star')}<span style="overflow:hidden;text-overflow:ellipsis;flex:1">${esc(p)}</span></div>
-      <div class="ctx-item" data-del="${esc(p)}" style="height:20px;color:var(--slot-t3)">${ico('delete')}<span style="font-size:10.5px">删除此书签</span></div>
-    `).join('') : `<div class="ctx-item disabled">${ico('star')}暂无书签</div>`}
+      <div class="ctx-item bm-row" data-p="${esc(p)}">
+        ${ico('star')}${bmPathHtml(p)}
+        <span class="bm-del" data-del="${esc(p)}" role="button" tabindex="-1" data-tip="删除此书签">${ico('delete')}</span>
+      </div>`).join('') : `<div class="ctx-item disabled">${ico('star')}暂无书签</div>`}
   `;
-  m.dataset.cur = cur;
+}
+/* 书签路径：掐头留尾 —— 头段按像素省略（切在分隔符处），末段目录名永远完整 */
+function bmPathHtml(p){
+  if (p.length <= 24) return `<span class="bm-path" data-tip="${esc(p)}"><span class="bm-tail">${esc(p)}</span></span>`;
+  const mid = Math.floor(p.length / 2);
+  let cut = p.lastIndexOf('/', mid);              /* 中点前最近的分隔符 */
+  if (cut <= 0) cut = p.indexOf('/', mid);
+  if (cut <= 0) return `<span class="bm-path" data-tip="${esc(p)}"><span class="bm-tail">${esc(p)}</span></span>`;
+  const head = p.slice(0, cut + 1);              /* 含尾分隔符 */
+  const tail = '/' + p.slice(cut + 1);           /* 末段自带分隔符，拼起来仍是一条完整路径 */
+  return `<span class="bm-path" data-tip="${esc(p)}"><span class="bm-head">${esc(head)}</span><span class="bm-tail">${esc(tail)}</span></span>`;
+}
+$('bmBtn').addEventListener('click', e => {
+  e.stopPropagation();
+  const m = $('bmMenu');
+  bmResetConfirm();
+  m.innerHTML = bmMenuHtml();
+  m.dataset.cur = S.cwd;
   const r = e.currentTarget.getBoundingClientRect();
   openMenuAt(m, r.left - 160, r.bottom + 4);
 });
@@ -2290,12 +2984,21 @@ $('bmMenu').addEventListener('click', e => {
   const m = $('bmMenu');
   const del = e.target.closest('[data-del]');
   if (del){
-    S.bookmarks = S.bookmarks.filter(p => p !== del.dataset.del);
-    toast('书签已删除');
-    $('bmBtn').click();   // 重开刷新
+    e.stopPropagation();
+    const row = del.closest('.bm-row');
+    if (row.classList.contains('confirming')){
+      /* 第二次点击 = 确认删除 */
+      S.bookmarks = S.bookmarks.filter(p => p !== del.dataset.del);
+      toast('书签已删除');
+      bmResetConfirm();
+      closeMenus();
+    } else {
+      /* 第一次点击 = 进入待确认，删除钮原位变「确认」钮 */
+      bmStartConfirm(row);
+    }
     return;
   }
-  const go = e.target.closest('.ctx-item[data-p]');
+  const go = e.target.closest('.bm-row[data-p]');
   if (go){ closeMenus(); navigate(go.dataset.p); return; }
   const act = e.target.closest('[data-act="toggle-star"]');
   if (act){
@@ -2306,10 +3009,14 @@ $('bmMenu').addEventListener('click', e => {
     toast(S.bookmarks.includes(cur) ? `已收藏 ${cur}` : '已取消收藏');
   }
 });
+/* 鼠标移出待确认行 = 放弃确认（回到删除钮） */
+$('bmMenu').addEventListener('mouseleave', e => {
+  if (bmPending && !bmPending.contains(e.relatedTarget)) bmResetConfirm();
+}, true);
 
-/* 拖文件行到主窗 dock 卡 = 下载到本机（系统拖出下载的站内演示，v3） */
+/* 拖文件行到主窗 = 下载到本机（系统拖出下载的站内演示，v3；v9 主窗外壳换 id） */
 (() => {
-  const dd = $('dockDemo');
+  const dd = $('shell');
   dd.addEventListener('dragover', e => {
     if (!dragPath) return;
     e.preventDefault();
@@ -2519,9 +3226,6 @@ function startDownload(paths, sequential = false, dirKind = 'dl', archive = fals
 function updateQueueUI(){
   const active = S.queue.filter(q => !q.finished && !q.canceled);
   $('queueCnt').textContent = `(${active.length})`;
-  const badge = $('queueBadge');
-  badge.style.display = active.length ? '' : 'none';
-  badge.textContent = active.length;
   $('queueList').innerHTML = S.queue.map(q => `
     <div class="q-row ${q.finished?'done':''} ${q.paused?'paused':''} ${q.canceled?'canceled':''}" data-id="${q.id}">
       <span class="dir ${q.dir}">${ico(q.dir === 'dl' ? 'download' : 'upload')}</span>
@@ -2537,10 +3241,32 @@ function updateQueueUI(){
         <button data-act="${q.finished ? 'remove' : 'cancel'}" data-tip="${q.finished ? '移除' : '取消'}">${ico('close')}</button>
       </span>
     </div>`).join('');
-  const down = active.filter(q => !q.paused && q.dir === 'dl').length ? SPEED : 0;
-  const up   = active.filter(q => !q.paused && q.dir === 'ul').length ? SPEED : 0;
-  $('stDown').innerHTML = down ? fmtSize(down) + '/s' : '0 B/s';
-  $('stUp').innerHTML   = up   ? fmtSize(up) + '/s'   : '0 B/s';
+  /* v21：状态栏右下角 = 一块聚合（多传输口径）
+     —— 进行中项数 + 双向**各自**的聚合速率（多个同向任务合并成一个总吞吐）；
+     —— 空闲不摆「0 B/s 0 B/s」两条噪音，只留一枚淡的 ⇅（仍可点开队列）。
+     —— 明细在队列抽屉逐条给；悬浮则先在气泡里看到在传哪几个。 */
+  const running = active.filter(q => !q.paused);
+  const down = running.filter(q => q.dir === 'dl').length * SPEED;
+  const up   = running.filter(q => q.dir === 'ul').length * SPEED;
+  const xf = $('stXfer');
+  xf.classList.toggle('idle', !active.length);
+  $('stXferCnt').textContent = active.length ? `${active.length} 项` : '';
+  $('stDown').textContent = down ? '↓ ' + fmtSize(down) + '/s' : '';
+  $('stUp').textContent   = up   ? '↑ ' + fmtSize(up) + '/s'   : '';
+  /* 悬浮明细：进行中的最多 4 条 + 还有 N 条 */
+  const pop = $('stXferPop');
+  if (!active.length){
+    pop.innerHTML = `<div class="xp-title">传输队列</div><div class="xp-empty">当前没有传输</div>`;
+  } else {
+    const shown = active.slice(0, 4).map(q => `
+      <div class="xp-row ${q.dir === 'dl' ? 'dl' : 'up'}">
+        ${ico(q.dir === 'dl' ? 'download' : 'upload')}
+        <span class="nm">${esc(q.name)}</span>
+        <span class="pct">${q.paused ? '已暂停' : ((q.done/q.size*100)|0) + '%'}</span>
+      </div>`).join('');
+    pop.innerHTML = `<div class="xp-title">进行中 ${active.length} 项${running.length < active.length ? `（${active.length - running.length} 项暂停）` : ''}</div>${shown}`
+      + (active.length > 4 ? `<div class="xp-more">还有 ${active.length - 4} 项…</div>` : '');
+  }
 }
 setInterval(() => {
   let changed = false;
@@ -2597,7 +3323,7 @@ $('queueMenu').addEventListener('click', e => {
   updateQueueUI();
 });
 $('queueClear').onclick = () => { S.queue = S.queue.filter(q => !q.finished && !q.canceled); updateQueueUI(); };
-$('queueBtn').onclick = () => {
+$('stXfer').onclick = () => {
   const q = $('queuePane');
   q.classList.toggle('open');
   if (q.classList.contains('open') && !S.queue.length){
@@ -2670,7 +3396,7 @@ function setPanelMode(m){
   S.panelMode = m;
   $('tabFiles').classList.toggle('on', m === 'files');
   $('tabTunnels').classList.toggle('on', m === 'tunnels');
-  $('treePane').style.display = m === 'files' && $('treeBtn').classList.contains('active') === false ? '' : (m === 'files' ? '' : 'none');
+  $('treePane').style.display = m === 'files' ? '' : 'none';   /* 文件页显示树，隧道页不显示 */
   $('listHead').style.display = m === 'files' ? '' : 'none';
   $('listScroll').style.display = m === 'files' ? '' : 'none';
   $('filterBar').style.display = m === 'files' ? '' : 'none';
@@ -2849,31 +3575,35 @@ $('winMenu').addEventListener('click', e => {
   if (act === 'max') $('maxBtn').click();
 });
 
-function dockBack(msg = '已停靠回主窗面板'){
-  $('dockPanel').classList.remove('undocked');
-  $('dockDemo').classList.remove('hidden');
-  $('dockHint').style.visibility = '';
-  $('sftpWin').classList.add('popped-in');
-  toast(msg);
-}
-function popOut(){
-  $('dockPanel').classList.add('undocked');
-  const win = $('sftpWin');
+/* ═══════ v9：形态切换 —— 主窗底部停靠 ⇄ 独立窗口（同一份面板 DOM 搬位置） ═══════ */
+const CORE = $('sftpCore'), SLOT = $('dockSlot'), WIN = $('sftpWin');
+function popOut(msg = 'SFTP 面板已弹出为独立窗口'){
+  if (!SLOT.contains(CORE)) return;
+  WIN.insertBefore(CORE, $('resizeGrip'));   /* 面板进窗口，窗口自带标题栏 */
+  CORE.classList.add('in-window');            /* 窗口形态下工具栏的「弹出独立窗口」隐藏 */
   const st = $('stage').getBoundingClientRect();
-  const dp = $('dockDemo').getBoundingClientRect();
-  win.style.transition = 'none';
-  const L = Math.max(16, Math.min(460, st.width - win.offsetWidth - 16));
-  const T = Math.max(24, Math.min(dp.bottom - st.top - win.offsetHeight + 60, st.height - win.offsetHeight - 16));
-  win.style.left = L + 'px';
-  win.style.top  = T + 'px';
-  win.offsetWidth;
-  win.style.transition = '';
-  win.classList.remove('popped-in');
+  WIN.style.left = Math.max(16, st.width - WIN.offsetWidth - 28) + 'px';
+  WIN.style.top  = '70px';
+  WIN.classList.remove('popped-in');
+  SLOT.classList.add('empty');
   $('dockHint').style.visibility = 'hidden';
+  setStatus(msg, 'ok');
 }
-$('popOutBtn').onclick = popOut;
+function dockBack(msg = '已停靠回主窗底部面板'){
+  if (!WIN.contains(CORE)) return;
+  SLOT.appendChild(CORE);                     /* 面板回主窗底部槽 */
+  CORE.classList.remove('in-window');
+  WIN.classList.add('popped-in');
+  SLOT.classList.remove('empty');
+  $('dockHint').style.visibility = '';
+  setStatus(msg, 'ok');
+}
+/* 初始形态：面板常态 = 停靠在主窗底部 */
+SLOT.appendChild(CORE);
+$('popOutBtn').onclick = () => popOut();
+$('dockBackBtn2').onclick = () => dockBack();
 $('dockBackBtn').onclick = () => dockBack();
-$('closeBtn').onclick = () => dockBack('窗口已关闭 · 面板停靠回主窗');
+$('closeBtn').onclick = () => dockBack('窗口已关闭 · 面板停靠回主窗底部');
 
 /* ═══════ 状态栏操作结果槽：把散落 toast 收成一条可读反馈 ═══════ */
 let stTimer = 0;
@@ -2932,7 +3662,7 @@ setTimeout(() => {
   const maxT = Math.max(24, Math.min(70, stage.offsetHeight - win.offsetHeight - 16));
   win.style.left = maxL + 'px';
   win.style.top = maxT + 'px';
-  win.classList.remove('popped-in');
+  /* v9：初始形态 = 面板停靠在主窗底部 —— 窗口保持收起，不摘 popped-in */
 }, 120);
 </script>
 </body>
