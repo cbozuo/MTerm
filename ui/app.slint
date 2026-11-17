@@ -1030,10 +1030,15 @@ component PanelMenu inherits Rectangle {
         PanelMenuItem { item-id: "new-group"; glyph-name: "folder-plus"; label: @tr("New group"); picked(a) => { root.action(a); } }
         // 新增：与标题栏「管理分组」钮 / Ctrl+Shift+G 同一入口。
         PanelMenuItem { item-id: "manage-groups"; glyph-name: "group-list"; label: @tr("Manage groups"); picked(a) => { root.action(a); } }
-        PanelMenuItem { item-id: "import-ssh-config"; glyph-name: "download"; label: @tr("Import ~/.ssh/config"); picked(a) => { root.action(a); } }
-        PanelMenuItem { item-id: "export-connections"; glyph-name: "upload"; label: @tr("Export connections"); picked(a) => { root.action(a); } }
+        // 顺序也与该菜单一致:导出连接 → 导入连接 → 批量导入(文本) → 导入 ~/.ssh/config。
+        // (#menu-icon-align 2026-11-17 用户要求) 这四项图标与主界面右侧「设置」
+        // 菜单用**同一套 SVG**:导入 ~/.ssh/config = input、导出连接 = arrow-up、
+        // 导入连接 = arrow-down、批量导入(文本) = table-rows。此前左侧用的是
+        // download/upload（带托盘线的那对），与标题栏那套不是同一个资产。
+        PanelMenuItem { item-id: "export-connections"; glyph-name: "arrow-up"; label: @tr("Export connections"); picked(a) => { root.action(a); } }
         PanelMenuItem { item-id: "import-connections"; glyph-name: "arrow-down"; label: @tr("Import connections"); picked(a) => { root.action(a); } }
         PanelMenuItem { item-id: "batch-import"; glyph-name: "table-rows"; label: @tr("Batch import (text)"); picked(a) => { root.action(a); } }
+        PanelMenuItem { item-id: "import-ssh-config"; glyph-name: "input"; label: @tr("Import ~/.ssh/config"); picked(a) => { root.action(a); } }
         PanelMenuDivider { }
         PanelMenuItem { item-id: "expand-all"; glyph-name: "unfold-more"; label: @tr("Expand all"); picked(a) => { root.action(a); } }
         PanelMenuItem { item-id: "collapse-all"; glyph-name: "unfold-less"; label: @tr("Collapse all"); picked(a) => { root.action(a); } }
@@ -5060,7 +5065,10 @@ export component AppWindow inherits Window {
                 : root.ctx-menu-y,
             parent.height - self.height - 8px));
         // 宽度随内容(快捷键列加宽后下限 190 / 上限 260)。
-        width: min(260px, max(190px, row-menu-vl.preferred-width));
+        // (#row-menu-noshortcut 2026-11-17 用户要求) 成员菜单不再显示快捷键
+        // (Enter / Ctrl+Enter),宽度随之收窄:下限 190→164(库内菜单紧凑档),
+        // 上限 260→240,与面板 ⋯ / 组头菜单同一档,不再靠内容撑出一条空列。
+        width: min(240px, max(164px, row-menu-vl.preferred-width));
         height: row-menu-vl.preferred-height;
         background: Theme.popup-bg;
         border-radius: Theme.radius-sm;
@@ -5101,12 +5109,6 @@ export component AppWindow inherits Window {
                         horizontal-stretch: 1;
                         horizontal-alignment: left;
                     }
-                    Text {
-                        text: "Enter";
-                        color: Theme.text-muted;
-                        font-size: Theme.fs-2xs;
-                        vertical-alignment: center;
-                    }
                 }
             }
             // ② 在新标签页打开(Ctrl+Enter)
@@ -5138,12 +5140,6 @@ export component AppWindow inherits Window {
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                         horizontal-alignment: left;
-                    }
-                    Text {
-                        text: "Ctrl+Enter";
-                        color: Theme.text-muted;
-                        font-size: Theme.fs-2xs;
-                        vertical-alignment: center;
                     }
                 }
             }
@@ -5331,6 +5327,255 @@ export component AppWindow inherits Window {
             parent.height - self.height - 8px));
         system-hidden: root.system-hidden;
         action(a) => { root.run-panel-menu(a); }
+    }
+
+    // (#ctx-group-menu 组头菜单:右键与悬停 ⋮ 共用;[!] 2026-11-17 的
+    // #panel-menu-unify 重构曾把它误删(整段替换跨过了它),此处按历史版本恢复。
+    if root.ctx-open-key != "" && root.ctx-menu-kind == "group" : grp-menu-rect := Rectangle {
+        x: max(8px, min(root.ctx-menu-x, parent.width - self.width - 8px));
+        y: min(
+            self.height > root.ctx-menu-space-below
+                ? max(8px, root.ctx-menu-y - self.height)
+                : root.ctx-menu-y,
+            parent.height - self.height - 8px);
+        // (#ctx-menu-fit 2026-09-13) 宽度跟着内容走,左右留白一致。
+        // (#ui-menu-compact-right 2026-09-15) 内容宽,色块紧贴文字。
+        // (#grp-menu-v2 2026-11-12) 下限 164 / 上限 260:新增「新建子分组 /
+        // 隐藏本地终端」等长条目在英文下不再顶出或被 elide 截断。
+        width: min(260px, max(164px, grp-menu-vl.preferred-width));
+        height: grp-menu-vl.preferred-height;
+        background: Theme.popup-bg;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        drop-shadow-blur: 10px;
+        drop-shadow-color: transparent;
+        // (#ctx-menu-autoclose) 垫底探测 + 安全区聚合 + 自动关闭,
+        // 同 row 菜单(组头菜单无动态项,全静态聚合)。
+        // (#ctx-menu-autoclose) 垫底探测:同 row 菜单,挡住 backdrop hover。
+        g-pad := TouchArea { width: 100%; height: 100%; }
+        grp-menu-vl := VerticalLayout {
+            // (#grp-menu-v2 2026-11-12 用户要求"参考高保真 left-panel-session-
+            // hifi §.context-menu")组头菜单重做:在此分组新建会话 / 新建子分组
+            // (仅父组) / 重命名分组 / 分组颜色…(右侧显示当前色号) / ─── /
+            // 展开全部 / 折叠全部 / 管理分组(既有入口保留) / ─── /
+            // 隐藏本地终端(用户点名补回) / 删除分组(红)。
+            // 保留组(default/system)只留通用项:新建会话 / 颜色 / 展开折叠 /
+            // 隐藏;重命名/新建子分组/删除对保留组隐藏(Rust 侧同样会拒绝)。
+            padding: 5px;
+            spacing: 0px;
+            // ① 在此分组新建会话(本地终端组隐藏:#grp-menu-local)
+            if !root.grp-menu-local() : Rectangle {
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: g-newsess-ta.has-hover ? Theme.bg-hover : transparent;
+                g-newsess-ta := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.ctx-open-key = "";
+                        root.ctx-menu-kind = "";
+                        root.new-session-clicked();
+                        // 新建弹框打开后预填本组(双向绑定直写 draft-group;
+                        // Rust 的 reset 在回调内同步跑完,这里后写生效)。
+                        root.dialog-group = root.ctx-menu-group;
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 10px; spacing: 9px;
+                    Icon { glyph: "new-session"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    Text { text: @tr("New session in this group"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
+                }
+            }
+            // ② 新建子分组(仅父组 depth 0、非保留组;高保真 UI 限深 2)
+            if root.ctx-menu-depth == 0 && !root.grp-menu-reserved() : Rectangle {
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: g-subgrp-ta.has-hover ? Theme.bg-hover : transparent;
+                g-subgrp-ta := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.ctx-open-key = "";
+                        root.ctx-menu-kind = "";
+                        // (#subgroup-dialog 2026-11-13 用户要求"新建和重命名用
+                        // 同一套弹框逻辑") 直建退役 → 打开组弹框 create 模式
+                        // (带父组,可输入名字+分组颜色同款色板,确定才落盘)。
+                        root.group-dialog-parent = root.ctx-menu-group;
+                        root.group-dialog-orig = "";
+                        root.group-dialog-name = "";
+                        root.group-dialog-error = "";
+                        root.group-dialog-color-hex = "";
+                        root.group-dialog-color = #00000000;
+                        root.group-color-picker-for = "dialog";
+                        root.group-dialog-open = true;
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 10px; spacing: 9px;
+                    Icon { glyph: "create-new-folder"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    Text { text: @tr("New subgroup"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
+                }
+            }
+            // ③ 重命名分组
+            if !root.grp-menu-reserved() : Rectangle {
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: g-edit-ta.has-hover ? Theme.bg-hover : transparent;
+                g-edit-ta := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.ctx-open-key = "";
+                        root.group-dialog-orig = root.ctx-menu-group;
+                        root.group-dialog-name = root.ctx-menu-group;
+                        root.group-dialog-error = "";
+                        root.group-dialog-color-hex = root.ctx-menu-group-color-hex;
+                        root.group-dialog-color = root.ctx-menu-group-color;
+                        root.group-dialog-open = true;
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 10px; spacing: 9px;
+                    Icon { glyph: "edit"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    Text { text: @tr("Rename group"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
+                }
+            }
+            // ④ 分组颜色…（右侧显示当前色号；点开取色面板，菜单不消失）
+            Rectangle {
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: g-color-ta.has-hover ? Theme.bg-hover : transparent;
+                g-color-ta := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.group-color-picker-for = "";   // ctx 落盘链
+                        root.group-color-picker-open = !root.group-color-picker-open;
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 9px;
+                    // 行内三项(图标/文字/色块)统一交叉轴居中 —— 定高子项在 HL 里默认
+                    // 顶对齐,色块会偏高(用户反馈"色块要居中显示")。
+                    cross-axis-alignment: center;
+                    Icon { glyph: "palette"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    Text { text: @tr("Group color…"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
+                    // (#group-color-swatch 2026-11-17 用户要求) 右侧**只放色块**:
+                    // 十六进制色号和「默认」文案都不要(前者要读、后者占位),色块本身
+                    // 就是答案。规格与分组弹框头部的色点一致(12px 圆 / 1px 描边);
+                    // 未设色时是透明底 + muted 描边的"空环"。
+                    Rectangle {
+                        width: 12px;
+                        height: 12px;
+                        border-radius: 6px;
+                        background: root.ctx-menu-group-color-hex == "" ? transparent : root.ctx-menu-group-color;
+                        border-width: 1px;
+                        border-color: root.ctx-menu-group-color-hex == "" ? Theme.text-muted : Theme.border-strong;
+                    }
+                }
+            }
+            // ─── 分区线
+            Rectangle { height: 9px; }
+            Rectangle { height: 1px; background: Theme.border-subtle; }
+            Rectangle { height: 9px; }
+            // ⑤ 展开全部
+            Rectangle {
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: g-exp-ta.has-hover ? Theme.bg-hover : transparent;
+                g-exp-ta := TouchArea {
+                    mouse-cursor: default;
+                    clicked => { root.ctx-open-key = ""; root.ctx-menu-kind = ""; root.set-all-groups-collapsed(false); }
+                }
+                HorizontalLayout {
+                    padding-left: 10px; spacing: 9px;
+                    Icon { glyph: "unfold-more"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    Text { text: @tr("Expand all"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; }
+                }
+            }
+            // ⑥ 折叠全部
+            Rectangle {
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: g-col-ta.has-hover ? Theme.bg-hover : transparent;
+                g-col-ta := TouchArea {
+                    mouse-cursor: default;
+                    clicked => { root.ctx-open-key = ""; root.ctx-menu-kind = ""; root.set-all-groups-collapsed(true); }
+                }
+                HorizontalLayout {
+                    padding-left: 10px; spacing: 9px;
+                    Icon { glyph: "unfold-less"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    Text { text: @tr("Collapse all"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; }
+                }
+            }
+            // ⑦ 管理分组(既有入口保留 —— 高保真菜单没有它,删掉功能就不可达;
+            // 位置收在展开/折叠之后。本地终端组隐藏:#grp-menu-local —— 全局
+            // 入口仍有 Ctrl+Shift+G / 标题 ⋯ 菜单)
+            if !root.grp-menu-local() : Rectangle {
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: gm-ta.has-hover ? Theme.bg-hover : transparent;
+                gm-ta := TouchArea {
+                    mouse-cursor: default;
+                    clicked => {
+                        root.ctx-open-key = "";
+                        root.gm-open-request();
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 10px; spacing: 9px;
+                    Icon { glyph: "group-list"; tint: Theme.text-primary; size: Theme.fs-sm; }
+                    Text { text: @tr("Manage groups"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
+                }
+            }
+            // ─── 分区线
+            Rectangle { height: 9px; }
+            Rectangle { height: 1px; background: Theme.border-subtle; }
+            Rectangle { height: 9px; }
+            // ⑧ 隐藏 / 显示本地终端(用户点名补回;文案随状态切换)
+            Rectangle {
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: g-sys-ta.has-hover ? Theme.bg-hover : transparent;
+                g-sys-ta := TouchArea {
+                    mouse-cursor: default;
+                    clicked => { root.ctx-open-key = ""; root.ctx-menu-kind = ""; root.set-system-group-hidden(!root.system-hidden); }
+                }
+                HorizontalLayout {
+                    padding-left: 10px; spacing: 9px;
+                    Icon {
+        glyph: root.system-hidden ? "visibility" : "visibility-off";
+        tint: Theme.text-primary;
+        size: Theme.fs-sm;
+    }
+                    Text { text: root.system-hidden ? @tr("Show Local Terminals") : @tr("Hide Local Terminals"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
+                }
+            }
+            // ⑨ 删除分组(红;保留组隐藏)。非空组入口恒显但禁用(0.45),
+            // 与高保真同口径("请先把组内会话移出")—— Rust remove_group 会让
+            // 会话回默认组、子组上提,但误点非空组的代价太大,先拦在入口。
+            if !root.grp-menu-reserved() : Rectangle {
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                opacity: root.ctx-menu-empty ? 1.0 : 0.45;
+                background: (root.ctx-menu-empty && g-del-ta.has-hover) ? #cc333320 : transparent;
+                g-del-ta := TouchArea {
+                    mouse-cursor: default;
+                    enabled: root.ctx-menu-empty;
+                    clicked => { root.ctx-open-key = ""; root.ctx-menu-kind = ""; root.delete-group(root.ctx-menu-group); }
+                }
+                HorizontalLayout {
+                    padding-left: 10px; spacing: 9px;
+                    Icon { glyph: "delete"; tint: #cc3333; size: Theme.fs-sm; }
+                    Text { text: @tr("Delete group"); color: #cc3333; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; }
+                }
+            }
+        }
+
+        // (#group-color 2026-09-14) 取色面板:与菜单**并存**(菜单不消失)。
+        // (#gh-ctx-swatch 2026-11-07 用户要求"分组管理同款")旧贴菜单的
+        // GroupColorField 小面板退役——换成分组管理同款 SwatchPopup(48 色
+        // 大色格+选定/调色盘+页脚),实例与右击链取色盘挂**窗口根尾**
+        // (gm 的改色弹层同层,见 7063 注释:模态全屏遮罩,无需贴菜单几何)。
     }
 
     // (#panel-menu-unify 2026-11-17) 面板 ⋯ 钮 = 面板级菜单（与空白右键同一份）。

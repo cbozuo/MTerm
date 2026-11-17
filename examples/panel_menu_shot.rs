@@ -54,6 +54,38 @@ fn main() -> Result<(), slint::PlatformError> {
     println!("wrote output/panel_menu/hint-tab-open.png");
     ui.set_active_tab_id("welcome".into());
 
+    // 组头菜单（ctx-menu-kind="group"）：2026-11-17 被 #panel-menu-unify 的整段
+    // 替换误删过一次，这张图用来盯它确实渲染出来（点 ⋮ 无反应 = 这个块没了）。
+    ui.set_ctx_open_key("hdr:grp-demo".into());
+    ui.set_ctx_menu_kind("group".into());
+    ui.set_ctx_menu_group("1方法".into());
+    ui.set_ctx_menu_group_color(slint::Color::from_rgb_u8(220, 60, 180));
+    ui.set_ctx_menu_group_color_hex("#dc3cb4".into());
+    ui.set_ctx_menu_empty(false);
+    ui.set_ctx_menu_depth(0);
+    ui.set_ctx_menu_x(300.0);
+    ui.set_ctx_menu_y(160.0);
+    ui.set_ctx_menu_space_below(600.0);
+    grab(&ui, "output/panel_menu/group-menu.png");
+    println!("wrote output/panel_menu/group-menu.png");
+    // 未设分组色：右侧应是「默认」+ muted 空环（#group-color-swatch 的另一种状态）。
+    ui.set_ctx_menu_group_color_hex("".into());
+    ui.set_ctx_menu_group_color(slint::Color::from_argb_u8(0, 0, 0, 0));
+    grab(&ui, "output/panel_menu/group-menu-default.png");
+    println!("wrote output/panel_menu/group-menu-default.png");
+    ui.set_ctx_menu_group_color_hex("#dc3cb4".into());
+    ui.set_ctx_menu_group_color(slint::Color::from_rgb_u8(220, 60, 180));
+
+    // 成员行菜单（ctx-menu-kind="row"）：快捷键列已删（#row-menu-noshortcut），
+    // 这张图盯宽度是否收紧、右侧不再留空列。
+    ui.set_ctx_open_key("row:demo".into());
+    ui.set_ctx_menu_kind("row".into());
+    ui.set_ctx_menu_x(300.0);
+    ui.set_ctx_menu_y(200.0);
+    ui.set_ctx_menu_space_below(600.0);
+    grab(&ui, "output/panel_menu/row-menu.png");
+    println!("wrote output/panel_menu/row-menu.png");
+
     for (kind, name) in [("blank", "blank"), ("panel", "panel")] {
         // 菜单锚在面板中部：上下都有空间，上翻/下翻两个分支都不会把菜单裁掉。
         ui.set_ctx_open_key(kind.into());
