@@ -36,6 +36,24 @@ fn main() -> Result<(), slint::PlatformError> {
         .set_size(slint::PhysicalSize::new(W as u32, H as u32));
     ui.show()?;
 
+    // 标题栏右侧「更多」菜单(= settings-open)：与左侧面板菜单的图标/字号对比。
+    ui.set_settings_open(true);
+    grab(&ui, "output/panel_menu/topbar.png");
+    println!("wrote output/panel_menu/topbar.png");
+    ui.set_settings_open(false);
+
+    // (#qs-hint-welcome-only 2026-11-17) 首屏引导条只在 welcome 页露：
+    // 开一个会话 tab 后必须**不**出现在终端画面中央。
+    ui.set_quick_search_hint_visible(true);
+    ui.set_active_tab_id("welcome".into());
+    grab(&ui, "output/panel_menu/hint-welcome.png");
+    println!("wrote output/panel_menu/hint-welcome.png");
+    ui.set_quick_search_hint_visible(true);
+    ui.set_active_tab_id("188 (2) (copy)".into());
+    grab(&ui, "output/panel_menu/hint-tab-open.png");
+    println!("wrote output/panel_menu/hint-tab-open.png");
+    ui.set_active_tab_id("welcome".into());
+
     for (kind, name) in [("blank", "blank"), ("panel", "panel")] {
         // 菜单锚在面板中部：上下都有空间，上翻/下翻两个分支都不会把菜单裁掉。
         ui.set_ctx_open_key(kind.into());
