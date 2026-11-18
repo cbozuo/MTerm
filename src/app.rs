@@ -2430,6 +2430,8 @@ fn open_window(
 
     // --- Build window + models ------------------------------------------
     let window = AppWindow::new().context("failed to build Slint window")?;
+ // (#glass-lab 2026-11-18) 液态玻璃演示浮层开关：MTERM_GLASS_DEMO=1 时显示。
+ window.set_glass_demo_visible(std::env::var("MTERM_GLASS_DEMO").as_deref() == Ok("1"));
     // Cascade origin must be captured *before* registering: once registered,
     // registry.newest() is this window itself. Registration itself is deferred
     // until after the last fallible construction below, so a failed monitor
