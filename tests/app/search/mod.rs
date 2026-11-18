@@ -54,7 +54,7 @@ fn item(id: &str, cat: Category, title: &str, kw: &str, open: bool, rank: i32) -
         kw.to_string(),
         open,
         rank,
-        Payload::None,
+        Payload::Setting { page: "" },
     )
 }
 

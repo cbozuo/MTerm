@@ -23,6 +23,7 @@ NEW_DESC = {
     "file-archive": "压缩包（SFTP 列表按扩展名给类型图标）",
     "file-code": "程序/脚本（SFTP 列表按扩展名给类型图标）",
     "file-data": "结构化数据/清单（SFTP 列表按扩展名给类型图标）",
+    "file-db": "数据库（SFTP 列表按扩展名给类型图标）",
     "file-image": "图片文件（SFTP 列表按扩展名给类型图标）",
     "file-font": "字体文件（SFTP 列表按扩展名给类型图标）",
     "file-log": "日志文件（SFTP 列表按扩展名给类型图标）",
