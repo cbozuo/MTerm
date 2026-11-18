@@ -426,9 +426,9 @@ fn contains_cjk(s: &str) -> bool {
 fn is_emoji_char(c: char) -> bool {
     matches!(c as u32,
         0x1F000..=0x1FAFF   // symbols & pictographs / emoticons / transport / supplemental
+                            // （含 0x1F1E6..=0x1F1FF 区域指示符/国旗，不必单列）
         | 0x2600..=0x27BF   // misc symbols + dingbats（☕ ✅ ✂ ✔）
         | 0x2B00..=0x2BFF   // 补充箭头 / 星形
-        | 0x1F1E6..=0x1F1FF // 区域指示符（国旗）
         | 0xFE0F)           // variation selector-16（emoji 呈现）
 }
 
@@ -457,76 +457,7 @@ fn is_nerd_icon_char(c: char) -> bool {
     matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD)
 }
 
-/// 16-colour ANSI palette for **dark** terminals (VS Code "Dark+" values).
-const ANSI16_DARK: [(u8, u8, u8); 16] = [
-    (0x00, 0x00, 0x00), // 0  black
-    (0xcd, 0x31, 0x31), // 1  red
-    (0x0d, 0xbc, 0x79), // 2  green
-    (0xe5, 0xe5, 0x10), // 3  yellow
-    (0x24, 0x72, 0xc8), // 4  blue
-    (0xbc, 0x3f, 0xbc), // 5  magenta
-    (0x11, 0xa8, 0xcd), // 6  cyan
-    (0xe5, 0xe5, 0xe5), // 7  white        (light grey on dark bg)
-    (0x66, 0x66, 0x66), // 8  bright black
-    (0xf1, 0x4c, 0x4c), // 9  bright red
-    (0x23, 0xd1, 0x8b), // 10 bright green
-    (0xf5, 0xf5, 0x43), // 11 bright yellow
-    (0x3b, 0x8e, 0xea), // 12 bright blue
-    (0xd6, 0x70, 0xd6), // 13 bright magenta
-    (0x29, 0xb8, 0xdb), // 14 bright cyan
-    (0xff, 0xff, 0xff), // 15 bright white
-];
 
-/// 16-colour ANSI palette for **light** terminal **foreground** (text) use.
-///
-/// On a near-white (#fafafa) background, the standard "white" (slot 7) and
-/// "bright white" (slot 15) are nearly invisible.  We remap them to dark greys
-/// so `ls`, `git` and other tools that use colour 7 for regular text stay
-/// perfectly readable.  Saturated hues are darkened for contrast.
-const ANSI16_LIGHT: [(u8, u8, u8); 16] = [
-    (0x1c, 0x1c, 0x1e), // 0  black        → Apple near-black
-    (0xc0, 0x39, 0x2b), // 1  red
-    (0x1a, 0x7f, 0x37), // 2  green        → darker for white bg
-    (0x85, 0x64, 0x04), // 3  yellow       → dark amber, readable
-    (0x04, 0x51, 0xa5), // 4  blue         → VS Code light blue
-    (0x80, 0x00, 0x80), // 5  magenta
-    (0x0e, 0x72, 0x5c), // 6  cyan         → darker teal
-    (0x3a, 0x3a, 0x3c), // 7  white        → dark grey (was 0xe5e5e5, near-invisible)
-    (0x55, 0x55, 0x55), // 8  bright black
-    (0xe7, 0x4c, 0x3c), // 9  bright red
-    (0x27, 0xae, 0x60), // 10 bright green
-    (0xd4, 0xac, 0x0d), // 11 bright yellow
-    (0x2e, 0x86, 0xc1), // 12 bright blue
-    (0x9b, 0x59, 0xb6), // 13 bright magenta
-    (0x1a, 0xbc, 0x9c), // 14 bright cyan
-    (0x2c, 0x2c, 0x2e), // 15 bright white → dark (was 0xffffff, near-invisible)
-];
-
-/// 16-colour ANSI palette for **light** terminal **background** (fill) use.
-///
-/// When TUI programs (btop, htop, vim) paint cell backgrounds in light mode,
-/// each colour maps to a light-tinted variant so the overall UI feels light.
-/// "Black" (slot 0) becomes a very light grey rather than near-black, so
-/// dark-background TUI apps naturally inherit a light appearance.  Foreground
-/// text always uses `ANSI16_LIGHT` so readability is unaffected.
-const ANSI16_LIGHT_BG: [(u8, u8, u8); 16] = [
-    (0xe8, 0xe8, 0xed), // 0  black        → Apple system-grey-6 (very light)
-    (0xff, 0xd5, 0xd5), // 1  red          → light rose
-    (0xd5, 0xf5, 0xd5), // 2  green        → light mint
-    (0xff, 0xf8, 0xd5), // 3  yellow       → light cream
-    (0xd5, 0xe8, 0xf8), // 4  blue         → light sky
-    (0xf5, 0xd5, 0xf5), // 5  magenta      → light lilac
-    (0xd5, 0xf5, 0xf8), // 6  cyan         → light aqua
-    (0xf5, 0xf5, 0xf7), // 7  white        → Apple bg (near-white)
-    (0xd1, 0xd1, 0xd6), // 8  bright black → Apple system-grey-4
-    (0xff, 0xbe, 0xbe), // 9  bright red   → light salmon
-    (0xbe, 0xf5, 0xbe), // 10 bright green
-    (0xf5, 0xf5, 0xbe), // 11 bright yellow
-    (0xbe, 0xdd, 0xff), // 12 bright blue  → light periwinkle
-    (0xf0, 0xbe, 0xff), // 13 bright magenta → light violet
-    (0xbe, 0xf5, 0xff), // 14 bright cyan
-    (0xff, 0xff, 0xff), // 15 bright white → white
-];
 
 /// Convert a vt100 foreground colour (+ bold) to a Slint colour.
 /// Bold + a base colour (0–7) maps to the bright variant (8–15), matching
@@ -674,7 +605,7 @@ fn darken_light_fg(r: u8, g: u8, b: u8, bg: (u8, u8, u8)) -> (u8, u8, u8) {
 /// Non-default backgrounds (btop/htop bars, selected rows) become opaque.
 ///
 /// In light mode:
-/// - ANSI 16 colours use `ANSI16_LIGHT_BG` (light pastels).
+/// - ANSI 16 colours come from the active theme's `ansi16` table (light pastels).
 /// - True-colour RGB backgrounds that are dark (HSL lightness < 0.45) are
 ///   remapped to light pastels so programs like btop feel light-themed.
 fn vt_bg_to_slint(

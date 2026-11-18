@@ -22,8 +22,6 @@ pub(crate) mod net;
 pub(crate) mod listen;
 #[path = "impls/chart.rs"]
 pub(crate) mod chart;
-#[path = "impls/local_ip.rs"]
-pub(crate) mod local_ip;
 #[path = "impls/listen_remote.rs"]
 pub(crate) mod listen_remote;
 #[path = "impls/ping_remote.rs"]
@@ -36,4 +34,3 @@ pub(crate) use listen::listen_table;
 pub(crate) use listen_remote::listen_table_remote;
 pub(crate) use ping_remote::ping_remote;
 pub(crate) use chart::{chart_paths, loss_path, spark_path};
-pub(crate) use local_ip::local_ipv4_list;

@@ -40,16 +40,15 @@ impl Category {
     }
 }
 
-/// 执行器需要的载荷。`None` = 纯展示（理论上不出现，兜底用）。
+/// 执行器需要的载荷。
 #[derive(Clone, Debug)]
 pub(crate) enum Payload {
-    None,
     /// 会话：`session_id` 供连接/切换；`ssh_cmd` 供 Ctrl+Enter 复制。
     Session { session_id: String, ssh_cmd: String },
     /// 命令文本（Enter 发送到当前会话 / Ctrl+Enter 填入命令栏）。
     Command { cmd: String, from_history: bool },
     /// 设置项：`page` = settings 弹框 `ifd-page` 页名。
-    Setting { page: &'static str, key: &'static str },
+    Setting { page: &'static str },
     /// 动作：`act` = 执行器分派键；`shortcut` = 展示快捷键（空 = 无）。
     Action { act: &'static str, shortcut: &'static str },
 }

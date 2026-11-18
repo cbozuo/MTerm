@@ -152,9 +152,8 @@ pub(super) fn apply_session_event_to_window(
             swap_total_kib,
             net,
             disks,
-            current_user: _,
-            procs: _,
             sys,
+            .. // current_user/procs 仅 parse 测试消费
         } => {
             if let Some(st) = statuses.lock().unwrap().get_mut(tab_id) {
                 st.cpu = cpu_percent;

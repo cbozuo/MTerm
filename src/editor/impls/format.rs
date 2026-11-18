@@ -46,7 +46,7 @@ pub(crate) fn can_format(lang: Lang) -> bool {
 fn format_xml(text: &str) -> Result<String, String> {
     let mut out = String::new();
     let mut depth = 0i32;
-    let indent = "    ";
+    let _indent = "    ";
     let mut rest = text.trim();
     // 粗分词:扫描 <...> 与标签间文本。声明/注释/CDATA 原样;开 tag 深度+,闭 tag-。
     while !rest.is_empty() {

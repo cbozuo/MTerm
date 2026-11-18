@@ -638,15 +638,6 @@ mod win {
     }
 
     /// 移除托盘图标。
-    unsafe fn remove_icon(hwnd: HWND) {
-        let nid = NOTIFYICONDATAW {
-            cbSize: size_of::<NOTIFYICONDATAW>() as u32,
-            hWnd: hwnd,
-            uID: 1,
-            ..Default::default()
-        };
-        let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
-    }
 
     unsafe extern "system" fn wnd_proc(
         hwnd: HWND,

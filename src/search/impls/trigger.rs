@@ -8,7 +8,7 @@
 //!     否则后到的标记会把第一击的时间戳抹掉，双击永远差一击）；
 //!   - 右 Shift 场景尾随 U+0008（~900ms 后）→ 清零（此时早已超窗，防御性）。
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// 双击窗口下限（ms）：给手指自然回弹留区间。
 pub(crate) const SHIFT_MIN_MS: u64 = 80;
@@ -92,17 +92,18 @@ impl DoubleShiftTracker {
     pub(crate) fn reset(&mut self) {
         self.last = None;
     }
-
-    /// 是否处于待机（无第一击在途）。供诊断日志。
+    #[cfg_attr(not(test), allow(dead_code))] // 诊断/节流辅助：仅测试消费
     pub(crate) fn idle(&self) -> bool {
         self.last.is_none()
     }
 
     /// 超时自清（可选：360ms 后的下一击本就会因超窗失败，这里供宿主节流）。
-    pub(crate) fn expired(&self, now: Instant) -> bool {
+    #[cfg_attr(not(test), allow(dead_code))] // 诊断/节流辅助：仅测试消费
+    pub(crate) fn expired(&self, now: std::time::Instant) -> bool {
         self.last
-            .is_some_and(|t0| now.duration_since(t0) > Duration::from_millis(SHIFT_MAX_MS))
+            .is_some_and(|t0| now.duration_since(t0) > std::time::Duration::from_millis(SHIFT_MAX_MS))
     }
+
 }
 
 

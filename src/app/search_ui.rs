@@ -256,7 +256,6 @@ fn build_preview(store: &ConfigStore, item: &SearchItem) -> QsPreview {
                 t("Ctrl+Enter 查看快捷键", "Ctrl+Enter show shortcut").to_string(),
             )
         }
-        crate::search::Payload::None => (t("Enter 执行", "Enter run").to_string(), String::new()),
     };
     QsPreview {
         has_item: true,
@@ -490,7 +489,6 @@ fn execute_item(win: &AppWindow, item: &SearchItem, secondary: bool) -> Option<S
                 run_action(win, act)
             }
         }
-        crate::search::Payload::None => None,
     }
 }
 

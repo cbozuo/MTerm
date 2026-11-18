@@ -354,11 +354,7 @@ impl TermBuffer {
         Some(combined_len.saturating_sub(rows + want_top))
     }
 
-    /// 当前匹配的绝对行号（遮挡让位判定用：匹配行在可视区的 y）。
-    pub(crate) fn find_current_abs_row(&self) -> Option<usize> {
-        let idx = self.find.current?;
-        self.find.hits.hits.get(idx).map(|&(abs, _, _)| abs)
-    }
+
 
     /// 纯数据读取：UI 计数条（current 从 1 起显示）。
     pub(crate) fn find_counts(&self) -> (usize, Option<usize>) {

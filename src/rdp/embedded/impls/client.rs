@@ -1341,23 +1341,6 @@ fn termination_note(reason: &SessionResult<GracefulDisconnectReason>) -> Option<
     }
 }
 
-/// Counter used to hand out trust request ids. Process-global because a session
-/// has exactly one verifier and the id only has to be unique among the requests
-/// actually pending.
-///
-/// **Dead, and dangerous to revive as-is.** The ids the driver actually sends and
-/// re-checks come from [`crate::remote::trust::open_decision`], which is also the
-/// only counter the trust store knows about; this one would hand out ids that
-/// collide with it, and the driver refuses an answer whose id it did not raise.
-/// Left in place (with its test) rather than deleted, so removing it stays a
-/// deliberate cleanup instead of an accident of this change.
-static NEXT_TRUST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
-/// Allocate the next trust request id.
-pub fn next_trust_id() -> u64 {
-    NEXT_TRUST_ID.fetch_add(1, Ordering::Relaxed)
-}
-
 /// Unused today, but the handle type is what the UI holds and the driver keeps
 /// the same shape for when reconnect policy becomes configurable (P1-10).
 #[allow(dead_code)]
@@ -1679,11 +1662,6 @@ mod tests {
     }
 
     #[test]
-    fn trust_ids_are_unique() {
-        assert_ne!(next_trust_id(), next_trust_id());
-    }
-
-    #[test]
     fn the_version_triple_encodes_as_a_build_number() {
         assert_eq!(client_build(), 703, "0.7.3 -> 703");
     }
@@ -1737,8 +1715,6 @@ mod tests {
 
     fn config_with_password(password: &str) -> EmbeddedRdpConfig {
         EmbeddedRdpConfig {
-            tab_id: "tab-1".to_string(),
-            session_id: "session-1".to_string(),
             // RFC 5737 TEST-NET-1: no real host, so the credential store can
             // never hold an entry for it and a blank field stays blank.
             host: "192.0.2.9".to_string(),

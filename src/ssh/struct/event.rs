@@ -66,9 +66,11 @@ pub enum SessionEvent {
         net: Vec<(String, u64, u64)>,
         /// Per-filesystem (mount_point, available_bytes, total_bytes).
         disks: Vec<(String, u64, u64)>,
-        /// Effective login name reported by the remote host (`id -un`).
+        /// Effective login name reported by the remote host (`id -un`). (Dead in production; kept for the parse test.)
+        #[cfg_attr(not(test), allow(dead_code))] // monitor 通道的字段仅 parse 测试消费（生产经 ProcessStats 通道）
         current_user: String,
         /// Top processes by CPU (#23). Empty if the host's `ps` is unusable.
+        #[cfg_attr(not(test), allow(dead_code))] // monitor 通道的字段仅 parse 测试消费（生产经 ProcessStats 通道）
         procs: Vec<ProcInfo>,
         /// Detailed system information for the detached system-info window.
         /// Detailed data is present only for the separately delayed one-shot

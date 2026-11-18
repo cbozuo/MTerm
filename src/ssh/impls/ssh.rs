@@ -181,6 +181,25 @@ mod setup_echo_tests {
         assert!(looks_like_setup_echo(echo, PROMPT_SETUP_PREFIX));
     }
 
+    /// (#echo-leak-r2 2026-11-18) readline 软折行把命令头切断 + 混入提示符前缀
+    /// 时（202 服务器实测：长命令折 4 行全部泄漏），折行归一后仍必须判回声。
+    #[test]
+    fn a_wrapped_echo_is_still_recognised() {
+        // 命令头 "test -z "$FISH_" 被软折行切成两段，前面还有彩色提示符。
+        let wrapped = concat!(
+            "\u{1b}[01;32m[root@localhost \u{1b}[01;34m~\u{1b}[0m]#  test -z \"$FI",
+            "
+",
+            "SH_VERSION\" && eval '__msc(){ …"
+        );
+        assert!(looks_like_setup_echo(wrapped, PROMPT_SETUP_PREFIX));
+        // MOTD 状态行 + 折行开头也不许误判成回声（"Swap used:" 归一后不含命令头）。
+        let unrelated = "System load:	0.04
+Memory used:	8.9%
+";
+        assert!(!looks_like_setup_echo(unrelated, PROMPT_SETUP_PREFIX));
+    }
+
     /// 回声被切成几块时,前几块只是命令前缀 —— 继续缓冲,不要当正文打出来。
     #[test]
     fn a_partial_echo_keeps_buffering() {
@@ -260,8 +279,12 @@ const ZMODEM_CANCEL: [u8; 16] = [
 
 const PROMPT_SETUP_PREFIX: &str = "test -z \"$FISH_VERSION\"";
 const PROMPT_SETUP_SUFFIX: &str = "__ms7'";
-const PROMPT_SETUP_HISTORY_MARKER: &str = "__MTERM_INTERNAL_SETUP_1";
 const PROMPT_SETUP_DONE: &str = "\u{1b}]699;ready\u{07}";
+// (#banner-echo) 历史命令回声抑制哨兵：随 setup 命令下发、回显时剥除。
+// 生产链路已改走 prompt-shape 尾巴判定（见 bound_prompt_setup_echo），
+// 常量仅为内嵌测试验证 PROMPT_BODY 自洽而保留。
+#[cfg_attr(not(test), allow(dead_code))] // 测试 API
+const PROMPT_SETUP_HISTORY_MARKER: &str = "__MTERM_INTERNAL_SETUP_1";
 const PROMPT_BODY: &str = "test -z \"$FISH_VERSION\" && eval '__msc(){ __c=\"$(fc -ln -1 2>/dev/null)\"; [ -n \"$__c\" ] && [ \"$__c\" != \"$__cl\" ] && { __cl=\"$__c\"; printf \"\\033]697;%s\\007\" \"$__c\"; }; }; __ms7(){ printf \"\\033]7;file://%s%s\\007\" \"$HOSTNAME\" \"$PWD\"; __msc; }; if [ -n \"$ZSH_VERSION\" ]; then autoload -Uz add-zsh-hook 2>/dev/null; add-zsh-hook precmd __ms7; else PROMPT_COMMAND=\"__ms7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"; fi; : __MTERM_INTERNAL_SETUP_1; if [ -n \"$BASH_VERSION\" ]; then __md=\"$(history 2>/dev/null | { __md=\"\"; while read -r __mn __mr; do case \"$__mr\" in *\"__ms7()\"*\"PROMPT_COMMAND=\"*) __mn=\"${__mn%\\*}\"; __md=\"$__mn $__md\";; esac; done; printf \"%s\" \"$__md\"; })\"; for __mn in $__md; do history -d \"$__mn\" 2>/dev/null; done; unset __md __mn __mr; fi; __cl=\"$(fc -ln -1 2>/dev/null)\"; printf \"\\033]699;ready\\007\"; __ms7'";
 const PROMPT_SHELL_PROBE: &[u8] = b"if [ -n \"$BASH_VERSION\" ]; then printf '__MTERM_SHELL__:bash\\n'; elif [ -n \"$ZSH_VERSION\" ]; then printf '__MTERM_SHELL__:zsh\\n'; else printf '__MTERM_SHELL__:other\\n'; fi";
 
@@ -558,12 +581,25 @@ fn prompt_like_tail(chunk: &str) -> bool {
 /// 判据用命令开头的一小段：回声里必然有它（可能被提示符或换行分隔），服务器的
 /// 欢迎信息不会有。缓冲只是命令前缀时（回声被切成几块）也算回声，继续等 ——
 /// 这条避免把 `pri` 这种半截回声当正文打出来。
+///
+/// (#echo-leak-r2 2026-11-18) 折行归一：bash 的 readline 回显长命令时在终端宽度处
+/// **插 \r\n 软换行**（用户 202 服务器截图：整条命令折成 4 行全部上屏）。软换行
+/// 可恰好落在命令头 10 字符内部，把 `contains(head)` 的子串切断；而前缀判据要求
+/// 缓冲以命令开头，混合了其它输出前缀的折行回声两头都不满足 → 整块被当「无关
+/// 输出」放行，回声逐块全部泄漏。修法：比较前把两边都按空白（\r\n\t 空格）归一
+/// —— 提示符/无关前缀不影响「命令头在不在」的判定，MOTD 行也不会碰巧含
+/// `test -z "$FISH_` 这种私有开头。
 fn looks_like_setup_echo(buffered: &str, command: &str) -> bool {
-    let head: String = command.chars().take(10).collect();
+    let squash = |s: &str| -> String {
+        s.chars()
+            .filter(|c| !matches!(c, '\r' | '\n' | '\t' | ' '))
+            .collect()
+    };
+    let head: String = squash(&command.chars().take(14).collect::<String>());
     if head.chars().count() < 4 {
         return false;
     }
-    if buffered.contains(&head) {
+    if squash(buffered).contains(&head) {
         return true;
     }
     let stripped = buffered.trim_start();

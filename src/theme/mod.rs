@@ -13,7 +13,7 @@ pub use palettes::find;
 
 use crate::config::AppearanceValues;
 use crate::ui::Theme;
-use slint::{Color, ComponentHandle, Model, ModelRc, VecModel};
+use slint::{Color, ComponentHandle, ModelRc, VecModel};
 use std::rc::Rc;
 
 /// 把 0xRRGGBB 转成 Slint 颜色。

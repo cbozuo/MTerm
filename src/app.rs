@@ -62,7 +62,7 @@ use self::window::*;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Max bytes merged into one Output event before starting a fresh chunk (#209).
 /// Keeps a single UI callback from spending hundreds of ms in vt100 ingest.
@@ -97,7 +97,7 @@ pub(crate) fn refresh_channel_bars(
     window: &AppWindow,
     store: &ConfigStore,
     panes: &slint::VecModel<crate::ui::PaneInfo>,
-    tabs: &slint::VecModel<crate::ui::TabInfo>,
+    _tabs: &slint::VecModel<crate::ui::TabInfo>,
 ) {
     let bars: Vec<crate::ui::ChannelBarInfo> = panes
         .iter()
@@ -151,7 +151,7 @@ pub(crate) fn refresh_channel_bars(
             }
         })
         .collect();
-    for (i, bar) in bars.iter().enumerate() {
+    for (i, _bar) in bars.iter().enumerate() {
         if i < panes.row_count() {
             panes.set_row_data(i, panes.row_data(i).unwrap().clone());
         }
@@ -288,7 +288,7 @@ fn refresh_terminal_hint(
     // 读网格：光标行文本 + 光标列 + 是否全屏。
     let snap = {
         let Some(h) = term_buf(bufs, tab_id) else { return };
-        let mut b = h.lock().unwrap();
+        let b = h.lock().unwrap();
         let (alt, _rows, cols) = {
             let s = b.parser.screen();
             let (r, c) = s.size();
@@ -333,7 +333,7 @@ fn refresh_terminal_hint(
 
     let model = match snap.state {
         // 密码 / 全屏 / 判不准 → 一律不弹（高保真 §4 抑制表）。
-        crate::terminal::LineState::Muted => crate::command_hint::HintModel::hidden(context),
+        crate::terminal::LineState::Muted => crate::command_hint::HintModel::hidden(),
         // 提示符后面是空的 → 也不端候选（同命令栏口径）。
         // ★ 同时解除 Esc 抑制：行被清空 = 新一轮。
         crate::terminal::LineState::Empty => {
@@ -342,7 +342,7 @@ fn refresh_terminal_hint(
                 let tok = w_ob.get_term_hint_reset_token().wrapping_add(1);
                 w_ob.set_term_hint_reset_token(tok);
             }
-            crate::command_hint::HintModel::hidden(context)
+            crate::command_hint::HintModel::hidden()
         }
         crate::terminal::LineState::Ready => {
             was_empty.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -441,7 +441,7 @@ use crate::i18n::t;
 use crate::layout::{LogicalRect, TerminalWheelHit};
 use crate::resource::system::{format_bytes_per_sec, format_mem};
 use crate::resource::{
-    LocalGpuInfo, LocalHardwareInfo, LocalSnap, NetHist, TabStatus, TabStatuses,
+    LocalSnap, NetHist, TabStatus, TabStatuses,
 };
 use crate::resource::{SystemSampler, SystemSnapshot};
 use crate::session::{ConnectCtx, PendingCred, PendingHostKey, PendingMfa};
@@ -2910,7 +2910,7 @@ fn open_window(
     {
         // (#send-cmd-p2 §04②) 插入到光标处:Slint 按光标像素反推行列(等宽
         // 字体),切片拼接在 Rust —— 不劈开正在写的行,光标落插入内容末尾。
-        let snd_weak = send_win.as_weak();
+        let _snd_weak = send_win.as_weak();
         send_win.on_insert_at(move |text: SharedString, line: i32, col: i32, cmd: SharedString| {
             let (new_text, caret) = crate::terminal::send_check::insert_at_cursor(
                 text.as_ref(),
@@ -5460,7 +5460,7 @@ fn open_window(
         });
         // (#chbar-per-tab 2026-10-11) 隐藏/显示状态条：写**指定 tab 行**的
         // channel-bar-hidden（根 tabs + pane.tabs 两处），再重算状态条。
-        let set_bar_hidden = |w: &AppWindow,
+        let set_bar_hidden = |_w: &AppWindow,
                               tabs: &Rc<VecModel<TabInfo>>,
                               panes: &Rc<VecModel<crate::ui::PaneInfo>>,
                               tab_id: &str,
@@ -6860,7 +6860,6 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
                         qs_mods = (st.control_key(), st.alt_key(), st.super_key());
                     }
                     _ => {}
-                    _ => {}
                 }
                 // Recompute window activity, push it to the shared cell, and update
                 // Theme.window-focused (gates the cursor blink) (#127).
@@ -8172,7 +8171,7 @@ fn gm_picked_ids(window: &AppWindow) -> Vec<String> {
 
 /// 新建分组的默认色（高保真 10-22）：当前主题色板里第一个没被占用的颜色。
 /// 新建行的色点直接显示它，落盘时用的也是同一条规则 —— 建之前就能看到会得到什么色。
-fn next_group_color(store: &ConfigStore, dark: bool) -> String {
+fn next_group_color(store: &ConfigStore, _dark: bool) -> String {
     // (#gm-accent-palette) 自动分配色与色板同源 = ACCENT_PRESETS（强调色预设）。
     let used: std::collections::HashSet<String> = store
         .group_records()
@@ -8512,7 +8511,7 @@ fn wire_session_callbacks(
     let refresh_jump_chain = {
         // (#chain-width) 闭包被三个调用点共用(new/edit/rename),非 Copy——
         // 调用点各自 clone。
-        let cw = chain_width.clone();
+        let _cw = chain_width.clone();
         move |window: &AppWindow,
          store: &ConfigStore,
          exclude_id: &str,
@@ -10746,7 +10745,7 @@ fn wire_session_callbacks(
                 // (#conn-path) 跳板链写入;jump_session_id 同步为链首(旧版本读兼容)。
                 // 仅 ssh/telnet 有连接路径 —— local/rdp 区块隐藏,残留链一并清空。
                 jump_session_id: match draft.kind.to_string().as_str() {
-                    k @ ("ssh" | "telnet") => ejc_submit
+                    _k @ ("ssh" | "telnet") => ejc_submit
                         .borrow()
                         .first()
                         .map(|s| s.id.clone())
@@ -12472,7 +12471,7 @@ fn wire_key_input(
                   key: SharedString,
                   raw_control: bool,
                   raw_meta: bool,
-                  alt: bool,
+                  _alt: bool,
                   shift: bool| {
                 if cfg!(target_os = "macos")
                     && (raw_control
@@ -12480,12 +12479,11 @@ fn wire_key_input(
                         || key.chars().any(|c| (0x10..=0x18).contains(&(c as u32))))
                 {
                     tracing::warn!(
-                        "[KEY_DIAG_312] stage=slint tab={} key={} raw_control={} raw_meta={} alt={} shift={}",
+                        "[KEY_DIAG_312] stage=slint tab={} key={} raw_control={} raw_meta={} shift={}",
                         tab_id,
                         redact_key(key.as_str()),
                         raw_control,
                         raw_meta,
-                        alt,
                         shift
                     );
                 }
@@ -12494,7 +12492,7 @@ fn wire_key_input(
 
         let handles = handles.clone();
         let bufs = bufs.clone();
-        let sync_input = sync_input.clone();
+        let _sync_input = sync_input.clone();
         // store is used by both the on_send_key closure and the ghost/raw
         // callbacks below; pre-clone here so the first closure can move it.
         let store = store.clone();
@@ -12503,7 +12501,7 @@ fn wire_key_input(
         let term_hint_was_empty = term_hint_was_empty.clone();
         // (#double-shift-v1) 双击 Shift 状态机：窗口级共享（与 open_window 的
         // winit 钩子共用同一份），这里取一份进闭包。
-        let qs_tracker = qs_tracker.clone();
+        let _qs_tracker = qs_tracker.clone();
         {
             // Shared timestamp: the last time the Shift key alone was pressed
             // (key="", shift=true).  Used by the time-based Backspace filter below.
@@ -12971,7 +12969,7 @@ fn wire_key_input(
                         //   执行完毕，这个提示框还存在」）。
                         //   这里先隐藏；等新提示符回显、用户再敲字时，下面的
                         //   observe 流程会用新行重新算出候选。
-                        let hidden = crate::command_hint::HintModel::hidden(String::new());
+                        let hidden = crate::command_hint::HintModel::hidden();
                         command_hint_ui::apply_terminal_hint_model(&w_ob, &hidden);
                         // 本行结束 → 解除 Slint 侧的 Esc 抑制。
                         // ★ 抑制是 Slint 的局部状态（用户按 Esc 建立），但
@@ -13041,7 +13039,7 @@ fn wire_key_input(
             // 当前行：从网格再读一次（与观察器同一套口径，避免用过期缓存）。
             let current = {
                 let Some(h) = term_buf(&bufs, &tab_id) else { return };
-                let mut b = h.lock().unwrap();
+                let b = h.lock().unwrap();
                 let (_alt, _r, cols) = {
                     let s = b.parser.screen();
                     let (r, c) = s.size();
@@ -13077,7 +13075,7 @@ fn wire_key_input(
             //   Tab / 回车 / 单击都汇到这里，所以统一在**发送之后**收起浮层。
             //   没有可发的尾巴（例如候选已经整行填好）也一样收起 —— 否则回车
             //   会变成一个什么都不做的死键（用户反馈「回车无法选择」）。
-            let hidden = crate::command_hint::HintModel::hidden(String::new());
+            let hidden = crate::command_hint::HintModel::hidden();
             command_hint_ui::apply_terminal_hint_model(&w, &hidden);
             // 收起同时解锁 Esc 抑制（自增令牌），下一行照常弹。
             let tok = w.get_term_hint_reset_token().wrapping_add(1);
@@ -13115,7 +13113,7 @@ fn wire_key_input(
             let apply = row.apply.to_string();
             let current = {
                 let Some(h) = term_buf(&bufs, &tab_id) else { return };
-                let mut b = h.lock().unwrap();
+                let b = h.lock().unwrap();
                 let s = b.parser.screen();
                 let (_r, cols) = s.size();
                 let (cur_row, cur_col) = s.cursor_position();
@@ -13138,7 +13136,7 @@ fn wire_key_input(
                 handle.send_raw(payload.into_bytes());
             }
             // 执行 = 行结束：收起浮层 + 解锁抑制（下一行照常弹）。
-            let hidden = crate::command_hint::HintModel::hidden(String::new());
+            let hidden = crate::command_hint::HintModel::hidden();
             command_hint_ui::apply_terminal_hint_model(&w, &hidden);
             let tok = w.get_term_hint_reset_token().wrapping_add(1);
             w.set_term_hint_reset_token(tok);
@@ -13158,7 +13156,7 @@ fn wire_key_input(
         let obs_all = hint_observers.clone();
         let was_empty = term_hint_was_empty.clone();
         let weak = window.as_weak();
-        let weak2 = window.as_weak();
+        let _weak2 = window.as_weak();
         window.on_term_hint_ghost_accept(move || {
             let Some(w) = weak.upgrade() else { return };
             let ghost = w.get_term_hint_ghost().to_string();
@@ -13216,7 +13214,7 @@ fn wire_key_input(
         let weak = window.as_weak();
         window.on_term_hint_close_request(move || {
             let Some(w) = weak.upgrade() else { return };
-            let hidden = crate::command_hint::HintModel::hidden(String::new());
+            let hidden = crate::command_hint::HintModel::hidden();
             command_hint_ui::apply_terminal_hint_model(&w, &hidden);
         });
     }
@@ -14002,18 +14000,15 @@ fn wire_key_input(
         {
             let remote_handles = remote_handles.clone();
             window.on_remote_key(
-                move |tab_id: SharedString, key: SharedString, down: bool, ctrl: bool,
-                      shift: bool, alt: bool, meta: bool| {
+                move |tab_id: SharedString, key: SharedString, down: bool, _ctrl: bool,
+                      shift: bool, _alt: bool, _meta: bool| {
                     let id = tab_id.to_string();
                     let Some((handle, protocol)) = remote_protocol(&remote_handles, &id) else {
                         return;
                     };
                     let ui = crate::remote::keyinput::UiKey {
                         text: key.to_string(),
-                        ctrl,
                         shift,
-                        alt,
-                        meta,
                         down,
                     };
                     use crate::remote::keyinput::KeyAction;
@@ -14300,12 +14295,12 @@ fn should_drop_macos_bare_ctrl_marker(key: &str, ctrl: bool, is_macos: bool) -> 
         )
 }
 
-/// `app_cursor` mirrors the remote terminal's DECCKM mode (`\x1b[?1h/l`):
-/// when true the four arrow keys must use SS3 sequences (`\x1bOA`…) instead
-/// of the default CSI sequences (`\x1b[A`…).  Full-screen apps like nano and
-/// vim set this mode on startup.
+
 /// Preserve logical lines (including blank and trailing lines) for the gutter.
 /// Slint measures each line with the same wrapping and font as the editor.
+/// (#editor-native 2026-11-16 退役：行号槽移入 vendor TextInput 补丁，生产不再调用；
+///  保留给 text_editor 测试验证切分语义。)
+#[cfg_attr(not(test), allow(dead_code))] // 测试 API
 fn editor_lines_for(content: &str) -> ModelRc<SharedString> {
     ModelRc::new(VecModel::from(
         content

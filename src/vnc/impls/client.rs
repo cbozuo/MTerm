@@ -328,9 +328,9 @@ async fn run_once(
     status: &Arc<RemoteStatus>,
     closed: &Arc<AtomicBool>,
     events: &mpsc::UnboundedSender<RemoteEvent>,
-    input_tx: &mpsc::UnboundedSender<RemoteInput>,
+    _input_tx: &mpsc::UnboundedSender<RemoteInput>,
     input_rx: &mut mpsc::UnboundedReceiver<RemoteInput>,
-    trust: &mut mpsc::UnboundedReceiver<(u64, bool, bool)>,
+    _trust: &mut mpsc::UnboundedReceiver<(u64, bool, bool)>,
 ) -> Result<(), AttemptError> {
     push_state(status, events, RemoteState::Connecting, None);
 

@@ -75,8 +75,8 @@ pub struct TrustStore {
 const TRUST_FILE_VERSION: u32 = 1;
 
 impl TrustStore {
-    /// An in-memory store with no file behind it (used by tests and by the
-    /// "don't remember" path).
+    /// An in-memory store with no file behind it (used by tests).
+    #[cfg_attr(not(test), allow(dead_code))] // 测试 API（本文件/verifier 测试在用）
     pub fn in_memory() -> Self {
         Self {
             peers: HashMap::new(),
@@ -137,13 +137,8 @@ impl TrustStore {
         self.save();
     }
 
-    /// Forget a peer, so the next connection prompts again.
-    pub fn forget(&mut self, protocol: &str, host: &str, port: u16) {
-        self.peers.remove(&key(protocol, host, port));
-        self.save();
-    }
-
     /// True when this exact fingerprint is remembered for this peer.
+    #[cfg_attr(not(test), allow(dead_code))] // 测试 API（verifier 测试在用）
     pub fn is_trusted(&self, protocol: &str, host: &str, port: u16, fingerprint: &str) -> bool {
         self.peers
             .get(&key(protocol, host, port))
@@ -248,13 +243,6 @@ pub fn authorize(
     }
 }
 
-/// Whether this exact fingerprint is remembered for this peer.
-pub fn is_trusted(protocol: &str, host: &str, port: u16, fingerprint: &str) -> bool {
-    matches!(
-        global().lock(),
-        Ok(store) if store.is_trusted(protocol, host, port, fingerprint)
-    )
-}
 
 /// Register a pending decision and return its id.
 pub fn open_decision(

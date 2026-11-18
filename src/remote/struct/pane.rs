@@ -116,15 +116,6 @@ pub enum RemoteProtocol {
     Vnc,
 }
 
-impl RemoteProtocol {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            RemoteProtocol::Rdp => "rdp",
-            RemoteProtocol::Vnc => "vnc",
-        }
-    }
-}
-
 /// The UI-thread side of one remote-desktop tab.
 ///
 /// Cheap to clone: it is only a set of channel senders plus a few atomics, and
@@ -139,8 +130,6 @@ pub struct RemoteHandle {
     tab_id: String,
     protocol: RemoteProtocol,
     input_tx: mpsc::UnboundedSender<RemoteInput>,
-    event_tx: mpsc::UnboundedSender<RemoteEvent>,
-    status: Arc<RemoteStatus>,
     closed: Arc<AtomicBool>,
     /// Answer a pending [`TrustRequest`].
     trust_tx: mpsc::UnboundedSender<(u64, bool, bool)>,
@@ -167,8 +156,6 @@ impl RemoteHandle {
     pub fn new(
         tab_id: &str,
         input_tx: mpsc::UnboundedSender<RemoteInput>,
-        event_tx: mpsc::UnboundedSender<RemoteEvent>,
-        status: Arc<RemoteStatus>,
         closed: Arc<AtomicBool>,
         trust_tx: mpsc::UnboundedSender<(u64, bool, bool)>,
         follow_tab_size: bool,
@@ -178,8 +165,6 @@ impl RemoteHandle {
             tab_id: tab_id.to_string(),
             protocol,
             input_tx,
-            event_tx,
-            status,
             closed,
             trust_tx,
             last_size: Arc::new(std::sync::Mutex::new((0, 0))),
@@ -242,18 +227,10 @@ impl RemoteHandle {
         self.protocol
     }
 
-    pub fn status(&self) -> Arc<RemoteStatus> {
-        self.status.clone()
-    }
-
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
     }
 
-    /// True when the remote desktop tracks the tab size.
-    pub fn follows_tab_size(&self) -> bool {
-        self.follow_tab_size
-    }
 
     /// Queue one input event. Dropped silently when the session is gone: input
     /// is a firehose of best-effort events and a full or closed channel says
@@ -305,14 +282,11 @@ mod tests {
 
     fn handle(follow: bool) -> (RemoteHandle, mpsc::UnboundedReceiver<RemoteInput>) {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
-        let (event_tx, _event_rx) = mpsc::unbounded_channel();
         let (trust_tx, _t) = mpsc::unbounded_channel();
         (
             RemoteHandle::new(
                 "tab-1",
                 input_tx,
-                event_tx,
-                Arc::new(RemoteStatus::default()),
                 Arc::new(AtomicBool::new(false)),
                 trust_tx,
                 follow,

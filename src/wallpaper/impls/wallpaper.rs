@@ -262,9 +262,7 @@ fn derive_palette(buf: &SharedPixelBuffer<Rgba8Pixel>) -> Palette {
     let lum = 0.299 * ar as f32 + 0.587 * ag as f32 + 0.114 * ab as f32;
     let is_dark = lum < 128.0;
     Palette {
-        is_dark,
         accent: vivid_accent(ar, ag, ab, is_dark),
-        tint: (ar, ag, ab),
     }
 }
 

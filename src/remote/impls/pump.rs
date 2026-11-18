@@ -81,7 +81,8 @@ impl FrameQueue {
     /// — a frame if one is at the front (the freshest frame is what matters, not
     /// the oldest), otherwise the oldest state, which is the one superseded by
     /// the event being pushed.
-    pub fn push_control(&mut self, event: RemoteEvent) {
+    #[cfg_attr(not(test), allow(dead_code))] // 测试 API
+pub fn push_control(&mut self, event: RemoteEvent) {
         while self.queue.len() >= self.capacity {
             self.queue.pop_front();
         }
@@ -93,11 +94,13 @@ impl FrameQueue {
         self.queue.drain(..).collect()
     }
 
-    pub fn len(&self) -> usize {
+    #[cfg_attr(not(test), allow(dead_code))] // 测试 API
+pub fn len(&self) -> usize {
         self.queue.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[cfg_attr(not(test), allow(dead_code))] // 测试 API
+pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
 }

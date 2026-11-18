@@ -157,7 +157,7 @@ pub(crate) fn setting_items() -> Vec<SearchItem> {
             d.item(
                 "set",
                 Category::Setting,
-                Payload::Setting { page: page_of(d.key), key: d.key },
+                Payload::Setting { page: page_of(d.key) },
             )
         })
         .collect()

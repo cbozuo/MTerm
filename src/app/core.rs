@@ -83,6 +83,11 @@ pub struct WindowState {
     pub sys_win: Rc<SystemInfoWindow>,
     pub editor_win: Rc<EditorWindow>,
     /// 「发送命令」独立窗口（#send-cmd-window）
+    /// (#send-win-anchor 2026-11-18) **生命周期锚**：Rust 侧对 SendCmdWindow 的唯一
+    /// 强引用。没有任何代码"读"它，但删掉它（1.19 告警清理轮误删）会让 Slint
+    /// VRc 在 open_window 返回后销毁组件 → SEND_CMD_WIN.weak.upgrade() 变 None →
+    /// 命令栏 ↗ 点击后静默无效（用户报「发送命令弹窗点击不出来」）。
+    #[cfg_attr(not(test), allow(dead_code))] // 生命周期锚，勿删
     pub send_win: Rc<SendCmdWindow>,
     pub proc_weak: slint::Weak<ProcWindow>,
     pub sys_weak: slint::Weak<SystemInfoWindow>,

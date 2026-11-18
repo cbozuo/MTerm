@@ -30,29 +30,6 @@ impl RemoteState {
         self as u8
     }
 
-    /// Slint renders the dot colour from this, so the UI never has to know the
-    /// numbering: connecting/reconnecting are amber, connected green,
-    /// disconnected/failed red.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            RemoteState::Connecting => "connecting",
-            RemoteState::Authenticating => "authenticating",
-            RemoteState::Connected => "connected",
-            RemoteState::Reconnecting => "reconnecting",
-            RemoteState::Disconnected => "disconnected",
-            RemoteState::Failed => "failed",
-        }
-    }
-
-    /// True while the tab should still be considered "live" — i.e. it may yet
-    /// produce frames. Drives the sidebar's online dot.
-    pub fn is_live(self) -> bool {
-        matches!(
-            self,
-            RemoteState::Connecting | RemoteState::Authenticating | RemoteState::Connected
-                | RemoteState::Reconnecting
-        )
-    }
 }
 
 /// The state a driver publishes when its attempt loop ends, if any.
@@ -145,12 +122,21 @@ mod tests {
         }
     }
 
+    // 测试辅助：生产侧的 is_live 已退役（无生产调用，点色由驱动层直接拼）。
+    fn test_is_live(state: RemoteState) -> bool {
+        matches!(
+            state,
+            RemoteState::Connecting | RemoteState::Authenticating | RemoteState::Connected
+                | RemoteState::Reconnecting
+        )
+    }
+
     #[test]
     fn a_failed_tab_is_not_live_so_the_right_sidebar_dot_goes_out() {
-        assert!(RemoteState::Connected.is_live());
-        assert!(RemoteState::Reconnecting.is_live());
-        assert!(!RemoteState::Failed.is_live());
-        assert!(!RemoteState::Disconnected.is_live());
+        assert!(test_is_live(RemoteState::Connected));
+        assert!(test_is_live(RemoteState::Reconnecting));
+        assert!(!test_is_live(RemoteState::Failed));
+        assert!(!test_is_live(RemoteState::Disconnected));
     }
 
     #[test]

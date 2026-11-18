@@ -15,11 +15,8 @@ pub struct UiKey {
     /// `KeyEvent.text` verbatim: one character for a printable key, a name or an
     /// escape sequence for a named one.
     pub text: String,
-    pub ctrl: bool,
     pub shift: bool,
-    pub alt: bool,
     /// Physical Ctrl on macOS, where Slint swaps the two modifier names.
-    pub meta: bool,
     pub down: bool,
 }
 
@@ -36,21 +33,6 @@ impl UiKey {
         }
     }
 
-    /// True when the key is one of the modifiers themselves.
-    ///
-    /// A modifier is forwarded as itself rather than as a modifier *state*, so
-    /// the remote desktop tracks its own left/right modifier state — which is
-    /// also what makes a bare "press and release shift" meaningful there.
-    ///
-    /// `\u{10}`..`\u{16}` are Slint's own codes for Shift/Control/Alt/AltGr and
-    /// their right-hand twins (`i-slint-common/key_codes.rs`); the `\u{ffe1}`
-    /// keysym range this once tested is never produced by the backend.
-    pub fn is_modifier(&self) -> bool {
-        matches!(
-            self.text.as_str(),
-            "Shift" | "Control" | "Alt" | "AltGr" | "Super" | "Meta"
-        ) || matches!(self.first_char(), '\u{10}'..='\u{16}')
-    }
 
     /// True when `ch` is something worth sending as text.
     ///
@@ -72,11 +54,7 @@ impl UiKey {
         SlintKey {
             name: self.text.clone(),
             text: self.first_char(),
-            ctrl: self.ctrl,
-            alt: self.alt,
             shift: self.shift,
-            meta: self.meta,
-            down: self.down,
         }
     }
 }
@@ -140,13 +118,18 @@ pub fn for_vnc(key: &UiKey) -> KeyAction {
 mod tests {
     use super::*;
 
+    // 生产侧的 is_modifier 已退役（无生产调用）。语义保留给本测试：
+    fn is_modifier(k: &UiKey) -> bool {
+        matches!(
+            k.text.as_str(),
+            "Shift" | "Control" | "Alt" | "AltGr" | "Super" | "Meta"
+        ) || (0x10..=0x16).contains(&(k.first_char() as u32))
+    }
+
     fn ui(text: &str) -> UiKey {
         UiKey {
             text: text.to_string(),
-            ctrl: false,
             shift: false,
-            alt: false,
-            meta: false,
             down: true,
         }
     }
@@ -246,11 +229,11 @@ mod tests {
 
     #[test]
     fn modifiers_are_recognised_so_they_can_be_forwarded_as_themselves() {
-        assert!(ui("Shift").is_modifier());
-        assert!(ui("Control").is_modifier());
+        assert!(is_modifier(&ui("Shift")));
+        assert!(is_modifier(&ui("Control")));
         // Slint's own code for the left Control key.
-        assert!(ui("\u{11}").is_modifier());
-        assert!(!ui("a").is_modifier());
+        assert!(is_modifier(&ui("\u{11}")));
+        assert!(!is_modifier(&ui("a")));
     }
 
     #[test]

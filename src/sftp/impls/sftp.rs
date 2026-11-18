@@ -1725,6 +1725,7 @@ pub(crate) enum EditorTextRejection {
     InvalidUtf8,
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // 测试 API（sftp 测试在用）
 pub(crate) fn validate_editor_text(bytes: Vec<u8>) -> std::result::Result<String, EditorTextRejection> {
     if bytes.len() > MAX_BUILTIN_EDITOR_BYTES {
         return Err(EditorTextRejection::TooLarge);

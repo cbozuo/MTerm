@@ -3,7 +3,6 @@
 //! 纯数据 + 只依赖自身字段的小逻辑（切词、阶段判定、apply 计算）。
 //! 不依赖 Slint、不依赖 app 层 —— 分层说明见 `src/command_hint/mod.rs`。
 
-use crate::i18n::t;
 
 /// 提示框所处的补全阶段 —— 对应高保真上下文条里的那枚胶囊。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -14,17 +13,6 @@ pub(crate) enum HintPhase {
     Path,
 }
 
-impl HintPhase {
-    /// 胶囊文案。走 i18n（签名是 `t(zh, en)`，中文在前）。
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Command => t("命令", "Command"),
-            Self::Subcommand => t("子命令", "Subcommand"),
-            Self::Option => t("参数", "Option"),
-            Self::Path => t("路径", "Path"),
-        }
-    }
-}
 
 /// 候选来源 —— 决定行首图标与来源标签。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -117,10 +105,6 @@ pub(crate) struct HintRowData {
     pub(crate) signature: String,
     /// 详情区说明。
     pub(crate) description: String,
-    /// 排序的**来源平手裁决键**（高保真 §3 排序五级键第 2 级）：
-    /// 0 = 快捷命令（用户自定义置顶）＜ 1 = 内置知识 ＜ 2 = 历史。
-    /// 匹配分相同的时候用它决胜负，最后才是字母序兜底。
-    pub(crate) pri: i32,
     /// 选中这一条后，命令行**整行**应该变成什么。
     ///
     /// ★ 在 Rust 侧算，不在 Slint 侧拼：Slint 1.18 的 string 没有
@@ -147,7 +131,6 @@ impl HintRowData {
         source: String,
         signature: String,
         description: String,
-        pri: i32,
         input: &HintInput,
         phase: HintPhase,
     ) -> Self {
@@ -159,7 +142,6 @@ impl HintRowData {
             source,
             signature,
             description,
-            pri,
             apply,
         }
     }
@@ -216,11 +198,6 @@ fn rebuild(input: &HintInput, cand: &str, tail: &str) -> String {
 /// 整块提示框的数据（对应 `ui/command_hint.slint` 的一组输入属性）。
 pub(crate) struct HintModel {
     pub(crate) open: bool,
-    pub(crate) phase: HintPhase,
-    /// 上下文条左边那段：`user@host : cwd`。
-    pub(crate) context: String,
-    /// 命中总数（可能大于 `rows.len()`，用于「N 条」计数；行数按 `HINT_MAX_ROWS` 封顶）。
-    pub(crate) total: usize,
     pub(crate) rows: Vec<HintRowData>,
     /// ★ 内联鬼影（高保真 §5 →）：首候选落在「当前整行」或「当前词」的
     ///   前缀上时，追加到行尾就能补全的那段文本。区分大小写（shell 语义）。
@@ -235,12 +212,9 @@ pub(crate) struct HintModel {
 }
 
 impl HintModel {
-    pub(crate) fn closed(context: String) -> Self {
+    pub(crate) fn closed() -> Self {
         Self {
             open: false,
-            phase: HintPhase::Command,
-            context,
-            total: 0,
             rows: Vec::new(),
             ghost: String::new(),
             danger_token: String::new(),
@@ -252,7 +226,7 @@ impl HintModel {
     ///
     /// 与 `closed()` 的区别只在语义：`hidden` 表示「判定为不该弹」，
     /// 调用方据此清掉终端内联浮层。两者产出相同，但分开命名让调用点自解释。
-    pub(crate) fn hidden(context: String) -> Self {
-        Self::closed(context)
+    pub(crate) fn hidden() -> Self {
+        Self::closed()
     }
 }

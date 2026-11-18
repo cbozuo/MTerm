@@ -52,6 +52,7 @@ pub(crate) mod zmodem;
 pub(crate) use input::c0_letter_key_down;
 #[cfg(test)]
 pub(crate) use input::normalize_pasted_newlines;
+#[cfg_attr(not(test), allow(unused_imports))] // 测试 API 面（lib 目标不引用，勿删）
 pub(crate) use input::{
     bare_ctrl_marker_workaround_enabled, encode_command_bar_input, encode_mouse_event,
     encode_pasted_text, is_terminal_interrupt, key_to_pty_bytes, paste_requires_large_review,
@@ -65,6 +66,7 @@ pub(crate) use json_output::format_json_output;
 pub(crate) use input::windows_process_ctrl_release;
 #[cfg(any(target_os = "windows", test))]
 pub(crate) use state::CtrlKeySide;
+#[cfg_attr(not(test), allow(unused_imports))] // 测试 API 面（lib 目标不引用，勿删）
 pub(crate) use output_highlight::{
     compile_highlight_rules, parse_color, preset_enabled, rainbow_parens_enabled, rendered_slot,
     HIGHLIGHT_PRESETS, HighlightPreset, RAINBOW_PRESET_ID,

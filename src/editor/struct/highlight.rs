@@ -37,10 +37,6 @@ pub(crate) enum SpanKind {
     At = 15,
     /// Caused by: 行
     Cs = 16,
-    /// 查找命中(琥珀底;查找时由宿主桥注入)
-    Hl = 17,
-    /// 当前查找命中(亮琥珀)
-    HlCur = 18,
 }
 
 /// 字符区间着色段(列以 unicode 字符计)。行级规则引擎的行内产物。
@@ -68,8 +64,3 @@ pub(crate) struct GSpan {
     pub kind: SpanKind,
 }
 
-impl SpanKind {
-    pub(crate) fn as_index(self) -> usize {
-        self as usize
-    }
-}

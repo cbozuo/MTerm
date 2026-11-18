@@ -42,6 +42,7 @@ pub fn to_buffer_exact(img: &RgbaImage) -> SharedPixelBuffer<Rgba8Pixel> {
 /// corner would land tens of remote pixels away from where the user pointed
 /// (P0-8).
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))] // 测试 API
 pub struct Viewport {
     /// Remote frame size in pixels.
     pub frame_w: u16,
@@ -54,6 +55,7 @@ pub struct Viewport {
 impl Viewport {
     /// Uniform scale factor of the letterboxed fit. 0 when there is nothing to
     /// draw, so callers can treat it as "no mapping available".
+#[cfg_attr(not(test), allow(dead_code))] // 测试 API（render 几何测试在用）
     pub fn scale(&self) -> f32 {
         let (fw, fh) = (self.frame_w as f32, self.frame_h as f32);
         let (vw, vh) = (self.view_w, self.view_h);
@@ -64,6 +66,7 @@ impl Viewport {
     }
 
     /// Top-left of the drawn image inside the tab (the letterbox bars).
+#[cfg_attr(not(test), allow(dead_code))] // 测试 API（render 几何测试在用）
     pub fn origin(&self) -> (f32, f32) {
         let s = self.scale();
         let drawn_w = self.frame_w as f32 * s;
@@ -76,6 +79,7 @@ impl Viewport {
     /// Returns `None` when the pointer is in a letterbox bar (there is no remote
     /// pixel under it) or the frame has no size yet — the caller then drops the
     /// event instead of sending a bogus coordinate to the server.
+#[cfg_attr(not(test), allow(dead_code))] // 测试 API（render 几何测试在用）
     pub fn to_remote(&self, x: f32, y: f32) -> Option<(u16, u16)> {
         let s = self.scale();
         if s <= 0.0 {

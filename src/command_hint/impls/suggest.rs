@@ -43,11 +43,11 @@ pub(crate) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
     let input = HintInput::parse(line);
     // 整行都是空白（或空串）→ 不弹。
     if input.settled.is_empty() && input.word.is_empty() {
-        return HintModel::closed(context);
+        return HintModel::closed();
     }
     // 只在补**第一个词**或后续词时都要有实际输入；否则（例如只有空格）不弹。
     if input.word.is_empty() && input.settled.is_empty() {
-        return HintModel::closed(context);
+        return HintModel::closed();
     }
 
     let q = input.word.to_lowercase();
@@ -67,7 +67,7 @@ pub(crate) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
         should_pop(input.word, input.trailing_space, phase)
     };
     if !pop {
-        return HintModel::closed(context);
+        return HintModel::closed();
     }
 
     // 子命令阶段：候选来自内置表，而不是「命令名」表。
@@ -145,7 +145,6 @@ pub(crate) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
                 t("快捷", "Quick").to_string(),
                 c.command.clone(),
                 quick_desc,
-                0,
                 &input,
                 phase,
             ),
@@ -172,7 +171,6 @@ pub(crate) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
                     "Previously run; Enter runs it again",
                 )
                 .to_string(),
-                2,
                 &input,
                 phase,
             ),
@@ -206,15 +204,12 @@ pub(crate) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
     let (danger_token, danger_why) = danger_of(line);
     if total == 0 {
         if danger_token.is_empty() {
-            return HintModel::closed(context);
+            return HintModel::closed();
         }
         // 危险命令 0 候选：框仍要弹 —— 告警条是安全信息（§3②，沙盘同款：
         // `rm -rf xyz` 即使没有路径候选，也要让红色告警出现在眼前）。
         return HintModel {
             open: true,
-            phase,
-            context,
-            total: 0,
             rows: Vec::new(),
             ghost: String::new(),
             danger_token,
@@ -237,9 +232,6 @@ pub(crate) fn hint_model(store: &ConfigStore, line: &str, context: String) -> Hi
         .collect();
     HintModel {
         open: true,
-        phase,
-        context,
-        total,
         rows,
         ghost,
         danger_token,
@@ -321,7 +313,7 @@ fn subcommand_hint(
     store: &ConfigStore,
     input: &HintInput,
     q: &str,
-    context: String,
+    _context: String,
 ) -> HintModel {
     let command = input.settled.first().copied().unwrap_or("");
     let subs = subcommands_for(command).unwrap_or(&[]);
@@ -339,7 +331,6 @@ fn subcommand_hint(
                 t("内置", "Built-in").to_string(),
                 format!("{command} {name} [<opts>]"),
                 (*desc).to_string(),
-                1,
                 input,
                 HintPhase::Subcommand,
             ));
@@ -371,15 +362,14 @@ fn subcommand_hint(
                     "Previously run; Enter runs it again",
                 )
                 .to_string(),
-                2,
                 input,
                 HintPhase::Subcommand,
             ));
         }
     }
-    let total = rows.len();
+    let _total = rows.len();
     if rows.is_empty() {
-        return HintModel::closed(context);
+        return HintModel::closed();
     }
     // 内联鬼影（与 hint_model 同口径）：子命令阶段 `git st` → `git status` 的尾巴。
     let ghost = match rows.first().map(|r| r.text.clone()) {
@@ -394,9 +384,6 @@ fn subcommand_hint(
     let (danger_token, danger_why) = danger_of(input.line);
     HintModel {
         open: true,
-        phase: HintPhase::Subcommand,
-        context,
-        total,
         rows,
         ghost,
         danger_token,

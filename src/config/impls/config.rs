@@ -1046,9 +1046,6 @@ impl ConfigStore {
         }
     }
 
-    pub fn set_theme_pref(&mut self, pref: String) {
-        self.cache.theme_pref = pref;
-    }
 
     // ── (#theme-split 2026-10-07) 主题/强调色/壁纸三层解耦的新字段 ──────
 
@@ -1200,12 +1197,6 @@ impl ConfigStore {
             })
     }
 
-    /// (#wallpaper-scope-params) 该 (主题, 壁纸, 作用域) 是否已经落过盘。
-    pub fn scope_settings_saved(&self) -> bool {
-        self.current_scope_key()
-            .map(|k| self.cache.wallpaper_settings.contains_key(&k))
-            .unwrap_or(false)
-    }
 
     /// (#zone-default-context 2026-10-19) 当前「主题 × 壁纸 × 作用域」下，
     /// 四根分区滑杆**双击恢复**的目标值（alpha = 1 − 透明度）。
@@ -1267,6 +1258,7 @@ impl ConfigStore {
         av
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // alpha getter：仅内嵌测试消费（生产走 effective_appearance 直取）
     pub fn titlebar_alpha(&self) -> f32 {
         self.effective_appearance().titlebar_alpha
     }
@@ -1276,6 +1268,7 @@ impl ConfigStore {
             self.theme_appearance_mut().plain.titlebar_alpha = v;
         }
     }
+    #[cfg_attr(not(test), allow(dead_code))] // alpha getter：仅内嵌测试消费（生产走 effective_appearance 直取）
     pub fn tabbar_alpha(&self) -> f32 {
         self.effective_appearance().tabbar_alpha
     }
@@ -1285,6 +1278,7 @@ impl ConfigStore {
             self.theme_appearance_mut().plain.tabbar_alpha = v;
         }
     }
+    #[cfg_attr(not(test), allow(dead_code))] // alpha getter：仅内嵌测试消费（生产走 effective_appearance 直取）
     pub fn sidebar_alpha(&self) -> f32 {
         self.effective_appearance().sidebar_alpha
     }
@@ -1294,6 +1288,7 @@ impl ConfigStore {
             self.theme_appearance_mut().plain.sidebar_alpha = v;
         }
     }
+    #[cfg_attr(not(test), allow(dead_code))] // alpha getter：仅内嵌测试消费（生产走 effective_appearance 直取）
     pub fn term_alpha(&self) -> f32 {
         self.effective_appearance().term_alpha
     }
@@ -1305,6 +1300,7 @@ impl ConfigStore {
     }
     /// (#wallpaper-transparency 2026-10-17) 壁纸透明度（0 = 完全显示）。
     /// (#wallpaper-scope-params) 现在属于「当前壁纸 × 当前作用域」。
+    #[cfg_attr(not(test), allow(dead_code))] // alpha getter：仅内嵌测试消费（生产走 effective_appearance 直取）
     pub fn wallpaper_transparency(&self) -> f32 {
         self.effective_appearance().wallpaper_transparency
     }
@@ -1425,6 +1421,7 @@ impl ConfigStore {
         }
     }
     /// 遮罩浓度（0.00–1.00）。
+    #[cfg_attr(not(test), allow(dead_code))] // alpha getter：仅内嵌测试消费（生产走 effective_appearance 直取）
     pub fn scrim_alpha(&self) -> f32 {
         self.effective_appearance().scrim_alpha
     }
@@ -1437,6 +1434,7 @@ impl ConfigStore {
         }
     }
     /// 弹窗透明度（0 = 实心）。
+    #[cfg_attr(not(test), allow(dead_code))] // alpha getter：仅内嵌测试消费（生产走 effective_appearance 直取）
     pub fn popup_transparency(&self) -> f32 {
         self.effective_appearance()
             .popup_transparency
@@ -1479,10 +1477,6 @@ impl ConfigStore {
         if slot < 4 {
             self.cache.channel_members[slot].clear();
         }
-    }
-    /// 已暂停参与频道的会话 id 集合（按会话粒度）。
-    pub fn channel_paused(&self) -> &Vec<String> {
-        &self.cache.channel_paused
     }
     pub fn channel_is_paused(&self, session_id: &str) -> bool {
         self.cache.channel_paused.iter().any(|s| s == session_id)
@@ -1863,9 +1857,6 @@ impl ConfigStore {
         self.cache.hide_cmd_bar
     }
 
-    pub fn set_cmd_bar_hidden(&mut self, hidden: bool) {
-        self.cache.hide_cmd_bar = hidden;
-    }
 
     /// Saved quick commands (#55).
     pub fn quick_commands(&self) -> &[QuickCommand] {
@@ -2081,12 +2072,6 @@ impl ConfigStore {
         }
     }
 
-    /// Update one quick command in place by index (#55).
-    pub fn update_quick_command(&mut self, index: usize, cmd: QuickCommand) {
-        if let Some(slot) = self.cache.quick_commands.get_mut(index) {
-            *slot = cmd;
-        }
-    }
 
     /// Recent command-box history as plain strings, **oldest first** (#55).
     /// Derived from `history_entries` so the legacy consumers (command-bar ↑
@@ -2419,18 +2404,6 @@ impl ConfigStore {
     }
     pub fn set_mcp_allow_file_transfers(&mut self, enabled: bool) {
         self.cache.mcp_allow_file_transfers = enabled;
-    }
-    pub fn wallpaper_overlay(&self) -> f32 {
-        let a = self.cache.wallpaper_overlay;
-        // Floor lowered 0.40 -> 0.30 so more see-through panels are reachable.
-        if a <= 0.0 {
-            DEFAULT_WALLPAPER_OVERLAY
-        } else {
-            a.clamp(0.30, 1.0)
-        }
-    }
-    pub fn set_wallpaper_overlay(&mut self, v: f32) {
-        self.cache.wallpaper_overlay = v.clamp(0.30, 1.0);
     }
     pub fn panel_font(&self) -> u32 {
         if self.cache.panel_font == 0 {

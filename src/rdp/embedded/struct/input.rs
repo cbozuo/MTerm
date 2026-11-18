@@ -76,20 +76,7 @@ pub struct SlintKey {
     pub name: String,
     /// First character of `name`, or `\0` when it is not a single character.
     pub text: char,
-    pub ctrl: bool,
-    pub alt: bool,
     pub shift: bool,
-    /// Physical Ctrl on macOS, where Slint swaps the two names.
-    pub meta: bool,
-    /// True for `key-pressed`, false for `key-released`.
-    pub down: bool,
-}
-
-impl RemoteInput {
-    /// Convenience constructor for a key press/release.
-    pub fn key(code: u32, down: bool) -> Self {
-        RemoteInput::Key { code, down }
-    }
 }
 
 /// X11 keysym for a printable Latin-1 character.

@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 
 use crate::config::{Session, SessionKind};
 use crate::remote::pump::{self, RemoteRoutes};
-use crate::remote::pane::{RemoteEvent, RemoteHandle, RemoteProtocol};
+use crate::remote::pane::{RemoteHandle, RemoteProtocol};
 use crate::remote::registry::RemotePanes;
 use crate::rdp::embedded::config::EmbeddedRdpConfig;
 use crate::rdp::embedded::status::RemoteStatus;
@@ -207,7 +207,7 @@ pub fn start_rdp_session(
     tab_id: &str,
     ctx: &StartCtx,
 ) -> Result<RemoteHandle, String> {
-    let config = EmbeddedRdpConfig::from_session(session, tab_id)?;
+    let config = EmbeddedRdpConfig::from_session(session)?;
     let status = Arc::new(RemoteStatus::new(
         crate::rdp::embedded::status::RemoteState::Connecting,
     ));
@@ -224,8 +224,6 @@ pub fn start_rdp_session(
     let handle = RemoteHandle::new(
         tab_id,
         input_tx,
-        events_tx.clone(),
-        status.clone(),
         closed.clone(),
         trust_tx,
         config.follow_tab_size,
@@ -277,7 +275,7 @@ pub fn start_vnc_session(
     tab_id: &str,
     ctx: &StartCtx,
 ) -> Result<RemoteHandle, String> {
-    let config = crate::vnc::config::VncConnectConfig::from_session(session, tab_id)?;
+    let config = crate::vnc::config::VncConnectConfig::from_session(session)?;
     let status = Arc::new(RemoteStatus::new(
         crate::rdp::embedded::status::RemoteState::Connecting,
     ));
@@ -290,8 +288,6 @@ pub fn start_vnc_session(
     let handle = RemoteHandle::new(
         tab_id,
         input_tx,
-        events_tx.clone(),
-        status.clone(),
         closed.clone(),
         trust_tx,
         config.follow_tab_size,
@@ -444,15 +440,10 @@ mod tests {
     #[test]
     fn a_handle_with_no_driver_needs_no_waiting() {
         let (input_tx, _input_rx) = mpsc::unbounded_channel();
-        let (event_tx, _event_rx) = pump::event_channel();
         let (trust_tx, _trust_rx) = mpsc::unbounded_channel();
         let handle = RemoteHandle::new(
             "tab-1",
             input_tx,
-            event_tx,
-            Arc::new(RemoteStatus::new(
-                crate::rdp::embedded::status::RemoteState::Connecting,
-            )),
             Arc::new(AtomicBool::new(false)),
             trust_tx,
             true,

@@ -40,18 +40,22 @@ pub(crate) mod render;
 #[path = "impls/session.rs"]
 pub(crate) mod session;
 
+#[cfg_attr(not(test), allow(unused_imports))] // 测试 API 面（lib 目标不引用，勿删）
 pub(crate) use pane::{
     RemoteEvent, RemoteHandle, RemoteProtocol, TrustRequest, FRAME_QUEUE_DEPTH,
 };
 #[path = "struct/registry.rs"]
 pub(crate) mod registry;
+#[cfg_attr(not(test), allow(unused_imports))] // 测试 API 面（lib 目标不引用，勿删）
 pub(crate) use registry::{
     apply_to, panes_of, register, status_for, unregister, RemotePanes,
 };
+#[cfg_attr(not(test), allow(unused_imports))] // 测试 API 面（lib 目标不引用，勿删）
 pub(crate) use session::{
     close_session, remote_resolve_trust, start, start_rdp_session, start_vnc_session, tab_kind,
 };
 pub(crate) use session::is_tab_hosted;
+#[cfg_attr(not(test), allow(unused_imports))] // 测试 API 面（lib 目标不引用，勿删）
 pub(crate) use trust::{
     authorize as authorize_trust, open_decision, resolve_decision, sha256_fingerprint,
     trust_store_path, TrustOutcome, TrustStore,

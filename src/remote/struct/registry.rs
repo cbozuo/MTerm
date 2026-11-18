@@ -22,7 +22,6 @@ use slint::{Model, ModelRc, VecModel};
 
 use crate::rdp::embedded::status::RemoteState;
 use crate::remote::pane::RemoteEvent;
-use crate::remote::render;
 use crate::ui::RemotePaneState;
 
 /// One window's remote-desktop rows.
@@ -379,11 +378,6 @@ impl RemotePanes {
             .insert(tab_id.to_string(), (width, height));
     }
 
-    /// Whether the session has ended, so the view can offer a reconnect.
-    pub fn is_finished(&self, tab_id: &str) -> bool {
-        self.finished.borrow().contains(tab_id)
-    }
-
     /// Forget every tab at once, for a window that is going away.
     ///
     /// The per-tab [`RemotePanes::close`] is what a closing *tab* calls; a
@@ -418,6 +412,7 @@ pub fn register(window_id: u64, panes: Rc<RemotePanes>) {
 }
 
 /// Drop a window's panes. Called when the window closes.
+#[cfg_attr(not(test), allow(dead_code))] // 测试 API（registry 测试在用）
 pub fn unregister(window_id: u64) {
     PANES.with(|slot| {
         if let Some(table) = slot.borrow_mut().as_mut() {

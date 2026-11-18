@@ -90,6 +90,7 @@ pub(crate) fn terminal_uses_bracketed_paste(bufs: &TermBuffers, tab_id: &str) ->
         .unwrap_or(false)
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // 测试 API（tests/app/terminal_input 经 re-export 调用）
 pub(crate) fn paste_requires_large_review(text: &str) -> bool {
     const COMPACT_CHAR_LIMIT: usize = 600;
     const COMPACT_LINE_LIMIT: usize = 12;

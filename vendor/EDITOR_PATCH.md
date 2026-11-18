@@ -1,9 +1,9 @@
-# Native editor patch (Slint 1.18.1) — MTerm
+# Native editor patch (Slint 1.19.0, re-applied 2026-11-18) — MTerm
 
 Ported into MTerm from the same-shaped patch in
 [`yituorou/meatshell`](https://github.com/yituorou/meatshell) (MIT OR Apache-2.0),
 adapted to MTerm's vendored crates. The three crates below are the published
-1.18.1 crates (upstream license files retained) selected by `[patch.crates-io]`.
+1.19.0 crates (upstream license files retained) selected by `[patch.crates-io]`.
 They must be upgraded together; do not remove only one override. Every change is
 marked with an `MTerm editor patch` (previously `MeatShell editor patch`) comment.
 

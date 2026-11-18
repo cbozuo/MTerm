@@ -7,13 +7,7 @@
 //! ⚠️ 放 Rust 而不是 Slint 的硬原因:续行风险要逐字符扫引号配对、逐行数
 //! 块开合 —— Slint 的 string 没有逐字符访问,做不了(§16 定稿注记)。
 
-/// 危险词表:按「段首」匹配(段 = 按 `;`、换行、`&&`、`||`、`|` 切开)。
-/// 匹配前先剥掉引号内容(`echo "rm -rf x"` 不算危险)和
-/// sudo/env/time/nohup/exec/\ 等段首前缀。
-const DANGER_RULES: &[(&str, &str)] = &[
-    // 正则不好上(不引 regex 依赖),逐条写成判别函数:
-    // ("展示名", 前缀词匹配器)
-];
+
 
 /// 判别某「段」(已剥引号与前缀)是否命中危险词,返回展示名。
 fn seg_danger(seg: &str) -> Option<&'static str> {
@@ -468,7 +462,7 @@ pub fn insert_at_cursor(text: &str, line: usize, col: usize, cmd: &str) -> (Stri
     let lines: Vec<&str> = if text.is_empty() { vec![""] } else { text.split(NL).collect() };
     let li = line.min(lines.len().saturating_sub(1));
     let row = lines[li];
-    let col = col.min(row.chars().count());
+    let _col = col.min(row.chars().count());
     // 行尾字符偏移 = 前面所有行的字符数 + 换行数 + 本行列数(Slint 侧列按
     // 字符格算,这里统一字符口径;char_indices 换回字节给字符串切片)
     let mut off = 0usize;

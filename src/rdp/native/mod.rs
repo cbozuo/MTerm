@@ -23,7 +23,7 @@ pub(crate) use account::Account;
 // Re-exported through `rdp/` so the protocol constants have a single
 // definition site (they are shared with the embedded client); `super::` paths
 // inside this package resolve to the same items the rest of the crate sees.
-pub(crate) use crate::rdp::{MIN_DESKTOP_SIDE, RDP_DEFAULT_PORT};
+pub(crate) use crate::rdp::RDP_DEFAULT_PORT;
 
 #[cfg(windows)]
 pub(crate) use mstsc::start_client;

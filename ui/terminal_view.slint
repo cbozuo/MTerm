@@ -1521,7 +1521,13 @@ export component TerminalView inherits Rectangle {
 
         // --- Key-capture scope + scrollable output --------------------------
         key-capture := FocusScope {
-            vertical-stretch: 1;
+            // (#slint119-cmdbar 2026-11-18) 1.19 的 VL 对「stretch:1 子项的首选高
+            // 巨大（终端 grid 行数×cell）」的分配会把固定高兄弟挤出可视区 —— 命令栏
+            // 被推出 central 的 clip 底外（实测：整条命令栏消失，↗/发送按钮随之
+            // 失联，用户报「发送命令弹窗点击不出来」）。改为**显式高度**：终端区 =
+            // 父高 − 命令栏，不再依赖 VL 的剩余空间分配，1.18/1.19 语义一致。
+            height: parent.height - (root.cmd-bar-hidden ? 0px : 48px);
+            vertical-stretch: 0;
             // Any click inside this scope (e.g. the middle-click paste strip)
             // can grab focus to the FocusScope itself.  Key forwarding lives on
             // the hidden `ime-input` TextInput, so a bare FocusScope focus means
@@ -2230,10 +2236,8 @@ export component TerminalView inherits Rectangle {
                                 // 首项再 ↑：关浮层 + 抑制本行 + 交给 shell 历史。
                                 root.term-hint-suppressed = true;
                                 root.term-hint-send-key-raw("\u{001b}[A");
-                                accept
                             } else {
                                 root.term-hint-selected -= 1;
-                                accept
                             }
                         } else {
                             let n = root.term-hint-rows.length;
@@ -2242,11 +2246,9 @@ export component TerminalView inherits Rectangle {
                                 // 继续敲字时 Rust 侧行观察会按新输入重算。
                                 root.term-hint-suppressed = false;
                                 root.term-hint-close-request();
-                                accept
                             } else {
                                 // -1（未选中）+↓ = 选首条；首条+↓ = 第二条。
                                 root.term-hint-selected += 1;
-                                accept
                             }
                         }
                         accept
@@ -2759,12 +2761,16 @@ export component TerminalView inherits Rectangle {
                                         // Enter = **仅填入**（替换），不执行；
                                         // 未选中 → 执行当前输入（敲 `free` 回车
                                         // 就是执行 `free`）。
+                                        // （Slint 无值早退：原先分支尾裸 `accept`
+                                        //   是死值，填入后仍落到 run-command 执行
+                                        //   了 —— 1.19 的 no-effect 警告照出来的
+                                        //   行为 bug，改 `return accept` 对齐定稿。）
                                         if (root.hist-popup-visible
                                                 && root.history-autocomplete
                                                 && root.history-selected >= 0
                                                 && root.hint-count() > 0) {
                                             root.hint-accept();
-                                            accept
+                                            return accept;
                                         }
                                         root.run-command(self.text, root.scope-spec(), "");
                                         self.text = "";

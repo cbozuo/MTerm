@@ -404,19 +404,14 @@ async fn run_driver(
     has_password: bool,
 ) -> Vec<Result<String, String>> {
     let cfg = VncConnectConfig {
-        tab_id: "t".into(),
-        session_id: "t".into(),
         host: "127.0.0.1".into(),
         port,
         password: password.into(),
         has_password,
-        security: String::new(),
         view_only: false,
         shared: true,
         clipboard: false,
         follow_tab_size: false,
-        width: 200,
-        height: 200,
     };
     let status = Arc::new(crate::rdp::embedded::status::RemoteStatus::new(
         crate::rdp::embedded::status::RemoteState::Connecting,
@@ -543,19 +538,14 @@ async fn the_first_frame_carries_the_expected_rgba() {
     let server = tokio::spawn(serve_rfb(listener, Security::None, ""));
 
     let cfg = VncConnectConfig {
-        tab_id: "t".into(),
-        session_id: "t".into(),
         host: "127.0.0.1".into(),
         port,
         password: String::new(),
         has_password: false,
-        security: String::new(),
         view_only: false,
         shared: true,
         clipboard: false,
         follow_tab_size: false,
-        width: 200,
-        height: 200,
     };
     let status = Arc::new(crate::rdp::embedded::status::RemoteStatus::new(
         crate::rdp::embedded::status::RemoteState::Connecting,
@@ -668,19 +658,14 @@ async fn zrle_first_frame(mode: ZrleMode) -> Result<Vec<u8>, String> {
     let server = tokio::spawn(serve_rfb_with(listener, Security::NoneZrle, "", mode));
 
     let cfg = VncConnectConfig {
-        tab_id: "t".into(),
-        session_id: "t".into(),
         host: "127.0.0.1".into(),
         port,
         password: String::new(),
         has_password: false,
-        security: String::new(),
         view_only: false,
         shared: true,
         clipboard: false,
         follow_tab_size: false,
-        width: 200,
-        height: 200,
     };
     let status = Arc::new(crate::rdp::embedded::status::RemoteStatus::new(
         crate::rdp::embedded::status::RemoteState::Connecting,

@@ -9,10 +9,6 @@ use crate::config::Session;
 /// Everything needed to (re)establish a built-in RDP session.
 #[derive(Debug, Clone)]
 pub struct EmbeddedRdpConfig {
-    /// Tab id, so state and frames can be routed back to the right desktop.
-    pub tab_id: String,
-    /// Saved-session id (the sidebar/tab grouping key).
-    pub session_id: String,
     pub host: String,
     pub port: u16,
     pub username: String,
@@ -37,7 +33,7 @@ impl EmbeddedRdpConfig {
     /// Account fields are shared verbatim with the system-client path — the
     /// built-in client must not invent its own parsing, or switching the mode
     /// in the edit dialog would quietly change the meaning of the fields.
-    pub fn from_session(session: &Session, tab_id: &str) -> Result<Self, String> {
+    pub fn from_session(session: &Session) -> Result<Self, String> {
         let host = session.host.trim().to_string();
         if host.is_empty() {
             return Err(crate::i18n::t("主机地址为空", "host is empty").to_string());
@@ -60,8 +56,6 @@ impl EmbeddedRdpConfig {
         // once the session is connected, and the driver resizes from there.
         let (width, height) = desktop_size(session);
         Ok(Self {
-            tab_id: tab_id.to_string(),
-            session_id: session.id.clone(),
             host,
             port,
             username: user,
@@ -113,12 +107,11 @@ mod tests {
         session.port = 0;
         session.user = "CONTOSO\\alice".into();
         session.auth = AuthMethod::Password;
-        let cfg = EmbeddedRdpConfig::from_session(&session, "tab-1").unwrap();
+        let cfg = EmbeddedRdpConfig::from_session(&session).unwrap();
         // port 0 means "use the protocol default", exactly as launch() does.
         assert_eq!(cfg.port, crate::rdp::RDP_DEFAULT_PORT);
         assert_eq!(cfg.username, "alice");
         assert_eq!(cfg.domain, "CONTOSO");
-        assert_eq!(cfg.tab_id, "tab-1");
     }
 
     #[test]
@@ -127,14 +120,14 @@ mod tests {
         session.host = "10.0.0.9".into();
         session.user = "alice@contos.com".into();
         session.rdp_domain = "OTHER".into();
-        let cfg = EmbeddedRdpConfig::from_session(&session, "t").unwrap();
+        let cfg = EmbeddedRdpConfig::from_session(&session).unwrap();
         assert_eq!(cfg.domain, "OTHER");
     }
 
     #[test]
     fn a_blank_host_is_rejected_before_any_socket_is_opened() {
         let session = Session::new_empty();
-        assert!(EmbeddedRdpConfig::from_session(&session, "t").is_err());
+        assert!(EmbeddedRdpConfig::from_session(&session).is_err());
     }
 
     /// (#rdp-follow-only 2026-11-16) The built-in client **always** follows
@@ -151,14 +144,14 @@ mod tests {
         session.rdp_fullscreen = false;
         session.rdp_width = 1920;
         session.rdp_height = 1080;
-        let cfg = EmbeddedRdpConfig::from_session(&session, "t").unwrap();
+        let cfg = EmbeddedRdpConfig::from_session(&session).unwrap();
         assert!(
             cfg.follow_tab_size,
             "a fixed resolution inside a tab is not a thing any more"
         );
 
         session.rdp_fullscreen = true;
-        let cfg = EmbeddedRdpConfig::from_session(&session, "t").unwrap();
+        let cfg = EmbeddedRdpConfig::from_session(&session).unwrap();
         assert!(cfg.follow_tab_size, "full screen fills the tab");
     }
 }

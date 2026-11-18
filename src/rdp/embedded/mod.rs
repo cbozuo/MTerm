@@ -40,9 +40,7 @@ pub(crate) mod credentials;
 #[path = "impls/clipboard.rs"]
 pub(crate) mod clipboard;
 
-pub(crate) use config::{desktop_size, EmbeddedRdpConfig};
-pub(crate) use status::{RemoteState, RemoteStatus};
-pub(crate) use input::{button, keysym, latin1_keysym, wheel_notches, RemoteInput, SlintKey};
+pub(crate) use input::{latin1_keysym, wheel_notches, RemoteInput};
 
 /// Split `DOMAIN\user` / `user@domain` into its parts; plain names pass through.
 ///

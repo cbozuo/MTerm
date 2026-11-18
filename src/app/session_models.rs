@@ -362,47 +362,8 @@ pub(super) fn assemble_proxy(draft: &SessionDraft, existing_proxy: &str) -> Stri
     url
 }
 
-/// Build the jump-host picker's parallel label/id lists for the session dialog
-/// (#211). Index 0 is always the "no jump host" entry (empty id); the rest are
-/// the saved SSH sessions except `exclude_id` (a session can't jump through
-/// itself). Returns `(labels, ids, selected_index)` where `selected_index`
-/// points at `current_jump_id` (0 if unset / dangling).
-pub(super) fn jump_candidates(
-    store: &ConfigStore,
-    exclude_id: &str,
-    current_jump_id: &str,
-) -> (ModelRc<SharedString>, ModelRc<SharedString>, i32) {
-    let mut labels: Vec<SharedString> = vec![t("无（直接连接）", "None (direct)").into()];
-    let mut ids: Vec<SharedString> = vec!["".into()];
-    let mut selected: i32 = 0;
-    for s in store.sessions() {
-        if s.kind != SessionKind::Ssh || s.id == exclude_id {
-            continue;
-        }
-        let label = if s.name.trim().is_empty() {
-            if s.user.trim().is_empty() {
-                s.host.clone()
-            } else {
-                format!("{}@{}", s.user, s.host)
-            }
-        } else {
-            format!("{} ({}@{})", s.name, s.user, s.host)
-        };
-        if s.id == current_jump_id {
-            selected = ids.len() as i32;
-        }
-        labels.push(label.into());
-        ids.push(s.id.clone().into());
-    }
-    (
-        ModelRc::from(Rc::new(VecModel::from(labels))),
-        ModelRc::from(Rc::new(VecModel::from(ids))),
-        selected,
-    )
-}
-
 /// (#conn-path 2026-10-04 高保真 #proxy-fields) Session → 跳板链条目(信息卡
-/// 数据源):label 沿用 jump_candidates 的命名规则,auth 存原始值由 slint 侧
+/// 数据源):label 沿用已退役 jump_candidates 的命名规则,auth 存原始值由 slint 侧
 /// auth-label() 转显示名。
 pub(super) fn jump_entry(s: &Session, group_display: &str) -> JumpEntry {
     let label = if s.name.trim().is_empty() {

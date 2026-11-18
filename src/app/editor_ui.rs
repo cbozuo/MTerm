@@ -68,7 +68,7 @@ fn default_download_dir() -> String {
 fn kind_ansi_slot(k: SpanKind) -> Option<usize> {
     use SpanKind::*;
     Some(match k {
-        Plain | Hl | HlCur => return None,
+        Plain => return None,
         Kw => 5,
         Ty => 11,
         Fn => 12,

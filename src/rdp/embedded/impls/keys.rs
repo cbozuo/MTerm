@@ -244,11 +244,7 @@ mod tests {
         SlintKey {
             name: text.to_string(),
             text,
-            ctrl: false,
-            alt: false,
             shift,
-            meta: false,
-            down: true,
         }
     }
 
@@ -257,11 +253,7 @@ mod tests {
         SlintKey {
             name: name.to_string(),
             text: name.chars().next().unwrap_or('\0'),
-            ctrl: false,
-            alt: false,
             shift: false,
-            meta: false,
-            down: true,
         }
     }
 

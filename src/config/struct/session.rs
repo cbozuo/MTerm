@@ -96,18 +96,6 @@ impl RdpClientMode {
 }
 
 impl SessionKind {
-    /// True for the transports that are *always* rendered inside a tab by MTerm
-    /// itself, whatever `rdp_mode` says.
-    ///
-    /// This deliberately answers only half the question. An RDP session in
-    /// `RdpClientMode::Embedded` is also a tab, and that cannot be decided from
-    /// `SessionKind` alone. Callers that need the real answer — anything that
-    /// creates a tab, or picks a renderer — must use `Session::uses_tab`, which
-    /// can see both fields. Use this one only for genuinely kind-level
-    /// questions (e.g. "does this protocol have a tab-hosted flavour at all?").
-    pub fn is_tab_transport(&self) -> bool {
-        matches!(self, SessionKind::Vnc)
-    }
 }
 
 fn default_baud() -> u32 {

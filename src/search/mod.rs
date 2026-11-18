@@ -38,7 +38,9 @@ mod trigger;
 
 pub(crate) use index::{build_index, SessionView};
 pub(crate) use model::{Category, Counts, GroupedMatches, MatchRow, Payload, SearchIndex, SearchItem};
+#[cfg_attr(not(test), allow(unused_imports))] // 测试 API 面（lib 目标不引用，勿删）
 pub(crate) use query::{search, tokenize, CatFilter};
+#[cfg_attr(not(test), allow(unused_imports))] // 测试 API 面（lib 目标不引用，勿删）
 pub(crate) use rank::{group_and_cap, recent_items, CAT_ORDER, MAX_PER_GROUP, MAX_TOTAL, MAX_RECENT};
 pub(crate) use trigger::{DoubleShiftTracker, KeyEvent};
 

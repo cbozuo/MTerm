@@ -84,6 +84,7 @@ use rustls::{DigitallySignedStruct, Error as TlsError, SignatureScheme};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+#[cfg_attr(not(test), allow(unused_imports))] // 测试 API 面（lib 目标不引用，勿删）
 use crate::remote::trust::{sha256_fingerprint, TrustOutcome, TrustedPeer};
 
 /// How long the probe may take before we give up on the whole connection.
@@ -100,6 +101,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_X224_FRAME: usize = 1024;
 
 /// Record a decision the user made in the UI.
+#[cfg_attr(not(test), allow(dead_code))] // 测试 API（trust 测试在用）
 pub fn remember(
     store: &mut crate::remote::trust::TrustStore,
     protocol: &str,
