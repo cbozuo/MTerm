@@ -1,0 +1,323 @@
+// SPDX-License-Identifier: MIT
+// 删除分组确认弹框（#del-group-dialog 2026-11-18 用户反馈"删除分组的交互
+// 不友好，组内成员直接进默认组了"）。
+//
+// 旧行为：组头菜单「删除分组」直接删组，组内会话静默回默认组；入口上那道
+// 「非空组禁用」的护栏实际从未生效（组头行的 session.id 恒为空串，`empty`
+// 判定恒真）—— 用户点一下，成员去向毫无提示。
+//
+// 现行为（本弹框）：
+//   ① 先确认：组名 / 直属会话数 / 子分组数一次说清；
+//   ② 会话去向 = 分组清单里任选（#del-group-picker 2026-11-18 用户要求
+//      "参考分组管理里面的交互，可以选择分组"）：默认组 + 全部非保留组，
+//      树形缩进 + 组色点 + 组内会话数；Rust 侧默认选中父分组（层级收拢），
+//      无父组时默认组；
+//   ③ 取消 / 点外 / Esc 一律不删；子分组恒提升到被删组同级（引擎既有
+//      语义，弹框里明说）。
+// 骨架 = confirm_dialog / panel_settings 同款：Scrim + 居中卡（设备像素
+// 对齐）+ 点外关 + Esc。破坏性动作不绑 Enter（confirm_dialog 定稿口径）。
+import { Theme } from "theme.slint";
+import { Scrim, GhostButton } from "widgets.slint";
+import { Icon } from "icons.slint";
+import { MoveGroupRow } from "group_types.slint";
+import { ScrollView } from "std-widgets.slint";
+
+// 实心危险键（confirm_dialog 的 DangerButton 是文件私有的，这里同款复刻，
+// 保持"破坏性落点键"一套视觉）。
+component DangerButton inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    height: 30px;
+    min-width: 80px;
+    horizontal-stretch: 0;
+    border-radius: Theme.radius-sm;
+    background: touch.pressed ? #c44a4a : (touch.has-hover ? #ec6a6a : Theme.danger);
+    animate background { duration: 120ms; }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        alignment: center;
+        Text {
+            text: root.text;
+            color: white;
+            font-size: Theme.fs-md;
+            font-weight: Theme.fw-strong;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: default;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component DeleteGroupDialog inherits Rectangle {
+    width: 100%;
+    height: 100%;
+
+    in property <bool> lang-en: false;
+    in property <string> group-name;
+    // 直属会话数（子组里的会话不搬，跟着子组一起提升）。
+    in property <int> sessions: 0;
+    in property <int> subgroups: 0;
+    // 去向清单（默认组 + 全部非保留组，排除被删组自身；MoveGroupRow 与
+    // 「移动到分组」弹框共用：depth 缩进 / 组色点 / 组内会话数）。
+    in property <[MoveGroupRow]> rows;
+    // 选中的去向（显示名；默认组的显示名由 Rust 按语言下发）。
+    in-out property <string> picked: "";
+
+    callback confirm(string);
+    callback cancel();
+
+    // 列表视口：行 30 + 上下 4 内衬，超过 5 行封顶 158（滚动）。
+    property <length> list-h: min(root.rows.length * 30px + 8px, 158px);
+    // 体高逐项记账（VerticalLayout spacing 10）：
+    //   内衬 28 + 问句 18 + (去向块 10+15+6+list-h) + (子组注记 10+15)
+    property <length> body-h: 28px + 18px
+        + (root.sessions > 0 ? 10px + 15px + 6px + root.list-h : 0px)
+        + (root.subgroups > 0 ? 10px + 15px : 0px);
+
+    // Esc 关闭：ctx 浮层 / panel_settings 同款（1×1 FocusScope + 0ms Timer）。
+    fs := FocusScope {
+        x: 0;
+        y: 0;
+        width: 1px;
+        height: 1px;
+        property <bool> fs-focus-pending: false;
+        init => { self.fs-focus-pending = true; }
+        Timer {
+            interval: 0ms;
+            running: parent.fs-focus-pending;
+            triggered => {
+                parent.fs-focus-pending = false;
+                parent.focus();
+            }
+        }
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                root.cancel();
+                accept
+            } else {
+                reject
+            }
+        }
+    }
+
+    Scrim { width: 100%; height: 100%; }
+
+    // 点外关闭 = 取消（不删）。
+    if true : Rectangle {
+        width: 100%;
+        height: 100%;
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            mouse-cursor: default;
+            scroll-event(e) => { accept }
+            clicked => { root.cancel(); }
+        }
+    }
+
+    card := Rectangle {
+        // (#panel-settings-blur 2026-11-18) 卡位/卡宽一律过 snap-to-device:
+        // 分数逻辑坐标在 125/150% DPI 下会落在半个设备像素上，整卡文字
+        // 一起发虚（面板设置卡同轮修复）。
+        width: Theme.snap-to-device(380px);
+        height: Theme.snap-to-device(min(parent.height - 36px, 58px + root.body-h + 50px));
+        x: Theme.snap-to-device((parent.width - self.width) / 2);
+        y: Theme.snap-to-device((parent.height - self.height) / 2);
+        background: Theme.popup-bg;
+        border-radius: 12px;
+        border-width: Theme.hairline();
+        border-color: Theme.border-strong;
+        // 卡片空白吞层：点卡内不穿透到遮罩（误当成"点外"关闭）。
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            mouse-cursor: default;
+        }
+        col := VerticalLayout {
+            // 头 58 = 12 + 21(标题) + 15(副题) + 10。
+            Rectangle {
+                height: 58px;
+                Rectangle {
+                    y: parent.height - Theme.hairline();
+                    height: Theme.hairline();
+                    width: 100%;
+                    background: Theme.border-subtle;
+                }
+                VerticalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    padding-top: 12px;
+                    padding-bottom: 10px;
+                    spacing: 0px;
+                    Text {
+                        text: root.lang-en ? "Delete group" : "删除分组";
+                        color: Theme.text-primary;
+                        font-size: Theme.fs-lg;
+                        font-weight: Theme.fw-strong;
+                        height: 21px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.lang-en
+                            ? "This cannot be undone"
+                            : "此操作无法撤销";
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-xs;
+                        height: 15px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            // 体：16 内衬 + 10 行距；文案 13/11(词表最小清晰档 fs-sm/fs-xs)。
+            VerticalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 14px;
+                padding-bottom: 14px;
+                spacing: 10px;
+                Text {
+                    text: (root.lang-en ? "Delete the group \"" : "确定删除分组「")
+                        + root.group-name + (root.lang-en ? "\"?" : "」？");
+                    color: Theme.text-primary;
+                    font-size: Theme.fs-sm;
+                    height: 18px;
+                    overflow: elide;
+                }
+                // 去向：有会话才需要说；清单 = 默认组 + 全部非保留组。
+                if root.sessions > 0 : VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: root.lang-en
+                            ? (root.sessions == 1 ? "Where should the 1 session go?" : "Where should the " + root.sessions + " sessions go?")
+                            : "组内 " + root.sessions + " 个会话的去向：";
+                        color: Theme.text-secondary;
+                        font-size: Theme.fs-xs;
+                        height: 15px;
+                    }
+                    Rectangle {
+                        height: root.list-h;
+                        border-radius: Theme.radius-sm;
+                        background: Theme.popup-bg-inset;
+                        border-width: Theme.hairline();
+                        border-color: Theme.border-strong;
+                        clip: true;
+                        // (#del-group-picker) 列表滚动：app 惯例 = std 滚动条
+                        // 一律 always-off(自绘细条那套)，这里行数封顶 5 行，
+                        // 少量溢出用滚轮即可。
+                        ScrollView {
+                            width: 100%;
+                            height: 100%;
+                            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                            dl-vl := VerticalLayout {
+                                padding: 4px;
+                                spacing: 0px;
+                                for r in root.rows : Rectangle {
+                                    // 行高显式在外层壳（move_group_dialog 同款：
+                                    // if/for 内层高不撑外层壳）。
+                                    height: 30px;
+                                    if r.name != "" : Rectangle {
+                                        width: 100%;
+                                        height: 100%;
+                                        border-radius: 4px;
+                                        background: r-ta.has-hover
+                                            ? Theme.bg-hover
+                                            : (root.picked == r.name
+                                                ? Theme.accent-solid.with-alpha(0.14)
+                                                : transparent);
+                                        r-ta := TouchArea {
+                                            mouse-cursor: default;
+                                            clicked => { root.picked = r.name; }
+                                        }
+                                        HorizontalLayout {
+                                            padding-left: 7px + r.depth * 16px;
+                                            padding-right: 8px;
+                                            spacing: 6px;
+                                            // 组色圆点 6px(无自定义色 → 次级前景)；
+                                            // 固定高子项在 HL 里贴顶 → 100% 高外壳居中。
+                                            Rectangle {
+                                                width: 6px;
+                                                height: 100%;
+                                                Rectangle {
+                                                    width: 6px;
+                                                    height: 6px;
+                                                    y: (parent.height - self.height) / 2;
+                                                    border-radius: 3px;
+                                                    background: Theme.group-color(r.has-color, r.color);
+                                                }
+                                            }
+                                            Text {
+                                                text: r.name;
+                                                color: root.picked == r.name || r-ta.has-hover
+                                                    ? Theme.text-primary : Theme.text-secondary;
+                                                font-size: Theme.fs-sm;
+                                                vertical-alignment: center;
+                                                horizontal-stretch: 1;
+                                                horizontal-alignment: left;
+                                                overflow: elide;
+                                            }
+                                            Text {
+                                                text: "" + r.count;
+                                                color: Theme.text-muted;
+                                                font-size: Theme.fs-2xs;
+                                                vertical-alignment: center;
+                                            }
+                                            if root.picked == r.name : Icon {
+                                                glyph: "check";
+                                                tint: Theme.accent-solid;
+                                                size: 12px;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if root.subgroups > 0 : Text {
+                    text: root.lang-en
+                        ? (root.subgroups == 1
+                            ? "1 subgroup will move up to the same level."
+                            : root.subgroups + " subgroups will move up to the same level.")
+                        : root.subgroups + " 个子分组将提升到同一级。";
+                    color: Theme.text-secondary;
+                    font-size: Theme.fs-xs;
+                    height: 15px;
+                    overflow: elide;
+                }
+            }
+            // 脚 50：顶线 + 取消(ghost) + spacer + 删除(实心危险)。
+            Rectangle {
+                height: 50px;
+                Rectangle {
+                    y: 0;
+                    height: Theme.hairline();
+                    width: 100%;
+                    background: Theme.border-subtle;
+                }
+                HorizontalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    padding-top: 10px;
+                    padding-bottom: 10px;
+                    spacing: 8px;
+                    GhostButton {
+                        text: root.lang-en ? "Cancel" : "取消";
+                        dialog-chrome: true;
+                        // HL 子项默认 stretch=1 会把退路键拉满整条，显式归零。
+                        horizontal-stretch: 0;
+                        clicked => { root.cancel(); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    DangerButton {
+                        text: root.lang-en ? "Delete group" : "删除分组";
+                        clicked => { root.confirm(root.picked); }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -2870,7 +2870,7 @@ impl ConfigStore {
     /// (#left-panel-v3) 删除分组:子组提升到被删组的父级(层级收拢,不级联
     /// 删);组内会话全部回到未分组(default)。保留组不可删。
     /// (#delete-by-name-compat 2026-11-12 用户实测"新建子分组后无法删除")
-    /// Slint 两条删除链(组头菜单 delete-group / 分组管理 remove-group)
+    /// Slint 两条删除链(组头菜单「删除分组」确认弹框 / 分组管理 remove-group)
     /// 传的都是**显示组名**,V3 按 id 键后 group_by_id 找不到 → 静默 return
     /// —— id 优先、显示名回退(set_group_color 11-07 同款口径)。
     pub fn remove_group(&mut self, id: &str) {
@@ -2899,6 +2899,53 @@ impl ConfigStore {
                 s.group_id = GROUP_ID_DEFAULT.to_string();
             }
         }
+    }
+
+    /// (#del-group-dialog 2026-11-18) 删除分组并把**直属会话**迁到指定去向。
+    /// 确认弹框的落点：`to` 先按 id、再按显示名解析；空串 / 未知名一律回落
+    /// 默认组（silent fallback 比误建组安全）。子组仍按 remove_group 语义
+    /// 提升到被删组同级。返回实际搬迁的会话数。
+    pub fn delete_group_moving_members(&mut self, id: &str, to: &str) -> usize {
+        let record = match self.group_by_id(id) {
+            Some(r) => r.clone(),
+            None => match self.cache.group_records.iter().find(|g| g.name == id) {
+                Some(r) => r.clone(),
+                None => return 0,
+            },
+        };
+        if record.reserved {
+            return 0;
+        }
+        let to = to.trim();
+        let to_gid = if to.is_empty() {
+            GROUP_ID_DEFAULT.to_string()
+        } else {
+            self.group_by_id(to)
+                .or_else(|| self.cache.group_records.iter().find(|g| g.name == to))
+                .map(|g| g.id.clone())
+                .unwrap_or_else(|| GROUP_ID_DEFAULT.to_string())
+        };
+        let to_name = if to_gid == GROUP_ID_DEFAULT {
+            String::new()
+        } else {
+            self.group_records()
+                .iter()
+                .find(|g| g.id == to_gid)
+                .map(|g| g.name.clone())
+                .unwrap_or_default()
+        };
+        let mut moved = 0;
+        for s in &mut self.cache.sessions {
+            if s.group_id == record.id {
+                s.group_id = to_gid.clone();
+                s.group = to_name.clone();
+                moved += 1;
+            }
+        }
+        // 落点组展开：成员搬进去却被折叠态吞掉，用户会以为「删没了」。
+        self.set_group_collapsed(&to_gid, false);
+        self.remove_group(&record.id);
+        moved
     }
 
     /// (#left-panel-v3) 重命名分组(id 键下只改名字,颜色/折叠/成员身份
@@ -3276,6 +3323,73 @@ mod tests {
         let child = store.group_by_id(&cid2).expect("child lifted");
         assert_eq!(child.parent_id, "", "子组应上提到根级");
         store.remove_group("不存在的组");
+    }
+
+    #[test]
+    fn delete_group_moving_members_honours_target() {
+        // (#del-group-dialog 2026-11-18) 删除分组的去向选择:直属成员迁到
+        // 指定组(父分组/默认组),子组提升到被删组同级,未知名回落默认组。
+        let mut store = temp_store();
+        let pid = store.add_group("P".into(), "").expect("add parent");
+        let cid = store.add_group("C".into(), &pid).expect("add child");
+        let mut a = Session::new_empty();
+        a.id = "a".into();
+        a.group_id = pid.clone();
+        a.group = "P".into();
+        store.upsert(a);
+        let mut b = Session::new_empty();
+        b.id = "b".into();
+        b.group_id = pid.clone();
+        b.group = "P".into();
+        store.upsert(b);
+        let mut c = Session::new_empty();
+        c.id = "c".into();
+        c.group_id = cid.clone();
+        c.group = "C".into();
+        store.upsert(c);
+
+        // 父组删掉、成员落默认组:2 个直属成员搬走,子组上提到根级,
+        // 子组里的会话不受影响。
+        assert_eq!(store.delete_group_moving_members("P", ""), 2);
+        assert!(store.group_by_id(&pid).is_none());
+        assert_eq!(
+            store.group_by_id(&cid).map(|g| g.parent_id.clone()),
+            Some(String::new()),
+            "子组应上提到根级"
+        );
+        assert_eq!(store.get("a").unwrap().group_id, GROUP_ID_DEFAULT);
+        assert_eq!(store.get("a").unwrap().group, "", "默认组显示名清空");
+        assert_eq!(store.get("c").unwrap().group_id, cid, "子组成员不搬");
+
+        // 子组删掉、成员按显示名落父组(这里父已删,用新建的 P2/C2 验证)。
+        let p2 = store.add_group("P2".into(), "").expect("add p2");
+        let c2 = store.add_group("C2".into(), &p2).expect("add c2");
+        let mut d = Session::new_empty();
+        d.id = "d".into();
+        d.group_id = c2.clone();
+        d.group = "C2".into();
+        store.upsert(d);
+        // 落点组先折叠：删除后必须自动展开，否则成员"消失"。
+        store.set_group_collapsed(&p2, true);
+        assert_eq!(store.delete_group_moving_members("C2", "P2"), 1);
+        assert_eq!(store.get("d").unwrap().group_id, p2);
+        assert_eq!(store.get("d").unwrap().group, "P2");
+        assert!(
+            !store.group_by_id(&p2).map(|g| g.collapsed).unwrap_or(true),
+            "落点分组应自动展开"
+        );
+
+        // 未知名去向 → 回落默认组;保留组不可删。
+        let p3 = store.add_group("P3".into(), "").expect("add p3");
+        let mut e = Session::new_empty();
+        e.id = "e".into();
+        e.group_id = p3.clone();
+        store.upsert(e);
+        assert_eq!(store.delete_group_moving_members(&p3, "不存在的去向"), 1);
+        assert_eq!(store.get("e").unwrap().group_id, GROUP_ID_DEFAULT);
+        // 保留组(默认组)不存在于临时 store 的 records 里 → 解析不到 = 0;
+        // 真实保留组的 reserved 拦截由 remove_group 既有单测覆盖。
+        assert_eq!(store.delete_group_moving_members(GROUP_ID_DEFAULT, ""), 0);
     }
 
     #[test]

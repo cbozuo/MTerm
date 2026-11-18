@@ -71,6 +71,7 @@ import { InterfacePanel, WslProfileInfo, AccentGuard } from "interface_panel.sli
 import { HighlightDialog, HighlightPresetItem, HighlightCustomItem } from "highlight_dialog.slint";
 import { PingDialog, PingTargetRow, ListenRow, PingHostOption, PingHostInfo } from "ping_dialog.slint";
 import { PanelSettingsDialog } from "panel_settings.slint";
+import { DeleteGroupDialog } from "delete_group_dialog.slint";
 import { MoveGroupDialog } from "move_group_dialog.slint";
 import { MoveGroupRow } from "group_types.slint";
 import { SettingsDialog } from "settings_dialog.slint";
@@ -805,7 +806,7 @@ component PanelMenuItem inherits Rectangle {
         Text {
             text: root.label;
             color: Theme.text-primary;
-            font-size: Theme.fs-md;
+            font-size: Theme.fs-menu;
             vertical-alignment: center;
             horizontal-stretch: 1;
             overflow: elide;
@@ -842,11 +843,17 @@ component PanelMenu inherits Rectangle {
     // 菜单项动作 id，见 AppWindow.run-panel-menu 的分发表。
     callback action(string);
 
-    width: min(260px, max(190px, pm-vl.preferred-width));
-    height: pm-vl.preferred-height;
+    // (#ctx-menu-crisp 2026-11-18 用户反馈"组内成员的菜单字体显示不清晰")
+    // 菜单锚点来自指针逻辑坐标(1.5 DPR 下常落在半个设备像素上),内容宽
+    // 也是 preferred 小数 —— 整块菜单连同文字一起发虚。宽高/落点一律过
+    // snap-to-device(与 confirm_dialog / 面板设置卡同一条规则)。
+    width: Theme.snap-to-device(min(260px, max(190px, pm-vl.preferred-width)));
+    height: Theme.snap-to-device(pm-vl.preferred-height);
     background: Theme.popup-bg;
     border-radius: Theme.radius-sm;
-    border-width: 1px;
+    // (#ctx-menu-crisp 2026-11-18) 逻辑 1px 在 125/150% 下是 1.25/1.5 设备
+    // 像素,外框摊成两列淡影;hairline = 1 设备像素(弹框口径同款)。
+    border-width: Theme.hairline();
     border-color: Theme.border-strong;
     drop-shadow-blur: 10px;
     drop-shadow-color: transparent;
@@ -1418,6 +1425,19 @@ export component AppWindow inherits Window {
     in-out property <string> move-search-query: "";
     in-out property <string> move-picked: "";
     callback refresh-move-group-rows(string /* session id */, string /* query */);
+    // (#del-group-dialog 2026-11-18) 删除分组确认弹框：组头菜单先发
+    // request-delete-group（Rust 算清直系会话数/子组数并回填「去向」清单后
+    // 开框），用户在清单里选中任意分组再 confirm。
+    // (#del-group-picker 2026-11-18 用户要求"参考分组管理里面的交互，可以选择
+    // 分组") 去向 = 默认组 + 全部非保留组（MoveGroupRow 树形行，排除被删组）。
+    in-out property <bool> del-group-open: false;
+    in-out property <string> del-group-name: "";
+    in-out property <int> del-group-count: 0;
+    in-out property <int> del-group-subs: 0;
+    in property <[MoveGroupRow]> del-group-rows;
+    in-out property <string> del-group-picked: "";
+    callback request-delete-group(string /* name */);
+    callback confirm-delete-group(string /* name */, string /* target display name */);
     // (#panel-settings) 点击标签定位树的 changed 钩子挂既有
     // changed active-tab-id(见 refresh-sidebar 旁;Slint 每属性只允许一个
     // changed 块)。
@@ -1951,9 +1971,10 @@ export component AppWindow inherits Window {
     in-out property <string> group-dialog-error;
     // (#group-dialog-color 2026-09-14) 对话框里的分组颜色草稿。与右键菜单的
     // "点即写盘"不同:这里只改草稿,随「确定」一起提交,取消即回退。
+    // (#del-group-dialog 2026-11-18) 原 delete-group 回调(直删)退役：
+    // 组头菜单改走 request-delete-group → 确认弹框 → confirm-delete-group。
     in-out property <string> group-dialog-color-hex;
     in-out property <color> group-dialog-color;
-    callback delete-group(string /* name */);
     // (#grp-menu-v2 2026-11-12) 组头菜单「新建子分组」:父组名 → Rust 建一个
     // 名为「新建子分组」的一级子组(重名自动加序号;UI 限深 2)。
     callback create-subgroup(string /* parent group name */);
@@ -3406,7 +3427,6 @@ export component AppWindow inherits Window {
                         root.group-dialog-color = #00000000;
                         root.group-dialog-open = true;
                     }
-                    delete-group(name) => { root.delete-group(name); }
                     remove-session(id) => { root.remove-session(id); }
                 }
                 } // 裁切层
@@ -4112,7 +4132,6 @@ export component AppWindow inherits Window {
                             root.group-dialog-color = #00000000;
                             root.group-dialog-open = true;
                         }
-                        delete-group(name) => { root.delete-group(name); }
                         remove-session(id) => { root.remove-session(id); }
                         cycle-tab(reverse) => { root.cycle-tab(reverse); }
                     }
@@ -4891,21 +4910,22 @@ export component AppWindow inherits Window {
     // (30px 行 / fs-sm 图标 / fs-md 文本 / 左距 10 + 间距 9),右侧新增
     // 快捷键列(fs-2xs · muted,同 mockup .sc)。
     if root.ctx-open-key != "" && root.ctx-menu-kind == "row" : row-menu-rect := Rectangle {
-        x: max(8px, min(root.ctx-menu-x, parent.width - self.width - 8px));
-        y: max(8px, min(
+        // (#ctx-menu-crisp 2026-11-18) 指针锚点/内容宽都是小数 → 设备像素对齐。
+        x: Theme.snap-to-device(max(8px, min(root.ctx-menu-x, parent.width - self.width - 8px)));
+        y: Theme.snap-to-device(max(8px, min(
             self.height > root.ctx-menu-space-below
                 ? max(8px, root.ctx-menu-y - self.height)
                 : root.ctx-menu-y,
-            parent.height - self.height - 8px));
-        // 宽度随内容(快捷键列加宽后下限 190 / 上限 260)。
+            parent.height - self.height - 8px)));
+        // (#ctx-menu-crisp 2026-11-18) 宽度随内容(快捷键列加宽后下限 190 / 上限 260)。
         // (#row-menu-noshortcut 2026-11-17 用户要求) 成员菜单不再显示快捷键
         // (Enter / Ctrl+Enter),宽度随之收窄:下限 190→164(库内菜单紧凑档),
         // 上限 260→240,与面板 ⋯ / 组头菜单同一档,不再靠内容撑出一条空列。
-        width: min(240px, max(164px, row-menu-vl.preferred-width));
-        height: row-menu-vl.preferred-height;
+        width: Theme.snap-to-device(min(240px, max(164px, row-menu-vl.preferred-width)));
+        height: Theme.snap-to-device(row-menu-vl.preferred-height);
         background: Theme.popup-bg;
         border-radius: Theme.radius-sm;
-        border-width: 1px;
+        border-width: Theme.hairline();
         border-color: Theme.border-strong;
         // 垫底探测:指针在菜单内非菜单项区域时由此层挡住 backdrop hover。
         menu-pad := TouchArea { width: 100%; height: 100%; }
@@ -4937,7 +4957,7 @@ export component AppWindow inherits Window {
                     Text {
                         text: @tr("Open session");
                         color: Theme.text-primary;
-                        font-size: Theme.fs-md;
+                        font-size: Theme.fs-menu;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                         horizontal-alignment: left;
@@ -4969,7 +4989,7 @@ export component AppWindow inherits Window {
                     Text {
                         text: @tr("Open in new tab");
                         color: Theme.text-primary;
-                        font-size: Theme.fs-md;
+                        font-size: Theme.fs-menu;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                         horizontal-alignment: left;
@@ -5001,7 +5021,7 @@ export component AppWindow inherits Window {
                     Text {
                         text: @tr("Edit session");
                         color: Theme.text-primary;
-                        font-size: Theme.fs-md;
+                        font-size: Theme.fs-menu;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                         horizontal-alignment: left;
@@ -5033,7 +5053,7 @@ export component AppWindow inherits Window {
                     Text {
                         text: @tr("Duplicate session");
                         color: Theme.text-primary;
-                        font-size: Theme.fs-md;
+                        font-size: Theme.fs-menu;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                         horizontal-alignment: left;
@@ -5070,7 +5090,7 @@ export component AppWindow inherits Window {
                     Text {
                         text: @tr("Move to group…");
                         color: Theme.text-primary;
-                        font-size: Theme.fs-md;
+                        font-size: Theme.fs-menu;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                         horizontal-alignment: left;
@@ -5102,7 +5122,7 @@ export component AppWindow inherits Window {
                     Text {
                         text: @tr("Copy host address");
                         color: Theme.text-primary;
-                        font-size: Theme.fs-md;
+                        font-size: Theme.fs-menu;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                         horizontal-alignment: left;
@@ -5138,7 +5158,7 @@ export component AppWindow inherits Window {
                     Text {
                         text: @tr("Delete session");
                         color: #cc3333;
-                        font-size: Theme.fs-md;
+                        font-size: Theme.fs-menu;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                         horizontal-alignment: left;
@@ -5150,14 +5170,15 @@ export component AppWindow inherits Window {
 
     // (#panel-menu-unify 2026-11-17) 列表空白处右键 = 面板级菜单（与面板 ⋯ 同一份）。
     if root.ctx-open-key == "blank" && root.ctx-menu-kind == "blank" : PanelMenu {
-        x: max(8px, min(root.ctx-menu-x, parent.width - self.width - 8px));
+        // (#ctx-menu-crisp 2026-11-18) 落点设备像素对齐。
+        x: Theme.snap-to-device(max(8px, min(root.ctx-menu-x, parent.width - self.width - 8px)));
         // 上翻时补 4px 间隙：菜单底边不死贴右击点，接近系统右键菜单手感。
         // 菜单比窗口还高时（14 项 ≈ 457px）不能把 y 算成负数顶出上缘。
-        y: max(8px, min(
+        y: Theme.snap-to-device(max(8px, min(
             self.height > root.ctx-menu-space-below
                 ? max(8px, root.ctx-menu-y - self.height - 4px)
                 : root.ctx-menu-y,
-            parent.height - self.height - 8px));
+            parent.height - self.height - 8px)));
         system-hidden: root.system-hidden;
         action(a) => { root.run-panel-menu(a); }
     }
@@ -5165,21 +5186,22 @@ export component AppWindow inherits Window {
     // (#ctx-group-menu 组头菜单:右键与悬停 ⋮ 共用;[!] 2026-11-17 的
     // #panel-menu-unify 重构曾把它误删(整段替换跨过了它),此处按历史版本恢复。
     if root.ctx-open-key != "" && root.ctx-menu-kind == "group" : grp-menu-rect := Rectangle {
-        x: max(8px, min(root.ctx-menu-x, parent.width - self.width - 8px));
-        y: min(
+        // (#ctx-menu-crisp 2026-11-18) 落点/宽高设备像素对齐（菜单文字发虚修）。
+        x: Theme.snap-to-device(max(8px, min(root.ctx-menu-x, parent.width - self.width - 8px)));
+        y: Theme.snap-to-device(min(
             self.height > root.ctx-menu-space-below
                 ? max(8px, root.ctx-menu-y - self.height)
                 : root.ctx-menu-y,
-            parent.height - self.height - 8px);
+            parent.height - self.height - 8px));
         // (#ctx-menu-fit 2026-09-13) 宽度跟着内容走,左右留白一致。
         // (#ui-menu-compact-right 2026-09-15) 内容宽,色块紧贴文字。
         // (#grp-menu-v2 2026-11-12) 下限 164 / 上限 260:新增「新建子分组 /
         // 隐藏本地终端」等长条目在英文下不再顶出或被 elide 截断。
-        width: min(260px, max(164px, grp-menu-vl.preferred-width));
-        height: grp-menu-vl.preferred-height;
+        width: Theme.snap-to-device(min(260px, max(164px, grp-menu-vl.preferred-width)));
+        height: Theme.snap-to-device(grp-menu-vl.preferred-height);
         background: Theme.popup-bg;
         border-radius: Theme.radius-sm;
-        border-width: 1px;
+        border-width: Theme.hairline();
         border-color: Theme.border-strong;
         drop-shadow-blur: 10px;
         drop-shadow-color: transparent;
@@ -5216,7 +5238,7 @@ export component AppWindow inherits Window {
                 HorizontalLayout {
                     padding-left: 10px; spacing: 9px;
                     Icon { glyph: "new-session"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("New session in this group"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
+                    Text { text: @tr("New session in this group"); color: Theme.text-primary; font-size: Theme.fs-menu; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
                 }
             }
             // ② 新建子分组(仅父组 depth 0、非保留组;高保真 UI 限深 2)
@@ -5245,7 +5267,7 @@ export component AppWindow inherits Window {
                 HorizontalLayout {
                     padding-left: 10px; spacing: 9px;
                     Icon { glyph: "create-new-folder"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("New subgroup"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
+                    Text { text: @tr("New subgroup"); color: Theme.text-primary; font-size: Theme.fs-menu; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
                 }
             }
             // ③ 重命名分组
@@ -5268,7 +5290,7 @@ export component AppWindow inherits Window {
                 HorizontalLayout {
                     padding-left: 10px; spacing: 9px;
                     Icon { glyph: "edit"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Rename group"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
+                    Text { text: @tr("Rename group"); color: Theme.text-primary; font-size: Theme.fs-menu; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
                 }
             }
             // ④ 分组颜色…（右侧显示当前色号；点开取色面板，菜单不消失）
@@ -5291,7 +5313,7 @@ export component AppWindow inherits Window {
                     // 顶对齐,色块会偏高(用户反馈"色块要居中显示")。
                     cross-axis-alignment: center;
                     Icon { glyph: "palette"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Group color…"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
+                    Text { text: @tr("Group color…"); color: Theme.text-primary; font-size: Theme.fs-menu; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
                     // (#group-color-swatch 2026-11-17 用户要求) 右侧**只放色块**:
                     // 十六进制色号和「默认」文案都不要(前者要读、后者占位),色块本身
                     // 就是答案。规格与分组弹框头部的色点一致(12px 圆 / 1px 描边);
@@ -5322,7 +5344,7 @@ export component AppWindow inherits Window {
                 HorizontalLayout {
                     padding-left: 10px; spacing: 9px;
                     Icon { glyph: "unfold-more"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Expand all"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; }
+                    Text { text: @tr("Expand all"); color: Theme.text-primary; font-size: Theme.fs-menu; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; }
                 }
             }
             // ⑥ 折叠全部
@@ -5337,7 +5359,7 @@ export component AppWindow inherits Window {
                 HorizontalLayout {
                     padding-left: 10px; spacing: 9px;
                     Icon { glyph: "unfold-less"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Collapse all"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; }
+                    Text { text: @tr("Collapse all"); color: Theme.text-primary; font-size: Theme.fs-menu; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; }
                 }
             }
             // ⑦ 管理分组(既有入口保留 —— 高保真菜单没有它,删掉功能就不可达;
@@ -5357,7 +5379,7 @@ export component AppWindow inherits Window {
                 HorizontalLayout {
                     padding-left: 10px; spacing: 9px;
                     Icon { glyph: "group-list"; tint: Theme.text-primary; size: Theme.fs-sm; }
-                    Text { text: @tr("Manage groups"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
+                    Text { text: @tr("Manage groups"); color: Theme.text-primary; font-size: Theme.fs-menu; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
                 }
             }
             // ─── 分区线
@@ -5380,26 +5402,26 @@ export component AppWindow inherits Window {
         tint: Theme.text-primary;
         size: Theme.fs-sm;
     }
-                    Text { text: root.system-hidden ? @tr("Show Local Terminals") : @tr("Hide Local Terminals"); color: Theme.text-primary; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
+                    Text { text: root.system-hidden ? @tr("Show Local Terminals") : @tr("Hide Local Terminals"); color: Theme.text-primary; font-size: Theme.fs-menu; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
                 }
             }
-            // ⑨ 删除分组(红;保留组隐藏)。非空组入口恒显但禁用(0.45),
-            // 与高保真同口径("请先把组内会话移出")—— Rust remove_group 会让
-            // 会话回默认组、子组上提,但误点非空组的代价太大,先拦在入口。
+            // ⑨ 删除分组(红;保留组隐藏)。(#del-group-dialog 2026-11-18) 不再
+            // 直接删:非空组也放行,改为打开确认弹框(Rust 回填会话数/子组数 +
+            // 全组「去向」清单),用户在弹框里选任意落点分组或取消 —— 旧版
+            // "非空置灰"护栏因组头行 id 恒空从未生效,点一下成员就静默掉进
+            // 默认组(用户反馈)。
             if !root.grp-menu-reserved() : Rectangle {
                 height: 30px;
                 border-radius: Theme.radius-sm;
-                opacity: root.ctx-menu-empty ? 1.0 : 0.45;
-                background: (root.ctx-menu-empty && g-del-ta.has-hover) ? #cc333320 : transparent;
+                background: g-del-ta.has-hover ? #cc333320 : transparent;
                 g-del-ta := TouchArea {
                     mouse-cursor: default;
-                    enabled: root.ctx-menu-empty;
-                    clicked => { root.ctx-open-key = ""; root.ctx-menu-kind = ""; root.delete-group(root.ctx-menu-group); }
+                    clicked => { root.ctx-open-key = ""; root.ctx-menu-kind = ""; root.request-delete-group(root.ctx-menu-group); }
                 }
                 HorizontalLayout {
                     padding-left: 10px; spacing: 9px;
                     Icon { glyph: "delete"; tint: #cc3333; size: Theme.fs-sm; }
-                    Text { text: @tr("Delete group"); color: #cc3333; font-size: Theme.fs-md; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; }
+                    Text { text: @tr("Delete group"); color: #cc3333; font-size: Theme.fs-menu; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; }
                 }
             }
         }
@@ -5413,12 +5435,13 @@ export component AppWindow inherits Window {
 
     // (#panel-menu-unify 2026-11-17) 面板 ⋯ 钮 = 面板级菜单（与空白右键同一份）。
     if root.ctx-open-key != "" && root.ctx-menu-kind == "panel" : PanelMenu {
-        x: max(8px, min(root.ctx-menu-x, parent.width - self.width - 8px));
-        y: min(
+        // (#ctx-menu-crisp 2026-11-18) 落点设备像素对齐。
+        x: Theme.snap-to-device(max(8px, min(root.ctx-menu-x, parent.width - self.width - 8px)));
+        y: Theme.snap-to-device(min(
             self.height > root.ctx-menu-space-below
                 ? max(8px, root.ctx-menu-y - self.height)
                 : root.ctx-menu-y,
-            parent.height - self.height - 8px);
+            parent.height - self.height - 8px));
         system-hidden: root.system-hidden;
         action(a) => { root.run-panel-menu(a); }
     }
@@ -6649,7 +6672,7 @@ export component AppWindow inherits Window {
                     // 视觉重量远轻于 13px 中文 → 用户截图反馈"文字与图标不协调"。
                     Icon { glyph: "settings"; tint: Theme.text-primary; size: Theme.fs-sm; }
                     Text { text: root.lang-en ? "Settings" : "设置";
-                           color: Theme.text-primary; font-size: Theme.fs-md;
+                           color: Theme.text-primary; font-size: Theme.fs-menu;
                            vertical-alignment: center; horizontal-stretch: 1; }
                 }
             }
@@ -6669,7 +6692,7 @@ export component AppWindow inherits Window {
                     padding-left: 8px; padding-right: 8px; spacing: 9px;
                     Icon { glyph: "arrow-up"; tint: Theme.text-primary; size: Theme.fs-sm; } // ↑ export
                     Text { text: root.lang-en ? "Export connections" : "导出连接";
-                           color: Theme.text-primary; font-size: Theme.fs-md;
+                           color: Theme.text-primary; font-size: Theme.fs-menu;
                            vertical-alignment: center; horizontal-stretch: 1; }
                 }
             }
@@ -6689,7 +6712,7 @@ export component AppWindow inherits Window {
                     padding-left: 8px; padding-right: 8px; spacing: 9px;
                     Icon { glyph: "arrow-down"; tint: Theme.text-primary; size: Theme.fs-sm; } // ↓ import
                     Text { text: root.lang-en ? "Import connections" : "导入连接";
-                           color: Theme.text-primary; font-size: Theme.fs-md;
+                           color: Theme.text-primary; font-size: Theme.fs-menu;
                            vertical-alignment: center; horizontal-stretch: 1; }
                 }
             }
@@ -6710,7 +6733,7 @@ export component AppWindow inherits Window {
                     padding-left: 8px; padding-right: 8px; spacing: 9px;
                     Icon { glyph: "table-rows"; tint: Theme.text-primary; size: Theme.fs-sm; } // table/rows
                     Text { text: root.lang-en ? "Batch import (text)" : "批量导入(文本)";
-                           color: Theme.text-primary; font-size: Theme.fs-md;
+                           color: Theme.text-primary; font-size: Theme.fs-menu;
                            vertical-alignment: center; horizontal-stretch: 1; }
                 }
             }
@@ -6732,7 +6755,7 @@ export component AppWindow inherits Window {
                     VerticalLayout {
                         horizontal-stretch: 1;
                         alignment: center;
-                        Text { text: @tr("Import ~/.ssh/config"); color: Theme.text-primary; font-size: Theme.fs-md;
+                        Text { text: @tr("Import ~/.ssh/config"); color: Theme.text-primary; font-size: Theme.fs-menu;
                                vertical-alignment: center; }
                         if root.ssh-import-hint != "" : Text {
                             text: root.ssh-import-hint;
@@ -6758,7 +6781,7 @@ export component AppWindow inherits Window {
                     padding-left: 8px; padding-right: 8px; spacing: 9px;
                     Icon { glyph: "language"; tint: Theme.text-primary; size: Theme.fs-sm; } // language/translate
                     Text { text: root.lang-en ? "切换到中文" : "Switch to English";
-                           color: Theme.text-primary; font-size: Theme.fs-md;
+                           color: Theme.text-primary; font-size: Theme.fs-menu;
                            vertical-alignment: center; horizontal-stretch: 1; }
                 }
             }
@@ -6778,7 +6801,7 @@ export component AppWindow inherits Window {
                     padding-left: 8px; padding-right: 8px; spacing: 9px;
                     Icon { glyph: "keyboard"; tint: Theme.text-primary; size: Theme.fs-sm; } // keyboard
                     Text { text: root.lang-en ? "Shortcuts" : "快捷键";
-                           color: Theme.text-primary; font-size: Theme.fs-md;
+                           color: Theme.text-primary; font-size: Theme.fs-menu;
                            vertical-alignment: center; horizontal-stretch: 1; }
                 }
             }
@@ -6796,7 +6819,7 @@ export component AppWindow inherits Window {
                 HorizontalLayout {
                     padding-left: 8px; padding-right: 8px; spacing: 9px;
                     Icon { glyph: "info"; tint: Theme.text-primary; size: Theme.fs-sm; } // Info
-                    Text { text: @tr("About"); color: Theme.text-primary; font-size: Theme.fs-md;
+                    Text { text: @tr("About"); color: Theme.text-primary; font-size: Theme.fs-menu;
                            vertical-alignment: center; horizontal-stretch: 1; }
                 }
             }
@@ -9207,6 +9230,22 @@ export component AppWindow inherits Window {
         toggled-auto-expand-group(v) => { root.set-panel-auto-expand-group(v); }
         sort-picked(v) => { root.set-panel-sort-mode(v); }
         close-requested => { root.panel-settings-open = false; }
+    }
+
+    // (#del-group-dialog 2026-11-18) 删除分组确认弹框：数据由 Rust 在
+    // request-delete-group 时回填（会话数/子组数/去向清单），confirm 才真正删。
+    if root.del-group-open : DeleteGroupDialog {
+        lang-en: root.lang-en;
+        group-name: root.del-group-name;
+        sessions: root.del-group-count;
+        subgroups: root.del-group-subs;
+        rows: root.del-group-rows;
+        picked <=> root.del-group-picked;
+        confirm(target) => {
+            root.del-group-open = false;
+            root.confirm-delete-group(root.del-group-name, target);
+        }
+        cancel => { root.del-group-open = false; }
     }
 
     if root.ping-dialog-open : PingDialog {

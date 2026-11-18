@@ -6,6 +6,12 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **删除分组确认弹框 + 面板设置/右键菜单字体修复（#del-group-dialog / #panel-settings-blur / #ctx-menu-crisp / #menu-text-14）。**
+  - **删除分组**：组头菜单「删除分组」不再直删。旧版两道坑：入口「非空组置灰」护栏实际从未生效（组头行 id 恒空，`empty` 判定恒真），且删组时成员静默回默认组。现改为确认弹框：先说清「组内 N 个会话 / M 个子分组」，会话去向 = **分组清单里任选**（默认组 + 全部非保留组，树形缩进 + 组色点 + 组内会话数，默认选中父分组、无父组时默认组），子组提升到同级；取消/点外/Esc 不删，落点组自动展开。确认链落在 `ConfigStore::delete_group_moving_members`（带单测）。
+  - **面板设置字体发虚**：10/11px CJK 在 125/150% DPI 下笔画摊成半透明点阵，整片文字发虚。正文升到 fs-sm(13)/fs-xs(11)、段题与分段标签同步升档；卡片 x/y/宽/高过 `snap-to-device`、分隔线改 `Theme.hairline()`（与 confirm_dialog 同款），去掉半个设备像素的落点。
+  - **弹出菜单字体/落点**：四张左侧菜单（成员行/组头/空白/PanelMenu）与标题栏菜单改为设备像素对齐（指针锚点与内容宽都是小数，落在半个设备像素上会整块发虚）+ 菜单外框改 hairline；菜单文字单独升一档 `Theme.fs-menu`(14px)——13px 只是「刚好有实心笔画」的下限，150% 下 1.3 设备像素竖笔在短菜单文本里最显单薄。
+- **Delete-group confirmation + crisp dialog/menu text (#del-group-dialog / #del-group-picker / #panel-settings-blur / #ctx-menu-crisp / #menu-text-14).** The group-header delete no longer removes a group silently (the old "empty group only" guard never worked: group rows always have an empty session id). A confirmation dialog now states how many sessions/subgroups are affected, lets the user pick **any group** as the destination (default group + every non-reserved group, tree-indented with colour dots and counts; the parent group is preselected when there is one), and promotes child groups; cancelling/backdrop/Esc deletes nothing and the destination group is expanded. Panel settings text was raised to fs-sm/fs-xs (10/11px CJK renders as half-intensity beading at 125/150% DPI) and the card is snapped to the device grid with hairline dividers. All popup menus are now snapped to the device grid (pointer-anchored positions and content widths were landing on half device pixels) with hairline frames, and menu labels use a new `Theme.fs-menu` (14px) step for clearer CJK at 150% DPI.
+
 - **历史命令弹框·布局与交互修复（#cmd-history-panel）。** 第二轮实测抓出的问题：
   - **布局三连**：`alignment: start` 把 `horizontal-stretch` 归零（行内「次数 · 时间」不贴右、页脚计数不贴右、排序分段不贴右）；布局缺显式 `width/height: parent`（整行缩在 preferred 宽、固定高子项顶对齐）。全部按「去 alignment + 显式撑满 + 固定高槽内居中」重写，并把这三条写进文件头注释当铁律。
   - **边线框**：面板/全文卡/撤销浮条描边改 `Theme.hairline()`（1 物理像素，与主窗框线、高亮设置弹框同规格）；逻辑 1px 在 DPR 1.25 下渲染成 2 物理像素所以看着粗。宿主落点/宽度 `snap-to-device`，防发丝线摊成两行淡影。

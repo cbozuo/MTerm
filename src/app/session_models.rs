@@ -262,6 +262,82 @@ pub(super) fn move_group_rows_model(
     ModelRc::from(Rc::new(VecModel::from(rows)))
 }
 
+/// (#del-group-picker 2026-11-18 用户要求"参考分组管理里面的交互，可以选择分组")
+/// 删除分组弹框的「会话去向」清单：默认组 + 全部非保留组。与「移动到分组」
+/// 共用 `MoveGroupRow`（DFS 序 / depth 缩进 / 组色点 / 直接会话数）。
+///
+/// 两条与 move 清单的差别：
+///  - 被删组自身不作为落点（不能把成员搬进即将删除的组）；它的**子组照常
+///    列出** —— 删完会提升到被删组同级，作为合并目标完全合法；
+///  - system（本地终端）保留组不可移入，同 move 清单剔除。
+pub(super) fn del_group_target_rows_model(
+    store: &ConfigStore,
+    excluded_id: &str,
+    default_display: &str,
+) -> ModelRc<MoveGroupRow> {
+    let records = store.group_records().to_vec();
+    let mut counts: std::collections::HashMap<String, i32> = std::collections::HashMap::new();
+    for s in store.sessions() {
+        *counts.entry(s.group_id.clone()).or_insert(0) += 1;
+    }
+    let mut rows: Vec<MoveGroupRow> = Vec::new();
+    fn walk(
+        records: &[crate::config::GroupRecord],
+        counts: &std::collections::HashMap<String, i32>,
+        excluded_id: &str,
+        default_display: &str,
+        parent: &str,
+        depth: i32,
+        rows: &mut Vec<MoveGroupRow>,
+    ) {
+        for record in records.iter().filter(|r| r.parent_id == parent) {
+            if record.id == crate::config::GROUP_ID_SYSTEM {
+                continue;
+            }
+            if record.id != excluded_id {
+                let display = if record.id == crate::config::GROUP_ID_DEFAULT {
+                    default_display.to_string()
+                } else {
+                    record.name.clone()
+                };
+                let hex = record.color.clone().unwrap_or_default();
+                let (color, has_color) = match parse_hex_color(&hex) {
+                    Some(c) => (c, true),
+                    None => (Default::default(), false),
+                };
+                rows.push(MoveGroupRow {
+                    name: display.as_str().into(),
+                    depth,
+                    color,
+                    has_color,
+                    count: counts.get(&record.id).copied().unwrap_or(0),
+                    current: false,
+                });
+            }
+            // 被删组的子组：跳过自己但继续下钻（提升后仍可作落点）。
+            walk(
+                records,
+                counts,
+                excluded_id,
+                default_display,
+                &record.id,
+                if record.id == excluded_id { depth } else { depth + 1 },
+                rows,
+            );
+        }
+    }
+    walk(
+        &records,
+        &counts,
+        excluded_id,
+        default_display,
+        "",
+        0,
+        &mut rows,
+    );
+    ModelRc::from(Rc::new(VecModel::from(rows)))
+}
+
 // ---------------------------------------------------------------------------
 // (#conn-path 2026-10-04 高保真 #proxy-fields) 代理四字段 ↔ 存储 URL
 // ---------------------------------------------------------------------------

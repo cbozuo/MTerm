@@ -9786,24 +9786,96 @@ fn wire_session_callbacks(
             SharedString::new()
         });
     }
-    // Group delete (#41) — UI only offers this on empty groups.
+    // Group delete (#41) — (#del-group-dialog 2026-11-18) 确认弹框链路。
+    {
+        // (#del-group-dialog 2026-11-18) 组头菜单「删除分组」不再直删：
+        // ① request → 算清后果回填弹框；② confirm → 按用户选的去向搬成员再删。
+        // 旧链路(s.on_delete_group = 直接 remove_group)会让成员静默回默认组，
+        // 且入口的"非空置灰"护栏因组头行 id 恒空从未生效（用户反馈）。
+        let weak = window.as_weak();
+        let store = store.clone();
+        window.on_request_delete_group(move |name: SharedString| {
+            let s = store.borrow();
+            let Some(rec) = s
+                .group_records()
+                .iter()
+                .find(|g| g.id == name.as_str() || g.name == name.as_str())
+                .cloned()
+            else {
+                return;
+            };
+            if rec.reserved {
+                return;
+            }
+            let Some(w) = weak.upgrade() else { return };
+            let count = s.sessions().iter().filter(|x| x.group_id == rec.id).count() as i32;
+            let subs = s
+                .group_records()
+                .iter()
+                .filter(|g| g.parent_id == rec.id)
+                .count() as i32;
+            let parent = s
+                .group_records()
+                .iter()
+                .find(|g| g.id == rec.parent_id)
+                .map(|g| g.name.clone())
+                .unwrap_or_default();
+            // (#del-group-picker 2026-11-18 用户要求"参考分组管理里面的交互,
+            // 可以选择分组") 去向从二选一升级为全组清单(默认组 + 所有非保留
+            // 组,排除被删组自身);默认落父组(有父组时),否则默认组。
+            let default_display = crate::i18n::t("默认组", "Default group").to_string();
+            let picked = if parent.is_empty() {
+                default_display.clone()
+            } else {
+                parent.clone()
+            };
+            let rows = session_models::del_group_target_rows_model(&s, &rec.id, &default_display);
+            w.set_del_group_name(rec.name.clone().into());
+            w.set_del_group_count(count);
+            w.set_del_group_subs(subs);
+            w.set_del_group_rows(rows);
+            w.set_del_group_picked(picked.into());
+            w.set_del_group_open(true);
+        });
+    }
     {
         let weak = window.as_weak();
         let store = store.clone();
         let sessions_model = sessions_model.clone();
         let registry = registry.clone();
-        window.on_delete_group(move |name: SharedString| {
+        let tabs_model = tabs_model.clone();
+        let panes_model = panes_model.clone();
+        window.on_confirm_delete_group(move |name: SharedString, target: SharedString| {
             {
                 let mut s = store.borrow_mut();
-                s.remove_group(&name.to_string());
+                let Some(rec) = s
+                    .group_records()
+                    .iter()
+                    .find(|g| g.id == name.as_str() || g.name == name.as_str())
+                    .cloned()
+                else {
+                    return;
+                };
+                // (#del-group-picker) 去向 = 弹框里选中的显示名；默认组的显示名
+                // (「默认组」/「Default group」)归一为空串 → 默认组。
+                let default_display = crate::i18n::t("默认组", "Default group");
+                let to = if target.trim() == default_display {
+                    String::new()
+                } else {
+                    target.trim().to_string()
+                };
+                s.delete_group_moving_members(&rec.id, &to);
                 if let Err(err) = s.save() {
                     tracing::warn!("failed to save config: {err:#}");
                 }
             }
             sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
             registry.broadcast_config_changed();
+            // 成员换了组 → 页签底部色条跟随新组的有效色。
+            refresh_tab_group_colors(&store.borrow(), &tabs_model, &panes_model);
             if let Some(w) = weak.upgrade() {
                 let _ = w.get_sessions();
+                w.set_del_group_open(false);
             }
         });
     }

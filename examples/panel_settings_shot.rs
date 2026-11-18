@@ -3,6 +3,7 @@
 //!
 //! 运行:`cargo run --example panel_settings_shot`
 //! 输出:output/panel-settings/dialog.png + grp-menu.png
+//!      (+ del-group-parent/default.png — 删除分组确认弹框 #del-group-dialog)
 
 use mterm::ui::{AppWindow, SessionInfo};
 use slint::platform::software_renderer::{
@@ -84,6 +85,44 @@ fn main() {
     shot(&ui, "output/panel-settings/dialog.png");
     ui.set_panel_settings_open(false);
 
+    // ── 图 1b/1c:删除分组确认弹框(#del-group-dialog / #del-group-picker) ——
+    // 去向 = 分组清单(默认组 + 非保留组,树形缩进/组色点/会话数/勾选)。
+    // 1b:子组删除(默认选中父分组);1c:顶层组删除(默认选中默认组)。
+    use mterm::ui::MoveGroupRow;
+    let dr = |name: &str, depth: i32, count: i32, color: Option<u32>| MoveGroupRow {
+        name: name.into(),
+        depth,
+        color: match color {
+            Some(v) => slint::Color::from_rgb_u8(
+                ((v >> 16) & 0xFF) as u8,
+                ((v >> 8) & 0xFF) as u8,
+                (v & 0xFF) as u8,
+            ),
+            None => slint::Color::default(),
+        },
+        has_color: color.is_some(),
+        count,
+        current: false,
+    };
+    ui.set_del_group_rows(ModelRc::from(Rc::new(VecModel::from(vec![
+        dr("默认组", 0, 12, Some(0xE6DB70)),
+        dr("测试父组", 0, 3, None),
+        dr("测试子组", 1, 1, None),
+        dr("线上机", 0, 2, Some(0x7CB8F8)),
+    ]))));
+    ui.set_del_group_name("测试子组".into());
+    ui.set_del_group_count(1);
+    ui.set_del_group_subs(0);
+    ui.set_del_group_picked("测试父组".into());
+    ui.set_del_group_open(true);
+    shot(&ui, "output/panel-settings/del-group-parent.png");
+    ui.set_del_group_name("测试父组".into());
+    ui.set_del_group_count(3);
+    ui.set_del_group_subs(0);
+    ui.set_del_group_picked("默认组".into());
+    shot(&ui, "output/panel-settings/del-group-default.png");
+    ui.set_del_group_open(false);
+
     // ── 图 2:组头菜单 —— 验证今天补译的中文(在此分组新建会话/新建子分组/
     // 分组颜色…);Test 非保留组 → 九项全出。
     ui.set_ctx_open_key("g1".into());
@@ -96,9 +135,20 @@ fn main() {
     ui.set_ctx_open_key("".into());
     ui.set_ctx_menu_kind("".into());
 
+    // ── 图 2b:成员行菜单(#ctx-menu-row-v2) —— #menu-text-14 字体档 +
+    // 落地设备像素对齐后的布局(离屏 1x 只验证布局/字号,150% 发虚修复靠真机)。
+    ui.set_ctx_open_key("s1".into());
+    ui.set_ctx_menu_kind("row".into());
+    ui.set_ctx_menu_group("Test".into());
+    ui.set_ctx_menu_x(180.0);
+    ui.set_ctx_menu_y(150.0);
+    ui.set_ctx_menu_space_below(500.0);
+    shot(&ui, "output/panel-settings/row-menu.png");
+    ui.set_ctx_open_key("".into());
+    ui.set_ctx_menu_kind("".into());
+
     // ── 图 3:移动到分组弹框 r2(#move-h)—— 卡高按内容全展开(修 ScrollView
     // + 行壳双塌陷)、hairline 边框;4 组带色点/深度缩进/计数,Test = 当前。
-    use mterm::ui::MoveGroupRow;
     let mr = |name: &str, depth: i32, color: &str, has: bool, count: i32, cur: bool| MoveGroupRow {
         name: name.into(),
         depth,
