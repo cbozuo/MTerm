@@ -2471,19 +2471,58 @@ export component LeftSidebar inherits Rectangle {
                                 // 组色淡染层(d0 10% / d1 4% / d2+ 无;悬停抬到 14%)。
                                 // (#panel-settings) 「组色带」开关可隐(菜单钉住
                                 // 的选中态底色不属色带,保持常显)。
+                                // (#band-soft 2026-11-19 用户反馈「无色和有色
+                                // 色带过渡不自然」) 成因:无色组也画带 ——
+                                // Theme.group-color 对无色兜底 text-secondary,
+                                // 每组头上都有一条冷灰"幽灵带",和有色组的暖
+                                // 色带上下相接,色相/强度都不连续 → 无色组不画
+                                // (menu-pin 选中态仍画)。
+                                // (#band-soft-r3 2026-11-20 用户定稿「回到之前的
+                                // 渐变色,美化过渡,不要断层感」) 椭圆版被否 ——
+                                // 回归**横向 linear-gradient**,两处美化:
+                                //  ① 水平衰减 2 停靠点线性斜坡 → 5 停靠点高斯
+                                //     (1 → .62 → .28 → .08 → 0),渐隐无棱角、
+                                //     尾端到 100% 才归零,不再有 78% 处的"截止线"。
+                                //  ② 竖直方向垫一层**行底色包络**(上/下缘行底色
+                                //     满α → 中段全透):色带在行上下缘熔进行底,
+                                //     消掉原来满 α 直切的上下硬边 —— 横向观感与
+                                //     旧版一致,竖向不再像贴上去的色条。
+                                //     包络色与卡片底同源(menu-pin 时同步
+                                //     zone-sidebar-active),不会出现色差缝。
                                 Rectangle {
                                     x: 0px;
                                     y: 0px;
                                     width: parent.width;
                                     height: parent.height;
                                     border-radius: parent.border-radius;
+                                    property <float> band-a: parent.menu-pin ? 0.14
+                                        : session.depth <= 0 ? 0.10 : 0.04;
                                     visible: parent.menu-pin
                                         || (panel-group-bands
-                                            && (session.depth <= 0 || session.depth == 1));
+                                            && session.group-color-hex != ""
+                                            && (session.depth <= 0
+                                                || session.depth == 1));
                                     background: @linear-gradient(90deg,
-                                        parent.band.with-alpha(parent.menu-pin ? 0.14
-                                            : session.depth <= 0 ? 0.10 : 0.04) 0%,
-                                        parent.band.with-alpha(0) 78%);
+                                        parent.band.with-alpha(band-a) 0%,
+                                        parent.band.with-alpha(band-a * 0.62) 38%,
+                                        parent.band.with-alpha(band-a * 0.28) 62%,
+                                        parent.band.with-alpha(band-a * 0.08) 84%,
+                                        parent.band.with-alpha(0) 100%);
+                                }
+                                Rectangle {
+                                    x: 0px;
+                                    y: 0px;
+                                    width: parent.width;
+                                    height: parent.height;
+                                    border-radius: parent.border-radius;
+                                    property <color> band-bg: parent.menu-pin
+                                        ? Theme.zone-sidebar-active
+                                        : Theme.zone-sidebar;
+                                    background: @linear-gradient(180deg,
+                                        band-bg 0%,
+                                        band-bg.with-alpha(0) 20%,
+                                        band-bg.with-alpha(0) 80%,
+                                        band-bg 100%);
                                 }
 
                             // (#ctx-menu-backdrop 2026-09-08) 右键菜单迁往
