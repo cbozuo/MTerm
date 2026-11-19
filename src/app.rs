@@ -6237,7 +6237,9 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
             }
         });
         // (#scrim-rand 2026-10-17) 「随机」遮罩样式：Scrim 每次出现（= 弹框打开）
-        // 调一次本回调，这里重掷 0..8 的抽签 —— 即「每次打开弹窗换一种」。
+        // 调一次本回调，这里重掷 0..9 的抽签 —— 即「每次打开弹窗换一种」。
+        // 池 = auto/dark/light/tint/soft/frost/spot/sheen/liquid（#scrim-liquid
+        // 2026-11-19 加入），与 Theme.scrim-name 的映射同序。
         // 其它档位直接不管（Scrim 只在 random 时依赖抽签值）。
         {
             let weak = window.as_weak();
@@ -6255,7 +6257,7 @@ fn refresh_slider_image(w: &crate::ui::AppWindow, hex: u32) {
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.subsec_nanos())
                         .unwrap_or(0);
-                    t.set_scrim_random_pick((nanos % 8) as i32);
+                    t.set_scrim_random_pick((nanos % 9) as i32);
                 });
         }
         window.on_set_popup_transparency({

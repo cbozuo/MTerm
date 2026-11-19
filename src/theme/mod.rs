@@ -141,9 +141,8 @@ pub fn resolve(st: &ThemeState) -> Resolved {
         _ => "cover".to_string(),
     };
     let style = match st.scrim_style.as_str() {
-        "dark" | "light" | "tint" | "soft" | "frost" | "spot" | "sheen" | "random" => {
-            st.scrim_style.clone()
-        }
+        "dark" | "light" | "tint" | "soft" | "frost" | "spot" | "sheen" | "liquid"
+        | "random" => st.scrim_style.clone(),
         _ => "auto".to_string(),
     };
     Resolved {

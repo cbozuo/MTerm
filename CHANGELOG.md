@@ -6,6 +6,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+- **遮罩样式新增「液态玻璃」（#scrim-liquid）。** 设置 → 界面 → 遮罩样式下拉新增一档：真 `backdrop-blur`（Slint 1.19；femtovg 实测生效，Skia 同支持，软件渲染器自动退化为釉面渐变）+ 乳白底釉 + 冷/暖虹彩 + 顶部水光，浓度仍由「遮罩浓度」统一控制。所有走 `Scrim` 的弹框（会话/面板设置/确认框等）即时生效；「随机」抽签池同步扩到 9 种，`set_scrim_style` 与生效解析两处白名单补 `liquid`（否则选中会被静默改回 auto，带单测）。
+- **Liquid-glass scrim style (#scrim-liquid).** A new entry in Settings → Interface → Scrim style: a real `backdrop-blur` (Slint 1.19; verified on the femtovg renderer, also supported by Skia, gracefully degrades to its glaze gradient on other renderers) with a milky base glaze, cool/warm iridescence and a top sheen; density is still driven by “Scrim strength”. It applies live to every dialog that uses `Scrim` (session / panel settings / confirm dialogs), and “Random” now draws from 9 styles — both whitelists (`set_scrim_style` and the effective-appearance resolver) accept `liquid`, covered by a unit test.
+
 - **分组颜色不再向子分组继承（#group-color-no-inherit）+ 分组重命名按显示名失效修复（#rename-by-name-compat）。**
   - **组色继承退役**（用户定稿）：原 `group_effective_color` 链为「本组 → 最近祖先 → 无」，给父组设色会连带染色所有子分组的色点、组色带与页签底部色条。现改为 `group_own_color`：只读本组自身色，子分组未设色即无色。顺带统一两处口径 —— 分组管理弹框一直只显示 record 自身色、左栏却显示继承色；且子分组上「无颜色」在继承版里清完仍显示父组色，现在真正生效。三处消费链（树拍平 / 页签色条 / 组弹框提交回写）同步换源。
   - **分组重命名看起来「没反应」**：Slint 组弹框与分组管理传的是**显示组名**，V3 按 id 键后 `rename_group` 的 `find(g.id == id)` 静默 no-op（set_group_color 11-07 / remove_group 11-12 同款坑，这一处当时漏了）。现改 id 优先、显示名唯一回退，且命中后以 id 做自排除 —— 纯大小写改名不会再被自己挡成「已存在」。

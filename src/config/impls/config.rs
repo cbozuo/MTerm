@@ -1410,7 +1410,7 @@ impl ConfigStore {
     pub fn set_scrim_style(&mut self, v: String) {
         let v = match v.as_str() {
             "dark" | "light" | "tint" | "soft" | "frost" | "spot" | "sheen"
-            | "random" => v,
+            | "liquid" | "random" => v,
             _ => "auto".to_string(),
         };
         // 改哪一档就只写哪一档；另一档保持自己的值。
@@ -4503,6 +4503,21 @@ mod tests {
         // 另一主题不受影响。
         cfg.set_theme("mterm-light".into());
         assert!((cfg.popup_transparency() - 0.0).abs() < 1e-6);
+        assert_eq!(cfg.scrim_style(), "auto");
+    }
+
+    #[test]
+    fn scrim_style_accepts_liquid() {
+        // (#scrim-liquid 2026-11-19) 新档位要同时进 set 与 effective 解析两处
+        // 白名单,否则选「液态玻璃」会被静默改回 auto。
+        let mut cfg = ConfigStore {
+            path: PathBuf::new(),
+            cache: fresh_config(),
+            key: [0u8; 32],
+        };
+        cfg.set_scrim_style("liquid".into());
+        assert_eq!(cfg.scrim_style(), "liquid");
+        cfg.set_scrim_style("nope".into());
         assert_eq!(cfg.scrim_style(), "auto");
     }
 
