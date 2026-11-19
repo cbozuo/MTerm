@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // 面板设置弹框（#panel-settings 2026-11-12，高保真 docs/design/
 // left-panel-session-hifi-2026-10-28-v3.html §V4.3 面板设置弹层）。
-// 左侧会话面板的 8 项设置：布局(行密度) / 显示(组色带·子组数·会话总数·
-// 悬停信息卡) / 交互(点击标签定位树·自动展开所在组) / 排序(排序方式)。
+// 左侧会话面板的 9 项设置：布局(行密度) / 显示(组色带·子组数·会话总数·
+// 悬停信息卡) / 交互(打开会话·点击标签定位树·自动展开所在组) / 排序(排序方式)。
 // 骨架 = highlight_dialog 同款的全窗 overlay + Scrim + 居中卡片（点外关闭
 // + Esc + 头部拖动，r2 2026-11-12 用户要求；原 ping 口径「点外不关」退役）；
 // 关闭口径 = 完成/×/点外/Esc；「修改实时生效」= 开关/分段直写双向绑定的
@@ -55,18 +55,16 @@ import { PickerMath } from "color_picker.slint";
     // ping「开关不动」教训 —— TouchArea 必须包住视觉块）。
     // (#ps-row-center 2026-11-14 用户反馈)三处修正：① 交叉轴居中 —— 固定
     // 高开关在 HL 里贴顶（固定高子项贴顶须居中，坑⑪同族）；② 行 hover
-    // 底色退役 —— 用户「悬浮的阴影没必要，点按钮就行」；③ row-ta 保留
+    // 底色退役 —— 用户「悬浮的阴影没必要，点按钮就行」；③ row-ta 当时保留
     // （不再画 hover，只吞行内点击防穿透 backdrop 关框）。
+    // (#panel-settings-drag-anywhere 2026-11-19) 行级吞层删除：卡片本身已有
+    // 全尺寸吞层，行内点击不会穿透；删掉后行文字/空白处的拖动可落到卡片
+    // 空白拖把（控件自己的 TouchArea 在上层照常点击）。
     component SetRow inherits Rectangle {
         in property <string> title;
         in property <string> sub;
         width: 100%;
         height: 36px;
-        row-ta := TouchArea {
-            width: 100%;
-            height: 100%;
-            mouse-cursor: default;
-        }
         HorizontalLayout {
             cross-axis-alignment: center;
             padding-right: 12px;
@@ -110,7 +108,7 @@ export component PanelSettingsDialog inherits Rectangle {
     height: 100%;
 
     in property <bool> lang-en: false;
-    // 8 项设置：宿主与 AppWindow 根双向绑定（改属性 = 全库即时反馈）。
+    // 9 项设置：宿主与 AppWindow 根双向绑定（改属性 = 全库即时反馈）。
     in-out property <bool> panel-row-compact;
     in-out property <bool> panel-group-bands;
     in-out property <bool> panel-sub-count;
@@ -118,6 +116,9 @@ export component PanelSettingsDialog inherits Rectangle {
     in-out property <bool> panel-hover-card;
     in-out property <bool> panel-locate-follow-tab;
     in-out property <bool> panel-auto-expand-group;
+    // (#panel-open-mode 2026-11-19 用户要求"单击还是双击打开 tap") false = 单击
+    // (历史行为) / true = 双击;切换实时生效并落盘。
+    in-out property <bool> panel-double-click-open;
     in-out property <int> panel-sort-mode;   // 0 默认 / 1 名称 / 2 最近
     // 持久化回调（宿主转发 AppWindow 的 set-panel-* → Rust save；sort 另触发模型重建）。
     callback toggled-row-compact(bool);
@@ -127,6 +128,7 @@ export component PanelSettingsDialog inherits Rectangle {
     callback toggled-hover-card(bool);
     callback toggled-locate-follow-tab(bool);
     callback toggled-auto-expand-group(bool);
+    callback toggled-double-click-open(bool);
     callback sort-picked(int);
     callback close-requested();
     // (#panel-settings-drag 2026-11-12) 拖动/居中钳制 = 全窗(宿主传 root 尺寸,
@@ -195,12 +197,12 @@ export component PanelSettingsDialog inherits Rectangle {
     // （段 = 上下 padding 24 + 段题 16 + 36×行 + 4×行距；分隔线 1×3）：
     //   布局   80 = 24+16+4+36×1
     //   显示  200 = 24+16+4×4+36×4
-    //   交互  120 = 24+16+4×2+36×2
+    //   交互  160 = 24+16+4×3+36×3
     //   排序   80 = 24+16+4+36×1
     //   线      3
-    // 合计 body = 483。SetRow 行高 / 段距 / 段行数改动须同步此账。
+    // 合计 body = 523。SetRow 行高 / 段距 / 段行数改动须同步此账。
     set-card := Rectangle {
-        property <length> body-pref: 483px;
+        property <length> body-pref: 523px;
         // (#panel-settings-blur 2026-11-18) 卡位过设备栅格：窗宽为奇数逻辑
         // px 时 (parent.width − 380)/2 落在半个设备像素上，整卡文字一起发虚
         // （150% 实测；confirm_dialog 同款写法）。
@@ -220,10 +222,36 @@ export component PanelSettingsDialog inherits Rectangle {
         // 卡片空白吞层：段落标题 / 分隔线 / 段间距处没有行级 TouchArea,
         // 点击穿透到遮罩点击层 → 弹框被误关。垫底全尺寸吞层(quick_search
         // 卡片空白吞层同款);声明在内容之前=垫底,不吃任何交互。
+        // (#panel-settings-drag-anywhere 2026-11-19 用户要求「弹框里面空白处
+        // 拖动」) 这一层同时当整卡拖把：控件都在它上层（各自 TouchArea 先吃
+        // 事件），空白处按下即拖，与头部拖把共用同一组锚点/钳制逻辑。
         TouchArea {
             width: 100%;
             height: 100%;
             mouse-cursor: default;
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.down) {
+                    root.dragging = true;
+                    root.drag-ox = set-card.x;
+                    root.drag-oy = set-card.y;
+                    root.drag-cx = self.absolute-position.x + self.mouse-x;
+                    root.drag-cy = self.absolute-position.y + self.mouse-y;
+                } else if (ev.kind == PointerEventKind.up) {
+                    root.dragging = false;
+                }
+            }
+            moved => {
+                if (root.dragging) {
+                    set-card.x = clamp(
+                        Theme.snap-to-device(root.drag-ox
+                            + (self.absolute-position.x + self.mouse-x - root.drag-cx)),
+                        8px, max(8px, root.bounds-w - set-card.width - 8px));
+                    set-card.y = clamp(
+                        Theme.snap-to-device(root.drag-oy
+                            + (self.absolute-position.y + self.mouse-y - root.drag-cy)),
+                        8px, max(8px, root.bounds-h - set-card.height - 8px));
+                }
+            }
         }
         set-vl := VerticalLayout {
             // 头（hifi .set-head：14·16·10 + 底线；#panel-settings-blur
@@ -303,6 +331,10 @@ export component PanelSettingsDialog inherits Rectangle {
             // 体（hifi .set-body：左右 16、超高滚动；stretch 吸收钳制差额）。
             ps-scroll := ScrollView {
                 vertical-stretch: 1;
+                // (#panel-settings-drag-anywhere 2026-11-19) 鼠标拖动不滚动正文
+                // —— 按住袋区/段题/分隔线即拖卡片；正文溢出时用滚轮滚动
+                // （滚轮与 drag-pan 互不影响）。
+                mouse-drag-pan-enabled: false;
                 ps-body := VerticalLayout {
                     padding-left: 16px;
                     padding-right: 16px;
@@ -332,7 +364,13 @@ export component PanelSettingsDialog inherits Rectangle {
                                         min-width: 0;
                                         preferred-width: 48px;
                                         horizontal-stretch: 1;
+                                        // (#seg-hover 2026-11-19 用户要求) 未选中
+                                        // 段悬停 = bg-hover + text-primary,与设置页
+                                        // 「强调色」分段(AccentSeg)同款。
+                                        border-radius: 6px;
                                         property <bool> is-on: (root.panel-row-compact ? 0 : 1) == i;
+                                        background: is-on ? transparent
+                                            : (dens-cell.has-hover ? Theme.bg-hover : transparent);
                                         dens-cell := TouchArea {
                                             mouse-cursor: default;
                                             clicked => {
@@ -345,7 +383,8 @@ export component PanelSettingsDialog inherits Rectangle {
                                                 ? (root.lang-en ? "Compact" : "紧凑")
                                                 : (root.lang-en ? "Standard" : "标准");
                                             color: parent.is-on
-                                                ? Theme.accent-solid : Theme.text-secondary;
+                                                ? Theme.accent-solid
+                                                : (dens-cell.has-hover ? Theme.text-primary : Theme.text-secondary);
                                             font-size: Theme.fs-xs;
                                             font-weight: parent.is-on
                                                 ? Theme.fw-strong : Theme.fw-regular;
@@ -416,6 +455,53 @@ export component PanelSettingsDialog inherits Rectangle {
                         padding-bottom: 12px;
                         spacing: 4px;
                         SectionTitle { text: root.lang-en ? "INTERACTION" : "交互"; }
+                        // (#panel-open-mode 2026-11-19 用户要求) 打开方式:
+                        // 单击(历史行为)/ 双击。分段样式与「行密度」同款。
+                        SetRow {
+                            title: root.lang-en ? "Open sessions" : "打开会话";
+                            sub: root.lang-en ? "Single-click or double-click opens a session" : "单击或双击打开会话";
+                            Rectangle {
+                                width: open-seg.content-w;
+                                height: 25px;
+                                open-seg := SegGroup {
+                                    active-index: root.panel-double-click-open ? 1 : 0;
+                                    count: 2;
+                                    compact: true;
+                                    height: 25px;
+                                    for i in 2: Rectangle {
+                                        // 等宽格同「行密度」(#seg-uniform-cells)。
+                                        min-width: 0;
+                                        preferred-width: 48px;
+                                        horizontal-stretch: 1;
+                                        // (#seg-hover 2026-11-19) 悬停同强调色分段。
+                                        border-radius: 6px;
+                                        property <bool> is-on: (root.panel-double-click-open ? 1 : 0) == i;
+                                        background: is-on ? transparent
+                                            : (open-cell.has-hover ? Theme.bg-hover : transparent);
+                                        open-cell := TouchArea {
+                                            mouse-cursor: default;
+                                            clicked => {
+                                                root.panel-double-click-open = i == 1;
+                                                root.toggled-double-click-open(i == 1);
+                                            }
+                                        }
+                                        Text {
+                                            text: i == 0
+                                                ? (root.lang-en ? "Single" : "单击")
+                                                : (root.lang-en ? "Double" : "双击");
+                                            color: parent.is-on
+                                                ? Theme.accent-solid
+                                                : (open-cell.has-hover ? Theme.text-primary : Theme.text-secondary);
+                                            font-size: Theme.fs-xs;
+                                            font-weight: parent.is-on
+                                                ? Theme.fw-strong : Theme.fw-regular;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         SetRow {
                             title: root.lang-en ? "Locate tree on tab switch" : "点击标签定位树";
                             sub: root.lang-en ? "Scroll & highlight the session when switching tabs" : "切换顶部标签时滚动并高亮对应会话";
@@ -463,7 +549,11 @@ export component PanelSettingsDialog inherits Rectangle {
                                         min-width: 0;
                                         preferred-width: 48px;
                                         horizontal-stretch: 1;
+                                        // (#seg-hover 2026-11-19) 悬停同强调色分段。
+                                        border-radius: 6px;
                                         property <bool> is-on: root.panel-sort-mode == i;
+                                        background: is-on ? transparent
+                                            : (sort-cell.has-hover ? Theme.bg-hover : transparent);
                                         sort-cell := TouchArea {
                                             mouse-cursor: default;
                                             clicked => {
@@ -478,7 +568,8 @@ export component PanelSettingsDialog inherits Rectangle {
                                                 ? (root.lang-en ? "Name" : "名称")
                                                 : (root.lang-en ? "Recent" : "最近");
                                             color: parent.is-on
-                                                ? Theme.accent-solid : Theme.text-secondary;
+                                                ? Theme.accent-solid
+                                                : (sort-cell.has-hover ? Theme.text-primary : Theme.text-secondary);
                                             font-size: Theme.fs-xs;
                                             font-weight: parent.is-on
                                                 ? Theme.fw-strong : Theme.fw-regular;
@@ -507,7 +598,7 @@ export component PanelSettingsDialog inherits Rectangle {
                     padding-top: 10px;
                     padding-bottom: 10px;
                     spacing: 8px;
-                    // 恢复默认（ghost 30px）：8 项回出厂并逐项持久化。
+                    // 恢复默认（ghost 30px）：9 项回出厂并逐项持久化。
                     Rectangle {
                         width: reset-tx.preferred-width + 24px;
                         height: 30px;
@@ -533,6 +624,8 @@ export component PanelSettingsDialog inherits Rectangle {
                                 root.toggled-locate-follow-tab(true);
                                 root.panel-auto-expand-group = true;
                                 root.toggled-auto-expand-group(true);
+                                root.panel-double-click-open = false;
+                                root.toggled-double-click-open(false);
                                 root.panel-sort-mode = 0;
                                 root.sort-picked(0);
                             }

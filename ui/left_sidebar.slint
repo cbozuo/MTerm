@@ -50,9 +50,10 @@ export struct SessionInfo {
     note: string,
     // (#session-drag-smooth 2026-09-05) 组内序(0..n,Rust 按过滤后顺序填):
     // 拖拽让位计算用——被拖行越过的同组成员向反方向平移一行高。
-    // (#group-color 2026-09-14) 分组颜色 = **有效色**(V3:本组自定义 → 最近
-    // 祖先 → 无)。`group-color-hex == ""` 即**无色**:渲染时回落该主题的
-    // 次级前景色(不是置灰 —— 用户定稿"无色就是普通前景色")。
+    // (#group-color 2026-09-14) 分组颜色 = **本组自身色**。
+    // (#group-color-no-inherit 2026-11-19 用户定稿) 不再向父组继承 ——
+    // 给父组设色不连带子分组;`group-color-hex == ""` 即**无色**:渲染时
+    // 回落该主题的次级前景色(不是置灰 —— 用户定稿"无色就是普通前景色")。
     group-color: color,
     // (#group-color 2026-09-14) hex 原文("" = 无色):取色面板的输入框要显示
     // 它,"有没有设过色"也看它(非空即有色),不再另开一个 bool 字段。
@@ -90,6 +91,9 @@ component SessionRow inherits Rectangle {
     in property <bool> panel-group-total: true;
     in property <bool> panel-hover-card: true;
     in property <bool> panel-row-compact: false;
+    // (#panel-open-mode 2026-11-19 用户要求"单击还是双击打开") true = 双击
+    // 打开会话，false = 单击(历史行为)。松手连接的分支按它分流。
+    in property <bool> double-click-open: false;
     callback connect();
     callback edit();
     callback duplicate();
@@ -502,7 +506,9 @@ component SessionRow inherits Rectangle {
                     if (root.pressing && !root.grab-dragging) {
                         if (root.drag-cancel-pending) {
                             root.drag-cancel-pending = false;
-                        } else {
+                        } else if (!root.double-click-open) {
+                            // (#panel-open-mode 2026-11-19) 双击模式下单击只
+                            // 选中/聚焦，连接交给 double-clicked。
                             root.connect();
                         }
                     }
@@ -524,6 +530,15 @@ component SessionRow inherits Rectangle {
                     root.pressing = false;
                     root.grab-dragging = false;
                 }
+            }
+        }
+        // (#panel-open-mode 2026-11-19 用户要求"单击还是双击打开")
+        // 双击模式:第二次松手后 Slint 派发 double-clicked(在第二次 clicked
+        // 之后);单击分支已按 double-click-open 闸掉,不会一次点击开两次。
+        // 拖拽松手不产生 click/double-click,拖动排序不受影响。
+        double-clicked => {
+            if (root.double-click-open) {
+                root.connect();
             }
         }
         moved => {
@@ -1312,6 +1327,8 @@ export component LeftSidebar inherits Rectangle {
     in property <bool> panel-group-total: true;
     in property <bool> panel-hover-card: true;
     in property <bool> panel-row-compact: false;
+    // (#panel-open-mode 2026-11-19) 单击 / 双击打开会话(会话行转呈 SessionRow)。
+    in property <bool> double-click-open: false;
     in property <string> dock-edge: "left";
     property <bool> dock-horizontal: root.dock-edge == "left" || root.dock-edge == "right";
     // Collapse the sidebar to the edge icon strip (compact mode only) (#v0.5 M5).
@@ -3030,7 +3047,10 @@ export component LeftSidebar inherits Rectangle {
                             // (#density 2026-09-11) 行高收紧 36→30(窄栏 38→32):36/38px 配 13px 字号
     // 显得空旷(用户反馈),30/32 更接近设计稿的紧凑列表观感,同时保留
     // "桌面端比 28px 宽松一档"的可点性。drag-pitch = 本高 + 2 自动跟随。
-    height: 34px; // (#tree-geom) 见 SessionRow 注释
+    // (#row-density-fix 2026-11-19 用户反馈"行密度不起作用") 外壳恒写 34px
+    // 覆盖了 SessionRow 内部的 30/34 绑定 —— 紧凑档只改了内层、视觉纹丝不动。
+    // 行高改由本外壳按「行密度」算（组头/空占位各有自己的壳，不受影响）。
+    height: (session.row-kind == "session" && root.panel-row-compact) ? 30px : 34px;
                             clip: false;
                             srow := SessionRow {
                                 width: parent.width;
@@ -3045,6 +3065,8 @@ export component LeftSidebar inherits Rectangle {
                             panel-group-total: root.panel-group-total;
                             panel-hover-card: root.panel-hover-card;
                             panel-row-compact: root.panel-row-compact;
+                            // (#panel-open-mode 2026-11-19) 单击 / 双击打开会话。
+                            double-click-open: root.double-click-open;
                             // (#session-hover-card) 信息卡片坐标/文本中转到
                             // Welcome,再由实例侧绑到 AppWindow 根浮层。
                             card-out-name <=> root.card-out-name;

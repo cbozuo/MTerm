@@ -3637,7 +3637,7 @@ fn open_window(
         }
         window.set_collapse_right_sidebar_default(collapse_sidebar);
         window.set_collapse_sftp_default(collapse_sftp);
-        // (#panel-settings 2026-11-12) 面板设置弹框 8 键启动下发(修改实时生效)。
+        // (#panel-settings 2026-11-12) 面板设置弹框 9 键启动下发(修改实时生效)。
         window.set_panel_row_compact(s.panel_row_compact());
         window.set_panel_group_bands(s.panel_group_bands());
         window.set_panel_sub_count(s.panel_sub_count());
@@ -3645,6 +3645,8 @@ fn open_window(
         window.set_panel_hover_card(s.panel_hover_card());
         window.set_panel_locate_follow_tab(s.panel_locate_follow_tab());
         window.set_panel_auto_expand_group(s.panel_auto_expand_group());
+        // (#panel-open-mode 2026-11-19) 打开会话:单击 / 双击。
+        window.set_panel_double_click_open(s.panel_double_click_open());
         window.set_panel_sort_mode(s.panel_sort_mode() as i32);
         // Restore the persisted panel docking layout (#dock).
         window.set_right_sidebar_width(s.right_sidebar_width());
@@ -3797,7 +3799,7 @@ fn open_window(
             let _ = s.save();
         });
     }
-    // (#panel-settings 2026-11-12) 面板设置弹框 8 键落盘(改即存,弹框直写
+    // (#panel-settings 2026-11-12) 面板设置弹框 9 键落盘(改即存,弹框直写
     // Slint 属性 + 调这里的回调;排序档变更的模型重建在 Slint 侧顺带触发)。
     {
         let store = store.clone();
@@ -3852,6 +3854,15 @@ fn open_window(
         window.on_set_panel_auto_expand_group(move |v| {
             let mut s = store.borrow_mut();
             s.set_panel_auto_expand_group(v);
+            let _ = s.save();
+        });
+    }
+    {
+        // (#panel-open-mode 2026-11-19) 打开会话方式落盘(UI 已双向绑定,无需重建模型)。
+        let store = store.clone();
+        window.on_set_panel_double_click_open(move |v| {
+            let mut s = store.borrow_mut();
+            s.set_panel_double_click_open(v);
             let _ = s.save();
         });
     }
@@ -9771,8 +9782,13 @@ fn wire_session_callbacks(
             }
             // 菜单 / 取色面板的当前色回写,与 on_set_group_color 同口径 —— 否则
             // 右击同一组时菜单色块还停在旧色上。
-            // (#left-panel-v3) rename 按组 id(V3):提交后按 id 查本组自定义色。
-            let final_hex = store.borrow().group_effective_color(&orig).unwrap_or_default();
+            // (#group-color-no-inherit 2026-11-19) 用**新名**回查本组自身色
+            // (上面的 set_group_color 也是按新名写入);orig 是旧名,改名后
+            // 按它查会落空,菜单色块被清空。
+            let final_hex = store
+                .borrow()
+                .group_own_color(trimmed)
+                .unwrap_or_default();
             sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
             registry.broadcast_config_changed();
             // (#group-color-live-tab) 对话框提交(新建设色/改名覆盖/清除)同样
@@ -9871,7 +9887,7 @@ fn wire_session_callbacks(
             }
             sync_sessions_for_window(&weak, &store.borrow(), &sessions_model);
             registry.broadcast_config_changed();
-            // 成员换了组 → 页签底部色条跟随新组的有效色。
+            // 成员换了组 → 页签底部色条跟随新组的自身色(2026-11-19 起不继承)。
             refresh_tab_group_colors(&store.borrow(), &tabs_model, &panes_model);
             if let Some(w) = weak.upgrade() {
                 let _ = w.get_sessions();

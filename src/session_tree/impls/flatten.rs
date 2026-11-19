@@ -19,7 +19,7 @@ use crate::config::{ConfigStore, Session};
 struct FlatCtx<'a> {
     records: &'a [crate::config::GroupRecord],
     by_group: HashMap<&'a str, Vec<&'a Session>>,
-    /// 有效色预计算：id -> hex（"" = 无色）。
+    /// 组色预计算：id -> hex（"" = 无色；#group-color-no-inherit 只读本组）。
     colors: HashMap<&'a str, String>,
     name_hit: HashSet<&'a str>,
     searching: bool,
@@ -245,11 +245,11 @@ pub(crate) fn build_tree_rows(
             .push(b);
     }
 
-    // 有效色预计算(本组 → 最近祖先 → 无)。
+    // 组色预计算(只读本组自身色,不向父组继承 —— 2026-11-19 用户定稿)。
     let mut colors: HashMap<&str, String> = HashMap::new();
     for r in records {
         let hex = store
-            .group_effective_color(&r.id)
+            .group_own_color(&r.id)
             .filter(|h| !h.trim().is_empty())
             .unwrap_or_default();
         colors.insert(r.id.as_str(), hex);
@@ -482,6 +482,49 @@ mod tests {
         let member = rows.iter().find(|r| r.id == "1").unwrap();
         assert_eq!(member.depth, 2);
         assert_eq!(member.row_kind_str(), "session");
+    }
+
+    #[test]
+    fn group_color_stays_on_its_own_group() {
+        // (#group-color-no-inherit 2026-11-19 用户定稿) 父组色不落到子组行/
+        // 成员行:子组 color_hex 为空 → 色点回落中性、不画色带/页签条。
+        let mut store = temp_store();
+        let parent = store.add_group("prod".into(), "").expect("parent");
+        let child = store.add_group("cn".into(), &parent).expect("child");
+        store.upsert(session("1", "api", "10.0.0.1", &child));
+        store.set_group_color(&parent, "#ff5500");
+
+        let rows = build_tree_rows(&store, &[], "", false, GroupSort::Storage);
+        assert_eq!(
+            rows.iter().find(|r| r.group == "prod").unwrap().color_hex,
+            "#ff5500"
+        );
+        assert_eq!(
+            rows.iter().find(|r| r.group == "cn").unwrap().color_hex,
+            "",
+            "子组行不得继承父组色"
+        );
+        assert_eq!(
+            rows.iter().find(|r| r.id == "1").unwrap().color_hex,
+            "",
+            "子组成员行同样不继承"
+        );
+
+        // 子组自己设色只影响自己的行;父组不受影响。
+        store.set_group_color(&child, "#00aa88");
+        let rows = build_tree_rows(&store, &[], "", false, GroupSort::Storage);
+        assert_eq!(
+            rows.iter().find(|r| r.group == "prod").unwrap().color_hex,
+            "#ff5500"
+        );
+        assert_eq!(
+            rows.iter().find(|r| r.group == "cn").unwrap().color_hex,
+            "#00aa88"
+        );
+        assert_eq!(
+            rows.iter().find(|r| r.id == "1").unwrap().color_hex,
+            "#00aa88"
+        );
     }
 
     #[test]

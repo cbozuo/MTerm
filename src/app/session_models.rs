@@ -5,7 +5,7 @@ use super::*;
 // 本文件降级为**宿主桥**:TreeRow → ui::SessionInfo 转换、模型下发、会话
 // 对话框/跳板/代理/RDP 等桥层助手。
 // (#tab-group-bar 2026-09-14) 标签底部色条要用与左侧会话行同一套组色语义。
-// (#group-color 2026-09-14) 分组颜色(旧:组名表;新:record 有效色)。
+// (#group-color 2026-09-14) 分组颜色(旧:组名表;新:record 自身色)。
 use std::collections::HashSet;
 
 // (#left-panel-v3-r2) 引擎层类型经桥层转呈 app.rs(glob 导入 `use
@@ -48,9 +48,10 @@ pub(super) fn normalize_hex(hex: &str) -> Option<String> {
 
 /// (#tab-group-bar 2026-09-14) 标签底部色条用的组色:`(绘制色, hex)`。
 ///
-/// **必须与左侧会话行同源** —— 走 `group_effective_color`(本组 → 最近祖先),
-/// 与树渲染同一条颜色链。builtin 本地终端恒归 `system` 组。
-/// hex 为空 = 该组无有效色 → Slint 侧不绘制色条。
+/// **必须与左侧会话行同源** —— 走 `group_own_color`(只读本组自身色,
+/// #group-color-no-inherit 2026-11-19 起不向父组继承),与树渲染同一条
+/// 颜色链。builtin 本地终端恒归 `system` 组。
+/// hex 为空 = 该组未设色 → Slint 侧不绘制色条。
 pub(super) fn tab_group_color(store: &ConfigStore, session: &Session) -> (slint::Color, String) {
     let builtin = builtin_local_sessions(store.wsl_profiles());
     let gid = if builtin.iter().any(|b| b.id == session.id) {
@@ -61,7 +62,7 @@ pub(super) fn tab_group_color(store: &ConfigStore, session: &Session) -> (slint:
         session.group_id.clone()
     };
     match store
-        .group_effective_color(&gid)
+        .group_own_color(&gid)
         .filter(|hex| !hex.trim().is_empty())
     {
         Some(hex) => (

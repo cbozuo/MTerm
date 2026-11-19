@@ -2,10 +2,13 @@
 
 Ported into MTerm from the same-shaped patch in
 [`yituorou/meatshell`](https://github.com/yituorou/meatshell) (MIT OR Apache-2.0),
-adapted to MTerm's vendored crates. The three crates below are the published
-1.19.0 crates (upstream license files retained) selected by `[patch.crates-io]`.
-They must be upgraded together; do not remove only one override. Every change is
-marked with an `MTerm editor patch` (previously `MeatShell editor patch`) comment.
+adapted to MTerm's vendored crates. The three editor-patch crates below are the
+published 1.19.0 crates (upstream license files retained) selected by
+`[patch.crates-io]`; a fourth override, `i-slint-renderer-femtovg`, carries the
+`#glyph-snap` fix documented in its own section. They share the same 1.19.0
+version and must be upgraded together; do not remove only one override. Every
+change is marked with an `MTerm editor patch` (previously `MeatShell editor
+patch`) comment; the renderer hunk is marked `MTERM local patch (#glyph-snap)`.
 
 Why this exists: MTerm's first built-in editor drew the document itself — one
 `Rectangle` per line, one absolutely positioned `Text` per highlighted span at
@@ -57,6 +60,16 @@ application is trusted.
 - `items/text.rs` also carries MTerm's `#tip-r17` patch: gate caret painting on
   `text_cursor_width() > 0` so the send-command editor's own overlay caret does
   not double-draw. Re-apply it when rebasing.
+
+## i-slint-renderer-femtovg (`#glyph-snap`)
+
+- `itemrenderer.rs::draw_glyph_run` rounds each `PositionedGlyph` x/y to whole
+  device pixels (in canvas space, using `translation_origin`) before handing the
+  run to femtovg. Unhinted grayscale AA at 125/150% DPI otherwise rasterizes the
+  same glyph at different subpixel phases, so CJK text of the same word looks
+  "beaded"/mottled (`花`) and never matches its neighbours. Geometry is set from
+  the same rounded positions, so hit-testing/layout are unaffected; only the
+  rasterization grid changes.
 
 ## Scope note
 

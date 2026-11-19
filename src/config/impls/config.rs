@@ -2264,6 +2264,15 @@ impl ConfigStore {
         self.cache.panel_auto_expand_group = v;
     }
 
+    /// 打开会话方式(false = 单击打开 / true = 双击打开)。
+    pub fn panel_double_click_open(&self) -> bool {
+        self.cache.panel_double_click_open
+    }
+
+    pub fn set_panel_double_click_open(&mut self, v: bool) {
+        self.cache.panel_double_click_open = v;
+    }
+
     /// 排序方式:0 = 默认(存储序) / 1 = 名称 / 2 = 最近。
     pub fn panel_sort_mode(&self) -> u8 {
         self.cache.panel_sort_mode
@@ -2587,23 +2596,18 @@ impl ConfigStore {
         self.cache.group_records.iter().find(|g| g.id == id)
     }
 
-    /// (#group-color 2026-09-14 / V3) 分组有效色:本组自定义色 → 最近祖先
-    /// 自定义色 → None(渲染层回落主题次级前景)。环防御:父链最多走 16 层。
-    pub fn group_effective_color(&self, id: &str) -> Option<String> {
-        let mut current = id.to_string();
-        for _ in 0..16 {
-            let Some(record) = self.group_by_id(&current) else {
-                break;
-            };
-            if let Some(hex) = &record.color {
-                return Some(hex.clone());
-            }
-            if record.parent_id.is_empty() {
-                break;
-            }
-            current = record.parent_id.clone();
-        }
-        None
+    /// (#group-color 2026-09-14 / V3) 分组**自身**的颜色。
+    /// (#group-color-no-inherit 2026-11-19 用户定稿) 原「本组 → 最近祖先」
+    /// 继承链退役:给父组设色不再连带子分组的色点/色带/页签色条 —— 颜色
+    /// 是组自身属性,与分组管理弹框(只读 record.color)口径一致,子组上
+    /// 「无颜色」也才真正生效(继承版清完仍显示父色)。
+    /// 入参 id 优先、显示名回退(set_group_color 同款:Slint 多处传组名)。
+    /// None = 本组未设色(渲染层回落主题次级前景 / 不画色带)。
+    pub fn group_own_color(&self, id: &str) -> Option<String> {
+        let key = self.resolve_group_key(id)?;
+        self.group_by_id(&key)
+            .and_then(|r| r.color.clone())
+            .filter(|h| !h.trim().is_empty())
     }
 
     /// (#hide-system-group) 是否隐藏欢迎列表里的"本地终端"保留组
@@ -2950,16 +2954,24 @@ impl ConfigStore {
 
     /// (#left-panel-v3) 重命名分组(id 键下只改名字,颜色/折叠/成员身份
     /// 天然不动 —— 旧版按名连带迁移的逻辑整体退役)。保留组不可改名。
+    /// (#rename-by-name-compat 2026-11-19) Slint 组弹框 / 分组管理入参是
+    /// **显示组名**,V3 按 id 键后 find(g.id==id) 静默 no-op —— 改名看起来
+    /// 「没反应」(set_group_color 11-07 / remove_group 11-12 同款坑,这一处
+    /// 当时漏了)。id 优先、显示名唯一回退;命中后以 id 做自排除,否则纯
+    /// 大小写改名会被自己挡成"已存在"。
     pub fn rename_group(&mut self, id: &str, new: String) {
         let n = new.trim().to_string();
-        if n.is_empty() || self.session_group_name_taken(&n, id) {
+        let Some(key) = self.resolve_group_key(id) else {
+            return;
+        };
+        if n.is_empty() || self.session_group_name_taken(&n, &key) {
             return;
         }
         let Some(record) = self
             .cache
             .group_records
             .iter_mut()
-            .find(|g| g.id == id)
+            .find(|g| g.id == key)
         else {
             return;
         };
@@ -3446,21 +3458,68 @@ mod tests {
             .expect("add group");
         // 按 id 写入(V3 主路径)。
         store.set_group_color(&gid, "#ff5500");
-        assert_eq!(
-            store.group_effective_color(&gid).as_deref(),
-            Some("#ff5500")
-        );
+        assert_eq!(store.group_own_color(&gid).as_deref(), Some("#ff5500"));
         // 按显示组名写入(Slint 既有契约)——修复前这里静默 return。
         store.set_group_color("生产环境", "#00aa88");
-        assert_eq!(
-            store.group_effective_color(&gid).as_deref(),
-            Some("#00aa88")
-        );
+        assert_eq!(store.group_own_color(&gid).as_deref(), Some("#00aa88"));
         // 名传空 = 清除;未知键静默不动。
         store.set_group_color("生产环境", "");
-        assert_eq!(store.group_effective_color(&gid).as_deref(), None);
+        assert_eq!(store.group_own_color(&gid).as_deref(), None);
         store.set_group_color("不存在的组", "#123456");
-        assert_eq!(store.group_effective_color(&gid).as_deref(), None);
+        assert_eq!(store.group_own_color(&gid).as_deref(), None);
+    }
+
+    #[test]
+    fn group_color_does_not_inherit_from_parent() {
+        // (#group-color-no-inherit 2026-11-19 用户定稿) 父组设色不再连带
+        // 子分组:子组自身无色 = None(色点回落中性、不画色带/页签条)。
+        let mut store = temp_store();
+        let parent = store.add_group("生产环境".into(), "").expect("parent");
+        let child = store
+            .add_group("华东".into(), &parent)
+            .expect("child group");
+        store.set_group_color(&parent, "#ff5500");
+        assert_eq!(store.group_own_color(&parent).as_deref(), Some("#ff5500"));
+        assert_eq!(store.group_own_color(&child), None, "子组不得继承父色");
+        // 子组自己设色只影响自己,父组不受影响。
+        store.set_group_color(&child, "#00aa88");
+        assert_eq!(store.group_own_color(&child).as_deref(), Some("#00aa88"));
+        assert_eq!(store.group_own_color(&parent).as_deref(), Some("#ff5500"));
+        // 子组「无颜色」清掉后回到无色(继承版清完仍显示父色 —— 曾经的坑)。
+        store.set_group_color(&child, "");
+        assert_eq!(store.group_own_color(&child), None);
+    }
+
+    #[test]
+    fn rename_group_accepts_display_name() {
+        // (#rename-by-name-compat 2026-11-19) 组弹框/分组管理传显示组名,
+        // V3 按 id 键后曾静默 no-op —— 改名"没反应"就是这个原因。
+        let mut store = temp_store();
+        let gid = store.add_group("旧名".into(), "").expect("group");
+        store.rename_group("旧名", "新名".into());
+        assert_eq!(
+            store.group_by_id(&gid).map(|g| g.name.as_str()),
+            Some("新名")
+        );
+        // 纯大小写改名(自排除不能把自己挡成"已存在");按 id 直呼同样成立。
+        store.rename_group("新名", "NEW".into());
+        assert_eq!(
+            store.group_by_id(&gid).map(|g| g.name.as_str()),
+            Some("NEW")
+        );
+        store.rename_group(&gid, "终名".into());
+        assert_eq!(
+            store.group_by_id(&gid).map(|g| g.name.as_str()),
+            Some("终名")
+        );
+        // 撞名被拒。(保留组 guard 在 rename_group 内由 record.reserved 承担;
+        // temp_store 不补建保留组 record,这里不再断言 —— 与删除组单测同况。)
+        store.add_group("占用".into(), "").expect("other");
+        store.rename_group("终名", "占用".into());
+        assert_eq!(
+            store.group_by_id(&gid).map(|g| g.name.as_str()),
+            Some("终名")
+        );
     }
 
     #[test]

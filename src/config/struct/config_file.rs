@@ -708,7 +708,7 @@ pub struct ConfigFile {
     /// resource panel / wallpaper overlay) to users still sitting on old defaults.
     #[serde(default)]
     pub defaults_rev: u32,
-    // ── 面板设置弹框 8 键(#panel-settings 2026-11-12,hifi
+    // ── 面板设置弹框 9 键(#panel-settings 2026-11-12,hifi
     // ── left-panel-session-hifi §V4.3)全部「修改实时生效」,app.rs 的
     // ── on_set_panel_* 落盘。
     /// 行密度:会话行高度。false = 标准(34px,#tree-geom),true = 紧凑(30px)。
@@ -732,6 +732,9 @@ pub struct ConfigFile {
     /// 自动展开所在组:打开会话时展开它的父分组。默认开。
     #[serde(default = "default_true")]
     pub panel_auto_expand_group: bool,
+    /// 打开会话的方式(false = 单击打开，历史行为 / true = 双击打开)。
+    #[serde(default)]
+    pub panel_double_click_open: bool,
     /// 排序方式(分组与组内会话共用):0 = 默认(存储序) / 1 = 名称 / 2 = 最近。
     #[serde(default)]
     pub panel_sort_mode: u8,

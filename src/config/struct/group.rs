@@ -23,7 +23,8 @@ pub struct GroupRecord {
     /// "" = 根级分组;否则指向父组 id(父组不存在时按根级渲染)。
     #[serde(default)]
     pub parent_id: String,
-    /// 用户自定义组色 "#RRGGBB";None = 无自定义色(继承父组或主题默认)。
+    /// 用户自定义组色 "#RRGGBB";None = 本组无色(渲染回落主题默认;
+    /// #group-color-no-inherit 2026-11-19 起不再继承父组)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     /// 折叠状态(折叠的是本组的子层,组头行本身仍显示)。
@@ -126,12 +127,18 @@ pub fn is_reserved_session_group(name: &str) -> bool {
 /// 大小写不敏感(ASCII);中文名精确匹配(trim 由调用方或本函数处理)。
 pub fn reserved_session_group_id(name: &str) -> Option<&'static str> {
     let name = name.trim();
+    // (#group-name-i18n 2026-11-19) 英文界面下组头的**显示名**是
+    // "Default group" / "Local Terminals"（left_sidebar 只翻译展示层），
+    // 而分组输入框会把这个显示名原样回填/回传 —— 不认就等于「选默认组
+    // 却新建了一个组」。变体清单与 session_dialog.slint group-hint() 同步。
     if name.eq_ignore_ascii_case("default")
+        || name.eq_ignore_ascii_case("default group")
         || matches!(name, "默认" | "默认组" | "默认分组" | "默认值")
     {
         return Some(GROUP_ID_DEFAULT);
     }
     if name.eq_ignore_ascii_case("system")
+        || name.eq_ignore_ascii_case("local terminals")
         || matches!(name, "本地终端" | "系统" | "系统组")
     {
         return Some(GROUP_ID_SYSTEM);
@@ -191,5 +198,25 @@ mod group_record_tests {
         let id = new_group_id();
         assert!(id.starts_with("grp-"));
         assert_eq!(id.len(), "grp-".len() + 8);
+    }
+
+    #[test]
+    fn english_display_names_are_reserved() {
+        // (#group-name-i18n 2026-11-19) 英文界面下组头显示名会回填到分组
+        // 输入框:必须认作保留组,否则"选默认组"会新建一个同名组。
+        assert_eq!(
+            reserved_session_group_id("Default group"),
+            Some(GROUP_ID_DEFAULT)
+        );
+        assert_eq!(
+            reserved_session_group_id("default group"),
+            Some(GROUP_ID_DEFAULT)
+        );
+        assert_eq!(
+            reserved_session_group_id("Local Terminals"),
+            Some(GROUP_ID_SYSTEM)
+        );
+        assert_eq!(reserved_session_group_id("默认组"), Some(GROUP_ID_DEFAULT));
+        assert_eq!(reserved_session_group_id("我的组"), None);
     }
 }

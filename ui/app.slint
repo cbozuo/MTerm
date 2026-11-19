@@ -1397,7 +1397,7 @@ export component AppWindow inherits Window {
     // (#titlebar-ping 2026-11-04) Ping 弹框数据/开关（Rust 侧模型重建下发，
     // 与 highlight 同款模式；「加入 N」条数走 pure callback ping-count-draft）。
     in-out property <bool> ping-dialog-open: false;
-    // (#panel-settings 2026-11-12) 面板设置弹框 8 键(弹框双向绑定到这里;
+    // (#panel-settings 2026-11-12) 面板设置弹框 9 键(弹框双向绑定到这里;
     // Rust 启动下发 + set-panel-* 回调落盘,排序档回调另触发模型重建)。
     in-out property <bool> panel-settings-open: false;
     in-out property <bool> panel-row-compact: false;          // 行密度:紧凑(30px)/标准(34px)
@@ -1407,6 +1407,8 @@ export component AppWindow inherits Window {
     in-out property <bool> panel-hover-card: true;            // 悬停信息卡
     in-out property <bool> panel-locate-follow-tab: true;     // 点击标签定位树
     in-out property <bool> panel-auto-expand-group: true;     // 自动展开所在组
+    // (#panel-open-mode 2026-11-19 用户要求"单击还是双击打开 tap")
+    in-out property <bool> panel-double-click-open: false;    // 打开会话:单击/双击
     in-out property <int> panel-sort-mode: 0;                 // 0 默认 / 1 名称 / 2 最近
     callback set-panel-row-compact(bool);
     callback set-panel-group-bands(bool);
@@ -1415,6 +1417,7 @@ export component AppWindow inherits Window {
     callback set-panel-hover-card(bool);
     callback set-panel-locate-follow-tab(bool);
     callback set-panel-auto-expand-group(bool);
+    callback set-panel-double-click-open(bool);
     callback set-panel-sort-mode(int);
     // (#move-group-dialog 2026-11-12) 「移动到分组」弹框:树形目标组 +
     // 搜索(过滤在 Rust 侧)+ 选中态。打开时 Slint 发 refresh 请求。
@@ -3350,6 +3353,7 @@ export component AppWindow inherits Window {
                     panel-group-total: root.panel-group-total;
                     panel-hover-card: root.panel-hover-card;
                     panel-row-compact: root.panel-row-compact;
+                    double-click-open: root.panel-double-click-open;
                     locate-scroll-y: root.locate-scroll-y;
                     locate-flash-id <=> root.locate-flash-id;
                     locate-current-session() => { root.locate-current-session(); }
@@ -3358,7 +3362,7 @@ export component AppWindow inherits Window {
                     panel-settings-open: root.panel-settings-open;
                     open-panel-settings() => {
                         // (#panel-settings 2026-11-12) 面板设置 = 专属弹框
-                        // (8 项会话面板设置;旧跳转接口设置「侧栏」页退役)。
+                        // (9 项会话面板设置;旧跳转接口设置「侧栏」页退役)。
                         root.panel-settings-open = true;
                     }
     return-hotkey-focus() => { shortcut-scope.focus(); }
@@ -4045,6 +4049,7 @@ export component AppWindow inherits Window {
                         panel-group-total: root.panel-group-total;
                         panel-hover-card: root.panel-hover-card;
                         panel-row-compact: root.panel-row-compact;
+                        double-click-open: root.panel-double-click-open;
                         locate-scroll-y: root.locate-scroll-y;
                         locate-flash-id <=> root.locate-flash-id;
                         locate-current-session() => { root.locate-current-session(); }
@@ -5232,7 +5237,12 @@ export component AppWindow inherits Window {
                         root.new-session-clicked();
                         // 新建弹框打开后预填本组(双向绑定直写 draft-group;
                         // Rust 的 reset 在回调内同步跑完,这里后写生效)。
-                        root.dialog-group = root.ctx-menu-group;
+                        // (#group-default-zh) 默认组的树行 group 值是存储键
+                        // "default",直接预填会让输入框显示 "default";按显示名
+                        // 归一(语义不变:group-hint/提交都把「默认组」认作默认组)。
+                        root.dialog-group = root.ctx-menu-group == "default"
+                            ? @tr("Default group")
+                            : root.ctx-menu-group;
                     }
                 }
                 HorizontalLayout {
@@ -5316,15 +5326,38 @@ export component AppWindow inherits Window {
                     Text { text: @tr("Group color…"); color: Theme.text-primary; font-size: Theme.fs-menu; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: left; overflow: elide; }
                     // (#group-color-swatch 2026-11-17 用户要求) 右侧**只放色块**:
                     // 十六进制色号和「默认」文案都不要(前者要读、后者占位),色块本身
-                    // 就是答案。规格与分组弹框头部的色点一致(12px 圆 / 1px 描边);
-                    // 未设色时是透明底 + muted 描边的"空环"。
+                    // 就是答案。
+                    // (#group-menu-swatch 2026-11-19 用户要求"和预设弹框上面的样色
+                    // 同款、悬浮有提示信息、注意居中") 复刻 InfoSwatch 的视觉
+                    // (14px / radius 4 / 悬浮 2px 内描边 ink-on@0.72)并把它的
+                    // ColorInfoCard(HEX/RGB/HSV/HSL)搬过来 —— 不能直接用
+                    // InfoSwatch:它自带 TouchArea 会吞掉本行点击(点色块就打不开
+                    // 取色器了),这里用**整行悬浮**驱动(悬停「分组颜色…」就是在问
+                    // 这个颜色是什么)。未设色 = 透明底 + muted 空环,不出提示卡。
                     Rectangle {
-                        width: 12px;
-                        height: 12px;
-                        border-radius: 6px;
+                        width: 14px;
+                        height: 14px;
+                        border-radius: 4px;
                         background: root.ctx-menu-group-color-hex == "" ? transparent : root.ctx-menu-group-color;
-                        border-width: 1px;
-                        border-color: root.ctx-menu-group-color-hex == "" ? Theme.text-muted : Theme.border-strong;
+                        border-width: (g-color-ta.has-hover && root.ctx-menu-group-color-hex != "") ? 2px : 1px;
+                        border-color: root.ctx-menu-group-color-hex == ""
+                            ? Theme.text-muted
+                            : (g-color-ta.has-hover
+                                ? PickerMath.ink-on(root.ctx-menu-group-color-hex).with-alpha(0.72)
+                                : #ffffff26);
+                        // 悬浮卡:居中于色块、上浮 8px(InfoSwatch 默认位)。卡片属于
+                        // 本行,菜单里排在后面的兄弟都在下方 → 不会盖住卡片;上方的
+                        // 兄弟先绘制 → 被卡片压住,正是提示层级。
+                        // (#info-card-empty 2026-11-19 用户要求) 未设色也要出卡:
+                        // 显示「未设置颜色」而不是什么都不弹。
+                        ColorInfoCard {
+                            hex: root.ctx-menu-group-color-hex;
+                            empty-label: @tr("No colour set");
+                            empty-hint: @tr("Click this row to pick one");
+                            x: (parent.width - self.width) / 2;
+                            y: -(self.height + 8px);
+                            visible: g-color-ta.has-hover;
+                        }
                     }
                 }
             }
@@ -9206,7 +9239,7 @@ export component AppWindow inherits Window {
         close-requested => { root.move-dialog-open = false; }
     }
 
-    // (#panel-settings 2026-11-12) 面板设置弹框:8 项双向绑定 + 落盘回调转发
+    // (#panel-settings 2026-11-12) 面板设置弹框:9 项双向绑定 + 落盘回调转发
     // (排序档回调在 Rust 侧顺带重建会话模型)。
     if root.panel-settings-open : PanelSettingsDialog {
         lang-en: root.lang-en;
@@ -9220,6 +9253,7 @@ export component AppWindow inherits Window {
         panel-hover-card <=> root.panel-hover-card;
         panel-locate-follow-tab <=> root.panel-locate-follow-tab;
         panel-auto-expand-group <=> root.panel-auto-expand-group;
+        panel-double-click-open <=> root.panel-double-click-open;
         panel-sort-mode <=> root.panel-sort-mode;
         toggled-row-compact(v) => { root.set-panel-row-compact(v); }
         toggled-group-bands(v) => { root.set-panel-group-bands(v); }
@@ -9228,6 +9262,7 @@ export component AppWindow inherits Window {
         toggled-hover-card(v) => { root.set-panel-hover-card(v); }
         toggled-locate-follow-tab(v) => { root.set-panel-locate-follow-tab(v); }
         toggled-auto-expand-group(v) => { root.set-panel-auto-expand-group(v); }
+        toggled-double-click-open(v) => { root.set-panel-double-click-open(v); }
         sort-picked(v) => { root.set-panel-sort-mode(v); }
         close-requested => { root.panel-settings-open = false; }
     }
